@@ -162,6 +162,17 @@ Bundled docs tools:
 revit-mcp-skill/
 |-- README.md
 |-- SKILL.md
+|-- references/
+|   |-- parameters.md
+|   |-- units.md
+|   |-- system-classification.md
+|   |-- collectors.md
+|   |-- linked-models.md
+|   `-- patterns/
+|       |-- boq-duct.cs
+|       |-- boq-pipe.cs
+|       |-- pressure-loss-duct.cs
+|       `-- diffuser-count.cs
 |-- evals/
 |   `-- evals.json
 `-- kurulum/
@@ -174,6 +185,21 @@ revit-mcp-skill/
     |-- Custom_DLL/
     `-- mcp-server/
 ```
+
+## Host compatibility
+
+The installation steps above are written for Codex CLI on Windows, but
+the skill itself is host-agnostic. To use it from another host:
+
+- **Claude Code**: copy the repo root into `~/.claude/skills/revit-mcp/`
+  and register the MCP server with `claude mcp add`. The
+  `send_code_to_revit` tool will surface as
+  `mcp__revit-mcp__send_code_to_revit`.
+- **Cursor**: place the repo under your skills/rules location and
+  register the MCP server in Cursor's MCP settings.
+- **Codex CLI**: see the Quick start section above.
+
+`SKILL.md` does not hardcode any host-specific tool name.
 
 ## Bundled tool surface
 

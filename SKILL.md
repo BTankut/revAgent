@@ -1,74 +1,93 @@
 ---
 name: revit-mcp
 description: >
-  MEP tesisat mühendisliği için Revit API otomasyon uzmanı. Bu skill'i şu durumlarda kullan:
-  kullanıcı Revit'te kanal, boru, armatür, vana, damper, sprinkler, difüzör, klima santrali,
-  fan veya herhangi bir mekanik/tesisat elemanıyla ilgili kod yazmak istediğinde; HVAC,
-  pis su, temiz su, yağmur suyu drenajı, sulu söndürme, yangın dolabı, yangın basınçlandırma
-  veya duman kanal sistemleri üzerinde işlem yapmak istediğinde; metraj (BOQ), basınç kaybı,
-  kritik hat hesabı veya sistem debisi gibi mühendislik hesapları yapmak istediğinde;
-  mcp_revit-mcp_send_code_to_revit aracını kullanmak istediğinde.
-  Kullanıcı "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
-  "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar" gibi şeyler söylediğinde de devreye gir.
+  Revit MEP automation expert for HVAC, plumbing, fire protection, and
+  smoke control systems via the Revit MCP server. Use this skill when
+  the user asks to write or run Revit API code through `send_code_to_revit`,
+  work with ducts, pipes, fittings, accessories, valves, dampers, sprinklers,
+  diffusers, air handling units, fans, or any mechanical/plumbing element,
+  operate on HVAC, sanitary, domestic water, storm drainage, sprinkler,
+  fire hose, fire pressurization, or smoke duct systems, or perform
+  engineering calculations such as BOQ/quantity takeoff, pressure loss,
+  critical path, or system flow. Turkish trigger phrases also apply:
+  "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
+  "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
+license: MIT
+version: 0.2.0
 ---
 
-# Revit MCP - Mekanik Tesisat API Uzmanı
+# Revit MCP — MEP Automation Expert
 
-Revit MCP üzerinden çalışan MEP otomasyon uzmanısın.
-Kapsam: HVAC kanalları, pis su, temiz su, yağmur suyu drenajı, sulu söndürme (sprinkler),
-yangın dolabı, yangın basınçlandırma ve duman kanal sistemleri.
-Mimari veya yapısal elemanlara müdahale edilmez.
+You are an MEP automation expert working through the Revit MCP server.
+Scope: HVAC ducts, sanitary, domestic water, storm drainage, sprinkler,
+fire hose, fire pressurization, and smoke duct systems. Do not touch
+architectural or structural elements.
 
-Tüm kodlar `mcp_revit-mcp_send_code_to_revit` aracıyla Revit'e gönderilir.
+All code is sent to Revit through the `send_code_to_revit` MCP tool. The
+fully qualified tool name depends on the host, e.g.
+`mcp_revit-mcp_send_code_to_revit` in Codex CLI or
+`mcp__revit-mcp__send_code_to_revit` in Claude Code. Use whichever form
+the host exposes.
+
+The bundled tool surface is intentionally small:
+
+- `send_code_to_revit` — primary; use it for any non-trivial task
+- `get_selected_elements`
+- `get_current_view_info`
+- `get_current_view_elements`
+
+Prefer `send_code_to_revit` for linked-model queries, room matching,
+custom export logic, instance/type parameter fallback, bulk extraction,
+performance-sensitive workflows, and CSV/XLSX reporting.
 
 ---
 
-## 1. Çalışma Ortamı - Kesin Kurallar
+## 1. Execution Contract — Hard Rules
 
-Upstream `mcp-servers-for-revit` dinamik C# kodunu derler.
-Kod şu metodun gövdesine enjekte edilir:
+The upstream `mcp-servers-for-revit` plugin compiles C# at runtime. Your
+code is injected into the body of:
 
 ```csharp
 public static object Execute(Document document, object[] parameters)
 {
-    // senin kodun buraya gelir
+    // your code goes here
 }
 ```
 
-- Sadece Execute gövdesini yaz. `class`, `namespace`, `method` tanımlama.
-- `document` ve `parameters` zaten tanımlı. Tekrar tanımlama.
-- `document` bir `Autodesk.Revit.DB.Document` nesnesidir.
-- `parameters` bir `object[]` dizisidir.
-- Kod mutlaka `return` ile bitmeli.
+- Write only the body of `Execute`. Do not declare `class`, `namespace`, or `method`.
+- `document` and `parameters` are already in scope. Do not redeclare them.
+- `document` is `Autodesk.Revit.DB.Document`.
+- `parameters` is `object[]`.
+- The snippet must end with `return`.
 
 ---
 
-## 2. C# Derleyici Kısıtlamaları
+## 2. C# Compiler Constraints
 
-| Kullanma | Kullan |
+| Don't use | Use instead |
 |---|---|
-| `$"Uzunluk: {len} m"` | `string.Format("Uzunluk: {0} m", len)` |
+| `$"Length: {len} m"` | `string.Format("Length: {0} m", len)` |
 | `List<Element>` | `System.Collections.Generic.List<Element>` |
 | `Dictionary<string,int>` | `System.Collections.Generic.Dictionary<string, int>` |
-| `Duct d = ...` kısa yol | `Autodesk.Revit.DB.Mechanical.Duct d = ...` |
-| `Pipe p = ...` kısa yol | `Autodesk.Revit.DB.Plumbing.Pipe p = ...` |
+| `Duct d = ...` short form | `Autodesk.Revit.DB.Mechanical.Duct d = ...` |
+| `Pipe p = ...` short form | `Autodesk.Revit.DB.Plumbing.Pipe p = ...` |
 | `fi.Level` | `document.GetElement(fi.LevelId)` |
-| `?.` null-conditional | Açık `if (x != null)` kontrolü |
+| `?.` null-conditional | explicit `if (x != null)` |
 
 ---
 
-## 3. MEP Sınıfları - Gerçek API Durumu
+## 3. MEP Classes — Real API Status
 
-### Derleyen sınıflar
+### Compile-friendly classes
 
 ```text
-Autodesk.Revit.DB.Mechanical.Duct      -> Kanal segmenti
-Autodesk.Revit.DB.Mechanical.FlexDuct  -> Esnek kanal
-Autodesk.Revit.DB.Plumbing.Pipe        -> Boru segmenti
-Autodesk.Revit.DB.Plumbing.FlexPipe    -> Esnek boru
+Autodesk.Revit.DB.Mechanical.Duct      -> duct segment
+Autodesk.Revit.DB.Mechanical.FlexDuct  -> flexible duct
+Autodesk.Revit.DB.Plumbing.Pipe        -> pipe segment
+Autodesk.Revit.DB.Plumbing.FlexPipe    -> flexible pipe
 ```
 
-### Derlemeyen sınıflar - Kategori ile kullan
+### Classes that fail to compile — use category instead
 
 ```text
 DuctFitting   -> OfCategory(BuiltInCategory.OST_DuctFitting)   + FamilyInstance
@@ -79,576 +98,97 @@ PipeAccessory -> OfCategory(BuiltInCategory.OST_PipeAccessory) + FamilyInstance
 
 ---
 
-## 4. FilteredElementCollector Desenleri
+## 4. FilteredElementCollector — Core Pattern
+
+Always append `.WhereElementIsNotElementType()`.
 
 ```csharp
-// Tüm kanallar:
 new FilteredElementCollector(document)
     .OfClass(typeof(Autodesk.Revit.DB.Mechanical.Duct))
     .WhereElementIsNotElementType();
-
-// Aktif görünümdeki kanallar:
-new FilteredElementCollector(document, document.ActiveView.Id)
-    .OfClass(typeof(Autodesk.Revit.DB.Mechanical.Duct))
-    .WhereElementIsNotElementType();
-
-// Tüm borular:
-new FilteredElementCollector(document)
-    .OfClass(typeof(Autodesk.Revit.DB.Plumbing.Pipe))
-    .WhereElementIsNotElementType();
-
-// Kanal armatürleri:
-new FilteredElementCollector(document)
-    .OfCategory(BuiltInCategory.OST_DuctFitting)
-    .OfClass(typeof(FamilyInstance))
-    .WhereElementIsNotElementType();
-
-// Kanal aksesuarları:
-new FilteredElementCollector(document)
-    .OfCategory(BuiltInCategory.OST_DuctAccessory)
-    .OfClass(typeof(FamilyInstance))
-    .WhereElementIsNotElementType();
-
-// Boru armatürleri:
-new FilteredElementCollector(document)
-    .OfCategory(BuiltInCategory.OST_PipeFitting)
-    .OfClass(typeof(FamilyInstance))
-    .WhereElementIsNotElementType();
-
-// Boru aksesuarları:
-new FilteredElementCollector(document)
-    .OfCategory(BuiltInCategory.OST_PipeAccessory)
-    .OfClass(typeof(FamilyInstance))
-    .WhereElementIsNotElementType();
-
-// Sprinkler başlıkları:
-new FilteredElementCollector(document)
-    .OfCategory(BuiltInCategory.OST_Sprinklers)
-    .OfClass(typeof(FamilyInstance))
-    .WhereElementIsNotElementType();
-
-// Hava terminalleri:
-new FilteredElementCollector(document)
-    .OfCategory(BuiltInCategory.OST_DuctTerminal)
-    .OfClass(typeof(FamilyInstance))
-    .WhereElementIsNotElementType();
-
-// Mekanik ekipman:
-new FilteredElementCollector(document)
-    .OfCategory(BuiltInCategory.OST_MechanicalEquipment)
-    .OfClass(typeof(FamilyInstance))
-    .WhereElementIsNotElementType();
 ```
 
-`.WhereElementIsNotElementType()` her zaman eklenir.
+For the full set of category + class collector recipes (sprinklers, air
+terminals, mechanical equipment, fittings, accessories, active-view
+filters), see `references/collectors.md`.
 
 ---
 
-## 5. Parametre Okuma Yöntemi
+## 5. Transactions
 
-### Kanal - LookupParameter kullan
+The wrapper calls `send_code_to_revit` with `transactionMode: "auto"` by
+default. In that mode the snippet already runs inside a transaction.
 
-Kanal BuiltInParameter'larının büyük çoğunluğu dinamik derleyicide güvenilir değildir.
-Kanal için varsayılan yaklaşım `LookupParameter(name)` kullanmaktır.
+- Read-only work: keep the default `auto` mode.
+- Manual transaction control: call the tool with `transactionMode: "none"`.
+- In `auto` mode, do **not** open a second `Transaction.Start()`.
 
-Örnekler:
-- `Diameter`
-- `Width`
-- `Height`
-- `Length`
-- `Flow`
-- `Velocity`
-- `Friction`
-- `Pressure Drop`
-- `Insulation Thickness`
-- `System Type`
-- `System Classification`
-- `System Name`
-- `Size`
-- `Area`
-- `Level`
-
-### Boru - BuiltInParameter kullan
-
-Boru tarafında şu parametreler tipik olarak güvenilirdir:
-- `RBS_PIPE_OUTER_DIAMETER`
-- `RBS_PIPE_INNER_DIAM_PARAM`
-- `RBS_PIPE_DIAMETER_PARAM`
-- `RBS_PIPE_FLOW_PARAM`
-- `RBS_VELOCITY`
-- `RBS_FRICTION`
-- `RBS_SYSTEM_NAME_PARAM`
-- `CURVE_ELEM_LENGTH`
-- `RBS_PRESSURE_DROP`
-- `RBS_REFERENCE_INSULATION_THICKNESS`
-
-Derlemeyen boru BIP'lerinde `LookupParameter(...)` kullan:
-- `RBS_PIPE_SLOPE_PARAM` -> `LookupParameter("Slope")`
-- `RBS_SYSTEM_TYPE_PARAM` -> `LookupParameter("System Type")`
-
-### FamilyInstance örneği
+Manual transaction example:
 
 ```csharp
-Parameter p = fi.LookupParameter("System Type");
-if (p != null && p.HasValue)
-{
-    string val = p.AsValueString();
-}
-
-ElementId lvlId = fi.LevelId;
-string levelName =
-    (lvlId != null && lvlId != ElementId.InvalidElementId && document.GetElement(lvlId) != null)
-    ? document.GetElement(lvlId).Name
-    : "N/A";
-```
-
----
-
-## 6. Birim Dönüşümleri
-
-`DisplayUnitType` kullanma. `UnitTypeId` kullan.
-
-```csharp
-double mm  = UnitUtils.ConvertFromInternalUnits(val, UnitTypeId.Millimeters);
-double m   = UnitUtils.ConvertFromInternalUnits(val, UnitTypeId.Meters);
-double m3h = UnitUtils.ConvertFromInternalUnits(val, UnitTypeId.CubicMetersPerHour);
-double lps = UnitUtils.ConvertFromInternalUnits(val, UnitTypeId.LitersPerSecond);
-double ms  = UnitUtils.ConvertFromInternalUnits(val, UnitTypeId.MetersPerSecond);
-double pam = UnitUtils.ConvertFromInternalUnits(val, UnitTypeId.PascalsPerMeter);
-double pa  = UnitUtils.ConvertFromInternalUnits(val, UnitTypeId.Pascals);
-
-double ft = UnitUtils.ConvertToInternalUnits(200.0, UnitTypeId.Millimeters);
-```
-
----
-
-## 7. Transaction
-
-`send_code_to_revit` aracı varsayılan olarak `transactionMode: "auto"` ile çağrılır.
-Bu modda snippet zaten bir transaction içinde çalışır.
-
-- Sadece okuma yapıyorsan varsayılan `auto` modunu kullan.
-- Kendi transaction yönetimini yazacaksan aracı `transactionMode: "none"` ile çağır.
-- `auto` modunda snippet içinde ikinci kez `Transaction.Start()` açma.
-
-Manuel transaction örneği:
-
-```csharp
-using (Transaction t = new Transaction(document, "İşlem Adı"))
+using (Transaction t = new Transaction(document, "Operation Name"))
 {
     t.Start();
-    // ... değişiklik ...
+    // ... modification ...
     t.Commit();
 }
 ```
 
 ---
 
-## 8. Hata Yönetimi
-
-Her zaman şu deseni kullan:
+## 6. Error Handling — Always Wrap
 
 ```csharp
 try
 {
-    // ... ana mantık ...
-    return "Sonuç";
+    // ... main logic ...
+    return "Result";
 }
 catch (Exception ex)
 {
-    return "HATA: " + ex.ToString();
+    return "ERROR: " + ex.ToString();
 }
 ```
 
 ---
 
-## 9. Sistem Sınıflandırması
+## 7. Reference Material
 
-`LookupParameter("System Classification")` tipik değerleri:
-- `Supply Air`
-- `Return Air`
-- `Exhaust Air`
-- `Other Air`
+Load these as needed for the current task:
 
-`LookupParameter("System Type")` proje özelindeki sistem tipini verir.
-`LookupParameter("System Name")` sistem örneği adını verir.
-
-Boru sistemlerinde `LookupParameter("System Type").AsValueString()` tipik değerleri:
-- `Domestic Cold Water`
-- `Domestic Hot Water`
-- `Sanitary`
-- `Storm`
-- `Fire Protection`
-- `Hydronic Supply`
-- `Hydronic Return`
-
----
-
-## 10. Mühendislik Hesabı Desenleri
-
-### 10.1 BOQ - Kanal sistemi + boyut bazlı metraj
-
-```csharp
-try
-{
-    System.Collections.Generic.Dictionary<string, double> boq =
-        new System.Collections.Generic.Dictionary<string, double>();
-
-    FilteredElementCollector col = new FilteredElementCollector(document)
-        .OfClass(typeof(Autodesk.Revit.DB.Mechanical.Duct))
-        .WhereElementIsNotElementType();
-
-    foreach (Element elem in col.ToElements())
-    {
-        Autodesk.Revit.DB.Mechanical.Duct duct = elem as Autodesk.Revit.DB.Mechanical.Duct;
-        if (duct == null) continue;
-
-        Parameter lenP = duct.LookupParameter("Length");
-        Parameter sysP = duct.LookupParameter("System Classification");
-        Parameter sizeP = duct.LookupParameter("Size");
-
-        if (lenP == null || !lenP.HasValue) continue;
-
-        string sys = (sysP != null && sysP.HasValue) ? sysP.AsValueString() : "?";
-        string size = (sizeP != null && sizeP.HasValue) ? sizeP.AsValueString() : "?";
-        double lenM = UnitUtils.ConvertFromInternalUnits(lenP.AsDouble(), UnitTypeId.Meters);
-
-        string key = string.Format("{0} | {1}", sys, size);
-        if (!boq.ContainsKey(key)) boq[key] = 0.0;
-        boq[key] += lenM;
-    }
-
-    System.Collections.Generic.List<string> lines = new System.Collections.Generic.List<string>();
-    lines.Add("SİSTEM | BOYUT | UZUNLUK (m)");
-    lines.Add(new string('-', 50));
-    foreach (System.Collections.Generic.KeyValuePair<string, double> kv in boq)
-        lines.Add(string.Format("{0} -> {1:F2} m", kv.Key, kv.Value));
-    return string.Join("\n", lines);
-}
-catch (Exception ex)
-{
-    return "HATA: " + ex.ToString();
-}
-```
-
-### 10.2 BOQ - Boru sistemi + çap bazlı metraj
-
-```csharp
-try
-{
-    System.Collections.Generic.Dictionary<string, double> boq =
-        new System.Collections.Generic.Dictionary<string, double>();
-
-    FilteredElementCollector col = new FilteredElementCollector(document)
-        .OfClass(typeof(Autodesk.Revit.DB.Plumbing.Pipe))
-        .WhereElementIsNotElementType();
-
-    foreach (Element elem in col.ToElements())
-    {
-        Autodesk.Revit.DB.Plumbing.Pipe pipe = elem as Autodesk.Revit.DB.Plumbing.Pipe;
-        if (pipe == null) continue;
-
-        Parameter lenP = pipe.get_Parameter(BuiltInParameter.CURVE_ELEM_LENGTH);
-        Parameter diamP = pipe.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM);
-        Parameter sysP = pipe.LookupParameter("System Type");
-
-        if (lenP == null || !lenP.HasValue) continue;
-
-        string sys = (sysP != null && sysP.HasValue) ? sysP.AsValueString() : "?";
-        double diamMm = (diamP != null && diamP.HasValue)
-            ? UnitUtils.ConvertFromInternalUnits(diamP.AsDouble(), UnitTypeId.Millimeters)
-            : 0;
-        double lenM = UnitUtils.ConvertFromInternalUnits(lenP.AsDouble(), UnitTypeId.Meters);
-
-        string key = string.Format("{0} | DN{1:F0}", sys, diamMm);
-        if (!boq.ContainsKey(key)) boq[key] = 0.0;
-        boq[key] += lenM;
-    }
-
-    System.Collections.Generic.List<string> lines = new System.Collections.Generic.List<string>();
-    lines.Add("SİSTEM | ÇAP | UZUNLUK (m)");
-    lines.Add(new string('-', 50));
-    foreach (System.Collections.Generic.KeyValuePair<string, double> kv in boq)
-        lines.Add(string.Format("{0} -> {1:F2} m", kv.Key, kv.Value));
-    return string.Join("\n", lines);
-}
-catch (Exception ex)
-{
-    return "HATA: " + ex.ToString();
-}
-```
-
-### 10.3 Basınç kaybı - Kanal sistemi bazında
-
-```csharp
-try
-{
-    System.Collections.Generic.Dictionary<string, double> sysPa =
-        new System.Collections.Generic.Dictionary<string, double>();
-    System.Collections.Generic.Dictionary<string, int> sysCnt =
-        new System.Collections.Generic.Dictionary<string, int>();
-
-    FilteredElementCollector col = new FilteredElementCollector(document)
-        .OfClass(typeof(Autodesk.Revit.DB.Mechanical.Duct))
-        .WhereElementIsNotElementType();
-
-    foreach (Element elem in col.ToElements())
-    {
-        Autodesk.Revit.DB.Mechanical.Duct duct = elem as Autodesk.Revit.DB.Mechanical.Duct;
-        if (duct == null) continue;
-
-        Parameter fricP = duct.LookupParameter("Friction");
-        Parameter lenP = duct.LookupParameter("Length");
-        Parameter sysP = duct.LookupParameter("System Name");
-
-        if (fricP == null || !fricP.HasValue) continue;
-        if (lenP == null || !lenP.HasValue) continue;
-
-        string sys = (sysP != null && sysP.HasValue) ? sysP.AsValueString() : "?";
-        double pam = UnitUtils.ConvertFromInternalUnits(fricP.AsDouble(), UnitTypeId.PascalsPerMeter);
-        double m = UnitUtils.ConvertFromInternalUnits(lenP.AsDouble(), UnitTypeId.Meters);
-
-        if (!sysPa.ContainsKey(sys))
-        {
-            sysPa[sys] = 0.0;
-            sysCnt[sys] = 0;
-        }
-        sysPa[sys] += pam * m;
-        sysCnt[sys] += 1;
-    }
-
-    System.Collections.Generic.List<string> lines = new System.Collections.Generic.List<string>();
-    lines.Add("SİSTEM | TOPLAM BASINÇ KAYBI (Pa) | SEGMENT");
-    lines.Add(new string('-', 60));
-    foreach (System.Collections.Generic.KeyValuePair<string, double> kv in sysPa)
-        lines.Add(string.Format("{0} -> {1:F1} Pa ({2} seg)", kv.Key, kv.Value, sysCnt[kv.Key]));
-    return string.Join("\n", lines);
-}
-catch (Exception ex)
-{
-    return "HATA: " + ex.ToString();
-}
-```
-
-### 10.4 Difüzör sayımı - Sistem + kat bazlı
-
-```csharp
-try
-{
-    System.Collections.Generic.Dictionary<string, int> counts =
-        new System.Collections.Generic.Dictionary<string, int>();
-
-    FilteredElementCollector col = new FilteredElementCollector(document)
-        .OfCategory(BuiltInCategory.OST_DuctTerminal)
-        .OfClass(typeof(FamilyInstance))
-        .WhereElementIsNotElementType();
-
-    foreach (Element elem in col.ToElements())
-    {
-        FamilyInstance fi = elem as FamilyInstance;
-        if (fi == null) continue;
-
-        Parameter sysP = fi.LookupParameter("System Classification");
-        string sys = (sysP != null && sysP.HasValue) ? sysP.AsValueString() : "?";
-
-        ElementId lvlId = fi.LevelId;
-        string lvl = (lvlId != null && lvlId != ElementId.InvalidElementId && document.GetElement(lvlId) != null)
-            ? document.GetElement(lvlId).Name
-            : "?";
-
-        string key = string.Format("{0} | {1}", sys, lvl);
-        if (!counts.ContainsKey(key)) counts[key] = 0;
-        counts[key]++;
-    }
-
-    System.Collections.Generic.List<string> lines = new System.Collections.Generic.List<string>();
-    lines.Add("SİSTEM | KAT | ADET");
-    lines.Add(new string('-', 40));
-    foreach (System.Collections.Generic.KeyValuePair<string, int> kv in counts)
-        lines.Add(string.Format("{0}: {1} adet", kv.Key, kv.Value));
-    return string.Join("\n", lines);
-}
-catch (Exception ex)
-{
-    return "HATA: " + ex.ToString();
-}
-```
+- `references/parameters.md` — parameter lookup order, BIP vs.
+  `LookupParameter` rules for ducts and pipes, FamilyInstance level
+  resolution
+- `references/units.md` — `UnitTypeId` conversions (mm, m, m³/h, L/s,
+  m/s, Pa, Pa/m). Never use `DisplayUnitType`.
+- `references/system-classification.md` — typical values for `System
+  Classification`, `System Type`, `System Name` on duct and pipe systems
+- `references/collectors.md` — full list of category + class collector recipes
+- `references/linked-models.md` — linked architectural model lookup, room
+  matching, nearest-room fallback, level lock, performance patterns,
+  CSV/Excel export safety, identity strategy, debug workflow, companion
+  `revit-api-docs` MCP server usage
+- `references/patterns/boq-duct.cs` — duct BOQ by system + size
+- `references/patterns/boq-pipe.cs` — pipe BOQ by system + diameter
+- `references/patterns/pressure-loss-duct.cs` — total pressure loss per system
+- `references/patterns/diffuser-count.cs` — diffuser count by system + level
 
 ---
 
-## 11. Gönderme Öncesi Kontrol Listesi
+## 8. Pre-Send Checklist
 
-- [ ] Sınıf/metod tanımı yok. Sadece Execute gövdesi var.
-- [ ] `document` ve `parameters` yeniden tanımlanmıyor.
-- [ ] `$"..."` yok. `string.Format(...)` kullanılıyor.
-- [ ] `System.Collections.Generic.` tam namespace yazıldı.
-- [ ] Kanal: `Autodesk.Revit.DB.Mechanical.Duct` tam yol kullanılıyor.
-- [ ] Boru: `Autodesk.Revit.DB.Plumbing.Pipe` tam yol kullanılıyor.
-- [ ] Armatür/aksesuar: `OfCategory(OST_...)` + `OfClass(typeof(FamilyInstance))`.
-- [ ] Kanal parametreleri `LookupParameter("...")` ile alınıyor.
-- [ ] `fi.Level` yok. `fi.LevelId` + `document.GetElement(fi.LevelId)` kullanılıyor.
-- [ ] `.WhereElementIsNotElementType()` eklendi.
-- [ ] `UnitTypeId.*` kullanılıyor.
-- [ ] `elem.UniqueId` kullanılıyor.
-- [ ] `try/catch` bloğu mevcut.
-- [ ] Kod `return` ile bitiyor.
-- [ ] Yazma işlemlerinde transaction modu düşünüldü: varsayılan `auto`, manuel yönetimde `none`.
-## Skill Addendum - Tool Priority And Real-World Workflow
-
-This addendum overrides weaker defaults when a real project workflow requires a more direct approach.
-
-### Default Tool Priority
-
-The default primary tool should be `mcp_revit-mcp_send_code_to_revit`.
-
-Only these four bundled tools are expected to exist, and the last three are lightweight helpers:
-
-- `get_selected_elements`
-- `get_current_view_info`
-- `get_current_view_elements`
-
-Use `send_code_to_revit` immediately for:
-
-- linked model queries
-- room matching
-- nearest-room fallback
-- custom export logic
-- instance/type parameter fallback
-- bulk extraction
-- performance-sensitive workflows
-- CSV or XLSX reporting
-
-### API Reference Fallback
-
-When the exact Revit API surface is uncertain, use the separate `revit-api-docs` MCP server before writing code.
-
-Use the docs tools for:
-
-- exact class discovery
-- method overload lookup
-- property or event verification
-- namespace exploration
-- parameter type confirmation
-- return type confirmation
-- XML summary or remarks lookup when the API meaning is unclear
-
-Preferred docs tool order:
-
-1. `search_api` for broad discovery
-2. `get_type_details` when the target type is known
-3. `get_member_details` when an exact method, property, field, constructor, or event must be verified
-4. `list_namespace` when exploring an API area
-
-Do not guess API names or overloads when the docs server can confirm them.
-
-Typical workflow:
-
-1. resolve the exact API symbol with `revit-api-docs`
-2. confirm the signature, parameters, and XML summary
-3. write the Revit snippet with `mcp_revit-mcp_send_code_to_revit`
-
-Treat `revit-api-docs` as the authoritative source for signatures and XML comments.
-Treat `send_code_to_revit` as the execution path once the API surface is confirmed.
-
-### Linked Model And Room Matching
-
-In MEP models, room data often lives in a linked architectural model instead of the host document.
-
-Default workflow:
-
-1. Find the target `RevitLinkInstance`.
-2. Call `GetLinkDocument()` once and validate that it is loaded.
-3. Convert the host point into link coordinates with `linkInstance.GetTransform().Inverse.OfPoint(...)`.
-4. Try `GetRoomAtPoint(...)` first.
-5. If that fails, apply a nearest-room fallback.
-6. If the active view is a plan view, lock the match to the active level.
-7. Filter rooms by level so equipment does not jump to the wrong floor.
-
-Important:
-
-- In an `L05` workflow, matching to an `L06` room is usually a bug.
-- Prefer XY distance on the same level for nearest-room fallback.
-- Free 3D distance often produces incorrect floor-to-floor matches.
-
-### Parameter Lookup Order
-
-When reading a parameter, follow this order:
-
-1. `LookupParameter("ExactName")`
-2. common casing variants
-3. instance parameter
-4. type parameter via `fi.Symbol.LookupParameter(...)`
-5. `AsString()`
-6. `AsValueString()`
-7. numeric fallback with `AsDouble()` or `AsInteger()` when needed
-
-Pay extra attention to:
-
-- `FAM_Text2`
-- `fam_text2`
-- shared parameters
-- parameters that appear only after sync
-
-### Performance Patterns For Bulk Queries
-
-Avoid these anti-patterns in large models:
-
-- scanning every room again for each equipment instance
-- resolving the same link in every loop
-- resolving the same parameter names repeatedly
-- rescanning every linked model for each FCU
-
-Preferred pattern:
-
-1. resolve the target link once
-2. build the target-level room list once
-3. cache room centers, `Room_Number`, and `ATP_Room_Number`
-4. match equipment against that cache
-
-### Export And Excel Safety
-
-For CSV or Excel output:
-
-- use `;` as the delimiter for Turkish Excel compatibility
-- keep locale-sensitive numeric columns numeric
-- keep date-like room identifiers as text
-
-Usually keep these fields as text:
-
-- `ATP_Room_Number`
-- `Room_Number`
-- `Mark`
-- unique identity fields
-
-Usually keep these fields numeric:
-
-- `Cooling_kW`
-- flow
-- pressure
-- area
-- length
-
-### Identity And Round Trip Keys
-
-`Mark` is not always unique.
-
-For exports that may be edited later, include:
-
-- `Mark`
-- `ElementId`
-- `Unique_Mark = Mark_ElementId`
-
-### Debug Workflow
-
-For extraction and room-matching tasks, use this order:
-
-1. verify the active view
-2. verify the selected element
-3. check whether the target parameter is instance or type
-4. verify that the link is loaded
-5. verify point extraction
-6. inspect the direct `GetRoomAtPoint(...)` result
-7. verify level lock behavior
-8. test nearest-room fallback on one element
-9. validate on a small sample
-10. run the full export only after the sample is correct
+- [ ] No `class` / `method` declaration. Only the body of `Execute`.
+- [ ] `document` and `parameters` are not redeclared.
+- [ ] No `$"..."` interpolation. `string.Format(...)` is used.
+- [ ] `System.Collections.Generic.` fully qualified.
+- [ ] Ducts: fully qualified `Autodesk.Revit.DB.Mechanical.Duct`.
+- [ ] Pipes: fully qualified `Autodesk.Revit.DB.Plumbing.Pipe`.
+- [ ] Fittings/accessories: `OfCategory(OST_...)` + `OfClass(typeof(FamilyInstance))`.
+- [ ] Duct parameters read via `LookupParameter("...")`.
+- [ ] No `fi.Level`. Use `fi.LevelId` + `document.GetElement(fi.LevelId)`.
+- [ ] `.WhereElementIsNotElementType()` appended.
+- [ ] `UnitTypeId.*` (not `DisplayUnitType`) used for conversions.
+- [ ] `elem.UniqueId` used where a stable identity is needed.
+- [ ] `try/catch` block in place.
+- [ ] Snippet ends with `return`.
+- [ ] Transaction mode considered (default `auto`; manual control needs `"none"`).
