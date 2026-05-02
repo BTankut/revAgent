@@ -10,6 +10,7 @@ $ProgressPreference = "SilentlyContinue"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $pluginSource = Join-Path $PSScriptRoot "revit-plugin"
 $serverSource = Join-Path $PSScriptRoot "mcp-server"
+$docsServerSource = Join-Path $PSScriptRoot "revit-api-docs-mcp"
 $addinRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitVersion"
 $pluginTarget = Join-Path $addinRoot "revit_mcp_plugin"
 $revitInstallRoot = Join-Path ${env:ProgramFiles} "Autodesk\Revit $RevitVersion"
@@ -46,8 +47,14 @@ if (Test-Path $pluginTarget) {
     Remove-Item -LiteralPath $pluginTarget -Recurse -Force
 }
 Copy-Item -LiteralPath (Join-Path $pluginSource "revit_mcp_plugin") -Destination $addinRoot -Recurse -Force
-# Expand the bundled server contents into the target directory.
+# Expand the bundled runtime server contents into the target directory.
 Copy-Item -Path (Join-Path $serverSource "*") -Destination $ServerTarget -Recurse -Force
+
+# The required Revit API docs MCP server remains in the repo under kurulum\revit-api-docs-mcp.
+# It is registered from that path after npm install; see the final Next steps.
+if (-not (Test-Path $docsServerSource)) {
+    throw "Required docs server source was not found: $docsServerSource"
+}
 
 # Copy Custom_DLL payload so dynamic command compilation works after install.
 $customDllDir = Join-Path $PSScriptRoot "Custom_DLL"
@@ -138,11 +145,16 @@ if (Test-Path $duplicateAddin) {
 
 Write-Host "Self-contained Revit MCP bundle installed for Revit $RevitVersion" -ForegroundColor Green
 Write-Host "Plugin path: $addinRoot"
-Write-Host "Server path: $ServerTarget"
+Write-Host "Runtime server path: $ServerTarget"
+Write-Host "Required docs server path: $docsServerSource"
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "1. cd $ServerTarget"
 Write-Host "2. npm install --omit=dev"
 Write-Host "3. codex mcp add revit-mcp -- node `"$ServerTarget\build\index.js`""
-Write-Host "4. Copy this repo to %USERPROFILE%\.codex\skills\revit-mcp and run /skills reload"
-Write-Host "5. Open Revit and enable commands from the mcp-servers-for-revit ribbon Settings button"
+Write-Host "4. cd $docsServerSource"
+Write-Host "5. npm install --omit=dev"
+Write-Host "6. codex mcp add revit-api-docs -- node `"$docsServerSource\build\index.js`""
+Write-Host "7. Confirm both servers with: codex mcp list"
+Write-Host "8. Copy this repo to %USERPROFILE%\.codex\skills\revit-mcp and run /skills reload"
+Write-Host "9. Open Revit and enable commands from the mcp-servers-for-revit ribbon Settings button"
