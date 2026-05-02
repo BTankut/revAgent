@@ -5,29 +5,13 @@ import {
     normalizeRevitExecutionResponse,
     truncateText,
 } from "../utils/revitToolHelpers.js";
-
-const WRITE_PATTERNS = [
-    { name: "Parameter.Set", pattern: /\.Set\s*\(/i },
-    { name: "Parameter.SetValueString", pattern: /\.SetValueString\s*\(/i },
-    { name: "Parameter.ClearValue", pattern: /\.ClearValue\s*\(/i },
-    { name: "Document.Delete", pattern: /Document\s*\.\s*Delete|document\s*\.\s*Delete/i },
-    { name: "ElementTransformUtils", pattern: /ElementTransformUtils/i },
-    { name: "NewFamilyInstance", pattern: /NewFamilyInstance/i },
-    { name: "Create API", pattern: /\.(Create|New[A-Z]\w*)\s*\(/ },
-    { name: "Manual Transaction", pattern: /new\s+Transaction\s*\(|Transaction\s*\(/i },
-];
-
-function findWritePatterns(code) {
-    return WRITE_PATTERNS
-        .filter((entry) => entry.pattern.test(code))
-        .map((entry) => entry.name);
-}
+import { findWritePatterns } from "./send_code_to_revit_safe_guards.js";
 
 export function registerSendCodeToRevitSafeTool(server) {
     server.tool("send_code_to_revit_safe", "Run Revit C# through the existing dynamic execution command with read/preview safety checks, JSON result parsing, and output trimming. This MVP does not commit writes.", {
         code: z.string().min(1).describe("Body of Execute(Document document, object[] parameters)."),
         parameters: z.array(z.union([z.string(), z.number(), z.boolean()])).optional().describe("Simple execution parameters. Prefer strings for host portability."),
-        transactionMode: z.enum(["auto", "none"]).optional().describe("Forwarded transaction mode. Defaults to none for safe read/preview calls."),
+        transactionMode: z.enum(["auto", "none"]).optional().describe("Safe wrapper execution mode. Only none is executed; auto is rejected for read/preview safety."),
         intent: z.enum(["read", "writePreview", "writeCommit"]).optional().describe("Safety intent. writeCommit is not supported by this MVP wrapper."),
         timeoutMs: z.number().int().positive().optional().describe("Reserved for future plugin support; current socket timeout is controlled by the Revit client."),
         maxReturnedChars: z.number().int().positive().optional().describe("Maximum JSON characters returned to the model."),
@@ -42,6 +26,13 @@ export function registerSendCodeToRevitSafeTool(server) {
                 writePatterns,
             });
         }
+        if (args.transactionMode === "auto") {
+            return formatJsonContent({
+                success: false,
+                error: "send_code_to_revit_safe only executes with transactionMode 'none'. Use raw send_code_to_revit for an explicitly confirmed write.",
+                writePatterns,
+            });
+        }
         if (writePatterns.length > 0) {
             return formatJsonContent({
                 success: false,
@@ -52,7 +43,7 @@ export function registerSendCodeToRevitSafeTool(server) {
         try {
             const response = await executeRevitCode(args.code, {
                 parameters: args.parameters || [],
-                transactionMode: args.transactionMode || "none",
+                transactionMode: "none",
             });
             const normalized = args.parseJsonResult === false
                 ? response

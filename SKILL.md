@@ -13,7 +13,7 @@ description: >
   "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
   "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
 license: MIT
-version: 0.4.1
+version: 0.4.2
 ---
 
 # Revit MCP — MEP Automation Expert
@@ -36,7 +36,8 @@ only the bare names appear, so the rules stay host-agnostic.
 
 - `send_code_to_revit` — raw dynamic execution for explicit, broad control
 - `send_code_to_revit_safe` — read/preview execution with write-looking code
-  rejection, JSON result parsing, and output trimming
+  rejection, JSON result parsing, output trimming, and forced
+  `transactionMode: "none"`
 - `get_revit_session_context` — first-call context for version/build/culture,
   document state, active view, selection, MEP counts, and link counts
 - `get_active_view_context` — model-view vs sheet-view context; sheets return
@@ -79,9 +80,10 @@ Default workflow for any non-trivial task:
 4. Before writes or localized/shared parameter work, call
    `inspect_parameter_schema` with `parameterNameMatchMode: "exact"`; for
    element-specific tasks call `inspect_elements`.
-5. Use `send_code_to_revit_safe` for read-only probes and write previews. Use
-   raw `send_code_to_revit` only when the user explicitly asks for broad
-   dynamic execution or a confirmed write.
+5. Use `send_code_to_revit_safe` for read-only probes and write previews. It
+   rejects `transactionMode: "auto"` and always executes with
+   `transactionMode: "none"`. Use raw `send_code_to_revit` only when the user
+   explicitly asks for broad dynamic execution or a confirmed write.
 
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known — e.g. the bundled patterns under
@@ -306,7 +308,8 @@ Apply these only when the task triggers them.
       uses `parameterNameMatchMode: "exact"` or explicitly selects exactly one
       returned parameter by `name` + `source` + `builtInParameter` +
       `storageType`.
-- [ ] `send_code_to_revit_safe` used for read-only probes and previews.
+- [ ] `send_code_to_revit_safe` used for read-only probes and previews; it must
+      not be used with `transactionMode: "auto"`.
 - [ ] Raw `send_code_to_revit` write used only after explicit user commit
       instruction.
 
