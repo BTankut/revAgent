@@ -8,19 +8,34 @@ Harici release ZIP indirme veya `npx -y mcp-server-for-revit` akisina ihtiyac yo
 Bu paket sunlari bundled olarak saglar:
 
 1. Revit 2022 icin add-in payload
-2. Yerel calisacak prebuilt Node.js MCP server build'i
-3. Dynamic command execution icin `RevitMCPCommandSet.dll` payload'u
+2. Yerel calisacak prebuilt runtime Node.js MCP server build'i (`revit-mcp`)
+3. Revit API DLL + XML dokumantasyonunu indeksleyen required companion MCP server (`revit-api-docs`)
+4. Dynamic command execution icin `RevitMCPCommandSet.dll` payload'u
 
 ## Hizli yol
 
-Kurulumu calistirmadan once Revit'i kapat.
+Komutlari repo root'tan calistir. Kuruluma baslamadan once Revit'i kapat.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\kurulum\install-self-contained.ps1 -RevitVersion 2022 -ServerTarget C:\Projects\revit-mcp
+$RepoRoot = (Resolve-Path .).Path
+
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022 -ServerTarget C:\Projects\revit-mcp
+
 cd C:\Projects\revit-mcp
 npm install --omit=dev
 codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
+
+cd "$RepoRoot\kurulum\revit-api-docs-mcp"
+npm install --omit=dev
+codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
+
+Iki MCP server da zorunludur:
+
+- `revit-mcp`: Revit ile canli execution/inspection yapar.
+- `revit-api-docs`: lokal Revit DLL + XML dokumantasyonundan class/member imzalarini dogrular.
+
+Skill, iki server'in da bagli oldugunu varsayar.
 
 ## Manuel kurulum
 
@@ -81,7 +96,7 @@ Normal son kullanici kurulumunda deployed bundle icine NuGet paketi ekleyerek so
 
 NuGet ancak `RevitMCPCommandSet.dll` kaynaktan yeniden derleniyorsa build-time bagimliliktir.
 
-### 3. Yerel MCP server'i kopyala
+### 3. Yerel runtime MCP server'i kopyala
 
 ```powershell
 xcopy /E /I /Y kurulum\mcp-server C:\Projects\revit-mcp
@@ -89,11 +104,24 @@ cd C:\Projects\revit-mcp
 npm install --omit=dev
 ```
 
-### 4. Codex CLI'a MCP server ekle
+### 4. Codex CLI'a runtime MCP server ekle
 
 ```powershell
 codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
 ```
+
+### 5. Required companion docs MCP server'i kur ve Codex CLI'a ekle
+
+Repo root'tan:
+
+```powershell
+$RepoRoot = (Resolve-Path .).Path
+cd "$RepoRoot\kurulum\revit-api-docs-mcp"
+npm install --omit=dev
+codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
+```
+
+`revit-api-docs` opsiyonel degildir. Skill non-trivial Revit API yuzeylerinde class/member imzalarini bu server uzerinden dogrular. Server bagli degilse bu bir setup problemidir.
 
 Dogrulama:
 
@@ -101,9 +129,12 @@ Dogrulama:
 codex mcp list
 ```
 
-Listede `revit-mcp` satirini gormelisin.
+Listede iki satiri da gormelisin:
 
-### 5. Skill'i Codex'e yukle
+- `revit-mcp`
+- `revit-api-docs`
+
+### 6. Skill'i Codex'e yukle
 
 ```powershell
 xcopy /E /I /Y . "%USERPROFILE%\.codex\skills\revit-mcp"
@@ -115,25 +146,43 @@ Ardindan Codex icinde:
 /skills reload
 ```
 
-### 6. Revit'te komutlari ac
+### 7. Revit'te komutlari ac
 
 1. Revit'i ac
 2. `mcp-servers-for-revit` sekmesine git
 3. `Settings` dugmesine tikla
-4. Bu paket yalnizca su dort komutu icerir:
+4. Bu paket yalnizca su dort runtime komutu icerir:
    - `get_selected_elements`
    - `get_current_view_info`
    - `get_current_view_elements`
    - `send_code_to_revit`
 5. `Save` de
 
+## Beklenen MCP tool yuzeyi
+
+Runtime server (`revit-mcp`):
+
+- `send_code_to_revit`
+- `get_selected_elements`
+- `get_current_view_info`
+- `get_current_view_elements`
+
+Docs server (`revit-api-docs`):
+
+- `search_api`
+- `get_type_details`
+- `get_member_details`
+- `list_namespace`
+
 ## Test sirasi
 
-1. aktif gorunum bilgisi testi
-2. secili eleman testi
-3. aktif gorunum elemanlari testi
-4. `send_code_to_revit` ile kucuk okuma snippet'i
-5. gercek model sorgusu veya rapor testi
+1. `codex mcp list` ile iki server'in da kayitli oldugunu dogrula
+2. aktif gorunum bilgisi testi
+3. secili eleman testi
+4. aktif gorunum elemanlari testi
+5. `send_code_to_revit` ile kucuk okuma snippet'i
+6. non-trivial API gerektiren bir is icin once `revit-api-docs` lookup testi
+7. gercek model sorgusu veya rapor testi
 
 ## Bu pakette ne guncellendi?
 
@@ -141,7 +190,8 @@ Ardindan Codex icinde:
 - plugin payload'u calisan upstream kurulumdan vendor edildi
 - local MCP wrapper `transactionMode` parametresini gecirir hale getirildi
 - `SKILL.md` upstream `document / parameters` sozlesmesiyle senkron tutuldu
-- tum katmanlar ayni dort tool'a indirildi
+- runtime katmanlari ayni dort tool'a indirildi
+- `revit-api-docs` required companion MCP server olarak cercevelendi
 - Roslyn runtime dosyalari installer tarafinda acik sekilde dogrulanip kopyalaniyor
 
 ## Sinir
