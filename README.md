@@ -186,6 +186,32 @@ revit-mcp-skill/
     `-- mcp-server/
 ```
 
+## Refreshing an existing install
+
+When a new version of the skill lands in this repo, run the refresh
+script. It detects how the skill was previously installed (git clone,
+symlink, or plain copy) under each known host location and updates
+each install with the matching strategy (`git pull` for clones, no-op
+for symlinks, backup + resync for copies).
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\kurulum\refresh-skill.ps1
+```
+
+Useful flags:
+
+- `-RepoRoot <path>` — point at a specific local clone (defaults to the
+  parent of the script).
+- `-ExtraPaths <path1,path2>` — add project-level installs, e.g.
+  `<project>\.claude\skills\revit-mcp`.
+- `-NoConfirm` — skip per-target prompts (for unattended runs).
+
+After the script finishes:
+
+- Codex CLI: run `/skills reload`.
+- Claude Code: start a new session.
+- Cursor: restart Cursor.
+
 ## Host compatibility
 
 The installation steps above are written for Codex CLI on Windows, but
