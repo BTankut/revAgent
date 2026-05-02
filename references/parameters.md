@@ -3,7 +3,9 @@
 ## Ducts — use `LookupParameter`
 
 Most duct `BuiltInParameter` values are unreliable inside the dynamic
-compiler. Default to `LookupParameter(name)` for ducts.
+compiler. Default to `LookupParameter(name)` for ordinary duct
+parameters, but do not rely on `LookupParameter("Level")` for duct level
+resolution.
 
 Common duct parameter names:
 
@@ -21,7 +23,48 @@ Common duct parameter names:
 - `System Name`
 - `Size`
 - `Area`
-- `Level`
+
+## Duct and pipe level resolution
+
+For `Duct` and `Pipe`, live testing showed:
+
+- `LookupParameter("Level")` can be `null`.
+- `LevelId` can be `ElementId.InvalidElementId`.
+- `ReferenceLevel.Name` can return the correct level.
+- `BuiltInParameter.RBS_START_LEVEL_PARAM` can also resolve the level.
+
+Use this order for duct/pipe level names:
+
+1. `mepCurve.ReferenceLevel`
+2. `RBS_START_LEVEL_PARAM` as an `ElementId`
+3. `RBS_START_LEVEL_PARAM.AsValueString()`
+4. `"N/A"`
+
+```csharp
+Autodesk.Revit.DB.Mechanical.Duct duct =
+    elem as Autodesk.Revit.DB.Mechanical.Duct;
+
+string levelName = "N/A";
+if (duct != null)
+{
+    if (duct.ReferenceLevel != null)
+    {
+        levelName = duct.ReferenceLevel.Name;
+    }
+    else
+    {
+        Parameter levelP = duct.get_Parameter(BuiltInParameter.RBS_START_LEVEL_PARAM);
+        if (levelP != null && levelP.HasValue)
+        {
+            Element levelElem = document.GetElement(levelP.AsElementId());
+            levelName = (levelElem != null) ? levelElem.Name : levelP.AsValueString();
+        }
+    }
+}
+```
+
+For pipes, use the same pattern with
+`Autodesk.Revit.DB.Plumbing.Pipe pipe`.
 
 ## Pipes — prefer `BuiltInParameter`
 

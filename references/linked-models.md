@@ -111,12 +111,30 @@ Tool order:
 
 Default workflow for any non-trivial task:
 
-1. Resolve the exact API symbol with `search_api` /
-   `get_type_details` / `get_member_details`.
-2. Confirm signatures, parameters, return types, and XML summary.
-3. Write the Revit snippet and run it via `send_code_to_revit`.
+1. Determine the active Revit version before docs lookup. Prefer
+   `get_current_view_info` if it exposes the version; otherwise run a
+   read-only `send_code_to_revit` snippet that returns
+   `document.Application.VersionNumber`.
+2. Resolve the exact API symbol with `search_api` /
+   `get_type_details` / `get_member_details`, passing that version as
+   `revit_version`.
+3. Confirm signatures, parameters, return types, and XML summary.
+4. Write the Revit snippet and run it via `send_code_to_revit`.
 
-Skip step 1 only when the API surface is already trivially known —
+Skip docs lookup only when the API surface is already trivially known —
 e.g. the bundled patterns under `references/patterns/` or anything
 explicitly enumerated in `SKILL.md` (collectors, units, parameter
 names).
+
+Version probe snippet:
+
+```csharp
+try
+{
+    return document.Application.VersionNumber;
+}
+catch (Exception ex)
+{
+    return "ERROR: " + ex.ToString();
+}
+```

@@ -13,7 +13,7 @@ description: >
   "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
   "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
 license: MIT
-version: 0.3.0
+version: 0.3.1
 ---
 
 # Revit MCP — MEP Automation Expert
@@ -55,12 +55,16 @@ guesses API names.
 
 Default workflow for any non-trivial task:
 
-1. Resolve the exact symbol with the docs server
-   (`search_api` → `get_type_details` / `get_member_details`).
-2. Confirm signatures, overloads, parameter and return types.
-3. Write the snippet and execute it via `send_code_to_revit`.
+1. Determine the active Revit version first. Prefer `get_current_view_info`
+   if it returns version data; otherwise run a tiny read-only snippet that
+   returns `document.Application.VersionNumber`.
+2. Resolve the exact symbol with the docs server and pass that version as
+   `revit_version` (`search_api` -> `get_type_details` /
+   `get_member_details`).
+3. Confirm signatures, overloads, parameter and return types.
+4. Write the snippet and execute it via `send_code_to_revit`.
 
-Use `send_code_to_revit` directly (skipping step 1) only when the API
+Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known — e.g. the bundled patterns under
 `references/patterns/`.
 
@@ -86,17 +90,29 @@ public static object Execute(Document document, object[] parameters)
 
 ---
 
-## 2. C# Compiler Constraints
+## 2. C# Compatibility Preferences
 
-| Don't use | Use instead |
+The runtime compiler accepts some modern C# constructs, but host/plugin
+builds differ. Treat these as compatibility preferences unless marked
+as a hard rule.
+
+| Prefer avoiding | Prefer using |
 |---|---|
 | `$"Length: {len} m"` | `string.Format("Length: {0} m", len)` |
 | `List<Element>` | `System.Collections.Generic.List<Element>` |
 | `Dictionary<string,int>` | `System.Collections.Generic.Dictionary<string, int>` |
-| `Duct d = ...` short form | `Autodesk.Revit.DB.Mechanical.Duct d = ...` |
-| `Pipe p = ...` short form | `Autodesk.Revit.DB.Plumbing.Pipe p = ...` |
 | `fi.Level` | `document.GetElement(fi.LevelId)` |
 | `?.` null-conditional | explicit `if (x != null)` |
+
+Hard rules from live Revit 2022 testing:
+
+- `Duct` short form does not compile; use
+  `Autodesk.Revit.DB.Mechanical.Duct`.
+- `Pipe` short form does not compile; use
+  `Autodesk.Revit.DB.Plumbing.Pipe`.
+- `DuctFitting`, `DuctAccessory`, `PipeFitting`, and `PipeAccessory`
+  do not compile as direct classes; collect them by category plus
+  `FamilyInstance`.
 
 ---
 
@@ -141,20 +157,35 @@ filters), see `references/collectors.md`.
 ## 5. Transactions
 
 The wrapper calls `send_code_to_revit` with `transactionMode: "auto"` by
-default. In that mode the snippet already runs inside a transaction.
+default. In the currently tested plugin build, writes such as
+`Parameter.Set(...)` work through the wrapper-managed transaction, but
+opening your own `Transaction.Start()` inside the snippet fails with
+`Starting a new transaction is not permitted`.
 
-- Read-only work: keep the default `auto` mode.
-- Manual transaction control: call the tool with `transactionMode: "none"`.
-- In `auto` mode, do **not** open a second `Transaction.Start()`.
+- Read-only work: keep the default call shape.
+- Write work: usually keep the default call shape and let the wrapper
+  manage the transaction.
+- Do not open a manual `Transaction` inside the snippet unless you have
+  verified that the installed plugin build allows it.
+- Do not assume `transactionMode: "none"` permits manual
+  `Transaction.Start()`; live testing showed it still rejects nested/manual
+  transactions in this package version.
 
-Manual transaction example:
+Preferred write pattern:
 
 ```csharp
-using (Transaction t = new Transaction(document, "Operation Name"))
+try
 {
-    t.Start();
-    // ... modification ...
-    t.Commit();
+    Parameter p = element.LookupParameter("Comments");
+    if (p != null && !p.IsReadOnly)
+    {
+        p.Set("Updated by Revit MCP");
+    }
+    return "OK";
+}
+catch (Exception ex)
+{
+    return "ERROR: " + ex.ToString();
 }
 ```
 
@@ -211,12 +242,16 @@ Universal rules — check every snippet against this list:
 - [ ] Pipes: fully qualified `Autodesk.Revit.DB.Plumbing.Pipe`.
 - [ ] Fittings/accessories: `OfCategory(OST_...)` + `OfClass(typeof(FamilyInstance))`.
 - [ ] Duct parameters read via `LookupParameter("...")`.
-- [ ] No `fi.Level`. Use `fi.LevelId` + `document.GetElement(fi.LevelId)`.
+- [ ] FamilyInstance level: no `fi.Level`; use `fi.LevelId` +
+      `document.GetElement(fi.LevelId)`.
+- [ ] Duct/pipe level: prefer `MEPCurve.ReferenceLevel`; fall back to
+      `RBS_START_LEVEL_PARAM`.
 - [ ] `.WhereElementIsNotElementType()` appended.
 - [ ] `UnitTypeId.*` (not `DisplayUnitType`) used for conversions.
 - [ ] `try/catch` block in place.
 - [ ] Snippet ends with `return`.
-- [ ] Transaction mode considered (default `auto`; manual control needs `"none"`).
+- [ ] Write snippets rely on wrapper-managed transactions and do not open
+      manual `Transaction.Start()` unless this plugin build was verified.
 
 ### Conditional rules
 
@@ -234,6 +269,8 @@ Apply these only when the task triggers them.
 
 **Any non-trivial API surface (not in the bundled patterns):**
 
+- [ ] Active Revit version detected and passed as `revit_version` to docs
+      server calls.
 - [ ] Resolved the symbol via `search_api` / `get_type_details` /
       `get_member_details` before writing the snippet.
 

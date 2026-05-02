@@ -188,7 +188,9 @@ Docs server (`revit-api-docs`):
 
 - repo tekrar self-contained dagitim modeline dondu
 - plugin payload'u calisan upstream kurulumdan vendor edildi
-- local MCP wrapper `transactionMode` parametresini gecirir hale getirildi
+- local MCP wrapper `transactionMode` parametresini gecirir hale getirildi;
+  test edilen plugin build'inde yazma islemleri yine wrapper tarafindan
+  yonetilir, snippet icinde manuel `Transaction.Start()` acilmaz
 - `SKILL.md` upstream `document / parameters` sozlesmesiyle senkron tutuldu
 - runtime katmanlari ayni dort tool'a indirildi
 - `revit-api-docs` required companion MCP server olarak cercevelendi

@@ -20,7 +20,10 @@ This repo stays self-contained, but keeps its execution contract aligned with cu
 
 - `send_code_to_revit` expects code for `Execute(Document document, object[] parameters)`
 - the bundled Revit payload is vendor-copied from a working upstream-compatible installation
-- the bundled Node wrapper forwards `transactionMode`
+- the bundled Node wrapper forwards `transactionMode`, but the tested plugin
+  build still manages write transactions itself; snippets should not open
+  their own `Transaction.Start()` unless that exact installed build has been
+  verified
 - the required docs server resolves class/member signatures before non-trivial snippets are generated
 
 ## Requirements
