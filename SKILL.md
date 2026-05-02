@@ -54,6 +54,11 @@ only the bare names appear, so the rules stay host-agnostic.
 - `list_namespace`
 - `resolve_api_symbols_bulk`
 
+For field symbols such as `BuiltInParameter.RBS_START_LEVEL_PARAM`, use
+`resolve_api_symbols_bulk` with `mode: "search"` and `kind: "field"`.
+Do not use `mode: "field"`; valid modes are `search`, `type`, `member`,
+and `namespace`.
+
 The two servers are designed to work together: `revit-api-docs`
 resolves the exact API surface against the locally installed Revit DLLs
 and XML, then `send_code_to_revit` runs the verified snippet. Treat the

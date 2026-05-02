@@ -129,11 +129,11 @@ try
         Element typeElem = document.GetElement(elem.GetTypeId());
         if (typeElem != null) typeName = typeElem.Name;
 
-        System.Collections.Generic.List<object> parameters = new System.Collections.Generic.List<object>();
-        AddParameterSchemas(elem, "instance", parameters);
+        System.Collections.Generic.List<object> parameterSchemas = new System.Collections.Generic.List<object>();
+        AddParameterSchemas(elem, "instance", parameterSchemas);
         if (includeTypeParameters && typeElem != null)
         {
-            AddParameterSchemas(typeElem, "type", parameters);
+            AddParameterSchemas(typeElem, "type", parameterSchemas);
         }
 
         elements.Add(new {
@@ -142,7 +142,7 @@ try
             category = category,
             className = elem.GetType().FullName,
             typeName = typeName,
-            parameters = parameters.ToArray()
+            parameters = parameterSchemas.ToArray()
         });
     }
 

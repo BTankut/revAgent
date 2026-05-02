@@ -160,19 +160,19 @@ try
             }
         }
 
-        System.Collections.Generic.List<object> parameters = new System.Collections.Generic.List<object>();
+        System.Collections.Generic.List<object> parameterSummaries = new System.Collections.Generic.List<object>();
         if (includeParameters)
         {
             foreach (string parameterName in names)
             {
                 Parameter p = elem.LookupParameter(parameterName);
                 object summary = ParameterSummary(p, "instance");
-                if (summary != null) parameters.Add(summary);
+                if (summary != null) parameterSummaries.Add(summary);
                 if (includeTypeParameters && typeElem != null)
                 {
                     Parameter tp = typeElem.LookupParameter(parameterName);
                     object typeSummary = ParameterSummary(tp, "type");
-                    if (typeSummary != null) parameters.Add(typeSummary);
+                    if (typeSummary != null) parameterSummaries.Add(typeSummary);
                 }
             }
         }
@@ -189,7 +189,7 @@ try
             levelName = LevelName(elem),
             connectorCount = connectorCount,
             openConnectorCount = openConnectorCount,
-            parameters = parameters.ToArray()
+            parameters = parameterSummaries.ToArray()
         });
     }
 
