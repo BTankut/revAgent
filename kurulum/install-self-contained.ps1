@@ -84,6 +84,8 @@ if (Test-Path $customDllDir) {
         $revitInstallRoot,
         (Join-Path $revitInstallRoot "AddIns\CoordinationModel"),
         (Join-Path $revitInstallRoot "AddIns\DynamoForRevit"),
+        (Join-Path ${env:ProgramFiles} "Autodesk\AECGenerativeDesign $RevitVersion\RestDynamoCore"),
+        (Join-Path ${env:ProgramFiles} "Autodesk\AECGenerativeDesign\RestDynamoCore"),
         (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319"),
         (Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319")
     )
@@ -128,9 +130,9 @@ if (Test-Path $customDllDir) {
 
     if ($missingRuntimeFiles.Count -gt 0) {
         throw ("Required Roslyn runtime files were not found for Revit {0}: {1}. " +
-            "This installer expects the Revit {0} installation to provide these assemblies; " +
+            "This installer expects the local Autodesk/Revit {0} installation to provide these assemblies; " +
             "do not try to fix end-user installation by adding NuGet packages to the deployed bundle. " +
-            "Repair or reinstall Revit {0} instead.") -f $RevitVersion, ($missingRuntimeFiles -join ", ")
+            "Repair or reinstall the Autodesk/Revit {0} components instead.") -f $RevitVersion, ($missingRuntimeFiles -join ", ")
     }
 }
 

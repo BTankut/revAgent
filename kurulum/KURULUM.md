@@ -83,11 +83,11 @@ Gerekli runtime assembly'leri sunlardir:
 - `System.Reflection.Metadata.dll`
 - `System.Runtime.CompilerServices.Unsafe.dll`
 
-Bu dosyalar normalde `C:\Program Files\Autodesk\Revit 2022\...` altinda zaten bulunur.
+Bu dosyalar normalde lokal Autodesk/Revit kurulumunda bulunur; sik gorulen konumlar `C:\Program Files\Autodesk\Revit 2022\...` ve `C:\Program Files\Autodesk\AECGenerativeDesign 2022\RestDynamoCore\...` altidir.
 
 `install-self-contained.ps1` artik bu dosyalari kontrol eder ve `RevitMCPCommandSet.dll` yanina mirror eder.
 
-Eger hedef makinede `Microsoft.CodeAnalysis` eksik hatasi aliniyorsa:
+Eger installer bu Autodesk yollarini kontrol ettikten sonra hedef makinede `Microsoft.CodeAnalysis` eksik hatasi aliniyorsa:
 
 1. Revit 2022 kurulumunu onar veya yeniden kur
 2. installer'i tekrar calistir

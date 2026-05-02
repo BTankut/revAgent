@@ -91,11 +91,11 @@ What the command set depends on:
 - `System.Reflection.Metadata.dll`
 - `System.Runtime.CompilerServices.Unsafe.dll`
 
-On a healthy Revit 2022 machine, these assemblies are already present under `C:\Program Files\Autodesk\Revit 2022\...`.
+On a healthy Revit 2022 machine, these assemblies are normally present under the local Autodesk/Revit installation, commonly under either `C:\Program Files\Autodesk\Revit 2022\...` or `C:\Program Files\Autodesk\AECGenerativeDesign 2022\RestDynamoCore\...`.
 
 The installer now verifies that Revit 2022 provides these files and mirrors them next to `RevitMCPCommandSet.dll` in the deployed command folders.
 
-If a target machine throws a missing `Microsoft.CodeAnalysis` or similar runtime error, treat that as a machine/install problem, not as a step where the end user should run NuGet.
+If a target machine throws a missing `Microsoft.CodeAnalysis` or similar runtime error after the installer checks those Autodesk paths, treat that as a machine/install problem, not as a step where the end user should run NuGet.
 
 NuGet is only relevant if you are rebuilding `RevitMCPCommandSet.dll` from source in a separate development project.
 
