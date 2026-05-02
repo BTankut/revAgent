@@ -4,18 +4,18 @@
     {
       "id": 1,
       "prompt": "Revit modelindeki tüm boruların sistem tipi ve nominal çapına göre metrajını (BOQ) çıkar. Her grup için toplam uzunluğu metre cinsinden göster.",
-      "expected_output": "Doğru bir C# snippet gövdesi; Autodesk.Revit.DB.Plumbing.Pipe ile tüm boruları toplar, System Type ve nominal çapı kullanarak gruplar, CURVE_ELEM_LENGTH ile uzunluğu metreye çevirir, string.Format kullanır, try-catch ile sarar ve return ile biter.",
+      "expected_output": "Doğru bir C# snippet gövdesi; Autodesk.Revit.DB.Plumbing.Pipe ile tüm boruları toplar, System Type ve nominal çapı kullanarak gruplar, CURVE_ELEM_LENGTH ile uzunluğu metreye çevirir, uyumluluk için string.Format tercih eder, try-catch ile sarar ve tüm code path'lerde değer döndürür.",
       "files": [],
       "assertions": [
         "Code uses Autodesk.Revit.DB.Plumbing.Pipe as fully qualified type name",
         "Code does NOT contain class or method definitions",
-        "Code uses string.Format instead of $\"...\" string interpolation",
+        "Code preferably uses string.Format instead of $\"...\" string interpolation for maximum compatibility",
         "FilteredElementCollector includes .WhereElementIsNotElementType()",
         "Unit conversion uses UnitTypeId.Meters",
         "CURVE_ELEM_LENGTH is used for pipe length",
-        "Code groups results using System.Collections.Generic.Dictionary",
+        "Code preferably groups results using System.Collections.Generic.Dictionary for maximum compatibility",
         "Code is wrapped in try-catch returning HATA/ERROR string on exception",
-        "Code ends with a return statement",
+        "All code paths return a value",
         "document and parameters are NOT redeclared"
       ]
     },
@@ -30,18 +30,18 @@
         "Code uses LookupParameter(\"System Classification\")",
         "Code uses LookupParameter(\"Size\")",
         "Code uses LookupParameter(\"Length\")",
-        "Code uses string.Format instead of string interpolation",
+        "Code preferably uses string.Format instead of string interpolation for maximum compatibility",
         "FilteredElementCollector includes .WhereElementIsNotElementType()",
         "Unit conversion uses UnitTypeId.Meters",
-        "Code groups results using System.Collections.Generic.Dictionary",
-        "Code ends with a return statement",
+        "Code preferably groups results using System.Collections.Generic.Dictionary for maximum compatibility",
+        "All code paths return a value",
         "document and parameters are NOT redeclared"
       ]
     },
     {
       "id": 3,
-      "prompt": "Her kanal sistemindeki toplam basınç kaybını hesapla. Sürtünme kaybı (Pa/m) ile uzunluğu (m) çarparak segment bazlı hesap yap, sistem bazında topla ve sonuçları listele.",
-      "expected_output": "Doğru bir C# snippet gövdesi; Duct elemanlarını toplar, Friction ve Length parametrelerini LookupParameter ile okur, UnitTypeId.PascalsPerMeter ve UnitTypeId.Meters ile dönüştürür, sistem adına göre toplar ve string.Format ile sonuç döner.",
+      "prompt": "Her kanal sistemindeki yaklaşık segment sürtünme kaybını hesapla. Sürtünme kaybı (Pa/m) ile uzunluğu (m) çarparak segment bazlı hesap yap, fitting/accessory lokal kayıplarını toplam basınç kaybı gibi dahil etme.",
+      "expected_output": "Doğru bir C# snippet gövdesi; Duct elemanlarını toplar, Friction ve Length parametrelerini LookupParameter ile okur, UnitTypeId.PascalsPerMeter ve UnitTypeId.Meters ile dönüştürür, sistem adına göre yaklaşık segment sürtünme kaybını toplar ve çıktıda bunun total system pressure loss olmadığını belirtir.",
       "files": [],
       "assertions": [
         "Code uses Autodesk.Revit.DB.Mechanical.Duct as fully qualified type name",
@@ -50,10 +50,10 @@
         "Code uses LookupParameter(\"System Name\")",
         "Code converts friction using UnitTypeId.PascalsPerMeter",
         "Code multiplies friction rate by length",
-        "Code accumulates pressure loss by system using Dictionary",
-        "Code uses string.Format instead of string interpolation",
+        "Code accumulates approximate segment friction loss by system using Dictionary",
+        "Code preferably uses string.Format instead of string interpolation for maximum compatibility",
         "Code is wrapped in try-catch returning error string on exception",
-        "Code ends with a return statement",
+        "All code paths return a value",
         "document and parameters are NOT redeclared"
       ]
     },
@@ -67,11 +67,11 @@
         "Code uses OfClass(typeof(FamilyInstance))",
         "Code does NOT contain class or method definitions",
         "Code uses fi.LevelId and document.GetElement(fi.LevelId)",
-        "Code groups by level using System.Collections.Generic.Dictionary",
-        "Code uses string.Format instead of string interpolation",
+        "Code preferably groups by level using System.Collections.Generic.Dictionary for maximum compatibility",
+        "Code preferably uses string.Format instead of string interpolation for maximum compatibility",
         "FilteredElementCollector includes .WhereElementIsNotElementType()",
         "Code is wrapped in try-catch returning error string on exception",
-        "Code ends with a return statement",
+        "All code paths return a value",
         "document and parameters are NOT redeclared"
       ]
     }

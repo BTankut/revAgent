@@ -1,4 +1,6 @@
-// Pressure loss — per duct system, summed from segment friction * length.
+// Approximate duct segment friction loss by system.
+// This sums duct segment friction * length only.
+// It excludes fitting/accessory local losses and is not total system pressure loss.
 // Body of Execute(Document document, object[] parameters).
 
 try
@@ -38,7 +40,7 @@ try
     }
 
     System.Collections.Generic.List<string> lines = new System.Collections.Generic.List<string>();
-    lines.Add("SYSTEM | TOTAL PRESSURE LOSS (Pa) | SEGMENTS");
+    lines.Add("SYSTEM | SEGMENT FRICTION LOSS APPROX. (Pa) | SEGMENTS");
     lines.Add(new string('-', 60));
     foreach (System.Collections.Generic.KeyValuePair<string, double> kv in sysPa)
         lines.Add(string.Format("{0} -> {1:F1} Pa ({2} seg)", kv.Key, kv.Value, sysCnt[kv.Key]));

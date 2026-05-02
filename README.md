@@ -212,7 +212,7 @@ revit-mcp-skill/
 |   `-- patterns/
 |       |-- boq-duct.cs
 |       |-- boq-pipe.cs
-|       |-- pressure-loss-duct.cs
+|       |-- segment-friction-loss-duct.cs
 |       `-- diffuser-count.cs
 |-- evals/
 |   `-- evals.json

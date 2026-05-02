@@ -13,7 +13,7 @@ description: >
   "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
   "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
 license: MIT
-version: 0.3.1
+version: 0.3.2
 ---
 
 # Revit MCP — MEP Automation Expert
@@ -85,8 +85,11 @@ public static object Execute(Document document, object[] parameters)
 - Write only the body of `Execute`. Do not declare `class`, `namespace`, or `method`.
 - `document` and `parameters` are already in scope. Do not redeclare them.
 - `document` is `Autodesk.Revit.DB.Document`.
-- `parameters` is `object[]`.
-- The snippet must end with `return`.
+- `parameters` is `object[]` inside the Revit execution template.
+- Some hosts expose the MCP tool schema as `parameters?: string[]` even
+  though the wrapper passes an object array internally. For portable tool
+  calls, pass simple strings and parse them inside the snippet when needed.
+- All code paths must return a value.
 
 ---
 
@@ -225,7 +228,8 @@ Load these as needed for the current task:
   required `revit-api-docs` server workflow
 - `references/patterns/boq-duct.cs` — duct BOQ by system + size
 - `references/patterns/boq-pipe.cs` — pipe BOQ by system + diameter
-- `references/patterns/pressure-loss-duct.cs` — total pressure loss per system
+- `references/patterns/segment-friction-loss-duct.cs` — approximate duct
+  segment friction loss by system; excludes fittings/accessory local losses
 - `references/patterns/diffuser-count.cs` — diffuser count by system + level
 
 ---
@@ -236,8 +240,10 @@ Universal rules — check every snippet against this list:
 
 - [ ] No `class` / `method` declaration. Only the body of `Execute`.
 - [ ] `document` and `parameters` are not redeclared.
-- [ ] No `$"..."` interpolation. `string.Format(...)` is used.
-- [ ] `System.Collections.Generic.` fully qualified.
+- [ ] For maximum compatibility, prefer `string.Format(...)` over
+      `$"..."` interpolation.
+- [ ] For maximum compatibility, prefer fully qualified
+      `System.Collections.Generic.*` names.
 - [ ] Ducts: fully qualified `Autodesk.Revit.DB.Mechanical.Duct`.
 - [ ] Pipes: fully qualified `Autodesk.Revit.DB.Plumbing.Pipe`.
 - [ ] Fittings/accessories: `OfCategory(OST_...)` + `OfClass(typeof(FamilyInstance))`.
@@ -249,7 +255,7 @@ Universal rules — check every snippet against this list:
 - [ ] `.WhereElementIsNotElementType()` appended.
 - [ ] `UnitTypeId.*` (not `DisplayUnitType`) used for conversions.
 - [ ] `try/catch` block in place.
-- [ ] Snippet ends with `return`.
+- [ ] All code paths return a value.
 - [ ] Write snippets rely on wrapper-managed transactions and do not open
       manual `Transaction.Start()` unless this plugin build was verified.
 
