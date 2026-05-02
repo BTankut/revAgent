@@ -82,12 +82,17 @@ For extraction and room-matching tasks:
 9. Validate on a small sample.
 10. Run the full export only after the sample is correct.
 
-## Companion API docs server
+## Required `revit-api-docs` server workflow
 
-When the exact Revit API surface is uncertain, use the separate
-`revit-api-docs` MCP server before writing code.
+The `revit-api-docs` MCP server is a hard dependency of this skill, not
+an optional fallback. It indexes the locally installed Revit API DLLs
+and matching XML doc files and exposes them as the authoritative source
+for class/member signatures.
 
-Use it for:
+If the docs server is not connected, stop and surface the missing
+dependency instead of guessing API names.
+
+Use the docs server for:
 
 - exact class discovery
 - method overload lookup
@@ -96,20 +101,22 @@ Use it for:
 - parameter and return type confirmation
 - XML summary or remarks lookup
 
-Preferred order:
+Tool order:
 
-1. `search_api` for broad discovery
-2. `get_type_details` when the target type is known
-3. `get_member_details` to verify an exact method, property, field,
+1. `search_api` — broad discovery
+2. `get_type_details` — when the target type is known
+3. `get_member_details` — verify an exact method, property, field,
    constructor, or event
-4. `list_namespace` when exploring an API area
+4. `list_namespace` — explore an API area
 
-Treat `revit-api-docs` as the authoritative source for signatures and XML
-comments. Treat `send_code_to_revit` as the execution path once the API
-surface is confirmed.
+Default workflow for any non-trivial task:
 
-Typical workflow:
+1. Resolve the exact API symbol with `search_api` /
+   `get_type_details` / `get_member_details`.
+2. Confirm signatures, parameters, return types, and XML summary.
+3. Write the Revit snippet and run it via `send_code_to_revit`.
 
-1. Resolve the exact API symbol with `revit-api-docs`.
-2. Confirm the signature, parameters, and XML summary.
-3. Write the Revit snippet with `send_code_to_revit`.
+Skip step 1 only when the API surface is already trivially known —
+e.g. the bundled patterns under `references/patterns/` or anything
+explicitly enumerated in `SKILL.md` (collectors, units, parameter
+names).

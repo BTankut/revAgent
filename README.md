@@ -38,7 +38,15 @@ powershell -ExecutionPolicy Bypass -File .\kurulum\install-self-contained.ps1 -R
 cd C:\Projects\revit-mcp
 npm install --omit=dev
 codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
+
+cd <repo-root>\kurulum\revit-api-docs-mcp
+npm install --omit=dev
+codex mcp add revit-api-docs -- node "<repo-root>\kurulum\revit-api-docs-mcp\build\index.js"
 ```
+
+Both MCP servers are required — the runtime server executes code, the
+docs server resolves the API surface against the locally installed
+Revit DLLs and XML. The skill assumes both are connected.
 
 Then:
 
@@ -110,17 +118,25 @@ cd C:\Projects\revit-mcp
 npm install --omit=dev
 ```
 
-6. Register the MCP server in Codex:
+6. Register the runtime MCP server in Codex:
 
 ```powershell
 codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
 ```
 
-7. Install the skill last:
+7. Install and register the required docs MCP server:
+
+```powershell
+cd <repo-root>\kurulum\revit-api-docs-mcp
+npm install --omit=dev
+codex mcp add revit-api-docs -- node "<repo-root>\kurulum\revit-api-docs-mcp\build\index.js"
+```
+
+8. Install the skill last:
    - copy this repo root to `%USERPROFILE%\.codex\skills\revit-mcp`
    - run `/skills reload`
-8. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
-9. If the installer stops with a Roslyn runtime error, repair the Revit 2022 installation first. Do not try to fix a normal end-user install by adding NuGet packages into the deployed bundle.
+9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
+10. If the installer stops with a Roslyn runtime error, repair the Revit 2022 installation first. Do not try to fix a normal end-user install by adding NuGet packages into the deployed bundle.
 
 Expected bundled commands:
 
@@ -129,13 +145,17 @@ Expected bundled commands:
 - `get_current_view_info`
 - `get_current_view_elements`
 
-## Optional Revit API docs server
+## Required companion: Revit API docs server
 
-This repo also includes a separate MCP server that reads the installed Revit API assemblies and XML doc files directly from the local Revit installation.
+This repo includes a second MCP server that reads the installed Revit
+API assemblies and XML doc files directly from the local Revit
+installation. It is kept as a separate process so the live Revit tool
+surface stays minimal, but the skill **depends on it** — it is the
+authoritative source for class and member signatures that the snippet
+generation step relies on.
 
-It is intentionally kept separate from the four-tool runtime server so the live Revit tool surface stays minimal.
-
-Install it separately when you want local API lookup:
+Install it after the runtime server (Quick start already shows this
+step):
 
 ```powershell
 cd .\kurulum\revit-api-docs-mcp

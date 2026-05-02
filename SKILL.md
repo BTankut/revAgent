@@ -13,7 +13,7 @@ description: >
   "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
   "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
 license: MIT
-version: 0.2.0
+version: 0.3.0
 ---
 
 # Revit MCP — MEP Automation Expert
@@ -23,22 +23,46 @@ Scope: HVAC ducts, sanitary, domestic water, storm drainage, sprinkler,
 fire hose, fire pressurization, and smoke duct systems. Do not touch
 architectural or structural elements.
 
-All code is sent to Revit through the `send_code_to_revit` MCP tool. The
-fully qualified tool name depends on the host, e.g.
-`mcp_revit-mcp_send_code_to_revit` in Codex CLI or
-`mcp__revit-mcp__send_code_to_revit` in Claude Code. Use whichever form
-the host exposes.
+## Tool surface
 
-The bundled tool surface is intentionally small:
+This skill assumes two MCP servers are installed and connected. Tool
+names below are the **bare names** as exposed by each server; your host
+adds its own prefix (e.g. Codex CLI prepends `mcp_revit-mcp_`,
+Claude Code prepends `mcp__revit-mcp__`). Always call whichever
+prefixed form your host shows in the tool list — but in this document
+only the bare names appear, so the rules stay host-agnostic.
 
-- `send_code_to_revit` — primary; use it for any non-trivial task
+**Runtime server (`revit-mcp`)** — code execution and selection:
+
+- `send_code_to_revit` — primary tool for any non-trivial task
 - `get_selected_elements`
 - `get_current_view_info`
 - `get_current_view_elements`
 
-Prefer `send_code_to_revit` for linked-model queries, room matching,
-custom export logic, instance/type parameter fallback, bulk extraction,
-performance-sensitive workflows, and CSV/XLSX reporting.
+**API docs server (`revit-api-docs`)** — required companion:
+
+- `search_api`
+- `get_type_details`
+- `get_member_details`
+- `list_namespace`
+
+The two servers are designed to work together: `revit-api-docs`
+resolves the exact API surface against the locally installed Revit DLLs
+and XML, then `send_code_to_revit` runs the verified snippet. Treat the
+docs server as a hard dependency, not an optional add-on. If it is not
+connected, surface that as a setup problem before writing code that
+guesses API names.
+
+Default workflow for any non-trivial task:
+
+1. Resolve the exact symbol with the docs server
+   (`search_api` → `get_type_details` / `get_member_details`).
+2. Confirm signatures, overloads, parameter and return types.
+3. Write the snippet and execute it via `send_code_to_revit`.
+
+Use `send_code_to_revit` directly (skipping step 1) only when the API
+surface is already trivially known — e.g. the bundled patterns under
+`references/patterns/`.
 
 ---
 
@@ -166,8 +190,8 @@ Load these as needed for the current task:
 - `references/collectors.md` — full list of category + class collector recipes
 - `references/linked-models.md` — linked architectural model lookup, room
   matching, nearest-room fallback, level lock, performance patterns,
-  CSV/Excel export safety, identity strategy, debug workflow, companion
-  `revit-api-docs` MCP server usage
+  CSV/Excel export safety, identity strategy, debug workflow, and the
+  required `revit-api-docs` server workflow
 - `references/patterns/boq-duct.cs` — duct BOQ by system + size
 - `references/patterns/boq-pipe.cs` — pipe BOQ by system + diameter
 - `references/patterns/pressure-loss-duct.cs` — total pressure loss per system
@@ -176,6 +200,8 @@ Load these as needed for the current task:
 ---
 
 ## 8. Pre-Send Checklist
+
+Universal rules — check every snippet against this list:
 
 - [ ] No `class` / `method` declaration. Only the body of `Execute`.
 - [ ] `document` and `parameters` are not redeclared.
@@ -188,7 +214,31 @@ Load these as needed for the current task:
 - [ ] No `fi.Level`. Use `fi.LevelId` + `document.GetElement(fi.LevelId)`.
 - [ ] `.WhereElementIsNotElementType()` appended.
 - [ ] `UnitTypeId.*` (not `DisplayUnitType`) used for conversions.
-- [ ] `elem.UniqueId` used where a stable identity is needed.
 - [ ] `try/catch` block in place.
 - [ ] Snippet ends with `return`.
 - [ ] Transaction mode considered (default `auto`; manual control needs `"none"`).
+
+### Conditional rules
+
+Apply these only when the task triggers them.
+
+**Export, CSV/XLSX, or any round-trip that may be re-imported**
+(see `references/linked-models.md`):
+
+- [ ] `ElementId` included in the output.
+- [ ] `UniqueId` included if the export must survive workshare/copy operations.
+- [ ] `Unique_Mark = Mark_ElementId` composite key emitted when `Mark`
+      alone is not unique.
+- [ ] `;` delimiter used for Turkish Excel compatibility.
+- [ ] Identity columns kept as text; numeric columns kept numeric.
+
+**Any non-trivial API surface (not in the bundled patterns):**
+
+- [ ] Resolved the symbol via `search_api` / `get_type_details` /
+      `get_member_details` before writing the snippet.
+
+**Linked model / room matching:**
+
+- [ ] `RevitLinkInstance` resolved once, `GetLinkDocument()` validated.
+- [ ] Host point converted via `linkInstance.GetTransform().Inverse.OfPoint(...)`.
+- [ ] Level lock applied if the active view is a plan view.
