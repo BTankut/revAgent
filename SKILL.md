@@ -13,7 +13,7 @@ description: >
   "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
   "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
 license: MIT
-version: 0.3.2
+version: 0.4.0
 ---
 
 # Revit MCP — MEP Automation Expert
@@ -32,12 +32,19 @@ Claude Code prepends `mcp__revit-mcp__`). Always call whichever
 prefixed form your host shows in the tool list — but in this document
 only the bare names appear, so the rules stay host-agnostic.
 
-**Runtime server (`revit-mcp`)** — code execution and selection:
+**Runtime server (`revit-mcp`)** — dynamic execution plus read-only context:
 
-- `send_code_to_revit` — primary tool for any non-trivial task
-- `get_selected_elements`
-- `get_current_view_info`
-- `get_current_view_elements`
+- `send_code_to_revit` — raw dynamic execution for explicit, broad control
+- `send_code_to_revit_safe` — read/preview execution with write-looking code
+  rejection, JSON result parsing, and output trimming
+- `get_revit_session_context` — first-call context for version/build/culture,
+  document state, active view, selection, MEP counts, and link counts
+- `get_active_view_context` — model-view vs sheet-view context; sheets return
+  placed viewports instead of direct model-category assumptions
+- `inspect_elements` — targeted/selection element inspection: class,
+  category, type, level, key parameters, connector counts
+- `inspect_parameter_schema` — parameter schema for element ids or category
+  samples: BIP, storage type, unit, shared/read-only, raw/display values
 
 **API docs server (`revit-api-docs`)** — required companion:
 
@@ -45,6 +52,7 @@ only the bare names appear, so the rules stay host-agnostic.
 - `get_type_details`
 - `get_member_details`
 - `list_namespace`
+- `resolve_api_symbols_bulk`
 
 The two servers are designed to work together: `revit-api-docs`
 resolves the exact API surface against the locally installed Revit DLLs
@@ -55,14 +63,18 @@ guesses API names.
 
 Default workflow for any non-trivial task:
 
-1. Determine the active Revit version first. Prefer `get_current_view_info`
-   if it returns version data; otherwise run a tiny read-only snippet that
-   returns `document.Application.VersionNumber`.
-2. Resolve the exact symbol with the docs server and pass that version as
-   `revit_version` (`search_api` -> `get_type_details` /
-   `get_member_details`).
-3. Confirm signatures, overloads, parameter and return types.
-4. Write the snippet and execute it via `send_code_to_revit`.
+1. Call `get_revit_session_context` first to learn Revit version/build,
+   culture, active view type, document state, selection, MEP counts, and links.
+2. If the active view is a sheet or the task depends on view visibility, call
+   `get_active_view_context` before making view-level assumptions.
+3. Resolve API symbols with `resolve_api_symbols_bulk` and pass the active
+   `revit_version`. Use the single-symbol docs tools only for follow-up detail.
+4. Before writes or localized/shared parameter work, call
+   `inspect_parameter_schema`; for element-specific tasks call
+   `inspect_elements`.
+5. Use `send_code_to_revit_safe` for read-only probes and write previews. Use
+   raw `send_code_to_revit` only when the user explicitly asks for broad
+   dynamic execution or a confirmed write.
 
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known — e.g. the bundled patterns under
@@ -275,10 +287,22 @@ Apply these only when the task triggers them.
 
 **Any non-trivial API surface (not in the bundled patterns):**
 
-- [ ] Active Revit version detected and passed as `revit_version` to docs
-      server calls.
-- [ ] Resolved the symbol via `search_api` / `get_type_details` /
-      `get_member_details` before writing the snippet.
+- [ ] `get_revit_session_context` called first and active Revit version
+      passed as `revit_version` to docs server calls.
+- [ ] Resolved symbols via `resolve_api_symbols_bulk` before writing the
+      snippet; single-symbol docs tools used only for follow-up detail.
+
+**Production write or localized/shared parameter work:**
+
+- [ ] `inspect_parameter_schema` run before generating any write snippet.
+- [ ] `send_code_to_revit_safe` used for read-only probes and previews.
+- [ ] Raw `send_code_to_revit` write used only after explicit user commit
+      instruction.
+
+**Active view / sheet-sensitive work:**
+
+- [ ] `get_active_view_context` called before assuming visible model elements
+      when the active view may be a sheet.
 
 **Linked model / room matching:**
 

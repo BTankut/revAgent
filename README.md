@@ -24,7 +24,9 @@ This repo stays self-contained, but keeps its execution contract aligned with cu
   build still manages write transactions itself; snippets should not open
   their own `Transaction.Start()` unless that exact installed build has been
   verified
-- the required docs server resolves class/member signatures before non-trivial snippets are generated
+- the runtime MCP server exposes raw dynamic execution plus read-only context
+  primitives for session, active view, elements, and parameter schema
+- the required docs server resolves class/member signatures before non-trivial snippets are generated, including bulk symbol resolution
 
 ## Requirements
 
@@ -160,9 +162,11 @@ Expected MCP servers:
 Expected bundled runtime commands:
 
 - `send_code_to_revit`
-- `get_selected_elements`
-- `get_current_view_info`
-- `get_current_view_elements`
+- `send_code_to_revit_safe`
+- `get_revit_session_context`
+- `get_active_view_context`
+- `inspect_elements`
+- `inspect_parameter_schema`
 
 Expected bundled docs commands:
 
@@ -170,6 +174,7 @@ Expected bundled docs commands:
 - `get_type_details`
 - `get_member_details`
 - `list_namespace`
+- `resolve_api_symbols_bulk`
 
 ## Required companion: Revit API docs server
 
@@ -196,6 +201,7 @@ Bundled docs tools:
 - `get_type_details`
 - `get_member_details`
 - `list_namespace`
+- `resolve_api_symbols_bulk`
 
 ## Repo layout
 
@@ -264,18 +270,18 @@ Host-specific notes:
 
 ## Bundled runtime tool surface
 
-The runtime MCP server intentionally exposes exactly four live Revit execution/inspection tools:
+The runtime MCP server intentionally exposes raw dynamic execution plus a small set of high-value context primitives:
 
 - `send_code_to_revit`
-- `get_selected_elements`
-- `get_current_view_info`
-- `get_current_view_elements`
+- `send_code_to_revit_safe`
+- `get_revit_session_context`
+- `get_active_view_context`
+- `inspect_elements`
+- `inspect_parameter_schema`
 
-This same four-tool runtime set is reflected in:
+The Revit add-in command payload still provides the low-level `send_code_to_revit`, selection, and active-view commands internally. The public MCP surface favors the higher-value Node context tools above.
 
-- the Node MCP wrapper
-- the bundled Revit command payload
-- the installer-copied command registry
+This runtime set is reflected in the Node MCP wrapper. The installer still copies the bundled Revit command payload required by the wrapper.
 
 The required docs server is separate and exposes its own API lookup tools:
 
@@ -283,8 +289,9 @@ The required docs server is separate and exposes its own API lookup tools:
 - `get_type_details`
 - `get_member_details`
 - `list_namespace`
+- `resolve_api_symbols_bulk`
 
-There are no additional runtime tool profiles in the bundled distribution.
+There are no task-specific static runtime tools in the bundled distribution.
 
 ## Why `send_code_to_revit` stays primary
 
@@ -306,8 +313,10 @@ That is why `send_code_to_revit` should remain the first-class runtime tool in b
 
 `SKILL.md` should strongly document:
 
-- use `send_code_to_revit` first for non-trivial tasks
-- use `revit-api-docs` before non-trivial snippets to confirm exact API signatures
+- call `get_revit_session_context` first for non-trivial tasks
+- use `resolve_api_symbols_bulk` before non-trivial snippets to confirm exact API signatures
+- use `send_code_to_revit_safe` for read-only probes and previews
+- keep raw `send_code_to_revit` as the explicit broad-control escape hatch
 - linked model and room matching workflow
 - parameter lookup order
 - bulk-query performance patterns
@@ -321,7 +330,7 @@ The self-contained installer also copies the `Custom_DLL` payload so dynamic cod
 
 It now also mirrors the required Roslyn runtime assemblies from the local Revit 2022 installation into the deployed command folders, and it fails early if those files are missing.
 
-The copied command manifests are kept in sync with the same four bundled runtime tools.
+The copied command manifests are kept in sync with the bundled Revit low-level commands required by the Node runtime tools.
 
 The docs server remains under `kurulum\revit-api-docs-mcp`; register it as a required companion MCP server after running the installer.
 

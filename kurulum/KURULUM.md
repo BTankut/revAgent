@@ -151,11 +151,13 @@ Ardindan Codex icinde:
 1. Revit'i ac
 2. `mcp-servers-for-revit` sekmesine git
 3. `Settings` dugmesine tikla
-4. Bu paket yalnizca su dort runtime komutu icerir:
+4. Revit plugin payload tarafinda low-level komutlari enable et:
    - `get_selected_elements`
    - `get_current_view_info`
    - `get_current_view_elements`
    - `send_code_to_revit`
+   Public MCP yuzeyi Node server tarafinda context tool'lariyla acilir;
+   bunlar Revit Settings ekraninda gorunmez.
 5. `Save` de
 
 ## Beklenen MCP tool yuzeyi
@@ -163,9 +165,11 @@ Ardindan Codex icinde:
 Runtime server (`revit-mcp`):
 
 - `send_code_to_revit`
-- `get_selected_elements`
-- `get_current_view_info`
-- `get_current_view_elements`
+- `send_code_to_revit_safe`
+- `get_revit_session_context`
+- `get_active_view_context`
+- `inspect_elements`
+- `inspect_parameter_schema`
 
 Docs server (`revit-api-docs`):
 
@@ -173,6 +177,7 @@ Docs server (`revit-api-docs`):
 - `get_type_details`
 - `get_member_details`
 - `list_namespace`
+- `resolve_api_symbols_bulk`
 
 ## Test sirasi
 
@@ -192,7 +197,8 @@ Docs server (`revit-api-docs`):
   test edilen plugin build'inde yazma islemleri yine wrapper tarafindan
   yonetilir, snippet icinde manuel `Transaction.Start()` acilmaz
 - `SKILL.md` upstream `document / parameters` sozlesmesiyle senkron tutuldu
-- runtime katmanlari ayni dort tool'a indirildi
+- runtime public yuzeyi raw `send_code_to_revit` + read-only context
+  primitive'leri + safe wrapper olarak ayarlandi
 - `revit-api-docs` required companion MCP server olarak cercevelendi
 - Roslyn runtime dosyalari installer tarafinda acik sekilde dogrulanip kopyalaniyor
 

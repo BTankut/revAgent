@@ -1,12 +1,16 @@
 import { registerSendCodeToRevitTool } from "./send_code_to_revit.js";
-import { registerGetSelectedElementsTool } from "./get_selected_elements.js";
-import { registerGetCurrentViewInfoTool } from "./get_current_view_info.js";
-import { registerGetCurrentViewElementsTool } from "./get_current_view_elements.js";
+import { registerSendCodeToRevitSafeTool } from "./send_code_to_revit_safe.js";
+import { registerGetRevitSessionContextTool } from "./get_revit_session_context.js";
+import { registerGetActiveViewContextTool } from "./get_active_view_context.js";
+import { registerInspectElementsTool } from "./inspect_elements.js";
+import { registerInspectParameterSchemaTool } from "./inspect_parameter_schema.js";
 
 export async function registerTools(server) {
     registerSendCodeToRevitTool(server);
-    registerGetSelectedElementsTool(server);
-    registerGetCurrentViewInfoTool(server);
-    registerGetCurrentViewElementsTool(server);
-    console.error("Registered 4 Revit MCP tools");
+    registerSendCodeToRevitSafeTool(server);
+    registerGetRevitSessionContextTool(server);
+    registerGetActiveViewContextTool(server);
+    registerInspectElementsTool(server);
+    registerInspectParameterSchemaTool(server);
+    console.error("Registered 6 Revit MCP tools");
 }

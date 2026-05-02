@@ -12,7 +12,7 @@ export function registerSendCodeToRevitTool(server) {
         transactionMode: z
             .enum(["auto", "none"])
             .optional()
-            .describe("Transaction handling mode. Use 'auto' for the default managed transaction, or 'none' if the snippet will open and manage its own Transaction."),
+            .describe("Transaction handling mode forwarded to the Revit wrapper. In the bundled plugin build, snippets should not open their own Transaction unless that exact build has been verified."),
     }, async (args, extra) => {
         const params = {
             code: args.code,
