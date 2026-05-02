@@ -13,12 +13,21 @@ function buildInspectParameterSchemaCode(args) {
     const sampleLimit = Number.isFinite(args.sampleLimit) ? Math.max(1, Math.min(25, args.sampleLimit)) : 5;
     const includeTypeParameters = args.includeTypeParameters === true ? "true" : "false";
     const filters = csharpStringArray(args.parameterNameFilter || []);
+    const matchMode = args.parameterNameMatchMode === "exact" ? "exact" : "contains";
     return `
 int[] explicitElementIds = ${explicitIds};
 string categoryName = ${category};
 int sampleLimit = ${sampleLimit};
 bool includeTypeParameters = ${includeTypeParameters};
 string[] parameterNameFilter = ${filters};
+string parameterNameMatchMode = "${matchMode}";
+
+bool ParameterNameMatches(string parameterName, string filter)
+{
+    if (parameterNameMatchMode == "exact")
+        return string.Equals(parameterName, filter, StringComparison.OrdinalIgnoreCase);
+    return parameterName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
+}
 
 bool IncludeParameter(Parameter p)
 {
@@ -26,8 +35,7 @@ bool IncludeParameter(Parameter p)
     if (parameterNameFilter.Length == 0) return true;
     foreach (string filter in parameterNameFilter)
     {
-        if (string.Equals(p.Definition.Name, filter, StringComparison.OrdinalIgnoreCase)) return true;
-        if (p.Definition.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if (ParameterNameMatches(p.Definition.Name, filter)) return true;
     }
     return false;
 }
@@ -148,6 +156,7 @@ try
 
     return new {
         success = true,
+        matchMode = parameterNameMatchMode,
         sampleCount = samples.Count,
         elements = elements.ToArray(),
         warnings = warnings.ToArray()
@@ -165,11 +174,13 @@ export function registerInspectParameterSchemaTool(server) {
         category: z.string().optional().describe("BuiltInCategory name such as OST_DuctCurves or OST_DuctTerminal."),
         sampleLimit: z.number().int().positive().max(25).optional().describe("Maximum sample elements. Defaults 5."),
         includeTypeParameters: z.boolean().optional().describe("Include type parameters. Defaults false."),
-        parameterNameFilter: z.array(z.string()).optional().describe("Optional exact/contains name filters."),
+        parameterNameFilter: z.array(z.string()).optional().describe("Optional parameter name filters."),
+        parameterNameMatchMode: z.enum(["contains", "exact"]).optional().describe("Filter matching mode. contains is discovery mode and default; exact is write-preflight mode."),
     }, async (args) => {
         if ((!args.elementIds || args.elementIds.length === 0) && !args.category) {
             return formatJsonContent({
                 success: true,
+                matchMode: args.parameterNameMatchMode === "exact" ? "exact" : "contains",
                 sampleCount: 0,
                 elements: [],
                 warnings: ["Provide elementIds or category."],

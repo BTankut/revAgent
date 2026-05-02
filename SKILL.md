@@ -13,7 +13,7 @@ description: >
   "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
   "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
 license: MIT
-version: 0.4.0
+version: 0.4.1
 ---
 
 # Revit MCP — MEP Automation Expert
@@ -44,7 +44,9 @@ only the bare names appear, so the rules stay host-agnostic.
 - `inspect_elements` — targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
 - `inspect_parameter_schema` — parameter schema for element ids or category
-  samples: BIP, storage type, unit, shared/read-only, raw/display values
+  samples: BIP, storage type, unit, shared/read-only, raw/display values.
+  Use `parameterNameMatchMode: "contains"` for broad discovery and
+  `parameterNameMatchMode: "exact"` for write-preflight.
 
 **API docs server (`revit-api-docs`)** — required companion:
 
@@ -75,8 +77,8 @@ Default workflow for any non-trivial task:
 3. Resolve API symbols with `resolve_api_symbols_bulk` and pass the active
    `revit_version`. Use the single-symbol docs tools only for follow-up detail.
 4. Before writes or localized/shared parameter work, call
-   `inspect_parameter_schema`; for element-specific tasks call
-   `inspect_elements`.
+   `inspect_parameter_schema` with `parameterNameMatchMode: "exact"`; for
+   element-specific tasks call `inspect_elements`.
 5. Use `send_code_to_revit_safe` for read-only probes and write previews. Use
    raw `send_code_to_revit` only when the user explicitly asks for broad
    dynamic execution or a confirmed write.
@@ -300,6 +302,10 @@ Apply these only when the task triggers them.
 **Production write or localized/shared parameter work:**
 
 - [ ] `inspect_parameter_schema` run before generating any write snippet.
+- [ ] Any write targeting localized, shared, or user-visible parameters first
+      uses `parameterNameMatchMode: "exact"` or explicitly selects exactly one
+      returned parameter by `name` + `source` + `builtInParameter` +
+      `storageType`.
 - [ ] `send_code_to_revit_safe` used for read-only probes and previews.
 - [ ] Raw `send_code_to_revit` write used only after explicit user commit
       instruction.
