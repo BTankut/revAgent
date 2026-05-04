@@ -14,6 +14,7 @@ Commands:
 Get-ChildItem -Recurse kurulum\mcp-server\build -Filter *.js | ForEach-Object { node --check $_.FullName }
 node kurulum\mcp-server\build\tools\send_code_to_revit_safe.guard-test.js
 node kurulum\mcp-server\build\write-plan\write-plan.test.js
+node kurulum\mcp-server\build\domains\engineering-calculations.test.js
 ```
 
 Result:
@@ -21,6 +22,12 @@ Result:
 - JavaScript syntax check passed.
 - Safe execution guard tests passed.
 - Write-plan schema/state/risk tests passed.
+- Engineering calculation tests passed:
+  - duct area, hydraulic diameter, velocity, and friction loss against hand-check values
+  - equal-friction duct sizing proposal gate
+  - pipe area, velocity, and friction loss against hand-check values
+  - hydronic pipe sizing proposal gate
+  - missing office standard blockers for HVAC and hydronic sizing
 
 ## Plugin Build Check
 
@@ -81,6 +88,10 @@ Live read-only results captured on the active session:
   - `verify_write_plan` used direct assembly fallback against the same uncommitted `set_parameter` plan.
   - Returned `success: false`, `mutateModel: false`, and error `parameter value does not match expected value`.
   - Verification row reported expected `preview-only`, actual empty string.
+- Engineering method live runtime probe succeeded without Revit mutation:
+  - HVAC analysis reports connector/open connector summary, Darcy-Weisbach duct friction loss, and equal-friction rectangular duct sizing proposal methods.
+  - Hydronic analysis reports pipe system summary, Darcy-Weisbach pipe pressure loss, and velocity/friction pipe sizing proposal methods.
+  - Missing office standards correctly block sizing examples for HVAC and hydronic.
 
 Write checks:
 

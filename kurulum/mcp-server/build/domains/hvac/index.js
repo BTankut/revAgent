@@ -1,5 +1,6 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { executeRevitCode } from "../../utils/revitToolHelpers.js";
+import { sizeRectangularDuctEqualFriction } from "./calculations.js";
 
 export async function analyzeHvacAirside({ includeRevitRead = true, officeStandards = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("hvac", officeStandards);
@@ -12,6 +13,18 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
         assumptions: [
             "Read-only collector and connector summary only; sizing remains a proposal until office friction and velocity standards are configured.",
         ],
+        engineeringMethods: [
+            "connector/open connector summary",
+            "duct friction loss by Darcy-Weisbach",
+            "equal-friction rectangular duct sizing proposal",
+        ],
+        calculationExamples: {
+            equalFrictionSizing: sizeRectangularDuctEqualFriction({
+                flowM3h: 3600,
+                targetPaPerM: officeStandards.hvac?.ductEqualFrictionTargetPaPerM,
+                maxVelocityMps: officeStandards.hvac?.ductVelocityLimitsMps?.main,
+            }),
+        },
         canCommit: false,
     };
     if (!includeRevitRead) {

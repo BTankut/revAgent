@@ -156,6 +156,13 @@ kurulum/mcp-server/build/office-standards/defaults.js
 
 Missing standards return `requiresOfficeStandard`, `missingStandards`, assumptions, and `canCommit: false` for engineering design decisions.
 
+Engineering calculation foundations:
+
+- HVAC rectangular duct velocity, hydraulic diameter, Darcy-Weisbach friction loss, and equal-friction size proposal.
+- Hydronic circular pipe velocity, Darcy-Weisbach pressure loss, and velocity/friction size proposal.
+- Fitting/accessory/equipment local losses are explicitly excluded from these first-pass calculations.
+- Calculation outputs remain proposals with `canCommit: false`.
+
 ## Safety Model
 
 Risk levels:

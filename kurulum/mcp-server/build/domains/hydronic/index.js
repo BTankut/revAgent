@@ -1,5 +1,6 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { executeRevitCode } from "../../utils/revitToolHelpers.js";
+import { sizePipeByVelocityOrFriction } from "./calculations.js";
 
 export async function analyzeHydronic({ includeRevitRead = true, officeStandards = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("hydronic", officeStandards);
@@ -12,6 +13,18 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
         assumptions: [
             "Read-only pipe network summary only; pressure loss and pump head are proposals until office pipe criteria are configured.",
         ],
+        engineeringMethods: [
+            "pipe system summary",
+            "pipe pressure loss by Darcy-Weisbach",
+            "velocity/friction pipe sizing proposal",
+        ],
+        calculationExamples: {
+            pipeSizing: sizePipeByVelocityOrFriction({
+                flowLs: 1.0,
+                maxVelocityMps: officeStandards.hydronic?.pipeVelocityLimitsMps?.main,
+                maxPressureLossPaPerM: officeStandards.hydronic?.pipeFrictionLimitPaPerM,
+            }),
+        },
         canCommit: false,
     };
     if (!includeRevitRead) return base;

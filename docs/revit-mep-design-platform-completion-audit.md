@@ -36,8 +36,9 @@ Concrete deliverables:
 | Native executor live preview | Direct assembly fallback live preview succeeded against open Revit session and did not mutate model. | Done |
 | Native executor live commit/verify on test model | No disposable/test model active and no explicit write approval. | Blocked |
 | HVAC duct analysis real model read-only | Live `analyze_mep_system` read `8840` ducts, `7996.625 m` duct length, `41735` connectors, `708` open connectors. | Done |
-| Hydronic/domestic/sanitary/fire/clash/equipment foundations | Foundation modules exist and return assumptions/missing standards; only HVAC/fire/hydronic have live/read collectors. | Partially Done |
-| Full engineering engines | Full graph sizing, hydraulic calculations, critical path, clash reroute, and equipment selection are not complete. | Not Done |
+| Hydronic/domestic/sanitary/fire/clash/equipment foundations | Foundation modules exist and return assumptions/missing standards; HVAC/fire/hydronic have live/read collectors; HVAC and hydronic have deterministic calculation foundations. | Partially Done |
+| Engineering validation calculations | `engineering-calculations.test.js` checks duct velocity/friction/sizing and pipe velocity/friction/sizing against hand-check values and missing-standard blockers. | Partially Done |
+| Full engineering engines | Full connector graph traversal, branch flow aggregation, critical path, clash reroute, hydraulic network calculations, and equipment selection are not complete. | Not Done |
 | Skill update | `SKILL.md` version `0.5.0`; write-plan workflow documented. | Done |
 | README/docs update | README updated; architecture, validation, PR summary, audit docs added. | Done |
 | Static tests | JS syntax, safe guard test, write-plan schema/state/risk test passed. | Done |
