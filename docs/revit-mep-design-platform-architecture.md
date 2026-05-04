@@ -168,6 +168,13 @@ Engineering calculation foundations:
 - Fitting/accessory/equipment local losses are explicitly excluded from these first-pass calculations.
 - Calculation outputs remain proposals with `canCommit: false`.
 
+MEP graph foundation:
+
+- HVAC and hydronic read-only analyses collect connector-owning elements as graph nodes.
+- `Connector.AllRefs` is used to count unique element-to-element edges.
+- Open connector samples are returned for issue/debug workflows.
+- The graph foundation is summary-level; full pathfinding, branch flow aggregation, and critical path calculations remain future work.
+
 ## Safety Model
 
 Risk levels:

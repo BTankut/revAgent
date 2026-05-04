@@ -38,8 +38,9 @@ Concrete deliverables:
 | Native executor live commit/verify on test model | No disposable/test model active and no explicit write approval. | Blocked |
 | HVAC duct analysis real model read-only | Live `analyze_mep_system` read `8840` ducts, `7996.625 m` duct length, `41735` connectors, `708` open connectors. | Done |
 | Hydronic/domestic/sanitary/fire/clash/equipment foundations | Foundation modules exist and return assumptions/missing standards; HVAC/fire/hydronic have live/read collectors; all domain foundations now expose deterministic calculation/issue examples with `canCommit: false`. | Partially Done |
+| MEP graph foundation | HVAC and hydronic live connector graph summaries read `Connector.AllRefs`, node counts, unique element edge counts, and open connector samples with `0` AllRefs errors. | Partially Done |
 | Engineering validation calculations | `engineering-calculations.test.js` checks duct/pipe calculations; `domain-foundation-calculations.test.js` checks domestic water, sanitary/storm, fire/sprinkler, clash, and equipment foundations. | Partially Done |
-| Full engineering engines | Full connector graph traversal, branch flow aggregation, critical path, clash reroute, hydraulic network calculations, and equipment selection are not complete. | Not Done |
+| Full engineering engines | Full graph pathfinding, branch flow aggregation, critical path, clash reroute, hydraulic network calculations, and production equipment selection are not complete. | Not Done |
 | Skill update | `SKILL.md` version `0.5.0`; write-plan workflow documented. | Done |
 | README/docs update | README updated; architecture, validation, PR summary, audit docs added. | Done |
 | Static tests | JS syntax, safe guard test, write-plan schema/state/risk test passed. | Done |
