@@ -92,8 +92,12 @@ function resolveExecutorDllPath() {
     const candidates = [
         process.env.REVIT_MCP_WRITE_PLAN_EXECUTOR_DLL,
         process.env.APPDATA
+            ? path.join(process.env.APPDATA, "Autodesk", "Revit", "Addins", "2022", "revit_mcp_plugin", "Commands", "SampleCommandsetCompat", "2022", "SampleCommandSetCompat.dll")
+            : null,
+        process.env.APPDATA
             ? path.join(process.env.APPDATA, "Autodesk", "Revit", "Addins", "2022", "revit_mcp_plugin", "Commands", "SampleCommandset", "2022", "SampleCommandSet.dll")
             : null,
+        path.join(moduleDir, "..", "..", "..", "revit-plugin", "revit_mcp_plugin", "Commands", "SampleCommandsetCompat", "2022", "SampleCommandSetCompat.dll"),
         path.join(moduleDir, "..", "..", "..", "revit-plugin", "revit_mcp_plugin", "Commands", "SampleCommandset", "2022", "SampleCommandSet.dll"),
     ].filter(Boolean);
     return candidates.find((candidate) => fs.existsSync(candidate)) || null;
@@ -188,7 +192,7 @@ function unwrapCommandResult(payload) {
     if (!payload || typeof payload !== "object") {
         return payload;
     }
-    for (const key of ["result", "data", "value"]) {
+    for (const key of ["result", "data", "value", "Result", "Data", "Value"]) {
         const nested = payload[key];
         if (nested && typeof nested === "object" && ("mode" in nested || "planId" in nested || "previewRows" in nested)) {
             return nested;

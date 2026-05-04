@@ -67,6 +67,9 @@ Result:
   - `view_hide_elements`
   - `view_unhide_elements`
   - basic target existence for other starter operations
+- A later compatibility build fixed the write-plan command interface to implement the active add-in's `RevitMCPSDK.API.Interfaces.IRevitCommand` rather than the older lowercase `revit_mcp_sdk` interface:
+  `dotnet msbuild SampleCommandSet\SampleCommandSet.csproj /p:Configuration="Debug 2022" /p:Platform=x64 /p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\compat-verify\SampleCommandset\2022\ /m:1`
+- The compatibility build passed with the same Revit 2024 deprecation warnings.
 
 ## Live Revit Validation Plan
 
@@ -106,7 +109,20 @@ Live read-only results captured on the active session:
   - `verify_write_plan` used direct assembly fallback against the same uncommitted `set_parameter` plan.
   - Returned `success: false`, `mutateModel: false`, and error `parameter value does not match expected value`.
   - Verification row reported expected `preview-only`, actual empty string.
-- A newer expanded verifier DLL was copied into the packaged and installed `SampleCommandset` folders. The open Revit process may keep the older loaded assembly until restart because .NET assemblies cannot be unloaded from the active AppDomain.
+- The active Revit socket registry was inspected by reflection:
+  - Loaded socket service: `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin\RevitMCPPlugin.dll`.
+  - In-memory registry originally exposed only `get_current_view_elements`, `get_current_view_info`, `get_selected_elements`, and `send_code_to_revit`.
+  - A first hot-register attempt against the old `SampleCommandSet.dll` failed because the command implemented `revit_mcp_sdk.API.Interfaces.IRevitCommand`, not the active `RevitMCPSDK.API.Interfaces.IRevitCommand`.
+  - The compat command assembly `SampleCommandSetCompat.dll` was then loaded and registered in memory; the registry reported `execute_write_plan` present.
+- Normal socket native preview then succeeded without direct assembly fallback:
+  - `preview_write_plan` called normal `execute_write_plan`.
+  - Returned one preview row for duct `1749785`, `warnings: []`, no `audit.directAssemblyFallback`, and `mutateModel: false`.
+  - Re-read duct `1749785`; `Comments` remained empty.
+- Normal socket native verify also succeeded as a read-only failure case:
+  - `verify_write_plan` called normal `execute_write_plan`.
+  - Returned `success: false`, no fallback marker, and error `parameter value does not match expected value`.
+  - Verification row reported expected `normal-socket-verify`, actual empty string, with `mutateModel: false`.
+- The installed add-in registry was updated to point `execute_write_plan` to `SampleCommandsetCompat\2022\SampleCommandSetCompat.dll` so the corrected command can load on the next Revit restart/reload without relying on the temporary hot-register path.
 - Engineering method live runtime probe succeeded without Revit mutation:
   - HVAC analysis reports connector/open connector summary, Darcy-Weisbach duct friction loss, and equal-friction rectangular duct sizing proposal methods.
   - Hydronic analysis reports pipe system summary, Darcy-Weisbach pipe pressure loss, and velocity/friction pipe sizing proposal methods.
@@ -134,8 +150,6 @@ Write checks:
 
 - The installed MCP tool session currently exposes the previous six-tool runtime surface. The updated local runtime lists all 13 tools and was used for the new tool tests.
 - The registered Codex runtime path is `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js`; its `build` folder was updated from this repo and a fresh handshake against that path listed all 13 tools. The already-running MCP process still needs restart/reconnect before this chat exposes the new tool namespace.
-- A safe native availability probe returned: `Native execute_write_plan command unavailable; returned MCP runtime fallback preview only.` The active Revit session must reload the rebuilt command set that contains `execute_write_plan` before native preview/commit can be live-tested.
-- The native executor class itself was live-tested by direct assembly load in read-only preview mode, but the public Revit socket command registry still needs reload before `execute_write_plan` is callable as a normal command.
-- The installed Revit add-in command registry under `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin\Commands\commandRegistry.json` was updated on disk with `execute_write_plan`, and `SampleCommandset\2022\SampleCommandSet.dll` was copied next to it. A live preview probe still returned `Method 'execute_write_plan' not found`, which confirms the open Revit process has not reloaded the command registry in memory.
-- Runtime now has a direct-assembly fallback for `validate`, `preview`, and `verify` so read-only/native validation can continue before Revit reloads the command registry. Direct fallback for `commit` is disabled unless `REVIT_MCP_ALLOW_DIRECT_EXECUTOR_COMMIT=true` is set.
+- The public Revit socket command registry can now call `execute_write_plan` in the current session after in-memory hot registration of the compat assembly. A normal Revit restart/reload is still recommended to prove the on-disk `commandRegistry.json` path loads the compat assembly from a clean AppDomain.
+- Runtime keeps a direct-assembly fallback for `validate`, `preview`, and `verify` so read-only/native validation can continue if a future session has an unavailable command registry. Direct fallback for `commit` is disabled unless `REVIT_MCP_ALLOW_DIRECT_EXECUTOR_COMMIT=true` is set.
 - Production-model writes were intentionally not run. The active document is a workshared project model, not a confirmed disposable/test model.
