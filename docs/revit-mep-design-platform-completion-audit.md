@@ -1,0 +1,61 @@
+# Revit MCP MEP Design Platform Completion Audit
+
+## Objective Restatement
+
+Apply `docs/revit-mep-design-platform-full-goal.md` on branch `feature/full-mep-design-platform-goal` without harming `main`, preserve existing dirty work, use plugin branch `feature/native-write-plan-executor`, and live-test through open Revit/MCP.
+
+Concrete deliverables:
+
+- Runtime MCP write-plan platform tools.
+- Native plugin `execute_write_plan` executor.
+- Workflow identity/eId state.
+- Safety model and office standards config.
+- Initial MEP domain engines.
+- Skill/README/docs updates.
+- Static tests, plugin build, MCP handshake, and live Revit validation.
+- Branch push where possible, with `main` untouched.
+
+## Prompt-to-Artifact Checklist
+
+| Requirement | Evidence | Status |
+|---|---|---|
+| Read and apply `docs/revit-mep-design-platform-full-goal.md` | Source goal file remains on branch; architecture/validation/PR docs derive from its required flow and deliverables. | Done |
+| Do not harm `main` | Work occurred on `feature/full-mep-design-platform-goal` and `feature/native-write-plan-executor`; `git status --short --branch` clean on both feature branches. | Done |
+| Preserve dirty changes | Plugin repo's existing `send_code_to_revit` dirty files were kept and included with the native executor commit instead of reverted. | Done |
+| Runtime existing six tools regress not intentionally changed | Existing tool files unchanged except registry imports; safe guard test still passes. | Done |
+| New runtime write-plan tools list | Fresh MCP handshake against `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js` listed 13 tools, including all seven new tools. | Done |
+| Typed write-plan schema/protocol | `kurulum/mcp-server/build/write-plan/schemas.js`, `validators.js`, `risk.js`, `previewFormatter.js`. | Done |
+| `prepare_write_plan` invalid plan rejection | Tool behavior test returned `invalidSuccess: false`; unit test covers empty step rejection. | Done |
+| `preview_write_plan` must not mutate model | Tool behavior test returned `previewMutates: false`; live preview re-read confirmed `Comments` unchanged. | Done |
+| `commit_write_plan` rejects without approval/token | Tool behavior test returned `commitRejected: true`; commit tool checks token/explicit approval. | Done |
+| Workflow eId mapping | `workflowStore.js`; native executor returns mappings for created/existing elements when `eId` exists. | Partially Done |
+| Office standards config | `office-standards/defaults.js`; HVAC live analysis returned missing standard blocker. | Done |
+| Safety model | `risk.js`, commit-token gate, direct commit fallback disabled by default, skill checklist updated. | Done |
+| Native plugin executor | Plugin repo `SampleCommandSet/Commands/WritePlan/*`; build passed for `Debug 2022|x64`. | Done |
+| Native executor exposed by normal Revit command registry | Added to packaged and installed `commandRegistry.json`; open Revit process still returns `Method 'execute_write_plan' not found` until registry reload/restart. | Blocked |
+| Native executor live preview | Direct assembly fallback live preview succeeded against open Revit session and did not mutate model. | Done |
+| Native executor live commit/verify on test model | No disposable/test model active and no explicit write approval. | Blocked |
+| HVAC duct analysis real model read-only | Live `analyze_mep_system` read `8840` ducts, `7996.625 m` duct length, `41735` connectors, `708` open connectors. | Done |
+| Hydronic/domestic/sanitary/fire/clash/equipment foundations | Foundation modules exist and return assumptions/missing standards; only HVAC/fire/hydronic have live/read collectors. | Partially Done |
+| Full engineering engines | Full graph sizing, hydraulic calculations, critical path, clash reroute, and equipment selection are not complete. | Not Done |
+| Skill update | `SKILL.md` version `0.5.0`; write-plan workflow documented. | Done |
+| README/docs update | README updated; architecture, validation, PR summary, audit docs added. | Done |
+| Static tests | JS syntax, safe guard test, write-plan schema/state/risk test passed. | Done |
+| Plugin build test | `dotnet msbuild SampleCommandSet\SampleCommandSet.csproj /p:Configuration="Debug 2022" /p:Platform=x64 /m:1` passed. | Done |
+| Docs MCP live validation | Revit 2022 API docs resolved `Duct.Create`, `Pipe.Create`, `MoveElements`, `OverrideGraphicSettings`, `UnitUtils`. | Done |
+| Runtime MCP initialize | Fresh registered runtime handshake succeeded and listed 13 tools. | Done |
+| Revit live connection | `get_revit_session_context`, `get_active_view_context`, `inspect_parameter_schema`, `analyze_mep_system`, direct native preview/verify fallback tested. | Done |
+| Branch pushed | Skill branch pushed through `origin/feature/full-mep-design-platform-goal`. | Done |
+| Plugin branch pushed | Push failed because upstream plugin repo is archived/read-only and returns HTTP 403. | Blocked |
+| Clear PR/handoff summary | `docs/revit-mep-design-platform-pr-summary.md`. | Done |
+
+## Current Blocking Items
+
+- Revit must restart or reload command registry before normal socket command `execute_write_plan` is callable without direct assembly fallback.
+- A disposable/test model must be active and explicit user approval must be given before any live write commit test.
+- Plugin repo needs a writable fork/remote before branch push can succeed.
+- Full engineering engines remain beyond the current implemented foundation.
+
+## Completion Decision
+
+Do not mark the goal complete yet. The platform foundation is implemented and live read-only/native preview validation is strong, but several acceptance criteria are blocked or incomplete.
