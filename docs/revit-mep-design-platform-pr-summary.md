@@ -36,9 +36,10 @@
 - Plugin `Debug 2022|x64` build passed.
 - Live Revit read-only connection passed on Revit `2022` build `22.0.2.392`.
 - Updated local runtime `analyze_mep_system` read the active model without mutation.
+- Native write-plan preview was live-tested through the registered runtime using direct assembly fallback because the open Revit process had not reloaded `execute_write_plan`; preview succeeded and did not mutate the sampled duct.
 
 ## Remaining Work
 
-- Deploy/reload the rebuilt plugin command set into the active Revit session for live native `execute_write_plan` validation.
+- Restart/reload Revit so the socket command registry exposes `execute_write_plan` directly instead of requiring direct assembly fallback.
 - Run write-plan commit/verify only after confirming a disposable/test model is active.
 - Expand engineering engines from foundation summaries to full graph, sizing, critical path, and report workflows.

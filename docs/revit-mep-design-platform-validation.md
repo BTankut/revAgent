@@ -72,6 +72,11 @@ Live read-only results captured on the active session:
   - Called `WritePlanExecutor.Execute(document, "preview", plan, "")`.
   - Returned `success: true`, `mode: preview`, one `set_parameter` preview row for duct `1749785`, and `willMutateModel: false`.
   - Re-read duct `1749785` after preview; `Comments` remained empty, confirming preview did not mutate the model.
+- Runtime native executor fallback test succeeded through the registered runtime path:
+  - Updated `C:\Users\BT\Projects\revit-mcp-runtime\build` from this repo.
+  - `preview_write_plan` attempted normal `execute_write_plan`, received `Method 'execute_write_plan' not found`, then invoked `WritePlanExecutor` by direct assembly fallback.
+  - Returned `success: true`, `directAssemblyFallback: true`, one preview row for duct `1749785`, and `mutateModel: false`.
+  - Re-read duct `1749785`; `Comments` remained empty.
 
 Write checks:
 
@@ -87,4 +92,5 @@ Write checks:
 - A safe native availability probe returned: `Native execute_write_plan command unavailable; returned MCP runtime fallback preview only.` The active Revit session must reload the rebuilt command set that contains `execute_write_plan` before native preview/commit can be live-tested.
 - The native executor class itself was live-tested by direct assembly load in read-only preview mode, but the public Revit socket command registry still needs reload before `execute_write_plan` is callable as a normal command.
 - The installed Revit add-in command registry under `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin\Commands\commandRegistry.json` was updated on disk with `execute_write_plan`, and `SampleCommandset\2022\SampleCommandSet.dll` was copied next to it. A live preview probe still returned `Method 'execute_write_plan' not found`, which confirms the open Revit process has not reloaded the command registry in memory.
+- Runtime now has a direct-assembly fallback for `validate`, `preview`, and `verify` so read-only/native validation can continue before Revit reloads the command registry. Direct fallback for `commit` is disabled unless `REVIT_MCP_ALLOW_DIRECT_EXECUTOR_COMMIT=true` is set.
 - Production-model writes were intentionally not run. The active document is a workshared project model, not a confirmed disposable/test model.
