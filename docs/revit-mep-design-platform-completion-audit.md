@@ -34,6 +34,7 @@ Concrete deliverables:
 | Native plugin executor | Plugin repo `SampleCommandSet/Commands/WritePlan/*`; build passed for `Debug 2022|x64`. | Done |
 | Native executor exposed by normal Revit command registry | Added to packaged and installed `commandRegistry.json`; open Revit process still returns `Method 'execute_write_plan' not found` until registry reload/restart. | Blocked |
 | Native executor live preview | Direct assembly fallback live preview succeeded against open Revit session and did not mutate model. | Done |
+| Native executor verification coverage | Expanded verifier build passed in an alternate output path; verifier reads back set/clear parameter, type change, resize, view hide/unhide, and target existence. Active Revit may require restart to load the newest verifier assembly. | Partially Done |
 | Native executor live commit/verify on test model | No disposable/test model active and no explicit write approval. | Blocked |
 | HVAC duct analysis real model read-only | Live `analyze_mep_system` read `8840` ducts, `7996.625 m` duct length, `41735` connectors, `708` open connectors. | Done |
 | Hydronic/domestic/sanitary/fire/clash/equipment foundations | Foundation modules exist and return assumptions/missing standards; HVAC/fire/hydronic have live/read collectors; HVAC and hydronic have deterministic calculation foundations. | Partially Done |

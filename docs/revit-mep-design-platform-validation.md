@@ -49,6 +49,17 @@ Result:
 - Output DLL:
   `revit-mcp-plugin\bin\x64\Debug\commands\SampleCommandset\2022\SampleCommandSet.dll`
 - Warnings are Revit 2024 API deprecation warnings from the package reference and existing project code.
+- After the live direct-load test locked the normal build output DLL in Revit, the expanded verifier build was checked with an alternate output path:
+  `dotnet msbuild SampleCommandSet\SampleCommandSet.csproj /p:Configuration="Debug 2022" /p:Platform=x64 /p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\build-check\SampleCommandset\2022\ /m:1`
+- Expanded native verifier coverage now includes real readback checks for:
+  - `set_parameter`
+  - `clear_parameter`
+  - `change_type`
+  - `resize_duct`
+  - `resize_pipe`
+  - `view_hide_elements`
+  - `view_unhide_elements`
+  - basic target existence for other starter operations
 
 ## Live Revit Validation Plan
 
@@ -88,6 +99,7 @@ Live read-only results captured on the active session:
   - `verify_write_plan` used direct assembly fallback against the same uncommitted `set_parameter` plan.
   - Returned `success: false`, `mutateModel: false`, and error `parameter value does not match expected value`.
   - Verification row reported expected `preview-only`, actual empty string.
+- A newer expanded verifier DLL was copied into the packaged and installed `SampleCommandset` folders. The open Revit process may keep the older loaded assembly until restart because .NET assemblies cannot be unloaded from the active AppDomain.
 - Engineering method live runtime probe succeeded without Revit mutation:
   - HVAC analysis reports connector/open connector summary, Darcy-Weisbach duct friction loss, and equal-friction rectangular duct sizing proposal methods.
   - Hydronic analysis reports pipe system summary, Darcy-Weisbach pipe pressure loss, and velocity/friction pipe sizing proposal methods.
