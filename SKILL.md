@@ -13,7 +13,7 @@ description: >
   "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
   "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
 license: MIT
-version: 0.4.2
+version: 0.5.0
 ---
 
 # Revit MCP — MEP Automation Expert
@@ -32,9 +32,10 @@ Claude Code prepends `mcp__revit-mcp__`). Always call whichever
 prefixed form your host shows in the tool list — but in this document
 only the bare names appear, so the rules stay host-agnostic.
 
-**Runtime server (`revit-mcp`)** — dynamic execution plus read-only context:
+**Runtime server (`revit-mcp`)** — write-plan platform, dynamic execution, and read-only context:
 
-- `send_code_to_revit` — raw dynamic execution for explicit, broad control
+- `send_code_to_revit` — expert raw dynamic execution fallback for explicit,
+  broad control
 - `send_code_to_revit_safe` — read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced
   `transactionMode: "none"`
@@ -48,6 +49,15 @@ only the bare names appear, so the rules stay host-agnostic.
   samples: BIP, storage type, unit, shared/read-only, raw/display values.
   Use `parameterNameMatchMode: "contains"` for broad discovery and
   `parameterNameMatchMode: "exact"` for write-preflight.
+- `analyze_mep_system` — read-only MEP analysis foundation with assumptions,
+  missing office standards, and proposal readiness
+- `prepare_write_plan` — create/validate typed JSON plans; never writes
+- `preview_write_plan` — native or runtime-only preview; never writes
+- `commit_write_plan` — native deterministic commit; requires explicit
+  approval or a commit token
+- `verify_write_plan` — read model state back after a commit/proposal
+- `get_workflow_state` — inspect local `planId`/`stepId`/`eId` mappings
+- `clear_workflow_state` — clear local workflow state by plan or all state
 
 **API docs server (`revit-api-docs`)** — required companion:
 
@@ -64,7 +74,8 @@ and `namespace`.
 
 The two servers are designed to work together: `revit-api-docs`
 resolves the exact API surface against the locally installed Revit DLLs
-and XML, then `send_code_to_revit` runs the verified snippet. Treat the
+and XML, then the runtime either prepares a typed write-plan or runs a
+verified expert fallback snippet. Treat the
 docs server as a hard dependency, not an optional add-on. If it is not
 connected, surface that as a setup problem before writing code that
 guesses API names.
@@ -80,10 +91,14 @@ Default workflow for any non-trivial task:
 4. Before writes or localized/shared parameter work, call
    `inspect_parameter_schema` with `parameterNameMatchMode: "exact"`; for
    element-specific tasks call `inspect_elements`.
-5. Use `send_code_to_revit_safe` for read-only probes and write previews. It
+5. For model-changing work, generate a typed write-plan with
+   `prepare_write_plan`, run `preview_write_plan`, get explicit user commit
+   approval, then call `commit_write_plan` and `verify_write_plan`.
+6. Use `send_code_to_revit_safe` for read-only probes and expert previews. It
    rejects `transactionMode: "auto"` and always executes with
-   `transactionMode: "none"`. Use raw `send_code_to_revit` only when the user
-   explicitly asks for broad dynamic execution or a confirmed write.
+   `transactionMode: "none"`. Use raw `send_code_to_revit` only as an expert
+   fallback when the user explicitly asks for broad dynamic execution or the
+   typed write-plan path cannot express the task.
 
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known — e.g. the bundled patterns under
@@ -303,6 +318,9 @@ Apply these only when the task triggers them.
 
 **Production write or localized/shared parameter work:**
 
+- [ ] Model-changing requests represented as typed write-plans first:
+      `prepare_write_plan` -> `preview_write_plan` -> explicit approval ->
+      `commit_write_plan` -> `verify_write_plan`.
 - [ ] `inspect_parameter_schema` run before generating any write snippet.
 - [ ] Any write targeting localized, shared, or user-visible parameters first
       uses `parameterNameMatchMode: "exact"` or explicitly selects exactly one
@@ -310,8 +328,13 @@ Apply these only when the task triggers them.
       `storageType`.
 - [ ] `send_code_to_revit_safe` used for read-only probes and previews; it must
       not be used with `transactionMode: "auto"`.
-- [ ] Raw `send_code_to_revit` write used only after explicit user commit
-      instruction.
+- [ ] Raw `send_code_to_revit` write used only as an expert fallback after
+      explicit user commit instruction and when the typed write-plan operation
+      catalog cannot express the change.
+- [ ] Fire/sprinkler/hydraulic results state assumptions, missing standards,
+      method, source data, and risk level; unresolved standards block commit.
+- [ ] Clash/reroute work never auto-commits; it must preview and verify no new
+      clash was introduced.
 
 **Active view / sheet-sensitive work:**
 

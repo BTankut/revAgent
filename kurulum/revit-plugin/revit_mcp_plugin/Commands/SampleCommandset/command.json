@@ -1,0 +1,17 @@
+{
+  "name": "SampleCommandset",
+  "description": "Native typed write-plan command collection for Revit MCP",
+  "developer": {
+    "name": "revit-mcp",
+    "email": "",
+    "website": "",
+    "organization": "revit-mcp"
+  },
+  "commands": [
+    {
+      "commandName": "execute_write_plan",
+      "description": "Validate, preview, commit, or verify typed Revit write-plans",
+      "assemblyPath": "SampleCommandSet.dll"
+    }
+  ]
+}

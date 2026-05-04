@@ -59,6 +59,21 @@
         "organization": "mcp-servers-for-revit"
       },
       "description": "Execute dynamic C# code in Revit with access to the Document and Revit API"
+    },
+    {
+      "commandName": "execute_write_plan",
+      "assemblyPath": "SampleCommandset\\\\2022\\\\SampleCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "revit-mcp",
+        "email": "",
+        "website": "",
+        "organization": "revit-mcp"
+      },
+      "description": "Validate, preview, commit, or verify typed Revit write-plans"
     }
   ]
 }

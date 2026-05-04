@@ -24,8 +24,9 @@ This repo stays self-contained, but keeps its execution contract aligned with cu
   build still manages write transactions itself; snippets should not open
   their own `Transaction.Start()` unless that exact installed build has been
   verified
-- the runtime MCP server exposes raw dynamic execution plus read-only context
-  primitives for session, active view, elements, and parameter schema
+- the runtime MCP server exposes typed write-plan tools, raw expert dynamic
+  execution, and read-only context primitives for session, active view,
+  elements, parameter schema, and initial MEP analysis
 - the required docs server resolves class/member signatures before non-trivial snippets are generated, including bulk symbol resolution
 
 ## Requirements
@@ -167,6 +168,13 @@ Expected bundled runtime commands:
 - `get_active_view_context`
 - `inspect_elements`
 - `inspect_parameter_schema`
+- `analyze_mep_system`
+- `prepare_write_plan`
+- `preview_write_plan`
+- `commit_write_plan`
+- `verify_write_plan`
+- `get_workflow_state`
+- `clear_workflow_state`
 
 Expected bundled docs commands:
 
@@ -270,7 +278,7 @@ Host-specific notes:
 
 ## Bundled runtime tool surface
 
-The runtime MCP server intentionally exposes raw dynamic execution plus a small set of high-value context primitives:
+The runtime MCP server intentionally exposes a controlled write-plan platform plus a small set of high-value context and expert fallback primitives:
 
 - `send_code_to_revit`
 - `send_code_to_revit_safe`
@@ -278,8 +286,15 @@ The runtime MCP server intentionally exposes raw dynamic execution plus a small 
 - `get_active_view_context`
 - `inspect_elements`
 - `inspect_parameter_schema`
+- `analyze_mep_system`
+- `prepare_write_plan`
+- `preview_write_plan`
+- `commit_write_plan`
+- `verify_write_plan`
+- `get_workflow_state`
+- `clear_workflow_state`
 
-The Revit add-in command payload still provides the low-level `send_code_to_revit`, selection, and active-view commands internally. The public MCP surface favors the higher-value Node context tools above.
+The Revit add-in command payload still provides low-level `send_code_to_revit`, selection, active-view commands, and the native `execute_write_plan` executor internally. Public domain-specific actions such as creating ducts or resizing pipes remain write-plan operations, not separate public MCP tools.
 
 This runtime set is reflected in the Node MCP wrapper. The installer still copies the bundled Revit command payload required by the wrapper.
 
@@ -293,7 +308,7 @@ The required docs server is separate and exposes its own API lookup tools:
 
 There are no task-specific static runtime tools in the bundled distribution.
 
-## Why `send_code_to_revit` stays primary
+## Why write-plans are primary
 
 Real Revit tasks usually need:
 
@@ -305,9 +320,9 @@ Real Revit tasks usually need:
 - bulk export
 - CSV/XLSX output safety
 
-In practice, one strong custom-code tool performs better than a large set of narrow tools.
+The production write path now uses typed write-plans for deterministic preview, commit, verify, mapping, and audit. Raw custom code remains available for expert fallback and read-only probes, but it is not the preferred production write path.
 
-That is why `send_code_to_revit` should remain the first-class runtime tool in both the MCP setup and the skill.
+That is why the public surface stays small: domain actions live in `prepare_write_plan`/`preview_write_plan`/`commit_write_plan` as typed operations instead of many narrow MCP tools.
 
 ## Skill update direction
 
@@ -315,7 +330,9 @@ That is why `send_code_to_revit` should remain the first-class runtime tool in b
 
 - call `get_revit_session_context` first for non-trivial tasks
 - use `resolve_api_symbols_bulk` before non-trivial snippets to confirm exact API signatures
-- use `send_code_to_revit_safe` for read-only probes and previews
+- use `prepare_write_plan`, `preview_write_plan`, `commit_write_plan`, and
+  `verify_write_plan` for model-changing work
+- use `send_code_to_revit_safe` for read-only probes and expert previews
 - keep raw `send_code_to_revit` as the explicit broad-control escape hatch
 - linked model and room matching workflow
 - parameter lookup order

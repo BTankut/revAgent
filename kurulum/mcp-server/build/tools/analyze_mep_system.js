@@ -1,0 +1,60 @@
+import { z } from "zod";
+import { analyzeClashCoordination } from "../domains/clash/index.js";
+import { analyzeDomesticWater } from "../domains/domestic-water/index.js";
+import { analyzeEquipmentSelection } from "../domains/equipment/index.js";
+import { analyzeFireProtection } from "../domains/fire/index.js";
+import { analyzeHvacAirside } from "../domains/hvac/index.js";
+import { analyzeHydronic } from "../domains/hydronic/index.js";
+import { analyzeSanitaryStorm } from "../domains/sanitary-storm/index.js";
+import { mergeOfficeStandards } from "../office-standards/defaults.js";
+import { formatJsonContent } from "../utils/revitToolHelpers.js";
+
+export function registerAnalyzeMepSystemTool(server) {
+    server.tool("analyze_mep_system", "Read-only MEP system analysis foundation. Produces discipline summaries, assumptions, missing office standards, and write-plan proposal readiness without mutating the model.", {
+        discipline: z.enum(["all", "hvac", "hydronic", "domestic_water", "sanitary", "fire", "sprinkler", "clash", "equipment", "general"]).optional(),
+        includeRevitRead: z.boolean().optional().describe("Run live read-only Revit collectors where implemented. Defaults true."),
+        officeStandards: z.any().optional().describe("Optional office standards override object."),
+    }, async (args) => {
+        const discipline = args.discipline || "all";
+        const officeStandards = mergeOfficeStandards(args.officeStandards || {});
+        const includeRevitRead = args.includeRevitRead !== false;
+        try {
+            const analyses = [];
+            if (discipline === "all" || discipline === "hvac" || discipline === "general") {
+                analyses.push(await analyzeHvacAirside({ includeRevitRead, officeStandards }));
+            }
+            if (discipline === "all" || discipline === "hydronic" || discipline === "general") {
+                analyses.push(await analyzeHydronic({ includeRevitRead, officeStandards }));
+            }
+            if (discipline === "all" || discipline === "domestic_water" || discipline === "general") {
+                analyses.push(analyzeDomesticWater({ officeStandards }));
+            }
+            if (discipline === "all" || discipline === "sanitary" || discipline === "general") {
+                analyses.push(analyzeSanitaryStorm({ officeStandards }));
+            }
+            if (discipline === "all" || discipline === "fire" || discipline === "sprinkler" || discipline === "general") {
+                analyses.push(await analyzeFireProtection({ includeRevitRead, officeStandards }));
+            }
+            if (discipline === "all" || discipline === "clash" || discipline === "general") {
+                analyses.push(analyzeClashCoordination());
+            }
+            if (discipline === "all" || discipline === "equipment" || discipline === "general") {
+                analyses.push(analyzeEquipmentSelection());
+            }
+            return formatJsonContent({
+                success: true,
+                discipline,
+                mutateModel: false,
+                analyses,
+            });
+        }
+        catch (error) {
+            return formatJsonContent({
+                success: false,
+                discipline,
+                mutateModel: false,
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+    });
+}
