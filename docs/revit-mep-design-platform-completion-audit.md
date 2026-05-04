@@ -48,7 +48,7 @@ Concrete deliverables:
 | Runtime MCP initialize | Fresh registered runtime handshake succeeded and listed 13 tools. | Done |
 | Revit live connection | `get_revit_session_context`, `get_active_view_context`, `inspect_parameter_schema`, `analyze_mep_system`, direct native preview/verify fallback tested. | Done |
 | Branch pushed | Skill branch pushed through `origin/feature/full-mep-design-platform-goal`. | Done |
-| Plugin branch pushed | Push failed because upstream plugin repo is archived/read-only and returns HTTP 403. | Blocked |
+| Plugin branch pushed | Push failed because upstream plugin repo is archived/read-only and returns HTTP 403; plugin changes are exported as `docs/revit-mcp-plugin-native-write-plan-executor.patch`. | Blocked |
 | Clear PR/handoff summary | `docs/revit-mep-design-platform-pr-summary.md`. | Done |
 
 ## Current Blocking Items

@@ -21,6 +21,7 @@
 - Implemented validate/preview/commit/verify modes.
 - Implemented initial operation catalog for parameter writes, view operations, movement, placement, duct/pipe creation, and duct/pipe resize.
 - Commit mode uses a transaction and rolls back on error.
+- Plugin remote is archived/read-only, so the two plugin commits are exported in `docs/revit-mcp-plugin-native-write-plan-executor.patch`.
 
 ## Documentation
 
