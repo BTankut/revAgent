@@ -39,6 +39,48 @@ function Resolve-DependencyPath {
     return $null
 }
 
+function Get-AssemblyVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    try {
+        return ([System.Reflection.AssemblyName]::GetAssemblyName($Path)).Version.ToString()
+    }
+    catch {
+        return $null
+    }
+}
+
+function Resolve-CompatibleDependencyPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FileName,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedVersion,
+        [Parameter(Mandatory = $true)]
+        [string[]]$SearchRoots,
+        [Parameter(Mandatory = $true)]
+        [System.Collections.Generic.List[string]]$RejectedVersions
+    )
+
+    foreach ($root in $SearchRoots) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $candidate = Join-Path $root $FileName
+        if (-not (Test-Path $candidate)) { continue }
+
+        $actualVersion = Get-AssemblyVersion -Path $candidate
+        if ($actualVersion -eq $ExpectedVersion) {
+            return $candidate
+        }
+
+        $RejectedVersions.Add(("{0} found at {1} but version is {2}; expected {3}" -f $FileName, $candidate, $actualVersion, $ExpectedVersion))
+    }
+
+    return $null
+}
+
 New-Item -ItemType Directory -Path $addinRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $ServerTarget -Force | Out-Null
 
@@ -79,8 +121,15 @@ if (Test-Path $customDllDir) {
     Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $roamingCmdSet2022 -Force
     Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $roamingCmdSet -Force
 
-    # 3. Mirror the Roslyn runtime dependencies that the command set needs.
+    # 3. Mirror the exact Roslyn runtime dependencies that the command set needs.
+    # Revit/AECGenerativeDesign can contain older Roslyn assemblies (for example
+    # Microsoft.CodeAnalysis 2.8.0.0). Copying those next to the current command
+    # DLL makes install appear successful but fails at runtime, so exact version
+    # checks are required.
+    $bundledRuntimeDir = Join-Path $customDllDir "runtime\$RevitVersion"
     $dependencySearchRoots = @(
+        $bundledRuntimeDir,
+        $localAppCmdSet,
         $revitInstallRoot,
         (Join-Path $revitInstallRoot "AddIns\CoordinationModel"),
         (Join-Path $revitInstallRoot "AddIns\DynamoForRevit"),
@@ -90,27 +139,34 @@ if (Test-Path $customDllDir) {
         (Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319")
     )
 
-    $requiredRuntimeFiles = @(
-        "Microsoft.CodeAnalysis.dll",
-        "Microsoft.CodeAnalysis.CSharp.dll",
-        "System.Collections.Immutable.dll",
-        "System.Memory.dll",
-        "System.Reflection.Metadata.dll",
-        "System.Runtime.CompilerServices.Unsafe.dll"
-    )
-
-    $optionalRuntimeFiles = @(
-        "System.Threading.Tasks.Extensions.dll",
-        "System.Text.Encoding.CodePages.dll"
+    $runtimeAssemblies = @(
+        @{ File = "Microsoft.CodeAnalysis.dll"; Version = "4.8.0.0"; Required = $true },
+        @{ File = "Microsoft.CodeAnalysis.CSharp.dll"; Version = "4.8.0.0"; Required = $true },
+        @{ File = "System.Collections.Immutable.dll"; Version = "7.0.0.0"; Required = $true },
+        @{ File = "System.Memory.dll"; Version = "4.0.1.2"; Required = $true },
+        @{ File = "System.Reflection.Metadata.dll"; Version = "7.0.0.0"; Required = $true },
+        @{ File = "System.Runtime.CompilerServices.Unsafe.dll"; Version = "6.0.0.0"; Required = $true },
+        @{ File = "System.Threading.Tasks.Extensions.dll"; Version = "4.2.0.1"; Required = $true },
+        @{ File = "System.Text.Encoding.CodePages.dll"; Version = "7.0.0.0"; Required = $true },
+        @{ File = "System.Buffers.dll"; Version = "4.0.3.0"; Required = $true },
+        @{ File = "System.Numerics.Vectors.dll"; Version = "4.1.4.0"; Required = $true }
     )
 
     $runtimeDestinations = @($localAppCmdSet2022, $roamingCmdSet2022)
     $missingRuntimeFiles = @()
+    $rejectedRuntimeFiles = [System.Collections.Generic.List[string]]::new()
 
-    foreach ($fileName in $requiredRuntimeFiles) {
-        $sourcePath = Resolve-DependencyPath -FileName $fileName -SearchRoots $dependencySearchRoots
+    foreach ($assembly in $runtimeAssemblies) {
+        $fileName = $assembly.File
+        $sourcePath = Resolve-CompatibleDependencyPath `
+            -FileName $fileName `
+            -ExpectedVersion $assembly.Version `
+            -SearchRoots $dependencySearchRoots `
+            -RejectedVersions $rejectedRuntimeFiles
         if (-not $sourcePath) {
-            $missingRuntimeFiles += $fileName
+            if ($assembly.Required) {
+                $missingRuntimeFiles += ("{0} version {1}" -f $fileName, $assembly.Version)
+            }
             continue
         }
 
@@ -119,20 +175,14 @@ if (Test-Path $customDllDir) {
         }
     }
 
-    foreach ($fileName in $optionalRuntimeFiles) {
-        $sourcePath = Resolve-DependencyPath -FileName $fileName -SearchRoots $dependencySearchRoots
-        if (-not $sourcePath) { continue }
-
-        foreach ($destination in $runtimeDestinations) {
-            Copy-Item -Path $sourcePath -Destination $destination -Force
-        }
-    }
-
     if ($missingRuntimeFiles.Count -gt 0) {
-        throw ("Required Roslyn runtime files were not found for Revit {0}: {1}. " +
-            "This installer expects the local Autodesk/Revit {0} installation to provide these assemblies; " +
-            "do not try to fix end-user installation by adding NuGet packages to the deployed bundle. " +
-            "Repair or reinstall the Autodesk/Revit {0} components instead.") -f $RevitVersion, ($missingRuntimeFiles -join ", ")
+        $detail = ""
+        if ($rejectedRuntimeFiles.Count -gt 0) {
+            $detail = " Rejected incompatible assemblies: " + ($rejectedRuntimeFiles -join "; ")
+        }
+        throw ("Required Roslyn runtime files were not found with the exact versions needed for Revit {0}: {1}. " +
+            "The self-contained package must include them under {2}; do not fall back to older Autodesk/Revit Roslyn assemblies." +
+            "{3}") -f $RevitVersion, ($missingRuntimeFiles -join ", "), $bundledRuntimeDir, $detail
     }
 }
 

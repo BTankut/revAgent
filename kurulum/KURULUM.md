@@ -83,19 +83,27 @@ Gerekli runtime assembly'leri sunlardir:
 - `System.Memory.dll`
 - `System.Reflection.Metadata.dll`
 - `System.Runtime.CompilerServices.Unsafe.dll`
+- `System.Threading.Tasks.Extensions.dll`
+- `System.Text.Encoding.CodePages.dll`
+- `System.Buffers.dll`
+- `System.Numerics.Vectors.dll`
 
-Bu dosyalar normalde lokal Autodesk/Revit kurulumunda bulunur; sik gorulen konumlar `C:\Program Files\Autodesk\Revit 2022\...` ve `C:\Program Files\Autodesk\AECGenerativeDesign 2022\RestDynamoCore\...` altidir.
+Bu dosyalar repo icinde exact runtime payload olarak tutulur:
 
-`install-self-contained.ps1` artik bu dosyalari kontrol eder ve `RevitMCPCommandSet.dll` yanina mirror eder.
+```text
+kurulum\Custom_DLL\runtime\2022\...
+```
 
-Eger installer bu Autodesk yollarini kontrol ettikten sonra hedef makinede `Microsoft.CodeAnalysis` eksik hatasi aliniyorsa:
+`install-self-contained.ps1` bu dosyalari `RevitMCPCommandSet.dll` yanina mirror eder ve assembly version'larini exact kontrol eder. Ornek olarak yeni command DLL `Microsoft.CodeAnalysis, Version=4.8.0.0` istiyorsa installer `2.8.0.0` gibi eski Autodesk/Revit kopyalarini kabul etmez.
 
-1. Revit 2022 kurulumunu onar veya yeniden kur
-2. installer'i tekrar calistir
+Eger installer exact runtime payload'u bulamazsa veya surumler uyusmazsa kurulum basarili sayilmaz. Bu durumda repo paketini duzelt:
 
-Normal son kullanici kurulumunda deployed bundle icine NuGet paketi ekleyerek sorun cozulmeye calisilmaz.
+1. `RevitMCPCommandSet.dll` hangi Roslyn surumlerine referans veriyor kontrol et
+2. uyumlu DLL'leri `kurulum\Custom_DLL\runtime\2022` altina vendor et
+3. `install-self-contained.ps1` icindeki surum manifestini ayni surumlerle guncelle
+4. installer'i tekrar calistir
 
-NuGet ancak `RevitMCPCommandSet.dll` kaynaktan yeniden derleniyorsa build-time bagimliliktir.
+NuGet ancak `RevitMCPCommandSet.dll` kaynaktan yeniden derleniyorsa build-time bagimliliktir; son kullanici kurulumunda runtime payload repo icinden gelmelidir.
 
 ### 3. Yerel runtime MCP server'i kopyala
 
