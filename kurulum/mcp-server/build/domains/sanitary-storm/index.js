@@ -1,4 +1,5 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
+import { validateGravitySlope } from "./calculations.js";
 
 export function analyzeSanitaryStorm({ officeStandards = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("sanitary", officeStandards);
@@ -12,10 +13,18 @@ export function analyzeSanitaryStorm({ officeStandards = {} } = {}) {
             "Gravity pipe sizing and slope decisions are reported as issues/proposals until slope and sizing standards are configured.",
         ],
         checksAvailable: [
-            "slope validation scaffold",
-            "reverse slope issue scaffold",
+            "gravity slope validation",
+            "reverse slope issue check",
             "vent continuity scaffold",
         ],
+        calculationExamples: {
+            slopeValidation: validateGravitySlope({
+                startElevationM: 10.0,
+                endElevationM: 9.95,
+                lengthM: 5.0,
+                minSlopePercent: officeStandards.sanitaryStorm?.sanitarySlopeRules?.[0]?.minSlopePercent,
+            }),
+        },
         canCommit: false,
     };
 }

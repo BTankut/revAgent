@@ -40,6 +40,7 @@
 - Added deterministic HVAC and hydronic calculation foundations with hand-check tests and missing office standard blockers.
 - Added workflow eId hydration from stored mappings into preview/commit/verify plans, with a live read-only preview test resolving an eId to a real duct.
 - Expanded native verifier readback coverage for parameter clear/set, type changes, duct/pipe resize, view hide/unhide, and target existence.
+- Added calculation/issue foundations for domestic water, sanitary/storm, fire/sprinkler, clash, and equipment selection, with tests and runtime probe coverage.
 
 ## Remaining Work
 

@@ -15,6 +15,7 @@ Get-ChildItem -Recurse kurulum\mcp-server\build -Filter *.js | ForEach-Object { 
 node kurulum\mcp-server\build\tools\send_code_to_revit_safe.guard-test.js
 node kurulum\mcp-server\build\write-plan\write-plan.test.js
 node kurulum\mcp-server\build\domains\engineering-calculations.test.js
+node kurulum\mcp-server\build\domains\domain-foundation-calculations.test.js
 ```
 
 Result:
@@ -28,6 +29,12 @@ Result:
   - pipe area, velocity, and friction loss against hand-check values
   - hydronic pipe sizing proposal gate
   - missing office standard blockers for HVAC and hydronic sizing
+- Domain foundation calculation tests passed:
+  - domestic water fixture-unit summation and recirculation continuity
+  - sanitary/storm slope and reverse-slope checks
+  - sprinkler coverage/spacing standard gating
+  - clash AABB hard/clearance classification
+  - fan and pump candidate screening
 
 ## Plugin Build Check
 
@@ -108,6 +115,9 @@ Live read-only results captured on the active session:
   - A temporary workflow state file stored a plan targeting only `eId: duct-preview-001`.
   - Runtime mapping resolved that eId to duct `1749785` / UniqueId `7e61ea08-330a-47b5-8b95-36e4bdc5bdf9-001ab319`.
   - `preview_write_plan` returned one native fallback preview row with the resolved element id and `mutateModel: false`.
+- Domain foundation runtime probe succeeded:
+  - `analyze_mep_system` with `discipline: all` and `includeRevitRead: false` returned calculation examples for HVAC, hydronic, domestic water, sanitary/storm, fire/sprinkler, clash, and equipment.
+  - Every domain foundation returned `canCommit: false`.
 
 Write checks:
 

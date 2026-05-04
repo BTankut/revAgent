@@ -37,8 +37,8 @@ Concrete deliverables:
 | Native executor verification coverage | Expanded verifier build passed in an alternate output path; verifier reads back set/clear parameter, type change, resize, view hide/unhide, and target existence. Active Revit may require restart to load the newest verifier assembly. | Partially Done |
 | Native executor live commit/verify on test model | No disposable/test model active and no explicit write approval. | Blocked |
 | HVAC duct analysis real model read-only | Live `analyze_mep_system` read `8840` ducts, `7996.625 m` duct length, `41735` connectors, `708` open connectors. | Done |
-| Hydronic/domestic/sanitary/fire/clash/equipment foundations | Foundation modules exist and return assumptions/missing standards; HVAC/fire/hydronic have live/read collectors; HVAC and hydronic have deterministic calculation foundations. | Partially Done |
-| Engineering validation calculations | `engineering-calculations.test.js` checks duct velocity/friction/sizing and pipe velocity/friction/sizing against hand-check values and missing-standard blockers. | Partially Done |
+| Hydronic/domestic/sanitary/fire/clash/equipment foundations | Foundation modules exist and return assumptions/missing standards; HVAC/fire/hydronic have live/read collectors; all domain foundations now expose deterministic calculation/issue examples with `canCommit: false`. | Partially Done |
+| Engineering validation calculations | `engineering-calculations.test.js` checks duct/pipe calculations; `domain-foundation-calculations.test.js` checks domestic water, sanitary/storm, fire/sprinkler, clash, and equipment foundations. | Partially Done |
 | Full engineering engines | Full connector graph traversal, branch flow aggregation, critical path, clash reroute, hydraulic network calculations, and equipment selection are not complete. | Not Done |
 | Skill update | `SKILL.md` version `0.5.0`; write-plan workflow documented. | Done |
 | README/docs update | README updated; architecture, validation, PR summary, audit docs added. | Done |

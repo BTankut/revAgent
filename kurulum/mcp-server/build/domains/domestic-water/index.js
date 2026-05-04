@@ -1,4 +1,5 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
+import { calculateFixtureDemand, checkRecirculationContinuity } from "./calculations.js";
 
 export function analyzeDomesticWater({ officeStandards = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("domestic_water", officeStandards);
@@ -13,9 +14,17 @@ export function analyzeDomesticWater({ officeStandards = {} } = {}) {
         ],
         checksAvailable: [
             "network classification scaffold",
-            "fixture demand basis scaffold",
-            "recirculation continuity issue scaffold",
+            "configured fixture-unit summation",
+            "recirculation continuity issue check",
         ],
+        calculationExamples: {
+            fixtureDemand: calculateFixtureDemand(),
+            recirculationContinuity: checkRecirculationContinuity({
+                nodes: [{ id: "heater" }, { id: "riser-1" }],
+                edges: [{ from: "heater", to: "riser-1" }],
+                requiredLoopNodeIds: ["heater", "riser-1"],
+            }),
+        },
         canCommit: false,
     };
 }

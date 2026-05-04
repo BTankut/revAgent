@@ -1,5 +1,6 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { executeRevitCode } from "../../utils/revitToolHelpers.js";
+import { checkSprinklerCoverage } from "./calculations.js";
 
 export async function analyzeFireProtection({ includeRevitRead = true, officeStandards = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("fire", officeStandards);
@@ -12,6 +13,19 @@ export async function analyzeFireProtection({ includeRevitRead = true, officeSta
         assumptions: [
             "Sprinkler/fire hydraulic decisions are assumptions-only until the applicable office/fire code basis is supplied.",
         ],
+        engineeringMethods: [
+            "sprinkler collector",
+            "rectangular room spacing/coverage screening",
+        ],
+        calculationExamples: {
+            sprinklerCoverage: checkSprinklerCoverage({
+                roomWidthM: 6,
+                roomLengthM: 6,
+                sprinklers: [{ x: 3, y: 3 }],
+                maxSpacingM: officeStandards.fire?.sprinklerSpacingRules?.[0]?.maxSpacingM,
+                maxCoverageM2: officeStandards.fire?.sprinklerSpacingRules?.[0]?.maxCoverageM2,
+            }),
+        },
         canCommit: false,
     };
     if (!includeRevitRead) return base;
