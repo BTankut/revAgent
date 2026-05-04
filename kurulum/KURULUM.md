@@ -27,6 +27,7 @@ codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
 
 cd "$RepoRoot\kurulum\revit-api-docs-mcp"
 npm install --omit=dev
+npm run build-index
 codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
 
@@ -118,6 +119,7 @@ Repo root'tan:
 $RepoRoot = (Resolve-Path .).Path
 cd "$RepoRoot\kurulum\revit-api-docs-mcp"
 npm install --omit=dev
+npm run build-index
 codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
 
