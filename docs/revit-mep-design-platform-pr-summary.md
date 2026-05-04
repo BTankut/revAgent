@@ -38,6 +38,7 @@
 - Updated local runtime `analyze_mep_system` read the active model without mutation.
 - Native write-plan preview was live-tested through the registered runtime using direct assembly fallback because the open Revit process had not reloaded `execute_write_plan`; preview succeeded and did not mutate the sampled duct.
 - Added deterministic HVAC and hydronic calculation foundations with hand-check tests and missing office standard blockers.
+- Added workflow eId hydration from stored mappings into preview/commit/verify plans, with a live read-only preview test resolving an eId to a real duct.
 
 ## Remaining Work
 

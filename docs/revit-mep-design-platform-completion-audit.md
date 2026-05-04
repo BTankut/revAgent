@@ -28,7 +28,7 @@ Concrete deliverables:
 | `prepare_write_plan` invalid plan rejection | Tool behavior test returned `invalidSuccess: false`; unit test covers empty step rejection. | Done |
 | `preview_write_plan` must not mutate model | Tool behavior test returned `previewMutates: false`; live preview re-read confirmed `Comments` unchanged. | Done |
 | `commit_write_plan` rejects without approval/token | Tool behavior test returned `commitRejected: true`; commit tool checks token/explicit approval. | Done |
-| Workflow eId mapping | `workflowStore.js`; native executor returns mappings for created/existing elements when `eId` exists. | Partially Done |
+| Workflow eId mapping | `workflowStore.js`; native executor returns mappings; runtime hydrates `eId` targets from workflow state before preview/commit/verify; live preview resolved `duct-preview-001` to duct `1749785`. | Done |
 | Office standards config | `office-standards/defaults.js`; HVAC live analysis returned missing standard blocker. | Done |
 | Safety model | `risk.js`, commit-token gate, direct commit fallback disabled by default, skill checklist updated. | Done |
 | Native plugin executor | Plugin repo `SampleCommandSet/Commands/WritePlan/*`; build passed for `Debug 2022|x64`. | Done |

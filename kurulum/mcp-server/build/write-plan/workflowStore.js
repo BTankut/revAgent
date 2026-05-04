@@ -108,6 +108,52 @@ export function addWorkflowMappings(planId, mappings = []) {
     return saveWorkflowState(state).mappings[planId];
 }
 
+export function getWorkflowMappings(planId) {
+    const state = loadWorkflowState();
+    return Array.isArray(state.mappings[planId]) ? state.mappings[planId] : [];
+}
+
+export function hydratePlanTargetsFromMappings(plan, mappings = []) {
+    const mappingByEId = new Map();
+    for (const mapping of Array.isArray(mappings) ? mappings : []) {
+        if (mapping && mapping.eId) {
+            mappingByEId.set(String(mapping.eId), mapping);
+        }
+    }
+    const hydrated = JSON.parse(JSON.stringify(plan));
+    const hydration = {
+        applied: [],
+        missing: [],
+    };
+    for (const step of hydrated.steps || []) {
+        const targetEId = step?.targets?.eId || step?.eId;
+        if (!targetEId || step.targets?.elementId) {
+            continue;
+        }
+        const mapping = mappingByEId.get(String(targetEId));
+        if (!mapping || !mapping.elementId) {
+            hydration.missing.push({ stepId: step.stepId, eId: String(targetEId) });
+            continue;
+        }
+        step.targets = {
+            ...(step.targets || {}),
+            elementId: mapping.elementId,
+            uniqueId: mapping.uniqueId || step.targets?.uniqueId,
+            resolvedFromEId: String(targetEId),
+        };
+        hydration.applied.push({
+            stepId: step.stepId,
+            eId: String(targetEId),
+            elementId: mapping.elementId,
+            uniqueId: mapping.uniqueId || "",
+        });
+    }
+    return {
+        plan: hydrated,
+        hydration,
+    };
+}
+
 export function clearWorkflowState(planId) {
     if (!planId) {
         const empty = saveWorkflowState(createEmptyState());

@@ -92,6 +92,10 @@ Live read-only results captured on the active session:
   - HVAC analysis reports connector/open connector summary, Darcy-Weisbach duct friction loss, and equal-friction rectangular duct sizing proposal methods.
   - Hydronic analysis reports pipe system summary, Darcy-Weisbach pipe pressure loss, and velocity/friction pipe sizing proposal methods.
   - Missing office standards correctly block sizing examples for HVAC and hydronic.
+- Workflow eId hydration live preview succeeded:
+  - A temporary workflow state file stored a plan targeting only `eId: duct-preview-001`.
+  - Runtime mapping resolved that eId to duct `1749785` / UniqueId `7e61ea08-330a-47b5-8b95-36e4bdc5bdf9-001ab319`.
+  - `preview_write_plan` returned one native fallback preview row with the resolved element id and `mutateModel: false`.
 
 Write checks:
 

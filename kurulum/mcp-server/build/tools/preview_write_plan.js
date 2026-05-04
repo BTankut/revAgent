@@ -5,7 +5,7 @@ import { executeNativeWritePlan } from "../write-plan/nativeExecutorClient.js";
 import { buildPreviewRows } from "../write-plan/previewFormatter.js";
 import { normalizePlan } from "../write-plan/schemas.js";
 import { validateWritePlan } from "../write-plan/validators.js";
-import { getPlanRecord, updatePlanRecord, upsertPlanRecord } from "../write-plan/workflowStore.js";
+import { getPlanRecord, getWorkflowMappings, hydratePlanTargetsFromMappings, updatePlanRecord, upsertPlanRecord } from "../write-plan/workflowStore.js";
 
 export function registerPreviewWritePlanTool(server) {
     server.tool("preview_write_plan", "Preview a typed write-plan without mutating the Revit model. Uses native execute_write_plan preview when available and otherwise returns a runtime-only fallback preview.", {
@@ -19,7 +19,8 @@ export function registerPreviewWritePlanTool(server) {
             if (!resolved.plan) {
                 return formatJsonContent({ success: false, errors: [resolved.error], warnings: [] });
             }
-            const plan = resolved.plan;
+            const hydrationResult = hydratePlanTargetsFromMappings(resolved.plan, getWorkflowMappings(resolved.plan.planId));
+            const plan = hydrationResult.plan;
             const officeStandards = mergeOfficeStandards(args.officeStandards || {});
             const validation = validateWritePlan(plan, { mode: "preview", officeStandards, requireInitialOperationsOnly: true });
             const fallback = {
@@ -46,6 +47,7 @@ export function registerPreviewWritePlanTool(server) {
                 ...result,
                 success: validation.valid && result.success !== false,
                 validation,
+                eIdHydration: hydrationResult.hydration,
                 mutateModel: false,
             });
         }

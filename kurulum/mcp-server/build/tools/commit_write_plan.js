@@ -5,7 +5,7 @@ import { executeNativeWritePlan } from "../write-plan/nativeExecutorClient.js";
 import { requiresExplicitApproval } from "../write-plan/risk.js";
 import { normalizePlan } from "../write-plan/schemas.js";
 import { validateWritePlan } from "../write-plan/validators.js";
-import { addWorkflowMappings, getPlanRecord, updatePlanRecord } from "../write-plan/workflowStore.js";
+import { addWorkflowMappings, getPlanRecord, getWorkflowMappings, hydratePlanTargetsFromMappings, updatePlanRecord } from "../write-plan/workflowStore.js";
 
 export function registerCommitWritePlanTool(server) {
     server.tool("commit_write_plan", "Commit a previously previewed typed write-plan through the native Revit executor. Requires explicit approval or a commit token and never falls back to raw dynamic code.", {
@@ -21,7 +21,8 @@ export function registerCommitWritePlanTool(server) {
             if (!resolved.plan) {
                 return formatJsonContent({ success: false, mode: "commit", errors: [resolved.error], warnings: [] });
             }
-            const plan = resolved.plan;
+            const hydrationResult = hydratePlanTargetsFromMappings(resolved.plan, getWorkflowMappings(resolved.plan.planId));
+            const plan = hydrationResult.plan;
             const approval = Boolean(args.commitToken) || args.explicitApproval === true;
             if (!approval) {
                 return formatJsonContent({
@@ -69,6 +70,7 @@ export function registerCommitWritePlanTool(server) {
             return formatJsonContent({
                 ...result,
                 validation,
+                eIdHydration: hydrationResult.hydration,
                 mutateModel: result.success === true,
             });
         }

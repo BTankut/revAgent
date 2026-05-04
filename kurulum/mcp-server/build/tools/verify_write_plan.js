@@ -4,7 +4,7 @@ import { formatJsonContent } from "../utils/revitToolHelpers.js";
 import { executeNativeWritePlan } from "../write-plan/nativeExecutorClient.js";
 import { normalizePlan } from "../write-plan/schemas.js";
 import { validateWritePlan } from "../write-plan/validators.js";
-import { getPlanRecord, updatePlanRecord } from "../write-plan/workflowStore.js";
+import { getPlanRecord, getWorkflowMappings, hydratePlanTargetsFromMappings, updatePlanRecord } from "../write-plan/workflowStore.js";
 
 export function registerVerifyWritePlanTool(server) {
     server.tool("verify_write_plan", "Verify a committed or proposed write-plan by re-reading model state through the native executor. This mode is read-only.", {
@@ -17,7 +17,8 @@ export function registerVerifyWritePlanTool(server) {
             if (!resolved.plan) {
                 return formatJsonContent({ success: false, mode: "verify", errors: [resolved.error], warnings: [] });
             }
-            const plan = resolved.plan;
+            const hydrationResult = hydratePlanTargetsFromMappings(resolved.plan, getWorkflowMappings(resolved.plan.planId));
+            const plan = hydrationResult.plan;
             const officeStandards = mergeOfficeStandards(args.officeStandards || {});
             const validation = validateWritePlan(plan, { mode: "verify", officeStandards, requireInitialOperationsOnly: true });
             const result = await executeNativeWritePlan({
@@ -35,6 +36,7 @@ export function registerVerifyWritePlanTool(server) {
             return formatJsonContent({
                 ...result,
                 validation,
+                eIdHydration: hydrationResult.hydration,
                 mutateModel: false,
             });
         }
