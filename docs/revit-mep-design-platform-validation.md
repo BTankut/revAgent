@@ -67,6 +67,11 @@ Live read-only results captured on the active session:
   - connector count: `41735`
   - open connector count: `708`
   - missing office standard blocker: `hvac.ductEqualFrictionTargetPaPerM`
+- Native plugin executor direct-load read-only probe succeeded against the open Revit session:
+  - Loaded `SampleCommandSet.dll` from the plugin build output by reflection.
+  - Called `WritePlanExecutor.Execute(document, "preview", plan, "")`.
+  - Returned `success: true`, `mode: preview`, one `set_parameter` preview row for duct `1749785`, and `willMutateModel: false`.
+  - Re-read duct `1749785` after preview; `Comments` remained empty, confirming preview did not mutate the model.
 
 Write checks:
 
@@ -78,5 +83,8 @@ Write checks:
 ## Known Validation Limits
 
 - The installed MCP tool session currently exposes the previous six-tool runtime surface. The updated local runtime lists all 13 tools and was used for the new tool tests.
+- The registered Codex runtime path is `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js`; its `build` folder was updated from this repo and a fresh handshake against that path listed all 13 tools. The already-running MCP process still needs restart/reconnect before this chat exposes the new tool namespace.
 - A safe native availability probe returned: `Native execute_write_plan command unavailable; returned MCP runtime fallback preview only.` The active Revit session must reload the rebuilt command set that contains `execute_write_plan` before native preview/commit can be live-tested.
+- The native executor class itself was live-tested by direct assembly load in read-only preview mode, but the public Revit socket command registry still needs reload before `execute_write_plan` is callable as a normal command.
+- The installed Revit add-in command registry under `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin\Commands\commandRegistry.json` was updated on disk with `execute_write_plan`, and `SampleCommandset\2022\SampleCommandSet.dll` was copied next to it. A live preview probe still returned `Method 'execute_write_plan' not found`, which confirms the open Revit process has not reloaded the command registry in memory.
 - Production-model writes were intentionally not run. The active document is a workshared project model, not a confirmed disposable/test model.
