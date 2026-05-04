@@ -77,6 +77,10 @@ Live read-only results captured on the active session:
   - `preview_write_plan` attempted normal `execute_write_plan`, received `Method 'execute_write_plan' not found`, then invoked `WritePlanExecutor` by direct assembly fallback.
   - Returned `success: true`, `directAssemblyFallback: true`, one preview row for duct `1749785`, and `mutateModel: false`.
   - Re-read duct `1749785`; `Comments` remained empty.
+- Runtime verify failure test succeeded read-only:
+  - `verify_write_plan` used direct assembly fallback against the same uncommitted `set_parameter` plan.
+  - Returned `success: false`, `mutateModel: false`, and error `parameter value does not match expected value`.
+  - Verification row reported expected `preview-only`, actual empty string.
 
 Write checks:
 
