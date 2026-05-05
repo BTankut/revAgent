@@ -43,6 +43,8 @@ export const defaultOfficeStandards = {
         sprinklerSpacingRules: [],
         fireCabinetFlowLpm: null,
         fireCabinetPressureBar: null,
+        fireCabinetMaxHoseReachM: null,
+        simultaneousFireCabinetCount: null,
         hydraulicStandard: null,
     },
     reporting: {
@@ -107,6 +109,15 @@ export function missingStandardsForDiscipline(discipline, standards = defaultOff
         }
         if (!Array.isArray(standards.fire?.sprinklerSpacingRules) || standards.fire.sprinklerSpacingRules.length === 0) {
             missing.push("fire.sprinklerSpacingRules");
+        }
+        if (standards.fire?.fireCabinetFlowLpm == null) {
+            missing.push("fire.fireCabinetFlowLpm");
+        }
+        if (standards.fire?.fireCabinetPressureBar == null) {
+            missing.push("fire.fireCabinetPressureBar");
+        }
+        if (standards.fire?.fireCabinetMaxHoseReachM == null) {
+            missing.push("fire.fireCabinetMaxHoseReachM");
         }
     }
     return missing;

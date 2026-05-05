@@ -50,6 +50,7 @@ Result:
   - sanitary/storm slope and reverse-slope checks
   - sanitary/storm fixture-unit gravity pipe sizing, branch-to-stack reachability, and vent continuity checks
   - sprinkler coverage/spacing standard gating
+  - fire cabinet coverage, fire cabinet demand basis, and fire pump flow/pressure basis
   - clash AABB hard/clearance classification
   - orthogonal clash reroute preview with added-length calculation
   - multi-candidate orthogonal reroute solver with clearance validation
@@ -169,6 +170,9 @@ Live read-only results captured on the active session:
 - Sanitary runtime probe succeeded without model mutation:
   - `analyze_mep_system` with `discipline: sanitary`, `includeRevitRead: false`, and supplied slope/sizing standards returned pipe sizing, stack reachability, and vent continuity examples.
   - The analysis remains issue/proposal-only with `canCommit: false`.
+- Fire runtime probe succeeded without model mutation:
+  - `analyze_mep_system` with `discipline: fire`, `includeRevitRead: false`, and supplied sprinkler/cabinet/fire-pump standards returned sprinkler coverage, cabinet coverage, cabinet demand, and pump basis examples.
+  - The analysis remains assumption-heavy and proposal-only with `canCommit: false`.
 - Workflow eId hydration live preview succeeded:
   - A temporary workflow state file stored a plan targeting only `eId: duct-preview-001`.
   - Runtime mapping resolved that eId to duct `1749785` / UniqueId `7e61ea08-330a-47b5-8b95-36e4bdc5bdf9-001ab319`.

@@ -1,6 +1,6 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { executeRevitCode } from "../../utils/revitToolHelpers.js";
-import { checkSprinklerCoverage } from "./calculations.js";
+import { calculateFireCabinetDemand, calculateFirePumpBasis, checkFireCabinetCoverage, checkSprinklerCoverage } from "./calculations.js";
 
 export async function analyzeFireProtection({ includeRevitRead = true, officeStandards = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("fire", officeStandards);
@@ -16,6 +16,9 @@ export async function analyzeFireProtection({ includeRevitRead = true, officeSta
         engineeringMethods: [
             "sprinkler collector",
             "rectangular room spacing/coverage screening",
+            "fire cabinet hose reach screening",
+            "fire cabinet demand basis",
+            "fire pump flow/pressure basis",
         ],
         calculationExamples: {
             sprinklerCoverage: checkSprinklerCoverage({
@@ -24,6 +27,27 @@ export async function analyzeFireProtection({ includeRevitRead = true, officeSta
                 sprinklers: [{ x: 3, y: 3 }],
                 maxSpacingM: officeStandards.fire?.sprinklerSpacingRules?.[0]?.maxSpacingM,
                 maxCoverageM2: officeStandards.fire?.sprinklerSpacingRules?.[0]?.maxCoverageM2,
+            }),
+            fireCabinetCoverage: checkFireCabinetCoverage({
+                cabinets: [{ x: 0, y: 0 }],
+                targetPoints: [{ x: 15, y: 0 }],
+                maxHoseReachM: officeStandards.fire?.fireCabinetMaxHoseReachM,
+            }),
+            fireCabinetDemand: calculateFireCabinetDemand({
+                cabinetCount: 2,
+                flowLpmPerCabinet: officeStandards.fire?.fireCabinetFlowLpm,
+                simultaneousCabinetCount: officeStandards.fire?.simultaneousFireCabinetCount,
+            }),
+            firePumpBasis: calculateFirePumpBasis({
+                cabinetDemand: calculateFireCabinetDemand({
+                    cabinetCount: 2,
+                    flowLpmPerCabinet: officeStandards.fire?.fireCabinetFlowLpm,
+                    simultaneousCabinetCount: officeStandards.fire?.simultaneousFireCabinetCount,
+                }),
+                residualPressureBar: officeStandards.fire?.fireCabinetPressureBar,
+                staticLiftM: 12,
+                pipeLossKPa: 25,
+                safetyFactor: 1.1,
             }),
         },
         canCommit: false,

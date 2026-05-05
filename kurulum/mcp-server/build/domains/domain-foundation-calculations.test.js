@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } from "./clash/calculations.js";
 import { calculateDomesticWaterPressureLoss, calculateFixtureDemand, checkRecirculationContinuity, convertFixtureUnitsToDemand, sizeDomesticWaterPipe } from "./domestic-water/calculations.js";
 import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
-import { checkSprinklerCoverage } from "./fire/calculations.js";
+import { calculateFireCabinetDemand, calculateFirePumpBasis, checkFireCabinetCoverage, checkSprinklerCoverage } from "./fire/calculations.js";
 import { analyzeHvacAirside } from "./hvac/index.js";
 import { analyzeHydronic } from "./hydronic/index.js";
 import { connectorPathElementIds, selectCriticalConnectorPath, summarizeLocalLossSamples } from "./local-losses/calculations.js";
@@ -125,6 +125,36 @@ assert.equal(sprinklerOk.success, true);
 assert.equal(sprinklerOk.canCommit, false);
 const sprinklerMissing = checkSprinklerCoverage({ roomWidthM: 6, roomLengthM: 6, sprinklers: [{ x: 3, y: 3 }] });
 assert.equal(sprinklerMissing.requiresOfficeStandard, true);
+
+const cabinetCoverage = checkFireCabinetCoverage({
+    cabinets: [{ x: 0, y: 0 }],
+    targetPoints: [{ x: 20, y: 0 }, { x: 35, y: 0 }],
+    maxHoseReachM: 30,
+});
+assert.equal(cabinetCoverage.success, false);
+assert.equal(cabinetCoverage.issues[0].targetIndex, 1);
+
+const cabinetDemand = calculateFireCabinetDemand({
+    cabinetCount: 3,
+    flowLpmPerCabinet: 100,
+    simultaneousCabinetCount: 2,
+});
+assert.equal(cabinetDemand.success, true);
+assert.equal(cabinetDemand.output.totalFlowLpm, 200);
+
+const firePumpBasis = calculateFirePumpBasis({
+    cabinetDemand,
+    sprinklerDemandLpm: 300,
+    residualPressureBar: 4,
+    staticLiftM: 10,
+    pipeLossKPa: 25,
+    safetyFactor: 1.1,
+});
+assert.equal(firePumpBasis.success, true);
+assert.equal(firePumpBasis.output.requiredFlowLpm, 500);
+assert(Math.abs(firePumpBasis.output.requiredPressureKPa - 575.37315) < 1e-5);
+assert.equal(calculateFireCabinetDemand({ cabinetCount: 1 }).requiresOfficeStandard, true);
+assert.equal(calculateFirePumpBasis({ cabinetDemand }).requiresOfficeStandard, true);
 
 const hardClash = classifyAabbClash({
     boxA: { min: { x: 0, y: 0, z: 0 }, max: { x: 1, y: 1, z: 1 } },
