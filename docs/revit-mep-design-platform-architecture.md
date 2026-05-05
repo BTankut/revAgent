@@ -209,6 +209,7 @@ Rules:
 
 - Preview before commit.
 - `commit_write_plan` rejects calls without `commitToken` or explicit approval.
+- Parameter write operations are checked against `officeStandards.allowedParameterNames` and `exactSchemaMappings`; unlisted names warn by default and become validation errors when `enforceAllowedParameterNames: true`.
 - Fire/sprinkler/hydraulic outputs remain proposal/assumption-driven unless standards are configured.
 - Clash/reroute work cannot auto-commit.
 - Raw `send_code_to_revit` remains an expert fallback, not the normal production write path.

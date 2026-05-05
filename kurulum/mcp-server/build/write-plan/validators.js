@@ -35,7 +35,7 @@ export function validateWritePlan(plan, options = {}) {
     else {
         const stepIds = new Set();
         for (const [index, step] of plan.steps.entries()) {
-            const stepResult = validateStep(step, index);
+            const stepResult = validateStep(step, index, options.officeStandards);
             errors.push(...stepResult.errors);
             warnings.push(...stepResult.warnings);
             if (step.stepId) {
@@ -73,7 +73,7 @@ export function validateWritePlan(plan, options = {}) {
     };
 }
 
-export function validateStep(step, index = 0) {
+export function validateStep(step, index = 0, officeStandards = null) {
     const prefix = `steps[${index}]`;
     const errors = [];
     const warnings = [];
@@ -104,28 +104,32 @@ export function validateStep(step, index = 0) {
     if (!riskLevels.includes(step.riskLevel || riskForOperation(step.operation))) {
         errors.push(`${prefix}.riskLevel is invalid`);
     }
-    validateOperationPayload(step, prefix, errors, warnings);
+    validateOperationPayload(step, prefix, errors, warnings, officeStandards);
     return { errors, warnings };
 }
 
-function validateOperationPayload(step, prefix, errors, warnings) {
+function validateOperationPayload(step, prefix, errors, warnings, officeStandards = null) {
     const targets = step.targets || {};
     const args = step.arguments || {};
     switch (step.operation) {
         case "set_parameter":
             requireTargetElement(targets, prefix, errors);
             if (!isNonEmptyString(args.parameterName)) errors.push(`${prefix}.arguments.parameterName is required`);
+            validateAllowedParameterName(args.parameterName, "arguments.parameterName", prefix, errors, warnings, officeStandards);
             if (!("value" in args)) errors.push(`${prefix}.arguments.value is required`);
             break;
         case "clear_parameter":
             requireTargetElement(targets, prefix, errors);
             if (!isNonEmptyString(args.parameterName)) errors.push(`${prefix}.arguments.parameterName is required`);
+            validateAllowedParameterName(args.parameterName, "arguments.parameterName", prefix, errors, warnings, officeStandards);
             break;
         case "copy_parameter_value":
             requireTargetElement(targets, prefix, errors);
             if (!hasElementReference(args.sourceElementId, args.sourceEId)) errors.push(`${prefix}.arguments.sourceElementId or sourceEId is required`);
             if (!isNonEmptyString(args.sourceParameterName)) errors.push(`${prefix}.arguments.sourceParameterName is required`);
             if (!isNonEmptyString(args.targetParameterName)) errors.push(`${prefix}.arguments.targetParameterName is required`);
+            validateAllowedParameterName(args.sourceParameterName, "arguments.sourceParameterName", prefix, errors, warnings, officeStandards);
+            validateAllowedParameterName(args.targetParameterName, "arguments.targetParameterName", prefix, errors, warnings, officeStandards);
             break;
         case "change_type":
             requireTargetElement(targets, prefix, errors);
@@ -265,6 +269,99 @@ function requireTargetElement(targets, prefix, errors) {
     if (!hasElementReference(targets.elementId, targets.eId) && !hasAnyTargetElements(targets)) {
         errors.push(`${prefix}.targets.elementId, eId, or elementIds is required`);
     }
+}
+
+function validateAllowedParameterName(parameterName, argumentPath, prefix, errors, warnings, officeStandards) {
+    if (!officeStandards || !isNonEmptyString(parameterName)) {
+        return;
+    }
+    const allowedNames = collectAllowedParameterNames(officeStandards);
+    if (allowedNames.size === 0 || allowedNames.has(parameterName.trim())) {
+        return;
+    }
+    const message = `${prefix}.${argumentPath} "${parameterName}" is not in officeStandards.allowedParameterNames or exactSchemaMappings`;
+    if (officeStandards.enforceAllowedParameterNames === true) {
+        errors.push(message);
+    }
+    else {
+        warnings.push(`${message}; allowedParameterNames: ${summarizeAllowedParameterNames(officeStandards.allowedParameterNames)}`);
+    }
+}
+
+function collectAllowedParameterNames(officeStandards) {
+    const names = new Set();
+    for (const name of normalizeAllowedParameterNameList(officeStandards.allowedParameterNames)) {
+        addAllowedParameterName(names, name);
+    }
+    collectExactSchemaMappingNames(names, officeStandards.exactSchemaMappings);
+    return names;
+}
+
+function collectExactSchemaMappingNames(names, mappings) {
+    if (!mappings || typeof mappings !== "object") {
+        return;
+    }
+    if (Array.isArray(mappings)) {
+        for (const item of mappings) {
+            collectExactSchemaMappingValueNames(names, item);
+        }
+        return;
+    }
+    for (const [key, value] of Object.entries(mappings)) {
+        addAllowedParameterName(names, key);
+        if (typeof value === "string") {
+            addAllowedParameterName(names, value);
+        }
+        else if (Array.isArray(value)) {
+            for (const item of value) {
+                collectExactSchemaMappingValueNames(names, item);
+            }
+        }
+        else if (value && typeof value === "object") {
+            collectExactSchemaMappingValueNames(names, value);
+        }
+    }
+}
+
+function collectExactSchemaMappingValueNames(names, value) {
+    if (typeof value === "string") {
+        addAllowedParameterName(names, value);
+        return;
+    }
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            collectExactSchemaMappingValueNames(names, item);
+        }
+        return;
+    }
+    if (!value || typeof value !== "object") {
+        return;
+    }
+    for (const field of ["parameterName", "sourceParameterName", "targetParameterName", "name", "revitParameterName"]) {
+        addAllowedParameterName(names, value[field]);
+    }
+}
+
+function addAllowedParameterName(names, value) {
+    if (isNonEmptyString(value)) {
+        names.add(value.trim());
+    }
+}
+
+function summarizeAllowedParameterNames(allowedParameterNames = []) {
+    const names = normalizeAllowedParameterNameList(allowedParameterNames).filter(isNonEmptyString).map((name) => name.trim());
+    if (names.length === 0) {
+        return "(none)";
+    }
+    const visible = names.slice(0, 10).join(", ");
+    return names.length > 10 ? `${visible}, ...` : visible;
+}
+
+function normalizeAllowedParameterNameList(value) {
+    if (Array.isArray(value)) {
+        return value;
+    }
+    return isNonEmptyString(value) ? [value] : [];
 }
 
 function hasAnyTargetElements(targets) {

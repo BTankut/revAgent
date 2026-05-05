@@ -114,6 +114,66 @@ const copyParameterValidation = validateWritePlan(copyParameterPlan, { mode: "co
 assert.equal(copyParameterValidation.valid, true);
 assert.equal(classifyPlanRisk(copyParameterPlan), "low");
 
+const parameterOfficeStandards = {
+    allowedParameterNames: ["Comments"],
+    enforceAllowedParameterNames: false,
+    exactSchemaMappings: {
+        approvedCustomNote: { parameterName: "Approved Custom Note" },
+    },
+};
+
+const allowedParameterValidation = validateWritePlan(plan, { mode: "commit", officeStandards: parameterOfficeStandards });
+assert.equal(allowedParameterValidation.valid, true);
+assert.equal(allowedParameterValidation.warnings.some((warning) => warning.includes("officeStandards.allowedParameterNames")), false);
+
+const singleAllowedParameterValidation = validateWritePlan(plan, { mode: "commit", officeStandards: { allowedParameterNames: "Comments" } });
+assert.equal(singleAllowedParameterValidation.valid, true);
+assert.equal(singleAllowedParameterValidation.warnings.some((warning) => warning.includes("officeStandards.allowedParameterNames")), false);
+
+const mappedParameterPlan = buildPlanFromArgs({
+    title: "Set mapped parameter",
+    discipline: "general",
+    operation: "set_parameter",
+    targets: { elementId: 126 },
+    arguments: { parameterName: "Approved Custom Note", value: "Mapped value" },
+});
+const mappedParameterValidation = validateWritePlan(mappedParameterPlan, { mode: "commit", officeStandards: parameterOfficeStandards });
+assert.equal(mappedParameterValidation.valid, true);
+assert.equal(mappedParameterValidation.warnings.some((warning) => warning.includes("officeStandards.allowedParameterNames")), false);
+
+const disallowedParameterPlan = buildPlanFromArgs({
+    title: "Warn on unapproved parameter",
+    discipline: "general",
+    operation: "set_parameter",
+    targets: { elementId: 127 },
+    arguments: { parameterName: "Unapproved Parameter", value: "Unsafe target" },
+});
+const disallowedParameterValidation = validateWritePlan(disallowedParameterPlan, { mode: "commit", officeStandards: parameterOfficeStandards });
+assert.equal(disallowedParameterValidation.valid, true);
+assert(disallowedParameterValidation.warnings.some((warning) => warning.includes("steps[0].arguments.parameterName \"Unapproved Parameter\" is not in officeStandards.allowedParameterNames or exactSchemaMappings")));
+
+const enforcedDisallowedParameterValidation = validateWritePlan(disallowedParameterPlan, {
+    mode: "commit",
+    officeStandards: { ...parameterOfficeStandards, enforceAllowedParameterNames: true },
+});
+assert.equal(enforcedDisallowedParameterValidation.valid, false);
+assert(enforcedDisallowedParameterValidation.errors.some((error) => error.includes("steps[0].arguments.parameterName \"Unapproved Parameter\" is not in officeStandards.allowedParameterNames or exactSchemaMappings")));
+
+const disallowedCopyParameterPlan = buildPlanFromArgs({
+    title: "Warn on unapproved copy parameter",
+    discipline: "general",
+    operation: "copy_parameter_value",
+    targets: { elementId: 128 },
+    arguments: {
+        sourceElementId: 124,
+        sourceParameterName: "Comments",
+        targetParameterName: "Unapproved Target",
+    },
+});
+const disallowedCopyParameterValidation = validateWritePlan(disallowedCopyParameterPlan, { mode: "commit", officeStandards: parameterOfficeStandards });
+assert.equal(disallowedCopyParameterValidation.valid, true);
+assert(disallowedCopyParameterValidation.warnings.some((warning) => warning.includes("steps[0].arguments.targetParameterName \"Unapproved Target\" is not in officeStandards.allowedParameterNames or exactSchemaMappings")));
+
 const invalidCopyParameterPlan = buildPlanFromArgs({
     title: "Reject copy parameter without source",
     discipline: "general",

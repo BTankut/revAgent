@@ -65,6 +65,7 @@ export const defaultOfficeStandards = {
         "System Type",
         "System Classification",
     ],
+    enforceAllowedParameterNames: false,
     exactSchemaMappings: {},
 };
 
