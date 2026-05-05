@@ -115,20 +115,50 @@ export function buildBoqRows({ analyses = [] } = {}) {
     return rows;
 }
 
+export function buildHydraulicResistanceRows({ analyses = [] } = {}) {
+    const rows = [];
+    for (const analysis of Array.isArray(analyses) ? analyses : []) {
+        const calibration = analysis.resistanceCalibration;
+        if (!calibration || !Array.isArray(calibration.rows)) continue;
+        for (const row of calibration.rows) {
+            rows.push({
+                rowType: "hydraulic_resistance",
+                discipline: analysis.discipline || "hydronic",
+                engine: analysis.engine || "",
+                elementId: row.elementId,
+                uniqueId: row.uniqueId || "",
+                systemName: row.systemName || "(unassigned)",
+                lengthM: row.lengthM,
+                diameterMm: row.diameterMm,
+                referenceFlowLs: row.referenceFlowLs,
+                resistancePaPerFlow2: row.resistancePaPerFlow2,
+                pressureLossPaAtReferenceFlow: row.pressureLossPaAtReferenceFlow,
+                velocityMpsAtReferenceFlow: row.velocityMpsAtReferenceFlow,
+                source: "resistanceCalibration.rows",
+                canCommit: false,
+            });
+        }
+    }
+    return rows;
+}
+
 export function buildAnalysisReport({ analyses = [], delimiter = defaultDelimiter } = {}) {
     const issueRows = buildAnalysisIssueRows({ analyses });
     const designLogRows = buildDesignLogRows({ analyses });
     const boqRows = buildBoqRows({ analyses });
+    const hydraulicResistanceRows = buildHydraulicResistanceRows({ analyses });
     return {
         success: true,
         mutateModel: false,
-        reportKinds: ["issue_list", "design_log", "boq"],
+        reportKinds: ["issue_list", "design_log", "boq", "hydraulic_resistance"],
         issueRows,
         designLogRows,
         boqRows,
+        hydraulicResistanceRows,
         issueCsv: toDelimitedText(issueRows, { delimiter }),
         designLogCsv: toDelimitedText(designLogRows, { delimiter }),
         boqCsv: toDelimitedText(boqRows, { delimiter }),
+        hydraulicResistanceCsv: toDelimitedText(hydraulicResistanceRows, { delimiter }),
         writePlanOperations: [
             "export_boq_report",
             "export_clash_report",
@@ -137,6 +167,7 @@ export function buildAnalysisReport({ analyses = [], delimiter = defaultDelimite
         assumptions: [
             "Report builder returns deterministic rows and CSV text only; file export is handled by approved write-plan/report steps.",
             "BOQ rows are populated from live read-only Revit summaries when analyses include revitRead counts and lengths.",
+            "Hydraulic resistance rows are populated from live read-only Revit pipe length/diameter samples when hydronic resistance calibration is requested.",
             "Identity columns are emitted as text-compatible values for spreadsheet workflows.",
         ],
         canCommit: false,

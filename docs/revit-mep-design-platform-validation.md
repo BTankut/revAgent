@@ -28,6 +28,7 @@ Result:
   - duct area, hydraulic diameter, velocity, and friction loss against hand-check values
   - equal-friction duct sizing proposal gate
   - pipe area, velocity, and friction loss against hand-check values
+  - pipe resistance coefficient calibration from length/diameter/reference flow samples
   - hydronic pipe sizing proposal gate
   - missing office standard blockers for HVAC and hydronic sizing
   - rooted-tree branch flow aggregation for airside and hydronic sample networks
@@ -169,6 +170,10 @@ Live read-only results captured on the active session:
 - Live BOQ-only report population probe succeeded:
   - Hydronic read-only BOQ collector returned `488` pipes, `489` pipe fittings, `47` mechanical equipment, and `930.684 m` pipe length from the active test model.
   - `buildAnalysisReport` converted the live read into `12` BOQ rows with `canCommit: false`.
+- Live hydronic resistance calibration probe succeeded:
+  - Read-only collector returned `5` pipe length/diameter samples from the active test model.
+  - First sample: element `513756`, system `Hydronic Supply`, length `4.795 m`, diameter `150 mm`.
+  - Calibration produced `5` hydraulic resistance rows; first coefficient was `1.683 Pa/(L/s)^2` at `1 L/s`.
 - Connector graph live probe succeeded:
   - Revit 2022 API docs resolved `Connector.AllRefs`, `Connector.Owner`, `Connector.IsConnected`, `MEPCurve.ConnectorManager`, and `FamilyInstance.MEPModel`.
   - HVAC graph summary: `27237` connector-owning element nodes, `41735` connectors, `708` open connectors, `20341` unique element edges, `25` open connector samples, `0` AllRefs errors.

@@ -262,6 +262,98 @@ export function calculateHydronicBalance({
     };
 }
 
+export function pipeResistanceCoefficient({
+    lengthM,
+    diameterMm,
+    referenceFlowLs = 1,
+    water,
+} = {}) {
+    const flow = Number(referenceFlowLs);
+    const length = Number(lengthM);
+    if (!Number.isFinite(length) || length <= 0) {
+        return {
+            success: false,
+            error: "lengthM must be positive",
+            canCommit: false,
+        };
+    }
+    if (!Number.isFinite(flow) || flow <= 0) {
+        return {
+            success: false,
+            error: "referenceFlowLs must be positive",
+            canCommit: false,
+        };
+    }
+    const friction = pipeFrictionLossPaPerM(flow, diameterMm, water);
+    if (!friction.success) return friction;
+    const pressureLossPa = friction.output.pressureLossPaPerM * length;
+    return {
+        success: true,
+        method: "Resistance coefficient calibrated from Darcy-Weisbach pressure loss at a reference flow",
+        input: {
+            lengthM: length,
+            diameterMm: Number(diameterMm),
+            referenceFlowLs: flow,
+        },
+        output: {
+            pressureLossPa,
+            resistancePaPerFlow2: pressureLossPa / (flow * flow),
+            pressureLossPaPerM: friction.output.pressureLossPaPerM,
+            velocityMps: friction.output.velocityMps,
+            reynolds: friction.output.reynolds,
+            frictionFactor: friction.output.frictionFactor,
+        },
+        assumptions: [
+            "Coefficient uses flow in L/s and pressure in Pa.",
+            "Pipe fittings, valves, accessories, elevation change, glycol, and equipment losses are excluded unless supplied separately.",
+        ],
+        canCommit: false,
+        riskLevel: "medium",
+    };
+}
+
+export function calibratePipeResistanceSamples({ pipeSamples = [], referenceFlowLs = 1, water } = {}) {
+    const rows = [];
+    const warnings = [];
+    for (const sample of Array.isArray(pipeSamples) ? pipeSamples : []) {
+        const result = pipeResistanceCoefficient({
+            lengthM: sample.lengthM,
+            diameterMm: sample.diameterMm,
+            referenceFlowLs,
+            water,
+        });
+        if (!result.success) {
+            warnings.push(`Skipped pipe ${sample.elementId || ""}: ${result.error || "invalid sample"}`);
+            continue;
+        }
+        rows.push({
+            elementId: sample.elementId,
+            uniqueId: sample.uniqueId || "",
+            systemName: sample.systemName || "(unassigned)",
+            lengthM: Number(sample.lengthM),
+            diameterMm: Number(sample.diameterMm),
+            referenceFlowLs: Number(referenceFlowLs),
+            resistancePaPerFlow2: result.output.resistancePaPerFlow2,
+            pressureLossPaAtReferenceFlow: result.output.pressureLossPa,
+            velocityMpsAtReferenceFlow: result.output.velocityMps,
+            reynoldsAtReferenceFlow: result.output.reynolds,
+        });
+    }
+    return {
+        success: rows.length > 0,
+        method: "Live pipe resistance calibration from Revit length/diameter samples",
+        rows,
+        warnings,
+        assumptions: [
+            "Live Revit collector supplies pipe element id, length, diameter, unique id, and system name only.",
+            "Resistance coefficients are first-pass Darcy-Weisbach values at the configured reference flow.",
+            "Use detailed fittings/accessories/equipment data before production hydraulic balancing.",
+        ],
+        canCommit: false,
+        riskLevel: "high",
+    };
+}
+
 export function solveHardyCrossLoop({
     loopEdges = [],
     exponent = 2,

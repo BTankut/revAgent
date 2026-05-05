@@ -8,9 +8,11 @@ import {
     sizeRectangularDuctEqualFriction,
 } from "./hvac/calculations.js";
 import {
+    calibratePipeResistanceSamples,
     calculatePumpHeadBasis,
     calculateHydronicBalance,
     circularAreaM2,
+    pipeResistanceCoefficient,
     pipeFrictionLossPaPerM,
     pipeVelocityMps,
     sizePipeByVelocityOrFriction,
@@ -71,6 +73,24 @@ const pipeLoss = pipeFrictionLossPaPerM(1.0, 50);
 assert.equal(pipeLoss.success, true);
 close(pipeLoss.output.pressureLossPaPerM, 61.0, 12.0, "pipe friction loss hand check");
 assert(pipeLoss.output.reynolds > 20000, "pipe Reynolds should be turbulent");
+
+const pipeResistance = pipeResistanceCoefficient({ lengthM: 12, diameterMm: 50, referenceFlowLs: 1.0 });
+assert.equal(pipeResistance.success, true);
+close(pipeResistance.output.pressureLossPa, pipeLoss.output.pressureLossPaPerM * 12, 1e-9, "pipe resistance pressure loss");
+close(pipeResistance.output.resistancePaPerFlow2, pipeResistance.output.pressureLossPa, 1e-9, "pipe resistance coefficient at 1 L/s");
+
+const calibratedSamples = calibratePipeResistanceSamples({
+    referenceFlowLs: 1.0,
+    pipeSamples: [
+        { elementId: 101, uniqueId: "u-101", systemName: "Heating", lengthM: 12, diameterMm: 50 },
+        { elementId: 102, uniqueId: "u-102", systemName: "Heating", lengthM: 0, diameterMm: 50 },
+    ],
+});
+assert.equal(calibratedSamples.success, true);
+assert.equal(calibratedSamples.rows.length, 1);
+assert.equal(calibratedSamples.rows[0].elementId, 101);
+assert(calibratedSamples.rows[0].resistancePaPerFlow2 > 0);
+assert.equal(calibratedSamples.canCommit, false);
 
 const pipeSize = sizePipeByVelocityOrFriction({
     flowLs: 1.0,

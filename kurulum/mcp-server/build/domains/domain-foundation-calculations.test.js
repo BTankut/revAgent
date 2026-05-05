@@ -151,6 +151,21 @@ const report = buildAnalysisReport({
                 ductLengthMeters: 12.5,
                 systemElementCounts: { "Supply Air": 5 },
             },
+            resistanceCalibration: {
+                rows: [
+                    {
+                        elementId: 101,
+                        uniqueId: "u-101",
+                        systemName: "Hydronic Supply",
+                        lengthM: 4,
+                        diameterMm: 50,
+                        referenceFlowLs: 1,
+                        resistancePaPerFlow2: 20,
+                        pressureLossPaAtReferenceFlow: 20,
+                        velocityMpsAtReferenceFlow: 0.5,
+                    },
+                ],
+            },
             canCommit: false,
         },
     ],
@@ -160,10 +175,12 @@ assert.equal(report.success, true);
 assert.equal(report.issueRows.length, 1);
 assert.equal(report.designLogRows.length, 1);
 assert.equal(report.boqRows.length, 4);
+assert.equal(report.hydraulicResistanceRows.length, 1);
 assert(report.issueCsv.includes("missing_standard"));
 assert(report.designLogCsv.includes("weighted graph shortest path traversal"));
 assert(report.boqCsv.includes("Total duct length"));
 assert(report.boqCsv.includes("Supply Air"));
+assert(report.hydraulicResistanceCsv.includes("Hydronic Supply"));
 assert.equal(report.canCommit, false);
 
 console.log("domain foundation calculation tests passed");

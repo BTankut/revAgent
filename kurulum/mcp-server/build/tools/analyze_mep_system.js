@@ -17,6 +17,9 @@ export function registerAnalyzeMepSystemTool(server) {
         includeConnectorGraph: z.boolean().optional().describe("Include full live connector graph summary where implemented. Defaults true; set false for targeted pathfinding probes."),
         networkPathfindingOnly: z.boolean().optional().describe("When true with a network root, skip broad summary loops and return only targeted live connector pathfinding."),
         boqOnly: z.boolean().optional().describe("When true, run short read-only live BOQ collectors without connector graph traversal."),
+        hydraulicResistanceOnly: z.boolean().optional().describe("When true for hydronic analysis, run short read-only pipe length/diameter sampling and resistance calibration."),
+        resistanceSampleLimit: z.number().optional().describe("Maximum number of pipe samples for hydraulicResistanceOnly. Defaults 25."),
+        referenceFlowLs: z.number().optional().describe("Reference flow in L/s for pipe resistance calibration. Defaults 1."),
         networkRootElementId: z.number().optional().describe("Optional Revit element id used as the root for live connector graph pathfinding in HVAC/hydronic analyses."),
         networkTerminalElementIds: z.array(z.number()).optional().describe("Optional terminal Revit element ids for live connector graph pathfinding."),
         officeStandards: z.any().optional().describe("Optional office standards override object."),
@@ -31,6 +34,9 @@ export function registerAnalyzeMepSystemTool(server) {
             includeConnectorGraph,
             pathfindingOnly: args.networkPathfindingOnly === true,
             boqOnly: args.boqOnly === true,
+            hydraulicResistanceOnly: args.hydraulicResistanceOnly === true,
+            sampleLimit: args.resistanceSampleLimit,
+            referenceFlowLs: args.referenceFlowLs,
         };
         try {
             const analyses = [];

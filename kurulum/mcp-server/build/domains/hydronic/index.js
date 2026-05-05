@@ -1,7 +1,7 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { exampleHydronicFlowDirections, exampleHydronicTreeNetwork, exampleHydronicWeightedNetwork } from "../network/calculations.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
-import { calculateHydronicBalance, calculatePumpHeadBasis, sizePipeByVelocityOrFriction, solveHardyCrossLoop, solveHardyCrossNetwork } from "./calculations.js";
+import { calibratePipeResistanceSamples, calculateHydronicBalance, calculatePumpHeadBasis, pipeResistanceCoefficient, sizePipeByVelocityOrFriction, solveHardyCrossLoop, solveHardyCrossNetwork } from "./calculations.js";
 
 export async function analyzeHydronic({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("hydronic", officeStandards);
@@ -27,6 +27,7 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
             "pump flow/head basis from critical circuit",
             "pipe pressure loss by Darcy-Weisbach",
             "velocity/friction pipe sizing proposal",
+            "live pipe resistance coefficient calibration from Revit length/diameter samples",
         ],
         calculationExamples: {
             pipeSizing: sizePipeByVelocityOrFriction({
@@ -96,13 +97,29 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                 tolerancePa: 0.001,
                 maxIterations: 100,
             }),
+            pipeResistanceCoefficient: pipeResistanceCoefficient({
+                lengthM: 12,
+                diameterMm: 50,
+                referenceFlowLs: 1,
+            }),
         },
         canCommit: false,
     };
     if (!includeRevitRead) return base;
     try {
         const response = await executeRevitCode(buildPipeReadCode(networkPathRequest), { transactionMode: "none" });
-        return { ...base, revitRead: response && response.result ? response.result : response };
+        const revitRead = response && response.result ? response.result : response;
+        const resistanceCalibration = revitRead?.pipeResistanceSamples
+            ? calibratePipeResistanceSamples({
+                pipeSamples: revitRead.pipeResistanceSamples,
+                referenceFlowLs: networkPathRequest.referenceFlowLs || 1,
+            })
+            : undefined;
+        return {
+            ...base,
+            revitRead,
+            ...(resistanceCalibration ? { resistanceCalibration } : {}),
+        };
     }
     catch (error) {
         return { ...base, warnings: [error instanceof Error ? error.message : String(error)] };
@@ -114,6 +131,10 @@ function buildPipeReadCode(networkPathRequest = {}) {
     const terminalElementIds = csharpIntArray(networkPathRequest.terminalElementIds || []);
     const includeConnectorGraph = networkPathRequest.includeConnectorGraph !== false ? "true" : "false";
     const networkPathfindingOnly = networkPathRequest.pathfindingOnly === true ? "true" : "false";
+    if (networkPathRequest.hydraulicResistanceOnly === true) {
+        const sampleLimit = Number.parseInt(String(networkPathRequest.sampleLimit || 25), 10);
+        return buildHydronicResistanceOnlyCode(Number.isFinite(sampleLimit) ? sampleLimit : 25);
+    }
     if (networkPathRequest.boqOnly === true) {
         return buildHydronicBoqOnlyCode();
     }
@@ -476,6 +497,91 @@ try
         connectorGraph = (object)null,
         connectorPathfinding = (object)null,
         systemPipeCounts = systems
+    };
+}
+catch (Exception ex)
+{
+    return new { success = false, error = ex.ToString() };
+}`;
+}
+
+function buildHydronicResistanceOnlyCode(sampleLimit) {
+    const limit = Math.max(1, Math.min(200, Number.parseInt(String(sampleLimit), 10) || 25));
+    return `
+double AsMeters(Parameter parameter)
+{
+    if (parameter == null || !parameter.HasValue) return 0.0;
+    try { return UnitUtils.ConvertFromInternalUnits(parameter.AsDouble(), UnitTypeId.Meters); }
+    catch { return 0.0; }
+}
+
+double AsMillimeters(Parameter parameter)
+{
+    if (parameter == null || !parameter.HasValue) return 0.0;
+    try { return UnitUtils.ConvertFromInternalUnits(parameter.AsDouble(), UnitTypeId.Millimeters); }
+    catch { return 0.0; }
+}
+
+double PipeDiameterMm(Element elem)
+{
+    try
+    {
+        Parameter p = elem.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM);
+        double value = AsMillimeters(p);
+        if (value > 0) return value;
+    }
+    catch {}
+    try
+    {
+        Parameter p = elem.LookupParameter("Diameter");
+        double value = AsMillimeters(p);
+        if (value > 0) return value;
+    }
+    catch {}
+    return 0.0;
+}
+
+string SystemNameFor(Element elem)
+{
+    try
+    {
+        Parameter systemName = elem.LookupParameter("System Name");
+        string key = systemName != null && systemName.HasValue ? systemName.AsString() : "";
+        if (!string.IsNullOrEmpty(key)) return key;
+    }
+    catch {}
+    return "(unassigned)";
+}
+
+try
+{
+    int sampleLimit = ${limit};
+    int inspected = 0;
+    System.Collections.Generic.List<object> samples = new System.Collections.Generic.List<object>();
+    FilteredElementCollector collector = new FilteredElementCollector(document)
+        .OfClass(typeof(Autodesk.Revit.DB.Plumbing.Pipe))
+        .WhereElementIsNotElementType();
+    foreach (Element elem in collector.ToElements())
+    {
+        inspected++;
+        Parameter length = elem.get_Parameter(BuiltInParameter.CURVE_ELEM_LENGTH);
+        double lengthM = AsMeters(length);
+        double diameterMm = PipeDiameterMm(elem);
+        if (lengthM <= 0 || diameterMm <= 0) continue;
+        samples.Add(new {
+            elementId = elem.Id.IntegerValue,
+            uniqueId = elem.UniqueId,
+            systemName = SystemNameFor(elem),
+            lengthM = lengthM,
+            diameterMm = diameterMm
+        });
+        if (samples.Count >= sampleLimit) break;
+    }
+    return new {
+        success = true,
+        hydraulicResistanceOnly = true,
+        inspectedPipeCount = inspected,
+        pipeResistanceSamples = samples.ToArray()
     };
 }
 catch (Exception ex)

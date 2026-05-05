@@ -160,7 +160,7 @@ Engineering calculation foundations:
 
 - HVAC rectangular duct velocity, hydraulic diameter, Darcy-Weisbach friction loss, and equal-friction size proposal.
 - Hydronic circular pipe velocity, Darcy-Weisbach pressure loss, and velocity/friction size proposal.
-- Weighted network shortest-path traversal, rooted tree branch flow aggregation, least-loss flow direction inference, HVAC fan pressure basis, hydronic pump head basis, hydronic terminal balancing loss, and single/multi-loop Hardy-Cross hydraulic balancing.
+- Weighted network shortest-path traversal, rooted tree branch flow aggregation, least-loss flow direction inference, HVAC fan pressure basis, hydronic pump head basis, hydronic pipe resistance calibration, hydronic terminal balancing loss, and single/multi-loop Hardy-Cross hydraulic balancing.
 - Domestic water fixture-unit summation and recirculation continuity issue screening.
 - Sanitary/storm gravity slope and reverse-slope validation.
 - Fire/sprinkler rectangular room spacing/coverage screening with explicit fire-design assumptions.
@@ -182,6 +182,7 @@ Reporting foundation:
 
 - `analyze_mep_system` returns deterministic issue-list and design-log rows plus CSV text previews.
 - `boqOnly` runs short live Revit BOQ collectors without connector graph traversal for count/length report population.
+- `hydraulicResistanceOnly` runs short live hydronic pipe length/diameter sampling and returns resistance calibration rows.
 - `export_boq_report` and `export_clash_report` write-plans are handled by a runtime report executor for approved CSV/JSON file export.
 - Report export writes files only and returns `mutateModel: false`; model schedule creation remains a future native operation.
 

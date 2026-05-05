@@ -53,7 +53,9 @@ only the bare names appear, so the rules stay host-agnostic.
   missing office standards, proposal readiness, optional targeted connector
   pathfinding (`networkRootElementId` / `networkTerminalElementIds`), and
   deterministic report/BOQ rows. Use `boqOnly: true` for short live count and
-  length report population without connector graph traversal.
+  length report population without connector graph traversal. Use
+  `hydraulicResistanceOnly: true` for short live hydronic pipe length/diameter
+  sampling and resistance report rows.
 - `prepare_write_plan` — create/validate typed JSON plans; never writes
 - `preview_write_plan` — native or runtime-only preview; never writes
 - `commit_write_plan` — native deterministic commit; requires explicit
