@@ -51,8 +51,9 @@
 - Added targeted live connector pathfinding inputs for `analyze_mep_system`; read-only HVAC pathfinding was live-tested in the disposable model on duct `392168`.
 - Added runtime report export handling for `export_boq_report` and `export_clash_report` write-plans; approved commits write CSV/JSON files with `mutateModel: false`.
 - Added least-loss flow direction inference and hydronic critical-circuit balancing loss foundations, with tests and runtime examples.
+- Added BOQ-only live Revit collectors and report row population; hydronic live probe returned pipe/fitting/equipment counts and total pipe length from the active test model.
 
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from foundations to production looped hydraulic solving, production reroute solving, equipment schedule integration, and live-model BOQ/report population workflows.
+- Expand engineering engines from foundations to production looped hydraulic solving, production reroute solving, equipment schedule integration, and native model schedule population workflows.

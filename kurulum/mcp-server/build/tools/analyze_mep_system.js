@@ -16,6 +16,7 @@ export function registerAnalyzeMepSystemTool(server) {
         includeRevitRead: z.boolean().optional().describe("Run live read-only Revit collectors where implemented. Defaults true."),
         includeConnectorGraph: z.boolean().optional().describe("Include full live connector graph summary where implemented. Defaults true; set false for targeted pathfinding probes."),
         networkPathfindingOnly: z.boolean().optional().describe("When true with a network root, skip broad summary loops and return only targeted live connector pathfinding."),
+        boqOnly: z.boolean().optional().describe("When true, run short read-only live BOQ collectors without connector graph traversal."),
         networkRootElementId: z.number().optional().describe("Optional Revit element id used as the root for live connector graph pathfinding in HVAC/hydronic analyses."),
         networkTerminalElementIds: z.array(z.number()).optional().describe("Optional terminal Revit element ids for live connector graph pathfinding."),
         officeStandards: z.any().optional().describe("Optional office standards override object."),
@@ -29,6 +30,7 @@ export function registerAnalyzeMepSystemTool(server) {
             terminalElementIds: args.networkTerminalElementIds || [],
             includeConnectorGraph,
             pathfindingOnly: args.networkPathfindingOnly === true,
+            boqOnly: args.boqOnly === true,
         };
         try {
             const analyses = [];

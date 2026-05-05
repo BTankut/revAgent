@@ -181,6 +181,7 @@ MEP graph foundation:
 Reporting foundation:
 
 - `analyze_mep_system` returns deterministic issue-list and design-log rows plus CSV text previews.
+- `boqOnly` runs short live Revit BOQ collectors without connector graph traversal for count/length report population.
 - `export_boq_report` and `export_clash_report` write-plans are handled by a runtime report executor for approved CSV/JSON file export.
 - Report export writes files only and returns `mutateModel: false`; model schedule creation remains a future native operation.
 

@@ -296,7 +296,7 @@ The runtime MCP server intentionally exposes a controlled write-plan platform pl
 
 The Revit add-in command payload still provides low-level `send_code_to_revit`, selection, active-view commands, and the native `execute_write_plan` executor internally. Public domain-specific actions such as creating ducts or resizing pipes remain write-plan operations, not separate public MCP tools.
 
-`analyze_mep_system` includes read-only engineering foundations for connector summaries, optional targeted connector pathfinding, fan/pump basis calculations, and deterministic issue/design-log report rows. `export_boq_report` and `export_clash_report` write-plans can export approved CSV/JSON report rows without mutating the Revit model. Engineering results with missing office standards remain proposals and return `canCommit: false`.
+`analyze_mep_system` includes read-only engineering foundations for connector summaries, optional targeted connector pathfinding, BOQ-only live collectors, fan/pump basis calculations, and deterministic issue/design-log/BOQ report rows. `export_boq_report` and `export_clash_report` write-plans can export approved CSV/JSON report rows without mutating the Revit model. Engineering results with missing office standards remain proposals and return `canCommit: false`.
 
 This runtime set is reflected in the Node MCP wrapper. The installer still copies the bundled Revit command payload required by the wrapper.
 

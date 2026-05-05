@@ -88,6 +88,9 @@ function buildPipeReadCode(networkPathRequest = {}) {
     const terminalElementIds = csharpIntArray(networkPathRequest.terminalElementIds || []);
     const includeConnectorGraph = networkPathRequest.includeConnectorGraph !== false ? "true" : "false";
     const networkPathfindingOnly = networkPathRequest.pathfindingOnly === true ? "true" : "false";
+    if (networkPathRequest.boqOnly === true) {
+        return buildHydronicBoqOnlyCode();
+    }
     if (networkPathRequest.pathfindingOnly === true) {
         return buildHydronicPathfindingOnlyCode(rootElementId, terminalElementIds);
     }
@@ -381,6 +384,71 @@ try
         pipeLengthMeters = totalLength,
         connectorGraph = includeConnectorGraph ? ConnectorGraphSummary(graphCategories) : null,
         connectorPathfinding = ConnectorPathSummary(graphCategories, networkRootElementId, networkTerminalElementIds),
+        systemPipeCounts = systems
+    };
+}
+catch (Exception ex)
+{
+    return new { success = false, error = ex.ToString() };
+}`;
+}
+
+function buildHydronicBoqOnlyCode() {
+    return `
+int CountCategory(BuiltInCategory category)
+{
+    try
+    {
+        return new FilteredElementCollector(document)
+            .OfCategory(category)
+            .WhereElementIsNotElementType()
+            .ToElementIds()
+            .Count;
+    }
+    catch { return -1; }
+}
+
+string SystemNameFor(Element elem)
+{
+    try
+    {
+        Parameter systemName = elem.LookupParameter("System Name");
+        string key = systemName != null && systemName.HasValue ? systemName.AsString() : "";
+        if (!string.IsNullOrEmpty(key)) return key;
+    }
+    catch {}
+    return "(unassigned)";
+}
+
+try
+{
+    double totalLength = 0.0;
+    System.Collections.Generic.Dictionary<string, int> systems = new System.Collections.Generic.Dictionary<string, int>();
+    FilteredElementCollector collector = new FilteredElementCollector(document)
+        .OfClass(typeof(Autodesk.Revit.DB.Plumbing.Pipe))
+        .WhereElementIsNotElementType();
+    foreach (Element elem in collector.ToElements())
+    {
+        Parameter length = elem.get_Parameter(BuiltInParameter.CURVE_ELEM_LENGTH);
+        if (length != null && length.HasValue)
+            totalLength += UnitUtils.ConvertFromInternalUnits(length.AsDouble(), UnitTypeId.Meters);
+        string key = SystemNameFor(elem);
+        if (!systems.ContainsKey(key)) systems[key] = 0;
+        systems[key]++;
+    }
+    return new {
+        success = true,
+        boqOnly = true,
+        counts = new {
+            pipes = CountCategory(BuiltInCategory.OST_PipeCurves),
+            flexPipes = CountCategory(BuiltInCategory.OST_FlexPipeCurves),
+            pipeFittings = CountCategory(BuiltInCategory.OST_PipeFitting),
+            pipeAccessories = CountCategory(BuiltInCategory.OST_PipeAccessory),
+            mechanicalEquipment = CountCategory(BuiltInCategory.OST_MechanicalEquipment)
+        },
+        pipeLengthMeters = totalLength,
+        connectorGraph = (object)null,
+        connectorPathfinding = (object)null,
         systemPipeCounts = systems
     };
 }

@@ -80,6 +80,9 @@ function buildHvacReadCode(networkPathRequest = {}) {
     const terminalElementIds = csharpIntArray(networkPathRequest.terminalElementIds || []);
     const includeConnectorGraph = networkPathRequest.includeConnectorGraph !== false ? "true" : "false";
     const networkPathfindingOnly = networkPathRequest.pathfindingOnly === true ? "true" : "false";
+    if (networkPathRequest.boqOnly === true) {
+        return buildHvacBoqOnlyCode();
+    }
     if (networkPathRequest.pathfindingOnly === true) {
         return buildHvacPathfindingOnlyCode(rootElementId, terminalElementIds);
     }
@@ -403,6 +406,95 @@ try
         openConnectorCount = openConnectorCount,
         connectorGraph = includeConnectorGraph ? ConnectorGraphSummary(categories) : null,
         connectorPathfinding = ConnectorPathSummary(categories, networkRootElementId, networkTerminalElementIds),
+        systemElementCounts = systems
+    };
+}
+catch (Exception ex)
+{
+    return new { success = false, error = ex.ToString() };
+}`;
+}
+
+function buildHvacBoqOnlyCode() {
+    return `
+int CountCategory(BuiltInCategory category)
+{
+    try
+    {
+        return new FilteredElementCollector(document)
+            .OfCategory(category)
+            .WhereElementIsNotElementType()
+            .ToElementIds()
+            .Count;
+    }
+    catch { return -1; }
+}
+
+double DuctLengthMeters()
+{
+    double total = 0.0;
+    FilteredElementCollector collector = new FilteredElementCollector(document)
+        .OfClass(typeof(Autodesk.Revit.DB.Mechanical.Duct))
+        .WhereElementIsNotElementType();
+    foreach (Element elem in collector.ToElements())
+    {
+        Parameter p = elem.get_Parameter(BuiltInParameter.CURVE_ELEM_LENGTH);
+        if (p != null && p.HasValue)
+        {
+            total += UnitUtils.ConvertFromInternalUnits(p.AsDouble(), UnitTypeId.Meters);
+        }
+    }
+    return total;
+}
+
+string SystemNameFor(Element elem)
+{
+    try
+    {
+        Parameter systemName = elem.LookupParameter("System Name");
+        string key = systemName != null && systemName.HasValue ? systemName.AsString() : "";
+        if (!string.IsNullOrEmpty(key)) return key;
+    }
+    catch {}
+    return "(unassigned)";
+}
+
+try
+{
+    System.Collections.Generic.Dictionary<string, int> systems = new System.Collections.Generic.Dictionary<string, int>();
+    BuiltInCategory[] categories = new BuiltInCategory[] {
+        BuiltInCategory.OST_DuctCurves,
+        BuiltInCategory.OST_DuctFitting,
+        BuiltInCategory.OST_DuctAccessory,
+        BuiltInCategory.OST_DuctTerminal,
+        BuiltInCategory.OST_MechanicalEquipment
+    };
+    foreach (BuiltInCategory category in categories)
+    {
+        FilteredElementCollector collector = new FilteredElementCollector(document)
+            .OfCategory(category)
+            .WhereElementIsNotElementType();
+        foreach (Element elem in collector.ToElements())
+        {
+            string key = SystemNameFor(elem);
+            if (!systems.ContainsKey(key)) systems[key] = 0;
+            systems[key]++;
+        }
+    }
+    return new {
+        success = true,
+        boqOnly = true,
+        counts = new {
+            ducts = CountCategory(BuiltInCategory.OST_DuctCurves),
+            flexDucts = CountCategory(BuiltInCategory.OST_FlexDuctCurves),
+            ductFittings = CountCategory(BuiltInCategory.OST_DuctFitting),
+            ductAccessories = CountCategory(BuiltInCategory.OST_DuctAccessory),
+            airTerminals = CountCategory(BuiltInCategory.OST_DuctTerminal),
+            mechanicalEquipment = CountCategory(BuiltInCategory.OST_MechanicalEquipment)
+        },
+        ductLengthMeters = DuctLengthMeters(),
+        connectorGraph = (object)null,
+        connectorPathfinding = (object)null,
         systemElementCounts = systems
     };
 }

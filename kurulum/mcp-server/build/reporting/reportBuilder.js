@@ -71,28 +71,132 @@ export function buildDesignLogRows({ analyses = [] } = {}) {
     return rows;
 }
 
+export function buildBoqRows({ analyses = [] } = {}) {
+    const rows = [];
+    for (const analysis of Array.isArray(analyses) ? analyses : []) {
+        const revitRead = analysis.revitRead && analysis.revitRead.result ? analysis.revitRead.result : analysis.revitRead;
+        if (!revitRead || revitRead.success === false) continue;
+        const discipline = analysis.discipline || "general";
+        const engine = analysis.engine || "";
+        addCountRows(rows, {
+            discipline,
+            engine,
+            counts: revitRead.counts,
+            source: "revitRead.counts",
+        });
+        if (Number.isFinite(Number(revitRead.ductLengthMeters)) && Number(revitRead.ductLengthMeters) > 0) {
+            rows.push(quantityRow({
+                discipline,
+                engine,
+                category: "Ducts",
+                item: "Total duct length",
+                quantity: Number(revitRead.ductLengthMeters),
+                unit: "m",
+                source: "revitRead.ductLengthMeters",
+            }));
+        }
+        if (Number.isFinite(Number(revitRead.pipeLengthMeters)) && Number(revitRead.pipeLengthMeters) > 0) {
+            rows.push(quantityRow({
+                discipline,
+                engine,
+                category: "Pipes",
+                item: "Total pipe length",
+                quantity: Number(revitRead.pipeLengthMeters),
+                unit: "m",
+                source: "revitRead.pipeLengthMeters",
+            }));
+        }
+        addSystemCountRows(rows, {
+            discipline,
+            engine,
+            systemCounts: revitRead.systemElementCounts || revitRead.systemPipeCounts,
+        });
+    }
+    return rows;
+}
+
 export function buildAnalysisReport({ analyses = [], delimiter = defaultDelimiter } = {}) {
     const issueRows = buildAnalysisIssueRows({ analyses });
     const designLogRows = buildDesignLogRows({ analyses });
+    const boqRows = buildBoqRows({ analyses });
     return {
         success: true,
         mutateModel: false,
-        reportKinds: ["issue_list", "design_log"],
+        reportKinds: ["issue_list", "design_log", "boq"],
         issueRows,
         designLogRows,
+        boqRows,
         issueCsv: toDelimitedText(issueRows, { delimiter }),
         designLogCsv: toDelimitedText(designLogRows, { delimiter }),
+        boqCsv: toDelimitedText(boqRows, { delimiter }),
         writePlanOperations: [
             "export_boq_report",
             "export_clash_report",
             "create_schedule_or_update_schedule",
         ],
         assumptions: [
-            "Report builder returns deterministic rows and CSV text only; file export is handled by a future approved write-plan/report step.",
+            "Report builder returns deterministic rows and CSV text only; file export is handled by approved write-plan/report steps.",
+            "BOQ rows are populated from live read-only Revit summaries when analyses include revitRead counts and lengths.",
             "Identity columns are emitted as text-compatible values for spreadsheet workflows.",
         ],
         canCommit: false,
     };
+}
+
+function addCountRows(rows, { discipline, engine, counts, source }) {
+    if (!counts || typeof counts !== "object") return;
+    for (const [key, value] of Object.entries(counts)) {
+        const quantity = Number(value);
+        if (!Number.isFinite(quantity) || quantity < 0) continue;
+        rows.push(quantityRow({
+            discipline,
+            engine,
+            category: labelFromKey(key),
+            item: labelFromKey(key),
+            quantity,
+            unit: "ea",
+            source,
+        }));
+    }
+}
+
+function addSystemCountRows(rows, { discipline, engine, systemCounts }) {
+    if (!systemCounts || typeof systemCounts !== "object") return;
+    for (const [systemName, value] of Object.entries(systemCounts)) {
+        const quantity = Number(value);
+        if (!Number.isFinite(quantity) || quantity < 0) continue;
+        rows.push(quantityRow({
+            discipline,
+            engine,
+            category: "System element count",
+            item: systemName || "(unassigned)",
+            quantity,
+            unit: "ea",
+            source: "revitRead.systemCounts",
+        }));
+    }
+}
+
+function quantityRow({ discipline, engine, category, item, quantity, unit, source }) {
+    return {
+        rowType: "boq_quantity",
+        discipline,
+        engine,
+        category,
+        item,
+        quantity,
+        unit,
+        source,
+        canCommit: false,
+    };
+}
+
+function labelFromKey(key) {
+    return String(key || "")
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .replace(/[_-]+/g, " ")
+        .trim()
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 export function toDelimitedText(rows, { delimiter = defaultDelimiter } = {}) {

@@ -111,6 +111,12 @@ const report = buildAnalysisReport({
             missingStandards: ["hvac.ductEqualFrictionTargetPaPerM"],
             assumptions: ["proposal only"],
             engineeringMethods: ["weighted graph shortest path traversal"],
+            revitRead: {
+                success: true,
+                counts: { ducts: 2, airTerminals: 3 },
+                ductLengthMeters: 12.5,
+                systemElementCounts: { "Supply Air": 5 },
+            },
             canCommit: false,
         },
     ],
@@ -119,8 +125,11 @@ const report = buildAnalysisReport({
 assert.equal(report.success, true);
 assert.equal(report.issueRows.length, 1);
 assert.equal(report.designLogRows.length, 1);
+assert.equal(report.boqRows.length, 4);
 assert(report.issueCsv.includes("missing_standard"));
 assert(report.designLogCsv.includes("weighted graph shortest path traversal"));
+assert(report.boqCsv.includes("Total duct length"));
+assert(report.boqCsv.includes("Supply Air"));
 assert.equal(report.canCommit, false);
 
 console.log("domain foundation calculation tests passed");

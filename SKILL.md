@@ -52,7 +52,8 @@ only the bare names appear, so the rules stay host-agnostic.
 - `analyze_mep_system` — read-only MEP analysis foundation with assumptions,
   missing office standards, proposal readiness, optional targeted connector
   pathfinding (`networkRootElementId` / `networkTerminalElementIds`), and
-  deterministic report rows
+  deterministic report/BOQ rows. Use `boqOnly: true` for short live count and
+  length report population without connector graph traversal.
 - `prepare_write_plan` — create/validate typed JSON plans; never writes
 - `preview_write_plan` — native or runtime-only preview; never writes
 - `commit_write_plan` — native deterministic commit; requires explicit
