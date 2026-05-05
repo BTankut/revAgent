@@ -40,7 +40,7 @@ Concrete deliverables:
 | Hydronic/domestic/sanitary/fire/clash/equipment foundations | Foundation modules exist and return assumptions/missing standards; HVAC/fire/hydronic have live/read collectors; all domain foundations now expose deterministic calculation/issue examples with `canCommit: false`. | Done |
 | MEP graph foundation | HVAC and hydronic live connector graph summaries read `Connector.AllRefs`, node counts, unique element edge counts, and open connector samples with `0` AllRefs errors. | Partially Done |
 | Engineering validation calculations | `engineering-calculations.test.js` checks duct/pipe calculations, rooted tree branch flow aggregation, critical path/critical circuit selection, and cycle warnings; `domain-foundation-calculations.test.js` checks domestic water, sanitary/storm, fire/sprinkler, clash, and equipment foundations. | Done |
-| Full engineering engines | Deterministic foundations now cover branch flow aggregation and critical path/circuit examples. Full live graph pathfinding, clash reroute, hydraulic network calculations, and production equipment selection are not complete. | Partially Done |
+| Full engineering engines | Deterministic foundations now cover branch flow aggregation, critical path/circuit examples, and orthogonal clash reroute preview. Full live graph pathfinding, hydraulic network solving, production equipment selection, and report workflows are not complete. | Partially Done |
 | Skill update | `SKILL.md` version `0.5.0`; write-plan workflow documented. | Done |
 | README/docs update | README updated; architecture, validation, PR summary, audit docs added. | Done |
 | Static tests | JS syntax, safe guard test, write-plan schema/state/risk test passed. | Done |
@@ -56,7 +56,7 @@ Concrete deliverables:
 
 - Clean Revit restart/reload is recommended for operational confidence that the on-disk compat registry path loads `execute_write_plan` without the temporary in-memory hot-register step.
 - Plugin repo needs a writable fork/remote before branch push can succeed.
-- Full engineering engines remain beyond the current implemented foundation.
+- Full production engineering engines remain beyond the current implemented foundation.
 
 ## Completion Decision
 

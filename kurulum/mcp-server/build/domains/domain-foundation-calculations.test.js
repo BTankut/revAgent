@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { classifyAabbClash } from "./clash/calculations.js";
+import { classifyAabbClash, proposeOrthogonalReroute } from "./clash/calculations.js";
 import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic-water/calculations.js";
 import { selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
@@ -61,6 +61,19 @@ const clearanceClash = classifyAabbClash({
     clearanceM: 0.1,
 });
 assert.equal(clearanceClash.classification, "clearance_clash");
+
+const reroute = proposeOrthogonalReroute({
+    routePoints: [{ x: 0, y: 0, z: 0 }, { x: 5, y: 0, z: 0 }],
+    obstacleBox: { min: { x: 2, y: -0.25, z: -0.25 }, max: { x: 3, y: 0.25, z: 0.25 } },
+    clearanceM: 0.25,
+    offsetAxis: "y",
+});
+assert.equal(reroute.success, true);
+assert.equal(reroute.rerouteRequired, true);
+assert.equal(reroute.canCommit, false);
+assert(reroute.addedLengthM > 0);
+assert.deepEqual(reroute.previewPoints[0], { x: 0, y: 0, z: 0 });
+assert.deepEqual(reroute.previewPoints.at(-1), { x: 5, y: 0, z: 0 });
 
 const fan = selectFanCandidate({
     requiredFlowM3h: 5000,

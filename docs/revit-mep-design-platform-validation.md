@@ -37,6 +37,7 @@ Result:
   - sanitary/storm slope and reverse-slope checks
   - sprinkler coverage/spacing standard gating
   - clash AABB hard/clearance classification
+  - orthogonal clash reroute preview with added-length calculation
   - fan and pump candidate screening
 
 ## Plugin Build Check
@@ -147,6 +148,10 @@ Live read-only results captured on the active session:
   - Revit 2022 API docs resolved `Connector.AllRefs`, `Connector.Owner`, `Connector.IsConnected`, `MEPCurve.ConnectorManager`, and `FamilyInstance.MEPModel`.
   - HVAC graph summary: `27237` connector-owning element nodes, `41735` connectors, `708` open connectors, `20341` unique element edges, `25` open connector samples, `0` AllRefs errors.
   - Hydronic graph summary: `1373` connector-owning element nodes, `1598` connectors, `24` open connectors, `216` unique element edges, `24` open connector samples, `0` AllRefs errors.
+- Clash reroute foundation runtime probe succeeded:
+  - `analyze_mep_system` with `discipline: clash` returned an orthogonal reroute preview around a rectangular obstacle envelope.
+  - Example original length: `5 m`; reroute length: `6 m`; added length: `1 m`.
+  - The result is explicitly preview/foundation only with `riskLevel: high` and `canCommit: false`.
 
 Write checks:
 
