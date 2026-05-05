@@ -3,7 +3,7 @@ import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } f
 import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic-water/calculations.js";
 import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
-import { selectCriticalConnectorPath, summarizeLocalLossSamples } from "./local-losses/calculations.js";
+import { connectorPathElementIds, selectCriticalConnectorPath, summarizeLocalLossSamples } from "./local-losses/calculations.js";
 import { buildLocalLossOnlyCode } from "./local-losses/revit-read.js";
 import { calculateSlopePercent, validateGravitySlope } from "./sanitary-storm/calculations.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
@@ -204,6 +204,15 @@ const criticalPathSelection = selectCriticalConnectorPath({
 assert.equal(criticalPathSelection.success, true);
 assert.equal(criticalPathSelection.selectedTerminalElementId, 302);
 assert.deepEqual(criticalPathSelection.pathElementIds, [10, 21, 22, 23, 302]);
+assert.deepEqual(connectorPathElementIds({
+    connectorPathfinding: {
+        terminalPaths: [
+            { elementId: 301, reachable: true, pathElementIds: [10, 20, 301] },
+            { elementId: 302, reachable: true, pathElementIds: [10, 21, 22, 23, 302] },
+            { elementId: 303, reachable: false, pathElementIds: [10, 99, 303] },
+        ],
+    },
+}), [10, 20, 301, 21, 22, 23, 302]);
 const criticalPathLocalLossExtraction = summarizeLocalLossSamples({
     discipline: "hvac",
     samples: [],
@@ -211,6 +220,25 @@ const criticalPathLocalLossExtraction = summarizeLocalLossSamples({
 });
 assert.equal(criticalPathLocalLossExtraction.targetedByCriticalPath, true);
 assert.equal(criticalPathLocalLossExtraction.criticalPathSelection.selectedTerminalElementId, 302);
+const pressureCriticalPathSelection = selectCriticalConnectorPath({
+    connectorPathfinding: {
+        terminalPaths: [
+            { elementId: 401, reachable: true, hopCount: 5, pathElementIds: [10, 31, 32, 33, 34, 401] },
+            { elementId: 402, reachable: true, hopCount: 2, pathElementIds: [10, 40, 402] },
+        ],
+    },
+    localLossSamples: [
+        {
+            elementId: 40,
+            lossParameters: [
+                { valueKind: "pressure_drop_pa", numericValue: 125 },
+            ],
+        },
+    ],
+});
+assert.equal(pressureCriticalPathSelection.strategy, "max_local_loss_pressure_drop");
+assert.equal(pressureCriticalPathSelection.selectedTerminalElementId, 402);
+assert.equal(pressureCriticalPathSelection.selectedTotalPressureDropPa, 125);
 
 const targetedLocalLossCode = buildLocalLossOnlyCode({
     categories: ["OST_DuctFitting"],

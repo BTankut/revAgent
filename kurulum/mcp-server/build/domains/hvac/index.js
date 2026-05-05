@@ -1,6 +1,6 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { exampleAirsideFlowDirections, exampleAirsideTreeNetwork, exampleAirsideWeightedNetwork } from "../network/calculations.js";
-import { selectCriticalConnectorPath, summarizeLocalLossSamples } from "../local-losses/calculations.js";
+import { connectorPathElementIds, selectCriticalConnectorPath, summarizeLocalLossSamples } from "../local-losses/calculations.js";
 import { buildLocalLossOnlyCode } from "../local-losses/revit-read.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
 import { calculateFanPressureBasis, sizeRectangularDuctEqualFriction } from "./calculations.js";
@@ -58,14 +58,34 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
                 localLossOnly: false,
             }), { transactionMode: "none" });
             const pathRead = pathResponse && pathResponse.result ? pathResponse.result : pathResponse;
-            const criticalPathSelection = selectCriticalConnectorPath({
+            const sampleLimit = Number.parseInt(String(networkPathRequest.localLossSampleLimit || 25), 10);
+            const candidateTargetElementIds = connectorPathElementIds({
                 connectorPathfinding: pathRead?.connectorPathfinding,
             });
-            const sampleLimit = Number.parseInt(String(networkPathRequest.localLossSampleLimit || 25), 10);
+            const rankingSampleLimit = Math.max(
+                Number.isFinite(sampleLimit) ? sampleLimit : 25,
+                candidateTargetElementIds.length,
+            );
+            const rankingLossResponse = candidateTargetElementIds.length > 0
+                ? await executeRevitCode(buildLocalLossOnlyCode({
+                    sampleLimit: rankingSampleLimit,
+                    targetElementIds: candidateTargetElementIds,
+                    categories: ["OST_DuctFitting", "OST_DuctAccessory", "OST_DuctTerminal", "OST_MechanicalEquipment"],
+                }), { transactionMode: "none" })
+                : { localLossSamples: [] };
+            const rankingLocalLossRead = rankingLossResponse && rankingLossResponse.result ? rankingLossResponse.result : rankingLossResponse;
+            const criticalPathSelection = selectCriticalConnectorPath({
+                connectorPathfinding: pathRead?.connectorPathfinding,
+                localLossSamples: rankingLocalLossRead?.localLossSamples || [],
+            });
             const targetElementIds = criticalPathSelection.pathElementIds || [];
+            const selectedSampleLimit = Math.max(
+                Number.isFinite(sampleLimit) ? sampleLimit : 25,
+                targetElementIds.length,
+            );
             const lossResponse = targetElementIds.length > 0
                 ? await executeRevitCode(buildLocalLossOnlyCode({
-                    sampleLimit: Number.isFinite(sampleLimit) ? sampleLimit : 25,
+                    sampleLimit: selectedSampleLimit,
                     targetElementIds,
                     categories: ["OST_DuctFitting", "OST_DuctAccessory", "OST_DuctTerminal", "OST_MechanicalEquipment"],
                 }), { transactionMode: "none" })
@@ -74,6 +94,8 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
             const revitRead = {
                 ...pathRead,
                 localLossFromNetworkPath: true,
+                localLossRankingRead: rankingLocalLossRead,
+                localLossCandidateTargetElementIds: candidateTargetElementIds,
                 criticalPathLocalLossTargetElementIds: targetElementIds,
                 localLossRead,
                 localLossSamples: localLossRead?.localLossSamples || [],

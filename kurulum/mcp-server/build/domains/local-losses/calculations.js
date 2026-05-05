@@ -1,7 +1,26 @@
-export function selectCriticalConnectorPath({ connectorPathfinding } = {}) {
+export function connectorPathElementIds({ connectorPathfinding } = {}) {
     const terminalPaths = Array.isArray(connectorPathfinding?.terminalPaths)
         ? connectorPathfinding.terminalPaths
         : [];
+    const ids = [];
+    const seen = new Set();
+    for (const path of terminalPaths) {
+        if (path?.reachable !== true || !Array.isArray(path.pathElementIds)) continue;
+        for (const value of path.pathElementIds) {
+            const elementId = Number.parseInt(String(value), 10);
+            if (!Number.isFinite(elementId) || elementId <= 0 || seen.has(elementId)) continue;
+            seen.add(elementId);
+            ids.push(elementId);
+        }
+    }
+    return ids;
+}
+
+export function selectCriticalConnectorPath({ connectorPathfinding, localLossSamples } = {}) {
+    const terminalPaths = Array.isArray(connectorPathfinding?.terminalPaths)
+        ? connectorPathfinding.terminalPaths
+        : [];
+    const pressureByElementId = pressureDropByElementId(localLossSamples);
     const reachable = terminalPaths
         .filter((path) => path?.reachable === true && Array.isArray(path.pathElementIds) && path.pathElementIds.length > 0)
         .map((path) => ({
@@ -11,6 +30,19 @@ export function selectCriticalConnectorPath({ connectorPathfinding } = {}) {
                 .map((value) => Number.parseInt(String(value), 10))
                 .filter((value) => Number.isFinite(value) && value > 0),
         }))
+        .map((path) => {
+            const pressure = path.pathElementIds.reduce((total, elementId) => {
+                return total + (pressureByElementId.get(elementId)?.pressureDropPa || 0);
+            }, 0);
+            const pressureDropParameterCount = path.pathElementIds.reduce((total, elementId) => {
+                return total + (pressureByElementId.get(elementId)?.pressureDropParameterCount || 0);
+            }, 0);
+            return {
+                ...path,
+                totalPressureDropPa: pressure,
+                pressureDropParameterCount,
+            };
+        })
         .filter((path) => path.pathElementIds.length > 0);
     const warnings = [];
     if (!connectorPathfinding) {
@@ -28,7 +60,12 @@ export function selectCriticalConnectorPath({ connectorPathfinding } = {}) {
             canCommit: false,
         };
     }
+    const canRankByPressure = reachable.some((path) => path.pressureDropParameterCount > 0);
     reachable.sort((a, b) => {
+        if (canRankByPressure) {
+            const pressureDiff = Number(b.totalPressureDropPa || 0) - Number(a.totalPressureDropPa || 0);
+            if (pressureDiff !== 0) return pressureDiff;
+        }
         const hopDiff = Number(b.hopCount || 0) - Number(a.hopCount || 0);
         if (hopDiff !== 0) return hopDiff;
         return b.pathElementIds.length - a.pathElementIds.length;
@@ -36,16 +73,22 @@ export function selectCriticalConnectorPath({ connectorPathfinding } = {}) {
     const selected = reachable[0];
     return {
         success: true,
-        method: "Select live connector path with maximum hop count for targeted local-loss extraction",
-        strategy: "max_hop_count",
+        method: canRankByPressure
+            ? "Select live connector path with maximum explicit local-loss pressure drop for targeted extraction"
+            : "Select live connector path with maximum hop count for targeted local-loss extraction",
+        strategy: canRankByPressure ? "max_local_loss_pressure_drop" : "max_hop_count",
         selectedTerminalElementId: selected.elementId,
         selectedHopCount: selected.hopCount,
+        selectedTotalPressureDropPa: selected.totalPressureDropPa,
+        selectedPressureDropParameterCount: selected.pressureDropParameterCount,
         reachableTerminalCount: reachable.length,
         pathElementIds: selected.pathElementIds,
         terminalPathSummaries: reachable.map((path) => ({
             elementId: path.elementId,
             hopCount: path.hopCount,
             pathElementCount: path.pathElementIds.length,
+            totalPressureDropPa: path.totalPressureDropPa,
+            pressureDropParameterCount: path.pressureDropParameterCount,
         })),
         warnings,
         canCommit: false,
@@ -202,4 +245,27 @@ function finiteOrNull(value) {
     if (value === null || value === undefined || value === "") return null;
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : null;
+}
+
+function pressureDropByElementId(samples) {
+    const byElementId = new Map();
+    if (!Array.isArray(samples)) return byElementId;
+    for (const sample of samples) {
+        const elementId = Number.parseInt(String(sample?.elementId), 10);
+        if (!Number.isFinite(elementId) || elementId <= 0) continue;
+        const current = byElementId.get(elementId) || {
+            pressureDropPa: 0,
+            pressureDropParameterCount: 0,
+        };
+        const parameters = Array.isArray(sample?.lossParameters) ? sample.lossParameters : [];
+        for (const parameter of parameters) {
+            if (parameter?.valueKind !== "pressure_drop_pa") continue;
+            const numericValue = finiteOrNull(parameter.numericValue);
+            if (numericValue === null) continue;
+            current.pressureDropPa += numericValue;
+            current.pressureDropParameterCount++;
+        }
+        byElementId.set(elementId, current);
+    }
+    return byElementId;
 }
