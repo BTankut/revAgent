@@ -189,6 +189,23 @@ export function buildLocalLossPressureRows({ analyses = [] } = {}) {
             source: "localLossExtraction.pressureContribution",
             canCommit: false,
         });
+        const selectedPathCheck = analysis.localLossExtraction?.selectedPathPressureCheck;
+        if (selectedPathCheck) {
+            rows.push({
+                rowType: "local_loss_selected_path_pressure_check",
+                discipline: analysis.discipline || contribution.discipline || "general",
+                engine: analysis.engine || "",
+                systemName: "",
+                category: "",
+                pressureDropPa: selectedPathCheck.extractedPressureDropPa,
+                selectedPathPressureDropPa: selectedPathCheck.selectedPathPressureDropPa,
+                extractedPressureDropPa: selectedPathCheck.extractedPressureDropPa,
+                deltaPa: selectedPathCheck.deltaPa,
+                consistent: selectedPathCheck.consistent,
+                source: "localLossExtraction.selectedPathPressureCheck",
+                canCommit: false,
+            });
+        }
         for (const row of contribution.bySystem || []) {
             rows.push({
                 rowType: "local_loss_pressure_by_system",

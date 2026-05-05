@@ -68,6 +68,7 @@
 - Hardened targeted local-loss collection for longer critical paths: explicit target reads now scale the sample limit to cover the requested target id set up to a guarded cap and return `uninspectedTargetCount`, `truncatedBySampleLimit`, and `targetedReadComplete` for audit.
 - Propagated targeted local-loss truncation into analysis-level warnings so incomplete candidate ranking or selected-path reads are visible without digging into raw Revit readback.
 - Added selected-path local-loss pressure consistency checks: summaries now compare the pressure used to rank the selected path against the final selected-path extraction total and warn on mismatch.
+- Added `local_loss_selected_path_pressure_check` report rows/CSV output so selected-path pressure consistency is exported with other local-loss pressure audit rows.
 - Live-tested approved equipment schedule note execution on Mechanical Equipment `386031` through native preview/commit/verify/readback.
 - Added native `create_schedule_or_update_schedule`, runtime validation/risk coverage, and live-tested approved schedule creation in the disposable model:
   - Schedule `Codex MEP Equipment Schedule 2026-05-05`

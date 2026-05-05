@@ -418,4 +418,18 @@ assert(report.localLossCsv.includes("Pressure Drop"));
 assert(report.localLossPressureCsv.includes("local_loss_pressure_total"));
 assert.equal(report.canCommit, false);
 
+const selectedPathReport = buildAnalysisReport({
+    analyses: [
+        {
+            discipline: "hvac",
+            engine: "hvac-airside-foundation",
+            localLossExtraction: pressureMatchedLocalLossExtraction,
+        },
+    ],
+    delimiter: ";",
+});
+assert(selectedPathReport.localLossPressureRows.some((row) => row.rowType === "local_loss_selected_path_pressure_check"));
+assert(selectedPathReport.localLossPressureCsv.includes("local_loss_selected_path_pressure_check"));
+assert(selectedPathReport.localLossPressureCsv.includes("125"));
+
 console.log("domain foundation calculation tests passed");
