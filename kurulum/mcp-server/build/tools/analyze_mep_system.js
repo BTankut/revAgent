@@ -10,6 +10,7 @@ import { analyzeSanitaryStorm } from "../domains/sanitary-storm/index.js";
 import { mergeOfficeStandards } from "../office-standards/defaults.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 import { buildAnalysisWritePlanProposal } from "./analysis_write_plan_proposal.js";
+import { buildAnalyzeHandoffValidation } from "./analysis_handoff_validation.js";
 import { summarizeOfficeStandardsCompleteness } from "./office_standards_completeness.js";
 import { summarizeProductionReadiness } from "./production_readiness.js";
 import { formatJsonContent } from "../utils/revitToolHelpers.js";
@@ -131,12 +132,14 @@ export function registerAnalyzeMepSystemTool(server) {
                 officeStandardsCompleteness,
                 writePlanProposal,
             });
+            const handoffValidation = buildAnalyzeHandoffValidation(args);
             return formatJsonContent({
                 success: true,
                 discipline,
                 mutateModel: false,
                 officeStandardsCompleteness,
                 productionReadiness,
+                handoffValidation,
                 analyses,
                 reporting,
                 writePlanProposal,

@@ -79,6 +79,13 @@ Result:
   - blank project-critical data template is shape-valid but not production-complete
   - `criticalPathLocalLossComplete: true` without `criticalPathLocalLossPressurePa` is rejected
   - live project-critical data sample is accepted only as sample/non-commit data
+  - `analyze_mep_system` source is checked to surface the validator through `handoffValidation` without adding a new public MCP tool
+- Runtime `analyze_mep_system` handoff-validation probe passed from `C:\Users\BT\Projects\revit-mcp-runtime`:
+  - complete test office standards and one domestic-water pipe sizing request returned `handoffValidation.officeStandards.valid: true`
+  - `handoffValidation.projectCriticalData.valid: true`
+  - `handoffValidation.projectCriticalData.completeForProductionReview: true`
+  - `handoffValidation.canCommit: false`
+  - `mutateModel: false`
 
 ## Plugin Build Check
 

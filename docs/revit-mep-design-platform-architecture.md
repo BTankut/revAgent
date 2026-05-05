@@ -191,6 +191,7 @@ Reporting foundation:
 - `productionReadiness` combines office-standard completeness, proposal data-completeness, and generated write-plan validation into a single blocker list for final-design review.
 - `productionReadiness.nextRequiredInputs` points to the exact handoff type and source artefact needed next: office standards, project-critical data, or proposal-validation fixes.
 - `handoff_input_validator.js` gives those handoff artefacts a local production-review guard: placeholder office standards stay invalid, project-critical data can be shape-valid but production-incomplete, and sample-only live captures stay non-committable.
+- `analyze_mep_system.handoffValidation` surfaces that same guard without adding another public MCP tool, keeping the runtime surface at the targeted 13 tools.
 - `boqOnly` runs short live Revit BOQ collectors without connector graph traversal for count/length report population.
 - `hydraulicResistanceOnly` runs short live hydronic pipe length/diameter sampling and returns resistance calibration rows.
 - Hydronic analysis can turn pipe resistance samples plus model-read `Flow`, `hydronicDesignFlowsByElementId`, optional `hydronicDefaultDesignFlowLs`, office velocity/friction limits, and critical-circuit local-loss pressure context into `pipe_sizing` report rows and proposal-only `resize_pipe` steps. When `localLossFromNetworkPath` is enabled, the hydronic branch can perform the selected-path local-loss reads first, then run a separate read-only pipe resistance sample for proposal output.
