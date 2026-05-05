@@ -42,9 +42,12 @@ export function summarizeProductionSizingReview({
 
     const currentLinearPressureLossPaTotal = sumFinite(rows.map((row) => row.currentLinearPressureLossPa));
     const selectedLinearPressureLossPaTotal = sumFinite(rows.map((row) => row.selectedLinearPressureLossPa));
-    const criticalPathLocalLossPressurePaMax = maxFinite(rows.map((row) => row.criticalPathLocalLossPressurePa));
-    const currentPathPressureBasisPa = addIfFinite(currentLinearPressureLossPaTotal, criticalPathLocalLossPressurePaMax);
-    const selectedPathPressureBasisPa = addIfFinite(selectedLinearPressureLossPaTotal, criticalPathLocalLossPressurePaMax);
+    const criticalPathRows = rows.filter((row) => Number.isFinite(row.criticalPathLocalLossPressurePa));
+    const criticalPathLocalLossPressurePaMax = maxFinite(criticalPathRows.map((row) => row.criticalPathLocalLossPressurePa));
+    const currentCriticalPathLinearPressureLossPaTotal = sumFinite(criticalPathRows.map((row) => row.currentLinearPressureLossPa));
+    const selectedCriticalPathLinearPressureLossPaTotal = sumFinite(criticalPathRows.map((row) => row.selectedLinearPressureLossPa));
+    const currentPathPressureBasisPa = addIfFinite(currentCriticalPathLinearPressureLossPaTotal, criticalPathLocalLossPressurePaMax);
+    const selectedPathPressureBasisPa = addIfFinite(selectedCriticalPathLinearPressureLossPaTotal, criticalPathLocalLossPressurePaMax);
 
     return {
         completeForProductionReview: blockers.length === 0,
@@ -54,6 +57,8 @@ export function summarizeProductionSizingReview({
         writePlanStepCount: new Set(rows.map((row) => row.writePlanStepId).filter(Boolean)).size,
         currentLinearPressureLossPaTotal,
         selectedLinearPressureLossPaTotal,
+        currentCriticalPathLinearPressureLossPaTotal,
+        selectedCriticalPathLinearPressureLossPaTotal,
         criticalPathLocalLossPressurePaMax,
         currentPathPressureBasisPa,
         selectedPathPressureBasisPa,
@@ -83,10 +88,11 @@ function appendSizingRows({
     const dataComplete = proposal?.dataCompleteness?.completeForProductionReview === true;
     for (const sourceRow of proposalRows) {
         const elementId = positiveInteger(sourceRow?.elementId);
-        const step = findWritePlanStep(writePlanSteps, operation, elementId);
+        const eId = typeof sourceRow?.eId === "string" ? sourceRow.eId.trim() : "";
+        const step = findWritePlanStep(writePlanSteps, operation, elementId, eId);
         const rowReady = dataComplete &&
-            sourceRow?.localLossDatasetComplete === true &&
-            sourceRow?.status === "proposal_ready_for_review";
+            localLossReadyForReview(sourceRow, proposal) &&
+            readyStatus(sourceRow?.status);
         const currentLinearPressureLossPa = finiteOrNull(sourceRow?.currentLinearPressureLossPa);
         const selectedLinearPressureLossPa = finiteOrNull(sourceRow?.selectedLinearPressureLossPa);
         const criticalPathLocalLossPressurePa = finiteOrNull(sourceRow?.criticalPathLocalLossPressurePa);
@@ -99,10 +105,15 @@ function appendSizingRows({
             proposalName,
             systemKind,
             elementId,
+            eId,
             uniqueId: sourceRow?.uniqueId || "",
             systemName: sourceRow?.systemName || "(unassigned)",
+            demandType: sourceRow?.demandType || sourceRow?.drainageType || "",
+            demandSource: sourceRow?.demandSource || "",
+            fixtureUnits: finiteOrNull(sourceRow?.fixtureUnits),
             currentSize: currentSize(sourceRow, systemKind),
             selectedSize: selectedSize(sourceRow, systemKind),
+            selectedMinSlopePercent: finiteOrNull(sourceRow?.selectedMinSlopePercent),
             designFlow: designFlow(sourceRow, systemKind),
             currentVelocityMps: finiteOrNull(sourceRow?.currentVelocityMps),
             selectedVelocityMps: finiteOrNull(sourceRow?.selectedVelocityMps),
@@ -124,10 +135,26 @@ function appendSizingRows({
     }
 }
 
-function findWritePlanStep(writePlanSteps, operation, elementId) {
-    if (!elementId) return null;
+function localLossReadyForReview(sourceRow, proposal) {
+    if (sourceRow && Object.prototype.hasOwnProperty.call(sourceRow, "localLossDatasetComplete")) {
+        return sourceRow.localLossDatasetComplete === true;
+    }
+    if (proposal?.dataCompleteness &&
+        Object.prototype.hasOwnProperty.call(proposal.dataCompleteness, "localLossDatasetComplete")) {
+        return proposal.dataCompleteness.localLossDatasetComplete === true;
+    }
+    return true;
+}
+
+function readyStatus(status) {
+    return typeof status === "string" && status.includes("proposal_ready");
+}
+
+function findWritePlanStep(writePlanSteps, operation, elementId, eId) {
+    if (!elementId && !eId) return null;
     return writePlanSteps.find((step) => step?.operation === operation &&
-        positiveInteger(step?.targets?.elementId) === elementId) || null;
+        (positiveInteger(step?.targets?.elementId) === elementId ||
+            (eId && step?.targets?.eId === eId))) || null;
 }
 
 function currentSize(row, systemKind) {

@@ -1090,9 +1090,74 @@ const readySizingAnalyses = [
             ],
         },
     },
+    {
+        discipline: "domestic_water",
+        engine: "domestic-water-foundation",
+        pipeSizingProposal: {
+            dataCompleteness: {
+                requestCount: 1,
+                rowCount: 1,
+                writePlanStepCount: 1,
+                skippedNoDemandCount: 0,
+                skippedNoSizeCount: 0,
+                completeForProductionReview: true,
+                blockers: [],
+            },
+            rows: [
+                {
+                    rowType: "domestic_water_pipe_sizing_proposal",
+                    elementId: 601,
+                    eId: "domestic-pipe-601",
+                    systemName: "Domestic Cold Water",
+                    fixtureUnits: 10,
+                    designFlowLs: 0.3,
+                    demandSource: "fixture-unit curve",
+                    currentDiameterMm: 20,
+                    selectedDiameterMm: 25,
+                    currentLinearPressureLossPa: 80,
+                    selectedLinearPressureLossPa: 45,
+                    resizeRequired: true,
+                    status: "proposal_ready_for_review",
+                    canCommit: false,
+                },
+            ],
+        },
+    },
+    {
+        discipline: "fire",
+        engine: "fire-sprinkler-foundation",
+        pipeSizingProposal: {
+            dataCompleteness: {
+                requestCount: 1,
+                rowCount: 1,
+                writePlanStepCount: 1,
+                skippedNoDemandCount: 0,
+                skippedNoSizeCount: 0,
+                completeForProductionReview: true,
+                blockers: [],
+            },
+            rows: [
+                {
+                    rowType: "fire_pipe_sizing_proposal",
+                    elementId: 801,
+                    systemName: "Fire Protection",
+                    demandType: "cabinet_plus_sprinkler",
+                    designFlowLpm: 500,
+                    designFlowLs: 8.333333333333334,
+                    currentDiameterMm: 65,
+                    selectedDiameterMm: 80,
+                    currentLinearPressureLossPa: 320,
+                    selectedLinearPressureLossPa: 240,
+                    resizeRequired: true,
+                    status: "proposal_ready_for_fire_engineer_review",
+                    canCommit: false,
+                },
+            ],
+        },
+    },
 ];
 const readySizingWritePlan = {
-    stepCount: 1,
+    stepCount: 3,
     validation: { valid: true, errors: [] },
     plan: {
         steps: [
@@ -1101,6 +1166,18 @@ const readySizingWritePlan = {
                 operation: "resize_duct",
                 targets: { elementId: 201 },
                 arguments: { width: 250, height: 500, unit: "mm" },
+            },
+            {
+                stepId: "resize-domestic-water-pipe-601",
+                operation: "resize_pipe",
+                targets: { elementId: 601 },
+                arguments: { diameter: 25, unit: "mm" },
+            },
+            {
+                stepId: "resize-fire-pipe-801",
+                operation: "resize_pipe",
+                targets: { elementId: 801 },
+                arguments: { diameter: 80, unit: "mm" },
             },
         ],
     },
@@ -1129,13 +1206,19 @@ const productionSizingReview = summarizeProductionSizingReview({
     writePlanProposal: readySizingWritePlan,
 });
 assert.equal(productionSizingReview.completeForProductionReview, true);
-assert.equal(productionSizingReview.rowCount, 1);
-assert.equal(productionSizingReview.readyRowCount, 1);
-assert.equal(productionSizingReview.writePlanStepCount, 1);
+assert.equal(productionSizingReview.rowCount, 3);
+assert.equal(productionSizingReview.readyRowCount, 3);
+assert.equal(productionSizingReview.writePlanStepCount, 3);
 assert(Math.abs(productionSizingReview.selectedPathPressureBasisPa - 57.2) < 1e-9);
 assert(Math.abs(productionSizingReview.pressureBasisDeltaPa + 7.2) < 1e-9);
 assert.equal(productionSizingReview.rows[0].status, "ready_for_engineer_final_review");
 assert.equal(productionSizingReview.rows[0].writePlanStepId, "resize-duct-201");
+assert.equal(productionSizingReview.rows[1].status, "ready_for_engineer_final_review");
+assert.equal(productionSizingReview.rows[1].writePlanStepId, "resize-domestic-water-pipe-601");
+assert.equal(productionSizingReview.rows[1].fixtureUnits, 10);
+assert.equal(productionSizingReview.rows[2].status, "ready_for_engineer_final_review");
+assert.equal(productionSizingReview.rows[2].writePlanStepId, "resize-fire-pipe-801");
+assert.equal(productionSizingReview.rows[2].demandType, "cabinet_plus_sprinkler");
 assert.equal(productionSizingReview.canCommit, false);
 
 const blockedProductionSizingReview = summarizeProductionSizingReview({
