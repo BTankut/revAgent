@@ -51,6 +51,7 @@ Result:
   - sanitary/storm fixture-unit gravity pipe sizing, rational-method storm runoff and pipe sizing, branch-to-stack reachability, and vent continuity checks
   - sprinkler coverage/spacing standard gating
   - fire cabinet coverage, fire cabinet demand basis, and fire pump flow/pressure basis
+  - stricter office-standard completeness gates for HVAC velocity limits, hydronic velocity limits, domestic water method/fixture standard, sanitary stack/vent node sets, and simultaneous fire cabinet count
   - clash AABB hard/clearance classification
   - orthogonal clash reroute preview with added-length calculation
   - multi-candidate orthogonal reroute solver with clearance validation
@@ -181,6 +182,13 @@ Live read-only results captured on the active session:
 - Domain foundation runtime probe succeeded:
   - `analyze_mep_system` with `discipline: all` and `includeRevitRead: false` returned calculation examples for HVAC, hydronic, domestic water, sanitary/storm, fire/sprinkler, clash, and equipment.
   - Every domain foundation returned `canCommit: false`.
+- Office standards completeness runtime probe succeeded:
+  - `analyze_mep_system` with `discipline: all` and `includeRevitRead: false` returned `mutateModel: false`.
+  - HVAC missing standards included `hvac.ductEqualFrictionTargetPaPerM`, all three configured duct velocity limit slots (`main`, `branch`, `terminal`).
+  - Hydronic missing standards included `hydronic.pipeFrictionLimitPaPerM` plus `main` and `branch` pipe velocity limits.
+  - Domestic water missing standards included sizing method, pressure-loss method, fixture-unit standard, demand curve, velocity limit, and friction limit.
+  - Sanitary/storm missing standards included slope, sanitary sizing, rainfall/runoff, storm sizing, stack nodes, and vent nodes.
+  - Fire missing standards included hydraulic standard, sprinkler spacing, cabinet flow/pressure/reach, and simultaneous cabinet count.
 - HVAC/hydronic network foundation runtime probe succeeded:
   - HVAC methods include rooted tree branch airflow aggregation and critical path by accumulated edge loss.
   - HVAC example returned total demand `400`, critical path `fan -> main -> branch-b -> term-b`, and total loss `112 Pa`.

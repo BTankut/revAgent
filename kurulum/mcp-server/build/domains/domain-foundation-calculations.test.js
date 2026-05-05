@@ -10,8 +10,37 @@ import { readPathTargetedLocalLosses } from "./local-losses/path-targeting.js";
 import { buildLocalLossOnlyCode } from "./local-losses/revit-read.js";
 import { analyzeDomainPlacement } from "./placement/index.js";
 import { calculateSlopePercent, calculateStormRunoffRational, checkVentContinuity, sizeGravityPipeByFixtureUnits, sizeStormPipeByFlow, traceGravityDrainageToStack, validateGravitySlope } from "./sanitary-storm/calculations.js";
+import { mergeOfficeStandards, missingStandardsForDiscipline } from "../office-standards/defaults.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 import { buildAnalysisWritePlanProposal } from "../tools/analysis_write_plan_proposal.js";
+
+const hvacMissingStandards = missingStandardsForDiscipline("hvac", mergeOfficeStandards());
+assert(hvacMissingStandards.includes("hvac.ductEqualFrictionTargetPaPerM"));
+assert(hvacMissingStandards.includes("hvac.ductVelocityLimitsMps.main"));
+assert(hvacMissingStandards.includes("hvac.ductVelocityLimitsMps.branch"));
+assert(hvacMissingStandards.includes("hvac.ductVelocityLimitsMps.terminal"));
+assert.deepEqual(missingStandardsForDiscipline("hvac", mergeOfficeStandards({
+    hvac: {
+        ductEqualFrictionTargetPaPerM: 1,
+        ductVelocityLimitsMps: { main: 5, branch: 4, terminal: 2.5 },
+    },
+})), []);
+
+const hydronicMissingStandards = missingStandardsForDiscipline("hydronic", mergeOfficeStandards());
+assert(hydronicMissingStandards.includes("hydronic.pipeFrictionLimitPaPerM"));
+assert(hydronicMissingStandards.includes("hydronic.pipeVelocityLimitsMps.main"));
+assert(hydronicMissingStandards.includes("hydronic.pipeVelocityLimitsMps.branch"));
+
+const domesticMissingStandards = missingStandardsForDiscipline("domestic_water", mergeOfficeStandards());
+assert(domesticMissingStandards.includes("domesticWater.pressureLossMethod"));
+assert(domesticMissingStandards.includes("domesticWater.fixtureUnitStandard"));
+
+const sanitaryMissingStandards = missingStandardsForDiscipline("sanitary", mergeOfficeStandards());
+assert(sanitaryMissingStandards.includes("sanitaryStorm.stackNodeIds"));
+assert(sanitaryMissingStandards.includes("sanitaryStorm.ventNodeIds"));
+
+const fireMissingStandards = missingStandardsForDiscipline("fire", mergeOfficeStandards());
+assert(fireMissingStandards.includes("fire.simultaneousFireCabinetCount"));
 
 const fixtureDemand = calculateFixtureDemand({
     fixtureUnitTable: {

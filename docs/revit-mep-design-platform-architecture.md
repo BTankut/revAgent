@@ -157,6 +157,7 @@ kurulum/mcp-server/build/office-standards/defaults.js
 ```
 
 Missing standards return `requiresOfficeStandard`, `missingStandards`, assumptions, and `canCommit: false` for engineering design decisions.
+The completeness gate intentionally blocks production-final output when velocity limits, fixture-unit standards, stack/vent node sets, simultaneous fire-cabinet count, or other discipline-critical assumptions are absent, even if a narrow calculation example can still run as a proposal.
 
 Engineering calculation foundations:
 

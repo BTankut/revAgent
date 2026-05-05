@@ -78,15 +78,36 @@ export function missingStandardsForDiscipline(discipline, standards = defaultOff
         if (standards.hvac?.ductEqualFrictionTargetPaPerM == null) {
             missing.push("hvac.ductEqualFrictionTargetPaPerM");
         }
+        if (standards.hvac?.ductVelocityLimitsMps?.main == null) {
+            missing.push("hvac.ductVelocityLimitsMps.main");
+        }
+        if (standards.hvac?.ductVelocityLimitsMps?.branch == null) {
+            missing.push("hvac.ductVelocityLimitsMps.branch");
+        }
+        if (standards.hvac?.ductVelocityLimitsMps?.terminal == null) {
+            missing.push("hvac.ductVelocityLimitsMps.terminal");
+        }
     }
     if (discipline === "hydronic" || discipline === "general") {
         if (standards.hydronic?.pipeFrictionLimitPaPerM == null) {
             missing.push("hydronic.pipeFrictionLimitPaPerM");
         }
+        if (standards.hydronic?.pipeVelocityLimitsMps?.main == null) {
+            missing.push("hydronic.pipeVelocityLimitsMps.main");
+        }
+        if (standards.hydronic?.pipeVelocityLimitsMps?.branch == null) {
+            missing.push("hydronic.pipeVelocityLimitsMps.branch");
+        }
     }
     if (discipline === "domestic_water" || discipline === "general") {
         if (!standards.domesticWater?.sizingMethod) {
             missing.push("domesticWater.sizingMethod");
+        }
+        if (!standards.domesticWater?.pressureLossMethod) {
+            missing.push("domesticWater.pressureLossMethod");
+        }
+        if (!standards.domesticWater?.fixtureUnitStandard) {
+            missing.push("domesticWater.fixtureUnitStandard");
         }
         if (!Array.isArray(standards.domesticWater?.fixtureUnitDemandCurve) || standards.domesticWater.fixtureUnitDemandCurve.length < 2) {
             missing.push("domesticWater.fixtureUnitDemandCurve");
@@ -114,6 +135,12 @@ export function missingStandardsForDiscipline(discipline, standards = defaultOff
         if (!Array.isArray(standards.sanitaryStorm?.stormPipeSizingTable) || standards.sanitaryStorm.stormPipeSizingTable.length === 0) {
             missing.push("sanitaryStorm.stormPipeSizingTable");
         }
+        if (!Array.isArray(standards.sanitaryStorm?.stackNodeIds) || standards.sanitaryStorm.stackNodeIds.length === 0) {
+            missing.push("sanitaryStorm.stackNodeIds");
+        }
+        if (!Array.isArray(standards.sanitaryStorm?.ventNodeIds) || standards.sanitaryStorm.ventNodeIds.length === 0) {
+            missing.push("sanitaryStorm.ventNodeIds");
+        }
     }
     if (discipline === "fire" || discipline === "sprinkler" || discipline === "general") {
         if (!standards.fire?.hydraulicStandard) {
@@ -130,6 +157,9 @@ export function missingStandardsForDiscipline(discipline, standards = defaultOff
         }
         if (standards.fire?.fireCabinetMaxHoseReachM == null) {
             missing.push("fire.fireCabinetMaxHoseReachM");
+        }
+        if (standards.fire?.simultaneousFireCabinetCount == null) {
+            missing.push("fire.simultaneousFireCabinetCount");
         }
     }
     return missing;
