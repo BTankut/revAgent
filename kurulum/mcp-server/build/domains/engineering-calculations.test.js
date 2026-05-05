@@ -14,6 +14,7 @@ import {
     pipeFrictionLossPaPerM,
     pipeVelocityMps,
     sizePipeByVelocityOrFriction,
+    solveHardyCrossLoop,
 } from "./hydronic/calculations.js";
 import {
     analyzeTreeNetwork,
@@ -190,6 +191,22 @@ close(coilABalance.balancingLossKPa, 0.7, 1e-9, "coil-a balancing loss");
 const coilBBalance = hydronicBalance.output.terminalBalance.find((row) => row.terminalNodeId === "coil-b");
 assert.equal(coilBBalance.isCritical, true);
 close(coilBBalance.balancingLossKPa, 0, 1e-9, "coil-b balancing loss");
+
+const hardyCross = solveHardyCrossLoop({
+    loopEdges: [
+        { edgeId: "loop-a", resistancePaPerFlowN: 1, initialFlow: 1 },
+        { edgeId: "loop-b", resistancePaPerFlowN: 4, initialFlow: 1 },
+        { edgeId: "loop-c", resistancePaPerFlowN: 1, initialFlow: -1 },
+    ],
+    tolerancePa: 0.001,
+    maxIterations: 25,
+});
+assert.equal(hardyCross.success, true);
+assert.equal(hardyCross.output.converged, true);
+assert(Math.abs(hardyCross.output.residualPa) <= 0.001);
+assert(hardyCross.output.iterationCount > 1);
+const hardyResidualFromEdges = hardyCross.output.finalEdges.reduce((sum, edge) => sum + edge.headLossPa, 0);
+close(hardyResidualFromEdges, hardyCross.output.residualPa, 1e-9, "Hardy-Cross residual from edges");
 
 const cyclicNetwork = analyzeTreeNetwork({
     rootNodeId: "a",

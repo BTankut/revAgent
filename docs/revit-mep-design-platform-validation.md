@@ -36,6 +36,7 @@ Result:
   - accumulated-loss critical path / critical circuit selection
   - HVAC fan pressure basis and hydronic pump head basis
   - hydronic critical-circuit balancing loss and pump-head adequacy
+  - single-loop Hardy-Cross hydraulic balancing convergence and residual check
   - cyclic network warning path for branch aggregation assumptions
 - Domain foundation calculation tests passed:
   - domestic water fixture-unit summation and recirculation continuity
@@ -159,6 +160,7 @@ Live read-only results captured on the active session:
   - Hydronic flow direction inference returned `0.77 L/s` total flow and `0.42 L/s` through `riser -> coil-b`.
   - Hydronic pump basis example returned `0.77 L/s` and `26.73 kPa` required head after allowances/safety factor.
   - Hydronic balancing example returned `12.3 kPa` required pump head, adequate `30 kPa` available head, and `0.7 kPa` balancing loss for `coil-a`.
+  - Hardy-Cross loop example converged in `3` iterations with final residual `0.000004 Pa`.
   - Reporting foundation returned issue-list/design-log rows and CSV text previews without file writes.
   - Runtime write-plan report executor supports approved CSV/JSON export for `export_boq_report` and `export_clash_report` without Revit model mutation.
 - Live BOQ-only report population probe succeeded:

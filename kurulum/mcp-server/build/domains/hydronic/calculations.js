@@ -262,6 +262,121 @@ export function calculateHydronicBalance({
     };
 }
 
+export function solveHardyCrossLoop({
+    loopEdges = [],
+    exponent = 2,
+    tolerancePa = 0.01,
+    maxIterations = 50,
+} = {}) {
+    const errors = [];
+    if (!Array.isArray(loopEdges) || loopEdges.length < 2) {
+        errors.push("loopEdges must contain at least two edges");
+    }
+    const n = Number(exponent);
+    if (!Number.isFinite(n) || n <= 1) {
+        errors.push("exponent must be greater than 1");
+    }
+    const edges = (Array.isArray(loopEdges) ? loopEdges : []).map((edge, index) => {
+        const resistance = Number(edge.resistancePaPerFlowN ?? edge.resistance ?? 0);
+        const flow = Number(edge.initialFlow ?? edge.flow ?? 0);
+        if (!Number.isFinite(resistance) || resistance <= 0) {
+            errors.push(`loopEdges[${index}].resistancePaPerFlowN must be positive`);
+        }
+        if (!Number.isFinite(flow)) {
+            errors.push(`loopEdges[${index}].initialFlow must be finite`);
+        }
+        return {
+            edgeId: edge.edgeId || `edge-${index + 1}`,
+            resistancePaPerFlowN: resistance,
+            flow,
+        };
+    });
+    if (errors.length > 0) {
+        return { success: false, errors, warnings: [], canCommit: false };
+    }
+
+    const iterations = [];
+    let converged = false;
+    let residualPa = 0;
+    let correction = 0;
+    const max = Math.max(1, Number.parseInt(String(maxIterations), 10) || 50);
+    const tolerance = Math.max(0, Number(tolerancePa) || 0.01);
+    for (let iteration = 1; iteration <= max; iteration++) {
+        const state = loopState(edges, n);
+        residualPa = state.residualPa;
+        if (Math.abs(residualPa) <= tolerance) {
+            converged = true;
+            iterations.push({ iteration, residualPa, correction: 0 });
+            break;
+        }
+        if (state.derivativeSum <= 0) {
+            return {
+                success: false,
+                errors: ["Hardy-Cross derivative sum is zero; check initial flows and resistances"],
+                warnings: [],
+                canCommit: false,
+            };
+        }
+        correction = -residualPa / state.derivativeSum;
+        for (const edge of edges) {
+            edge.flow += correction;
+        }
+        iterations.push({ iteration, residualPa, correction });
+        const corrected = loopState(edges, n);
+        if (Math.abs(corrected.residualPa) <= tolerance) {
+            residualPa = corrected.residualPa;
+            converged = true;
+            break;
+        }
+    }
+    const finalState = loopState(edges, n);
+    return {
+        success: true,
+        method: "Hardy-Cross single-loop hydraulic balancing",
+        assumptions: [
+            "All loop edges use the same flow exponent and signed loop orientation.",
+            "Resistance coefficients must be supplied by prior pipe/fitting/equipment calculations.",
+            "This is a single-loop deterministic foundation; coupled multi-loop network solving remains a production extension.",
+        ],
+        input: {
+            exponent: n,
+            tolerancePa: tolerance,
+            maxIterations: max,
+        },
+        output: {
+            converged: converged || Math.abs(finalState.residualPa) <= tolerance,
+            iterationCount: iterations.length,
+            residualPa: finalState.residualPa,
+            correction,
+            finalEdges: edges.map((edge) => ({
+                edgeId: edge.edgeId,
+                flow: edge.flow,
+                resistancePaPerFlowN: edge.resistancePaPerFlowN,
+                headLossPa: signedHeadLoss(edge.flow, edge.resistancePaPerFlowN, n),
+            })),
+            iterations,
+        },
+        canCommit: false,
+        riskLevel: "high",
+    };
+}
+
+function loopState(edges, exponent) {
+    let residualPa = 0;
+    let derivativeSum = 0;
+    for (const edge of edges) {
+        residualPa += signedHeadLoss(edge.flow, edge.resistancePaPerFlowN, exponent);
+        derivativeSum += exponent * edge.resistancePaPerFlowN * Math.pow(Math.abs(edge.flow), exponent - 1);
+    }
+    return { residualPa, derivativeSum };
+}
+
+function signedHeadLoss(flow, resistance, exponent) {
+    const q = Number(flow);
+    if (!Number.isFinite(q) || q === 0) return 0;
+    return Math.sign(q) * Number(resistance) * Math.pow(Math.abs(q), exponent);
+}
+
 function isFinitePositive(value) {
     return value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0;
 }

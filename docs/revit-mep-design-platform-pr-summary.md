@@ -53,8 +53,9 @@
 - Added least-loss flow direction inference and hydronic critical-circuit balancing loss foundations, with tests and runtime examples.
 - Added BOQ-only live Revit collectors and report row population; hydronic live probe returned pipe/fitting/equipment counts and total pipe length from the active test model.
 - Added multi-candidate orthogonal reroute solver with clearance validation; runtime example selects a valid no-violation candidate.
+- Added single-loop Hardy-Cross hydraulic balancing foundation with convergence/residual tests and runtime example.
 
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from foundations to production looped hydraulic solving, native reroute commit verification, equipment schedule integration, and native model schedule population workflows.
+- Expand engineering engines from foundations to coupled multi-loop hydraulic solving, native reroute commit verification, equipment schedule integration, and native model schedule population workflows.

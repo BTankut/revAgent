@@ -1,7 +1,7 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { exampleHydronicFlowDirections, exampleHydronicTreeNetwork, exampleHydronicWeightedNetwork } from "../network/calculations.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
-import { calculateHydronicBalance, calculatePumpHeadBasis, sizePipeByVelocityOrFriction } from "./calculations.js";
+import { calculateHydronicBalance, calculatePumpHeadBasis, sizePipeByVelocityOrFriction, solveHardyCrossLoop } from "./calculations.js";
 
 export async function analyzeHydronic({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("hydronic", officeStandards);
@@ -22,6 +22,7 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
             "rooted tree branch flow aggregation",
             "critical circuit by accumulated edge loss",
             "terminal balancing loss by critical-circuit equalization",
+            "single-loop Hardy-Cross hydraulic balancing",
             "pump flow/head basis from critical circuit",
             "pipe pressure loss by Darcy-Weisbach",
             "velocity/friction pipe sizing proposal",
@@ -69,6 +70,15 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                 },
                 pumpHeadKPa: 30,
                 terminalPressureAllowanceKPa: 8,
+            }),
+            hardyCrossLoop: solveHardyCrossLoop({
+                loopEdges: [
+                    { edgeId: "loop-a", resistancePaPerFlowN: 1, initialFlow: 1 },
+                    { edgeId: "loop-b", resistancePaPerFlowN: 4, initialFlow: 1 },
+                    { edgeId: "loop-c", resistancePaPerFlowN: 1, initialFlow: -1 },
+                ],
+                tolerancePa: 0.001,
+                maxIterations: 25,
             }),
         },
         canCommit: false,
