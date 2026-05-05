@@ -109,6 +109,7 @@ if (Test-Path $customDllDir) {
 
     # Copy files into LocalAppData
     Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $localAppCmdSet2022 -Force
+    Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $localAppCmdSet -Force
     Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $localAppCmdSet2022 -Force
     Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $localAppCmdSet -Force
 
@@ -118,6 +119,7 @@ if (Test-Path $customDllDir) {
 
     New-Item -ItemType Directory -Path $roamingCmdSet2022 -Force | Out-Null
     Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $roamingCmdSet2022 -Force
+    Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $roamingCmdSet -Force
     Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $roamingCmdSet2022 -Force
     Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $roamingCmdSet -Force
 

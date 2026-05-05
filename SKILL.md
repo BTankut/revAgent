@@ -71,6 +71,10 @@ guesses API names.
 
 Default workflow for any non-trivial task:
 
+0. Do not run Revit MCP runtime tools in parallel. Revit API execution is
+   single-threaded through the Revit UI process, and overlapping MCP calls can
+   leave the socket service alive while the command handler is still busy.
+   Run one runtime call, wait for it to return, then send the next one.
 1. Call `get_revit_session_context` first to learn Revit version/build,
    culture, active view type, document state, selection, MEP counts, and links.
 2. If the active view is a sheet or the task depends on view visibility, call
