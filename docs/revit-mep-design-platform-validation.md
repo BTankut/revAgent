@@ -55,6 +55,7 @@ Result:
   - pipe sizing proposal rows and CSV text generation
   - duct sizing proposal rows and CSV text generation
   - model-read flow fields on duct/pipe samples feeding proposal sizing without external design-flow maps
+  - top-level `writePlanProposal` aggregation from domain proposal `writePlanSteps`, with validator coverage for `resize_duct` and `resize_pipe` steps
   - HVAC duct sizing analyzer branch with fake-executor coverage for read-only duct sample collection and proposal-only `resize_duct` output
   - hydronic path-targeted local-loss branch with fake-executor coverage for pathfinding, ranking, selected-path extraction, pipe resistance read, and proposal-only `resize_pipe` output
 
@@ -307,6 +308,12 @@ Write checks:
   - expected and actual `Comments` both matched `Codex write-plan commit test 2026-05-05T00:00:00Z`
   - `mutateModel: false`
 - Final readback matched the committed value.
+- Additional user-approved disposable live commit sanity test after the `writePlanProposal` aggregation change:
+  - Preview/read-only check reported source duct `392168`, duct count `744`, and no mutation.
+  - Direct Revit API symbols for `ElementTransformUtils.CopyElement`, `Document.Delete`, `Parameter.Set`, `Element.LookupParameter`, and `XYZ` were resolved against Revit 2022 docs before writing.
+  - Commit copied source duct `392168` to disposable duct `1021032` and set `Comments` to `Codex disposable live commit 2026-05-05T00:00:00Z`.
+  - `inspect_elements` verified the copied duct's `Comments` value and confirmed source duct `392168` still retained `Codex write-plan commit test 2026-05-05T00:00:00Z`.
+  - Cleanup deleted `1021032`; final session counts returned to `744` ducts and `488` pipes.
 
 ## Known Validation Limits
 

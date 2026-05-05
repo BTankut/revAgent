@@ -10,6 +10,7 @@ import { readPathTargetedLocalLosses } from "./local-losses/path-targeting.js";
 import { buildLocalLossOnlyCode } from "./local-losses/revit-read.js";
 import { calculateSlopePercent, validateGravitySlope } from "./sanitary-storm/calculations.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
+import { buildAnalysisWritePlanProposal } from "../tools/analysis_write_plan_proposal.js";
 
 const fixtureDemand = calculateFixtureDemand({
     fixtureUnitTable: {
@@ -618,5 +619,53 @@ const selectedPathReport = buildAnalysisReport({
 assert(selectedPathReport.localLossPressureRows.some((row) => row.rowType === "local_loss_selected_path_pressure_check"));
 assert(selectedPathReport.localLossPressureCsv.includes("local_loss_selected_path_pressure_check"));
 assert(selectedPathReport.localLossPressureCsv.includes("125"));
+
+const writePlanProposal = buildAnalysisWritePlanProposal({
+    discipline: "all",
+    analyses: [
+        {
+            discipline: "hvac",
+            ductSizingProposal: {
+                writePlanSteps: [
+                    {
+                        stepId: "resize-duct-201",
+                        operation: "resize_duct",
+                        dependsOn: [],
+                        targets: { elementId: 201 },
+                        arguments: { width: 400, height: 400, unit: "mm" },
+                        preconditions: ["HVAC sizing proposal reviewed."],
+                        riskLevel: "medium",
+                    },
+                ],
+            },
+        },
+        {
+            discipline: "hydronic",
+            pipeSizingProposal: {
+                writePlanSteps: [
+                    {
+                        stepId: "resize-pipe-101",
+                        operation: "resize_pipe",
+                        dependsOn: [],
+                        targets: { elementId: 101 },
+                        arguments: { diameter: 50, unit: "mm" },
+                        preconditions: ["Hydronic sizing proposal reviewed."],
+                        riskLevel: "medium",
+                    },
+                ],
+            },
+        },
+    ],
+});
+assert.equal(writePlanProposal.success, true);
+assert.equal(writePlanProposal.stepCount, 2);
+assert.deepEqual(writePlanProposal.operations, ["resize_duct", "resize_pipe"]);
+assert.equal(writePlanProposal.plan.discipline, "general");
+assert.equal(writePlanProposal.plan.riskLevel, "medium");
+assert.equal(writePlanProposal.plan.steps[0].operation, "resize_duct");
+assert.equal(writePlanProposal.plan.steps[1].operation, "resize_pipe");
+assert(writePlanProposal.plan.steps[0].preconditions.some((text) => text.includes("preview before commit")));
+assert.equal(writePlanProposal.validation.valid, true);
+assert.equal(writePlanProposal.canCommit, false);
 
 console.log("domain foundation calculation tests passed");

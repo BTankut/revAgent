@@ -8,6 +8,7 @@ import { analyzeHydronic } from "../domains/hydronic/index.js";
 import { analyzeSanitaryStorm } from "../domains/sanitary-storm/index.js";
 import { mergeOfficeStandards } from "../office-standards/defaults.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
+import { buildAnalysisWritePlanProposal } from "./analysis_write_plan_proposal.js";
 import { formatJsonContent } from "../utils/revitToolHelpers.js";
 
 export function registerAnalyzeMepSystemTool(server) {
@@ -93,12 +94,18 @@ export function registerAnalyzeMepSystemTool(server) {
                 analyses,
                 delimiter: officeStandards.reporting?.csvDelimiter,
             });
+            const writePlanProposal = buildAnalysisWritePlanProposal({
+                analyses,
+                discipline,
+                revitVersion: args.revitVersion || "2022",
+            });
             return formatJsonContent({
                 success: true,
                 discipline,
                 mutateModel: false,
                 analyses,
                 reporting,
+                writePlanProposal,
             });
         }
         catch (error) {
