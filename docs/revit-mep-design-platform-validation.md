@@ -368,6 +368,7 @@ Write checks:
   - A fresh stdio runtime handshake against `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js` listed all `13` tools and confirmed `prepare_write_plan` is registered.
   - A `set_parameter` plan targeting `Unapproved Parameter` with `officeStandards.allowedParameterNames: ["Comments"]` returned `success: true`, `validation.valid: true`, and a warning that the parameter is not in `allowedParameterNames` or `exactSchemaMappings`.
   - The same plan with `officeStandards.enforceAllowedParameterNames: true` returned `success: false`, `validation.valid: false`, and the same condition as a validation error.
+  - A follow-up exact-schema mapping probe used `exactSchemaMappings.approvedCustomNote.parameterName = "Approved Custom Note"`: targeting `Approved Custom Note` returned no warning, while targeting the logical alias `approvedCustomNote` returned an allowlist warning. This keeps mapping aliases from bypassing the parameter-name gate.
   - `get_revit_session_context` still confirmed the clean-restart model `rme_advanced_sample_project_codex_restart_test`, Revit `2022` build `22.0.2.392`, active view `WSHP 2-3 System View`, and live MEP counts including `728` ducts and `488` pipes.
 
 ## Known Validation Limits

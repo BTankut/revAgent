@@ -307,8 +307,7 @@ function collectExactSchemaMappingNames(names, mappings) {
         }
         return;
     }
-    for (const [key, value] of Object.entries(mappings)) {
-        addAllowedParameterName(names, key);
+    for (const value of Object.values(mappings)) {
         if (typeof value === "string") {
             addAllowedParameterName(names, value);
         }

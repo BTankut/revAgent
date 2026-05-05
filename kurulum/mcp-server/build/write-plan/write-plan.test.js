@@ -141,6 +141,17 @@ const mappedParameterValidation = validateWritePlan(mappedParameterPlan, { mode:
 assert.equal(mappedParameterValidation.valid, true);
 assert.equal(mappedParameterValidation.warnings.some((warning) => warning.includes("officeStandards.allowedParameterNames")), false);
 
+const mappingAliasParameterPlan = buildPlanFromArgs({
+    title: "Warn on logical mapping alias as parameter",
+    discipline: "general",
+    operation: "set_parameter",
+    targets: { elementId: 126 },
+    arguments: { parameterName: "approvedCustomNote", value: "Alias value" },
+});
+const mappingAliasParameterValidation = validateWritePlan(mappingAliasParameterPlan, { mode: "commit", officeStandards: parameterOfficeStandards });
+assert.equal(mappingAliasParameterValidation.valid, true);
+assert(mappingAliasParameterValidation.warnings.some((warning) => warning.includes("steps[0].arguments.parameterName \"approvedCustomNote\" is not in officeStandards.allowedParameterNames or exactSchemaMappings")));
+
 const disallowedParameterPlan = buildPlanFromArgs({
     title: "Warn on unapproved parameter",
     discipline: "general",
