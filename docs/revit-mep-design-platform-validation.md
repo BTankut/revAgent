@@ -417,6 +417,7 @@ Write checks:
   - The summary returned `completeForProductionReview: false`, `officeStandardsComplete: false`, `proposalDataComplete: true`, `writePlanProposalValid: false`, and blockers for missing office standards plus generated write-plan proposal invalid because the equipment note proposal targeted `Comments`.
   - Follow-up runtime probe confirmed `productionReadiness.nextRequiredInputs` returned `office_standards` and `write_plan_proposal_validation`, including `docs/revit-mep-office-standards-input-template.json` as the office standards handoff source artefact, without mutating Revit.
   - Unit coverage now also verifies `projectCriticalDataComplete: false`, a blocked `project_critical_data_readiness` row, and a `project_critical_data` next input when handoff validation reports missing project-critical data, even if proposal data rows are otherwise complete.
+  - Runtime handler smoke from `C:\Users\BT\Projects\revit-mcp-runtime` with complete office standards but missing complete critical-path local-loss data returned `officeStandardsComplete: true`, `projectCriticalDataComplete: false`, `nextRequiredInputs: ["project_critical_data"]`, and `mutateModel: false`.
 - Current clean-restart normal socket commit smoke:
   - A fresh stdio runtime handshake against `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js` listed all `13` tools.
   - `inspect_parameter_schema` confirmed duct `392168` has writable instance `Comments` / `ALL_MODEL_INSTANCE_COMMENTS`.
