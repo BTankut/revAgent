@@ -1,7 +1,7 @@
-﻿From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
+From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 1/8] Add native write-plan executor
+Subject: [PATCH 1/9] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 2/8] Expand write-plan verification readback
+Subject: [PATCH 2/9] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 3/8] Fix write-plan command SDK compatibility
+Subject: [PATCH 3/9] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 4/8] Add native schedule write-plan operation
+Subject: [PATCH 4/9] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 5/8] Add native reroute commit verification
+Subject: [PATCH 5/9] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2367,7 +2367,7 @@ index 31c47a5..0b76d2e 100644
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 6/8] Verify reroute obstacle clearance
+Subject: [PATCH 6/9] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2548,7 +2548,7 @@ index ba849b9..91431bb 100644
 From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:11:18 +0300
-Subject: [PATCH 7/8] Support reroute source replacement
+Subject: [PATCH 7/9] Support reroute source replacement
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
@@ -2664,7 +2664,7 @@ index 91431bb..f346aca 100644
 From 6be1a8b287fb9d41bf5ee96c449eab360ced9f75 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:24:33 +0300
-Subject: [PATCH 8/8] Reconnect reroute replacement endpoints
+Subject: [PATCH 8/9] Reconnect reroute replacement endpoints
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 445 +++++++++++++++++-
@@ -3241,6 +3241,115 @@ index f346aca..f230ebf 100644
          private static string StringValue(JObject obj, string name)
          {
              return obj[name] == null ? "" : obj[name].ToString();
+--
+2.50.1.windows.1
+
+
+From 0b3c09ff5eb9c55916f46cbaa5829e241542ecd7 Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 10:59:59 +0300
+Subject: [PATCH 9/9] Report reroute fitting references
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 58 +++++++++++++++++--
+ 1 file changed, 54 insertions(+), 4 deletions(-)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index 9c3c4e0..08ab8e9 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -1161,6 +1161,10 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             List<ElementId> routeIds = new List<ElementId>(ids);
+             JArray segmentChecks = new JArray();
+             JArray externalRefs = new JArray();
++            JArray routeFittingRefs = new JArray();
++            HashSet<int> routeOwnerIds = new HashSet<int>();
++            foreach (ElementId id in routeIds)
++                routeOwnerIds.Add(id.IntegerValue);
+             double tolerance = ConnectorToleranceInternal(args);
+             int segmentConnectionCount = 0;
+             for (int i = 0; i < routeIds.Count - 1; i++)
+@@ -1178,14 +1182,12 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             }
+
+             int externalConnectionCount = 0;
++            int routeFittingRefCount = CountRouteFittingRefs(document, routeIds, routeOwnerIds, routeFittingRefs);
+             if (routeIds.Count > 0)
+             {
+                 JArray points = args["points"] as JArray;
+                 XYZ startPoint = points != null && points.Count > 0 ? PointValue(points[0] as JObject, StringValue(args, "unit")) : null;
+                 XYZ endPoint = points != null && points.Count > 1 ? PointValue(points[points.Count - 1] as JObject, StringValue(args, "unit")) : null;
+-                HashSet<int> routeOwnerIds = new HashSet<int>();
+-                foreach (ElementId id in routeIds)
+-                    routeOwnerIds.Add(id.IntegerValue);
+                 Element firstRoute = document.GetElement(routeIds[0]);
+                 Element lastRoute = document.GetElement(routeIds[routeIds.Count - 1]);
+                 if (startPoint != null)
+@@ -1208,8 +1210,10 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 ["segmentConnectionCount"] = segmentConnectionCount,
+                 ["expectedSourceConnectionCount"] = expectedSourceConnections,
+                 ["externalConnectionCount"] = externalConnectionCount,
++                ["routeFittingRefCount"] = routeFittingRefCount,
+                 ["segmentChecks"] = segmentChecks,
+-                ["externalRefs"] = externalRefs
++                ["externalRefs"] = externalRefs,
++                ["routeFittingRefs"] = routeFittingRefs
+             };
+         }
+
+@@ -1517,6 +1521,52 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return count;
+         }
+
++        private static int CountRouteFittingRefs(Document document, ICollection<ElementId> routeIds, HashSet<int> routeOwnerIds, JArray refs)
++        {
++            if (routeIds == null || routeIds.Count == 0) return 0;
++            HashSet<string> seen = new HashSet<string>();
++            int count = 0;
++            foreach (ElementId routeId in routeIds)
++            {
++                Element routeElement = document.GetElement(routeId);
++                foreach (Connector connector in ElementConnectors(routeElement))
++                {
++                    ConnectorSet allRefs = null;
++                    try { allRefs = connector.AllRefs; }
++                    catch { allRefs = null; }
++                    if (allRefs == null) continue;
++                    foreach (Connector refConnector in allRefs)
++                    {
++                        if (refConnector == null || refConnector.Owner == null) continue;
++                        Element owner = refConnector.Owner;
++                        int ownerId = owner.Id.IntegerValue;
++                        if (routeOwnerIds.Contains(ownerId)) continue;
++                        if (!IsRouteFittingReferenceOwner(owner)) continue;
++                        string key = routeId.IntegerValue.ToString(CultureInfo.InvariantCulture) + ":" + ownerId.ToString(CultureInfo.InvariantCulture);
++                        if (seen.Contains(key)) continue;
++                        seen.Add(key);
++                        count++;
++                        refs.Add(new JObject
++                        {
++                            ["routeElementId"] = routeId.IntegerValue,
++                            ["fittingElementId"] = ownerId,
++                            ["category"] = owner.Category != null ? owner.Category.Name : "",
++                            ["name"] = owner.Name ?? ""
++                        });
++                    }
++                }
++            }
++            return count;
++        }
++
++        private static bool IsRouteFittingReferenceOwner(Element owner)
++        {
++            if (owner == null || owner.Category == null) return false;
++            int categoryId = owner.Category.Id.IntegerValue;
++            return categoryId == (int)BuiltInCategory.OST_DuctFitting
++                || categoryId == (int)BuiltInCategory.OST_PipeFitting;
++        }
++
+         private static bool IsSystemReferenceOwner(Element owner)
+         {
+             if (owner == null) return false;
 --
 2.50.1.windows.1
 
