@@ -188,8 +188,8 @@ Reporting foundation:
 - `analyze_mep_system` returns deterministic issue-list and design-log rows plus CSV text previews.
 - It also returns `officeStandardsCompleteness`, a top-level production-review gate that aggregates per-engine missing office standards into one sorted list and per-discipline status rows without mutating Revit.
 - `officeStandardsCompleteness.officeStandardsInputTemplate` turns the missing-standard paths into a fillable `officeStandards` override skeleton for `analyze_mep_system`, so the next review can use the same exact keys instead of a prose-only handoff.
-- `productionReadiness` combines office-standard completeness, proposal data-completeness, and generated write-plan validation into a single blocker list for final-design review.
-- `productionReadiness.nextRequiredInputs` points to the exact handoff type and source artefact needed next: office standards, project-critical data, or proposal-validation fixes.
+- `productionReadiness` combines office-standard completeness, proposal data-completeness, project-critical handoff completeness, and generated write-plan validation into a single blocker list for final-design review.
+- `productionReadiness.nextRequiredInputs` points to the exact handoff type and source artefact needed next: office standards, project-critical data, or proposal-validation fixes. Project-critical handoff errors/blockers are now carried into the same `project_critical_data` next input even when proposal data rows are otherwise complete.
 - `handoff_input_validator.js` gives those handoff artefacts a local production-review guard: placeholder office standards stay invalid, project-critical data can be shape-valid but production-incomplete, and sample-only live captures stay non-committable.
 - `analyze_mep_system.handoffValidation` surfaces that same guard without adding another public MCP tool, keeping the runtime surface at the targeted 13 tools.
 - `boqOnly` runs short live Revit BOQ collectors without connector graph traversal for count/length report population.

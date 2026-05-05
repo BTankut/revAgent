@@ -66,6 +66,7 @@ Result:
   - duct sizing proposal rows and CSV text generation
   - model-read flow fields on duct/pipe samples feeding proposal sizing without external design-flow maps
   - top-level `writePlanProposal` aggregation from domain proposal `writePlanSteps`, with validator coverage for `resize_duct` and `resize_pipe` steps
+  - `productionReadiness` blocker aggregation for office standards, proposal data completeness, project-critical handoff completeness, and generated write-plan validation
   - domain placement proposal handoff for air-terminal/damper/valve/equipment-style requests, producing validator-approved `place_family_instance` steps
   - HVAC duct sizing analyzer branch with fake-executor coverage for read-only duct sample collection and proposal-only `resize_duct` output
   - hydronic path-targeted local-loss branch with fake-executor coverage for pathfinding, ranking, selected-path extraction, pipe resistance read, and proposal-only `resize_pipe` output
@@ -413,8 +414,9 @@ Write checks:
 - Production readiness summary audit:
   - A fresh stdio runtime handshake listed all `13` tools.
   - `analyze_mep_system` with `discipline: all`, `includeRevitRead: false`, and enforced parameter allowlist allowing only `Mark` returned `success: true`, `mutateModel: false`, and top-level `productionReadiness`.
-  - The summary returned `completeForProductionReview: false`, `officeStandardsComplete: false`, `proposalDataComplete: true`, `writePlanProposalValid: false`, and two blockers: missing office standards plus generated write-plan proposal invalid because the equipment note proposal targeted `Comments`.
+  - The summary returned `completeForProductionReview: false`, `officeStandardsComplete: false`, `proposalDataComplete: true`, `writePlanProposalValid: false`, and blockers for missing office standards plus generated write-plan proposal invalid because the equipment note proposal targeted `Comments`.
   - Follow-up runtime probe confirmed `productionReadiness.nextRequiredInputs` returned `office_standards` and `write_plan_proposal_validation`, including `docs/revit-mep-office-standards-input-template.json` as the office standards handoff source artefact, without mutating Revit.
+  - Unit coverage now also verifies `projectCriticalDataComplete: false`, a blocked `project_critical_data_readiness` row, and a `project_critical_data` next input when handoff validation reports missing project-critical data, even if proposal data rows are otherwise complete.
 - Current clean-restart normal socket commit smoke:
   - A fresh stdio runtime handshake against `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js` listed all `13` tools.
   - `inspect_parameter_schema` confirmed duct `392168` has writable instance `Comments` / `ALL_MODEL_INSTANCE_COMMENTS`.

@@ -127,12 +127,13 @@ export function registerAnalyzeMepSystemTool(server) {
                 revitVersion: args.revitVersion || "2022",
                 officeStandards,
             });
+            const handoffValidation = buildAnalyzeHandoffValidation(args);
             const productionReadiness = summarizeProductionReadiness({
                 analyses,
                 officeStandardsCompleteness,
                 writePlanProposal,
+                handoffValidation,
             });
-            const handoffValidation = buildAnalyzeHandoffValidation(args);
             return formatJsonContent({
                 success: true,
                 discipline,

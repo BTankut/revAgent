@@ -2,6 +2,7 @@ export function summarizeProductionReadiness({
     analyses = [],
     officeStandardsCompleteness = null,
     writePlanProposal = null,
+    handoffValidation = null,
 } = {}) {
     const dataCompletenessRows = collectDataCompletenessRows(analyses);
     const blockers = [];
@@ -30,11 +31,22 @@ export function summarizeProductionReadiness({
             ? `Generated write-plan proposal is invalid: ${errors.join(" | ")}`
             : "Generated write-plan proposal is invalid.");
     }
+    const projectCriticalData = handoffValidation?.projectCriticalData || null;
+    const projectCriticalDataComplete = projectCriticalData
+        ? projectCriticalData.completeForProductionReview === true
+        : true;
+    if (!projectCriticalDataComplete) {
+        const details = projectCriticalDataDetails(projectCriticalData);
+        blockers.push(details
+            ? `Project-critical data handoff is incomplete: ${details}`
+            : "Project-critical data handoff is incomplete.");
+    }
     return {
         completeForProductionReview: blockers.length === 0,
         officeStandardsComplete,
         proposalDataComplete: dataCompletenessRows.every((row) => row.completeForProductionReview),
         writePlanProposalValid,
+        projectCriticalDataComplete,
         blockerCount: blockers.length,
         blockers,
         nextRequiredInputs: buildNextRequiredInputs({
@@ -43,6 +55,8 @@ export function summarizeProductionReadiness({
             dataCompletenessRows,
             writePlanProposalValid,
             writePlanProposal,
+            projectCriticalDataComplete,
+            projectCriticalData,
         }),
         rows: [
             {
@@ -55,6 +69,20 @@ export function summarizeProductionReadiness({
                 canCommit: false,
             },
             ...dataCompletenessRows,
+            {
+                rowType: "project_critical_data_readiness",
+                completeForProductionReview: projectCriticalDataComplete,
+                scenarioCount: Number(projectCriticalData?.scenarioCount || 0),
+                sampleOnly: projectCriticalData?.sampleOnly === true,
+                errorCount: Array.isArray(projectCriticalData?.errors)
+                    ? projectCriticalData.errors.length
+                    : 0,
+                blockerCount: Array.isArray(projectCriticalData?.blockers)
+                    ? projectCriticalData.blockers.length
+                    : 0,
+                status: projectCriticalDataComplete ? "ready" : "blocked",
+                canCommit: false,
+            },
             {
                 rowType: "write_plan_proposal_readiness",
                 completeForProductionReview: writePlanProposalValid,
@@ -80,6 +108,8 @@ function buildNextRequiredInputs({
     dataCompletenessRows,
     writePlanProposalValid,
     writePlanProposal,
+    projectCriticalDataComplete,
+    projectCriticalData,
 }) {
     const inputs = [];
     if (!officeStandardsComplete) {
@@ -107,6 +137,20 @@ function buildNextRequiredInputs({
             blockedProposalCount: incompleteRows.length,
             requiredArgumentGroups: requiredArgumentGroupsForRows(incompleteRows),
             blockedProposalRows: incompleteRows,
+            handoffBlockers: projectCriticalDataBlockers(projectCriticalData),
+            handoffErrors: projectCriticalDataErrors(projectCriticalData),
+        });
+    }
+    else if (!projectCriticalDataComplete) {
+        inputs.push({
+            inputType: "project_critical_data",
+            status: "required",
+            mergeTarget: "analyze_mep_system arguments",
+            sourceArtifact: "docs/revit-mep-project-critical-data-template.json",
+            blockedProposalCount: 0,
+            requiredArgumentGroups: requiredArgumentGroupsForProjectCriticalData(projectCriticalData),
+            handoffBlockers: projectCriticalDataBlockers(projectCriticalData),
+            handoffErrors: projectCriticalDataErrors(projectCriticalData),
         });
     }
     if (!writePlanProposalValid) {
@@ -123,6 +167,48 @@ function buildNextRequiredInputs({
         });
     }
     return inputs;
+}
+
+function projectCriticalDataDetails(projectCriticalData) {
+    return [
+        ...projectCriticalDataErrors(projectCriticalData),
+        ...projectCriticalDataBlockers(projectCriticalData),
+    ].join(" | ");
+}
+
+function projectCriticalDataErrors(projectCriticalData) {
+    return Array.isArray(projectCriticalData?.errors)
+        ? projectCriticalData.errors.filter((item) => item !== null && item !== undefined).map(String)
+        : [];
+}
+
+function projectCriticalDataBlockers(projectCriticalData) {
+    return Array.isArray(projectCriticalData?.blockers)
+        ? projectCriticalData.blockers.filter((item) => item !== null && item !== undefined).map(String)
+        : [];
+}
+
+function requiredArgumentGroupsForProjectCriticalData(projectCriticalData) {
+    const details = projectCriticalDataDetails(projectCriticalData);
+    const groups = new Set();
+    if (details.includes("hvacDuctSizingTargetElementIds") || details.includes("hvacDesignFlowsByElementId")) {
+        groups.add("hvacDuctSizingTargetElementIds");
+        groups.add("hvacDesignFlowsByElementId");
+    }
+    if (details.includes("hydronicPipeSizingTargetElementIds") || details.includes("hydronicDesignFlowsByElementId")) {
+        groups.add("hydronicPipeSizingTargetElementIds");
+        groups.add("hydronicDesignFlowsByElementId");
+    }
+    if (details.includes("criticalPathLocalLoss")) {
+        groups.add("criticalPathLocalLossPressurePa");
+        groups.add("criticalPathLocalLossComplete");
+        groups.add("localLossElementIds");
+    }
+    if (details.includes("domesticWaterPipeSizingRequests")) groups.add("domesticWaterPipeSizingRequests");
+    if (details.includes("sanitaryStormPipeSizingRequests")) groups.add("sanitaryStormPipeSizingRequests");
+    if (details.includes("firePipeSizingRequests")) groups.add("firePipeSizingRequests");
+    if (groups.size === 0) groups.add("projectCriticalData");
+    return [...groups].sort();
 }
 
 function requiredArgumentGroupsForRows(rows) {

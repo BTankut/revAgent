@@ -991,22 +991,61 @@ const productionReadiness = summarizeProductionReadiness({
             errors: ["analysis proposal validation failed"],
         },
     },
+    handoffValidation: {
+        projectCriticalData: {
+            completeForProductionReview: false,
+            scenarioCount: 1,
+            sampleOnly: false,
+            errors: [],
+            blockers: ["directArguments.hvacDesignFlowsByElementId needs confirmed HVAC design flow for target element 201."],
+        },
+    },
 });
 assert.equal(productionReadiness.completeForProductionReview, false);
 assert.equal(productionReadiness.officeStandardsComplete, false);
 assert.equal(productionReadiness.proposalDataComplete, false);
 assert.equal(productionReadiness.writePlanProposalValid, false);
+assert.equal(productionReadiness.projectCriticalDataComplete, false);
 assert(productionReadiness.blockers.some((blocker) => blocker.includes("Missing office standards")));
 assert(productionReadiness.blockers.some((blocker) => blocker.includes("ductSizingProposal data is incomplete")));
 assert(productionReadiness.blockers.some((blocker) => blocker.includes("Generated write-plan proposal is invalid")));
+assert(productionReadiness.blockers.some((blocker) => blocker.includes("Project-critical data handoff is incomplete")));
 assert(productionReadiness.rows.some((row) => row.rowType === "proposal_data_readiness" && row.status === "blocked"));
+assert(productionReadiness.rows.some((row) => row.rowType === "project_critical_data_readiness" && row.status === "blocked"));
 assert.equal(productionReadiness.nextRequiredInputs.length, 3);
 assert(productionReadiness.nextRequiredInputs.some((input) => input.inputType === "office_standards" && input.missingStandardCount === 2));
 assert(productionReadiness.nextRequiredInputs.some((input) => input.inputType === "project_critical_data" &&
     input.requiredArgumentGroups.includes("hvacDesignFlowsByElementId") &&
-    input.requiredArgumentGroups.includes("criticalPathLocalLossPressurePa")));
+    input.requiredArgumentGroups.includes("criticalPathLocalLossPressurePa") &&
+    input.handoffBlockers.some((blocker) => blocker.includes("confirmed HVAC design flow"))));
 assert(productionReadiness.nextRequiredInputs.some((input) => input.inputType === "write_plan_proposal_validation" && input.validationErrorCount === 1));
 assert.equal(productionReadiness.canCommit, false);
+
+const projectCriticalOnlyReadiness = summarizeProductionReadiness({
+    analyses: [],
+    officeStandardsCompleteness: {
+        completeForProductionReview: true,
+        missingStandards: [],
+    },
+    writePlanProposal: {
+        stepCount: 0,
+        validation: { valid: true, errors: [] },
+    },
+    handoffValidation: {
+        projectCriticalData: {
+            completeForProductionReview: false,
+            scenarioCount: 1,
+            sampleOnly: false,
+            errors: ["directArguments.criticalPathLocalLossPressurePa is required when criticalPathLocalLossComplete is true."],
+            blockers: [],
+        },
+    },
+});
+assert.equal(projectCriticalOnlyReadiness.completeForProductionReview, false);
+assert.equal(projectCriticalOnlyReadiness.projectCriticalDataComplete, false);
+assert.equal(projectCriticalOnlyReadiness.nextRequiredInputs.length, 1);
+assert.equal(projectCriticalOnlyReadiness.nextRequiredInputs[0].inputType, "project_critical_data");
+assert(projectCriticalOnlyReadiness.nextRequiredInputs[0].requiredArgumentGroups.includes("criticalPathLocalLossPressurePa"));
 
 const writePlanProposal = buildAnalysisWritePlanProposal({
     discipline: "all",
