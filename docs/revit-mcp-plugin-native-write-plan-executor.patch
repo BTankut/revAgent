@@ -1,7 +1,7 @@
 From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 01/13] Add native write-plan executor
+Subject: [PATCH 01/14] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -61,10 +61,10 @@ index 0000000..7d29e44
 +            {
 +                _handler.Parameters = new JArray();
 +            }
-+
++            
 +            _handler.Reset();
 +            RaiseAndWaitForCompletion(15000);
-+
++            
 +            if (_handler.Exception != null)
 +            {
 +                return CommandResult.CreateError(_handler.Exception.Message);
@@ -99,7 +99,7 @@ index 0000000..c1fb7d0
 +        public JArray Parameters { get; set; }
 +        public Exception Exception { get; set; }
 +        public object Result { get; set; }
-+
++        
 +        public void Reset()
 +        {
 +            _resetEvent.Reset();
@@ -116,7 +116,7 @@ index 0000000..c1fb7d0
 +            {
 +                Exception = null;
 +                Result = null;
-+
++                
 +                string sourceCode = @"
 +using System;
 +using System.Collections.Generic;
@@ -150,7 +150,7 @@ index 0000000..c1fb7d0
 +                compilerParams.ReferencedAssemblies.Add("System.Data.dll");
 +                compilerParams.ReferencedAssemblies.Add("System.Xml.dll");
 +                compilerParams.ReferencedAssemblies.Add("System.Xml.Linq.dll");
-+
++                
 +                compilerParams.ReferencedAssemblies.Add(typeof(Document).Assembly.Location);
 +                compilerParams.ReferencedAssemblies.Add(typeof(UIApplication).Assembly.Location);
 +                compilerParams.ReferencedAssemblies.Add(typeof(JObject).Assembly.Location);
@@ -170,7 +170,7 @@ index 0000000..c1fb7d0
 +                Type type = results.CompiledAssembly.GetType("RevitMcpDynamicCode.DynamicExecutor");
 +                object instance = Activator.CreateInstance(type);
 +                MethodInfo method = type.GetMethod("Execute");
-+
++                
 +                Result = method.Invoke(instance, new object[] { app, Parameters });
 +            }
 +            catch (Exception ex)
@@ -1237,14 +1237,14 @@ index c9ebbed..55dff88 100644
 -}
 \ No newline at end of file
 +}
---
+-- 
 2.50.1.windows.1
 
 
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 02/13] Expand write-plan verification readback
+Subject: [PATCH 02/14] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1260,7 +1260,7 @@ index e6d710d..4add29c 100644
  using SampleCommandSet.Commands.WritePlan.Operations;
 +using System;
 +using System.Globalization;
-
+ 
  namespace SampleCommandSet.Commands.WritePlan.Verification
  {
 @@ -27,24 +29,234 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
@@ -1288,7 +1288,7 @@ index e6d710d..4add29c 100644
 +                    warnings.Add(row["warning"].ToString());
                  }
              }
-
+ 
              result["success"] = errors.Count == 0;
              return result;
          }
@@ -1508,14 +1508,14 @@ index e6d710d..4add29c 100644
 +        }
      }
  }
---
+-- 
 2.50.1.windows.1
 
 
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 03/13] Fix write-plan command SDK compatibility
+Subject: [PATCH 03/14] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1535,7 +1535,7 @@ index 2108b19..1d13dcb 100644
 +[Bb]uild-check-compat/
  [Ll]og/
  [Ll]ogs/
-
+ 
 diff --git a/SampleCommandSet/Commands/WritePlan/ExecuteWritePlanCommand.cs b/SampleCommandSet/Commands/WritePlan/ExecuteWritePlanCommand.cs
 index 75dd5a3..bb6bdf8 100644
 --- a/SampleCommandSet/Commands/WritePlan/ExecuteWritePlanCommand.cs
@@ -1551,7 +1551,7 @@ index 75dd5a3..bb6bdf8 100644
 +using RevitMCPSDK.API.Models.Results;
 +using RevitMCPSDK.Exceptions;
  using System;
-
+ 
  namespace SampleCommandSet.Commands.WritePlan
 diff --git a/SampleCommandSet/Commands/WritePlan/ExecuteWritePlanEventHandler.cs b/SampleCommandSet/Commands/WritePlan/ExecuteWritePlanEventHandler.cs
 index 04c1974..0e65260 100644
@@ -1581,14 +1581,14 @@ index b58ccae..6df80ee 100644
      <Reference Include="RevitAddInUtility, Version=24.0.0.0, Culture=neutral, processorArchitecture=MSIL">
        <HintPath>..\packages\Revit_API_x64.2024.0.2\lib\NET480\RevitAddInUtility.dll</HintPath>
        <Private>False</Private>
---
+-- 
 2.50.1.windows.1
 
 
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 04/13] Add native schedule write-plan operation
+Subject: [PATCH 04/14] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -1685,7 +1685,7 @@ index 718f0a4..ee089b6 100644
 @@ -156,11 +184,58 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              };
          }
-
+ 
 +        public static JObject VerifySchedule(Document document, JObject step)
 +        {
 +            JObject args = step["arguments"] as JObject ?? new JObject();
@@ -1723,7 +1723,7 @@ index 718f0a4..ee089b6 100644
          {
              return obj != null && obj[name] != null ? obj[name].ToString() : "";
          }
-
+ 
 +        private static bool ExecutePlanSteps(Document document, JObject plan, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
 +        {
 +            JArray steps = plan["steps"] as JArray;
@@ -1753,7 +1753,7 @@ index 718f0a4..ee089b6 100644
 @@ -325,6 +402,68 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              }
          }
-
+ 
 +        private static void CreateOrUpdateSchedule(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
 +        {
 +            JObject args = step["arguments"] as JObject ?? new JObject();
@@ -1822,7 +1822,7 @@ index 718f0a4..ee089b6 100644
 @@ -381,6 +520,176 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              return ids;
          }
-
+ 
 +        private static int ScheduleIdValue(JObject step, JObject args)
 +        {
 +            if (args["scheduleId"] != null)
@@ -1999,7 +1999,7 @@ index 718f0a4..ee089b6 100644
 @@ -480,6 +789,20 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              mappings.Add(BuildMapping(step, elem, false));
          }
-
+ 
 +        private static void AddScheduleMapping(JObject step, ViewSchedule schedule, Dictionary<string, ElementId> eIdMap, JArray mappings, bool created)
 +        {
 +            if (schedule == null) return;
@@ -2020,7 +2020,7 @@ index 718f0a4..ee089b6 100644
 @@ -579,6 +902,18 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              return 0.0;
          }
-
+ 
 +        private static bool BoolValue(JToken token, bool defaultValue)
 +        {
 +            if (token == null) return defaultValue;
@@ -2075,7 +2075,7 @@ index 808db79..779b253 100644
 +            "resize_pipe",
 +            "create_schedule_or_update_schedule"
          };
-
+ 
          public static JObject Validate(string mode, JObject plan, string commitToken)
 @@ -84,6 +85,8 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
                          errors.Add("steps[" + i + "].targets must be an object");
@@ -2085,11 +2085,11 @@ index 808db79..779b253 100644
 +                        ValidateOperationPayload(step, i, errors, warnings);
                  }
              }
-
+ 
 @@ -112,6 +115,26 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
                  errors.Add(name + " is required");
          }
-
+ 
 +        private static void ValidateOperationPayload(JObject step, int index, JArray errors, JArray warnings)
 +        {
 +            string operation = StringValue(step, "operation");
@@ -2125,15 +2125,15 @@ index 4add29c..31c47a5 100644
 +                return WritePlanExecutor.VerifySchedule(document, step);
              return VerifyTargetExists(document, plan, step);
          }
-
---
+ 
+-- 
 2.50.1.windows.1
 
 
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 05/13] Add native reroute commit verification
+Subject: [PATCH 05/14] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2163,7 +2163,7 @@ index ee089b6..52034fc 100644
 @@ -217,6 +225,53 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              };
          }
-
+ 
 +        public static JObject VerifyReroute(Document document, JObject step)
 +        {
 +            JObject args = step["arguments"] as JObject ?? new JObject();
@@ -2241,7 +2241,7 @@ index ee089b6..52034fc 100644
                  AddCreatedMapping(step, pipe, eIdMap, mappings, i);
              }
          }
-
+ 
 +        private static void CommitReroute(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
 +        {
 +            JObject args = step["arguments"] as JObject ?? new JObject();
@@ -2266,7 +2266,7 @@ index ee089b6..52034fc 100644
 @@ -862,6 +941,18 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
                  ConvertToInternal(DoubleValue(obj["z"]), unit));
          }
-
+ 
 +        private static double PolylineLength(JArray points, string unit)
 +        {
 +            double total = 0.0;
@@ -2294,7 +2294,7 @@ index 779b253..ba849b9 100644
 +            "create_schedule_or_update_schedule",
 +            "commit_reroute"
          };
-
+ 
          public static JObject Validate(string mode, JObject plan, string commitToken)
 @@ -118,9 +119,20 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
          private static void ValidateOperationPayload(JObject step, int index, JArray errors, JArray warnings)
@@ -2312,7 +2312,7 @@ index 779b253..ba849b9 100644
                  return;
 +            }
 +        }
-
+ 
 +        private static void ValidateSchedulePayload(JObject step, int index, JArray errors, JArray warnings)
 +        {
              JObject args = step["arguments"] as JObject ?? new JObject();
@@ -2321,7 +2321,7 @@ index 779b253..ba849b9 100644
 @@ -135,6 +147,28 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
                  warnings.Add("steps[" + index + "].arguments.fields is empty; schedule will be created or renamed without adding fields");
          }
-
+ 
 +        private static void ValidateReroutePayload(JObject step, int index, JArray errors)
 +        {
 +            JObject args = step["arguments"] as JObject ?? new JObject();
@@ -2359,15 +2359,15 @@ index 31c47a5..0b76d2e 100644
 +                return WritePlanExecutor.VerifyReroute(document, step);
              return VerifyTargetExists(document, plan, step);
          }
-
---
+ 
+-- 
 2.50.1.windows.1
 
 
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 06/13] Verify reroute obstacle clearance
+Subject: [PATCH 06/14] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2401,11 +2401,11 @@ index 52034fc..68b1712 100644
 +                ["message"] = ok ? "verified" : "reroute created segments do not match expected count, length, or clearance"
              };
          }
-
+ 
 @@ -953,6 +958,107 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              return total;
          }
-
+ 
 +        private static int VerifyRerouteClearance(Document document, ICollection<ElementId> ids, JObject args, JArray checks)
 +        {
 +            JArray obstacleBoxes = args["obstacleBoxes"] as JArray ?? args["obstacles"] as JArray;
@@ -2539,16 +2539,16 @@ index ba849b9..91431bb 100644
 +            if (args["obstacles"] != null && !(args["obstacles"] is JArray))
 +                errors.Add("steps[" + index + "].arguments.obstacles must be an array when provided");
          }
-
+ 
          private static string StringValue(JObject obj, string name)
---
+-- 
 2.50.1.windows.1
 
 
 From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:11:18 +0300
-Subject: [PATCH 07/13] Support reroute source replacement
+Subject: [PATCH 07/14] Support reroute source replacement
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
@@ -2579,19 +2579,19 @@ index 68b1712..063a4f5 100644
 +                ["message"] = ok ? "verified" : "reroute created segments do not match expected count, length, clearance, or source replacement"
              };
          }
-
+ 
 @@ -484,6 +487,7 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
                      args["ductTypeId"] = args["typeId"].DeepClone();
                  CreateDuctRun(document, step, eIdMap, mappings, result);
              }
 +            DeleteRerouteSourceIfRequested(document, step, args, result);
          }
-
+ 
          private static void CreateOrUpdateSchedule(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
 @@ -958,6 +962,44 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              return total;
          }
-
+ 
 +        private static void DeleteRerouteSourceIfRequested(Document document, JObject step, JObject args, JObject result)
 +        {
 +            if (!BoolValue(args["deleteSource"], false) && !BoolValue(args["replaceSource"], false))
@@ -2655,16 +2655,16 @@ index 91431bb..f346aca 100644
 +            if (bool.TryParse(token.ToString(), out value)) return value;
 +            return token.ToString() == "1";
          }
-
+ 
          private static string StringValue(JObject obj, string name)
---
+-- 
 2.50.1.windows.1
 
 
 From 6be1a8b287fb9d41bf5ee96c449eab360ced9f75 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:24:33 +0300
-Subject: [PATCH 08/13] Reconnect reroute replacement endpoints
+Subject: [PATCH 08/14] Reconnect reroute replacement endpoints
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 445 +++++++++++++++++-
@@ -2695,11 +2695,11 @@ index 063a4f5..9c3c4e0 100644
 +                ["message"] = ok ? "verified" : "reroute created segments do not match expected count, length, clearance, source replacement, or reconnection"
              };
          }
-
+ 
 @@ -431,8 +434,9 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              ElementTransformUtils.MoveElements(document, ids, vector);
          }
-
+ 
 -        private static void CreateDuctRun(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
 +        private static List<ElementId> CreateDuctRun(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
          {
@@ -2715,7 +2715,7 @@ index 063a4f5..9c3c4e0 100644
              }
 +            return createdIds;
          }
-
+ 
 -        private static void CreatePipeRun(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
 +        private static List<ElementId> CreatePipeRun(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
          {
@@ -2731,7 +2731,7 @@ index 063a4f5..9c3c4e0 100644
              }
 +            return createdIds;
          }
-
+ 
          private static void CommitReroute(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
          {
              JObject args = step["arguments"] as JObject ?? new JObject();
@@ -2761,12 +2761,12 @@ index 063a4f5..9c3c4e0 100644
 +                    throw new InvalidOperationException("Reroute reconnection failed.");
 +            }
          }
-
+ 
          private static void CreateOrUpdateSchedule(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
 @@ -962,6 +980,139 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              return total;
          }
-
+ 
 +        private static List<ConnectorSnapshot> CaptureRerouteSourceConnections(Document document, JObject step, JObject args)
 +        {
 +            List<ConnectorSnapshot> snapshots = new List<ConnectorSnapshot>();
@@ -2906,7 +2906,7 @@ index 063a4f5..9c3c4e0 100644
 @@ -1000,6 +1151,68 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              return 0;
          }
-
+ 
 +        private static JObject VerifyRerouteReconnect(Document document, ICollection<ElementId> ids, JObject step, JObject args)
 +        {
 +            bool connectSegments = RerouteConnectSegmentsRequested(args);
@@ -2975,7 +2975,7 @@ index 063a4f5..9c3c4e0 100644
 @@ -1101,6 +1314,218 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              return tMin <= tMax;
          }
-
+ 
 +        private static bool RerouteReconnectRequested(JObject args)
 +        {
 +            return RerouteConnectSegmentsRequested(args) || RerouteReconnectSourceRequested(args);
@@ -3194,7 +3194,7 @@ index 063a4f5..9c3c4e0 100644
 @@ -1187,6 +1612,14 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              }
          }
-
+ 
 +        private class ConnectorSnapshot
 +        {
 +            public int OwnerId;
@@ -3224,12 +3224,12 @@ index f346aca..f230ebf 100644
 +            if (args["expectedSourceConnectionCount"] != null && IntValue(args["expectedSourceConnectionCount"]) < 0)
 +                errors.Add("steps[" + index + "].arguments.expectedSourceConnectionCount must be non-negative when provided");
          }
-
+ 
          private static bool BoolValue(JToken token)
 @@ -186,6 +191,14 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
              return token.ToString() == "1";
          }
-
+ 
 +        private static int IntValue(JToken token)
 +        {
 +            if (token == null) return 0;
@@ -3241,14 +3241,14 @@ index f346aca..f230ebf 100644
          private static string StringValue(JObject obj, string name)
          {
              return obj[name] == null ? "" : obj[name].ToString();
---
+-- 
 2.50.1.windows.1
 
 
 From 0b3c09ff5eb9c55916f46cbaa5829e241542ecd7 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:59:59 +0300
-Subject: [PATCH 09/13] Report reroute fitting references
+Subject: [PATCH 09/14] Report reroute fitting references
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 58 +++++++++++++++++--
@@ -3271,7 +3271,7 @@ index 9c3c4e0..08ab8e9 100644
              for (int i = 0; i < routeIds.Count - 1; i++)
 @@ -1178,14 +1182,12 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              }
-
+ 
              int externalConnectionCount = 0;
 +            int routeFittingRefCount = CountRouteFittingRefs(document, routeIds, routeOwnerIds, routeFittingRefs);
              if (routeIds.Count > 0)
@@ -3296,11 +3296,11 @@ index 9c3c4e0..08ab8e9 100644
 +                ["routeFittingRefs"] = routeFittingRefs
              };
          }
-
+ 
 @@ -1517,6 +1521,52 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              return count;
          }
-
+ 
 +        private static int CountRouteFittingRefs(Document document, ICollection<ElementId> routeIds, HashSet<int> routeOwnerIds, JArray refs)
 +        {
 +            if (routeIds == null || routeIds.Count == 0) return 0;
@@ -3350,14 +3350,14 @@ index 9c3c4e0..08ab8e9 100644
          private static bool IsSystemReferenceOwner(Element owner)
          {
              if (owner == null) return false;
---
+-- 
 2.50.1.windows.1
 
 
 From 4d1672f96c751579511eb03c46bd5ae8166a61d9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:12:20 +0300
-Subject: [PATCH 10/13] Add native pin element operations
+Subject: [PATCH 10/14] Add native pin element operations
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 24 ++++++++++++++
@@ -3395,7 +3395,7 @@ index 08ab8e9..da6a01e 100644
 @@ -380,6 +389,21 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              AddExistingMapping(step, elem, mappings);
          }
-
+ 
 +        private static void SetPinned(Document document, JObject step, bool pinned, JArray mappings)
 +        {
 +            ICollection<ElementId> ids = GetTargetElementIds(step);
@@ -3438,12 +3438,12 @@ index f230ebf..c91b7c2 100644
 +                    errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
 +            }
          }
-
+ 
          private static void ValidateSchedulePayload(JObject step, int index, JArray errors, JArray warnings)
 @@ -199,6 +207,14 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
              return 0;
          }
-
+ 
 +        private static bool HasTargetElement(JObject targets)
 +        {
 +            if (targets == null) return false;
@@ -3473,7 +3473,7 @@ index 0b76d2e..7b69f41 100644
 @@ -168,6 +172,34 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
              return row;
          }
-
+ 
 +        private static JObject VerifyPinned(Document document, JObject step, bool expectedPinned)
 +        {
 +            JArray rows = new JArray();
@@ -3505,14 +3505,14 @@ index 0b76d2e..7b69f41 100644
          private static bool VerifyDoubleParameter(Element elem, string parameterName, JToken expectedToken, string unit, JArray checks)
          {
              Parameter p = elem != null ? elem.LookupParameter(parameterName) : null;
---
+-- 
 2.50.1.windows.1
 
 
 From 57644057abdf3023af59358e5940af51c04fc41e Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:27:07 +0300
-Subject: [PATCH 11/13] Add native delete element operation
+Subject: [PATCH 11/14] Add native delete element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 30 +++++++++++++++++++
@@ -3548,7 +3548,7 @@ index da6a01e..d97532a 100644
 @@ -404,6 +411,29 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              }
          }
-
+ 
 +        private static void DeleteElements(Document document, JObject step, JObject result)
 +        {
 +            ICollection<ElementId> ids = GetTargetElementIds(step);
@@ -3612,7 +3612,7 @@ index 7b69f41..af2da46 100644
 @@ -200,6 +202,33 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
              };
          }
-
+ 
 +        private static JObject VerifyDeleted(Document document, JObject step)
 +        {
 +            JArray rows = new JArray();
@@ -3643,14 +3643,14 @@ index 7b69f41..af2da46 100644
          private static bool VerifyDoubleParameter(Element elem, string parameterName, JToken expectedToken, string unit, JArray checks)
          {
              Parameter p = elem != null ? elem.LookupParameter(parameterName) : null;
---
+-- 
 2.50.1.windows.1
 
 
 From a4b7f6f034cbb18e6f29596db615a12f9042d9d4 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:34:06 +0300
-Subject: [PATCH 12/13] Add native copy element operation
+Subject: [PATCH 12/14] Add native copy element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  38 +++++
@@ -3686,7 +3686,7 @@ index d97532a..f23843d 100644
 @@ -488,6 +495,37 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              ElementTransformUtils.MoveElements(document, ids, vector);
          }
-
+ 
 +        private static void CopyElements(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
 +        {
 +            JObject args = step["arguments"] as JObject ?? new JObject();
@@ -3747,7 +3747,7 @@ index fe2ac9d..1039060 100644
 +                    errors.Add("steps[" + index + "].arguments.vector is required");
 +            }
          }
-
+ 
          private static void ValidateSchedulePayload(JObject step, int index, JArray errors, JArray warnings)
 diff --git a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
 index af2da46..1b22f12 100644
@@ -3759,7 +3759,7 @@ index af2da46..1b22f12 100644
  using System;
 +using System.Collections.Generic;
  using System.Globalization;
-
+ 
  namespace SampleCommandSet.Commands.WritePlan.Verification
 @@ -60,6 +61,8 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
                  return VerifyPinned(document, step, false);
@@ -3773,7 +3773,7 @@ index af2da46..1b22f12 100644
 @@ -229,6 +232,50 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
              };
          }
-
+ 
 +        private static JObject VerifyCopied(Document document, JObject step)
 +        {
 +            JObject args = step["arguments"] as JObject ?? new JObject();
@@ -3824,7 +3824,7 @@ index af2da46..1b22f12 100644
 @@ -271,6 +318,89 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
              return ids;
          }
-
+ 
 +        private static List<ElementId> SourceElementIdsForCopy(JObject step)
 +        {
 +            JObject targets = step["targets"] as JObject ?? new JObject();
@@ -3911,14 +3911,14 @@ index af2da46..1b22f12 100644
          private static View ResolveView(Document document, JObject step)
          {
              JObject args = step["arguments"] as JObject ?? new JObject();
---
+-- 
 2.50.1.windows.1
 
 
 From cac42e1db4d4cdb868a2b4bb6b79e2ba9e243621 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:42:35 +0300
-Subject: [PATCH 13/13] Add native rotate element operation
+Subject: [PATCH 13/14] Add native rotate element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 54 +++++++++++++
@@ -3955,7 +3955,7 @@ index f23843d..e70210a 100644
 @@ -526,6 +534,25 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
              result["copiedElementCount"] = copied.Count;
          }
-
+ 
 +        private static void RotateElements(Document document, JObject step, JObject result)
 +        {
 +            JObject args = step["arguments"] as JObject ?? new JObject();
@@ -3981,7 +3981,7 @@ index f23843d..e70210a 100644
 @@ -1060,6 +1087,33 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
                  ConvertToInternal(DoubleValue(obj["z"]), unit));
          }
-
+ 
 +        private static Line AxisLine(JObject args)
 +        {
 +            JObject axis = args["axis"] as JObject;
@@ -4041,7 +4041,7 @@ index 1039060..4b436a4 100644
 +                    errors.Add("steps[" + index + "].arguments.angleRadians or angleDegrees is required");
 +            }
          }
-
+ 
          private static void ValidateSchedulePayload(JObject step, int index, JArray errors, JArray warnings)
 diff --git a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
 index 1b22f12..ea6fddd 100644
@@ -4059,7 +4059,7 @@ index 1b22f12..ea6fddd 100644
 @@ -276,6 +278,47 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
              };
          }
-
+ 
 +        private static JObject VerifyRotated(Document document, JObject step)
 +        {
 +            JObject args = step["arguments"] as JObject ?? new JObject();
@@ -4107,7 +4107,7 @@ index 1b22f12..ea6fddd 100644
 @@ -391,6 +434,38 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
              return false;
          }
-
+ 
 +        private static JObject ExpectedCurveForElement(JArray expectedCurves, ElementId id, int index)
 +        {
 +            if (expectedCurves == null)
@@ -4143,6 +4143,274 @@ index 1b22f12..ea6fddd 100644
          private static XYZ PointValue(JObject obj, string unit)
          {
              if (obj == null)
---
+-- 
+2.50.1.windows.1
+
+
+From 4330cdc41a7b370cb9f325e7d292b64e2c4155e1 Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 11:54:41 +0300
+Subject: [PATCH 14/14] Add native align element operation
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 83 +++++++++++++++++++
+ .../Validators/WritePlanValidator.cs          | 12 +++
+ .../Verification/WritePlanVerifier.cs         | 76 +++++++++++++++++
+ 3 files changed, 171 insertions(+)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index e70210a..c9e2a2e 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -186,6 +186,14 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 row["axis"] = args["axis"] != null ? args["axis"].DeepClone() : null;
+                 row["angleRadians"] = AngleRadians(args);
+             }
++            else if (operation == "align_elements")
++            {
++                row["targetElementCount"] = GetTargetElementIds(step).Count;
++                row["sourcePoint"] = args["sourcePoint"] != null ? args["sourcePoint"].DeepClone() : null;
++                row["targetPoint"] = args["targetPoint"] != null ? args["targetPoint"].DeepClone() : null;
++                row["axes"] = args["axes"] != null ? args["axes"].DeepClone() : null;
++                row["translationInternal"] = PointJson(AlignVector(args));
++            }
+             else
+             {
+                 row["arguments"] = args.DeepClone();
+@@ -354,6 +362,8 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 CopyElements(document, step, eIdMap, mappings, result);
+             else if (operation == "rotate_elements")
+                 RotateElements(document, step, result);
++            else if (operation == "align_elements")
++                AlignElements(document, step, result);
+             else if (operation == "create_duct_run")
+                 CreateDuctRun(document, step, eIdMap, mappings, result);
+             else if (operation == "resize_duct")
+@@ -553,6 +563,24 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             result["rotationAngleRadians"] = angle;
+         }
+ 
++        private static void AlignElements(Document document, JObject step, JObject result)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            XYZ vector = AlignVector(args);
++            ICollection<ElementId> ids = GetTargetElementIds(step);
++            if (ids.Count == 0)
++                throw new InvalidOperationException("No target element ids supplied.");
++            foreach (ElementId id in ids)
++            {
++                Element elem = document.GetElement(id);
++                if (elem == null)
++                    throw new InvalidOperationException("Target element not found: " + id.IntegerValue.ToString(CultureInfo.InvariantCulture));
++            }
++            ElementTransformUtils.MoveElements(document, ids, vector);
++            result["alignedElementCount"] = ids.Count;
++            result["alignmentTranslationInternal"] = PointJson(vector);
++        }
++
+         private static List<ElementId> CreateDuctRun(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
+         {
+             List<ElementId> createdIds = new List<ElementId>();
+@@ -1087,6 +1115,61 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 ConvertToInternal(DoubleValue(obj["z"]), unit));
+         }
+ 
++        private static XYZ AlignVector(JObject args)
++        {
++            string unit = StringValue(args, "unit");
++            XYZ source = PointValue(args["sourcePoint"] as JObject, unit);
++            XYZ target = PointValue(args["targetPoint"] as JObject, unit);
++            XYZ delta = target - source;
++            return new XYZ(
++                AxisEnabled(args, "x") ? delta.X : 0.0,
++                AxisEnabled(args, "y") ? delta.Y : 0.0,
++                AxisEnabled(args, "z") ? delta.Z : 0.0);
++        }
++
++        private static bool AxisEnabled(JObject args, string axis)
++        {
++            JToken axes = args["axes"];
++            if (axes == null)
++                axes = args["axis"];
++            if (axes == null)
++                return true;
++            JArray array = axes as JArray;
++            if (array != null)
++            {
++                foreach (JToken token in array)
++                {
++                    if (AxisTokenIncludes(token != null ? token.ToString() : "", axis))
++                        return true;
++                }
++                return false;
++            }
++            return AxisTokenIncludes(axes.ToString(), axis);
++        }
++
++        private static bool AxisTokenIncludes(string token, string axis)
++        {
++            string normalized = string.IsNullOrWhiteSpace(token) ? "" : token.Trim().ToLowerInvariant();
++            normalized = normalized.Replace(",", "").Replace(" ", "");
++            if (normalized == "all" || normalized == "xyz" || normalized == "3d")
++                return true;
++            if (normalized == axis)
++                return true;
++            return normalized.Length > 1 && normalized.IndexOf(axis, StringComparison.Ordinal) >= 0;
++        }
++
++        private static JObject PointJson(XYZ point)
++        {
++            if (point == null)
++                return null;
++            return new JObject
++            {
++                ["x"] = point.X,
++                ["y"] = point.Y,
++                ["z"] = point.Z
++            };
++        }
++
+         private static Line AxisLine(JObject args)
+         {
+             JObject axis = args["axis"] as JObject;
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index 4b436a4..cdaea3f 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -21,6 +21,7 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+             "delete_elements",
+             "copy_elements",
+             "rotate_elements",
++            "align_elements",
+             "view_hide_elements",
+             "view_unhide_elements",
+             "view_apply_overrides",
+@@ -161,6 +162,17 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 if (args["angle"] == null && args["angleRadians"] == null && args["angleDegrees"] == null)
+                     errors.Add("steps[" + index + "].arguments.angleRadians or angleDegrees is required");
+             }
++            if (operation == "align_elements")
++            {
++                JObject targets = step["targets"] as JObject;
++                JObject args = step["arguments"] as JObject ?? new JObject();
++                if (!HasTargetElement(targets))
++                    errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
++                if (!(args["sourcePoint"] is JObject) || !(args["targetPoint"] is JObject))
++                    errors.Add("steps[" + index + "].arguments.sourcePoint and targetPoint are required");
++                if (args["axes"] != null && !(args["axes"] is JArray) && args["axes"].Type != JTokenType.String)
++                    errors.Add("steps[" + index + "].arguments.axes must be a string or array when provided");
++            }
+         }
+ 
+         private static void ValidateSchedulePayload(JObject step, int index, JArray errors, JArray warnings)
+diff --git a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+index ea6fddd..fec394e 100644
+--- a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
++++ b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+@@ -65,6 +65,8 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+                 return VerifyCopied(document, step);
+             if (operation == "rotate_elements")
+                 return VerifyRotated(document, step);
++            if (operation == "align_elements")
++                return VerifyAligned(document, step);
+             if (operation == "resize_duct" || operation == "resize_pipe")
+                 return VerifyResize(document, step, operation);
+             if (operation == "view_hide_elements")
+@@ -319,6 +321,53 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             };
+         }
+ 
++        private static JObject VerifyAligned(Document document, JObject step)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            JArray expectedCurves = args["expectedLocationCurves"] as JArray;
++            JArray expectedPoints = args["expectedLocationPoints"] as JArray;
++            JArray rows = new JArray();
++            bool ok = true;
++            int index = 0;
++            foreach (ElementId id in TargetElementIds(step))
++            {
++                Element elem = document.GetElement(id);
++                JObject expectedCurve = ExpectedCurveForElement(expectedCurves, id, index);
++                JObject expectedPoint = ExpectedPointForElement(expectedPoints, id, index);
++                bool exists = elem != null;
++                bool geometryChecked = false;
++                bool geometryMatches = true;
++                if (exists && expectedCurve != null)
++                {
++                    geometryChecked = TryVerifyLocationCurve(elem, expectedCurve, WritePlanExecutor.StringValue(args, "unit"), out geometryMatches);
++                }
++                else if (exists && expectedPoint != null)
++                {
++                    geometryChecked = TryVerifyLocationPoint(elem, expectedPoint, WritePlanExecutor.StringValue(args, "unit"), out geometryMatches);
++                }
++                if (geometryChecked && !geometryMatches)
++                    ok = false;
++                if (!exists)
++                    ok = false;
++                rows.Add(new JObject
++                {
++                    ["elementId"] = id.IntegerValue,
++                    ["exists"] = exists,
++                    ["geometryChecked"] = geometryChecked,
++                    ["locationMatches"] = geometryMatches
++                });
++                index++;
++            }
++            return new JObject
++            {
++                ["success"] = ok,
++                ["stepId"] = WritePlanExecutor.StringValue(step, "stepId"),
++                ["operation"] = "align_elements",
++                ["checks"] = rows,
++                ["message"] = ok ? "verified" : "aligned elements are missing or do not match expected locations"
++            };
++        }
++
+         private static bool VerifyDoubleParameter(Element elem, string parameterName, JToken expectedToken, string unit, JArray checks)
+         {
+             Parameter p = elem != null ? elem.LookupParameter(parameterName) : null;
+@@ -447,6 +496,19 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             return index >= 0 && index < expectedCurves.Count ? expectedCurves[index] as JObject : null;
+         }
+ 
++        private static JObject ExpectedPointForElement(JArray expectedPoints, ElementId id, int index)
++        {
++            if (expectedPoints == null)
++                return null;
++            foreach (JToken token in expectedPoints)
++            {
++                JObject obj = token as JObject;
++                if (obj != null && obj["elementId"] != null && IntValue(obj["elementId"]) == id.IntegerValue)
++                    return obj;
++            }
++            return index >= 0 && index < expectedPoints.Count ? expectedPoints[index] as JObject : null;
++        }
++
+         private static bool TryVerifyLocationCurve(Element elem, JObject expected, string unit, out bool matches)
+         {
+             const double tolerance = 0.001;
+@@ -466,6 +528,20 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             return true;
+         }
+ 
++        private static bool TryVerifyLocationPoint(Element elem, JObject expected, string unit, out bool matches)
++        {
++            const double tolerance = 0.001;
++            matches = true;
++            LocationPoint location = elem.Location as LocationPoint;
++            if (location == null)
++                return false;
++            XYZ expectedPoint = PointValue(expected["point"] as JObject ?? expected, unit);
++            if (expectedPoint == null)
++                return false;
++            matches = expectedPoint.DistanceTo(location.Point) <= tolerance;
++            return true;
++        }
++
+         private static XYZ PointValue(JObject obj, string unit)
+         {
+             if (obj == null)
+-- 
 2.50.1.windows.1
 

@@ -16,6 +16,7 @@ const operationRisk = {
     move_elements: "medium",
     copy_elements: "medium",
     rotate_elements: "medium",
+    align_elements: "medium",
     resize_duct: "medium",
     resize_pipe: "medium",
     create_schedule_or_update_schedule: "medium",

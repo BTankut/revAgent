@@ -19,7 +19,7 @@
 - Added native `execute_write_plan` command in the plugin repo.
 - Added ExternalEvent handler and deterministic executor.
 - Implemented validate/preview/commit/verify modes.
-- Implemented initial operation catalog for parameter writes, pin/unpin, delete, copy, rotate, view operations, movement, placement, duct/pipe creation, duct/pipe resize, and native schedule create/update.
+- Implemented initial operation catalog for parameter writes, pin/unpin, delete, copy, rotate, align, view operations, movement, placement, duct/pipe creation, duct/pipe resize, and native schedule create/update.
 - Added native `commit_reroute` source delete/replacement support: validation requires a `sourceElementId`, commit deletes the source after creating replacement route segments, and verify confirms the source no longer exists.
 - Added native `commit_reroute` reconnection support: source connector references are captured before deletion, replacement route segments are connected to each other, source neighbors are reconnected to route endpoints, and verify re-reads physical external connections while filtering system proxy references.
 - Added native reroute fitting reference readback: reconnect verify now reports `routeFittingRefCount` and `routeFittingRefs` for duct/pipe fittings connected to replacement route segments.
@@ -102,12 +102,13 @@
   - Commit plan `reroute-l-reconnect-1777967000000` deleted source `1020960` and created replacement ducts `1020965`, `1020967`, and `1020969`
   - Commit and verify both returned `segmentConnectionCount: 2`, `externalConnectionCount: 2`, `sourceReplacementCheck.exists: false`, and `success: true`
   - Final readback confirmed all three replacement ducts at `300 x 300 mm` with `openConnectorCount: 0`.
-- Added reroute fitting-reference verify readback in plugin patch `09/12`; plugin `Debug 2022|x64` build passed and live read-only probe on L-shaped replacement ducts `1020965`, `1020967`, `1020969` returned `routeFittingRefCount: 0`, making the no-separate-fitting behavior explicit.
+- Added reroute fitting-reference verify readback in the plugin patch series; plugin `Debug 2022|x64` build passed and live read-only probe on L-shaped replacement ducts `1020965`, `1020967`, `1020969` returned `routeFittingRefCount: 0`, making the no-separate-fitting behavior explicit.
 - Added native `pin_elements` / `unpin_elements`, runtime validation/risk coverage, native preview/commit/verify support, and live-tested reversible commit on duct `392168`: preview did not mutate, commit pinned, verify reported `actualPinned: true`, restore unpinned, and final pinned state returned to the original `false`.
 - Added native `delete_elements`, runtime validation/risk coverage, native preview/commit/verify support, and live-tested approved critical commit on disposable duct `1020971`: preview did not delete, commit returned `deletedElementCount: 1`, verify succeeded, and final readback returned `Element not found`.
 - Added native `copy_elements`, runtime validation/risk coverage, native preview/commit/verify support, and live-tested approved commit plan `copy-elements-live-1777970200001`: source duct `392168` stayed in place, copy `1020974` was created, verifier confirmed the requested `2 m` translation, and cleanup deleted the copy.
 - Added native `rotate_elements`, runtime validation/risk coverage, native preview/commit/verify support, and live-tested approved commit plan `rotate-elements-live-1777971200002`: disposable duct `1020976` remained after preview, commit rotated it `90` degrees around the requested vertical axis, verifier matched expected `LocationCurve` endpoints, and cleanup deleted the duct.
-- Re-generated plugin patch artifact as `13/13` and verified it applies cleanly with `git am --3way` on a temporary plugin `main` worktree.
+- Added native `align_elements`, runtime validation/risk coverage, native preview/commit/verify support, and live-tested approved commit plan `align-elements-live-1777972200003`: disposable duct `1020981` remained fixed during preview, commit aligned it by the requested constrained x-axis translation, verifier matched expected `LocationCurve` endpoints with `0` internal start-point error, cleanup deleted the duct, and a final read-only check returned `exists: false`.
+- Re-generated plugin patch artifact as `14/14` and verified it applies cleanly with `git am --3way` on a temporary plugin `main` worktree.
 
 ## Remaining Work
 

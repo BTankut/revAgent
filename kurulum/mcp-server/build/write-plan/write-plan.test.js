@@ -187,6 +187,33 @@ const invalidRotateValidation = validateWritePlan(invalidRotatePlan, { mode: "co
 assert.equal(invalidRotateValidation.valid, false);
 assert(invalidRotateValidation.errors.includes("steps[0].arguments.axis.start/end is required"));
 
+const alignPlan = buildPlanFromArgs({
+    title: "Align disposable model elements",
+    discipline: "general",
+    operation: "align_elements",
+    targets: { elementIds: [501] },
+    arguments: {
+        sourcePoint: { x: 0, y: 0, z: 0 },
+        targetPoint: { x: 2, y: 0, z: 0 },
+        axes: ["x"],
+        unit: "m",
+    },
+});
+const alignValidation = validateWritePlan(alignPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(alignValidation.valid, true);
+assert.equal(classifyPlanRisk(alignPlan), "medium");
+
+const invalidAlignPlan = buildPlanFromArgs({
+    title: "Reject align without points",
+    discipline: "general",
+    operation: "align_elements",
+    targets: { elementIds: [501] },
+    arguments: {},
+});
+const invalidAlignValidation = validateWritePlan(invalidAlignPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidAlignValidation.valid, false);
+assert(invalidAlignValidation.errors.includes("steps[0].arguments.sourcePoint and targetPoint are required"));
+
 const reroutePlan = buildPlanFromArgs({
     title: "Commit explicit reroute geometry",
     discipline: "clash",

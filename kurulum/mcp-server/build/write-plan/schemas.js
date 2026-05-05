@@ -33,6 +33,7 @@ export const initialOperations = [
     "move_elements",
     "copy_elements",
     "rotate_elements",
+    "align_elements",
     "create_duct_run",
     "resize_duct",
     "create_pipe_run",
@@ -43,7 +44,6 @@ export const initialOperations = [
 
 export const futureOperations = [
     "tag_elements",
-    "align_elements",
     "create_opening_or_sleeve",
     "place_support_or_hanger",
     "create_duct_branch",

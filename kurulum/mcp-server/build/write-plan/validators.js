@@ -140,8 +140,13 @@ function validateOperationPayload(step, prefix, errors, warnings) {
         case "move_elements":
         case "copy_elements":
         case "rotate_elements":
+        case "align_elements":
             if (!hasAnyTargetElements(targets)) errors.push(`${prefix}.targets.elementIds or elementId is required`);
             if ((step.operation === "move_elements" || step.operation === "copy_elements") && !args.vector) errors.push(`${prefix}.arguments.vector is required`);
+            if (step.operation === "align_elements") {
+                if (!args.sourcePoint || !args.targetPoint) errors.push(`${prefix}.arguments.sourcePoint and targetPoint are required`);
+                if (args.axes != null && !Array.isArray(args.axes) && typeof args.axes !== "string") errors.push(`${prefix}.arguments.axes must be a string or array when provided`);
+            }
             if (step.operation === "rotate_elements") {
                 if (!args.axis?.start || !args.axis?.end) errors.push(`${prefix}.arguments.axis.start/end is required`);
                 if (args.angle == null && args.angleRadians == null && args.angleDegrees == null) errors.push(`${prefix}.arguments.angleRadians or angleDegrees is required`);
