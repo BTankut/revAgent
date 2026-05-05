@@ -1,7 +1,7 @@
 From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 01/17] Add native write-plan executor
+Subject: [PATCH 01/18] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 02/17] Expand write-plan verification readback
+Subject: [PATCH 02/18] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 03/17] Fix write-plan command SDK compatibility
+Subject: [PATCH 03/18] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 04/17] Add native schedule write-plan operation
+Subject: [PATCH 04/18] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 05/17] Add native reroute commit verification
+Subject: [PATCH 05/18] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2367,7 +2367,7 @@ index 31c47a5..0b76d2e 100644
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 06/17] Verify reroute obstacle clearance
+Subject: [PATCH 06/18] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2548,7 +2548,7 @@ index ba849b9..91431bb 100644
 From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:11:18 +0300
-Subject: [PATCH 07/17] Support reroute source replacement
+Subject: [PATCH 07/18] Support reroute source replacement
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
@@ -2664,7 +2664,7 @@ index 91431bb..f346aca 100644
 From 6be1a8b287fb9d41bf5ee96c449eab360ced9f75 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:24:33 +0300
-Subject: [PATCH 08/17] Reconnect reroute replacement endpoints
+Subject: [PATCH 08/18] Reconnect reroute replacement endpoints
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 445 +++++++++++++++++-
@@ -3248,7 +3248,7 @@ index f346aca..f230ebf 100644
 From 0b3c09ff5eb9c55916f46cbaa5829e241542ecd7 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:59:59 +0300
-Subject: [PATCH 09/17] Report reroute fitting references
+Subject: [PATCH 09/18] Report reroute fitting references
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 58 +++++++++++++++++--
@@ -3357,7 +3357,7 @@ index 9c3c4e0..08ab8e9 100644
 From 4d1672f96c751579511eb03c46bd5ae8166a61d9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:12:20 +0300
-Subject: [PATCH 10/17] Add native pin element operations
+Subject: [PATCH 10/18] Add native pin element operations
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 24 ++++++++++++++
@@ -3512,7 +3512,7 @@ index 0b76d2e..7b69f41 100644
 From 57644057abdf3023af59358e5940af51c04fc41e Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:27:07 +0300
-Subject: [PATCH 11/17] Add native delete element operation
+Subject: [PATCH 11/18] Add native delete element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 30 +++++++++++++++++++
@@ -3650,7 +3650,7 @@ index 7b69f41..af2da46 100644
 From a4b7f6f034cbb18e6f29596db615a12f9042d9d4 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:34:06 +0300
-Subject: [PATCH 12/17] Add native copy element operation
+Subject: [PATCH 12/18] Add native copy element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  38 +++++
@@ -3918,7 +3918,7 @@ index af2da46..1b22f12 100644
 From cac42e1db4d4cdb868a2b4bb6b79e2ba9e243621 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:42:35 +0300
-Subject: [PATCH 13/17] Add native rotate element operation
+Subject: [PATCH 13/18] Add native rotate element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 54 +++++++++++++
@@ -4150,7 +4150,7 @@ index 1b22f12..ea6fddd 100644
 From 4330cdc41a7b370cb9f325e7d292b64e2c4155e1 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:54:41 +0300
-Subject: [PATCH 14/17] Add native align element operation
+Subject: [PATCH 14/18] Add native align element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 83 +++++++++++++++++++
@@ -4418,7 +4418,7 @@ index ea6fddd..fec394e 100644
 From ff7a4e1ea1f0d321b21b08408805fc3092d2ce5c Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:08:09 +0300
-Subject: [PATCH 15/17] Add native tag element operation
+Subject: [PATCH 15/18] Add native tag element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 80 +++++++++++++++++++
@@ -4683,7 +4683,7 @@ index fec394e..f31f5eb 100644
 From 2d2169d8cee9ac46d6b8ffc8acdc65769f6a662b Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:19:18 +0300
-Subject: [PATCH 16/17] Verify native view override operation
+Subject: [PATCH 16/18] Verify native view override operation
 
 ---
  .../Validators/WritePlanValidator.cs          |  9 ++
@@ -4840,7 +4840,7 @@ index f31f5eb..90697b7 100644
 From 9064ea3aa975c607d4b58b623c902d4f03a9f11b Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:33:59 +0300
-Subject: [PATCH 17/17] Validate direct duct and pipe run creation
+Subject: [PATCH 17/18] Validate direct duct and pipe run creation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  4 +--
@@ -4913,6 +4913,183 @@ index d938965..92711fa 100644
          private static void ValidateSchedulePayload(JObject step, int index, JArray errors, JArray warnings)
          {
              JObject args = step["arguments"] as JObject ?? new JObject();
+-- 
+2.50.1.windows.1
+
+
+From bf0a7f324670da04947151d02246b927519356ca Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 13:01:26 +0300
+Subject: [PATCH 18/18] Verify copied parameter values in write plans
+
+---
+ .../Validators/WritePlanValidator.cs          | 70 +++++++++++++++++++
+ .../Verification/WritePlanVerifier.cs         | 43 ++++++++++++
+ 2 files changed, 113 insertions(+)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index 92711fa..54810c2 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -141,6 +141,35 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 ValidateCurveRunPayload(step, index, operation == "create_pipe_run", errors);
+                 return;
+             }
++            if (operation == "set_parameter" || operation == "clear_parameter" || operation == "change_type")
++            {
++                JObject targets = step["targets"] as JObject;
++                JObject args = step["arguments"] as JObject ?? new JObject();
++                if (!HasTargetElement(targets))
++                    errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
++                if (operation == "set_parameter" || operation == "clear_parameter")
++                {
++                    if (string.IsNullOrWhiteSpace(StringValue(args, "parameterName")))
++                        errors.Add("steps[" + index + "].arguments.parameterName is required");
++                    if (operation == "set_parameter" && args["value"] == null)
++                        errors.Add("steps[" + index + "].arguments.value is required");
++                }
++                if (operation == "change_type" && args["typeId"] == null)
++                    errors.Add("steps[" + index + "].arguments.typeId is required");
++            }
++            if (operation == "copy_parameter_value")
++            {
++                JObject targets = step["targets"] as JObject;
++                JObject args = step["arguments"] as JObject ?? new JObject();
++                if (!HasTargetElement(targets))
++                    errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
++                if (args["sourceElementId"] == null && string.IsNullOrWhiteSpace(StringValue(args, "sourceEId")))
++                    errors.Add("steps[" + index + "].arguments.sourceElementId or sourceEId is required");
++                if (string.IsNullOrWhiteSpace(StringValue(args, "sourceParameterName")))
++                    errors.Add("steps[" + index + "].arguments.sourceParameterName is required");
++                if (string.IsNullOrWhiteSpace(StringValue(args, "targetParameterName")))
++                    errors.Add("steps[" + index + "].arguments.targetParameterName is required");
++            }
+             if (operation == "pin_elements" || operation == "unpin_elements" || operation == "delete_elements")
+             {
+                 JObject targets = step["targets"] as JObject;
+@@ -165,6 +194,31 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 if (!(args["projectionLineColor"] is JObject) && args["projectionLineWeight"] == null)
+                     errors.Add("steps[" + index + "].arguments.projectionLineColor or projectionLineWeight is required");
+             }
++            if (operation == "view_hide_elements" || operation == "view_unhide_elements")
++            {
++                JObject targets = step["targets"] as JObject;
++                if (!HasTargetElement(targets))
++                    errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
++            }
++            if (operation == "place_family_instance")
++            {
++                JObject args = step["arguments"] as JObject ?? new JObject();
++                if (!(args["point"] is JObject))
++                    errors.Add("steps[" + index + "].arguments.point is required");
++                if (args["familySymbolId"] == null &&
++                    (string.IsNullOrWhiteSpace(StringValue(args, "familyName")) ||
++                     string.IsNullOrWhiteSpace(StringValue(args, "typeName"))))
++                    errors.Add("steps[" + index + "].arguments.familySymbolId or familyName/typeName is required");
++            }
++            if (operation == "move_elements")
++            {
++                JObject targets = step["targets"] as JObject;
++                JObject args = step["arguments"] as JObject ?? new JObject();
++                if (!HasTargetElement(targets))
++                    errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
++                if (!(args["vector"] is JObject))
++                    errors.Add("steps[" + index + "].arguments.vector is required");
++            }
+             if (operation == "copy_elements")
+             {
+                 JObject targets = step["targets"] as JObject;
+@@ -197,6 +251,22 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 if (args["axes"] != null && !(args["axes"] is JArray) && args["axes"].Type != JTokenType.String)
+                     errors.Add("steps[" + index + "].arguments.axes must be a string or array when provided");
+             }
++            if (operation == "resize_duct" || operation == "resize_pipe")
++            {
++                JObject targets = step["targets"] as JObject;
++                JObject args = step["arguments"] as JObject ?? new JObject();
++                if (!HasTargetElement(targets))
++                    errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
++                if (operation == "resize_pipe")
++                {
++                    if (args["diameter"] == null)
++                        errors.Add("steps[" + index + "].arguments.diameter is required");
++                }
++                else if (args["width"] == null && args["height"] == null && args["diameter"] == null)
++                {
++                    errors.Add("steps[" + index + "].arguments.width, height, or diameter is required");
++                }
++            }
+         }
+ 
+         private static void ValidateCurveRunPayload(JObject step, int index, bool pipe, JArray errors)
+diff --git a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+index 90697b7..4814466 100644
+--- a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
++++ b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+@@ -53,6 +53,8 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+                 return WritePlanExecutor.VerifySetParameter(document, step);
+             if (operation == "clear_parameter")
+                 return VerifyClearParameter(document, step);
++            if (operation == "copy_parameter_value")
++                return VerifyCopyParameterValue(document, step);
+             if (operation == "change_type")
+                 return VerifyChangeType(document, step);
+             if (operation == "pin_elements")
+@@ -103,6 +105,37 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             };
+         }
+ 
++        private static JObject VerifyCopyParameterValue(Document document, JObject step)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            Element target = TargetElement(document, step);
++            Element source = SourceElement(document, step, args);
++            string sourceParameterName = WritePlanExecutor.StringValue(args, "sourceParameterName");
++            string targetParameterName = WritePlanExecutor.StringValue(args, "targetParameterName");
++            Parameter sourceParameter = source != null ? source.LookupParameter(sourceParameterName) : null;
++            Parameter targetParameter = target != null ? target.LookupParameter(targetParameterName) : null;
++            string expected = ParameterRawText(sourceParameter);
++            string actual = ParameterRawText(targetParameter);
++            bool ok = source != null &&
++                target != null &&
++                sourceParameter != null &&
++                targetParameter != null &&
++                string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase);
++            return new JObject
++            {
++                ["success"] = ok,
++                ["stepId"] = WritePlanExecutor.StringValue(step, "stepId"),
++                ["operation"] = "copy_parameter_value",
++                ["sourceElementId"] = source != null ? source.Id.IntegerValue : 0,
++                ["targetElementId"] = target != null ? target.Id.IntegerValue : 0,
++                ["sourceParameterName"] = sourceParameterName,
++                ["targetParameterName"] = targetParameterName,
++                ["expected"] = expected,
++                ["actual"] = actual,
++                ["message"] = ok ? "verified" : "copied parameter value does not match source parameter"
++            };
++        }
++
+         private static JObject VerifyChangeType(Document document, JObject step)
+         {
+             JObject args = step["arguments"] as JObject ?? new JObject();
+@@ -522,6 +555,16 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             return null;
+         }
+ 
++        private static Element SourceElement(Document document, JObject step, JObject args)
++        {
++            if (args["sourceElementId"] != null)
++                return document.GetElement(new ElementId(IntValue(args["sourceElementId"])));
++            JObject targets = step["targets"] as JObject ?? new JObject();
++            if (targets["sourceElementId"] != null)
++                return document.GetElement(new ElementId(IntValue(targets["sourceElementId"])));
++            return null;
++        }
++
+         private static System.Collections.Generic.ICollection<ElementId> TargetElementIds(JObject step)
+         {
+             System.Collections.Generic.List<ElementId> ids = new System.Collections.Generic.List<ElementId>();
 -- 
 2.50.1.windows.1
 

@@ -77,6 +77,57 @@ assert.equal(hydrated.plan.steps[0].targets.uniqueId, "unique-456");
 const commitValidation = validateWritePlan(plan, { mode: "commit" });
 assert.equal(commitValidation.valid, true);
 
+const clearPlan = buildPlanFromArgs({
+    title: "Clear test parameter",
+    discipline: "general",
+    operation: "clear_parameter",
+    targets: { elementId: 124 },
+    arguments: { parameterName: "Comments" },
+});
+const clearValidation = validateWritePlan(clearPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(clearValidation.valid, true);
+assert.equal(classifyPlanRisk(clearPlan), "low");
+
+const invalidClearPlan = buildPlanFromArgs({
+    title: "Reject clear without parameter",
+    discipline: "general",
+    operation: "clear_parameter",
+    targets: { elementId: 124 },
+    arguments: {},
+});
+const invalidClearValidation = validateWritePlan(invalidClearPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidClearValidation.valid, false);
+assert(invalidClearValidation.errors.includes("steps[0].arguments.parameterName is required"));
+
+const copyParameterPlan = buildPlanFromArgs({
+    title: "Copy test parameter",
+    discipline: "general",
+    operation: "copy_parameter_value",
+    targets: { elementId: 125 },
+    arguments: {
+        sourceElementId: 124,
+        sourceParameterName: "Comments",
+        targetParameterName: "Comments",
+    },
+});
+const copyParameterValidation = validateWritePlan(copyParameterPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(copyParameterValidation.valid, true);
+assert.equal(classifyPlanRisk(copyParameterPlan), "low");
+
+const invalidCopyParameterPlan = buildPlanFromArgs({
+    title: "Reject copy parameter without source",
+    discipline: "general",
+    operation: "copy_parameter_value",
+    targets: { elementId: 125 },
+    arguments: {
+        sourceParameterName: "Comments",
+        targetParameterName: "Comments",
+    },
+});
+const invalidCopyParameterValidation = validateWritePlan(invalidCopyParameterPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidCopyParameterValidation.valid, false);
+assert(invalidCopyParameterValidation.errors.includes("steps[0].arguments.sourceElementId or sourceEId is required"));
+
 const schedulePlan = buildPlanFromArgs({
     title: "Create mechanical equipment schedule",
     discipline: "general",
