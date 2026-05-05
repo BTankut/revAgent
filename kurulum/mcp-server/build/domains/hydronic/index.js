@@ -706,6 +706,36 @@ double PipeDiameterMm(Element elem)
     return 0.0;
 }
 
+double PipeFlowLs(Element elem)
+{
+    try
+    {
+        Parameter p = elem.LookupParameter("Flow");
+        if (p != null && p.HasValue && p.StorageType == StorageType.Double)
+        {
+            double internalCfs = p.AsDouble();
+            if (internalCfs > 0.0) return internalCfs * 28.316846592;
+        }
+    }
+    catch {}
+    return 0.0;
+}
+
+string PipeFlowDisplay(Element elem)
+{
+    try
+    {
+        Parameter p = elem.LookupParameter("Flow");
+        if (p != null && p.HasValue)
+        {
+            string display = p.AsValueString();
+            if (!string.IsNullOrEmpty(display)) return display;
+        }
+    }
+    catch {}
+    return "";
+}
+
 string SystemNameFor(Element elem)
 {
     try
@@ -732,13 +762,16 @@ try
         Parameter length = elem.get_Parameter(BuiltInParameter.CURVE_ELEM_LENGTH);
         double lengthM = AsMeters(length);
         double diameterMm = PipeDiameterMm(elem);
+        double designFlowLs = PipeFlowLs(elem);
         if (lengthM <= 0 || diameterMm <= 0) continue;
         samples.Add(new {
             elementId = elem.Id.IntegerValue,
             uniqueId = elem.UniqueId,
             systemName = SystemNameFor(elem),
             lengthM = lengthM,
-            diameterMm = diameterMm
+            diameterMm = diameterMm,
+            designFlowLs = designFlowLs,
+            flowDisplay = PipeFlowDisplay(elem)
         });
         if (samples.Count >= sampleLimit) break;
     }

@@ -71,9 +71,8 @@ assert.deepEqual(ductMissingStandards.missingStandards, [
 
 const ductResizeProposal = buildHvacDuctResizeProposal({
     ductSamples: [
-        { elementId: 201, uniqueId: "u-201", systemName: "Supply Air", lengthM: 8, widthMm: 300, heightMm: 300 },
+        { elementId: 201, uniqueId: "u-201", systemName: "Supply Air", lengthM: 8, widthMm: 300, heightMm: 300, designFlowM3h: 1800 },
     ],
-    designFlowsByElementId: { 201: 1800 },
     targetPaPerM: 1.0,
     maxVelocityMps: 5.0,
     localLossExtraction: {
@@ -88,6 +87,7 @@ assert.equal(ductResizeProposal.status, "proposal_ready_for_review");
 assert.equal(ductResizeProposal.localLossContext.complete, true);
 assert.equal(ductResizeProposal.rows.length, 1);
 assert.equal(ductResizeProposal.rows[0].elementId, 201);
+assert.equal(ductResizeProposal.rows[0].designFlowM3h, 1800);
 assert.equal(ductResizeProposal.rows[0].criticalPathLocalLossPressurePa, 50);
 assert.equal(ductResizeProposal.rows[0].localLossDatasetComplete, true);
 assert.equal(ductResizeProposal.writePlanSteps.length, 1);
@@ -147,9 +147,8 @@ assert.deepEqual(pipeMissingStandards.missingStandards, [
 
 const pipeResizeProposal = buildHydronicPipeResizeProposal({
     pipeSamples: [
-        { elementId: 101, uniqueId: "u-101", systemName: "Heating", lengthM: 12, diameterMm: 32 },
+        { elementId: 101, uniqueId: "u-101", systemName: "Heating", lengthM: 12, diameterMm: 32, designFlowLs: 1.0 },
     ],
-    designFlowsByElementId: { 101: 1.0 },
     maxVelocityMps: 1.0,
     maxPressureLossPaPerM: 120.0,
     localLossExtraction: {
@@ -164,6 +163,7 @@ assert.equal(pipeResizeProposal.status, "proposal_ready_for_review");
 assert.equal(pipeResizeProposal.localLossContext.complete, true);
 assert.equal(pipeResizeProposal.rows.length, 1);
 assert.equal(pipeResizeProposal.rows[0].elementId, 101);
+assert.equal(pipeResizeProposal.rows[0].designFlowLs, 1.0);
 assert.equal(pipeResizeProposal.rows[0].criticalPathLocalLossPressurePa, 2500);
 assert.equal(pipeResizeProposal.rows[0].localLossDatasetComplete, true);
 assert.equal(pipeResizeProposal.writePlanSteps.length, 1);

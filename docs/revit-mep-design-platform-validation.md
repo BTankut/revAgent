@@ -54,6 +54,7 @@ Result:
   - report issue-list/design-log rows and CSV text generation
   - pipe sizing proposal rows and CSV text generation
   - duct sizing proposal rows and CSV text generation
+  - model-read flow fields on duct/pipe samples feeding proposal sizing without external design-flow maps
   - HVAC duct sizing analyzer branch with fake-executor coverage for read-only duct sample collection and proposal-only `resize_duct` output
   - hydronic path-targeted local-loss branch with fake-executor coverage for pathfinding, ranking, selected-path extraction, pipe resistance read, and proposal-only `resize_pipe` output
 
@@ -209,6 +210,12 @@ Live read-only results captured on the active session:
   - Targeted read of path ids `[392199, 392203, 392200]` returned duct samples `392199` / `392200` and fitting `392203` `Pressure Drop = 0.903 Pa`; counts stayed `744` ducts and `488` pipes.
   - Feeding that targeted dataset into `summarizeLocalLossSamples` and `buildHvacDuctResizeProposal` returned `localLossContext.complete: true`, `status: proposal_ready_for_review`, `2` proposal rows, `2` proposal-only `resize_duct` steps, and `canCommit: false`.
   - First row: duct `392199`, system `Mechanical Supply Air 1`, current size `450 x 200 mm`, test design flow `900 m3/h`, selected size `200 x 300 mm`, selected velocity `4.167 m/s`, selected friction `0.958 Pa/m`.
+- Live model-flow extraction probes succeeded without model mutation:
+  - Duct `392199` and `392200` `Flow` parameters returned raw `3.5314666721488583` internal ft3/s and display `100.0 L/s`, confirming the collector conversion to `360 m3/h`.
+  - HVAC `ductSizingOnly` with no supplied design-flow map read 5 duct samples from live model `Flow`, including duct `392168` display `350.0 L/s` / `1260 m3/h`, and produced 5 proposal-only `resize_duct` rows with `canCommit: false`.
+  - Hydronic pipe flow scan found nonzero pipe `Flow` samples, including pipe `513840` display `30.6 L/s`.
+  - Hydronic `hydraulicResistanceOnly` with no supplied design-flow map read 12 pipe samples, used model `Flow` where nonzero, and produced 10 proposal-only `resize_pipe` rows with `canCommit: false`; first generated row used pipe `513840`, `30.57 L/s`, current diameter `100 mm`, selected diameter `200 mm`.
+  - Final session count remained `744` ducts and `488` pipes.
 - Targeted local-loss element probe succeeded:
   - Direct live read of HVAC fitting `392203` confirmed category `Duct Fittings`, loss parameters `Loss Method Settings`, `Loss Method`, `Pressure Drop`, and numeric pressure-drop sum `0.903 Pa`.
   - Direct live read of hydronic fitting `513769` confirmed category `Pipe Fittings`, the same three loss-like parameters, and numeric pressure-drop sum `193.936 Pa`.

@@ -358,7 +358,6 @@ const hydronicPathSizing = await analyzeHydronic({
         terminalElementIds: [901, 902],
         localLossSampleLimit: 2,
         hydraulicResistanceOnly: true,
-        hydronicDesignFlowsByElementId: { 1001: 1.0 },
     },
     executeRevitCodeFn: async (code, options) => {
         hydronicPathSizingCalls.push({ code, options });
@@ -409,12 +408,14 @@ const hydronicPathSizing = await analyzeHydronic({
             };
         }
         assert(hydronicPathSizingCalls[3].code.includes("pipeResistanceSamples"));
+        assert(hydronicPathSizingCalls[3].code.includes("designFlowLs"));
+        assert(hydronicPathSizingCalls[3].code.includes("flowDisplay"));
         return {
             result: {
                 hydraulicResistanceOnly: true,
                 inspectedPipeCount: 1,
                 pipeResistanceSamples: [
-                    { elementId: 1001, uniqueId: "pipe-1001", systemName: "Hydronic Supply", lengthM: 4, diameterMm: 32 },
+                    { elementId: 1001, uniqueId: "pipe-1001", systemName: "Hydronic Supply", lengthM: 4, diameterMm: 32, designFlowLs: 1.0, flowDisplay: "1.0 L/s" },
                 ],
             },
         };
@@ -471,19 +472,20 @@ const hvacDuctSizing = await analyzeHvacAirside({
     networkPathRequest: {
         ductSizingOnly: true,
         ductSizingSampleLimit: 1,
-        hvacDesignFlowsByElementId: { 201: 1800 },
         criticalPathLocalLossPressurePa: 50,
         criticalPathLocalLossComplete: true,
     },
     executeRevitCodeFn: async (code, options) => {
         hvacDuctSizingCalls.push({ code, options });
         assert(code.includes("ductSizingOnly = true"));
+        assert(code.includes("designFlowM3h"));
+        assert(code.includes("flowDisplay"));
         return {
             result: {
                 ductSizingOnly: true,
                 inspectedDuctCount: 1,
                 ductSamples: [
-                    { elementId: 201, uniqueId: "duct-201", systemName: "Supply Air", lengthM: 8, widthMm: 300, heightMm: 300 },
+                    { elementId: 201, uniqueId: "duct-201", systemName: "Supply Air", lengthM: 8, widthMm: 300, heightMm: 300, designFlowM3h: 1800, flowDisplay: "500.0 L/s" },
                 ],
             },
         };

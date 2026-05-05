@@ -736,6 +736,36 @@ double DuctHeightMm(Element elem)
     return 0.0;
 }
 
+double DuctFlowM3h(Element elem)
+{
+    try
+    {
+        Parameter p = elem.LookupParameter("Flow");
+        if (p != null && p.HasValue && p.StorageType == StorageType.Double)
+        {
+            double internalCfs = p.AsDouble();
+            if (internalCfs > 0.0) return internalCfs * 101.940647731;
+        }
+    }
+    catch {}
+    return 0.0;
+}
+
+string DuctFlowDisplay(Element elem)
+{
+    try
+    {
+        Parameter p = elem.LookupParameter("Flow");
+        if (p != null && p.HasValue)
+        {
+            string display = p.AsValueString();
+            if (!string.IsNullOrEmpty(display)) return display;
+        }
+    }
+    catch {}
+    return "";
+}
+
 string SystemNameFor(Element elem)
 {
     try
@@ -763,6 +793,7 @@ try
         double lengthM = AsMeters(length);
         double widthMm = DuctWidthMm(elem);
         double heightMm = DuctHeightMm(elem);
+        double designFlowM3h = DuctFlowM3h(elem);
         if (lengthM <= 0 || widthMm <= 0 || heightMm <= 0) continue;
         samples.Add(new {
             elementId = elem.Id.IntegerValue,
@@ -770,7 +801,9 @@ try
             systemName = SystemNameFor(elem),
             lengthM = lengthM,
             widthMm = widthMm,
-            heightMm = heightMm
+            heightMm = heightMm,
+            designFlowM3h = designFlowM3h,
+            flowDisplay = DuctFlowDisplay(elem)
         });
         if (samples.Count >= sampleLimit) break;
     }
