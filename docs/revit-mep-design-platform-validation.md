@@ -17,6 +17,7 @@ node kurulum\mcp-server\build\tools\tool-registration.test.js
 node kurulum\mcp-server\build\write-plan\write-plan.test.js
 node kurulum\mcp-server\build\domains\engineering-calculations.test.js
 node kurulum\mcp-server\build\domains\domain-foundation-calculations.test.js
+node kurulum\mcp-server\build\tools\handoff-templates.test.js
 ```
 
 Result:
@@ -67,6 +68,10 @@ Result:
   - domain placement proposal handoff for air-terminal/damper/valve/equipment-style requests, producing validator-approved `place_family_instance` steps
   - HVAC duct sizing analyzer branch with fake-executor coverage for read-only duct sample collection and proposal-only `resize_duct` output
   - hydronic path-targeted local-loss branch with fake-executor coverage for pathfinding, ranking, selected-path extraction, pipe resistance read, and proposal-only `resize_pipe` output
+- Handoff template tests passed:
+  - office standards handoff paths match the runtime missing-standard keys
+  - every missing standard has a fillable `officeStandards` placeholder and field hint
+  - project critical data handoff arguments match `analyze_mep_system` inputs and keep null numeric placeholders outside the directly passable argument object
 
 ## Plugin Build Check
 
