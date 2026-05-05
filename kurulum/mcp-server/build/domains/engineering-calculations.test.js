@@ -15,6 +15,7 @@ import {
     pipeVelocityMps,
     sizePipeByVelocityOrFriction,
     solveHardyCrossLoop,
+    solveHardyCrossNetwork,
 } from "./hydronic/calculations.js";
 import {
     analyzeTreeNetwork,
@@ -207,6 +208,28 @@ assert(Math.abs(hardyCross.output.residualPa) <= 0.001);
 assert(hardyCross.output.iterationCount > 1);
 const hardyResidualFromEdges = hardyCross.output.finalEdges.reduce((sum, edge) => sum + edge.headLossPa, 0);
 close(hardyResidualFromEdges, hardyCross.output.residualPa, 1e-9, "Hardy-Cross residual from edges");
+
+const hardyNetwork = solveHardyCrossNetwork({
+    edges: [
+        { edgeId: "e1", resistancePaPerFlowN: 1, initialFlow: 1 },
+        { edgeId: "e2", resistancePaPerFlowN: 3, initialFlow: 1 },
+        { edgeId: "e3", resistancePaPerFlowN: 2, initialFlow: -0.5 },
+        { edgeId: "e4", resistancePaPerFlowN: 4, initialFlow: 1 },
+        { edgeId: "e5", resistancePaPerFlowN: 1, initialFlow: -1 },
+    ],
+    loops: [
+        { loopId: "L1", edges: [{ edgeId: "e1", orientation: 1 }, { edgeId: "e2", orientation: 1 }, { edgeId: "e3", orientation: 1 }] },
+        { loopId: "L2", edges: [{ edgeId: "e3", orientation: -1 }, { edgeId: "e4", orientation: 1 }, { edgeId: "e5", orientation: 1 }] },
+    ],
+    tolerancePa: 0.001,
+    maxIterations: 100,
+});
+assert.equal(hardyNetwork.success, true);
+assert.equal(hardyNetwork.output.converged, true);
+assert(hardyNetwork.output.maxResidualPa <= 0.001);
+assert.equal(hardyNetwork.output.finalLoopResiduals.length, 2);
+assert.equal(hardyNetwork.output.finalEdges.length, 5);
+assert(hardyNetwork.output.iterationCount > 1);
 
 const cyclicNetwork = analyzeTreeNetwork({
     rootNodeId: "a",

@@ -160,7 +160,7 @@ Engineering calculation foundations:
 
 - HVAC rectangular duct velocity, hydraulic diameter, Darcy-Weisbach friction loss, and equal-friction size proposal.
 - Hydronic circular pipe velocity, Darcy-Weisbach pressure loss, and velocity/friction size proposal.
-- Weighted network shortest-path traversal, rooted tree branch flow aggregation, least-loss flow direction inference, HVAC fan pressure basis, hydronic pump head basis, hydronic terminal balancing loss, and single-loop Hardy-Cross hydraulic balancing.
+- Weighted network shortest-path traversal, rooted tree branch flow aggregation, least-loss flow direction inference, HVAC fan pressure basis, hydronic pump head basis, hydronic terminal balancing loss, and single/multi-loop Hardy-Cross hydraulic balancing.
 - Domestic water fixture-unit summation and recirculation continuity issue screening.
 - Sanitary/storm gravity slope and reverse-slope validation.
 - Fire/sprinkler rectangular room spacing/coverage screening with explicit fire-design assumptions.
@@ -176,7 +176,7 @@ MEP graph foundation:
 - Open connector samples are returned for issue/debug workflows.
 - Optional `networkRootElementId` / `networkTerminalElementIds` inputs run targeted live BFS pathfinding over the Revit connector graph without mutating the model.
 - Deterministic JS graph calculations cover weighted shortest-path traversal, rooted branch flow aggregation, least-loss flow direction inference, cycle warnings, and critical path/circuit selection.
-- Hydronic balancing foundations calculate critical-circuit equalization loss for terminal branches and include a single-loop Hardy-Cross solver; coupled multi-loop production solving remains future work.
+- Hydronic balancing foundations calculate critical-circuit equalization loss for terminal branches and include single-loop plus sequential coupled-loop Hardy-Cross solvers; production calibration against real model resistance data remains future work.
 
 Reporting foundation:
 

@@ -1,7 +1,7 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { exampleHydronicFlowDirections, exampleHydronicTreeNetwork, exampleHydronicWeightedNetwork } from "../network/calculations.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
-import { calculateHydronicBalance, calculatePumpHeadBasis, sizePipeByVelocityOrFriction, solveHardyCrossLoop } from "./calculations.js";
+import { calculateHydronicBalance, calculatePumpHeadBasis, sizePipeByVelocityOrFriction, solveHardyCrossLoop, solveHardyCrossNetwork } from "./calculations.js";
 
 export async function analyzeHydronic({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("hydronic", officeStandards);
@@ -23,6 +23,7 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
             "critical circuit by accumulated edge loss",
             "terminal balancing loss by critical-circuit equalization",
             "single-loop Hardy-Cross hydraulic balancing",
+            "coupled multi-loop Hardy-Cross hydraulic balancing",
             "pump flow/head basis from critical circuit",
             "pipe pressure loss by Darcy-Weisbach",
             "velocity/friction pipe sizing proposal",
@@ -79,6 +80,21 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                 ],
                 tolerancePa: 0.001,
                 maxIterations: 25,
+            }),
+            hardyCrossNetwork: solveHardyCrossNetwork({
+                edges: [
+                    { edgeId: "e1", resistancePaPerFlowN: 1, initialFlow: 1 },
+                    { edgeId: "e2", resistancePaPerFlowN: 3, initialFlow: 1 },
+                    { edgeId: "e3", resistancePaPerFlowN: 2, initialFlow: -0.5 },
+                    { edgeId: "e4", resistancePaPerFlowN: 4, initialFlow: 1 },
+                    { edgeId: "e5", resistancePaPerFlowN: 1, initialFlow: -1 },
+                ],
+                loops: [
+                    { loopId: "L1", edges: [{ edgeId: "e1", orientation: 1 }, { edgeId: "e2", orientation: 1 }, { edgeId: "e3", orientation: 1 }] },
+                    { loopId: "L2", edges: [{ edgeId: "e3", orientation: -1 }, { edgeId: "e4", orientation: 1 }, { edgeId: "e5", orientation: 1 }] },
+                ],
+                tolerancePa: 0.001,
+                maxIterations: 100,
             }),
         },
         canCommit: false,

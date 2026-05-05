@@ -55,8 +55,9 @@
 - Added multi-candidate orthogonal reroute solver with clearance validation; runtime example selects a valid no-violation candidate.
 - Added single-loop Hardy-Cross hydraulic balancing foundation with convergence/residual tests and runtime example.
 - Added equipment schedule/report update proposal foundation that emits report rows and low-risk note update write-plan steps without replacing equipment.
+- Added coupled multi-loop Hardy-Cross hydraulic balancing foundation with convergence/residual tests and runtime example.
 
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from foundations to coupled multi-loop hydraulic solving, native reroute commit verification, approved equipment update execution, and native model schedule population workflows.
+- Expand engineering engines from foundations to real-model hydraulic resistance extraction/calibration, native reroute commit verification, approved equipment update execution, and native model schedule population workflows.

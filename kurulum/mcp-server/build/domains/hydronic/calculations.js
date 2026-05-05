@@ -361,6 +361,142 @@ export function solveHardyCrossLoop({
     };
 }
 
+export function solveHardyCrossNetwork({
+    edges = [],
+    loops = [],
+    exponent = 2,
+    tolerancePa = 0.01,
+    maxIterations = 50,
+} = {}) {
+    const errors = [];
+    const n = Number(exponent);
+    if (!Number.isFinite(n) || n <= 1) {
+        errors.push("exponent must be greater than 1");
+    }
+    const edgeMap = new Map();
+    for (const [index, edge] of (Array.isArray(edges) ? edges : []).entries()) {
+        const edgeId = edge.edgeId || `edge-${index + 1}`;
+        const resistance = Number(edge.resistancePaPerFlowN ?? edge.resistance ?? 0);
+        const flow = Number(edge.initialFlow ?? edge.flow ?? 0);
+        if (!Number.isFinite(resistance) || resistance <= 0) {
+            errors.push(`edges[${index}].resistancePaPerFlowN must be positive`);
+        }
+        if (!Number.isFinite(flow)) {
+            errors.push(`edges[${index}].initialFlow must be finite`);
+        }
+        edgeMap.set(edgeId, { edgeId, resistancePaPerFlowN: resistance, flow });
+    }
+    const normalizedLoops = (Array.isArray(loops) ? loops : []).map((loop, loopIndex) => {
+        const loopEdges = Array.isArray(loop.edges) ? loop.edges : [];
+        if (loopEdges.length < 2) {
+            errors.push(`loops[${loopIndex}].edges must contain at least two edge references`);
+        }
+        return {
+            loopId: loop.loopId || `loop-${loopIndex + 1}`,
+            edges: loopEdges.map((ref, refIndex) => {
+                const edgeId = typeof ref === "string" ? ref : ref.edgeId;
+                const orientation = typeof ref === "string" ? 1 : Number(ref.orientation ?? 1);
+                if (!edgeMap.has(edgeId)) {
+                    errors.push(`loops[${loopIndex}].edges[${refIndex}] references unknown edge ${edgeId}`);
+                }
+                return {
+                    edgeId,
+                    orientation: orientation < 0 ? -1 : 1,
+                };
+            }),
+        };
+    });
+    if (edgeMap.size === 0) errors.push("edges must contain at least one edge");
+    if (normalizedLoops.length === 0) errors.push("loops must contain at least one loop");
+    if (errors.length > 0) {
+        return { success: false, errors, warnings: [], canCommit: false };
+    }
+
+    const max = Math.max(1, Number.parseInt(String(maxIterations), 10) || 50);
+    const tolerance = Math.max(0, Number(tolerancePa) || 0.01);
+    const iterations = [];
+    let converged = false;
+    for (let iteration = 1; iteration <= max; iteration++) {
+        const loopCorrections = [];
+        let maxResidualPa = 0;
+        for (const loop of normalizedLoops) {
+            const state = networkLoopState(loop, edgeMap, n);
+            maxResidualPa = Math.max(maxResidualPa, Math.abs(state.residualPa));
+            if (Math.abs(state.residualPa) <= tolerance) {
+                loopCorrections.push({ loopId: loop.loopId, residualPa: state.residualPa, correction: 0 });
+                continue;
+            }
+            if (state.derivativeSum <= 0) {
+                return {
+                    success: false,
+                    errors: [`Hardy-Cross derivative sum is zero for ${loop.loopId}`],
+                    warnings: [],
+                    canCommit: false,
+                };
+            }
+            const correction = -state.residualPa / state.derivativeSum;
+            for (const ref of loop.edges) {
+                edgeMap.get(ref.edgeId).flow += ref.orientation * correction;
+            }
+            loopCorrections.push({ loopId: loop.loopId, residualPa: state.residualPa, correction });
+        }
+        iterations.push({ iteration, maxResidualPa, loopCorrections });
+        const residuals = normalizedLoops.map((loop) => Math.abs(networkLoopState(loop, edgeMap, n).residualPa));
+        if (Math.max(...residuals) <= tolerance) {
+            converged = true;
+            break;
+        }
+    }
+    const finalLoopResiduals = normalizedLoops.map((loop) => ({
+        loopId: loop.loopId,
+        residualPa: networkLoopState(loop, edgeMap, n).residualPa,
+    }));
+    const maxResidualPa = Math.max(...finalLoopResiduals.map((loop) => Math.abs(loop.residualPa)));
+    return {
+        success: true,
+        method: "Sequential Hardy-Cross coupled loop hydraulic balancing",
+        assumptions: [
+            "Loops are solved sequentially; shared-edge interactions are updated each iteration.",
+            "All loop edges use signed loop orientation and a common flow exponent.",
+            "Resistance coefficients must be supplied by prior pipe/fitting/equipment calculations.",
+        ],
+        input: {
+            exponent: n,
+            tolerancePa: tolerance,
+            maxIterations: max,
+            loopCount: normalizedLoops.length,
+            edgeCount: edgeMap.size,
+        },
+        output: {
+            converged: converged || maxResidualPa <= tolerance,
+            iterationCount: iterations.length,
+            maxResidualPa,
+            finalLoopResiduals,
+            finalEdges: [...edgeMap.values()].map((edge) => ({
+                edgeId: edge.edgeId,
+                flow: edge.flow,
+                resistancePaPerFlowN: edge.resistancePaPerFlowN,
+                headLossPa: signedHeadLoss(edge.flow, edge.resistancePaPerFlowN, n),
+            })),
+            iterations,
+        },
+        canCommit: false,
+        riskLevel: "high",
+    };
+}
+
+function networkLoopState(loop, edgeMap, exponent) {
+    let residualPa = 0;
+    let derivativeSum = 0;
+    for (const ref of loop.edges) {
+        const edge = edgeMap.get(ref.edgeId);
+        const orientedFlow = ref.orientation * edge.flow;
+        residualPa += signedHeadLoss(orientedFlow, edge.resistancePaPerFlowN, exponent);
+        derivativeSum += exponent * edge.resistancePaPerFlowN * Math.pow(Math.abs(orientedFlow), exponent - 1);
+    }
+    return { residualPa, derivativeSum };
+}
+
 function loopState(edges, exponent) {
     let residualPa = 0;
     let derivativeSum = 0;
