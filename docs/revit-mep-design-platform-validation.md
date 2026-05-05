@@ -192,6 +192,10 @@ Live read-only results captured on the active session:
   - Fan selection chose `fan-b`.
   - Schedule proposal produced one report row and one low-risk `set_parameter` write-plan step targeting `eId: supply-fan-001`.
   - The result is proposal-only with `canCommit: false` and performs no equipment replacement.
+- Approved equipment schedule update live write test succeeded in the disposable model:
+  - Target: Mechanical Equipment element `386031`, type `14 kW`, UniqueId `ac8b9fc6-24ff-4c3b-a4c6-035f009e396e-0005e3ef`.
+  - Plan `equipment-schedule-update-1777960000000` set `Comments` to `Codex equipment schedule proposal test 2026-05-05T00:00:00Z`.
+  - Native preview returned one row; commit succeeded through `execute_write_plan`; verify succeeded; final readback matched.
 
 Write checks:
 
