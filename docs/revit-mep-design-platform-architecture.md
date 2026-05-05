@@ -113,6 +113,7 @@ Initial committed operations:
 - `create_pipe_run`
 - `resize_pipe`
 - `create_schedule_or_update_schedule`
+- `commit_reroute`
 
 `validate`, `preview`, and `verify` do not open a transaction. `commit` opens one transaction and rolls back on the first operation error; when invoked from an already modifiable dynamic host context, it uses a rollback-capable `SubTransaction` to avoid nested transaction failures.
 
@@ -187,6 +188,7 @@ Reporting foundation:
 - `export_boq_report` and `export_clash_report` write-plans are handled by a runtime report executor for approved CSV/JSON file export.
 - Report export writes files only and returns `mutateModel: false`.
 - `create_schedule_or_update_schedule` creates or updates native Revit schedules by category/name/id and can add requested fields by parameter name, `parameterId`, or `BuiltInParameter`.
+- `commit_reroute` creates explicit duct/pipe reroute geometry from approved points and verifies created segment count plus total length. It is a controlled foundation operation; it does not yet delete/reconnect the source route or prove final clash clearance against live obstacles.
 
 ## Safety Model
 

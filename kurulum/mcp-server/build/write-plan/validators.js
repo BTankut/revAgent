@@ -169,6 +169,25 @@ function validateOperationPayload(step, prefix, errors, warnings) {
                 warnings.push(`${prefix}.arguments.fields is empty; schedule will be created or renamed without adding fields`);
             }
             break;
+        case "commit_reroute":
+            if (!Array.isArray(args.points) || args.points.length < 2) {
+                errors.push(`${prefix}.arguments.points must contain at least two points`);
+            }
+            if (!Number.isFinite(Number(args.systemTypeId))) {
+                errors.push(`${prefix}.arguments.systemTypeId is required`);
+            }
+            if (String(args.curveType || "duct").toLowerCase() === "pipe") {
+                if (!Number.isFinite(Number(args.pipeTypeId)) && !Number.isFinite(Number(args.typeId))) {
+                    errors.push(`${prefix}.arguments.pipeTypeId or typeId is required`);
+                }
+            }
+            else if (!Number.isFinite(Number(args.ductTypeId)) && !Number.isFinite(Number(args.typeId))) {
+                errors.push(`${prefix}.arguments.ductTypeId or typeId is required`);
+            }
+            if (!Number.isFinite(Number(args.levelId))) {
+                errors.push(`${prefix}.arguments.levelId is required`);
+            }
+            break;
         case "export_boq_report":
         case "export_clash_report":
             if (args.format && !["csv", "json"].includes(String(args.format).toLowerCase())) {

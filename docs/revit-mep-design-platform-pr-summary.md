@@ -63,8 +63,13 @@
   - Element `1020916`
   - Fields `Family and Type`, `Mark`, `Level`
   - Native preview, commit, verify, and final readback all succeeded.
+- Added native `commit_reroute`, runtime validation/risk coverage, and live-tested approved reroute geometry creation in the disposable model:
+  - Created duct segments `1020923`, `1020925`, and `1020927`
+  - Verifier matched `3` actual segments to `3` expected segments
+  - Expected and actual total route length both `15.292563747898 ft`
+  - Final readback confirmed all three ducts at `300 x 300 mm`.
 
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from foundations to production-calibrated fitting/accessory/equipment loss extraction and native reroute commit verification.
+- Expand engineering engines from foundations to production-calibrated fitting/accessory/equipment loss extraction and production reroute replacement/clearance verification.

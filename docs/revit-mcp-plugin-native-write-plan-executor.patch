@@ -1,7 +1,7 @@
 ﻿From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 1/4] Add native write-plan executor
+Subject: [PATCH 1/5] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 2/4] Expand write-plan verification readback
+Subject: [PATCH 2/5] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 3/4] Fix write-plan command SDK compatibility
+Subject: [PATCH 3/5] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 4/4] Add native schedule write-plan operation
+Subject: [PATCH 4/5] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2123,6 +2123,240 @@ index 4add29c..31c47a5 100644
                  return VerifyViewHidden(document, step, false);
 +            if (operation == "create_schedule_or_update_schedule")
 +                return WritePlanExecutor.VerifySchedule(document, step);
+             return VerifyTargetExists(document, plan, step);
+         }
+
+--
+2.50.1.windows.1
+
+
+From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 09:20:42 +0300
+Subject: [PATCH 5/5] Add native reroute commit verification
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
+ .../Validators/WritePlanValidator.cs          | 38 +++++++-
+ .../Verification/WritePlanVerifier.cs         |  2 +
+ 3 files changed, 129 insertions(+), 2 deletions(-)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index ee089b6..52034fc 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -157,6 +157,14 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 row["requestedFields"] = RequestedFieldNames(args["fields"] as JArray);
+                 row["existingFieldCount"] = schedule != null ? schedule.Definition.GetFieldOrder().Count : 0;
+             }
++            else if (operation == "commit_reroute")
++            {
++                JArray points = args["points"] as JArray;
++                row["routeType"] = StringValue(args, "curveType");
++                row["requestedSegmentCount"] = points != null && points.Count > 1 ? points.Count - 1 : 0;
++                row["targetElementCount"] = GetTargetElementIds(step).Count;
++                row["arguments"] = args.DeepClone();
++            }
+             else
+             {
+                 row["arguments"] = args.DeepClone();
+@@ -217,6 +225,53 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             };
+         }
+
++        public static JObject VerifyReroute(Document document, JObject step)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            ICollection<ElementId> ids = GetTargetElementIds(step);
++            JArray checks = new JArray();
++            int existing = 0;
++            double actualLength = 0.0;
++            foreach (ElementId id in ids)
++            {
++                Element elem = document.GetElement(id);
++                LocationCurve location = elem != null ? elem.Location as LocationCurve : null;
++                double length = 0.0;
++                if (location != null && location.Curve != null)
++                    length = location.Curve.Length;
++                if (elem != null)
++                    existing++;
++                actualLength += length;
++                checks.Add(new JObject
++                {
++                    ["elementId"] = id.IntegerValue,
++                    ["exists"] = elem != null,
++                    ["category"] = elem != null && elem.Category != null ? elem.Category.Name : "",
++                    ["lengthInternal"] = length
++                });
++            }
++
++            JArray points = args["points"] as JArray;
++            double expectedLength = points != null && points.Count > 1 ? PolylineLength(points, StringValue(args, "unit")) : 0.0;
++            int expectedSegments = points != null && points.Count > 1 ? points.Count - 1 : 0;
++            bool countOk = ids.Count > 0 && existing == ids.Count;
++            bool segmentCountOk = expectedSegments == 0 || ids.Count == expectedSegments;
++            bool lengthOk = expectedLength <= 0.0 || Math.Abs(actualLength - expectedLength) <= 0.01;
++            bool ok = countOk && segmentCountOk && lengthOk;
++            return new JObject
++            {
++                ["success"] = ok,
++                ["stepId"] = StringValue(step, "stepId"),
++                ["operation"] = "commit_reroute",
++                ["expectedSegments"] = expectedSegments,
++                ["actualSegments"] = existing,
++                ["expectedLengthInternal"] = expectedLength,
++                ["actualLengthInternal"] = actualLength,
++                ["checks"] = checks,
++                ["message"] = ok ? "verified" : "reroute created segments do not match expected count or length"
++            };
++        }
++
+         public static string StringValue(JObject obj, string name)
+         {
+             return obj != null && obj[name] != null ? obj[name].ToString() : "";
+@@ -267,6 +322,8 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 ResizeCurve(document, step, eIdMap, result, false);
+             else if (operation == "create_schedule_or_update_schedule")
+                 CreateOrUpdateSchedule(document, step, eIdMap, mappings, result);
++            else if (operation == "commit_reroute")
++                CommitReroute(document, step, eIdMap, mappings, result);
+             else
+                 WritePlanResult.AddError(result, "Unsupported operation: " + operation);
+         }
+@@ -380,6 +437,9 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 XYZ a = PointValue(points[i] as JObject, StringValue(args, "unit"));
+                 XYZ b = PointValue(points[i + 1] as JObject, StringValue(args, "unit"));
+                 Autodesk.Revit.DB.Mechanical.Duct duct = Autodesk.Revit.DB.Mechanical.Duct.Create(document, systemTypeId, ductTypeId, levelId, a, b);
++                if (args["width"] != null) SetNamedDouble(duct, "Width", args["width"], StringValue(args, "unit"));
++                if (args["height"] != null) SetNamedDouble(duct, "Height", args["height"], StringValue(args, "unit"));
++                if (args["diameter"] != null) SetNamedDouble(duct, "Diameter", args["diameter"], StringValue(args, "unit"));
+                 AddCreatedMapping(step, duct, eIdMap, mappings, i);
+             }
+         }
+@@ -398,10 +458,29 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 XYZ a = PointValue(points[i] as JObject, StringValue(args, "unit"));
+                 XYZ b = PointValue(points[i + 1] as JObject, StringValue(args, "unit"));
+                 Autodesk.Revit.DB.Plumbing.Pipe pipe = Autodesk.Revit.DB.Plumbing.Pipe.Create(document, systemTypeId, pipeTypeId, levelId, a, b);
++                if (args["diameter"] != null) SetNamedDouble(pipe, "Diameter", args["diameter"], StringValue(args, "unit"));
+                 AddCreatedMapping(step, pipe, eIdMap, mappings, i);
+             }
+         }
+
++        private static void CommitReroute(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            string curveType = StringValue(args, "curveType").Trim().ToLowerInvariant();
++            if (curveType == "pipe")
++            {
++                if (args["pipeTypeId"] == null && args["typeId"] != null)
++                    args["pipeTypeId"] = args["typeId"].DeepClone();
++                CreatePipeRun(document, step, eIdMap, mappings, result);
++            }
++            else
++            {
++                if (args["ductTypeId"] == null && args["typeId"] != null)
++                    args["ductTypeId"] = args["typeId"].DeepClone();
++                CreateDuctRun(document, step, eIdMap, mappings, result);
++            }
++        }
++
+         private static void CreateOrUpdateSchedule(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
+         {
+             JObject args = step["arguments"] as JObject ?? new JObject();
+@@ -862,6 +941,18 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 ConvertToInternal(DoubleValue(obj["z"]), unit));
+         }
+
++        private static double PolylineLength(JArray points, string unit)
++        {
++            double total = 0.0;
++            for (int i = 0; i < points.Count - 1; i++)
++            {
++                XYZ a = PointValue(points[i] as JObject, unit);
++                XYZ b = PointValue(points[i + 1] as JObject, unit);
++                total += a.DistanceTo(b);
++            }
++            return total;
++        }
++
+         private static double ConvertToInternal(double value, string unit)
+         {
+             string normalized = string.IsNullOrWhiteSpace(unit) ? "internal" : unit.Trim().ToLowerInvariant();
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index 779b253..ba849b9 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -25,7 +25,8 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+             "resize_duct",
+             "create_pipe_run",
+             "resize_pipe",
+-            "create_schedule_or_update_schedule"
++            "create_schedule_or_update_schedule",
++            "commit_reroute"
+         };
+
+         public static JObject Validate(string mode, JObject plan, string commitToken)
+@@ -118,9 +119,20 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+         private static void ValidateOperationPayload(JObject step, int index, JArray errors, JArray warnings)
+         {
+             string operation = StringValue(step, "operation");
+-            if (operation != "create_schedule_or_update_schedule")
++            if (operation == "create_schedule_or_update_schedule")
++            {
++                ValidateSchedulePayload(step, index, errors, warnings);
++                return;
++            }
++            if (operation == "commit_reroute")
++            {
++                ValidateReroutePayload(step, index, errors);
+                 return;
++            }
++        }
+
++        private static void ValidateSchedulePayload(JObject step, int index, JArray errors, JArray warnings)
++        {
+             JObject args = step["arguments"] as JObject ?? new JObject();
+             if (string.IsNullOrWhiteSpace(StringValue(args, "scheduleName")))
+                 errors.Add("steps[" + index + "].arguments.scheduleName is required");
+@@ -135,6 +147,28 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 warnings.Add("steps[" + index + "].arguments.fields is empty; schedule will be created or renamed without adding fields");
+         }
+
++        private static void ValidateReroutePayload(JObject step, int index, JArray errors)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            JArray points = args["points"] as JArray;
++            if (points == null || points.Count < 2)
++                errors.Add("steps[" + index + "].arguments.points must contain at least two points");
++            if (args["systemTypeId"] == null)
++                errors.Add("steps[" + index + "].arguments.systemTypeId is required");
++            bool pipe = StringValue(args, "curveType").Trim().ToLowerInvariant() == "pipe";
++            if (pipe)
++            {
++                if (args["pipeTypeId"] == null && args["typeId"] == null)
++                    errors.Add("steps[" + index + "].arguments.pipeTypeId or typeId is required");
++            }
++            else if (args["ductTypeId"] == null && args["typeId"] == null)
++            {
++                errors.Add("steps[" + index + "].arguments.ductTypeId or typeId is required");
++            }
++            if (args["levelId"] == null)
++                errors.Add("steps[" + index + "].arguments.levelId is required");
++        }
++
+         private static string StringValue(JObject obj, string name)
+         {
+             return obj[name] == null ? "" : obj[name].ToString();
+diff --git a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+index 31c47a5..0b76d2e 100644
+--- a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
++++ b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+@@ -62,6 +62,8 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+                 return VerifyViewHidden(document, step, false);
+             if (operation == "create_schedule_or_update_schedule")
+                 return WritePlanExecutor.VerifySchedule(document, step);
++            if (operation == "commit_reroute")
++                return WritePlanExecutor.VerifyReroute(document, step);
              return VerifyTargetExists(document, plan, step);
          }
 

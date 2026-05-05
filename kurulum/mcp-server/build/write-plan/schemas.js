@@ -31,6 +31,7 @@ export const initialOperations = [
     "create_pipe_run",
     "resize_pipe",
     "create_schedule_or_update_schedule",
+    "commit_reroute",
 ];
 
 export const futureOperations = [
@@ -96,7 +97,6 @@ export const futureOperations = [
     "classify_clash",
     "propose_reroute",
     "preview_reroute",
-    "commit_reroute",
     "create_coordination_issue",
     "mark_clash_resolved",
     "export_clash_report",

@@ -89,6 +89,8 @@ Result:
   `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\schedule-final-2\`
 - The build passed with the same Revit 2024 deprecation warnings.
 - The schedule direct-load test DLL was built with unique assembly names because Revit locks loaded .NET assemblies for the session.
+- Native reroute operation build check passed:
+  `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\reroute-final\`
 
 ## Live Revit Validation Plan
 
@@ -211,6 +213,17 @@ Live read-only results captured on the active session:
   - Native executor was updated to use `SubTransaction` when `document.IsModifiable`; rebuilt with unique assembly name `SampleCommandSetScheduleOpTest2`.
   - Commit then succeeded and returned mapping `codex-mech-equipment-schedule-001 -> 1020916`, `created: true`, and `addedFields: 3`.
   - Native verify succeeded; final readback confirmed the schedule name and all three fields/headings.
+- Approved native reroute geometry live write test succeeded in the disposable model:
+  - Plan `reroute-commit-1777960000001`.
+  - Source basis duct: `392168`, system type `800822`, duct type `142427`, level `378117`, size `300 x 300 mm`.
+  - Native preview returned one `commit_reroute` row, `requestedSegmentCount: 3`, `canCommit: true`, and no model mutation.
+  - Commit created three new duct segments:
+    `1020923`, `1020925`, and `1020927`.
+  - Native verify re-read the target elements and returned `success: true`.
+  - Expected and actual segment counts both `3`.
+  - Expected and actual total route length both `15.292563747898 ft`.
+  - Final `inspect_elements` readback confirmed all three elements are `Autodesk.Revit.DB.Mechanical.Duct`, category `Ducts`, level `Level 1`, with `Width` and `Height` raw values `0.984251968503937` / display `300`.
+  - This is an explicit geometry commit/verify foundation; it does not yet delete/reconnect the source duct or validate live obstacle clearance after replacement.
 
 Write checks:
 

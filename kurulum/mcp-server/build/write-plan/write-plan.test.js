@@ -95,6 +95,28 @@ const scheduleValidation = validateWritePlan(schedulePlan, { mode: "commit", req
 assert.equal(scheduleValidation.valid, true);
 assert.equal(classifyPlanRisk(schedulePlan), "medium");
 
+const reroutePlan = buildPlanFromArgs({
+    title: "Commit explicit reroute geometry",
+    discipline: "clash",
+    operation: "commit_reroute",
+    targets: {},
+    arguments: {
+        curveType: "duct",
+        systemTypeId: 11,
+        ductTypeId: 22,
+        levelId: 33,
+        unit: "m",
+        points: [
+            { x: 0, y: 0, z: 3 },
+            { x: 1, y: 0, z: 3 },
+            { x: 1, y: 1, z: 3 },
+        ],
+    },
+});
+const rerouteValidation = validateWritePlan(reroutePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(rerouteValidation.valid, true);
+assert.equal(classifyPlanRisk(reroutePlan), "critical");
+
 const reportOutputDir = path.join(os.tmpdir(), `revit-mcp-report-test-${process.pid}`);
 const reportPlan = normalizePlan({
     schemaVersion: "1.0",
