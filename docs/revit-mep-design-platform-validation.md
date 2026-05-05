@@ -52,6 +52,7 @@ Result:
   - equipment schedule/report proposal rows and low-risk note update write-plan step
   - report issue-list/design-log rows and CSV text generation
   - pipe sizing proposal rows and CSV text generation
+  - hydronic path-targeted local-loss branch with fake-executor coverage for pathfinding, ranking, selected-path extraction, pipe resistance read, and proposal-only `resize_pipe` output
 
 ## Plugin Build Check
 
@@ -197,6 +198,10 @@ Live read-only results captured on the active session:
   - With test design flows, office limits `1.5 m/s` and `200 Pa/m`, and a complete `4560 Pa` critical-circuit local-loss context, `buildHydronicPipeResizeProposal` returned `3` proposal rows and `3` proposal-only `resize_pipe` steps.
   - First row: element `513756`, system `Hydronic Supply`, length `4.795 m`, current diameter `150 mm`, selected diameter `80 mm`, selected velocity `0.995 m/s`, selected friction `131.567 Pa/m`, `canCommit: false`.
   - Report builder emitted `pipe_sizing` CSV rows; final read-only check returned `488` pipes and `744` ducts.
+- Live critical-circuit hydronic resize micro-probe succeeded without model mutation:
+  - Connector readback confirmed pipe `513756` references fitting `513769`; fitting `513769` references pipe `513756` and pipe `513637`.
+  - Targeted read of path ids `[513756, 513769, 513637]` returned pipe sample `513756` and fitting `513769` `Pressure Drop = 193.936 Pa`; counts stayed `488` pipes and `744` ducts.
+  - Feeding that targeted dataset into `summarizeLocalLossSamples` and `buildHydronicPipeResizeProposal` returned `localLossContext.complete: true`, `status: proposal_ready_for_review`, one proposal row, one proposal-only `resize_pipe` step `resize-pipe-513756`, and `canCommit: false`.
 - Targeted local-loss element probe succeeded:
   - Direct live read of HVAC fitting `392203` confirmed category `Duct Fittings`, loss parameters `Loss Method Settings`, `Loss Method`, `Pressure Drop`, and numeric pressure-drop sum `0.903 Pa`.
   - Direct live read of hydronic fitting `513769` confirmed category `Pipe Fittings`, the same three loss-like parameters, and numeric pressure-drop sum `193.936 Pa`.

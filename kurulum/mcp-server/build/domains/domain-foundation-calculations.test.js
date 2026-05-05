@@ -3,6 +3,7 @@ import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } f
 import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic-water/calculations.js";
 import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
+import { analyzeHydronic } from "./hydronic/index.js";
 import { connectorPathElementIds, selectCriticalConnectorPath, summarizeLocalLossSamples } from "./local-losses/calculations.js";
 import { readPathTargetedLocalLosses } from "./local-losses/path-targeting.js";
 import { buildLocalLossOnlyCode } from "./local-losses/revit-read.js";
@@ -341,6 +342,99 @@ assert.equal(pathTargetingResult.localLossSamples[0].elementId, 60);
 assert.deepEqual(pathTargetingResult.warnings, [
     "Selected path local-loss read was truncated by sample limit (requested 3, uninspected 1).",
 ]);
+
+const hydronicPathSizingCalls = [];
+const hydronicPathSizing = await analyzeHydronic({
+    officeStandards: {
+        hydronic: {
+            pipeVelocityLimitsMps: { main: 1.5 },
+            pipeFrictionLimitPaPerM: 200,
+        },
+    },
+    networkPathRequest: {
+        localLossFromNetworkPath: true,
+        rootElementId: 900,
+        terminalElementIds: [901, 902],
+        localLossSampleLimit: 2,
+        hydraulicResistanceOnly: true,
+        hydronicDesignFlowsByElementId: { 1001: 1.0 },
+    },
+    executeRevitCodeFn: async (code, options) => {
+        hydronicPathSizingCalls.push({ code, options });
+        if (hydronicPathSizingCalls.length === 1) {
+            return {
+                result: {
+                    connectorPathfinding: {
+                        terminalPaths: [
+                            { elementId: 901, reachable: true, hopCount: 2, pathElementIds: [900, 1001, 901] },
+                            { elementId: 902, reachable: true, hopCount: 2, pathElementIds: [900, 2001, 902] },
+                        ],
+                    },
+                },
+            };
+        }
+        if (hydronicPathSizingCalls.length === 2) {
+            assert(hydronicPathSizingCalls[1].code.includes("int[] targetElementIds = new int[] { 900, 1001, 901, 2001, 902 }"));
+            return {
+                result: {
+                    localLossSamples: [
+                        {
+                            elementId: 900,
+                            category: "Pipe Fittings",
+                            systemName: "Hydronic Supply",
+                            lossParameters: [
+                                { parameterName: "Pressure Drop", valueKind: "pressure_drop_pa", numericValue: 125 },
+                            ],
+                        },
+                    ],
+                },
+            };
+        }
+        if (hydronicPathSizingCalls.length === 3) {
+            assert(hydronicPathSizingCalls[2].code.includes("int[] targetElementIds = new int[] { 900, 1001, 901 }"));
+            return {
+                result: {
+                    localLossSamples: [
+                        {
+                            elementId: 900,
+                            category: "Pipe Fittings",
+                            systemName: "Hydronic Supply",
+                            lossParameters: [
+                                { parameterName: "Pressure Drop", valueKind: "pressure_drop_pa", numericValue: 125 },
+                            ],
+                        },
+                    ],
+                },
+            };
+        }
+        assert(hydronicPathSizingCalls[3].code.includes("pipeResistanceSamples"));
+        return {
+            result: {
+                hydraulicResistanceOnly: true,
+                inspectedPipeCount: 1,
+                pipeResistanceSamples: [
+                    { elementId: 1001, uniqueId: "pipe-1001", systemName: "Hydronic Supply", lengthM: 4, diameterMm: 32 },
+                ],
+            },
+        };
+    },
+});
+assert.equal(hydronicPathSizingCalls.length, 4);
+assert.deepEqual(hydronicPathSizingCalls.map((call) => call.options), [
+    { transactionMode: "none" },
+    { transactionMode: "none" },
+    { transactionMode: "none" },
+    { transactionMode: "none" },
+]);
+assert.equal(hydronicPathSizing.localLossExtraction.targetedByCriticalPath, true);
+assert.equal(hydronicPathSizing.localLossExtraction.selectedPathPressureCheck.consistent, true);
+assert.equal(hydronicPathSizing.pipeSizingProposal.success, true);
+assert.equal(hydronicPathSizing.pipeSizingProposal.localLossContext.complete, true);
+assert.equal(hydronicPathSizing.pipeSizingProposal.rows[0].elementId, 1001);
+assert.equal(hydronicPathSizing.pipeSizingProposal.rows[0].criticalPathLocalLossPressurePa, 125);
+assert.equal(hydronicPathSizing.pipeSizingProposal.writePlanSteps[0].operation, "resize_pipe");
+assert.equal(hydronicPathSizing.pipeSizingProposal.writePlanSteps[0].targets.elementId, 1001);
+assert.equal(hydronicPathSizing.revitRead.pipeSizingRead.pipeResistanceSamples.length, 1);
 
 const targetedLocalLossCode = buildLocalLossOnlyCode({
     categories: ["OST_DuctFitting"],

@@ -185,7 +185,7 @@ Reporting foundation:
 - `analyze_mep_system` returns deterministic issue-list and design-log rows plus CSV text previews.
 - `boqOnly` runs short live Revit BOQ collectors without connector graph traversal for count/length report population.
 - `hydraulicResistanceOnly` runs short live hydronic pipe length/diameter sampling and returns resistance calibration rows.
-- Hydronic analysis can turn pipe resistance samples plus `hydronicDesignFlowsByElementId`, optional `hydronicDefaultDesignFlowLs`, office velocity/friction limits, and critical-circuit local-loss pressure context into `pipe_sizing` report rows and proposal-only `resize_pipe` steps.
+- Hydronic analysis can turn pipe resistance samples plus `hydronicDesignFlowsByElementId`, optional `hydronicDefaultDesignFlowLs`, office velocity/friction limits, and critical-circuit local-loss pressure context into `pipe_sizing` report rows and proposal-only `resize_pipe` steps. When `localLossFromNetworkPath` is enabled, the hydronic branch can perform the selected-path local-loss reads first, then run a separate read-only pipe resistance sample for proposal output.
 - `localLossOnly` runs short live HVAC/hydronic fitting/accessory/equipment parameter extraction and returns local-loss report rows plus local-loss pressure summary rows. `localLossElementIds` can restrict extraction to a known critical path/circuit element set from a prior graph/pathfinding step.
 - `export_boq_report` and `export_clash_report` write-plans are handled by a runtime report executor for approved CSV/JSON file export.
 - Report export writes files only and returns `mutateModel: false`.

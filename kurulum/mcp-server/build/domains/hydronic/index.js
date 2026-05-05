@@ -6,7 +6,7 @@ import { readPathTargetedLocalLosses } from "../local-losses/path-targeting.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
 import { buildHydronicPipeResizeProposal, calibratePipeResistanceSamples, calculateHydronicBalance, calculatePumpHeadBasis, pipeResistanceCoefficient, sizePipeByVelocityOrFriction, solveHardyCrossLoop, solveHardyCrossNetwork } from "./calculations.js";
 
-export async function analyzeHydronic({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {} } = {}) {
+export async function analyzeHydronic({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {}, executeRevitCodeFn = executeRevitCode } = {}) {
     const missingStandards = missingStandardsForDiscipline("hydronic", officeStandards);
     const pumpHeadNetwork = examplePumpHeadNetwork();
     const base = {
@@ -123,7 +123,7 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                     localLossOnly: false,
                     hydraulicResistanceOnly: false,
                 }),
-                executeRevitCode,
+                executeRevitCode: executeRevitCodeFn,
                 sampleLimit: networkPathRequest.localLossSampleLimit,
                 categories: ["OST_PipeFitting", "OST_PipeAccessory", "OST_MechanicalEquipment"],
             });
@@ -149,9 +149,44 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                 terminalLossKPa: 8,
                 safetyFactor: 1.1,
             });
+            const pipeSizingRead = shouldReadPipeSizingSamples(networkPathRequest)
+                ? unwrapRevitResult(await executeRevitCodeFn(buildPipeReadCode({
+                    ...networkPathRequest,
+                    pathfindingOnly: false,
+                    localLossOnly: false,
+                    hydraulicResistanceOnly: true,
+                }), { transactionMode: "none" }))
+                : undefined;
+            const resistanceCalibration = pipeSizingRead?.pipeResistanceSamples
+                ? calibratePipeResistanceSamples({
+                    pipeSamples: pipeSizingRead.pipeResistanceSamples,
+                    referenceFlowLs: networkPathRequest.referenceFlowLs || 1,
+                })
+                : undefined;
+            const pipeSizingProposal = pipeSizingRead?.pipeResistanceSamples
+                ? buildHydronicPipeResizeProposal({
+                    pipeSamples: pipeSizingRead.pipeResistanceSamples,
+                    designFlowsByElementId: networkPathRequest.hydronicDesignFlowsByElementId || {},
+                    defaultFlowLs: networkPathRequest.hydronicDefaultDesignFlowLs,
+                    maxVelocityMps: officeStandards.hydronic?.pipeVelocityLimitsMps?.main,
+                    maxPressureLossPaPerM: officeStandards.hydronic?.pipeFrictionLimitPaPerM,
+                    localLossExtraction,
+                    targetElementIds: (networkPathRequest.hydronicPipeSizingTargetElementIds || []).length > 0
+                        ? networkPathRequest.hydronicPipeSizingTargetElementIds
+                        : pathTargeting.targetElementIds,
+                })
+                : undefined;
             return {
                 ...base,
-                revitRead,
+                revitRead: {
+                    ...revitRead,
+                    ...(pipeSizingRead ? {
+                        pipeSizingRead,
+                        pipeResistanceSamples: pipeSizingRead.pipeResistanceSamples || [],
+                    } : {}),
+                },
+                ...(resistanceCalibration ? { resistanceCalibration } : {}),
+                ...(pipeSizingProposal ? { pipeSizingProposal } : {}),
                 localLossExtraction,
                 liveLocalLossPumpHeadBasis,
                 warnings: [
@@ -162,7 +197,7 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                 ],
             };
         }
-        const response = await executeRevitCode(buildPipeReadCode(networkPathRequest), { transactionMode: "none" });
+        const response = await executeRevitCodeFn(buildPipeReadCode(networkPathRequest), { transactionMode: "none" });
         const revitRead = response && response.result ? response.result : response;
         const resistanceCalibration = revitRead?.pipeResistanceSamples
             ? calibratePipeResistanceSamples({
@@ -214,6 +249,22 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
     catch (error) {
         return { ...base, warnings: [error instanceof Error ? error.message : String(error)] };
     }
+}
+
+function unwrapRevitResult(response) {
+    return response && response.result ? response.result : response;
+}
+
+function shouldReadPipeSizingSamples(networkPathRequest = {}) {
+    return networkPathRequest.hydraulicResistanceOnly === true ||
+        isFinitePositive(networkPathRequest.hydronicDefaultDesignFlowLs) ||
+        Object.keys(networkPathRequest.hydronicDesignFlowsByElementId || {}).length > 0 ||
+        (Array.isArray(networkPathRequest.hydronicPipeSizingTargetElementIds) &&
+            networkPathRequest.hydronicPipeSizingTargetElementIds.length > 0);
+}
+
+function isFinitePositive(value) {
+    return value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0;
 }
 
 function examplePumpHeadNetwork() {
