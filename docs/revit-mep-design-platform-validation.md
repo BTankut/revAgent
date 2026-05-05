@@ -18,6 +18,7 @@ node kurulum\mcp-server\build\write-plan\write-plan.test.js
 node kurulum\mcp-server\build\domains\engineering-calculations.test.js
 node kurulum\mcp-server\build\domains\domain-foundation-calculations.test.js
 node kurulum\mcp-server\build\tools\handoff-templates.test.js
+node kurulum\mcp-server\build\tools\handoff_input_validator.test.js
 ```
 
 Result:
@@ -72,6 +73,12 @@ Result:
   - office standards handoff paths match the runtime missing-standard keys
   - every missing standard has a fillable `officeStandards` placeholder and field hint
   - project critical data handoff arguments match `analyze_mep_system` inputs and keep null numeric placeholders outside the directly passable argument object
+- Handoff input validator tests passed:
+  - empty office standards template is rejected for production review with `28` missing standards
+  - a filled office standards payload clears the validator without enabling commit
+  - blank project-critical data template is shape-valid but not production-complete
+  - `criticalPathLocalLossComplete: true` without `criticalPathLocalLossPressurePa` is rejected
+  - live project-critical data sample is accepted only as sample/non-commit data
 
 ## Plugin Build Check
 
