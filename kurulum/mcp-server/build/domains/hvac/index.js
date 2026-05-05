@@ -4,9 +4,9 @@ import { summarizeLocalLossSamples } from "../local-losses/calculations.js";
 import { buildLocalLossOnlyCode } from "../local-losses/revit-read.js";
 import { readPathTargetedLocalLosses } from "../local-losses/path-targeting.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
-import { calculateFanPressureBasis, sizeRectangularDuctEqualFriction } from "./calculations.js";
+import { buildHvacDuctResizeProposal, calculateFanPressureBasis, sizeRectangularDuctEqualFriction } from "./calculations.js";
 
-export async function analyzeHvacAirside({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {} } = {}) {
+export async function analyzeHvacAirside({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {}, executeRevitCodeFn = executeRevitCode } = {}) {
     const missingStandards = missingStandardsForDiscipline("hvac", officeStandards);
     const fanPressureNetwork = exampleFanPressureNetwork();
     const base = {
@@ -28,6 +28,7 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
             "fan flow/pressure basis from critical path",
             "duct friction loss by Darcy-Weisbach",
             "equal-friction rectangular duct sizing proposal",
+            "resize_duct write-plan proposal from live duct samples and critical-path local-loss context",
             "live fitting/accessory/equipment local-loss parameter extraction",
         ],
         calculationExamples: {
@@ -35,6 +36,20 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
                 flowM3h: 3600,
                 targetPaPerM: officeStandards.hvac?.ductEqualFrictionTargetPaPerM,
                 maxVelocityMps: officeStandards.hvac?.ductVelocityLimitsMps?.main,
+            }),
+            ductResizeProposal: buildHvacDuctResizeProposal({
+                ductSamples: [
+                    { elementId: 101, uniqueId: "example-duct-101", systemName: "Supply Air", lengthM: 8, widthMm: 300, heightMm: 300 },
+                ],
+                designFlowsByElementId: { 101: 1800 },
+                targetPaPerM: officeStandards.hvac?.ductEqualFrictionTargetPaPerM,
+                maxVelocityMps: officeStandards.hvac?.ductVelocityLimitsMps?.main,
+                localLossExtraction: {
+                    targetedByCriticalPath: true,
+                    pressureContribution: { totalPressureDropPa: 50 },
+                    selectedPathPressureCheck: { consistent: true },
+                    warnings: [],
+                },
             }),
             branchFlowAndCriticalPath: exampleAirsideTreeNetwork(),
             weightedPathfinding: exampleAirsideWeightedNetwork(),
@@ -59,7 +74,7 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
                     pathfindingOnly: true,
                     localLossOnly: false,
                 }),
-                executeRevitCode,
+                executeRevitCode: executeRevitCodeFn,
                 sampleLimit: networkPathRequest.localLossSampleLimit,
                 categories: ["OST_DuctFitting", "OST_DuctAccessory", "OST_DuctTerminal", "OST_MechanicalEquipment"],
             });
@@ -85,9 +100,37 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
                 terminalAllowancePa: 40,
                 safetyFactor: 1.1,
             });
+            const ductSizingRead = shouldReadDuctSizingSamples(networkPathRequest)
+                ? unwrapRevitResult(await executeRevitCodeFn(buildHvacReadCode({
+                    ...networkPathRequest,
+                    pathfindingOnly: false,
+                    localLossOnly: false,
+                    ductSizingOnly: true,
+                }), { transactionMode: "none" }))
+                : undefined;
+            const ductSizingProposal = ductSizingRead?.ductSamples
+                ? buildHvacDuctResizeProposal({
+                    ductSamples: ductSizingRead.ductSamples,
+                    designFlowsByElementId: networkPathRequest.hvacDesignFlowsByElementId || {},
+                    defaultFlowM3h: networkPathRequest.hvacDefaultDesignFlowM3h,
+                    targetPaPerM: officeStandards.hvac?.ductEqualFrictionTargetPaPerM,
+                    maxVelocityMps: officeStandards.hvac?.ductVelocityLimitsMps?.main,
+                    localLossExtraction,
+                    targetElementIds: (networkPathRequest.hvacDuctSizingTargetElementIds || []).length > 0
+                        ? networkPathRequest.hvacDuctSizingTargetElementIds
+                        : pathTargeting.targetElementIds,
+                })
+                : undefined;
             return {
                 ...base,
-                revitRead,
+                revitRead: {
+                    ...revitRead,
+                    ...(ductSizingRead ? {
+                        ductSizingRead,
+                        ductSamples: ductSizingRead.ductSamples || [],
+                    } : {}),
+                },
+                ...(ductSizingProposal ? { ductSizingProposal } : {}),
                 localLossExtraction,
                 liveLocalLossFanPressureBasis,
                 warnings: [
@@ -98,7 +141,7 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
                 ],
             };
         }
-        const response = await executeRevitCode(buildHvacReadCode(networkPathRequest), { transactionMode: "none" });
+        const response = await executeRevitCodeFn(buildHvacReadCode(networkPathRequest), { transactionMode: "none" });
         const revitRead = response && response.result ? response.result : response;
         const localLossExtraction = revitRead?.localLossSamples
             ? summarizeLocalLossSamples({
@@ -116,9 +159,38 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
                 safetyFactor: 1.1,
             })
             : undefined;
+        const ductSizingRead = shouldReadDuctSizingSamples(networkPathRequest) && !revitRead?.ductSamples
+            ? unwrapRevitResult(await executeRevitCodeFn(buildHvacReadCode({
+                ...networkPathRequest,
+                localLossOnly: false,
+                pathfindingOnly: false,
+                ductSizingOnly: true,
+            }), { transactionMode: "none" }))
+            : undefined;
+        const ductSamples = revitRead?.ductSamples || ductSizingRead?.ductSamples;
+        const ductSizingProposal = ductSamples
+            ? buildHvacDuctResizeProposal({
+                ductSamples,
+                designFlowsByElementId: networkPathRequest.hvacDesignFlowsByElementId || {},
+                defaultFlowM3h: networkPathRequest.hvacDefaultDesignFlowM3h,
+                targetPaPerM: officeStandards.hvac?.ductEqualFrictionTargetPaPerM,
+                maxVelocityMps: officeStandards.hvac?.ductVelocityLimitsMps?.main,
+                localLossExtraction,
+                localLossPressurePa: networkPathRequest.criticalPathLocalLossPressurePa,
+                criticalPathLocalLossComplete: networkPathRequest.criticalPathLocalLossComplete === true,
+                targetElementIds: networkPathRequest.hvacDuctSizingTargetElementIds || [],
+            })
+            : undefined;
         return {
             ...base,
-            revitRead,
+            revitRead: {
+                ...revitRead,
+                ...(ductSizingRead ? {
+                    ductSizingRead,
+                    ductSamples: ductSamples || [],
+                } : {}),
+            },
+            ...(ductSizingProposal ? { ductSizingProposal } : {}),
             ...(localLossExtraction ? {
                 localLossExtraction,
                 liveLocalLossFanPressureBasis,
@@ -132,6 +204,22 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
             warnings: [error instanceof Error ? error.message : String(error)],
         };
     }
+}
+
+function unwrapRevitResult(response) {
+    return response && response.result ? response.result : response;
+}
+
+function shouldReadDuctSizingSamples(networkPathRequest = {}) {
+    return networkPathRequest.ductSizingOnly === true ||
+        isFinitePositive(networkPathRequest.hvacDefaultDesignFlowM3h) ||
+        Object.keys(networkPathRequest.hvacDesignFlowsByElementId || {}).length > 0 ||
+        (Array.isArray(networkPathRequest.hvacDuctSizingTargetElementIds) &&
+            networkPathRequest.hvacDuctSizingTargetElementIds.length > 0);
+}
+
+function isFinitePositive(value) {
+    return value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0;
 }
 
 function exampleFanPressureNetwork() {
@@ -164,6 +252,10 @@ function buildHvacReadCode(networkPathRequest = {}) {
             targetElementIds: networkPathRequest.localLossElementIds || [],
             categories: ["OST_DuctFitting", "OST_DuctAccessory", "OST_DuctTerminal", "OST_MechanicalEquipment"],
         });
+    }
+    if (networkPathRequest.ductSizingOnly === true) {
+        const sampleLimit = Number.parseInt(String(networkPathRequest.ductSizingSampleLimit || networkPathRequest.sampleLimit || 25), 10);
+        return buildHvacDuctSizingOnlyCode(Number.isFinite(sampleLimit) ? sampleLimit : 25);
     }
     if (networkPathRequest.boqOnly === true) {
         return buildHvacBoqOnlyCode();
@@ -581,6 +673,112 @@ try
         connectorGraph = (object)null,
         connectorPathfinding = (object)null,
         systemElementCounts = systems
+    };
+}
+catch (Exception ex)
+{
+    return new { success = false, error = ex.ToString() };
+}`;
+}
+
+function buildHvacDuctSizingOnlyCode(sampleLimit) {
+    const limit = Math.max(1, Math.min(200, Number.parseInt(String(sampleLimit), 10) || 25));
+    return `
+double AsMeters(Parameter parameter)
+{
+    if (parameter == null || !parameter.HasValue) return 0.0;
+    try { return UnitUtils.ConvertFromInternalUnits(parameter.AsDouble(), UnitTypeId.Meters); }
+    catch { return 0.0; }
+}
+
+double AsMillimeters(Parameter parameter)
+{
+    if (parameter == null || !parameter.HasValue) return 0.0;
+    try { return UnitUtils.ConvertFromInternalUnits(parameter.AsDouble(), UnitTypeId.Millimeters); }
+    catch { return 0.0; }
+}
+
+double DuctWidthMm(Element elem)
+{
+    try
+    {
+        Parameter p = elem.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM);
+        double value = AsMillimeters(p);
+        if (value > 0) return value;
+    }
+    catch {}
+    try
+    {
+        Parameter p = elem.LookupParameter("Width");
+        double value = AsMillimeters(p);
+        if (value > 0) return value;
+    }
+    catch {}
+    return 0.0;
+}
+
+double DuctHeightMm(Element elem)
+{
+    try
+    {
+        Parameter p = elem.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM);
+        double value = AsMillimeters(p);
+        if (value > 0) return value;
+    }
+    catch {}
+    try
+    {
+        Parameter p = elem.LookupParameter("Height");
+        double value = AsMillimeters(p);
+        if (value > 0) return value;
+    }
+    catch {}
+    return 0.0;
+}
+
+string SystemNameFor(Element elem)
+{
+    try
+    {
+        Parameter systemName = elem.LookupParameter("System Name");
+        string key = systemName != null && systemName.HasValue ? systemName.AsString() : "";
+        if (!string.IsNullOrEmpty(key)) return key;
+    }
+    catch {}
+    return "(unassigned)";
+}
+
+try
+{
+    int sampleLimit = ${limit};
+    int inspected = 0;
+    System.Collections.Generic.List<object> samples = new System.Collections.Generic.List<object>();
+    FilteredElementCollector collector = new FilteredElementCollector(document)
+        .OfClass(typeof(Autodesk.Revit.DB.Mechanical.Duct))
+        .WhereElementIsNotElementType();
+    foreach (Element elem in collector.ToElements())
+    {
+        inspected++;
+        Parameter length = elem.get_Parameter(BuiltInParameter.CURVE_ELEM_LENGTH);
+        double lengthM = AsMeters(length);
+        double widthMm = DuctWidthMm(elem);
+        double heightMm = DuctHeightMm(elem);
+        if (lengthM <= 0 || widthMm <= 0 || heightMm <= 0) continue;
+        samples.Add(new {
+            elementId = elem.Id.IntegerValue,
+            uniqueId = elem.UniqueId,
+            systemName = SystemNameFor(elem),
+            lengthM = lengthM,
+            widthMm = widthMm,
+            heightMm = heightMm
+        });
+        if (samples.Count >= sampleLimit) break;
+    }
+    return new {
+        success = true,
+        ductSizingOnly = true,
+        inspectedDuctCount = inspected,
+        ductSamples = samples.ToArray()
     };
 }
 catch (Exception ex)

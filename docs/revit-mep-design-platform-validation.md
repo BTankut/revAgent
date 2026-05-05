@@ -27,6 +27,7 @@ Result:
 - Engineering calculation tests passed:
   - duct area, hydraulic diameter, velocity, and friction loss against hand-check values
   - equal-friction duct sizing proposal gate
+  - HVAC duct resize proposal rows and validator-approved `resize_duct` write-plan step generation
   - pipe area, velocity, and friction loss against hand-check values
   - pipe resistance coefficient calibration from length/diameter/reference flow samples
   - hydronic pipe sizing proposal gate
@@ -52,6 +53,8 @@ Result:
   - equipment schedule/report proposal rows and low-risk note update write-plan step
   - report issue-list/design-log rows and CSV text generation
   - pipe sizing proposal rows and CSV text generation
+  - duct sizing proposal rows and CSV text generation
+  - HVAC duct sizing analyzer branch with fake-executor coverage for read-only duct sample collection and proposal-only `resize_duct` output
   - hydronic path-targeted local-loss branch with fake-executor coverage for pathfinding, ranking, selected-path extraction, pipe resistance read, and proposal-only `resize_pipe` output
 
 ## Plugin Build Check
@@ -202,6 +205,10 @@ Live read-only results captured on the active session:
   - Connector readback confirmed pipe `513756` references fitting `513769`; fitting `513769` references pipe `513756` and pipe `513637`.
   - Targeted read of path ids `[513756, 513769, 513637]` returned pipe sample `513756` and fitting `513769` `Pressure Drop = 193.936 Pa`; counts stayed `488` pipes and `744` ducts.
   - Feeding that targeted dataset into `summarizeLocalLossSamples` and `buildHydronicPipeResizeProposal` returned `localLossContext.complete: true`, `status: proposal_ready_for_review`, one proposal row, one proposal-only `resize_pipe` step `resize-pipe-513756`, and `canCommit: false`.
+- Live critical-path HVAC duct resize micro-probe succeeded without model mutation:
+  - Targeted read of path ids `[392199, 392203, 392200]` returned duct samples `392199` / `392200` and fitting `392203` `Pressure Drop = 0.903 Pa`; counts stayed `744` ducts and `488` pipes.
+  - Feeding that targeted dataset into `summarizeLocalLossSamples` and `buildHvacDuctResizeProposal` returned `localLossContext.complete: true`, `status: proposal_ready_for_review`, `2` proposal rows, `2` proposal-only `resize_duct` steps, and `canCommit: false`.
+  - First row: duct `392199`, system `Mechanical Supply Air 1`, current size `450 x 200 mm`, test design flow `900 m3/h`, selected size `200 x 300 mm`, selected velocity `4.167 m/s`, selected friction `0.958 Pa/m`.
 - Targeted local-loss element probe succeeded:
   - Direct live read of HVAC fitting `392203` confirmed category `Duct Fittings`, loss parameters `Loss Method Settings`, `Loss Method`, `Pressure Drop`, and numeric pressure-drop sum `0.903 Pa`.
   - Direct live read of hydronic fitting `513769` confirmed category `Pipe Fittings`, the same three loss-like parameters, and numeric pressure-drop sum `193.936 Pa`.

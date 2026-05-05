@@ -3,6 +3,7 @@ import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } f
 import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic-water/calculations.js";
 import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
+import { analyzeHvacAirside } from "./hvac/index.js";
 import { analyzeHydronic } from "./hydronic/index.js";
 import { connectorPathElementIds, selectCriticalConnectorPath, summarizeLocalLossSamples } from "./local-losses/calculations.js";
 import { readPathTargetedLocalLosses } from "./local-losses/path-targeting.js";
@@ -459,6 +460,44 @@ const cappedGeneralLocalLossCode = buildLocalLossOnlyCode({
 });
 assert(cappedGeneralLocalLossCode.includes("int sampleLimit = 200;"));
 
+const hvacDuctSizingCalls = [];
+const hvacDuctSizing = await analyzeHvacAirside({
+    officeStandards: {
+        hvac: {
+            ductEqualFrictionTargetPaPerM: 1.0,
+            ductVelocityLimitsMps: { main: 5.0 },
+        },
+    },
+    networkPathRequest: {
+        ductSizingOnly: true,
+        ductSizingSampleLimit: 1,
+        hvacDesignFlowsByElementId: { 201: 1800 },
+        criticalPathLocalLossPressurePa: 50,
+        criticalPathLocalLossComplete: true,
+    },
+    executeRevitCodeFn: async (code, options) => {
+        hvacDuctSizingCalls.push({ code, options });
+        assert(code.includes("ductSizingOnly = true"));
+        return {
+            result: {
+                ductSizingOnly: true,
+                inspectedDuctCount: 1,
+                ductSamples: [
+                    { elementId: 201, uniqueId: "duct-201", systemName: "Supply Air", lengthM: 8, widthMm: 300, heightMm: 300 },
+                ],
+            },
+        };
+    },
+});
+assert.equal(hvacDuctSizingCalls.length, 1);
+assert.deepEqual(hvacDuctSizingCalls[0].options, { transactionMode: "none" });
+assert.equal(hvacDuctSizing.ductSizingProposal.success, true);
+assert.equal(hvacDuctSizing.ductSizingProposal.localLossContext.complete, true);
+assert.equal(hvacDuctSizing.ductSizingProposal.rows[0].elementId, 201);
+assert.equal(hvacDuctSizing.ductSizingProposal.rows[0].criticalPathLocalLossPressurePa, 50);
+assert.equal(hvacDuctSizing.ductSizingProposal.writePlanSteps[0].operation, "resize_duct");
+assert.equal(hvacDuctSizing.revitRead.ductSamples.length, 1);
+
 const report = buildAnalysisReport({
     analyses: [
         {
@@ -474,6 +513,30 @@ const report = buildAnalysisReport({
                 counts: { ducts: 2, airTerminals: 3 },
                 ductLengthMeters: 12.5,
                 systemElementCounts: { "Supply Air": 5 },
+            },
+            ductSizingProposal: {
+                status: "proposal_ready_for_review",
+                rows: [
+                    {
+                        rowType: "hvac_duct_sizing_proposal",
+                        elementId: 201,
+                        uniqueId: "duct-201",
+                        systemName: "Supply Air",
+                        lengthM: 8,
+                        designFlowM3h: 1800,
+                        currentWidthMm: 300,
+                        currentHeightMm: 300,
+                        selectedWidthMm: 400,
+                        selectedHeightMm: 400,
+                        selectedVelocityMps: 3.125,
+                        selectedPressureLossPaPerM: 0.8,
+                        selectedLinearPressureLossPa: 6.4,
+                        criticalPathLocalLossPressurePa: 50,
+                        localLossDatasetComplete: true,
+                        resizeRequired: true,
+                        status: "proposal_ready_for_review",
+                    },
+                ],
             },
             resistanceCalibration: {
                 rows: [
@@ -524,6 +587,7 @@ assert.equal(report.designLogRows.length, 1);
 assert.equal(report.boqRows.length, 4);
 assert.equal(report.hydraulicResistanceRows.length, 1);
 assert.equal(report.pipeSizingRows.length, 1);
+assert.equal(report.ductSizingRows.length, 1);
 assert.equal(report.localLossRows.length, 2);
 assert.equal(report.localLossPressureRows.length, 3);
 assert(report.issueCsv.includes("missing_standard"));
@@ -533,6 +597,8 @@ assert(report.boqCsv.includes("Supply Air"));
 assert(report.hydraulicResistanceCsv.includes("Hydronic Supply"));
 assert(report.pipeSizingCsv.includes("hydronic_pipe_sizing_proposal"));
 assert(report.pipeSizingCsv.includes("proposal_ready_for_review"));
+assert(report.ductSizingCsv.includes("hvac_duct_sizing_proposal"));
+assert(report.ductSizingCsv.includes("proposal_ready_for_review"));
 assert(report.localLossCsv.includes("Pressure Drop"));
 assert(report.localLossPressureCsv.includes("local_loss_pressure_total"));
 assert.equal(report.canCommit, false);

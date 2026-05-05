@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+    buildHvacDuctResizeProposal,
     ductFrictionLossPaPerM,
     ductVelocityMps,
     calculateFanPressureBasis,
@@ -67,6 +68,34 @@ assert.deepEqual(ductMissingStandards.missingStandards, [
     "hvac.ductEqualFrictionTargetPaPerM",
     "hvac.ductVelocityLimitsMps",
 ]);
+
+const ductResizeProposal = buildHvacDuctResizeProposal({
+    ductSamples: [
+        { elementId: 201, uniqueId: "u-201", systemName: "Supply Air", lengthM: 8, widthMm: 300, heightMm: 300 },
+    ],
+    designFlowsByElementId: { 201: 1800 },
+    targetPaPerM: 1.0,
+    maxVelocityMps: 5.0,
+    localLossExtraction: {
+        targetedByCriticalPath: true,
+        pressureContribution: { totalPressureDropPa: 50 },
+        selectedPathPressureCheck: { consistent: true },
+        warnings: [],
+    },
+});
+assert.equal(ductResizeProposal.success, true);
+assert.equal(ductResizeProposal.status, "proposal_ready_for_review");
+assert.equal(ductResizeProposal.localLossContext.complete, true);
+assert.equal(ductResizeProposal.rows.length, 1);
+assert.equal(ductResizeProposal.rows[0].elementId, 201);
+assert.equal(ductResizeProposal.rows[0].criticalPathLocalLossPressurePa, 50);
+assert.equal(ductResizeProposal.rows[0].localLossDatasetComplete, true);
+assert.equal(ductResizeProposal.writePlanSteps.length, 1);
+assert.equal(ductResizeProposal.writePlanSteps[0].operation, "resize_duct");
+assert.equal(ductResizeProposal.writePlanSteps[0].targets.elementId, 201);
+assert.equal(ductResizeProposal.writePlanSteps[0].arguments.unit, "mm");
+assert.equal(validateStep(ductResizeProposal.writePlanSteps[0], 0).errors.length, 0);
+assert.equal(ductResizeProposal.canCommit, false);
 
 close(circularAreaM2(50), 0.0019634954, 1e-9, "pipe area");
 close(pipeVelocityMps(1.0, 50), 0.5092958, 1e-6, "pipe velocity");

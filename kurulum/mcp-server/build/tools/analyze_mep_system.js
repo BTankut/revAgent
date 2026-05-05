@@ -29,6 +29,11 @@ export function registerAnalyzeMepSystemTool(server) {
         localLossSampleLimit: z.number().optional().describe("Maximum number of fitting/accessory/equipment samples for localLossOnly. Defaults 25."),
         localLossElementIds: z.array(z.number()).optional().describe("Optional explicit Revit element ids for targeted local-loss extraction, for example a verified critical path/circuit element set."),
         localLossFromNetworkPath: z.boolean().optional().describe("When true with a network root and terminals, first find the live connector path, then target local-loss extraction to the selected reachable critical path/circuit."),
+        ductSizingOnly: z.boolean().optional().describe("When true for HVAC analysis, run short read-only duct length/size sampling for resize proposals."),
+        ductSizingSampleLimit: z.number().optional().describe("Maximum number of duct samples for ductSizingOnly. Defaults 25."),
+        hvacDesignFlowsByElementId: z.any().optional().describe("Optional map of Revit duct element id to confirmed design airflow in m3/h for HVAC resize proposals."),
+        hvacDefaultDesignFlowM3h: z.number().optional().describe("Optional default design airflow in m3/h for sampled HVAC ducts without an explicit element flow."),
+        hvacDuctSizingTargetElementIds: z.array(z.number()).optional().describe("Optional duct element ids to include in HVAC resize proposal output."),
         networkRootElementId: z.number().optional().describe("Optional Revit element id used as the root for live connector graph pathfinding in HVAC/hydronic analyses."),
         networkTerminalElementIds: z.array(z.number()).optional().describe("Optional terminal Revit element ids for live connector graph pathfinding."),
         officeStandards: z.any().optional().describe("Optional office standards override object."),
@@ -55,6 +60,11 @@ export function registerAnalyzeMepSystemTool(server) {
             localLossSampleLimit: args.localLossSampleLimit,
             localLossElementIds: args.localLossElementIds || [],
             localLossFromNetworkPath: args.localLossFromNetworkPath === true,
+            ductSizingOnly: args.ductSizingOnly === true,
+            ductSizingSampleLimit: args.ductSizingSampleLimit,
+            hvacDesignFlowsByElementId: args.hvacDesignFlowsByElementId || {},
+            hvacDefaultDesignFlowM3h: args.hvacDefaultDesignFlowM3h,
+            hvacDuctSizingTargetElementIds: args.hvacDuctSizingTargetElementIds || [],
         };
         try {
             const analyses = [];

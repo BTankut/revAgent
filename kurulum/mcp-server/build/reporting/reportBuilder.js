@@ -177,6 +177,43 @@ export function buildPipeSizingRows({ analyses = [] } = {}) {
     return rows;
 }
 
+export function buildDuctSizingRows({ analyses = [] } = {}) {
+    const rows = [];
+    for (const analysis of Array.isArray(analyses) ? analyses : []) {
+        const proposal = analysis.ductSizingProposal;
+        if (!proposal || !Array.isArray(proposal.rows)) continue;
+        for (const row of proposal.rows) {
+            rows.push({
+                rowType: row.rowType || "hvac_duct_sizing_proposal",
+                discipline: analysis.discipline || "hvac",
+                engine: analysis.engine || "",
+                elementId: row.elementId,
+                uniqueId: row.uniqueId || "",
+                systemName: row.systemName || "(unassigned)",
+                lengthM: row.lengthM,
+                designFlowM3h: row.designFlowM3h,
+                currentWidthMm: row.currentWidthMm,
+                currentHeightMm: row.currentHeightMm,
+                selectedWidthMm: row.selectedWidthMm,
+                selectedHeightMm: row.selectedHeightMm,
+                currentVelocityMps: row.currentVelocityMps,
+                selectedVelocityMps: row.selectedVelocityMps,
+                currentPressureLossPaPerM: row.currentPressureLossPaPerM,
+                selectedPressureLossPaPerM: row.selectedPressureLossPaPerM,
+                currentLinearPressureLossPa: row.currentLinearPressureLossPa,
+                selectedLinearPressureLossPa: row.selectedLinearPressureLossPa,
+                criticalPathLocalLossPressurePa: row.criticalPathLocalLossPressurePa,
+                localLossDatasetComplete: row.localLossDatasetComplete,
+                resizeRequired: row.resizeRequired,
+                status: row.status || proposal.status || "",
+                source: "ductSizingProposal.rows",
+                canCommit: false,
+            });
+        }
+    }
+    return rows;
+}
+
 export function buildLocalLossRows({ analyses = [] } = {}) {
     const rows = [];
     for (const analysis of Array.isArray(analyses) ? analyses : []) {
@@ -277,17 +314,19 @@ export function buildAnalysisReport({ analyses = [], delimiter = defaultDelimite
     const boqRows = buildBoqRows({ analyses });
     const hydraulicResistanceRows = buildHydraulicResistanceRows({ analyses });
     const pipeSizingRows = buildPipeSizingRows({ analyses });
+    const ductSizingRows = buildDuctSizingRows({ analyses });
     const localLossRows = buildLocalLossRows({ analyses });
     const localLossPressureRows = buildLocalLossPressureRows({ analyses });
     return {
         success: true,
         mutateModel: false,
-        reportKinds: ["issue_list", "design_log", "boq", "hydraulic_resistance", "pipe_sizing", "local_loss", "local_loss_pressure"],
+        reportKinds: ["issue_list", "design_log", "boq", "hydraulic_resistance", "pipe_sizing", "duct_sizing", "local_loss", "local_loss_pressure"],
         issueRows,
         designLogRows,
         boqRows,
         hydraulicResistanceRows,
         pipeSizingRows,
+        ductSizingRows,
         localLossRows,
         localLossPressureRows,
         issueCsv: toDelimitedText(issueRows, { delimiter }),
@@ -295,6 +334,7 @@ export function buildAnalysisReport({ analyses = [], delimiter = defaultDelimite
         boqCsv: toDelimitedText(boqRows, { delimiter }),
         hydraulicResistanceCsv: toDelimitedText(hydraulicResistanceRows, { delimiter }),
         pipeSizingCsv: toDelimitedText(pipeSizingRows, { delimiter }),
+        ductSizingCsv: toDelimitedText(ductSizingRows, { delimiter }),
         localLossCsv: toDelimitedText(localLossRows, { delimiter }),
         localLossPressureCsv: toDelimitedText(localLossPressureRows, { delimiter }),
         writePlanOperations: [
@@ -307,6 +347,7 @@ export function buildAnalysisReport({ analyses = [], delimiter = defaultDelimite
             "BOQ rows are populated from live read-only Revit summaries when analyses include revitRead counts and lengths.",
             "Hydraulic resistance rows are populated from live read-only Revit pipe length/diameter samples when hydronic resistance calibration is requested.",
             "Pipe sizing rows are populated from hydronic resize proposals and include proposed resize_pipe targets without committing model changes.",
+            "Duct sizing rows are populated from HVAC resize proposals and include proposed resize_duct targets without committing model changes.",
             "Local-loss rows are populated from live read-only fitting/accessory/equipment parameter extraction when local-loss sampling is requested.",
             "Local-loss pressure rows aggregate numeric pressure-drop parameters for use as fan pressure or pump head basis inputs after critical-path validation.",
             "Identity columns are emitted as text-compatible values for spreadsheet workflows.",
