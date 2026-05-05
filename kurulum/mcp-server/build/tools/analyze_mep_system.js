@@ -13,6 +13,7 @@ import { buildAnalysisWritePlanProposal } from "./analysis_write_plan_proposal.j
 import { buildAnalyzeHandoffValidation } from "./analysis_handoff_validation.js";
 import { summarizeOfficeStandardsCompleteness } from "./office_standards_completeness.js";
 import { summarizeProductionReadiness } from "./production_readiness.js";
+import { summarizeProductionSizingReview } from "./production_sizing_review.js";
 import { formatJsonContent } from "../utils/revitToolHelpers.js";
 
 export function registerAnalyzeMepSystemTool(server) {
@@ -134,12 +135,18 @@ export function registerAnalyzeMepSystemTool(server) {
                 writePlanProposal,
                 handoffValidation,
             });
+            const productionSizingReview = summarizeProductionSizingReview({
+                analyses,
+                productionReadiness,
+                writePlanProposal,
+            });
             return formatJsonContent({
                 success: true,
                 discipline,
                 mutateModel: false,
                 officeStandardsCompleteness,
                 productionReadiness,
+                productionSizingReview,
                 handoffValidation,
                 analyses,
                 reporting,

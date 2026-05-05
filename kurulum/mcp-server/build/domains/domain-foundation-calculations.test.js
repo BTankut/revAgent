@@ -15,6 +15,7 @@ import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 import { buildAnalysisWritePlanProposal } from "../tools/analysis_write_plan_proposal.js";
 import { summarizeOfficeStandardsCompleteness } from "../tools/office_standards_completeness.js";
 import { summarizeProductionReadiness } from "../tools/production_readiness.js";
+import { summarizeProductionSizingReview } from "../tools/production_sizing_review.js";
 import { validateStep } from "../write-plan/validators.js";
 
 const hvacMissingStandards = missingStandardsForDiscipline("hvac", mergeOfficeStandards());
@@ -1046,6 +1047,104 @@ assert.equal(projectCriticalOnlyReadiness.projectCriticalDataComplete, false);
 assert.equal(projectCriticalOnlyReadiness.nextRequiredInputs.length, 1);
 assert.equal(projectCriticalOnlyReadiness.nextRequiredInputs[0].inputType, "project_critical_data");
 assert(projectCriticalOnlyReadiness.nextRequiredInputs[0].requiredArgumentGroups.includes("criticalPathLocalLossPressurePa"));
+
+const readySizingAnalyses = [
+    {
+        discipline: "hvac",
+        engine: "hvac-airside-foundation",
+        ductSizingProposal: {
+            dataCompleteness: {
+                sampleCount: 1,
+                targetCount: 1,
+                rowCount: 1,
+                writePlanStepCount: 1,
+                skippedNoFlowCount: 0,
+                skippedNoSizeCount: 0,
+                localLossDatasetComplete: true,
+                completeForProductionReview: true,
+                blockers: [],
+            },
+            rows: [
+                {
+                    rowType: "hvac_duct_sizing_proposal",
+                    elementId: 201,
+                    uniqueId: "u-201",
+                    systemName: "Supply Air",
+                    designFlowM3h: 1800,
+                    currentWidthMm: 300,
+                    currentHeightMm: 300,
+                    selectedWidthMm: 250,
+                    selectedHeightMm: 500,
+                    currentVelocityMps: 5.55,
+                    selectedVelocityMps: 4,
+                    currentPressureLossPaPerM: 1.8,
+                    selectedPressureLossPaPerM: 0.9,
+                    currentLinearPressureLossPa: 14.4,
+                    selectedLinearPressureLossPa: 7.2,
+                    criticalPathLocalLossPressurePa: 50,
+                    localLossDatasetComplete: true,
+                    resizeRequired: true,
+                    status: "proposal_ready_for_review",
+                    canCommit: false,
+                },
+            ],
+        },
+    },
+];
+const readySizingWritePlan = {
+    stepCount: 1,
+    validation: { valid: true, errors: [] },
+    plan: {
+        steps: [
+            {
+                stepId: "resize-duct-201",
+                operation: "resize_duct",
+                targets: { elementId: 201 },
+                arguments: { width: 250, height: 500, unit: "mm" },
+            },
+        ],
+    },
+};
+const readyProductionReadiness = summarizeProductionReadiness({
+    analyses: readySizingAnalyses,
+    officeStandardsCompleteness: {
+        completeForProductionReview: true,
+        missingStandards: [],
+    },
+    writePlanProposal: readySizingWritePlan,
+    handoffValidation: {
+        projectCriticalData: {
+            completeForProductionReview: true,
+            scenarioCount: 1,
+            sampleOnly: false,
+            errors: [],
+            blockers: [],
+        },
+    },
+});
+assert.equal(readyProductionReadiness.completeForProductionReview, true);
+const productionSizingReview = summarizeProductionSizingReview({
+    analyses: readySizingAnalyses,
+    productionReadiness: readyProductionReadiness,
+    writePlanProposal: readySizingWritePlan,
+});
+assert.equal(productionSizingReview.completeForProductionReview, true);
+assert.equal(productionSizingReview.rowCount, 1);
+assert.equal(productionSizingReview.readyRowCount, 1);
+assert.equal(productionSizingReview.writePlanStepCount, 1);
+assert(Math.abs(productionSizingReview.selectedPathPressureBasisPa - 57.2) < 1e-9);
+assert(Math.abs(productionSizingReview.pressureBasisDeltaPa + 7.2) < 1e-9);
+assert.equal(productionSizingReview.rows[0].status, "ready_for_engineer_final_review");
+assert.equal(productionSizingReview.rows[0].writePlanStepId, "resize-duct-201");
+assert.equal(productionSizingReview.canCommit, false);
+
+const blockedProductionSizingReview = summarizeProductionSizingReview({
+    analyses: readySizingAnalyses,
+    productionReadiness,
+    writePlanProposal: readySizingWritePlan,
+});
+assert.equal(blockedProductionSizingReview.completeForProductionReview, false);
+assert(blockedProductionSizingReview.blockers.some((blocker) => blocker.includes("Production readiness gate")));
 
 const writePlanProposal = buildAnalysisWritePlanProposal({
     discipline: "all",
