@@ -90,6 +90,11 @@
   - Commit report returned `segmentConnectionCount: 1`, `sourceConnectionCount: 2`, and no reconnect failures
   - Verify returned `segmentConnectionCount: 1`, `externalConnectionCount: 2`, external refs to physical ducts `1020947` and `1020951`, `sourceReplacementCheck.exists: false`, and `success: true`
   - Final readback confirmed the two replacement ducts at `300 x 300 mm` with `openConnectorCount: 0`.
+- Live-tested an orthogonal L-shaped reconnect route without adding a separate elbow fallback:
+  - Connected chain left `1020958`, source `1020960`, right `1020962`
+  - Commit plan `reroute-l-reconnect-1777967000000` deleted source `1020960` and created replacement ducts `1020965`, `1020967`, and `1020969`
+  - Commit and verify both returned `segmentConnectionCount: 2`, `externalConnectionCount: 2`, `sourceReplacementCheck.exists: false`, and `success: true`
+  - Final readback confirmed all three replacement ducts at `300 x 300 mm` with `openConnectorCount: 0`.
 
 ## Remaining Work
 
