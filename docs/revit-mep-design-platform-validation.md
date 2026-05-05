@@ -137,6 +137,8 @@ Result:
   `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\route-fitting-create\`
   and the unique live-test assembly
   `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:AssemblyName=SampleCommandSetRouteFittingCreateTest -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\route-fitting-create-live\`.
+- Native pipe elbow creation live-test assembly build passed:
+  `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:AssemblyName=SampleCommandSetPipeFittingCreateTest -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\pipe-fitting-create-live\`.
 
 ## Live Revit Validation Plan
 
@@ -429,6 +431,11 @@ Write checks:
   - The direct-loaded unique assembly `SampleCommandSetRouteFittingCreateTest.dll` ran plan `route-fitting-create-live-20260505` on the disposable test model using source-derived ids `systemTypeId: 800822`, `ductTypeId: 142427`, and `levelId: 378117`.
   - Commit created route ducts `1020905` and `1020907`, created elbow fitting `1020909`, and returned `createdRouteFittingCount: 1`, `routeFittingCount: 1`, `routeFittingRefCount: 2`, `routeFittingOk: true`, and no failures.
   - Cleanup deleted all three created elements inside the same Revit execution; final session counts returned to `728` ducts and `936` duct fittings.
+- Current direct-loaded native pipe fitting creation smoke:
+  - Source pipe `513756` supplied `systemTypeId: 800836`, `pipeTypeId: 142438`, `levelId: 378120`, and `Diameter: 150 mm`.
+  - The direct-loaded unique assembly `SampleCommandSetPipeFittingCreateTest.dll` ran plan `pipe-fitting-create-live-20260505` on the same disposable test model.
+  - Commit created route pipes `1020910` and `1020913`, created pipe elbow fitting `1020916`, and returned `createdRouteFittingCount: 1`, `routeFittingCount: 1`, `routeFittingRefCount: 2`, `routeFittingOk: true`, and no failures.
+  - Cleanup deleted all three created elements inside the same Revit execution; final session counts returned to `488` pipes and `489` pipe fittings.
 - Live project-critical data sample:
   - `inspect_elements` re-read HVAC path elements `392199 -> 392203 -> 392200` and hydronic sample elements `513756 -> 513769 -> 513637` from the open test model.
   - The observed values were captured in `docs/revit-mep-project-critical-data-live-sample.json` as sample-only data with `requiresEngineerReview: true` and `canCommit: false`.
