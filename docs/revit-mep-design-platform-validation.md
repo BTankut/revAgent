@@ -30,7 +30,9 @@ Result:
   - hydronic pipe sizing proposal gate
   - missing office standard blockers for HVAC and hydronic sizing
   - rooted-tree branch flow aggregation for airside and hydronic sample networks
+  - weighted shortest-path traversal for cyclic network foundations
   - accumulated-loss critical path / critical circuit selection
+  - HVAC fan pressure basis and hydronic pump head basis
   - cyclic network warning path for branch aggregation assumptions
 - Domain foundation calculation tests passed:
   - domestic water fixture-unit summation and recirculation continuity
@@ -39,6 +41,7 @@ Result:
   - clash AABB hard/clearance classification
   - orthogonal clash reroute preview with added-length calculation
   - fan and pump candidate screening
+  - report issue-list/design-log rows and CSV text generation
 
 ## Plugin Build Check
 
@@ -144,10 +147,21 @@ Live read-only results captured on the active session:
   - Hydronic methods include rooted tree branch flow aggregation and critical circuit by accumulated edge loss.
   - Hydronic example returned total demand `0.77`, critical path `pump -> riser -> coil-b`, and total loss `4300 Pa`.
   - Both examples explicitly state the tree assumption and keep `canCommit: false`.
+- Weighted path/hydraulic/report foundation runtime probe succeeded:
+  - HVAC weighted graph example selected `fan -> main -> branch-b -> term-b` with `112 Pa`.
+  - HVAC fan basis example returned `400 m3/h` and `255.2 Pa` required pressure after allowances/safety factor.
+  - Hydronic weighted graph example selected `pump -> riser -> coil-b` with `4300 Pa`.
+  - Hydronic pump basis example returned `0.77 L/s` and `26.73 kPa` required head after allowances/safety factor.
+  - Reporting foundation returned issue-list/design-log rows and CSV text previews without file writes.
 - Connector graph live probe succeeded:
   - Revit 2022 API docs resolved `Connector.AllRefs`, `Connector.Owner`, `Connector.IsConnected`, `MEPCurve.ConnectorManager`, and `FamilyInstance.MEPModel`.
   - HVAC graph summary: `27237` connector-owning element nodes, `41735` connectors, `708` open connectors, `20341` unique element edges, `25` open connector samples, `0` AllRefs errors.
   - Hydronic graph summary: `1373` connector-owning element nodes, `1598` connectors, `24` open connectors, `216` unique element edges, `24` open connector samples, `0` AllRefs errors.
+- Targeted live connector pathfinding probe succeeded in the user-approved test model:
+  - Document: `rme_advanced_sample_project - Kopya`.
+  - Root/terminal duct: `392168`.
+  - Mode: read-only HVAC `networkPathfindingOnly` with full connector summary disabled.
+  - Result: `reachableTerminalCount: 1`, `hopCount: 0`, path `[392168]`, `canCommit: false`.
 - Clash reroute foundation runtime probe succeeded:
   - `analyze_mep_system` with `discipline: clash` returned an orthogonal reroute preview around a rectangular obstacle envelope.
   - Example original length: `5 m`; reroute length: `6 m`; added length: `1 m`.

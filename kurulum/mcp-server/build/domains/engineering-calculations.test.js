@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import {
     ductFrictionLossPaPerM,
     ductVelocityMps,
+    calculateFanPressureBasis,
     rectangularDuctAreaM2,
     rectangularHydraulicDiameterM,
     sizeRectangularDuctEqualFriction,
 } from "./hvac/calculations.js";
 import {
+    calculatePumpHeadBasis,
     circularAreaM2,
     pipeFrictionLossPaPerM,
     pipeVelocityMps,
@@ -14,7 +16,10 @@ import {
 } from "./hydronic/calculations.js";
 import {
     analyzeTreeNetwork,
+    analyzeWeightedNetwork,
+    exampleAirsideWeightedNetwork,
     exampleAirsideTreeNetwork,
+    exampleHydronicWeightedNetwork,
     exampleHydronicTreeNetwork,
 } from "./network/calculations.js";
 
@@ -92,12 +97,60 @@ close(airNetwork.criticalPath.totalLossPa, 112, 1e-9, "airside critical path los
 const airBranch = airNetwork.branchFlows.find((branch) => branch.from === "fan" && branch.to === "main");
 assert.equal(airBranch.flow, 400);
 
+const weightedAirNetwork = exampleAirsideWeightedNetwork();
+assert.equal(weightedAirNetwork.success, true);
+assert.equal(weightedAirNetwork.componentCount, 1);
+assert.deepEqual(weightedAirNetwork.criticalPath.nodeIds, ["fan", "main", "branch-b", "term-b"]);
+close(weightedAirNetwork.criticalPath.totalLossPa, 112, 1e-9, "weighted airside critical path loss");
+
+const fanBasis = calculateFanPressureBasis({
+    network: {
+        rootNodeId: "fan",
+        edges: [
+            { from: "fan", to: "main", pressureLossPa: 35 },
+            { from: "main", to: "term-a", pressureLossPa: 58 },
+            { from: "main", to: "term-b", pressureLossPa: 77 },
+        ],
+        terminalDemands: { "term-a": 180, "term-b": 220 },
+    },
+    equipmentLossPa: 80,
+    terminalAllowancePa: 40,
+    safetyFactor: 1.1,
+});
+assert.equal(fanBasis.success, true);
+assert.equal(fanBasis.output.requiredFlowM3h, 400);
+close(fanBasis.output.requiredPressurePa, 255.2, 1e-9, "fan pressure basis");
+
 const hydronicNetwork = exampleHydronicTreeNetwork();
 assert.equal(hydronicNetwork.success, true);
 assert.equal(hydronicNetwork.isTree, true);
 close(hydronicNetwork.totalDemand, 0.77, 1e-9, "hydronic total branch flow");
 assert.deepEqual(hydronicNetwork.criticalPath.nodeIds, ["pump", "riser", "coil-b"]);
 close(hydronicNetwork.criticalPath.totalLossPa, 4300, 1e-9, "hydronic critical circuit loss");
+
+const weightedHydronicNetwork = exampleHydronicWeightedNetwork();
+assert.equal(weightedHydronicNetwork.success, true);
+assert.equal(weightedHydronicNetwork.cycleDetected, true);
+assert.deepEqual(weightedHydronicNetwork.criticalPath.nodeIds, ["pump", "riser", "coil-b"]);
+close(weightedHydronicNetwork.criticalPath.totalLossPa, 4300, 1e-9, "weighted hydronic critical circuit loss");
+
+const pumpBasis = calculatePumpHeadBasis({
+    network: {
+        rootNodeId: "pump",
+        edges: [
+            { from: "pump", to: "riser", pressureLossPa: 1200 },
+            { from: "riser", to: "coil-a", pressureLossPa: 2400 },
+            { from: "riser", to: "coil-b", pressureLossPa: 3100 },
+        ],
+        terminalDemands: { "coil-a": 0.35, "coil-b": 0.42 },
+    },
+    equipmentLossKPa: 12,
+    terminalLossKPa: 8,
+    safetyFactor: 1.1,
+});
+assert.equal(pumpBasis.success, true);
+close(pumpBasis.output.requiredFlowLs, 0.77, 1e-9, "pump basis flow");
+close(pumpBasis.output.requiredHeadKPa, 26.73, 1e-9, "pump head basis");
 
 const cyclicNetwork = analyzeTreeNetwork({
     rootNodeId: "a",
@@ -111,5 +164,17 @@ const cyclicNetwork = analyzeTreeNetwork({
 assert.equal(cyclicNetwork.success, true);
 assert.equal(cyclicNetwork.isTree, false);
 assert(cyclicNetwork.warnings.some((warning) => warning.includes("cycles")));
+
+const disconnectedWeighted = analyzeWeightedNetwork({
+    rootNodeId: "source",
+    edges: [
+        { from: "source", to: "a", pressureLossPa: 1 },
+        { from: "orphan", to: "terminal", pressureLossPa: 1 },
+    ],
+    terminalNodeIds: ["terminal"],
+});
+assert.equal(disconnectedWeighted.success, true);
+assert.equal(disconnectedWeighted.terminalPaths[0].reachable, false);
+assert(disconnectedWeighted.warnings.some((warning) => warning.includes("disconnected")));
 
 console.log("engineering calculation tests passed");

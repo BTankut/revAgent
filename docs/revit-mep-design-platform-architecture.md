@@ -160,6 +160,7 @@ Engineering calculation foundations:
 
 - HVAC rectangular duct velocity, hydraulic diameter, Darcy-Weisbach friction loss, and equal-friction size proposal.
 - Hydronic circular pipe velocity, Darcy-Weisbach pressure loss, and velocity/friction size proposal.
+- Weighted network shortest-path traversal, rooted tree branch flow aggregation, HVAC fan pressure basis, and hydronic pump head basis.
 - Domestic water fixture-unit summation and recirculation continuity issue screening.
 - Sanitary/storm gravity slope and reverse-slope validation.
 - Fire/sprinkler rectangular room spacing/coverage screening with explicit fire-design assumptions.
@@ -173,7 +174,14 @@ MEP graph foundation:
 - HVAC and hydronic read-only analyses collect connector-owning elements as graph nodes.
 - `Connector.AllRefs` is used to count unique element-to-element edges.
 - Open connector samples are returned for issue/debug workflows.
-- The graph foundation is summary-level; full pathfinding, branch flow aggregation, and critical path calculations remain future work.
+- Optional `networkRootElementId` / `networkTerminalElementIds` inputs run targeted live BFS pathfinding over the Revit connector graph without mutating the model.
+- Deterministic JS graph calculations cover weighted shortest-path traversal, rooted branch flow aggregation, cycle warnings, and critical path/circuit selection.
+- Full production flow-direction inference and solved hydraulic network balancing remain future work.
+
+Reporting foundation:
+
+- `analyze_mep_system` returns deterministic issue-list and design-log rows plus CSV text previews.
+- Report outputs are read-only; file export remains an approved write-plan/report step.
 
 ## Safety Model
 

@@ -4,6 +4,7 @@ import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic
 import { selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
 import { calculateSlopePercent, validateGravitySlope } from "./sanitary-storm/calculations.js";
+import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 
 const fixtureDemand = calculateFixtureDemand({
     fixtureUnitTable: {
@@ -99,5 +100,27 @@ const pump = selectPumpCandidate({
 assert.equal(pump.success, true);
 assert.equal(pump.selected.id, "pump-b");
 assert.equal(pump.canCommit, false);
+
+const report = buildAnalysisReport({
+    analyses: [
+        {
+            discipline: "hvac",
+            engine: "hvac-airside-foundation",
+            status: "foundation",
+            requiresOfficeStandard: true,
+            missingStandards: ["hvac.ductEqualFrictionTargetPaPerM"],
+            assumptions: ["proposal only"],
+            engineeringMethods: ["weighted graph shortest path traversal"],
+            canCommit: false,
+        },
+    ],
+    delimiter: ";",
+});
+assert.equal(report.success, true);
+assert.equal(report.issueRows.length, 1);
+assert.equal(report.designLogRows.length, 1);
+assert(report.issueCsv.includes("missing_standard"));
+assert(report.designLogCsv.includes("weighted graph shortest path traversal"));
+assert.equal(report.canCommit, false);
 
 console.log("domain foundation calculation tests passed");

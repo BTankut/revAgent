@@ -47,8 +47,10 @@
 - Completed the live write acceptance test in user-approved disposable model `rme_advanced_sample_project - Kopya`: `prepare_write_plan -> preview_write_plan -> commit_write_plan -> verify_write_plan` set duct `392168` `Comments`, preview did not mutate, commit succeeded, verify succeeded, and final readback matched.
 - Added deterministic rooted-tree network calculations for HVAC/hydronic branch flow aggregation and critical path/circuit selection, with tests and runtime examples.
 - Added deterministic clash reroute preview foundation around rectangular obstacle envelopes, with added-length calculation, tests, and runtime example.
+- Added weighted network shortest-path traversal, HVAC fan pressure basis, hydronic pump head basis, and reporting row/CSV foundations, with tests and runtime probes.
+- Added targeted live connector pathfinding inputs for `analyze_mep_system`; read-only HVAC pathfinding was live-tested in the disposable model on duct `392168`.
 
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from calculation foundations to full live graph traversal, production reroute solving, hydraulic network solving, and report workflows.
+- Expand engineering engines from foundations to production flow-direction inference, hydraulic network balancing, production reroute solving, equipment schedule integration, and approved report file export workflows.

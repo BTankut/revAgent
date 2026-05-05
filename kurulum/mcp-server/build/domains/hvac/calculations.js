@@ -1,3 +1,5 @@
+import { analyzeWeightedNetwork } from "../network/calculations.js";
+
 const defaultAir = {
     densityKgM3: 1.2,
     dynamicViscosityPaS: 1.81e-5,
@@ -149,6 +151,66 @@ export function sizeRectangularDuctEqualFriction({
         candidateCount: candidates.length,
         canCommit: false,
         riskLevel: "medium",
+    };
+}
+
+export function calculateFanPressureBasis({
+    network,
+    equipmentLossPa = 0,
+    terminalAllowancePa = 0,
+    safetyFactor = 1.1,
+} = {}) {
+    const traversal = analyzeWeightedNetwork(network || {});
+    if (!traversal.success) {
+        return {
+            success: false,
+            errors: traversal.errors || [],
+            warnings: traversal.warnings || [],
+            canCommit: false,
+        };
+    }
+    if (!traversal.criticalPath) {
+        return {
+            success: false,
+            errors: ["At least one reachable terminal demand or terminal node is required."],
+            warnings: traversal.warnings || [],
+            canCommit: false,
+        };
+    }
+    const terminalDemands = network?.terminalDemands || {};
+    const requiredFlowM3h = Object.values(terminalDemands).reduce((sum, value) => {
+        const demand = Number(value);
+        return sum + (Number.isFinite(demand) && demand > 0 ? demand : 0);
+    }, 0);
+    const basePressurePa = Number(traversal.criticalPath.totalLossPa || 0) +
+        Math.max(0, Number(equipmentLossPa || 0)) +
+        Math.max(0, Number(terminalAllowancePa || 0));
+    const factor = Number.isFinite(Number(safetyFactor)) && Number(safetyFactor) > 0
+        ? Number(safetyFactor)
+        : 1.0;
+    return {
+        success: true,
+        method: "Fan basis from weighted connector/network critical path plus equipment and terminal allowance",
+        assumptions: [
+            "Network edge loss is supplied by upstream calculation or read-only model analysis.",
+            "Terminal demand values are treated as airflow in m3/h.",
+            "Selection is a basis/proposal only; no equipment replacement is committed.",
+        ],
+        input: {
+            equipmentLossPa: Number(equipmentLossPa || 0),
+            terminalAllowancePa: Number(terminalAllowancePa || 0),
+            safetyFactor: factor,
+        },
+        output: {
+            requiredFlowM3h,
+            criticalPathLossPa: traversal.criticalPath.totalLossPa,
+            basePressurePa,
+            requiredPressurePa: basePressurePa * factor,
+            criticalPath: traversal.criticalPath,
+        },
+        traversal,
+        canCommit: false,
+        riskLevel: "high",
     };
 }
 

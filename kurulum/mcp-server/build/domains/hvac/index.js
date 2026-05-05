@@ -1,9 +1,9 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
-import { exampleAirsideTreeNetwork } from "../network/calculations.js";
-import { executeRevitCode } from "../../utils/revitToolHelpers.js";
-import { sizeRectangularDuctEqualFriction } from "./calculations.js";
+import { exampleAirsideTreeNetwork, exampleAirsideWeightedNetwork } from "../network/calculations.js";
+import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
+import { calculateFanPressureBasis, sizeRectangularDuctEqualFriction } from "./calculations.js";
 
-export async function analyzeHvacAirside({ includeRevitRead = true, officeStandards = {} } = {}) {
+export async function analyzeHvacAirside({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("hvac", officeStandards);
     const base = {
         discipline: "hvac",
@@ -17,8 +17,10 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
         engineeringMethods: [
             "connector/open connector summary",
             "element-to-element connector graph summary",
+            "weighted graph shortest path traversal",
             "rooted tree branch airflow aggregation",
             "critical path by accumulated edge loss",
+            "fan flow/pressure basis from critical path",
             "duct friction loss by Darcy-Weisbach",
             "equal-friction rectangular duct sizing proposal",
         ],
@@ -29,6 +31,27 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
                 maxVelocityMps: officeStandards.hvac?.ductVelocityLimitsMps?.main,
             }),
             branchFlowAndCriticalPath: exampleAirsideTreeNetwork(),
+            weightedPathfinding: exampleAirsideWeightedNetwork(),
+            fanPressureBasis: calculateFanPressureBasis({
+                network: {
+                    rootNodeId: "fan",
+                    nodes: ["fan", "main", "branch-a", "branch-b", "term-a", "term-b"],
+                    edges: [
+                        { from: "fan", to: "main", pressureLossPa: 35 },
+                        { from: "main", to: "branch-a", pressureLossPa: 18 },
+                        { from: "main", to: "branch-b", pressureLossPa: 22 },
+                        { from: "branch-a", to: "term-a", pressureLossPa: 40 },
+                        { from: "branch-b", to: "term-b", pressureLossPa: 55 },
+                    ],
+                    terminalDemands: {
+                        "term-a": 180,
+                        "term-b": 220,
+                    },
+                },
+                equipmentLossPa: 80,
+                terminalAllowancePa: 40,
+                safetyFactor: 1.1,
+            }),
         },
         canCommit: false,
     };
@@ -36,7 +59,7 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
         return base;
     }
     try {
-        const response = await executeRevitCode(buildHvacReadCode(), { transactionMode: "none" });
+        const response = await executeRevitCode(buildHvacReadCode(networkPathRequest), { transactionMode: "none" });
         return {
             ...base,
             revitRead: response && response.result ? response.result : response,
@@ -50,8 +73,20 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
     }
 }
 
-function buildHvacReadCode() {
+function buildHvacReadCode(networkPathRequest = {}) {
+    const rootElementId = Number.parseInt(String(networkPathRequest.rootElementId || 0), 10);
+    const terminalElementIds = csharpIntArray(networkPathRequest.terminalElementIds || []);
+    const includeConnectorGraph = networkPathRequest.includeConnectorGraph !== false ? "true" : "false";
+    const networkPathfindingOnly = networkPathRequest.pathfindingOnly === true ? "true" : "false";
+    if (networkPathRequest.pathfindingOnly === true) {
+        return buildHvacPathfindingOnlyCode(rootElementId, terminalElementIds);
+    }
     return `
+int networkRootElementId = ${Number.isFinite(rootElementId) ? rootElementId : 0};
+int[] networkTerminalElementIds = ${terminalElementIds};
+bool includeConnectorGraph = ${includeConnectorGraph};
+bool networkPathfindingOnly = ${networkPathfindingOnly};
+
 int CountCategory(BuiltInCategory category)
 {
     try
@@ -200,6 +235,111 @@ object ConnectorGraphSummary(BuiltInCategory[] categories)
     };
 }
 
+object ConnectorPathSummary(BuiltInCategory[] categories, int rootElementId, int[] terminalElementIds)
+{
+    if (rootElementId <= 0) return null;
+    Element root = document.GetElement(new ElementId(rootElementId));
+    if (root == null || !IsAllowedConnectorPathElement(root, categories) || ConnectorsFor(root) == null)
+    {
+        return new { success = false, error = "root element is not an allowed connector owner in this graph", rootElementId = rootElementId };
+    }
+
+    System.Collections.Generic.HashSet<int> requestedTerminals = new System.Collections.Generic.HashSet<int>();
+    foreach (int terminalId in terminalElementIds)
+    {
+        if (terminalId > 0) requestedTerminals.Add(terminalId);
+    }
+    System.Collections.Generic.Dictionary<int, int> parent = new System.Collections.Generic.Dictionary<int, int>();
+    System.Collections.Generic.Dictionary<int, int> hop = new System.Collections.Generic.Dictionary<int, int>();
+    System.Collections.Generic.Dictionary<int, Element> elementsById = new System.Collections.Generic.Dictionary<int, Element>();
+    System.Collections.Generic.Queue<int> queue = new System.Collections.Generic.Queue<int>();
+    elementsById[rootElementId] = root;
+    parent[rootElementId] = -1;
+    hop[rootElementId] = 0;
+    queue.Enqueue(rootElementId);
+    int foundTerminalCount = requestedTerminals.Contains(rootElementId) ? 1 : 0;
+    while (queue.Count > 0)
+    {
+        if (requestedTerminals.Count > 0 && foundTerminalCount >= requestedTerminals.Count) break;
+        int current = queue.Dequeue();
+        if (!elementsById.ContainsKey(current)) continue;
+        ConnectorSet connectors = ConnectorsFor(elementsById[current]);
+        if (connectors == null) continue;
+        foreach (Connector connector in connectors)
+        {
+            try
+            {
+                ConnectorSet refs = connector.AllRefs;
+                if (refs == null) continue;
+                foreach (Connector other in refs)
+                {
+                    if (other == null || other.Owner == null) continue;
+                    int next = other.Owner.Id.IntegerValue;
+                    if (next == current || parent.ContainsKey(next)) continue;
+                    if (!IsAllowedConnectorPathElement(other.Owner, categories) || ConnectorsFor(other.Owner) == null) continue;
+                    elementsById[next] = other.Owner;
+                    parent[next] = current;
+                    hop[next] = hop[current] + 1;
+                    if (requestedTerminals.Contains(next)) foundTerminalCount++;
+                    queue.Enqueue(next);
+                }
+            }
+            catch {}
+        }
+    }
+
+    System.Collections.Generic.List<object> terminalPaths = new System.Collections.Generic.List<object>();
+    int reachableTerminalCount = 0;
+    foreach (int terminalId in terminalElementIds)
+    {
+        if (terminalId <= 0) continue;
+        bool reachable = parent.ContainsKey(terminalId);
+        if (reachable) reachableTerminalCount++;
+        System.Collections.Generic.List<int> path = new System.Collections.Generic.List<int>();
+        if (reachable)
+        {
+            int current = terminalId;
+            int guard = 0;
+            while (current > 0 && guard < 10000)
+            {
+                path.Add(current);
+                if (current == rootElementId) break;
+                current = parent[current];
+                guard++;
+            }
+            path.Reverse();
+        }
+        terminalPaths.Add(new {
+            elementId = terminalId,
+            reachable = reachable,
+            hopCount = reachable ? hop[terminalId] : -1,
+            pathElementIds = path.ToArray()
+        });
+    }
+
+    return new {
+        success = true,
+        method = "Read-only BFS over live Revit Connector.AllRefs element graph",
+        rootElementId = rootElementId,
+        requestedTerminalCount = terminalElementIds.Length,
+        reachableTerminalCount = reachableTerminalCount,
+        reachableNodeCount = parent.Count,
+        terminalPaths = terminalPaths.ToArray(),
+        canCommit = false
+    };
+}
+
+bool IsAllowedConnectorPathElement(Element elem, BuiltInCategory[] categories)
+{
+    if (elem == null || elem.Category == null) return false;
+    int categoryId = elem.Category.Id.IntegerValue;
+    foreach (BuiltInCategory category in categories)
+    {
+        if (categoryId == (int)category) return true;
+    }
+    return false;
+}
+
 try
 {
     int connectorCount = 0;
@@ -212,6 +352,19 @@ try
         BuiltInCategory.OST_DuctTerminal,
         BuiltInCategory.OST_MechanicalEquipment
     };
+    if (networkPathfindingOnly)
+    {
+        return new {
+            success = true,
+            counts = (object)null,
+            ductLengthMeters = 0.0,
+            connectorCount = 0,
+            openConnectorCount = 0,
+            connectorGraph = (object)null,
+            connectorPathfinding = ConnectorPathSummary(categories, networkRootElementId, networkTerminalElementIds),
+            systemElementCounts = new System.Collections.Generic.Dictionary<string, int>()
+        };
+    }
     foreach (BuiltInCategory category in categories)
     {
         FilteredElementCollector collector = new FilteredElementCollector(document)
@@ -246,8 +399,150 @@ try
         ductLengthMeters = DuctLengthMeters(),
         connectorCount = connectorCount,
         openConnectorCount = openConnectorCount,
-        connectorGraph = ConnectorGraphSummary(categories),
+        connectorGraph = includeConnectorGraph ? ConnectorGraphSummary(categories) : null,
+        connectorPathfinding = ConnectorPathSummary(categories, networkRootElementId, networkTerminalElementIds),
         systemElementCounts = systems
+    };
+}
+catch (Exception ex)
+{
+    return new { success = false, error = ex.ToString() };
+}`;
+}
+
+function buildHvacPathfindingOnlyCode(rootElementId, terminalElementIds) {
+    return `
+int networkRootElementId = ${Number.isFinite(rootElementId) ? rootElementId : 0};
+int[] networkTerminalElementIds = ${terminalElementIds};
+
+ConnectorSet ConnectorsFor(Element elem)
+{
+    Autodesk.Revit.DB.MEPCurve curve = elem as Autodesk.Revit.DB.MEPCurve;
+    if (curve != null && curve.ConnectorManager != null) return curve.ConnectorManager.Connectors;
+    FamilyInstance fi = elem as FamilyInstance;
+    if (fi != null && fi.MEPModel != null && fi.MEPModel.ConnectorManager != null)
+        return fi.MEPModel.ConnectorManager.Connectors;
+    return null;
+}
+
+bool IsAllowedConnectorPathElement(Element elem, BuiltInCategory[] categories)
+{
+    if (elem == null || elem.Category == null) return false;
+    int categoryId = elem.Category.Id.IntegerValue;
+    foreach (BuiltInCategory category in categories)
+    {
+        if (categoryId == (int)category) return true;
+    }
+    return false;
+}
+
+object ConnectorPathSummary(BuiltInCategory[] categories, int rootElementId, int[] terminalElementIds)
+{
+    if (rootElementId <= 0) return null;
+    Element root = document.GetElement(new ElementId(rootElementId));
+    if (root == null || !IsAllowedConnectorPathElement(root, categories) || ConnectorsFor(root) == null)
+    {
+        return new { success = false, error = "root element is not an allowed connector owner in this graph", rootElementId = rootElementId };
+    }
+
+    System.Collections.Generic.HashSet<int> requestedTerminals = new System.Collections.Generic.HashSet<int>();
+    foreach (int terminalId in terminalElementIds)
+    {
+        if (terminalId > 0) requestedTerminals.Add(terminalId);
+    }
+    System.Collections.Generic.Dictionary<int, int> parent = new System.Collections.Generic.Dictionary<int, int>();
+    System.Collections.Generic.Dictionary<int, int> hop = new System.Collections.Generic.Dictionary<int, int>();
+    System.Collections.Generic.Dictionary<int, Element> elementsById = new System.Collections.Generic.Dictionary<int, Element>();
+    System.Collections.Generic.Queue<int> queue = new System.Collections.Generic.Queue<int>();
+    elementsById[rootElementId] = root;
+    parent[rootElementId] = -1;
+    hop[rootElementId] = 0;
+    queue.Enqueue(rootElementId);
+    int foundTerminalCount = requestedTerminals.Contains(rootElementId) ? 1 : 0;
+    while (queue.Count > 0)
+    {
+        if (requestedTerminals.Count > 0 && foundTerminalCount >= requestedTerminals.Count) break;
+        int current = queue.Dequeue();
+        if (!elementsById.ContainsKey(current)) continue;
+        ConnectorSet connectors = ConnectorsFor(elementsById[current]);
+        if (connectors == null) continue;
+        foreach (Connector connector in connectors)
+        {
+            try
+            {
+                ConnectorSet refs = connector.AllRefs;
+                if (refs == null) continue;
+                foreach (Connector other in refs)
+                {
+                    if (other == null || other.Owner == null) continue;
+                    int next = other.Owner.Id.IntegerValue;
+                    if (next == current || parent.ContainsKey(next)) continue;
+                    if (!IsAllowedConnectorPathElement(other.Owner, categories) || ConnectorsFor(other.Owner) == null) continue;
+                    elementsById[next] = other.Owner;
+                    parent[next] = current;
+                    hop[next] = hop[current] + 1;
+                    if (requestedTerminals.Contains(next)) foundTerminalCount++;
+                    queue.Enqueue(next);
+                }
+            }
+            catch {}
+        }
+    }
+
+    System.Collections.Generic.List<object> terminalPaths = new System.Collections.Generic.List<object>();
+    int reachableTerminalCount = 0;
+    foreach (int terminalId in terminalElementIds)
+    {
+        if (terminalId <= 0) continue;
+        bool reachable = parent.ContainsKey(terminalId);
+        if (reachable) reachableTerminalCount++;
+        System.Collections.Generic.List<int> path = new System.Collections.Generic.List<int>();
+        if (reachable)
+        {
+            int current = terminalId;
+            int guard = 0;
+            while (current > 0 && guard < 10000)
+            {
+                path.Add(current);
+                if (current == rootElementId) break;
+                current = parent[current];
+                guard++;
+            }
+            path.Reverse();
+        }
+        terminalPaths.Add(new {
+            elementId = terminalId,
+            reachable = reachable,
+            hopCount = reachable ? hop[terminalId] : -1,
+            pathElementIds = path.ToArray()
+        });
+    }
+
+    return new {
+        success = true,
+        method = "Read-only BFS over live Revit Connector.AllRefs element graph",
+        rootElementId = rootElementId,
+        requestedTerminalCount = terminalElementIds.Length,
+        reachableTerminalCount = reachableTerminalCount,
+        reachableNodeCount = parent.Count,
+        terminalPaths = terminalPaths.ToArray(),
+        canCommit = false
+    };
+}
+
+try
+{
+    BuiltInCategory[] categories = new BuiltInCategory[] {
+        BuiltInCategory.OST_DuctCurves,
+        BuiltInCategory.OST_DuctFitting,
+        BuiltInCategory.OST_DuctAccessory,
+        BuiltInCategory.OST_DuctTerminal,
+        BuiltInCategory.OST_MechanicalEquipment
+    };
+    return new {
+        success = true,
+        connectorGraph = (object)null,
+        connectorPathfinding = ConnectorPathSummary(categories, networkRootElementId, networkTerminalElementIds)
     };
 }
 catch (Exception ex)

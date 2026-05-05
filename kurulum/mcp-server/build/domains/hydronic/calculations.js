@@ -1,3 +1,5 @@
+import { analyzeWeightedNetwork } from "../network/calculations.js";
+
 const defaultWater = {
     densityKgM3: 998.2,
     dynamicViscosityPaS: 0.001003,
@@ -124,6 +126,67 @@ export function sizePipeByVelocityOrFriction({
         candidateCount: candidates.length,
         canCommit: false,
         riskLevel: "medium",
+    };
+}
+
+export function calculatePumpHeadBasis({
+    network,
+    equipmentLossKPa = 0,
+    terminalLossKPa = 0,
+    safetyFactor = 1.1,
+} = {}) {
+    const traversal = analyzeWeightedNetwork(network || {});
+    if (!traversal.success) {
+        return {
+            success: false,
+            errors: traversal.errors || [],
+            warnings: traversal.warnings || [],
+            canCommit: false,
+        };
+    }
+    if (!traversal.criticalPath) {
+        return {
+            success: false,
+            errors: ["At least one reachable terminal demand or terminal node is required."],
+            warnings: traversal.warnings || [],
+            canCommit: false,
+        };
+    }
+    const terminalDemands = network?.terminalDemands || {};
+    const requiredFlowLs = Object.values(terminalDemands).reduce((sum, value) => {
+        const demand = Number(value);
+        return sum + (Number.isFinite(demand) && demand > 0 ? demand : 0);
+    }, 0);
+    const criticalCircuitLossKPa = Number(traversal.criticalPath.totalLossPa || 0) / 1000.0;
+    const baseHeadKPa = criticalCircuitLossKPa +
+        Math.max(0, Number(equipmentLossKPa || 0)) +
+        Math.max(0, Number(terminalLossKPa || 0));
+    const factor = Number.isFinite(Number(safetyFactor)) && Number(safetyFactor) > 0
+        ? Number(safetyFactor)
+        : 1.0;
+    return {
+        success: true,
+        method: "Pump head basis from weighted network critical circuit plus equipment and terminal losses",
+        assumptions: [
+            "Network edge loss is supplied by upstream calculation or read-only model analysis.",
+            "Terminal demand values are treated as water flow in L/s.",
+            "Selection is a basis/proposal only; no equipment replacement is committed.",
+        ],
+        input: {
+            equipmentLossKPa: Number(equipmentLossKPa || 0),
+            terminalLossKPa: Number(terminalLossKPa || 0),
+            safetyFactor: factor,
+        },
+        output: {
+            requiredFlowLs,
+            criticalCircuitLossKPa,
+            baseHeadKPa,
+            requiredHeadKPa: baseHeadKPa * factor,
+            criticalPath: traversal.criticalPath,
+        },
+        traversal,
+        canCommit: false,
+        riskLevel: "high",
     };
 }
 
