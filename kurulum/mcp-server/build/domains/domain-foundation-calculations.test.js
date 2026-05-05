@@ -314,6 +314,20 @@ const targetedLocalLossCode = buildLocalLossOnlyCode({
 assert(targetedLocalLossCode.includes("int[] targetElementIds = new int[] { 101 };"));
 assert(targetedLocalLossCode.includes("targeted = targetElementIds.Length > 0"));
 assert(targetedLocalLossCode.includes("skippedTargetCount"));
+assert(targetedLocalLossCode.includes("targetedReadComplete"));
+const longTargetedLocalLossCode = buildLocalLossOnlyCode({
+    categories: ["OST_DuctFitting"],
+    targetElementIds: Array.from({ length: 250 }, (_, index) => index + 1),
+    sampleLimit: 5,
+});
+assert(longTargetedLocalLossCode.includes("int sampleLimit = 250;"));
+assert(longTargetedLocalLossCode.includes("uninspectedTargetCount"));
+assert(longTargetedLocalLossCode.includes("truncatedBySampleLimit"));
+const cappedGeneralLocalLossCode = buildLocalLossOnlyCode({
+    categories: ["OST_DuctFitting"],
+    sampleLimit: 500,
+});
+assert(cappedGeneralLocalLossCode.includes("int sampleLimit = 200;"));
 
 const report = buildAnalysisReport({
     analyses: [

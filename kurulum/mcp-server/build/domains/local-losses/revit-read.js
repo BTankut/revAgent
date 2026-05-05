@@ -1,8 +1,12 @@
 export function buildLocalLossOnlyCode({ categories = [], sampleLimit = 25, targetElementIds = [] } = {}) {
-    const limit = Math.max(1, Math.min(200, Number.parseInt(String(sampleLimit), 10) || 25));
     const targetIds = (Array.isArray(targetElementIds) ? targetElementIds : [])
         .map((value) => Number.parseInt(String(value), 10))
         .filter((value) => Number.isFinite(value) && value > 0);
+    const requestedLimit = Number.parseInt(String(sampleLimit), 10);
+    const baseLimit = Number.isFinite(requestedLimit) ? requestedLimit : 25;
+    const limit = targetIds.length > 0
+        ? Math.max(1, Math.min(2000, Math.max(baseLimit, targetIds.length)))
+        : Math.max(1, Math.min(200, baseLimit));
     const categoryList = categories
         .filter((category) => /^OST_[A-Za-z0-9_]+$/.test(String(category || "")))
         .map((category) => `BuiltInCategory.${category}`)
@@ -183,6 +187,8 @@ try
     int[] targetElementIds = new int[] { ${targetIdList} };
     int inspected = 0;
     int skippedTargetCount = 0;
+    int uninspectedTargetCount = 0;
+    bool sampleLimitReached = false;
     System.Collections.Generic.List<object> samples = new System.Collections.Generic.List<object>();
     BuiltInCategory[] categories = new BuiltInCategory[] {
         ${safeCategoryList}
@@ -199,8 +205,13 @@ try
                 continue;
             }
             samples.Add(LocalLossSample(elem));
-            if (samples.Count >= sampleLimit) break;
+            if (samples.Count >= sampleLimit)
+            {
+                sampleLimitReached = true;
+                break;
+            }
         }
+        uninspectedTargetCount = Math.Max(0, targetElementIds.Length - inspected);
     }
     else
     {
@@ -213,7 +224,11 @@ try
             {
                 inspected++;
                 samples.Add(LocalLossSample(elem));
-                if (samples.Count >= sampleLimit) break;
+                if (samples.Count >= sampleLimit)
+                {
+                    sampleLimitReached = true;
+                    break;
+                }
             }
             if (samples.Count >= sampleLimit) break;
         }
@@ -224,6 +239,10 @@ try
         targeted = targetElementIds.Length > 0,
         requestedTargetCount = targetElementIds.Length,
         skippedTargetCount = skippedTargetCount,
+        uninspectedTargetCount = uninspectedTargetCount,
+        sampleLimitReached = sampleLimitReached,
+        truncatedBySampleLimit = targetElementIds.Length > 0 && uninspectedTargetCount > 0,
+        targetedReadComplete = targetElementIds.Length == 0 || uninspectedTargetCount == 0,
         inspectedElementCount = inspected,
         localLossSamples = samples.ToArray(),
         canCommit = false
