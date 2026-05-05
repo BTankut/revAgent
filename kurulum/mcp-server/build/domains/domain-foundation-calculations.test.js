@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { classifyAabbClash, proposeOrthogonalReroute } from "./clash/calculations.js";
+import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } from "./clash/calculations.js";
 import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic-water/calculations.js";
 import { selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
@@ -75,6 +75,25 @@ assert.equal(reroute.canCommit, false);
 assert(reroute.addedLengthM > 0);
 assert.deepEqual(reroute.previewPoints[0], { x: 0, y: 0, z: 0 });
 assert.deepEqual(reroute.previewPoints.at(-1), { x: 5, y: 0, z: 0 });
+
+const solvedReroute = solveOrthogonalReroute({
+    routePoints: [{ x: 0, y: 0, z: 0 }, { x: 8, y: 0, z: 0 }],
+    obstacleBoxes: [
+        { min: { x: 2, y: -0.25, z: -0.25 }, max: { x: 3, y: 0.25, z: 0.25 } },
+        { min: { x: 5, y: -0.35, z: -0.2 }, max: { x: 6, y: 0.35, z: 0.2 } },
+    ],
+    clearanceM: 0.25,
+    candidateOffsetAxes: ["y", "z"],
+});
+assert.equal(solvedReroute.success, true);
+assert.equal(solvedReroute.rerouteRequired, true);
+assert.equal(solvedReroute.selectedCandidate.valid, true);
+assert.equal(solvedReroute.selectedCandidate.violationCount, 0);
+assert(solvedReroute.candidates.length >= 4);
+assert(solvedReroute.selectedCandidate.addedLengthM > 0);
+assert.deepEqual(solvedReroute.selectedCandidate.previewPoints[0], { x: 0, y: 0, z: 0 });
+assert.deepEqual(solvedReroute.selectedCandidate.previewPoints.at(-1), { x: 8, y: 0, z: 0 });
+assert.equal(solvedReroute.canCommit, false);
 
 const fan = selectFanCandidate({
     requiredFlowM3h: 5000,

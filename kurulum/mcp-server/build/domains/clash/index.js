@@ -1,4 +1,4 @@
-import { classifyAabbClash, proposeOrthogonalReroute } from "./calculations.js";
+import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } from "./calculations.js";
 
 export function analyzeClashCoordination() {
     return {
@@ -12,6 +12,7 @@ export function analyzeClashCoordination() {
             "hard clash AABB classification",
             "clearance/insulation/maintenance clearance categories",
             "orthogonal reroute preview around a rectangular obstacle envelope",
+            "multi-candidate orthogonal reroute solver with clearance validation",
             "preview_reroute and commit_reroute write-plan operation slots",
         ],
         calculationExamples: {
@@ -25,6 +26,15 @@ export function analyzeClashCoordination() {
                 obstacleBox: { min: { x: 2, y: -0.25, z: -0.25 }, max: { x: 3, y: 0.25, z: 0.25 } },
                 clearanceM: 0.25,
                 offsetAxis: "y",
+            }),
+            rerouteSolver: solveOrthogonalReroute({
+                routePoints: [{ x: 0, y: 0, z: 0 }, { x: 8, y: 0, z: 0 }],
+                obstacleBoxes: [
+                    { min: { x: 2, y: -0.25, z: -0.25 }, max: { x: 3, y: 0.25, z: 0.25 } },
+                    { min: { x: 5, y: -0.35, z: -0.2 }, max: { x: 6, y: 0.35, z: 0.2 } },
+                ],
+                clearanceM: 0.25,
+                candidateOffsetAxes: ["y", "z"],
             }),
         },
         canCommit: false,

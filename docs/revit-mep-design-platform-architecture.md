@@ -164,7 +164,7 @@ Engineering calculation foundations:
 - Domestic water fixture-unit summation and recirculation continuity issue screening.
 - Sanitary/storm gravity slope and reverse-slope validation.
 - Fire/sprinkler rectangular room spacing/coverage screening with explicit fire-design assumptions.
-- Clash AABB hard/clearance clash classification.
+- Clash AABB hard/clearance clash classification and multi-candidate orthogonal reroute solving with clearance validation.
 - Fan/pump candidate screening from required flow and pressure/head.
 - Fitting/accessory/equipment local losses are explicitly excluded from these first-pass calculations.
 - Calculation outputs remain proposals with `canCommit: false`.

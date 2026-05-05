@@ -43,6 +43,7 @@ Result:
   - sprinkler coverage/spacing standard gating
   - clash AABB hard/clearance classification
   - orthogonal clash reroute preview with added-length calculation
+  - multi-candidate orthogonal reroute solver with clearance validation
   - fan and pump candidate screening
   - report issue-list/design-log rows and CSV text generation
 
@@ -175,6 +176,7 @@ Live read-only results captured on the active session:
 - Clash reroute foundation runtime probe succeeded:
   - `analyze_mep_system` with `discipline: clash` returned an orthogonal reroute preview around a rectangular obstacle envelope.
   - Example original length: `5 m`; reroute length: `6 m`; added length: `1 m`.
+  - Multi-candidate solver returned `4` candidates, selected a valid clearance route with `0` violations and `1.025 m` added length.
   - The result is explicitly preview/foundation only with `riskLevel: high` and `canCommit: false`.
 
 Write checks:

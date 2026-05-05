@@ -92,6 +92,94 @@ export function proposeOrthogonalReroute({ routePoints = [], obstacleBox, cleara
     };
 }
 
+export function solveOrthogonalReroute({
+    routePoints = [],
+    obstacleBoxes = [],
+    clearanceM = 0.1,
+    candidateOffsetAxes = ["y", "z"],
+} = {}) {
+    if (!Array.isArray(routePoints) || routePoints.length < 2) {
+        return {
+            success: false,
+            errors: ["routePoints must contain at least two points"],
+            canCommit: false,
+        };
+    }
+    const obstacles = Array.isArray(obstacleBoxes) ? obstacleBoxes.filter((box) => box?.min && box?.max) : [];
+    if (obstacles.length === 0) {
+        const start = point(routePoints[0]);
+        const end = point(routePoints[routePoints.length - 1]);
+        return {
+            success: true,
+            rerouteRequired: false,
+            selectedCandidate: {
+                previewPoints: [start, end],
+                addedLengthM: 0,
+                valid: true,
+            },
+            candidates: [],
+            canCommit: false,
+        };
+    }
+    const start = point(routePoints[0]);
+    const end = point(routePoints[routePoints.length - 1]);
+    const axis = dominantAxis(start, end);
+    if (axis !== "x") {
+        return {
+            success: false,
+            errors: ["foundation reroute solver currently supports x-directed routes"],
+            canCommit: false,
+        };
+    }
+    const expandedBoxes = obstacles.map((box) => expandBox(box, Number(clearanceM)));
+    const blockingBoxes = expandedBoxes.filter((box) => xSegmentIntersectsBox(start, end, box));
+    if (blockingBoxes.length === 0) {
+        return {
+            success: true,
+            rerouteRequired: false,
+            expandedObstacleBoxes: expandedBoxes,
+            selectedCandidate: {
+                previewPoints: [start, end],
+                originalLengthM: polylineLength([start, end]),
+                rerouteLengthM: polylineLength([start, end]),
+                addedLengthM: 0,
+                valid: true,
+            },
+            candidates: [],
+            canCommit: false,
+        };
+    }
+
+    const candidates = [];
+    const axes = [...new Set(candidateOffsetAxes.filter((candidate) => candidate === "y" || candidate === "z"))];
+    for (const offsetAxis of axes.length > 0 ? axes : ["y"]) {
+        for (const side of ["min", "max"]) {
+            candidates.push(buildRerouteCandidate({ start, end, blockingBoxes, expandedBoxes, offsetAxis, side, clearanceM }));
+        }
+    }
+    candidates.sort((a, b) => {
+        if (a.valid !== b.valid) return a.valid ? -1 : 1;
+        if (a.addedLengthM !== b.addedLengthM) return a.addedLengthM - b.addedLengthM;
+        return a.violationCount - b.violationCount;
+    });
+    const selectedCandidate = candidates.find((candidate) => candidate.valid) || candidates[0] || null;
+    return {
+        success: Boolean(selectedCandidate),
+        rerouteRequired: true,
+        method: "Candidate orthogonal reroute solver with clearance validation",
+        expandedObstacleBoxes: expandedBoxes,
+        selectedCandidate,
+        candidates,
+        assumptions: [
+            "Solver generates orthogonal y/z bypass candidates for one x-directed route segment.",
+            "Candidate validity checks expanded obstacle boxes including clearance; fittings, bend radius, slope, support, and system reconnection are still proposal-stage checks.",
+            "No automatic commit is allowed; selected geometry must become an explicit preview/commit write-plan and be verified after model changes.",
+        ],
+        riskLevel: "high",
+        canCommit: false,
+    };
+}
+
 function axisOverlap(aMin, aMax, bMin, bMax) {
     return Math.min(Number(aMax), Number(bMax)) - Math.max(Number(aMin), Number(bMin));
 }
@@ -157,6 +245,83 @@ function xSegmentIntersectsBox(start, end, box) {
 function chooseBypassValue(current, min, max) {
     const center = (Number(min) + Number(max)) / 2;
     return Number(current) <= center ? Number(min) : Number(max);
+}
+
+function buildRerouteCandidate({ start, end, blockingBoxes, expandedBoxes, offsetAxis, side, clearanceM }) {
+    const margin = Math.max(0.001, Number(clearanceM || 0) * 0.05);
+    const bypassValue = side === "min"
+        ? Math.min(...blockingBoxes.map((box) => box.min[offsetAxis])) - margin
+        : Math.max(...blockingBoxes.map((box) => box.max[offsetAxis])) + margin;
+    const entryX = Math.min(...blockingBoxes.map((box) => box.min.x)) - margin;
+    const exitX = Math.max(...blockingBoxes.map((box) => box.max.x)) + margin;
+    const previewPoints = [
+        start,
+        { x: entryX, y: start.y, z: start.z },
+        { x: entryX, y: offsetAxis === "y" ? bypassValue : start.y, z: offsetAxis === "z" ? bypassValue : start.z },
+        { x: exitX, y: offsetAxis === "y" ? bypassValue : end.y, z: offsetAxis === "z" ? bypassValue : end.z },
+        { x: exitX, y: end.y, z: end.z },
+        end,
+    ];
+    const violations = clearanceViolations(previewPoints, expandedBoxes);
+    const originalLengthM = polylineLength([start, end]);
+    const rerouteLengthM = polylineLength(previewPoints);
+    return {
+        offsetAxis,
+        side,
+        bypassValue,
+        previewPoints,
+        originalLengthM,
+        rerouteLengthM,
+        addedLengthM: rerouteLengthM - originalLengthM,
+        violationCount: violations.length,
+        violations,
+        valid: violations.length === 0,
+    };
+}
+
+function clearanceViolations(points, boxes) {
+    const violations = [];
+    for (let index = 1; index < points.length; index++) {
+        const a = points[index - 1];
+        const b = points[index];
+        if (samePoint(a, b)) continue;
+        for (const [boxIndex, box] of boxes.entries()) {
+            if (axisAlignedSegmentIntersectsBox(a, b, box)) {
+                violations.push({ segmentIndex: index - 1, obstacleIndex: boxIndex });
+            }
+        }
+    }
+    return violations;
+}
+
+function axisAlignedSegmentIntersectsBox(a, b, box) {
+    const dx = Math.abs(b.x - a.x);
+    const dy = Math.abs(b.y - a.y);
+    const dz = Math.abs(b.z - a.z);
+    if (dy === 0 && dz === 0) {
+        return rangesOverlap(a.x, b.x, box.min.x, box.max.x) && within(a.y, box.min.y, box.max.y) && within(a.z, box.min.z, box.max.z);
+    }
+    if (dx === 0 && dz === 0) {
+        return rangesOverlap(a.y, b.y, box.min.y, box.max.y) && within(a.x, box.min.x, box.max.x) && within(a.z, box.min.z, box.max.z);
+    }
+    if (dx === 0 && dy === 0) {
+        return rangesOverlap(a.z, b.z, box.min.z, box.max.z) && within(a.x, box.min.x, box.max.x) && within(a.y, box.min.y, box.max.y);
+    }
+    return false;
+}
+
+function rangesOverlap(a, b, min, max) {
+    const lower = Math.min(Number(a), Number(b));
+    const upper = Math.max(Number(a), Number(b));
+    return upper >= Number(min) && lower <= Number(max);
+}
+
+function within(value, min, max) {
+    return Number(value) >= Number(min) && Number(value) <= Number(max);
+}
+
+function samePoint(a, b) {
+    return a.x === b.x && a.y === b.y && a.z === b.z;
 }
 
 function polylineLength(points) {
