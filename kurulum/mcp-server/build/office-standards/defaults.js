@@ -27,6 +27,10 @@ export const defaultOfficeStandards = {
         sizingMethod: null,
         pressureLossMethod: null,
         fixtureUnitStandard: null,
+        fixtureUnitDemandCurve: null,
+        pipeVelocityLimitMps: null,
+        pipeFrictionLimitPaPerM: null,
+        pipeDiametersMm: [15, 20, 25, 32, 40, 50, 65, 80, 100],
     },
     sanitaryStorm: {
         sanitarySlopeRules: [],
@@ -75,6 +79,15 @@ export function missingStandardsForDiscipline(discipline, standards = defaultOff
     if (discipline === "domestic_water" || discipline === "general") {
         if (!standards.domesticWater?.sizingMethod) {
             missing.push("domesticWater.sizingMethod");
+        }
+        if (!Array.isArray(standards.domesticWater?.fixtureUnitDemandCurve) || standards.domesticWater.fixtureUnitDemandCurve.length < 2) {
+            missing.push("domesticWater.fixtureUnitDemandCurve");
+        }
+        if (standards.domesticWater?.pipeVelocityLimitMps == null) {
+            missing.push("domesticWater.pipeVelocityLimitMps");
+        }
+        if (standards.domesticWater?.pipeFrictionLimitPaPerM == null) {
+            missing.push("domesticWater.pipeFrictionLimitPaPerM");
         }
     }
     if (discipline === "sanitary" || discipline === "general") {

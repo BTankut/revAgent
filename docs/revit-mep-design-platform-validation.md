@@ -46,6 +46,7 @@ Result:
   - cyclic network warning path for branch aggregation assumptions
 - Domain foundation calculation tests passed:
   - domestic water fixture-unit summation and recirculation continuity
+  - domestic water fixture-unit demand interpolation, pressure-loss basis, and velocity/friction pipe sizing proposal
   - sanitary/storm slope and reverse-slope checks
   - sprinkler coverage/spacing standard gating
   - clash AABB hard/clearance classification
@@ -160,6 +161,10 @@ Live read-only results captured on the active session:
   - HVAC analysis reports connector/open connector summary, Darcy-Weisbach duct friction loss, and equal-friction rectangular duct sizing proposal methods.
   - Hydronic analysis reports pipe system summary, Darcy-Weisbach pipe pressure loss, and velocity/friction pipe sizing proposal methods.
   - Missing office standards correctly block sizing examples for HVAC and hydronic.
+- Domestic water runtime probe succeeded without model mutation:
+  - `analyze_mep_system` with `discipline: domestic_water`, `includeRevitRead: false`, and supplied fixture-unit demand/velocity/friction standards returned `requiresOfficeStandard: false`.
+  - Fixture-unit demand conversion and domestic pipe sizing examples both returned `success: true`.
+  - The analysis remained proposal-only with `canCommit: false` and top-level `mutateModel: false`.
 - Workflow eId hydration live preview succeeded:
   - A temporary workflow state file stored a plan targeting only `eId: duct-preview-001`.
   - Runtime mapping resolved that eId to duct `1749785` / UniqueId `7e61ea08-330a-47b5-8b95-36e4bdc5bdf9-001ab319`.

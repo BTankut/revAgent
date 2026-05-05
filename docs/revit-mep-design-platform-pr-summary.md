@@ -46,6 +46,7 @@
 - Added workflow eId hydration from stored mappings into preview/commit/verify plans, with a live read-only preview test resolving an eId to a real duct.
 - Expanded native verifier readback coverage for parameter set/clear/copy, type changes, duct/pipe resize, view hide/unhide, and target existence.
 - Added calculation/issue foundations for domestic water, sanitary/storm, fire/sprinkler, clash, and equipment selection, with tests and runtime probe coverage.
+- Expanded the domestic water foundation with fixture-unit demand curve interpolation, Darcy-Weisbach pressure-loss basis with static lift, and velocity/friction pipe sizing proposals; missing office standards still block final design and all outputs keep `canCommit: false`.
 - Added live-tested HVAC/hydronic connector graph summaries using `Connector.AllRefs`.
 - Completed the live write acceptance test in user-approved disposable model `rme_advanced_sample_project - Kopya`: `prepare_write_plan -> preview_write_plan -> commit_write_plan -> verify_write_plan` set duct `392168` `Comments`, preview did not mutate, commit succeeded, verify succeeded, and final readback matched.
 - Added deterministic rooted-tree network calculations for HVAC/hydronic branch flow aggregation and critical path/circuit selection, with tests and runtime examples.

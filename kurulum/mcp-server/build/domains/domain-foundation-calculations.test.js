@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } from "./clash/calculations.js";
-import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic-water/calculations.js";
+import { calculateDomesticWaterPressureLoss, calculateFixtureDemand, checkRecirculationContinuity, convertFixtureUnitsToDemand, sizeDomesticWaterPipe } from "./domestic-water/calculations.js";
 import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
 import { analyzeHvacAirside } from "./hvac/index.js";
@@ -27,6 +27,36 @@ assert.equal(fixtureDemand.totals.coldFixtureUnits, 13);
 assert.equal(fixtureDemand.totals.hotFixtureUnits, 3);
 assert.equal(fixtureDemand.totals.totalFixtureUnits, 16);
 assert.equal(calculateFixtureDemand().requiresOfficeStandard, true);
+
+const domesticDemand = convertFixtureUnitsToDemand({
+    fixtureUnits: 16,
+    demandCurve: [
+        { fixtureUnits: 10, flowLs: 0.3 },
+        { fixtureUnits: 20, flowLs: 0.45 },
+    ],
+});
+assert.equal(domesticDemand.success, true);
+assert(Math.abs(domesticDemand.output.demandFlowLs - 0.39) < 1e-12);
+
+const domesticPressureLoss = calculateDomesticWaterPressureLoss({
+    flowLs: 0.5,
+    diameterMm: 25,
+    lengthM: 10,
+    staticLiftM: 3,
+});
+assert.equal(domesticPressureLoss.success, true);
+assert(domesticPressureLoss.output.totalPressureLossPa > domesticPressureLoss.output.staticPressurePa);
+assert(domesticPressureLoss.output.staticPressurePa > 29000);
+
+const domesticPipeSizing = sizeDomesticWaterPipe({
+    flowLs: 0.5,
+    maxVelocityMps: 2.0,
+    maxPressureLossPaPerM: 500,
+    diametersMm: [15, 20, 25, 32],
+});
+assert.equal(domesticPipeSizing.success, true);
+assert(domesticPipeSizing.selected.velocityMps <= 2.0);
+assert(domesticPipeSizing.selected.pressureLossPaPerM <= 500);
 
 const continuity = checkRecirculationContinuity({
     nodes: [{ id: "a" }, { id: "b" }, { id: "c" }],
