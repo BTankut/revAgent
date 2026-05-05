@@ -369,6 +369,7 @@ Write checks:
   - A `set_parameter` plan targeting `Unapproved Parameter` with `officeStandards.allowedParameterNames: ["Comments"]` returned `success: true`, `validation.valid: true`, and a warning that the parameter is not in `allowedParameterNames` or `exactSchemaMappings`.
   - The same plan with `officeStandards.enforceAllowedParameterNames: true` returned `success: false`, `validation.valid: false`, and the same condition as a validation error.
   - A follow-up exact-schema mapping probe used `exactSchemaMappings.approvedCustomNote.parameterName = "Approved Custom Note"`: targeting `Approved Custom Note` returned no warning, while targeting the logical alias `approvedCustomNote` returned an allowlist warning. This keeps mapping aliases from bypassing the parameter-name gate.
+  - A runtime analyzer probe with `discipline: equipment`, `includeRevitRead: false`, and `officeStandards.enforceAllowedParameterNames: true` while only allowing `Mark` returned `writePlanProposal.validation.valid: false`; the generated equipment `set_parameter` step targeting `Comments` was blocked by the same allowlist gate.
   - `get_revit_session_context` still confirmed the clean-restart model `rme_advanced_sample_project_codex_restart_test`, Revit `2022` build `22.0.2.392`, active view `WSHP 2-3 System View`, and live MEP counts including `728` ducts and `488` pipes.
 - Domestic/sanitary/storm pipe sizing proposal handoff audit:
   - A fresh stdio runtime handshake listed all `13` tools.

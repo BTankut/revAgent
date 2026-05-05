@@ -6,11 +6,12 @@ export function buildAnalysisWritePlanProposal({
     discipline = "general",
     context = {},
     revitVersion = "2022",
+    officeStandards = null,
 } = {}) {
     const steps = uniqueSteps(collectProposalSteps(analyses));
     const proposalErrors = collectProposalErrors(analyses);
     const validationRows = steps.map((step, index) => {
-        const result = validateStep(step, index);
+        const result = validateStep(step, index, officeStandards);
         return {
             stepId: step.stepId,
             operation: step.operation,
@@ -62,6 +63,7 @@ export function buildAnalysisWritePlanProposal({
             "This object is a proposal handoff only; it is not a commit approval.",
             "Generated steps must still go through prepare_write_plan, preview_write_plan, explicit approval, commit_write_plan, and verify_write_plan.",
             "Engineering standards, local-loss context, and target identities remain visible in the source analysis rows and step preconditions.",
+            "Office parameter allowlist/enforcement is applied to generated proposal steps when office standards are supplied.",
         ],
         canCommit: false,
     };

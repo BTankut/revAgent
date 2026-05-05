@@ -121,6 +121,7 @@ export function registerAnalyzeMepSystemTool(server) {
                 analyses,
                 discipline,
                 revitVersion: args.revitVersion || "2022",
+                officeStandards,
             });
             return formatJsonContent({
                 success: true,

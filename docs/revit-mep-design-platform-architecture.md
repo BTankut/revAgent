@@ -193,6 +193,7 @@ Reporting foundation:
 - `domesticWaterPipeSizingRequests`, `sanitaryStormPipeSizingRequests`, and `firePipeSizingRequests` let domestic, sanitary, storm, and fire foundations produce proposal-only `resize_pipe` steps from supplied demand requests without mutating Revit.
 - `localLossOnly` runs short live HVAC/hydronic fitting/accessory/equipment parameter extraction and returns local-loss report rows plus local-loss pressure summary rows. `localLossElementIds` can restrict extraction to a known critical path/circuit element set from a prior graph/pathfinding step.
 - `analyze_mep_system` also returns a top-level `writePlanProposal` object that aggregates nested proposal-only domain `writePlanSteps` into a normalized plan for `prepare_write_plan` / `preview_write_plan` review. It remains a handoff object with `canCommit: false`; it is not commit approval.
+- The aggregated `writePlanProposal` validates generated steps with supplied `officeStandards`, so parameter allowlist enforcement can block unsafe analysis-generated note/update steps before preview or commit.
 - `export_boq_report` and `export_clash_report` write-plans are handled by a runtime report executor for approved CSV/JSON file export.
 - Report export writes files only and returns `mutateModel: false`.
 - `create_schedule_or_update_schedule` creates or updates native Revit schedules by category/name/id and can add requested fields by parameter name, `parameterId`, or `BuiltInParameter`.

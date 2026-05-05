@@ -988,4 +988,31 @@ const invalidWritePlanProposal = buildAnalysisWritePlanProposal({
 assert.equal(invalidWritePlanProposal.success, false);
 assert(invalidWritePlanProposal.validation.errors[0].includes("familySymbolId or familyName/typeName"));
 
+const enforcedAnalysisParameterProposal = buildAnalysisWritePlanProposal({
+    discipline: "general",
+    officeStandards: {
+        allowedParameterNames: ["Comments"],
+        enforceAllowedParameterNames: true,
+    },
+    analyses: [
+        {
+            discipline: "general",
+            writePlanSteps: [
+                {
+                    stepId: "unsafe-analysis-parameter",
+                    operation: "set_parameter",
+                    dependsOn: [],
+                    targets: { elementId: 999 },
+                    arguments: { parameterName: "Unapproved Parameter", value: "Blocked" },
+                    preconditions: [],
+                    riskLevel: "low",
+                },
+            ],
+        },
+    ],
+});
+assert.equal(enforcedAnalysisParameterProposal.success, false);
+assert.equal(enforcedAnalysisParameterProposal.validation.valid, false);
+assert(enforcedAnalysisParameterProposal.validation.errors.some((error) => error.includes("Unapproved Parameter")));
+
 console.log("domain foundation calculation tests passed");
