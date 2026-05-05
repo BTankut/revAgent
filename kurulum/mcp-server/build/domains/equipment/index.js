@@ -1,6 +1,6 @@
-import { buildEquipmentScheduleProposal, buildFamilyPlacementProposal, selectFanCandidate, selectPumpCandidate } from "./calculations.js";
+import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./calculations.js";
 
-export function analyzeEquipmentSelection({ placementRequests = [], defaultPlacementLevelId } = {}) {
+export function analyzeEquipmentSelection() {
     const fanSelection = selectFanCandidate({
         requiredFlowM3h: 5000,
         requiredPressurePa: 450,
@@ -17,12 +17,6 @@ export function analyzeEquipmentSelection({ placementRequests = [], defaultPlace
             { id: "pump-b", familyName: "Inline Pump", typeName: "P-5.5-85", flowLs: 5.5, headKPa: 85 },
         ],
     });
-    const placementProposal = buildFamilyPlacementProposal({
-        discipline: "general",
-        placementKind: "equipment",
-        requests: placementRequests,
-        defaultLevelId: defaultPlacementLevelId,
-    });
     return {
         discipline: "general",
         engine: "equipment-selection-foundation",
@@ -35,7 +29,6 @@ export function analyzeEquipmentSelection({ placementRequests = [], defaultPlace
             "pump candidate screening from flow and head",
             "family/type candidate comparison scaffold",
             "equipment schedule/report update proposal without replacement",
-            "domain placement proposal mapped to generic place_family_instance write-plan steps",
         ],
         calculationExamples: {
             fanSelection,
@@ -47,7 +40,6 @@ export function analyzeEquipmentSelection({ placementRequests = [], defaultPlace
                 targetEId: "supply-fan-001",
             }),
         },
-        ...(placementRequests.length > 0 ? { placementProposal } : {}),
         canCommit: false,
     };
 }

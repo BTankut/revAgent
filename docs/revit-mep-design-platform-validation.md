@@ -259,6 +259,7 @@ Live read-only results captured on the active session:
   - `analyze_mep_system` with `discipline: equipment`, `includeRevitRead: false`, `defaultPlacementLevelId: 378117`, and two `placementRequests` produced `place_family_instance` proposal steps for `air_terminal` and `valve`.
   - Fresh stdio runtime handshake listed `13` tools; `writePlanProposal.validation.valid` was `true`.
   - The first generated step used `operation: place_family_instance`, `eId: supply-air-terminal-001`, family/type `Supply Diffuser / 600x600`, point `{ x: 1, y: 2, z: 3 }`, level `378117`, risk `medium`, and preview-before-commit preconditions.
+  - Follow-up routing probe with `discipline: hvac` accepted only the `air_terminal` request, ignored the `valve` request with a discipline mismatch warning, and produced one `place_family_instance` step. The same request set under `discipline: equipment` accepted both requests and produced two placement steps plus the equipment schedule note proposal.
   - The result is proposal-only; connector/system assignment remains an explicit post-placement precondition and no Revit mutation was performed.
 - Approved equipment schedule update live write test succeeded in the disposable model:
   - Target: Mechanical Equipment element `386031`, type `14 kW`, UniqueId `ac8b9fc6-24ff-4c3b-a4c6-035f009e396e-0005e3ef`.

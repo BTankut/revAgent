@@ -5,6 +5,7 @@ import { analyzeEquipmentSelection } from "../domains/equipment/index.js";
 import { analyzeFireProtection } from "../domains/fire/index.js";
 import { analyzeHvacAirside } from "../domains/hvac/index.js";
 import { analyzeHydronic } from "../domains/hydronic/index.js";
+import { analyzeDomainPlacement } from "../domains/placement/index.js";
 import { analyzeSanitaryStorm } from "../domains/sanitary-storm/index.js";
 import { mergeOfficeStandards } from "../office-standards/defaults.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
@@ -90,7 +91,11 @@ export function registerAnalyzeMepSystemTool(server) {
                 analyses.push(analyzeClashCoordination());
             }
             if (discipline === "all" || discipline === "equipment" || discipline === "general") {
-                analyses.push(analyzeEquipmentSelection({
+                analyses.push(analyzeEquipmentSelection());
+            }
+            if ((args.placementRequests || []).length > 0) {
+                analyses.push(analyzeDomainPlacement({
+                    discipline,
                     placementRequests: args.placementRequests || [],
                     defaultPlacementLevelId: args.defaultPlacementLevelId,
                 }));

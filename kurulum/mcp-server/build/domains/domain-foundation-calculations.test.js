@@ -8,6 +8,7 @@ import { analyzeHydronic } from "./hydronic/index.js";
 import { connectorPathElementIds, selectCriticalConnectorPath, summarizeLocalLossSamples } from "./local-losses/calculations.js";
 import { readPathTargetedLocalLosses } from "./local-losses/path-targeting.js";
 import { buildLocalLossOnlyCode } from "./local-losses/revit-read.js";
+import { analyzeDomainPlacement } from "./placement/index.js";
 import { calculateSlopePercent, calculateStormRunoffRational, checkVentContinuity, sizeGravityPipeByFixtureUnits, sizeStormPipeByFlow, traceGravityDrainageToStack, validateGravitySlope } from "./sanitary-storm/calculations.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 import { buildAnalysisWritePlanProposal } from "../tools/analysis_write_plan_proposal.js";
@@ -296,6 +297,31 @@ const invalidPlacementProposal = buildFamilyPlacementProposal({
 });
 assert.equal(invalidPlacementProposal.success, false);
 assert(invalidPlacementProposal.errors[0].includes("familySymbolId or familyName/typeName"));
+
+const hvacPlacementAnalysis = analyzeDomainPlacement({
+    discipline: "hvac",
+    defaultPlacementLevelId: 378117,
+    placementRequests: [
+        {
+            kind: "air_terminal",
+            eId: "supply-air-terminal-001",
+            familyName: "Supply Diffuser",
+            typeName: "600x600",
+            point: { x: 1, y: 2, z: 3 },
+        },
+        {
+            kind: "valve",
+            eId: "isolation-valve-001",
+            familySymbolId: 701,
+            point: { x: 2, y: 2, z: 3 },
+        },
+    ],
+});
+assert.equal(hvacPlacementAnalysis.applicableRequestCount, 1);
+assert.equal(hvacPlacementAnalysis.ignoredRequestCount, 1);
+assert.equal(hvacPlacementAnalysis.placementProposal.writePlanSteps.length, 1);
+assert.equal(hvacPlacementAnalysis.placementProposal.writePlanSteps[0].operation, "place_family_instance");
+assert.equal(hvacPlacementAnalysis.placementProposal.writePlanSteps[0].eId, "supply-air-terminal-001");
 
 const localLossExtraction = summarizeLocalLossSamples({
     discipline: "hvac",
