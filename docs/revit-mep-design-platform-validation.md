@@ -13,6 +13,7 @@ Commands:
 ```powershell
 Get-ChildItem -Recurse kurulum\mcp-server\build -Filter *.js | ForEach-Object { node --check $_.FullName }
 node kurulum\mcp-server\build\tools\send_code_to_revit_safe.guard-test.js
+node kurulum\mcp-server\build\tools\tool-registration.test.js
 node kurulum\mcp-server\build\write-plan\write-plan.test.js
 node kurulum\mcp-server\build\domains\engineering-calculations.test.js
 node kurulum\mcp-server\build\domains\domain-foundation-calculations.test.js
@@ -22,6 +23,7 @@ Result:
 
 - JavaScript syntax check passed.
 - Safe execution guard tests passed.
+- Tool registration tests passed and assert the existing six tools plus all seven write-plan/platform tools are registered.
 - Write-plan schema/state/risk tests passed.
   - runtime report export executor wrote an approved CSV test file with `mutateModel: false` and `writesFiles: true`
 - Engineering calculation tests passed:

@@ -23,7 +23,7 @@ Concrete deliverables:
 | Do not harm `main` | Work occurred on `feature/full-mep-design-platform-goal` and `feature/native-write-plan-executor`; `git status --short --branch` clean on both feature branches. | Done |
 | Preserve dirty changes | Plugin repo's existing `send_code_to_revit` dirty files were kept and included with the native executor commit instead of reverted. | Done |
 | Runtime existing six tools regress not intentionally changed | Existing tool files unchanged except registry imports; safe guard test still passes. | Done |
-| New runtime write-plan tools list | Fresh MCP handshake against `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js` listed 13 tools, including all seven new tools. | Done |
+| New runtime write-plan tools list | Fresh MCP handshake against `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js` listed 13 tools, including all seven new tools. `tool-registration.test.js` also asserts the existing six tools plus all seven write-plan/platform tools are registered. | Done |
 | Typed write-plan schema/protocol | `kurulum/mcp-server/build/write-plan/schemas.js`, `validators.js`, `risk.js`, `previewFormatter.js`. | Done |
 | `prepare_write_plan` invalid plan rejection | Tool behavior test returned `invalidSuccess: false`; unit test covers empty step rejection. | Done |
 | `preview_write_plan` must not mutate model | Tool behavior test returned `previewMutates: false`; live preview re-read confirmed `Comments` unchanged. | Done |
@@ -78,7 +78,7 @@ Concrete deliverables:
 | Native model schedule population | `create_schedule_or_update_schedule` is now an initial native operation with runtime validation/risk coverage. Live disposable-model test plan `schedule-population-1777960000000` created schedule `Codex MEP Equipment Schedule 2026-05-05` as element `1020916`, added `Family and Type`, `Mark`, and `Level`, verified through native readback, and final readback matched. | Done |
 | Skill update | `SKILL.md` version `0.5.0`; write-plan workflow documented. | Done |
 | README/docs update | README updated; architecture, validation, PR summary, audit docs added. | Done |
-| Static tests | JS syntax, safe guard test, write-plan schema/state/risk test passed. | Done |
+| Static tests | JS syntax, safe guard test, tool registration test, write-plan schema/state/risk test, engineering calculation test, and domain foundation calculation test passed in both the skill build and synced runtime build. | Done |
 | Plugin build test | `dotnet msbuild SampleCommandSet\SampleCommandSet.csproj /p:Configuration="Debug 2022" /p:Platform=x64 /m:1` passed. | Done |
 | Docs MCP live validation | Revit 2022 API docs resolved `Duct.Create`, `Pipe.Create`, `PipeType`, `MoveElements`, `CopyElements`, `RotateElements`, `NewFamilyInstance`, `FamilySymbol`, `FamilyInstance`, `FamilyPlacementType`, `Element.IsHidden`, `View.HideElements`, `View.UnhideElements`, `Element.ChangeTypeId`, `Element.GetTypeId`, `Element.GetValidTypes`, `DuctType`, `ElementType.Name`, `MEPCurve.MEPSystem`, `Element.LevelId`, `LocationCurve.Curve`, `Level.GetNearestLevelId`, `RBS_START_LEVEL_PARAM`, `IndependentTag.Create`, `Reference`, `TagMode`, `TagOrientation`, `OST_DuctTags`, `LocationCurve`, `LocationPoint`, `View.GetElementOverrides`, `View.SetElementOverrides`, `OverrideGraphicSettings`, `ProjectionLineColor`, `ProjectionLineWeight`, `SetProjectionLineColor`, `SetProjectionLineWeight`, `Color.IsValid`, `UnitUtils`. | Done |
 | Runtime MCP initialize | Fresh registered runtime handshake succeeded and listed 13 tools. | Done |
