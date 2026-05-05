@@ -91,6 +91,8 @@ Result:
 - The schedule direct-load test DLL was built with unique assembly names because Revit locks loaded .NET assemblies for the session.
 - Native reroute operation build check passed:
   `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\reroute-final\`
+- Native reroute clearance verifier build check passed:
+  `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\reroute-clearance\`
 
 ## Live Revit Validation Plan
 
@@ -227,7 +229,15 @@ Live read-only results captured on the active session:
   - Expected and actual segment counts both `3`.
   - Expected and actual total route length both `15.292563747898 ft`.
   - Final `inspect_elements` readback confirmed all three elements are `Autodesk.Revit.DB.Mechanical.Duct`, category `Ducts`, level `Level 1`, with `Width` and `Height` raw values `0.984251968503937` / display `300`.
-  - This is an explicit geometry commit/verify foundation; it does not yet delete/reconnect the source duct or validate live obstacle clearance after replacement.
+  - This first reroute test checked geometry/count/length only; it did not include obstacle envelope clearance or source reconnection.
+- Approved native reroute clearance verification live write test succeeded in the disposable model:
+  - Plan `reroute-clearance-1777962600000`.
+  - Native preview returned `requestedSegmentCount: 2`, `canCommit: true`, and included one `obstacleBoxes` clearance envelope.
+  - Commit created duct segments `1020932` and `1020934`.
+  - Native verify re-read both ducts, matched `2` actual segments to `2` expected segments, and matched expected/actual total route length `6.56167979002624 ft`.
+  - Clearance verifier checked both created segment curves against the expanded obstacle box and returned `clearanceViolationCount: 0`; both `clearanceChecks` rows had `intersectsExpandedObstacle: false`.
+  - Final `inspect_elements` readback confirmed both ducts are `Autodesk.Revit.DB.Mechanical.Duct`, category `Ducts`, level `Level 1`, with `Width` and `Height` raw values `0.984251968503937` / display `300`.
+  - This verifies committed reroute geometry against supplied obstacle envelopes; it still does not delete/reconnect the original source route.
 
 Write checks:
 

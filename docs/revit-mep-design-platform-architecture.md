@@ -189,7 +189,7 @@ Reporting foundation:
 - `export_boq_report` and `export_clash_report` write-plans are handled by a runtime report executor for approved CSV/JSON file export.
 - Report export writes files only and returns `mutateModel: false`.
 - `create_schedule_or_update_schedule` creates or updates native Revit schedules by category/name/id and can add requested fields by parameter name, `parameterId`, or `BuiltInParameter`.
-- `commit_reroute` creates explicit duct/pipe reroute geometry from approved points and verifies created segment count plus total length. It is a controlled foundation operation; it does not yet delete/reconnect the source route or prove final clash clearance against live obstacles.
+- `commit_reroute` creates explicit duct/pipe reroute geometry from approved points and verifies created segment count plus total length. When `obstacleBoxes` are supplied, native verify checks created segment curves against clearance-expanded obstacle boxes. It is still a controlled foundation operation and does not yet delete/reconnect the source route.
 
 ## Safety Model
 

@@ -1,7 +1,7 @@
-﻿From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
+From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 1/5] Add native write-plan executor
+Subject: [PATCH 1/6] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 2/5] Expand write-plan verification readback
+Subject: [PATCH 2/6] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 3/5] Fix write-plan command SDK compatibility
+Subject: [PATCH 3/6] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 4/5] Add native schedule write-plan operation
+Subject: [PATCH 4/6] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 5/5] Add native reroute commit verification
+Subject: [PATCH 5/6] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2360,6 +2360,187 @@ index 31c47a5..0b76d2e 100644
              return VerifyTargetExists(document, plan, step);
          }
 
+--
+2.50.1.windows.1
+
+
+From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 09:41:57 +0300
+Subject: [PATCH 6/6] Verify reroute obstacle clearance
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
+ .../Validators/WritePlanValidator.cs          |   4 +
+ 2 files changed, 122 insertions(+), 2 deletions(-)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index 52034fc..68b1712 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -257,7 +257,10 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             bool countOk = ids.Count > 0 && existing == ids.Count;
+             bool segmentCountOk = expectedSegments == 0 || ids.Count == expectedSegments;
+             bool lengthOk = expectedLength <= 0.0 || Math.Abs(actualLength - expectedLength) <= 0.01;
+-            bool ok = countOk && segmentCountOk && lengthOk;
++            JArray clearanceChecks = new JArray();
++            int clearanceViolationCount = VerifyRerouteClearance(document, ids, args, clearanceChecks);
++            bool clearanceOk = clearanceViolationCount == 0;
++            bool ok = countOk && segmentCountOk && lengthOk && clearanceOk;
+             return new JObject
+             {
+                 ["success"] = ok,
+@@ -267,8 +270,10 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 ["actualSegments"] = existing,
+                 ["expectedLengthInternal"] = expectedLength,
+                 ["actualLengthInternal"] = actualLength,
++                ["clearanceViolationCount"] = clearanceViolationCount,
+                 ["checks"] = checks,
+-                ["message"] = ok ? "verified" : "reroute created segments do not match expected count or length"
++                ["clearanceChecks"] = clearanceChecks,
++                ["message"] = ok ? "verified" : "reroute created segments do not match expected count, length, or clearance"
+             };
+         }
+
+@@ -953,6 +958,107 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return total;
+         }
+
++        private static int VerifyRerouteClearance(Document document, ICollection<ElementId> ids, JObject args, JArray checks)
++        {
++            JArray obstacleBoxes = args["obstacleBoxes"] as JArray ?? args["obstacles"] as JArray;
++            if (obstacleBoxes == null || obstacleBoxes.Count == 0)
++                return 0;
++            string unit = StringValue(args, "unit");
++            double clearanceInternal = ClearanceInternal(args, unit);
++            List<RouteBox> boxes = new List<RouteBox>();
++            foreach (JToken token in obstacleBoxes)
++            {
++                RouteBox box = RouteBoxValue(token as JObject, unit, clearanceInternal);
++                if (box != null) boxes.Add(box);
++            }
++            int violationCount = 0;
++            foreach (ElementId id in ids)
++            {
++                Element elem = document.GetElement(id);
++                LocationCurve location = elem != null ? elem.Location as LocationCurve : null;
++                Curve curve = location != null ? location.Curve : null;
++                XYZ start = null;
++                XYZ end = null;
++                if (curve != null)
++                {
++                    try
++                    {
++                        start = curve.GetEndPoint(0);
++                        end = curve.GetEndPoint(1);
++                    }
++                    catch { }
++                }
++                for (int i = 0; i < boxes.Count; i++)
++                {
++                    bool violates = start != null && end != null && SegmentIntersectsBox(start, end, boxes[i]);
++                    if (violates) violationCount++;
++                    checks.Add(new JObject
++                    {
++                        ["elementId"] = id.IntegerValue,
++                        ["obstacleIndex"] = i,
++                        ["intersectsExpandedObstacle"] = violates
++                    });
++                }
++            }
++            return violationCount;
++        }
++
++        private static double ClearanceInternal(JObject args, string unit)
++        {
++            if (args["clearanceM"] != null)
++                return Math.Max(0.0, ConvertToInternal(DoubleValue(args["clearanceM"]), "m"));
++            if (args["clearance"] != null)
++                return Math.Max(0.0, ConvertToInternal(DoubleValue(args["clearance"]), unit));
++            return 0.0;
++        }
++
++        private static RouteBox RouteBoxValue(JObject obj, string unit, double clearanceInternal)
++        {
++            if (obj == null) return null;
++            JObject minObj = obj["min"] as JObject;
++            JObject maxObj = obj["max"] as JObject;
++            if (minObj == null || maxObj == null) return null;
++            XYZ minPoint = PointValue(minObj, unit);
++            XYZ maxPoint = PointValue(maxObj, unit);
++            return new RouteBox
++            {
++                MinX = Math.Min(minPoint.X, maxPoint.X) - clearanceInternal,
++                MinY = Math.Min(minPoint.Y, maxPoint.Y) - clearanceInternal,
++                MinZ = Math.Min(minPoint.Z, maxPoint.Z) - clearanceInternal,
++                MaxX = Math.Max(minPoint.X, maxPoint.X) + clearanceInternal,
++                MaxY = Math.Max(minPoint.Y, maxPoint.Y) + clearanceInternal,
++                MaxZ = Math.Max(minPoint.Z, maxPoint.Z) + clearanceInternal
++            };
++        }
++
++        private static bool SegmentIntersectsBox(XYZ start, XYZ end, RouteBox box)
++        {
++            double tMin = 0.0;
++            double tMax = 1.0;
++            if (!ClipSegmentAxis(start.X, end.X, box.MinX, box.MaxX, ref tMin, ref tMax)) return false;
++            if (!ClipSegmentAxis(start.Y, end.Y, box.MinY, box.MaxY, ref tMin, ref tMax)) return false;
++            if (!ClipSegmentAxis(start.Z, end.Z, box.MinZ, box.MaxZ, ref tMin, ref tMax)) return false;
++            return true;
++        }
++
++        private static bool ClipSegmentAxis(double start, double end, double min, double max, ref double tMin, ref double tMax)
++        {
++            double delta = end - start;
++            if (Math.Abs(delta) < 1e-9)
++                return start >= min && start <= max;
++            double t1 = (min - start) / delta;
++            double t2 = (max - start) / delta;
++            if (t1 > t2)
++            {
++                double temp = t1;
++                t1 = t2;
++                t2 = temp;
++            }
++            if (t1 > tMin) tMin = t1;
++            if (t2 < tMax) tMax = t2;
++            return tMin <= tMax;
++        }
++
+         private static double ConvertToInternal(double value, string unit)
+         {
+             string normalized = string.IsNullOrWhiteSpace(unit) ? "internal" : unit.Trim().ToLowerInvariant();
+@@ -1038,5 +1144,15 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 }
+             }
+         }
++
++        private class RouteBox
++        {
++            public double MinX;
++            public double MinY;
++            public double MinZ;
++            public double MaxX;
++            public double MaxY;
++            public double MaxZ;
++        }
+     }
+ }
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index ba849b9..91431bb 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -167,6 +167,10 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+             }
+             if (args["levelId"] == null)
+                 errors.Add("steps[" + index + "].arguments.levelId is required");
++            if (args["obstacleBoxes"] != null && !(args["obstacleBoxes"] is JArray))
++                errors.Add("steps[" + index + "].arguments.obstacleBoxes must be an array when provided");
++            if (args["obstacles"] != null && !(args["obstacles"] is JArray))
++                errors.Add("steps[" + index + "].arguments.obstacles must be an array when provided");
+         }
+
+         private static string StringValue(JObject obj, string name)
 --
 2.50.1.windows.1
 

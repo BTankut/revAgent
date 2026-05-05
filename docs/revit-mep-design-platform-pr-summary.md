@@ -69,8 +69,13 @@
   - Verifier matched `3` actual segments to `3` expected segments
   - Expected and actual total route length both `15.292563747898 ft`
   - Final readback confirmed all three ducts at `300 x 300 mm`.
+- Added native reroute clearance verification against supplied `obstacleBoxes`, with approved live test:
+  - Created duct segments `1020932` and `1020934`
+  - Verifier matched `2` actual segments to `2` expected segments
+  - Expected and actual total route length both `6.56167979002624 ft`
+  - Clearance checks returned `clearanceViolationCount: 0` against the expanded obstacle box.
 
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from local-loss extraction/reporting foundations to production-calibrated use of fitting/accessory/equipment losses and production reroute replacement/clearance verification.
+- Expand engineering engines from local-loss extraction/reporting foundations to production-calibrated use of fitting/accessory/equipment losses and production reroute replacement/reconnection.

@@ -187,6 +187,12 @@ function validateOperationPayload(step, prefix, errors, warnings) {
             if (!Number.isFinite(Number(args.levelId))) {
                 errors.push(`${prefix}.arguments.levelId is required`);
             }
+            if (args.obstacleBoxes && !Array.isArray(args.obstacleBoxes)) {
+                errors.push(`${prefix}.arguments.obstacleBoxes must be an array when provided`);
+            }
+            if (args.obstacles && !Array.isArray(args.obstacles)) {
+                errors.push(`${prefix}.arguments.obstacles must be an array when provided`);
+            }
             break;
         case "export_boq_report":
         case "export_clash_report":

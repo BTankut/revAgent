@@ -111,6 +111,10 @@ const reroutePlan = buildPlanFromArgs({
             { x: 1, y: 0, z: 3 },
             { x: 1, y: 1, z: 3 },
         ],
+        obstacleBoxes: [
+            { min: { x: 0.25, y: 0.25, z: 2.8 }, max: { x: 0.75, y: 0.75, z: 3.2 } },
+        ],
+        clearanceM: 0.1,
     },
 });
 const rerouteValidation = validateWritePlan(reroutePlan, { mode: "commit", requireInitialOperationsOnly: true });
