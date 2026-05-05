@@ -440,6 +440,12 @@ Write checks:
   - The direct-loaded unique assembly `SampleCommandSetPipeFittingCreateTest.dll` ran plan `pipe-fitting-create-live-20260505` on the same disposable test model.
   - Commit created route pipes `1020910` and `1020913`, created pipe elbow fitting `1020916`, and returned `createdRouteFittingCount: 1`, `routeFittingCount: 1`, `routeFittingRefCount: 2`, `routeFittingOk: true`, and no failures.
   - Cleanup deleted all three created elements inside the same Revit execution; final session counts returned to `488` pipes and `489` pipe fittings.
+- Current direct-loaded native pipe source replacement smoke:
+  - Revit 2022 API docs reconfirmed `Autodesk.Revit.DB.Plumbing.Pipe.Create(Document, ElementId, ElementId, ElementId, XYZ, XYZ)` and `Autodesk.Revit.Creation.Document.NewElbowFitting(Connector, Connector)` before the pipe reroute coverage probes.
+  - A reflection-only `validate` probe against `SampleCommandSetPipeFittingCreateTest.dll` succeeded without binding the dynamic snippet to the ambiguous in-memory Newtonsoft versions.
+  - A combined disposable pipe source replacement plus required route fitting probe timed out through the MCP call; immediate session readback showed counts restored to `488` pipes and `489` pipe fittings, so no residue remained. The separate pipe elbow creation smoke above is the fitting success evidence.
+  - The narrower disposable pipe source replacement plan `pipe-reroute-source-replace-live-20260505` then ran through the same direct-loaded assembly: source pipe `1020918` was created, `commit_reroute` deleted it, created two replacement pipe segments, and native verify succeeded.
+  - Cleanup deleted the two replacement pipes plus any remaining disposable source reference; final counts returned to `488` pipes and `489` pipe fittings with `countsRestored: true`.
 - Live project-critical data sample:
   - `inspect_elements` re-read HVAC path elements `392199 -> 392203 -> 392200` and hydronic sample elements `513756 -> 513769 -> 513637` from the open test model.
   - The observed values were captured in `docs/revit-mep-project-critical-data-live-sample.json` as sample-only data with `requiresEngineerReview: true` and `canCommit: false`.
