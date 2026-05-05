@@ -1,5 +1,9 @@
 # PR Summary: Revit MCP MEP Design Platform Foundation
 
+Skill PR: `https://github.com/BTankut/revit-mcp-skill/pull/1`
+
+Plugin PR: `https://github.com/BTankut/revit-mcp-plugin/pull/1`
+
 ## Runtime
 
 - Added seven public write-plan/platform tools:
