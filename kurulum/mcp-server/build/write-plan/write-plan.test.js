@@ -117,6 +117,28 @@ const invalidPinValidation = validateWritePlan(invalidPinPlan, { mode: "commit",
 assert.equal(invalidPinValidation.valid, false);
 assert(invalidPinValidation.errors.includes("steps[0].targets.elementIds or elementId is required"));
 
+const deletePlan = buildPlanFromArgs({
+    title: "Delete disposable model elements",
+    discipline: "general",
+    operation: "delete_elements",
+    targets: { elementIds: [201] },
+    arguments: {},
+});
+const deleteValidation = validateWritePlan(deletePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(deleteValidation.valid, true);
+assert.equal(classifyPlanRisk(deletePlan), "critical");
+
+const invalidDeletePlan = buildPlanFromArgs({
+    title: "Reject delete without targets",
+    discipline: "general",
+    operation: "delete_elements",
+    targets: {},
+    arguments: {},
+});
+const invalidDeleteValidation = validateWritePlan(invalidDeletePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidDeleteValidation.valid, false);
+assert(invalidDeleteValidation.errors.includes("steps[0].targets.elementIds or elementId is required"));
+
 const reroutePlan = buildPlanFromArgs({
     title: "Commit explicit reroute geometry",
     discipline: "clash",
