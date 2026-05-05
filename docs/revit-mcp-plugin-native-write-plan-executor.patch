@@ -1,7 +1,7 @@
 From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 01/20] Add native write-plan executor
+Subject: [PATCH 01/21] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 02/20] Expand write-plan verification readback
+Subject: [PATCH 02/21] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 03/20] Fix write-plan command SDK compatibility
+Subject: [PATCH 03/21] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 04/20] Add native schedule write-plan operation
+Subject: [PATCH 04/21] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 05/20] Add native reroute commit verification
+Subject: [PATCH 05/21] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2367,7 +2367,7 @@ index 31c47a5..0b76d2e 100644
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 06/20] Verify reroute obstacle clearance
+Subject: [PATCH 06/21] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2548,7 +2548,7 @@ index ba849b9..91431bb 100644
 From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:11:18 +0300
-Subject: [PATCH 07/20] Support reroute source replacement
+Subject: [PATCH 07/21] Support reroute source replacement
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
@@ -2664,7 +2664,7 @@ index 91431bb..f346aca 100644
 From 6be1a8b287fb9d41bf5ee96c449eab360ced9f75 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:24:33 +0300
-Subject: [PATCH 08/20] Reconnect reroute replacement endpoints
+Subject: [PATCH 08/21] Reconnect reroute replacement endpoints
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 445 +++++++++++++++++-
@@ -3248,7 +3248,7 @@ index f346aca..f230ebf 100644
 From 0b3c09ff5eb9c55916f46cbaa5829e241542ecd7 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:59:59 +0300
-Subject: [PATCH 09/20] Report reroute fitting references
+Subject: [PATCH 09/21] Report reroute fitting references
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 58 +++++++++++++++++--
@@ -3357,7 +3357,7 @@ index 9c3c4e0..08ab8e9 100644
 From 4d1672f96c751579511eb03c46bd5ae8166a61d9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:12:20 +0300
-Subject: [PATCH 10/20] Add native pin element operations
+Subject: [PATCH 10/21] Add native pin element operations
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 24 ++++++++++++++
@@ -3512,7 +3512,7 @@ index 0b76d2e..7b69f41 100644
 From 57644057abdf3023af59358e5940af51c04fc41e Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:27:07 +0300
-Subject: [PATCH 11/20] Add native delete element operation
+Subject: [PATCH 11/21] Add native delete element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 30 +++++++++++++++++++
@@ -3650,7 +3650,7 @@ index 7b69f41..af2da46 100644
 From a4b7f6f034cbb18e6f29596db615a12f9042d9d4 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:34:06 +0300
-Subject: [PATCH 12/20] Add native copy element operation
+Subject: [PATCH 12/21] Add native copy element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  38 +++++
@@ -3918,7 +3918,7 @@ index af2da46..1b22f12 100644
 From cac42e1db4d4cdb868a2b4bb6b79e2ba9e243621 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:42:35 +0300
-Subject: [PATCH 13/20] Add native rotate element operation
+Subject: [PATCH 13/21] Add native rotate element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 54 +++++++++++++
@@ -4150,7 +4150,7 @@ index 1b22f12..ea6fddd 100644
 From 4330cdc41a7b370cb9f325e7d292b64e2c4155e1 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:54:41 +0300
-Subject: [PATCH 14/20] Add native align element operation
+Subject: [PATCH 14/21] Add native align element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 83 +++++++++++++++++++
@@ -4418,7 +4418,7 @@ index ea6fddd..fec394e 100644
 From ff7a4e1ea1f0d321b21b08408805fc3092d2ce5c Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:08:09 +0300
-Subject: [PATCH 15/20] Add native tag element operation
+Subject: [PATCH 15/21] Add native tag element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 80 +++++++++++++++++++
@@ -4683,7 +4683,7 @@ index fec394e..f31f5eb 100644
 From 2d2169d8cee9ac46d6b8ffc8acdc65769f6a662b Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:19:18 +0300
-Subject: [PATCH 16/20] Verify native view override operation
+Subject: [PATCH 16/21] Verify native view override operation
 
 ---
  .../Validators/WritePlanValidator.cs          |  9 ++
@@ -4840,7 +4840,7 @@ index f31f5eb..90697b7 100644
 From 9064ea3aa975c607d4b58b623c902d4f03a9f11b Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:33:59 +0300
-Subject: [PATCH 17/20] Validate direct duct and pipe run creation
+Subject: [PATCH 17/21] Validate direct duct and pipe run creation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  4 +--
@@ -4920,7 +4920,7 @@ index d938965..92711fa 100644
 From bf0a7f324670da04947151d02246b927519356ca Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 13:01:26 +0300
-Subject: [PATCH 18/20] Verify copied parameter values in write plans
+Subject: [PATCH 18/21] Verify copied parameter values in write plans
 
 ---
  .../Validators/WritePlanValidator.cs          | 70 +++++++++++++++++++
@@ -5097,7 +5097,7 @@ index 90697b7..4814466 100644
 From 750a33290d25f7613fa65693562c1a1093a657fc Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 13:12:40 +0300
-Subject: [PATCH 19/20] Verify move and placement write-plan operations
+Subject: [PATCH 19/21] Verify move and placement write-plan operations
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  45 ++++++-
@@ -5328,7 +5328,7 @@ index 4814466..1f164aa 100644
 From 32149b97ab61c6c7ae7296f113bfab9b7ec586c6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 16:20:21 +0300
-Subject: [PATCH 20/20] Gate reroute fitting expectations
+Subject: [PATCH 20/21] Gate reroute fitting expectations
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 47 ++++++++++++++++++-
@@ -5455,6 +5455,308 @@ index 54810c2..b93e474 100644
          }
  
          private static bool BoolValue(JToken token)
+-- 
+2.50.1.windows.1
+
+
+From 2e6810eaae3daf97c45e09812806d970dcbcc8b9 Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 16:35:18 +0300
+Subject: [PATCH 21/21] Create reroute elbow fittings when requested
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 154 +++++++++++++++++-
+ 1 file changed, 145 insertions(+), 9 deletions(-)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index 0b5f4f4..59a177e 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -753,8 +753,12 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             if (reconnectReport != null)
+             {
+                 result["rerouteReconnect"] = reconnectReport;
+-                if (BoolValue(args["requireReconnect"], false) && reconnectReport["success"] != null && !(bool)reconnectReport["success"])
+-                    throw new InvalidOperationException("Reroute reconnection failed.");
++                if (reconnectReport["success"] != null &&
++                    !(bool)reconnectReport["success"] &&
++                    RerouteReconnectFailureIsFatal(args, createdIds.Count))
++                {
++                    WritePlanResult.AddError(result, "Reroute reconnection or route fitting requirement failed.");
++                }
+             }
+         }
+ 
+@@ -1388,23 +1392,31 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             JArray failures = new JArray();
+             JArray segmentChecks = new JArray();
+             JArray sourceChecks = new JArray();
++            JArray routeFittingCreationChecks = new JArray();
+             double tolerance = ConnectorToleranceInternal(args);
++            bool createRouteFittings = RerouteCreateRouteFittingsRequested(args);
+             try { document.Regenerate(); }
+             catch { }
+ 
+             int segmentConnectionCount = 0;
++            int createdRouteFittingCount = 0;
+             if (connectSegments)
+             {
+                 for (int i = 0; i < createdIds.Count - 1; i++)
+                 {
+                     Element first = document.GetElement(createdIds[i]);
+                     Element second = document.GetElement(createdIds[i + 1]);
+-                    if (TryConnectNearestConnectorPair(first, second, tolerance, failures, "segment-" + i.ToString(CultureInfo.InvariantCulture)))
++                    bool createdRouteFitting;
++                    if (TryConnectNearestConnectorPair(document, first, second, tolerance, failures, routeFittingCreationChecks, createRouteFittings, "segment-" + i.ToString(CultureInfo.InvariantCulture), out createdRouteFitting))
++                    {
+                         segmentConnectionCount++;
++                        if (createdRouteFitting) createdRouteFittingCount++;
++                    }
+                     segmentChecks.Add(new JObject
+                     {
+                         ["fromElementId"] = createdIds[i].IntegerValue,
+-                        ["toElementId"] = createdIds[i + 1].IntegerValue
++                        ["toElementId"] = createdIds[i + 1].IntegerValue,
++                        ["createdRouteFitting"] = createdRouteFitting
+                     });
+                 }
+             }
+@@ -1448,17 +1460,19 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             int expectedSourceConnections = ExpectedSourceConnectionCount(step, args, sourceConnections.Count);
+             JArray routeFittingRefs = new JArray();
+             int routeFittingRefCount = CountRouteFittingRefs(document, createdIds, RouteOwnerIds(createdIds), routeFittingRefs);
++            int routeFittingCount = CountUniqueRouteFittingOwners(routeFittingRefs);
+             int expectedRouteFittingCount = ExpectedRouteFittingCount(args, createdIds.Count);
+             bool routeFittingRequirementActive = RerouteRouteFittingsRequired(args) || expectedRouteFittingCount >= 0;
+             bool segmentOk = !connectSegments || segmentConnectionCount >= expectedSegmentConnections;
+             bool sourceOk = !reconnectSource || sourceConnectionCount >= expectedSourceConnections;
+-            bool routeFittingOk = !routeFittingRequirementActive || routeFittingRefCount >= Math.Max(0, expectedRouteFittingCount);
++            bool routeFittingOk = !routeFittingRequirementActive || routeFittingCount >= Math.Max(0, expectedRouteFittingCount);
+             return new JObject
+             {
+                 ["success"] = segmentOk && sourceOk && routeFittingOk && failures.Count == 0,
+                 ["requested"] = true,
+                 ["connectSegments"] = connectSegments,
+                 ["reconnectSource"] = reconnectSource,
++                ["createRouteFittings"] = createRouteFittings,
+                 ["requireRouteFittings"] = routeFittingRequirementActive,
+                 ["expectedSegmentConnectionCount"] = expectedSegmentConnections,
+                 ["segmentConnectionCount"] = segmentConnectionCount,
+@@ -1466,10 +1480,13 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 ["sourceConnectionSnapshotCount"] = sourceConnections.Count,
+                 ["sourceConnectionCount"] = sourceConnectionCount,
+                 ["expectedRouteFittingCount"] = expectedRouteFittingCount,
++                ["createdRouteFittingCount"] = createdRouteFittingCount,
++                ["routeFittingCount"] = routeFittingCount,
+                 ["routeFittingRefCount"] = routeFittingRefCount,
+                 ["routeFittingOk"] = routeFittingOk,
+                 ["segmentChecks"] = segmentChecks,
+                 ["sourceChecks"] = sourceChecks,
++                ["routeFittingCreationChecks"] = routeFittingCreationChecks,
+                 ["routeFittingRefs"] = routeFittingRefs,
+                 ["failures"] = failures
+             };
+@@ -1533,7 +1550,7 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             {
+                 Element first = document.GetElement(routeIds[i]);
+                 Element second = document.GetElement(routeIds[i + 1]);
+-                bool connected = AreNearestConnectorPairConnected(first, second, tolerance);
++                bool connected = AreRouteSegmentsConnected(first, second, tolerance);
+                 if (connected) segmentConnectionCount++;
+                 segmentChecks.Add(new JObject
+                 {
+@@ -1545,6 +1562,7 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+ 
+             int externalConnectionCount = 0;
+             int routeFittingRefCount = CountRouteFittingRefs(document, routeIds, routeOwnerIds, routeFittingRefs);
++            int routeFittingCount = CountUniqueRouteFittingOwners(routeFittingRefs);
+             if (routeIds.Count > 0)
+             {
+                 JArray points = args["points"] as JArray;
+@@ -1564,7 +1582,7 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             bool routeFittingRequirementActive = RerouteRouteFittingsRequired(args) || expectedRouteFittingCount >= 0;
+             bool segmentOk = !connectSegments || segmentConnectionCount >= expectedSegmentConnections;
+             bool sourceOk = !reconnectSource || expectedSourceConnections < 0 || externalConnectionCount >= expectedSourceConnections;
+-            bool routeFittingOk = !routeFittingRequirementActive || routeFittingRefCount >= Math.Max(0, expectedRouteFittingCount);
++            bool routeFittingOk = !routeFittingRequirementActive || routeFittingCount >= Math.Max(0, expectedRouteFittingCount);
+             return new JObject
+             {
+                 ["success"] = segmentOk && sourceOk && routeFittingOk,
+@@ -1577,6 +1595,7 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 ["expectedSourceConnectionCount"] = expectedSourceConnections,
+                 ["externalConnectionCount"] = externalConnectionCount,
+                 ["expectedRouteFittingCount"] = expectedRouteFittingCount,
++                ["routeFittingCount"] = routeFittingCount,
+                 ["routeFittingRefCount"] = routeFittingRefCount,
+                 ["routeFittingOk"] = routeFittingOk,
+                 ["segmentChecks"] = segmentChecks,
+@@ -1693,7 +1712,10 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+ 
+         private static bool RerouteConnectSegmentsRequested(JObject args)
+         {
+-            return BoolValue(args["reconnect"], false) || BoolValue(args["connectSegments"], false) || BoolValue(args["reconnectSource"], false);
++            return BoolValue(args["reconnect"], false)
++                || BoolValue(args["connectSegments"], false)
++                || BoolValue(args["reconnectSource"], false)
++                || RerouteRouteFittingCheckRequested(args);
+         }
+ 
+         private static bool RerouteReconnectSourceRequested(JObject args)
+@@ -1706,6 +1728,30 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return BoolValue(args["requireRouteFittings"], false) || BoolValue(args["requireFittings"], false);
+         }
+ 
++        private static bool RerouteCreateRouteFittingsRequested(JObject args)
++        {
++            return BoolValue(args["createRouteFittings"], false)
++                || BoolValue(args["preferRouteFittings"], false)
++                || RerouteRouteFittingsRequired(args)
++                || ExpectedRouteFittingCount(args, 0) > 0;
++        }
++
++        private static bool RerouteRouteFittingCheckRequested(JObject args)
++        {
++            return BoolValue(args["createRouteFittings"], false)
++                || BoolValue(args["preferRouteFittings"], false)
++                || RerouteRouteFittingsRequired(args)
++                || args["expectedRouteFittingCount"] != null
++                || args["expectedFittingCount"] != null;
++        }
++
++        private static bool RerouteReconnectFailureIsFatal(JObject args, int routeSegmentCount)
++        {
++            return BoolValue(args["requireReconnect"], false)
++                || RerouteRouteFittingsRequired(args)
++                || ExpectedRouteFittingCount(args, routeSegmentCount) >= 0;
++        }
++
+         private static int ExpectedRouteFittingCount(JObject args, int routeSegmentCount)
+         {
+             if (args["expectedRouteFittingCount"] != null)
+@@ -1786,8 +1832,9 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return bestDistance <= tolerance ? best : null;
+         }
+ 
+-        private static bool TryConnectNearestConnectorPair(Element first, Element second, double tolerance, JArray failures, string context)
++        private static bool TryConnectNearestConnectorPair(Document document, Element first, Element second, double tolerance, JArray failures, JArray routeFittingCreationChecks, bool createRouteFitting, string context, out bool createdRouteFitting)
+         {
++            createdRouteFitting = false;
+             Connector firstConnector;
+             Connector secondConnector;
+             double distance;
+@@ -1802,9 +1849,47 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 });
+                 return false;
+             }
++            if (createRouteFitting)
++            {
++                FamilyInstance fitting = TryCreateElbowFitting(document, firstConnector, secondConnector, routeFittingCreationChecks, context);
++                if (fitting != null)
++                {
++                    createdRouteFitting = true;
++                    try { document.Regenerate(); }
++                    catch { }
++                    return true;
++                }
++            }
+             return TryConnectConnectors(firstConnector, secondConnector, failures, context);
+         }
+ 
++        private static FamilyInstance TryCreateElbowFitting(Document document, Connector first, Connector second, JArray checks, string context)
++        {
++            JObject check = new JObject { ["context"] = context, ["attempted"] = true };
++            try
++            {
++                if (document == null)
++                    throw new InvalidOperationException("Document not available.");
++                if (first == null || second == null)
++                    throw new InvalidOperationException("Connector not found.");
++                if (first.Owner != null && second.Owner != null && first.Owner.Id.IntegerValue == second.Owner.Id.IntegerValue)
++                    throw new InvalidOperationException("Cannot create elbow fitting between connectors on the same owner.");
++                FamilyInstance fitting = document.Create.NewElbowFitting(first, second);
++                check["success"] = fitting != null;
++                check["fittingElementId"] = fitting != null ? fitting.Id.IntegerValue : 0;
++                check["category"] = fitting != null && fitting.Category != null ? fitting.Category.Name : "";
++                checks.Add(check);
++                return fitting;
++            }
++            catch (Exception ex)
++            {
++                check["success"] = false;
++                check["message"] = ex.Message;
++                checks.Add(check);
++                return null;
++            }
++        }
++
+         private static bool AreNearestConnectorPairConnected(Element first, Element second, double tolerance)
+         {
+             Connector firstConnector;
+@@ -1816,6 +1901,43 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return SafeIsConnectedTo(firstConnector, secondConnector);
+         }
+ 
++        private static bool AreRouteSegmentsConnected(Element first, Element second, double tolerance)
++        {
++            if (AreNearestConnectorPairConnected(first, second, tolerance))
++                return true;
++            return ShareRouteFittingReference(first, second);
++        }
++
++        private static bool ShareRouteFittingReference(Element first, Element second)
++        {
++            HashSet<int> firstFittings = RouteFittingOwnerIds(first);
++            if (firstFittings.Count == 0) return false;
++            foreach (int ownerId in RouteFittingOwnerIds(second))
++            {
++                if (firstFittings.Contains(ownerId)) return true;
++            }
++            return false;
++        }
++
++        private static HashSet<int> RouteFittingOwnerIds(Element element)
++        {
++            HashSet<int> ownerIds = new HashSet<int>();
++            foreach (Connector connector in ElementConnectors(element))
++            {
++                ConnectorSet allRefs = null;
++                try { allRefs = connector.AllRefs; }
++                catch { allRefs = null; }
++                if (allRefs == null) continue;
++                foreach (Connector refConnector in allRefs)
++                {
++                    if (refConnector == null || refConnector.Owner == null) continue;
++                    if (!IsRouteFittingReferenceOwner(refConnector.Owner)) continue;
++                    ownerIds.Add(refConnector.Owner.Id.IntegerValue);
++                }
++            }
++            return ownerIds;
++        }
++
+         private static void FindNearestConnectorPair(Element first, Element second, out Connector firstConnector, out Connector secondConnector, out double distance)
+         {
+             firstConnector = null;
+@@ -1943,6 +2065,20 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return count;
+         }
+ 
++        private static int CountUniqueRouteFittingOwners(JArray refs)
++        {
++            if (refs == null) return 0;
++            HashSet<int> ownerIds = new HashSet<int>();
++            foreach (JToken token in refs)
++            {
++                JObject row = token as JObject;
++                if (row == null || row["fittingElementId"] == null) continue;
++                int id = IntValue(row["fittingElementId"]);
++                if (id > 0) ownerIds.Add(id);
++            }
++            return ownerIds.Count;
++        }
++
+         private static bool IsRouteFittingReferenceOwner(Element owner)
+         {
+             if (owner == null || owner.Category == null) return false;
 -- 
 2.50.1.windows.1
 

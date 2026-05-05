@@ -132,6 +132,10 @@ Result:
 - Native reroute fitting gate build check passed:
   `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\route-fitting-gate\`
   The build passed with the same Revit 2024 deprecation warnings.
+- Native reroute elbow creation build checks passed:
+  `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\route-fitting-create\`
+  and the unique live-test assembly
+  `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:AssemblyName=SampleCommandSetRouteFittingCreateTest -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\route-fitting-create-live\`.
 
 ## Live Revit Validation Plan
 
@@ -417,6 +421,11 @@ Write checks:
   - Plan `codex-live-param-smoke-2026-05-05T12-33-54-621Z` ran `prepare_write_plan -> preview_write_plan -> commit_write_plan -> verify_write_plan` through the normal native socket path.
   - `commit_write_plan` without token/approval was rejected first; explicit user-approved commit then returned `success: true`, `mutateModel: true`, `directAssemblyFallback: false`, and verify returned `success: true`, `mutateModel: false`.
   - Final `inspect_elements` readback confirmed `Comments = Codex live write-plan smoke 2026-05-05T12-33-54-621Z` on duct `392168`.
+- Current direct-loaded native route fitting creation smoke:
+  - Revit 2022 API docs confirmed `Autodesk.Revit.Creation.Document.NewElbowFitting(Connector, Connector)` returns a `FamilyInstance` and throws when connector domain/angle/distance is invalid.
+  - The direct-loaded unique assembly `SampleCommandSetRouteFittingCreateTest.dll` ran plan `route-fitting-create-live-20260505` on the disposable test model using source-derived ids `systemTypeId: 800822`, `ductTypeId: 142427`, and `levelId: 378117`.
+  - Commit created route ducts `1020905` and `1020907`, created elbow fitting `1020909`, and returned `createdRouteFittingCount: 1`, `routeFittingCount: 1`, `routeFittingRefCount: 2`, `routeFittingOk: true`, and no failures.
+  - Cleanup deleted all three created elements inside the same Revit execution; final session counts returned to `728` ducts and `936` duct fittings.
 - Live project-critical data sample:
   - `inspect_elements` re-read HVAC path elements `392199 -> 392203 -> 392200` and hydronic sample elements `513756 -> 513769 -> 513637` from the open test model.
   - The observed values were captured in `docs/revit-mep-project-critical-data-live-sample.json` as sample-only data with `requiresEngineerReview: true` and `canCommit: false`.

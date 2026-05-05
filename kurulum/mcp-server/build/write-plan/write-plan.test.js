@@ -497,6 +497,31 @@ const rerouteValidation = validateWritePlan(reroutePlan, { mode: "commit", requi
 assert.equal(rerouteValidation.valid, true);
 assert.equal(classifyPlanRisk(reroutePlan), "critical");
 
+const rerouteFittingCreationPlan = buildPlanFromArgs({
+    title: "Commit reroute with created route fittings",
+    discipline: "clash",
+    operation: "commit_reroute",
+    targets: {},
+    arguments: {
+        curveType: "duct",
+        systemTypeId: 11,
+        ductTypeId: 22,
+        levelId: 33,
+        connectSegments: true,
+        createRouteFittings: true,
+        expectedRouteFittingCount: 1,
+        unit: "m",
+        points: [
+            { x: 0, y: 0, z: 3 },
+            { x: 1, y: 0, z: 3 },
+            { x: 1, y: 1, z: 3 },
+        ],
+    },
+});
+const rerouteFittingCreationValidation = validateWritePlan(rerouteFittingCreationPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(rerouteFittingCreationValidation.valid, true);
+assert.equal(classifyPlanRisk(rerouteFittingCreationPlan), "critical");
+
 const invalidRerouteFittingExpectation = buildPlanFromArgs({
     title: "Reject negative reroute fitting expectation",
     discipline: "clash",
