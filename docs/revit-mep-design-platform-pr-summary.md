@@ -62,6 +62,8 @@
 - Added live hydronic pipe resistance sampling/calibration and hydraulic resistance report rows from Revit pipe length/diameter data.
 - Added live HVAC/hydronic fitting/accessory/equipment local-loss parameter extraction and `local_loss` report rows; live probe returned HVAC `15` rows and hydronic `30` rows from the active test model.
 - Added local-loss pressure summary rows and explicit fan/pump basis contribution from numeric local-loss pressure drops; live probe carried HVAC `0.903 Pa` into fan pressure basis and hydronic `8.926 kPa` into pump head basis.
+- Added hydronic pipe resize proposal output that combines live pipe length/diameter samples, supplied design flows, office velocity/friction limits, and critical-circuit local-loss pressure context into auditable `hydronic_pipe_sizing_proposal` rows plus proposal-only `resize_pipe` write-plan steps.
+- Live-tested the hydronic pipe resize proposal path read-only in the disposable model: collector returned pipe samples `513756`, `513770`, and `513840`; with test design flows and `4560 Pa` complete critical-circuit local-loss context, the first row proposed element `513756` from `150 mm` to `80 mm`, emitted `resize-pipe-513756`, kept `canCommit: false`, and final model counts stayed `488` pipes / `744` ducts.
 - Added `localLossElementIds` targeted extraction input for known critical-path/circuit element sets; direct live targeted probe confirmed HVAC fitting `392203` and hydronic fitting `513769` pressure-drop values.
 - Added `localLossFromNetworkPath` critical-path targeting foundation: the runtime reads all reachable connector path candidates, ranks by explicit local-loss pressure drop when numeric loss samples are available, falls back to maximum hop count otherwise, then re-runs local-loss extraction only against the selected path's element ids. Live Revit evidence used path `392199 -> 392203 -> 392200`, selected terminal `392200`, skipped the two duct targets, sampled fitting `392203`, and carried `0.903187266396887 Pa` from `Pressure Drop`.
 - Consolidated the path-targeted local-loss workflow into a shared two-stage helper and added fake-executor test coverage for pathfinding read, candidate ranking read, and selected-path final read.
@@ -128,4 +130,4 @@
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from path-targeted local-loss extraction/reporting/basis-contribution foundations to production-calibrated final sizing from complete critical-path local-loss datasets and broader production reroute fitting behavior.
+- Continue expanding engineering engines from hydronic resize proposal foundations to production-calibrated final sizing from complete critical-path local-loss datasets and broader production reroute fitting behavior.

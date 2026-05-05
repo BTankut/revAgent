@@ -161,14 +161,14 @@ Missing standards return `requiresOfficeStandard`, `missingStandards`, assumptio
 Engineering calculation foundations:
 
 - HVAC rectangular duct velocity, hydraulic diameter, Darcy-Weisbach friction loss, and equal-friction size proposal.
-- Hydronic circular pipe velocity, Darcy-Weisbach pressure loss, and velocity/friction size proposal.
+- Hydronic circular pipe velocity, Darcy-Weisbach pressure loss, velocity/friction size proposal, and proposal-only `resize_pipe` write-plan step generation from live pipe samples plus supplied design flows.
 - Weighted network shortest-path traversal, rooted tree branch flow aggregation, least-loss flow direction inference, HVAC fan pressure basis, hydronic pump head basis, hydronic pipe resistance calibration, hydronic terminal balancing loss, and single/multi-loop Hardy-Cross hydraulic balancing.
 - Domestic water fixture-unit summation and recirculation continuity issue screening.
 - Sanitary/storm gravity slope and reverse-slope validation.
 - Fire/sprinkler rectangular room spacing/coverage screening with explicit fire-design assumptions.
 - Clash AABB hard/clearance clash classification and multi-candidate orthogonal reroute solving with clearance validation.
 - Fan/pump candidate screening from required flow and pressure/head plus equipment schedule/report update proposals without replacement.
-- HVAC/hydronic fitting/accessory/equipment local-loss parameters can be extracted from live Revit samples for calibration/reporting. Numeric pressure-drop parameters are aggregated by system/category and can be carried into fan pressure or pump head basis as explicit local-loss contribution; applying those losses to final production sizing still requires office/manufacturer standards and critical-path validation.
+- HVAC/hydronic fitting/accessory/equipment local-loss parameters can be extracted from live Revit samples for calibration/reporting. Numeric pressure-drop parameters are aggregated by system/category and can be carried into fan pressure or pump head basis as explicit local-loss contribution. Hydronic pipe resize proposals can also consume a complete critical-circuit local-loss pressure context, but final production sizing still requires office/manufacturer standards, confirmed design flows, and critical-path validation.
 - Calculation outputs remain proposals with `canCommit: false`.
 
 MEP graph foundation:
@@ -185,6 +185,7 @@ Reporting foundation:
 - `analyze_mep_system` returns deterministic issue-list and design-log rows plus CSV text previews.
 - `boqOnly` runs short live Revit BOQ collectors without connector graph traversal for count/length report population.
 - `hydraulicResistanceOnly` runs short live hydronic pipe length/diameter sampling and returns resistance calibration rows.
+- Hydronic analysis can turn pipe resistance samples plus `hydronicDesignFlowsByElementId`, optional `hydronicDefaultDesignFlowLs`, office velocity/friction limits, and critical-circuit local-loss pressure context into `pipe_sizing` report rows and proposal-only `resize_pipe` steps.
 - `localLossOnly` runs short live HVAC/hydronic fitting/accessory/equipment parameter extraction and returns local-loss report rows plus local-loss pressure summary rows. `localLossElementIds` can restrict extraction to a known critical path/circuit element set from a prior graph/pathfinding step.
 - `export_boq_report` and `export_clash_report` write-plans are handled by a runtime report executor for approved CSV/JSON file export.
 - Report export writes files only and returns `mutateModel: false`.

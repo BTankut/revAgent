@@ -4,7 +4,7 @@ import { summarizeLocalLossSamples } from "../local-losses/calculations.js";
 import { buildLocalLossOnlyCode } from "../local-losses/revit-read.js";
 import { readPathTargetedLocalLosses } from "../local-losses/path-targeting.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
-import { calibratePipeResistanceSamples, calculateHydronicBalance, calculatePumpHeadBasis, pipeResistanceCoefficient, sizePipeByVelocityOrFriction, solveHardyCrossLoop, solveHardyCrossNetwork } from "./calculations.js";
+import { buildHydronicPipeResizeProposal, calibratePipeResistanceSamples, calculateHydronicBalance, calculatePumpHeadBasis, pipeResistanceCoefficient, sizePipeByVelocityOrFriction, solveHardyCrossLoop, solveHardyCrossNetwork } from "./calculations.js";
 
 export async function analyzeHydronic({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("hydronic", officeStandards);
@@ -33,12 +33,27 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
             "velocity/friction pipe sizing proposal",
             "live pipe resistance coefficient calibration from Revit length/diameter samples",
             "live fitting/accessory/equipment local-loss parameter extraction",
+            "resize_pipe write-plan proposal from live pipe samples and critical-circuit local-loss context",
         ],
         calculationExamples: {
             pipeSizing: sizePipeByVelocityOrFriction({
                 flowLs: 1.0,
                 maxVelocityMps: officeStandards.hydronic?.pipeVelocityLimitsMps?.main,
                 maxPressureLossPaPerM: officeStandards.hydronic?.pipeFrictionLimitPaPerM,
+            }),
+            pipeResizeProposal: buildHydronicPipeResizeProposal({
+                pipeSamples: [
+                    { elementId: 101, uniqueId: "example-pipe-101", systemName: "Hydronic Supply", lengthM: 12, diameterMm: 32 },
+                ],
+                designFlowsByElementId: { 101: 1.0 },
+                maxVelocityMps: officeStandards.hydronic?.pipeVelocityLimitsMps?.main,
+                maxPressureLossPaPerM: officeStandards.hydronic?.pipeFrictionLimitPaPerM,
+                localLossExtraction: {
+                    targetedByCriticalPath: true,
+                    pressureContribution: { totalPressureDropPa: 2500 },
+                    selectedPathPressureCheck: { consistent: true },
+                    warnings: [],
+                },
             }),
             branchFlowAndCriticalPath: exampleHydronicTreeNetwork(),
             weightedPathfinding: exampleHydronicWeightedNetwork(),
@@ -171,10 +186,24 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                 safetyFactor: 1.1,
             })
             : undefined;
+        const pipeSizingProposal = revitRead?.pipeResistanceSamples
+            ? buildHydronicPipeResizeProposal({
+                pipeSamples: revitRead.pipeResistanceSamples,
+                designFlowsByElementId: networkPathRequest.hydronicDesignFlowsByElementId || {},
+                defaultFlowLs: networkPathRequest.hydronicDefaultDesignFlowLs,
+                maxVelocityMps: officeStandards.hydronic?.pipeVelocityLimitsMps?.main,
+                maxPressureLossPaPerM: officeStandards.hydronic?.pipeFrictionLimitPaPerM,
+                localLossExtraction,
+                localLossPressurePa: networkPathRequest.criticalPathLocalLossPressurePa,
+                criticalPathLocalLossComplete: networkPathRequest.criticalPathLocalLossComplete === true,
+                targetElementIds: networkPathRequest.hydronicPipeSizingTargetElementIds || [],
+            })
+            : undefined;
         return {
             ...base,
             revitRead,
             ...(resistanceCalibration ? { resistanceCalibration } : {}),
+            ...(pipeSizingProposal ? { pipeSizingProposal } : {}),
             ...(localLossExtraction ? {
                 localLossExtraction,
                 liveLocalLossPumpHeadBasis,

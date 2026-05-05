@@ -8,6 +8,7 @@ import {
     sizeRectangularDuctEqualFriction,
 } from "./hvac/calculations.js";
 import {
+    buildHydronicPipeResizeProposal,
     calibratePipeResistanceSamples,
     calculatePumpHeadBasis,
     calculateHydronicBalance,
@@ -30,6 +31,7 @@ import {
     exampleHydronicWeightedNetwork,
     exampleHydronicTreeNetwork,
 } from "./network/calculations.js";
+import { validateStep } from "../write-plan/validators.js";
 
 function close(actual, expected, tolerance, label) {
     assert(Math.abs(actual - expected) <= tolerance, `${label}: expected ${expected}, got ${actual}`);
@@ -113,6 +115,47 @@ assert.deepEqual(pipeMissingStandards.missingStandards, [
     "hydronic.pipeVelocityLimitsMps",
     "hydronic.pipeFrictionLimitPaPerM",
 ]);
+
+const pipeResizeProposal = buildHydronicPipeResizeProposal({
+    pipeSamples: [
+        { elementId: 101, uniqueId: "u-101", systemName: "Heating", lengthM: 12, diameterMm: 32 },
+    ],
+    designFlowsByElementId: { 101: 1.0 },
+    maxVelocityMps: 1.0,
+    maxPressureLossPaPerM: 120.0,
+    localLossExtraction: {
+        targetedByCriticalPath: true,
+        pressureContribution: { totalPressureDropPa: 2500 },
+        selectedPathPressureCheck: { consistent: true },
+        warnings: [],
+    },
+});
+assert.equal(pipeResizeProposal.success, true);
+assert.equal(pipeResizeProposal.status, "proposal_ready_for_review");
+assert.equal(pipeResizeProposal.localLossContext.complete, true);
+assert.equal(pipeResizeProposal.rows.length, 1);
+assert.equal(pipeResizeProposal.rows[0].elementId, 101);
+assert.equal(pipeResizeProposal.rows[0].criticalPathLocalLossPressurePa, 2500);
+assert.equal(pipeResizeProposal.rows[0].localLossDatasetComplete, true);
+assert.equal(pipeResizeProposal.writePlanSteps.length, 1);
+assert.equal(pipeResizeProposal.writePlanSteps[0].operation, "resize_pipe");
+assert.equal(pipeResizeProposal.writePlanSteps[0].targets.elementId, 101);
+assert.equal(pipeResizeProposal.writePlanSteps[0].arguments.unit, "mm");
+assert.equal(validateStep(pipeResizeProposal.writePlanSteps[0], 0).errors.length, 0);
+assert.equal(pipeResizeProposal.canCommit, false);
+
+const incompleteLocalLossResizeProposal = buildHydronicPipeResizeProposal({
+    pipeSamples: [
+        { elementId: 102, uniqueId: "u-102", systemName: "Heating", lengthM: 8, diameterMm: 32 },
+    ],
+    designFlowsByElementId: { 102: 1.0 },
+    maxVelocityMps: 1.0,
+    maxPressureLossPaPerM: 120.0,
+});
+assert.equal(incompleteLocalLossResizeProposal.success, true);
+assert.equal(incompleteLocalLossResizeProposal.status, "needs_complete_critical_path_local_loss");
+assert.equal(incompleteLocalLossResizeProposal.localLossContext.complete, false);
+assert(incompleteLocalLossResizeProposal.warnings.some((warning) => warning.includes("Complete critical-circuit local-loss pressure dataset")));
 
 const airNetwork = exampleAirsideTreeNetwork();
 assert.equal(airNetwork.success, true);

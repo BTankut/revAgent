@@ -396,6 +396,28 @@ const report = buildAnalysisReport({
                     },
                 ],
             },
+            pipeSizingProposal: {
+                status: "proposal_ready_for_review",
+                rows: [
+                    {
+                        rowType: "hydronic_pipe_sizing_proposal",
+                        elementId: 101,
+                        uniqueId: "u-101",
+                        systemName: "Hydronic Supply",
+                        lengthM: 4,
+                        designFlowLs: 1,
+                        currentDiameterMm: 32,
+                        selectedDiameterMm: 50,
+                        selectedVelocityMps: 0.5,
+                        selectedPressureLossPaPerM: 61,
+                        selectedLinearPressureLossPa: 244,
+                        criticalPathLocalLossPressurePa: 2500,
+                        localLossDatasetComplete: true,
+                        resizeRequired: true,
+                        status: "proposal_ready_for_review",
+                    },
+                ],
+            },
             localLossExtraction,
             canCommit: false,
         },
@@ -407,6 +429,7 @@ assert.equal(report.issueRows.length, 1);
 assert.equal(report.designLogRows.length, 1);
 assert.equal(report.boqRows.length, 4);
 assert.equal(report.hydraulicResistanceRows.length, 1);
+assert.equal(report.pipeSizingRows.length, 1);
 assert.equal(report.localLossRows.length, 2);
 assert.equal(report.localLossPressureRows.length, 3);
 assert(report.issueCsv.includes("missing_standard"));
@@ -414,6 +437,8 @@ assert(report.designLogCsv.includes("weighted graph shortest path traversal"));
 assert(report.boqCsv.includes("Total duct length"));
 assert(report.boqCsv.includes("Supply Air"));
 assert(report.hydraulicResistanceCsv.includes("Hydronic Supply"));
+assert(report.pipeSizingCsv.includes("hydronic_pipe_sizing_proposal"));
+assert(report.pipeSizingCsv.includes("proposal_ready_for_review"));
 assert(report.localLossCsv.includes("Pressure Drop"));
 assert(report.localLossPressureCsv.includes("local_loss_pressure_total"));
 assert.equal(report.canCommit, false);

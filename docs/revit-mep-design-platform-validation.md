@@ -30,6 +30,7 @@ Result:
   - pipe area, velocity, and friction loss against hand-check values
   - pipe resistance coefficient calibration from length/diameter/reference flow samples
   - hydronic pipe sizing proposal gate
+  - hydronic pipe resize proposal rows and validator-approved `resize_pipe` write-plan step generation
   - missing office standard blockers for HVAC and hydronic sizing
   - rooted-tree branch flow aggregation for airside and hydronic sample networks
   - weighted shortest-path traversal for cyclic network foundations
@@ -50,6 +51,7 @@ Result:
   - fan and pump candidate screening
   - equipment schedule/report proposal rows and low-risk note update write-plan step
   - report issue-list/design-log rows and CSV text generation
+  - pipe sizing proposal rows and CSV text generation
 
 ## Plugin Build Check
 
@@ -190,6 +192,11 @@ Live read-only results captured on the active session:
   - HVAC `localLossOnly` carried `0.903 Pa` extracted pressure drop into `liveLocalLossFanPressureBasis.output.localLossPressurePa`; required fan pressure basis became `256.194 Pa`.
   - Hydronic `localLossOnly` carried `8925.566 Pa` extracted pressure drop into `liveLocalLossPumpHeadBasis.output.localLossContributionKPa`; required pump head basis became `36.548 kPa`.
   - Synced runtime build probe with `3` samples also succeeded: HVAC `0.903 Pa`, hydronic `4.560 kPa` local-loss contribution.
+- Live hydronic pipe resize proposal probe succeeded without model mutation:
+  - Read-only collector returned pipe samples `513756`, `513770`, and `513840`; live count stayed `488` pipes.
+  - With test design flows, office limits `1.5 m/s` and `200 Pa/m`, and a complete `4560 Pa` critical-circuit local-loss context, `buildHydronicPipeResizeProposal` returned `3` proposal rows and `3` proposal-only `resize_pipe` steps.
+  - First row: element `513756`, system `Hydronic Supply`, length `4.795 m`, current diameter `150 mm`, selected diameter `80 mm`, selected velocity `0.995 m/s`, selected friction `131.567 Pa/m`, `canCommit: false`.
+  - Report builder emitted `pipe_sizing` CSV rows; final read-only check returned `488` pipes and `744` ducts.
 - Targeted local-loss element probe succeeded:
   - Direct live read of HVAC fitting `392203` confirmed category `Duct Fittings`, loss parameters `Loss Method Settings`, `Loss Method`, `Pressure Drop`, and numeric pressure-drop sum `0.903 Pa`.
   - Direct live read of hydronic fitting `513769` confirmed category `Pipe Fittings`, the same three loss-like parameters, and numeric pressure-drop sum `193.936 Pa`.

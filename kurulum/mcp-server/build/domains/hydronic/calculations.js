@@ -129,6 +129,165 @@ export function sizePipeByVelocityOrFriction({
     };
 }
 
+export function buildHydronicPipeResizeProposal({
+    pipeSamples = [],
+    designFlowsByElementId = {},
+    defaultFlowLs,
+    maxVelocityMps,
+    maxPressureLossPaPerM,
+    diametersMm = defaultPipeDiametersMm,
+    water,
+    localLossExtraction,
+    localLossPressurePa,
+    criticalPathLocalLossComplete = false,
+    targetElementIds = [],
+} = {}) {
+    const missingStandards = [];
+    if (!isFinitePositive(maxVelocityMps)) missingStandards.push("hydronic.pipeVelocityLimitsMps");
+    if (!isFinitePositive(maxPressureLossPaPerM)) missingStandards.push("hydronic.pipeFrictionLimitPaPerM");
+    if (missingStandards.length > 0) {
+        return {
+            success: false,
+            status: "blocked_missing_office_standard",
+            requiresOfficeStandard: true,
+            missingStandards,
+            rows: [],
+            writePlanSteps: [],
+            canCommit: false,
+            riskLevel: "high",
+        };
+    }
+
+    const localLossContext = criticalPathLocalLossContext({
+        localLossExtraction,
+        localLossPressurePa,
+        criticalPathLocalLossComplete,
+    });
+    const warnings = [...localLossContext.warnings];
+    const targetSet = numericSet(targetElementIds);
+    const rows = [];
+    const writePlanSteps = [];
+    let skippedNoFlowCount = 0;
+    let skippedNoSizeCount = 0;
+
+    for (const sample of Array.isArray(pipeSamples) ? pipeSamples : []) {
+        const elementId = positiveInteger(sample?.elementId);
+        if (targetSet.size > 0 && (!elementId || !targetSet.has(elementId))) continue;
+        const flowLs = flowForElement({ sample, designFlowsByElementId, defaultFlowLs });
+        if (!isFinitePositive(flowLs)) {
+            skippedNoFlowCount++;
+            continue;
+        }
+        const currentDiameterMm = Number(sample?.diameterMm);
+        const lengthM = Number(sample?.lengthM);
+        const sizing = sizePipeByVelocityOrFriction({
+            flowLs,
+            maxVelocityMps,
+            maxPressureLossPaPerM,
+            diametersMm,
+            water,
+        });
+        if (!sizing.success || !sizing.selected) {
+            skippedNoSizeCount++;
+            continue;
+        }
+        const currentFriction = isFinitePositive(currentDiameterMm)
+            ? pipeFrictionLossPaPerM(flowLs, currentDiameterMm, water)
+            : null;
+        const selected = sizing.selected;
+        const selectedLinearPressureLossPa = Number.isFinite(lengthM) && lengthM > 0
+            ? selected.pressureLossPaPerM * lengthM
+            : null;
+        const currentLinearPressureLossPa = currentFriction?.success && Number.isFinite(lengthM) && lengthM > 0
+            ? currentFriction.output.pressureLossPaPerM * lengthM
+            : null;
+        const resizeRequired = isFinitePositive(currentDiameterMm)
+            ? Math.abs(Number(selected.diameterMm) - currentDiameterMm) > 1e-6
+            : true;
+        const row = {
+            rowType: "hydronic_pipe_sizing_proposal",
+            elementId,
+            uniqueId: sample?.uniqueId || "",
+            systemName: sample?.systemName || "(unassigned)",
+            lengthM: Number.isFinite(lengthM) ? lengthM : null,
+            designFlowLs: Number(flowLs),
+            currentDiameterMm: Number.isFinite(currentDiameterMm) ? currentDiameterMm : null,
+            selectedDiameterMm: selected.diameterMm,
+            currentVelocityMps: currentFriction?.success ? currentFriction.output.velocityMps : null,
+            selectedVelocityMps: selected.velocityMps,
+            currentPressureLossPaPerM: currentFriction?.success ? currentFriction.output.pressureLossPaPerM : null,
+            selectedPressureLossPaPerM: selected.pressureLossPaPerM,
+            currentLinearPressureLossPa,
+            selectedLinearPressureLossPa,
+            criticalPathLocalLossPressurePa: localLossContext.pressurePa,
+            localLossDatasetComplete: localLossContext.complete,
+            resizeRequired,
+            status: localLossContext.complete ? "proposal_ready_for_review" : "needs_complete_critical_path_local_loss",
+            source: "pipeSamples + designFlowsByElementId/defaultFlowLs",
+            canCommit: false,
+        };
+        rows.push(row);
+        if (resizeRequired && elementId) {
+            writePlanSteps.push({
+                stepId: `resize-pipe-${elementId}`,
+                operation: "resize_pipe",
+                dependsOn: [],
+                targets: { elementId },
+                arguments: {
+                    diameter: selected.diameterMm,
+                    unit: "mm",
+                },
+                preconditions: [
+                    `Design flow confirmed at ${round(flowLs, 3)} L/s.`,
+                    `Velocity limit ${round(maxVelocityMps, 3)} m/s and friction limit ${round(maxPressureLossPaPerM, 3)} Pa/m applied.`,
+                    localLossContext.complete
+                        ? "Critical-circuit local-loss dataset is targeted and pressure-checked."
+                        : "Complete critical-circuit local-loss dataset must be confirmed before commit.",
+                ],
+                riskLevel: "medium",
+            });
+        }
+    }
+
+    if (rows.length === 0 && targetSet.size > 0) {
+        warnings.push("No pipe resistance samples matched the requested hydronic pipe sizing target element ids.");
+    }
+    if (skippedNoFlowCount > 0) {
+        warnings.push(`Skipped ${skippedNoFlowCount} pipe sample(s) without a design flow.`);
+    }
+    if (skippedNoSizeCount > 0) {
+        warnings.push(`Skipped ${skippedNoSizeCount} pipe sample(s) with no configured diameter satisfying velocity/friction limits.`);
+    }
+
+    return {
+        success: rows.length > 0,
+        method: "Hydronic pipe resize proposal from live pipe samples, design flow, office velocity/friction limits, and critical-circuit local-loss context",
+        status: rows.length === 0
+            ? "blocked_no_sizable_pipe_samples"
+            : localLossContext.complete
+                ? "proposal_ready_for_review"
+                : "needs_complete_critical_path_local_loss",
+        assumptions: [
+            "Pipe samples are read-only Revit length/diameter observations; design flows must be supplied or explicitly defaulted.",
+            "Local-loss pressure is treated as critical-circuit context, not silently distributed across pipe segments.",
+            "Generated resize_pipe steps are proposals only and remain canCommit=false until the engineer approves a write plan.",
+        ],
+        input: {
+            sampleCount: Array.isArray(pipeSamples) ? pipeSamples.length : 0,
+            targetElementIds: [...targetSet],
+            defaultFlowLs: isFinitePositive(defaultFlowLs) ? Number(defaultFlowLs) : null,
+            maxVelocityMps: Number(maxVelocityMps),
+            maxPressureLossPaPerM: Number(maxPressureLossPaPerM),
+        },
+        localLossContext,
+        rows,
+        writePlanSteps,
+        warnings,
+        canCommit: false,
+        riskLevel: "high",
+    };
+}
+
 export function calculatePumpHeadBasis({
     network,
     equipmentLossKPa = 0,
@@ -611,6 +770,100 @@ function signedHeadLoss(flow, resistance, exponent) {
     const q = Number(flow);
     if (!Number.isFinite(q) || q === 0) return 0;
     return Math.sign(q) * Number(resistance) * Math.pow(Math.abs(q), exponent);
+}
+
+function criticalPathLocalLossContext({ localLossExtraction, localLossPressurePa, criticalPathLocalLossComplete }) {
+    const warnings = [];
+    if (localLossExtraction) {
+        const pressurePa = finiteOrZero(
+            localLossExtraction.pressureContribution?.totalPressureDropPa ??
+            localLossExtraction.totalPressureDropPa
+        );
+        const targeted = localLossExtraction.targetedByCriticalPath === true ||
+            localLossExtraction.criticalPathSelection?.success === true;
+        const consistent = localLossExtraction.selectedPathPressureCheck?.consistent !== false;
+        const extractionWarnings = Array.isArray(localLossExtraction.warnings)
+            ? localLossExtraction.warnings.map(String)
+            : [];
+        const truncated = extractionWarnings.some((warning) => /truncated|uninspected/i.test(warning));
+        if (!targeted) warnings.push("Critical-circuit local-loss extraction is not tied to a selected connector path.");
+        if (!consistent) warnings.push("Critical-circuit local-loss pressure check is inconsistent.");
+        if (truncated) warnings.push("Critical-circuit local-loss extraction was truncated or incomplete.");
+        return {
+            source: "localLossExtraction.pressureContribution.totalPressureDropPa",
+            pressurePa,
+            pressureKPa: pressurePa / 1000.0,
+            targetedByCriticalPath: targeted,
+            pressureCheckConsistent: consistent,
+            complete: targeted && consistent && !truncated,
+            warnings,
+            canCommit: false,
+        };
+    }
+    if (Number.isFinite(Number(localLossPressurePa))) {
+        const pressurePa = Math.max(0, Number(localLossPressurePa));
+        if (criticalPathLocalLossComplete !== true) {
+            warnings.push("Critical-circuit local-loss pressure was supplied directly but not marked as a complete targeted dataset.");
+        }
+        return {
+            source: "criticalPathLocalLossPressurePa",
+            pressurePa,
+            pressureKPa: pressurePa / 1000.0,
+            targetedByCriticalPath: Boolean(criticalPathLocalLossComplete),
+            pressureCheckConsistent: Boolean(criticalPathLocalLossComplete),
+            complete: Boolean(criticalPathLocalLossComplete),
+            warnings,
+            canCommit: false,
+        };
+    }
+    warnings.push("Complete critical-circuit local-loss pressure dataset is required before production final sizing.");
+    return {
+        source: "none",
+        pressurePa: 0,
+        pressureKPa: 0,
+        targetedByCriticalPath: false,
+        pressureCheckConsistent: false,
+        complete: false,
+        warnings,
+        canCommit: false,
+    };
+}
+
+function flowForElement({ sample, designFlowsByElementId, defaultFlowLs }) {
+    const elementId = sample?.elementId;
+    const candidates = [
+        designFlowsByElementId?.[elementId],
+        designFlowsByElementId?.[String(elementId)],
+        sample?.designFlowLs,
+        defaultFlowLs,
+    ];
+    for (const candidate of candidates) {
+        if (isFinitePositive(candidate)) return Number(candidate);
+    }
+    return null;
+}
+
+function numericSet(values) {
+    const result = new Set();
+    for (const value of Array.isArray(values) ? values : []) {
+        const numeric = positiveInteger(value);
+        if (numeric) result.add(numeric);
+    }
+    return result;
+}
+
+function positiveInteger(value) {
+    const numeric = Number.parseInt(String(value), 10);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function finiteOrZero(value) {
+    return Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+}
+
+function round(value, decimals) {
+    const factor = Math.pow(10, decimals);
+    return Math.round(Number(value) * factor) / factor;
 }
 
 function isFinitePositive(value) {
