@@ -4,6 +4,7 @@ import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic
 import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
 import { connectorPathElementIds, selectCriticalConnectorPath, summarizeLocalLossSamples } from "./local-losses/calculations.js";
+import { readPathTargetedLocalLosses } from "./local-losses/path-targeting.js";
 import { buildLocalLossOnlyCode } from "./local-losses/revit-read.js";
 import { calculateSlopePercent, validateGravitySlope } from "./sanitary-storm/calculations.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
@@ -239,6 +240,71 @@ const pressureCriticalPathSelection = selectCriticalConnectorPath({
 assert.equal(pressureCriticalPathSelection.strategy, "max_local_loss_pressure_drop");
 assert.equal(pressureCriticalPathSelection.selectedTerminalElementId, 402);
 assert.equal(pressureCriticalPathSelection.selectedTotalPressureDropPa, 125);
+const pathTargetingCalls = [];
+const pathTargetingResult = await readPathTargetedLocalLosses({
+    pathCode: "pathfinding-code",
+    categories: ["OST_DuctFitting"],
+    sampleLimit: 2,
+    executeRevitCode: async (code, options) => {
+        pathTargetingCalls.push({ code, options });
+        if (pathTargetingCalls.length === 1) {
+            return {
+                result: {
+                    connectorPathfinding: {
+                        terminalPaths: [
+                            { elementId: 501, reachable: true, hopCount: 5, pathElementIds: [10, 51, 52, 53, 54, 501] },
+                            { elementId: 502, reachable: true, hopCount: 2, pathElementIds: [10, 60, 502] },
+                        ],
+                    },
+                },
+            };
+        }
+        if (pathTargetingCalls.length === 2) {
+            assert(pathTargetingCalls[1].code.includes("int[] targetElementIds = new int[] { 10, 51, 52, 53, 54, 501, 60, 502 }"));
+            assert(pathTargetingCalls[1].code.includes("int sampleLimit = 8;"));
+            return {
+                result: {
+                    localLossSamples: [
+                        {
+                            elementId: 60,
+                            lossParameters: [
+                                { valueKind: "pressure_drop_pa", numericValue: 75 },
+                            ],
+                        },
+                    ],
+                },
+            };
+        }
+        assert(pathTargetingCalls[2].code.includes("int[] targetElementIds = new int[] { 10, 60, 502 }"));
+        assert(pathTargetingCalls[2].code.includes("int sampleLimit = 3;"));
+        return {
+            result: {
+                localLossSamples: [
+                    {
+                        elementId: 60,
+                        category: "Duct Fittings",
+                        systemName: "Supply",
+                        lossParameters: [
+                            { valueKind: "pressure_drop_pa", numericValue: 75 },
+                        ],
+                    },
+                ],
+            },
+        };
+    },
+});
+assert.equal(pathTargetingCalls.length, 3);
+assert.equal(pathTargetingCalls[0].code, "pathfinding-code");
+assert.deepEqual(pathTargetingCalls.map((call) => call.options), [
+    { transactionMode: "none" },
+    { transactionMode: "none" },
+    { transactionMode: "none" },
+]);
+assert.deepEqual(pathTargetingResult.candidateTargetElementIds, [10, 51, 52, 53, 54, 501, 60, 502]);
+assert.equal(pathTargetingResult.criticalPathSelection.strategy, "max_local_loss_pressure_drop");
+assert.equal(pathTargetingResult.criticalPathSelection.selectedTerminalElementId, 502);
+assert.deepEqual(pathTargetingResult.targetElementIds, [10, 60, 502]);
+assert.equal(pathTargetingResult.localLossSamples[0].elementId, 60);
 
 const targetedLocalLossCode = buildLocalLossOnlyCode({
     categories: ["OST_DuctFitting"],

@@ -63,6 +63,7 @@
 - Added local-loss pressure summary rows and explicit fan/pump basis contribution from numeric local-loss pressure drops; live probe carried HVAC `0.903 Pa` into fan pressure basis and hydronic `8.926 kPa` into pump head basis.
 - Added `localLossElementIds` targeted extraction input for known critical-path/circuit element sets; direct live targeted probe confirmed HVAC fitting `392203` and hydronic fitting `513769` pressure-drop values.
 - Added `localLossFromNetworkPath` critical-path targeting foundation: the runtime reads all reachable connector path candidates, ranks by explicit local-loss pressure drop when numeric loss samples are available, falls back to maximum hop count otherwise, then re-runs local-loss extraction only against the selected path's element ids. Live Revit evidence used path `392199 -> 392203 -> 392200`, selected terminal `392200`, skipped the two duct targets, sampled fitting `392203`, and carried `0.903187266396887 Pa` from `Pressure Drop`.
+- Consolidated the path-targeted local-loss workflow into a shared two-stage helper and added fake-executor test coverage for pathfinding read, candidate ranking read, and selected-path final read.
 - Live-tested approved equipment schedule note execution on Mechanical Equipment `386031` through native preview/commit/verify/readback.
 - Added native `create_schedule_or_update_schedule`, runtime validation/risk coverage, and live-tested approved schedule creation in the disposable model:
   - Schedule `Codex MEP Equipment Schedule 2026-05-05`
