@@ -161,6 +161,32 @@ const invalidCopyValidation = validateWritePlan(invalidCopyPlan, { mode: "commit
 assert.equal(invalidCopyValidation.valid, false);
 assert(invalidCopyValidation.errors.includes("steps[0].arguments.vector is required"));
 
+const rotatePlan = buildPlanFromArgs({
+    title: "Rotate disposable model elements",
+    discipline: "general",
+    operation: "rotate_elements",
+    targets: { elementIds: [401] },
+    arguments: {
+        axis: { start: { x: 0, y: 0, z: 0 }, end: { x: 0, y: 0, z: 1 } },
+        angleDegrees: 90,
+        unit: "m",
+    },
+});
+const rotateValidation = validateWritePlan(rotatePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(rotateValidation.valid, true);
+assert.equal(classifyPlanRisk(rotatePlan), "medium");
+
+const invalidRotatePlan = buildPlanFromArgs({
+    title: "Reject rotate without axis",
+    discipline: "general",
+    operation: "rotate_elements",
+    targets: { elementIds: [401] },
+    arguments: { angleDegrees: 90 },
+});
+const invalidRotateValidation = validateWritePlan(invalidRotatePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidRotateValidation.valid, false);
+assert(invalidRotateValidation.errors.includes("steps[0].arguments.axis.start/end is required"));
+
 const reroutePlan = buildPlanFromArgs({
     title: "Commit explicit reroute geometry",
     discipline: "clash",

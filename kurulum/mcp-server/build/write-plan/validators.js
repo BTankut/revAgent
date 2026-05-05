@@ -139,8 +139,13 @@ function validateOperationPayload(step, prefix, errors, warnings) {
         case "view_apply_overrides":
         case "move_elements":
         case "copy_elements":
+        case "rotate_elements":
             if (!hasAnyTargetElements(targets)) errors.push(`${prefix}.targets.elementIds or elementId is required`);
             if ((step.operation === "move_elements" || step.operation === "copy_elements") && !args.vector) errors.push(`${prefix}.arguments.vector is required`);
+            if (step.operation === "rotate_elements") {
+                if (!args.axis?.start || !args.axis?.end) errors.push(`${prefix}.arguments.axis.start/end is required`);
+                if (args.angle == null && args.angleRadians == null && args.angleDegrees == null) errors.push(`${prefix}.arguments.angleRadians or angleDegrees is required`);
+            }
             break;
         case "place_family_instance":
             if (!args.point) errors.push(`${prefix}.arguments.point is required`);

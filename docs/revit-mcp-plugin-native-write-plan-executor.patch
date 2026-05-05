@@ -1,7 +1,7 @@
 From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 01/12] Add native write-plan executor
+Subject: [PATCH 01/13] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 02/12] Expand write-plan verification readback
+Subject: [PATCH 02/13] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 03/12] Fix write-plan command SDK compatibility
+Subject: [PATCH 03/13] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 04/12] Add native schedule write-plan operation
+Subject: [PATCH 04/13] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 05/12] Add native reroute commit verification
+Subject: [PATCH 05/13] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2367,7 +2367,7 @@ index 31c47a5..0b76d2e 100644
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 06/12] Verify reroute obstacle clearance
+Subject: [PATCH 06/13] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2548,7 +2548,7 @@ index ba849b9..91431bb 100644
 From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:11:18 +0300
-Subject: [PATCH 07/12] Support reroute source replacement
+Subject: [PATCH 07/13] Support reroute source replacement
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
@@ -2664,7 +2664,7 @@ index 91431bb..f346aca 100644
 From 6be1a8b287fb9d41bf5ee96c449eab360ced9f75 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:24:33 +0300
-Subject: [PATCH 08/12] Reconnect reroute replacement endpoints
+Subject: [PATCH 08/13] Reconnect reroute replacement endpoints
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 445 +++++++++++++++++-
@@ -3248,7 +3248,7 @@ index f346aca..f230ebf 100644
 From 0b3c09ff5eb9c55916f46cbaa5829e241542ecd7 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:59:59 +0300
-Subject: [PATCH 09/12] Report reroute fitting references
+Subject: [PATCH 09/13] Report reroute fitting references
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 58 +++++++++++++++++--
@@ -3357,7 +3357,7 @@ index 9c3c4e0..08ab8e9 100644
 From 4d1672f96c751579511eb03c46bd5ae8166a61d9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:12:20 +0300
-Subject: [PATCH 10/12] Add native pin element operations
+Subject: [PATCH 10/13] Add native pin element operations
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 24 ++++++++++++++
@@ -3512,7 +3512,7 @@ index 0b76d2e..7b69f41 100644
 From 57644057abdf3023af59358e5940af51c04fc41e Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:27:07 +0300
-Subject: [PATCH 11/12] Add native delete element operation
+Subject: [PATCH 11/13] Add native delete element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 30 +++++++++++++++++++
@@ -3650,7 +3650,7 @@ index 7b69f41..af2da46 100644
 From a4b7f6f034cbb18e6f29596db615a12f9042d9d4 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:34:06 +0300
-Subject: [PATCH 12/12] Add native copy element operation
+Subject: [PATCH 12/13] Add native copy element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  38 +++++
@@ -3911,6 +3911,238 @@ index af2da46..1b22f12 100644
          private static View ResolveView(Document document, JObject step)
          {
              JObject args = step["arguments"] as JObject ?? new JObject();
+--
+2.50.1.windows.1
+
+
+From cac42e1db4d4cdb868a2b4bb6b79e2ba9e243621 Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 11:42:35 +0300
+Subject: [PATCH 13/13] Add native rotate element operation
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 54 +++++++++++++
+ .../Validators/WritePlanValidator.cs          | 13 ++++
+ .../Verification/WritePlanVerifier.cs         | 75 +++++++++++++++++++
+ 3 files changed, 142 insertions(+)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index f23843d..e70210a 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -180,6 +180,12 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 row["targetElementCount"] = GetTargetElementIds(step).Count;
+                 row["vector"] = args["vector"] != null ? args["vector"].DeepClone() : null;
+             }
++            else if (operation == "rotate_elements")
++            {
++                row["targetElementCount"] = GetTargetElementIds(step).Count;
++                row["axis"] = args["axis"] != null ? args["axis"].DeepClone() : null;
++                row["angleRadians"] = AngleRadians(args);
++            }
+             else
+             {
+                 row["arguments"] = args.DeepClone();
+@@ -346,6 +352,8 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 MoveElements(document, step, result);
+             else if (operation == "copy_elements")
+                 CopyElements(document, step, eIdMap, mappings, result);
++            else if (operation == "rotate_elements")
++                RotateElements(document, step, result);
+             else if (operation == "create_duct_run")
+                 CreateDuctRun(document, step, eIdMap, mappings, result);
+             else if (operation == "resize_duct")
+@@ -526,6 +534,25 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             result["copiedElementCount"] = copied.Count;
+         }
+
++        private static void RotateElements(Document document, JObject step, JObject result)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            Line axis = AxisLine(args);
++            double angle = AngleRadians(args);
++            ICollection<ElementId> ids = GetTargetElementIds(step);
++            if (ids.Count == 0)
++                throw new InvalidOperationException("No target element ids supplied.");
++            foreach (ElementId id in ids)
++            {
++                Element elem = document.GetElement(id);
++                if (elem == null)
++                    throw new InvalidOperationException("Target element not found: " + id.IntegerValue.ToString(CultureInfo.InvariantCulture));
++            }
++            ElementTransformUtils.RotateElements(document, ids, axis, angle);
++            result["rotatedElementCount"] = ids.Count;
++            result["rotationAngleRadians"] = angle;
++        }
++
+         private static List<ElementId> CreateDuctRun(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
+         {
+             List<ElementId> createdIds = new List<ElementId>();
+@@ -1060,6 +1087,33 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 ConvertToInternal(DoubleValue(obj["z"]), unit));
+         }
+
++        private static Line AxisLine(JObject args)
++        {
++            JObject axis = args["axis"] as JObject;
++            if (axis == null)
++                throw new InvalidOperationException("arguments.axis is required.");
++            XYZ start = PointValue(axis["start"] as JObject, StringValue(args, "unit"));
++            XYZ end = PointValue(axis["end"] as JObject, StringValue(args, "unit"));
++            if (start.DistanceTo(end) <= 0.000001)
++                throw new InvalidOperationException("arguments.axis.start and axis.end must be distinct points.");
++            return Line.CreateBound(start, end);
++        }
++
++        private static double AngleRadians(JObject args)
++        {
++            if (args["angleRadians"] != null)
++                return DoubleValue(args["angleRadians"]);
++            if (args["radians"] != null)
++                return DoubleValue(args["radians"]);
++            if (args["angleDegrees"] != null)
++                return DoubleValue(args["angleDegrees"]) * Math.PI / 180.0;
++            if (args["degrees"] != null)
++                return DoubleValue(args["degrees"]) * Math.PI / 180.0;
++            string unit = StringValue(args, "angleUnit").Trim().ToLowerInvariant();
++            double angle = DoubleValue(args["angle"]);
++            return unit == "degrees" || unit == "degree" || unit == "deg" ? angle * Math.PI / 180.0 : angle;
++        }
++
+         private static double PolylineLength(JArray points, string unit)
+         {
+             double total = 0.0;
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index 1039060..4b436a4 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -20,6 +20,7 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+             "unpin_elements",
+             "delete_elements",
+             "copy_elements",
++            "rotate_elements",
+             "view_hide_elements",
+             "view_unhide_elements",
+             "view_apply_overrides",
+@@ -148,6 +149,18 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 if (!(args["vector"] is JObject))
+                     errors.Add("steps[" + index + "].arguments.vector is required");
+             }
++            if (operation == "rotate_elements")
++            {
++                JObject targets = step["targets"] as JObject;
++                JObject args = step["arguments"] as JObject ?? new JObject();
++                JObject axis = args["axis"] as JObject;
++                if (!HasTargetElement(targets))
++                    errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
++                if (axis == null || !(axis["start"] is JObject) || !(axis["end"] is JObject))
++                    errors.Add("steps[" + index + "].arguments.axis.start/end is required");
++                if (args["angle"] == null && args["angleRadians"] == null && args["angleDegrees"] == null)
++                    errors.Add("steps[" + index + "].arguments.angleRadians or angleDegrees is required");
++            }
+         }
+
+         private static void ValidateSchedulePayload(JObject step, int index, JArray errors, JArray warnings)
+diff --git a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+index 1b22f12..ea6fddd 100644
+--- a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
++++ b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+@@ -63,6 +63,8 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+                 return VerifyDeleted(document, step);
+             if (operation == "copy_elements")
+                 return VerifyCopied(document, step);
++            if (operation == "rotate_elements")
++                return VerifyRotated(document, step);
+             if (operation == "resize_duct" || operation == "resize_pipe")
+                 return VerifyResize(document, step, operation);
+             if (operation == "view_hide_elements")
+@@ -276,6 +278,47 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             };
+         }
+
++        private static JObject VerifyRotated(Document document, JObject step)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            JArray expectedCurves = args["expectedLocationCurves"] as JArray;
++            JArray rows = new JArray();
++            bool ok = true;
++            int index = 0;
++            foreach (ElementId id in TargetElementIds(step))
++            {
++                Element elem = document.GetElement(id);
++                JObject expected = ExpectedCurveForElement(expectedCurves, id, index);
++                bool exists = elem != null;
++                bool geometryChecked = false;
++                bool geometryMatches = true;
++                if (exists && expected != null)
++                {
++                    geometryChecked = TryVerifyLocationCurve(elem, expected, WritePlanExecutor.StringValue(args, "unit"), out geometryMatches);
++                    if (geometryChecked && !geometryMatches)
++                        ok = false;
++                }
++                if (!exists)
++                    ok = false;
++                rows.Add(new JObject
++                {
++                    ["elementId"] = id.IntegerValue,
++                    ["exists"] = exists,
++                    ["geometryChecked"] = geometryChecked,
++                    ["locationCurveMatches"] = geometryMatches
++                });
++                index++;
++            }
++            return new JObject
++            {
++                ["success"] = ok,
++                ["stepId"] = WritePlanExecutor.StringValue(step, "stepId"),
++                ["operation"] = "rotate_elements",
++                ["checks"] = rows,
++                ["message"] = ok ? "verified" : "rotated elements are missing or do not match expected location curves"
++            };
++        }
++
+         private static bool VerifyDoubleParameter(Element elem, string parameterName, JToken expectedToken, string unit, JArray checks)
+         {
+             Parameter p = elem != null ? elem.LookupParameter(parameterName) : null;
+@@ -391,6 +434,38 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             return false;
+         }
+
++        private static JObject ExpectedCurveForElement(JArray expectedCurves, ElementId id, int index)
++        {
++            if (expectedCurves == null)
++                return null;
++            foreach (JToken token in expectedCurves)
++            {
++                JObject obj = token as JObject;
++                if (obj != null && obj["elementId"] != null && IntValue(obj["elementId"]) == id.IntegerValue)
++                    return obj;
++            }
++            return index >= 0 && index < expectedCurves.Count ? expectedCurves[index] as JObject : null;
++        }
++
++        private static bool TryVerifyLocationCurve(Element elem, JObject expected, string unit, out bool matches)
++        {
++            const double tolerance = 0.001;
++            matches = true;
++            LocationCurve location = elem.Location as LocationCurve;
++            if (location == null || location.Curve == null)
++                return false;
++            XYZ expectedStart = PointValue(expected["start"] as JObject, unit);
++            XYZ expectedEnd = PointValue(expected["end"] as JObject, unit);
++            if (expectedStart == null || expectedEnd == null)
++                return false;
++            XYZ actualStart = location.Curve.GetEndPoint(0);
++            XYZ actualEnd = location.Curve.GetEndPoint(1);
++            bool forward = expectedStart.DistanceTo(actualStart) <= tolerance && expectedEnd.DistanceTo(actualEnd) <= tolerance;
++            bool reverse = expectedStart.DistanceTo(actualEnd) <= tolerance && expectedEnd.DistanceTo(actualStart) <= tolerance;
++            matches = forward || reverse;
++            return true;
++        }
++
+         private static XYZ PointValue(JObject obj, string unit)
+         {
+             if (obj == null)
 --
 2.50.1.windows.1
 
