@@ -1,7 +1,7 @@
 From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 01/19] Add native write-plan executor
+Subject: [PATCH 01/20] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 02/19] Expand write-plan verification readback
+Subject: [PATCH 02/20] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 03/19] Fix write-plan command SDK compatibility
+Subject: [PATCH 03/20] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 04/19] Add native schedule write-plan operation
+Subject: [PATCH 04/20] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 05/19] Add native reroute commit verification
+Subject: [PATCH 05/20] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2367,7 +2367,7 @@ index 31c47a5..0b76d2e 100644
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 06/19] Verify reroute obstacle clearance
+Subject: [PATCH 06/20] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2548,7 +2548,7 @@ index ba849b9..91431bb 100644
 From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:11:18 +0300
-Subject: [PATCH 07/19] Support reroute source replacement
+Subject: [PATCH 07/20] Support reroute source replacement
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
@@ -2664,7 +2664,7 @@ index 91431bb..f346aca 100644
 From 6be1a8b287fb9d41bf5ee96c449eab360ced9f75 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:24:33 +0300
-Subject: [PATCH 08/19] Reconnect reroute replacement endpoints
+Subject: [PATCH 08/20] Reconnect reroute replacement endpoints
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 445 +++++++++++++++++-
@@ -3248,7 +3248,7 @@ index f346aca..f230ebf 100644
 From 0b3c09ff5eb9c55916f46cbaa5829e241542ecd7 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:59:59 +0300
-Subject: [PATCH 09/19] Report reroute fitting references
+Subject: [PATCH 09/20] Report reroute fitting references
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 58 +++++++++++++++++--
@@ -3357,7 +3357,7 @@ index 9c3c4e0..08ab8e9 100644
 From 4d1672f96c751579511eb03c46bd5ae8166a61d9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:12:20 +0300
-Subject: [PATCH 10/19] Add native pin element operations
+Subject: [PATCH 10/20] Add native pin element operations
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 24 ++++++++++++++
@@ -3512,7 +3512,7 @@ index 0b76d2e..7b69f41 100644
 From 57644057abdf3023af59358e5940af51c04fc41e Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:27:07 +0300
-Subject: [PATCH 11/19] Add native delete element operation
+Subject: [PATCH 11/20] Add native delete element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 30 +++++++++++++++++++
@@ -3650,7 +3650,7 @@ index 7b69f41..af2da46 100644
 From a4b7f6f034cbb18e6f29596db615a12f9042d9d4 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:34:06 +0300
-Subject: [PATCH 12/19] Add native copy element operation
+Subject: [PATCH 12/20] Add native copy element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  38 +++++
@@ -3918,7 +3918,7 @@ index af2da46..1b22f12 100644
 From cac42e1db4d4cdb868a2b4bb6b79e2ba9e243621 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:42:35 +0300
-Subject: [PATCH 13/19] Add native rotate element operation
+Subject: [PATCH 13/20] Add native rotate element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 54 +++++++++++++
@@ -4150,7 +4150,7 @@ index 1b22f12..ea6fddd 100644
 From 4330cdc41a7b370cb9f325e7d292b64e2c4155e1 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:54:41 +0300
-Subject: [PATCH 14/19] Add native align element operation
+Subject: [PATCH 14/20] Add native align element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 83 +++++++++++++++++++
@@ -4418,7 +4418,7 @@ index ea6fddd..fec394e 100644
 From ff7a4e1ea1f0d321b21b08408805fc3092d2ce5c Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:08:09 +0300
-Subject: [PATCH 15/19] Add native tag element operation
+Subject: [PATCH 15/20] Add native tag element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 80 +++++++++++++++++++
@@ -4683,7 +4683,7 @@ index fec394e..f31f5eb 100644
 From 2d2169d8cee9ac46d6b8ffc8acdc65769f6a662b Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:19:18 +0300
-Subject: [PATCH 16/19] Verify native view override operation
+Subject: [PATCH 16/20] Verify native view override operation
 
 ---
  .../Validators/WritePlanValidator.cs          |  9 ++
@@ -4840,7 +4840,7 @@ index f31f5eb..90697b7 100644
 From 9064ea3aa975c607d4b58b623c902d4f03a9f11b Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:33:59 +0300
-Subject: [PATCH 17/19] Validate direct duct and pipe run creation
+Subject: [PATCH 17/20] Validate direct duct and pipe run creation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  4 +--
@@ -4920,7 +4920,7 @@ index d938965..92711fa 100644
 From bf0a7f324670da04947151d02246b927519356ca Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 13:01:26 +0300
-Subject: [PATCH 18/19] Verify copied parameter values in write plans
+Subject: [PATCH 18/20] Verify copied parameter values in write plans
 
 ---
  .../Validators/WritePlanValidator.cs          | 70 +++++++++++++++++++
@@ -5097,7 +5097,7 @@ index 90697b7..4814466 100644
 From 750a33290d25f7613fa65693562c1a1093a657fc Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 13:12:40 +0300
-Subject: [PATCH 19/19] Verify move and placement write-plan operations
+Subject: [PATCH 19/20] Verify move and placement write-plan operations
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  45 ++++++-
@@ -5321,6 +5321,140 @@ index 4814466..1f164aa 100644
              return ids;
          }
  
+-- 
+2.50.1.windows.1
+
+
+From 32149b97ab61c6c7ae7296f113bfab9b7ec586c6 Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 16:20:21 +0300
+Subject: [PATCH 20/20] Gate reroute fitting expectations
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 47 ++++++++++++++++++-
+ .../Validators/WritePlanValidator.cs          |  4 ++
+ 2 files changed, 49 insertions(+), 2 deletions(-)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index adaa763..0b5f4f4 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -1446,21 +1446,31 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+ 
+             int expectedSegmentConnections = connectSegments ? Math.Max(0, createdIds.Count - 1) : 0;
+             int expectedSourceConnections = ExpectedSourceConnectionCount(step, args, sourceConnections.Count);
++            JArray routeFittingRefs = new JArray();
++            int routeFittingRefCount = CountRouteFittingRefs(document, createdIds, RouteOwnerIds(createdIds), routeFittingRefs);
++            int expectedRouteFittingCount = ExpectedRouteFittingCount(args, createdIds.Count);
++            bool routeFittingRequirementActive = RerouteRouteFittingsRequired(args) || expectedRouteFittingCount >= 0;
+             bool segmentOk = !connectSegments || segmentConnectionCount >= expectedSegmentConnections;
+             bool sourceOk = !reconnectSource || sourceConnectionCount >= expectedSourceConnections;
++            bool routeFittingOk = !routeFittingRequirementActive || routeFittingRefCount >= Math.Max(0, expectedRouteFittingCount);
+             return new JObject
+             {
+-                ["success"] = segmentOk && sourceOk && failures.Count == 0,
++                ["success"] = segmentOk && sourceOk && routeFittingOk && failures.Count == 0,
+                 ["requested"] = true,
+                 ["connectSegments"] = connectSegments,
+                 ["reconnectSource"] = reconnectSource,
++                ["requireRouteFittings"] = routeFittingRequirementActive,
+                 ["expectedSegmentConnectionCount"] = expectedSegmentConnections,
+                 ["segmentConnectionCount"] = segmentConnectionCount,
+                 ["expectedSourceConnectionCount"] = expectedSourceConnections,
+                 ["sourceConnectionSnapshotCount"] = sourceConnections.Count,
+                 ["sourceConnectionCount"] = sourceConnectionCount,
++                ["expectedRouteFittingCount"] = expectedRouteFittingCount,
++                ["routeFittingRefCount"] = routeFittingRefCount,
++                ["routeFittingOk"] = routeFittingOk,
+                 ["segmentChecks"] = segmentChecks,
+                 ["sourceChecks"] = sourceChecks,
++                ["routeFittingRefs"] = routeFittingRefs,
+                 ["failures"] = failures
+             };
+         }
+@@ -1550,19 +1560,25 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+ 
+             int expectedSegmentConnections = connectSegments ? Math.Max(0, routeIds.Count - 1) : 0;
+             int expectedSourceConnections = ExpectedSourceConnectionCount(step, args, -1);
++            int expectedRouteFittingCount = ExpectedRouteFittingCount(args, routeIds.Count);
++            bool routeFittingRequirementActive = RerouteRouteFittingsRequired(args) || expectedRouteFittingCount >= 0;
+             bool segmentOk = !connectSegments || segmentConnectionCount >= expectedSegmentConnections;
+             bool sourceOk = !reconnectSource || expectedSourceConnections < 0 || externalConnectionCount >= expectedSourceConnections;
++            bool routeFittingOk = !routeFittingRequirementActive || routeFittingRefCount >= Math.Max(0, expectedRouteFittingCount);
+             return new JObject
+             {
+-                ["success"] = segmentOk && sourceOk,
++                ["success"] = segmentOk && sourceOk && routeFittingOk,
+                 ["requested"] = true,
+                 ["connectSegments"] = connectSegments,
+                 ["reconnectSource"] = reconnectSource,
++                ["requireRouteFittings"] = routeFittingRequirementActive,
+                 ["expectedSegmentConnectionCount"] = expectedSegmentConnections,
+                 ["segmentConnectionCount"] = segmentConnectionCount,
+                 ["expectedSourceConnectionCount"] = expectedSourceConnections,
+                 ["externalConnectionCount"] = externalConnectionCount,
++                ["expectedRouteFittingCount"] = expectedRouteFittingCount,
+                 ["routeFittingRefCount"] = routeFittingRefCount,
++                ["routeFittingOk"] = routeFittingOk,
+                 ["segmentChecks"] = segmentChecks,
+                 ["externalRefs"] = externalRefs,
+                 ["routeFittingRefs"] = routeFittingRefs
+@@ -1685,6 +1701,22 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return BoolValue(args["reconnect"], false) || BoolValue(args["reconnectSource"], false);
+         }
+ 
++        private static bool RerouteRouteFittingsRequired(JObject args)
++        {
++            return BoolValue(args["requireRouteFittings"], false) || BoolValue(args["requireFittings"], false);
++        }
++
++        private static int ExpectedRouteFittingCount(JObject args, int routeSegmentCount)
++        {
++            if (args["expectedRouteFittingCount"] != null)
++                return IntValue(args["expectedRouteFittingCount"]);
++            if (args["expectedFittingCount"] != null)
++                return IntValue(args["expectedFittingCount"]);
++            if (RerouteRouteFittingsRequired(args))
++                return Math.Max(0, routeSegmentCount - 1);
++            return -1;
++        }
++
+         private static double ConnectorToleranceInternal(JObject args)
+         {
+             if (args["connectorToleranceM"] != null)
+@@ -1928,6 +1960,17 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return false;
+         }
+ 
++        private static HashSet<int> RouteOwnerIds(IEnumerable<ElementId> routeIds)
++        {
++            HashSet<int> routeOwnerIds = new HashSet<int>();
++            if (routeIds == null) return routeOwnerIds;
++            foreach (ElementId id in routeIds)
++            {
++                if (id != null) routeOwnerIds.Add(id.IntegerValue);
++            }
++            return routeOwnerIds;
++        }
++
+         private static double ConvertToInternal(double value, string unit)
+         {
+             string normalized = string.IsNullOrWhiteSpace(unit) ? "internal" : unit.Trim().ToLowerInvariant();
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index 54810c2..b93e474 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -340,6 +340,10 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 errors.Add("steps[" + index + "].arguments.sourceElementId or targets.sourceElementId is required when reconnect/reconnectSource is true");
+             if (args["expectedSourceConnectionCount"] != null && IntValue(args["expectedSourceConnectionCount"]) < 0)
+                 errors.Add("steps[" + index + "].arguments.expectedSourceConnectionCount must be non-negative when provided");
++            if (args["expectedRouteFittingCount"] != null && IntValue(args["expectedRouteFittingCount"]) < 0)
++                errors.Add("steps[" + index + "].arguments.expectedRouteFittingCount must be non-negative when provided");
++            if (args["expectedFittingCount"] != null && IntValue(args["expectedFittingCount"]) < 0)
++                errors.Add("steps[" + index + "].arguments.expectedFittingCount must be non-negative when provided");
+         }
+ 
+         private static bool BoolValue(JToken token)
 -- 
 2.50.1.windows.1
 

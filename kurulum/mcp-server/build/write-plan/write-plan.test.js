@@ -479,6 +479,8 @@ const reroutePlan = buildPlanFromArgs({
         reconnect: true,
         requireReconnect: true,
         expectedSourceConnectionCount: 2,
+        requireRouteFittings: true,
+        expectedRouteFittingCount: 1,
         unit: "m",
         points: [
             { x: 0, y: 0, z: 3 },
@@ -494,6 +496,28 @@ const reroutePlan = buildPlanFromArgs({
 const rerouteValidation = validateWritePlan(reroutePlan, { mode: "commit", requireInitialOperationsOnly: true });
 assert.equal(rerouteValidation.valid, true);
 assert.equal(classifyPlanRisk(reroutePlan), "critical");
+
+const invalidRerouteFittingExpectation = buildPlanFromArgs({
+    title: "Reject negative reroute fitting expectation",
+    discipline: "clash",
+    operation: "commit_reroute",
+    targets: {},
+    arguments: {
+        curveType: "duct",
+        systemTypeId: 11,
+        ductTypeId: 22,
+        levelId: 33,
+        expectedRouteFittingCount: -1,
+        unit: "m",
+        points: [
+            { x: 0, y: 0, z: 3 },
+            { x: 1, y: 0, z: 3 },
+        ],
+    },
+});
+const invalidRerouteFittingValidation = validateWritePlan(invalidRerouteFittingExpectation, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidRerouteFittingValidation.valid, false);
+assert(invalidRerouteFittingValidation.errors.includes("steps[0].arguments.expectedRouteFittingCount must be a non-negative integer when provided"));
 
 const invalidReconnectReroute = buildPlanFromArgs({
     title: "Reject reconnect without source element",

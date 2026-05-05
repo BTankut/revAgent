@@ -129,6 +129,9 @@ Result:
   `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\reroute-final\`
 - Native reroute clearance verifier build check passed:
   `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\reroute-clearance\`
+- Native reroute fitting gate build check passed:
+  `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\route-fitting-gate\`
+  The build passed with the same Revit 2024 deprecation warnings.
 
 ## Live Revit Validation Plan
 

@@ -241,6 +241,12 @@ function validateOperationPayload(step, prefix, errors, warnings, officeStandard
             if (args.expectedSourceConnectionCount !== undefined && (!Number.isInteger(Number(args.expectedSourceConnectionCount)) || Number(args.expectedSourceConnectionCount) < 0)) {
                 errors.push(`${prefix}.arguments.expectedSourceConnectionCount must be a non-negative integer when provided`);
             }
+            if (args.expectedRouteFittingCount !== undefined && (!Number.isInteger(Number(args.expectedRouteFittingCount)) || Number(args.expectedRouteFittingCount) < 0)) {
+                errors.push(`${prefix}.arguments.expectedRouteFittingCount must be a non-negative integer when provided`);
+            }
+            if (args.expectedFittingCount !== undefined && (!Number.isInteger(Number(args.expectedFittingCount)) || Number(args.expectedFittingCount) < 0)) {
+                errors.push(`${prefix}.arguments.expectedFittingCount must be a non-negative integer when provided`);
+            }
             break;
         case "export_boq_report":
         case "export_clash_report":
