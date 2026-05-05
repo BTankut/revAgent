@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } from "./clash/calculations.js";
+import { classifyAabbClash, classifyMepClashPriority, proposeOrthogonalReroute, solveOrthogonalReroute, summarizeMepClashPriorities } from "./clash/calculations.js";
 import { buildDomesticWaterPipeResizeProposal, calculateDomesticWaterPressureLoss, calculateFixtureDemand, checkRecirculationContinuity, convertFixtureUnitsToDemand, sizeDomesticWaterPipe } from "./domestic-water/calculations.js";
 import { buildEquipmentScheduleProposal, buildFamilyPlacementProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { buildFireProtectionPipeResizeProposal, calculateFireCabinetDemand, calculateFirePumpBasis, checkFireCabinetCoverage, checkSprinklerCoverage } from "./fire/calculations.js";
@@ -327,6 +327,58 @@ assert(solvedReroute.selectedCandidate.addedLengthM > 0);
 assert.deepEqual(solvedReroute.selectedCandidate.previewPoints[0], { x: 0, y: 0, z: 0 });
 assert.deepEqual(solvedReroute.selectedCandidate.previewPoints.at(-1), { x: 8, y: 0, z: 0 });
 assert.equal(solvedReroute.canCommit, false);
+
+const horizontalMainClashPriority = classifyMepClashPriority({
+    classification: "hard_clash",
+    elementB: {
+        category: "Pipe Curves",
+        systemType: "Fire Protection Wet",
+        diameterM: 0.08,
+        orientation: "horizontal",
+    },
+});
+assert.equal(horizontalMainClashPriority.coordinationClass, "main_distribution_blocker");
+assert.equal(horizontalMainClashPriority.priority, "high");
+assert.equal(horizontalMainClashPriority.action, "reroute_or_layer_adjustment_required");
+assert.equal(horizontalMainClashPriority.canCommit, false);
+
+const verticalDropClashPriority = classifyMepClashPriority({
+    classification: "hard_clash",
+    elementB: {
+        category: "Pipe Curves",
+        systemType: "Hydronic Supply",
+        diameterM: 0.025,
+        orientation: "vertical",
+    },
+});
+assert.equal(verticalDropClashPriority.coordinationClass, "local_drop_or_equipment_connection_detail");
+assert.equal(verticalDropClashPriority.priority, "detail");
+
+const mepClashPrioritySummary = summarizeMepClashPriorities([
+    {
+        classification: "hard_clash",
+        elementB: {
+            category: "Pipe Curves",
+            systemType: "Fire Protection Wet",
+            diameterM: 0.08,
+            orientation: "horizontal",
+        },
+    },
+    {
+        classification: "hard_clash",
+        elementB: {
+            category: "Pipe Curves",
+            systemType: "Hydronic Supply",
+            diameterM: 0.025,
+            orientation: "vertical",
+        },
+    },
+]);
+assert.equal(mepClashPrioritySummary.success, true);
+assert.equal(mepClashPrioritySummary.summary.total, 2);
+assert.equal(mepClashPrioritySummary.summary.mainDistributionBlockers, 1);
+assert.equal(mepClashPrioritySummary.summary.localDropOrConnectionDetails, 1);
+assert.equal(mepClashPrioritySummary.summary.majorDistributionClear, false);
 
 const fan = selectFanCandidate({
     requiredFlowM3h: 5000,

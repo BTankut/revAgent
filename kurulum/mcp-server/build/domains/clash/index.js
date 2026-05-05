@@ -1,4 +1,4 @@
-import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } from "./calculations.js";
+import { classifyAabbClash, classifyMepClashPriority, proposeOrthogonalReroute, solveOrthogonalReroute, summarizeMepClashPriorities } from "./calculations.js";
 
 export function analyzeClashCoordination() {
     return {
@@ -10,6 +10,7 @@ export function analyzeClashCoordination() {
         ],
         checksAvailable: [
             "hard clash AABB classification",
+            "MEP clash priority classification by system, pipe size, and horizontal/vertical orientation",
             "clearance/insulation/maintenance clearance categories",
             "orthogonal reroute preview around a rectangular obstacle envelope",
             "multi-candidate orthogonal reroute solver with clearance validation",
@@ -36,6 +37,35 @@ export function analyzeClashCoordination() {
                 clearanceM: 0.25,
                 candidateOffsetAxes: ["y", "z"],
             }),
+            mepPriority: classifyMepClashPriority({
+                classification: "hard_clash",
+                elementB: {
+                    category: "Pipe Curves",
+                    systemType: "Fire Protection Wet",
+                    diameterM: 0.025,
+                    orientation: "vertical",
+                },
+            }),
+            mepPrioritySummary: summarizeMepClashPriorities([
+                {
+                    classification: "hard_clash",
+                    elementB: {
+                        category: "Pipe Curves",
+                        systemType: "Fire Protection Wet",
+                        diameterM: 0.08,
+                        orientation: "horizontal",
+                    },
+                },
+                {
+                    classification: "hard_clash",
+                    elementB: {
+                        category: "Pipe Curves",
+                        systemType: "Hydronic Supply",
+                        diameterM: 0.025,
+                        orientation: "vertical",
+                    },
+                },
+            ]),
         },
         canCommit: false,
     };

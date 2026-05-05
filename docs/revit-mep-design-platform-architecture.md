@@ -190,7 +190,9 @@ Engineering calculation foundations:
 - Domestic water fixture-unit summation, fixture-unit demand interpolation, pipe pressure-loss basis, velocity/friction pipe sizing proposal, and recirculation continuity issue screening.
 - Sanitary/storm gravity slope and reverse-slope validation, fixture-unit gravity pipe sizing proposal, rational-method storm runoff and pipe sizing proposal, branch-to-stack reachability, and vent continuity checks.
 - Fire/sprinkler rectangular room spacing/coverage screening, fire cabinet hose-reach coverage screening, fire cabinet demand basis, fire pump flow/pressure basis, and critical-risk fire pipe resize proposal handoff with explicit fire-design assumptions.
-- Clash AABB hard/clearance clash classification and multi-candidate orthogonal reroute solving with clearance validation.
+- Clash AABB hard/clearance clash classification, MEP clash priority
+  classification by system/pipe size/horizontal-or-vertical orientation, and
+  multi-candidate orthogonal reroute solving with clearance validation.
 - Fan/pump candidate screening from required flow and pressure/head plus equipment schedule/report update proposals without replacement.
 - Optional domain placement requests for air terminals, dampers, valves, pumps, fire cabinets, or equipment are normalized into proposal-only `place_family_instance` write-plan steps with explicit family/type or symbol identity, insertion point, optional level, and connector/system-assignment preconditions.
 - HVAC/hydronic fitting/accessory/equipment local-loss parameters can be extracted from live Revit samples for calibration/reporting. Numeric pressure-drop parameters are aggregated by system/category and can be carried into fan pressure or pump head basis as explicit local-loss contribution. Hydronic pipe resize proposals can also consume a complete critical-circuit local-loss pressure context, but final production sizing still requires office/manufacturer standards, confirmed design flows, and critical-path validation.

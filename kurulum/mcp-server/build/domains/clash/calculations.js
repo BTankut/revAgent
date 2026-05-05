@@ -26,6 +26,135 @@ export function classifyAabbClash({ boxA, boxB, clearanceM = 0 } = {}) {
     };
 }
 
+export function classifyMepClashPriority({
+    classification = "hard_clash",
+    elementA = {},
+    elementB = {},
+    pipeDiameterM,
+    pipeOrientation,
+    mainPipeDiameterM = 0.05,
+    smallDropDiameterM = 0.04,
+} = {}) {
+    if (classification === "no_clash") {
+        return {
+            success: true,
+            coordinationClass: "clear",
+            priority: "none",
+            action: "no_action",
+            canCommit: false,
+        };
+    }
+    const pipe = selectPipeElement(elementA, elementB, pipeDiameterM, pipeOrientation);
+    const diameterM = Number(pipe.diameterM || 0);
+    const orientation = pipe.orientation || "unknown";
+    const systemType = String(pipe.systemType || "");
+    const isHard = classification === "hard_clash";
+    const isHorizontal = orientation === "horizontal";
+    const isVertical = orientation === "vertical";
+    const isMainPipe = diameterM >= Number(mainPipeDiameterM);
+    const isSmallDrop = diameterM > 0 && diameterM <= Number(smallDropDiameterM);
+
+    if (isHard && isHorizontal) {
+        return {
+            success: true,
+            coordinationClass: isMainPipe ? "main_distribution_blocker" : "branch_distribution_blocker",
+            priority: isMainPipe ? "high" : "medium",
+            action: "reroute_or_layer_adjustment_required",
+            reason: "Horizontal distribution geometry intersects another service envelope.",
+            pipeSystemType: systemType,
+            pipeDiameterM: diameterM,
+            pipeOrientation: orientation,
+            canCommit: false,
+        };
+    }
+    if (isHard && isVertical && isSmallDrop) {
+        return {
+            success: true,
+            coordinationClass: "local_drop_or_equipment_connection_detail",
+            priority: "detail",
+            action: "offset_drop_or_connection_detail_required",
+            reason: "Small vertical drop/connection intersects a service envelope; main horizontal coordination can still be clear.",
+            pipeSystemType: systemType,
+            pipeDiameterM: diameterM,
+            pipeOrientation: orientation,
+            canCommit: false,
+        };
+    }
+    if (isHard && isVertical) {
+        return {
+            success: true,
+            coordinationClass: "vertical_connection_blocker",
+            priority: "medium",
+            action: "connection_offset_required",
+            reason: "Vertical connection intersects another service envelope.",
+            pipeSystemType: systemType,
+            pipeDiameterM: diameterM,
+            pipeOrientation: orientation,
+            canCommit: false,
+        };
+    }
+    return {
+        success: true,
+        coordinationClass: "clearance_review",
+        priority: classification === "clearance_clash" ? "low" : "review",
+        action: "clearance_review_required",
+        reason: "Non-hard clash or unknown orientation requires clearance review.",
+        pipeSystemType: systemType,
+        pipeDiameterM: diameterM,
+        pipeOrientation: orientation,
+        canCommit: false,
+    };
+}
+
+export function summarizeMepClashPriorities(clashes = [], options = {}) {
+    const rows = Array.isArray(clashes) ? clashes : [];
+    const summary = {
+        total: rows.length,
+        hardClashes: 0,
+        mainDistributionBlockers: 0,
+        branchDistributionBlockers: 0,
+        verticalConnectionBlockers: 0,
+        localDropOrConnectionDetails: 0,
+        clearanceReviews: 0,
+        clear: 0,
+        horizontalHardClashes: 0,
+        verticalHardClashes: 0,
+        largePipeHardClashes: 0,
+        majorDistributionClear: true,
+        canCommit: false,
+    };
+    const classified = rows.map((row) => {
+        const result = classifyMepClashPriority({ ...row, ...options });
+        if (row.classification === "hard_clash") summary.hardClashes++;
+        if (result.pipeOrientation === "horizontal" && row.classification === "hard_clash") summary.horizontalHardClashes++;
+        if (result.pipeOrientation === "vertical" && row.classification === "hard_clash") summary.verticalHardClashes++;
+        if (Number(result.pipeDiameterM || 0) >= Number(options.mainPipeDiameterM ?? 0.05) && row.classification === "hard_clash") {
+            summary.largePipeHardClashes++;
+        }
+        if (result.coordinationClass === "main_distribution_blocker") summary.mainDistributionBlockers++;
+        else if (result.coordinationClass === "branch_distribution_blocker") summary.branchDistributionBlockers++;
+        else if (result.coordinationClass === "vertical_connection_blocker") summary.verticalConnectionBlockers++;
+        else if (result.coordinationClass === "local_drop_or_equipment_connection_detail") summary.localDropOrConnectionDetails++;
+        else if (result.coordinationClass === "clearance_review") summary.clearanceReviews++;
+        else if (result.coordinationClass === "clear") summary.clear++;
+        return { ...row, coordination: result };
+    });
+    summary.majorDistributionClear = summary.mainDistributionBlockers === 0 &&
+        summary.branchDistributionBlockers === 0 &&
+        summary.horizontalHardClashes === 0 &&
+        summary.largePipeHardClashes === 0;
+    return {
+        success: true,
+        summary,
+        classified,
+        assumptions: [
+            "Horizontal hard clashes are treated as distribution coordination blockers.",
+            "Small vertical pipe/drop clashes are separated from main distribution blockers so they can be detailed with offsets or connection fittings.",
+        ],
+        canCommit: false,
+    };
+}
+
 export function proposeOrthogonalReroute({ routePoints = [], obstacleBox, clearanceM = 0.1, offsetAxis = "y" } = {}) {
     if (!Array.isArray(routePoints) || routePoints.length < 2) {
         return {
@@ -336,4 +465,21 @@ function polylineLength(points) {
         );
     }
     return total;
+}
+
+function selectPipeElement(elementA, elementB, pipeDiameterM, pipeOrientation) {
+    const aIsPipe = isPipeLike(elementA);
+    const bIsPipe = isPipeLike(elementB);
+    const selected = aIsPipe ? elementA : (bIsPipe ? elementB : {});
+    return {
+        systemType: selected.systemType || selected.systemName || "",
+        diameterM: Number(pipeDiameterM ?? selected.diameterM ?? selected.diameter ?? 0),
+        orientation: pipeOrientation || selected.orientation || "",
+    };
+}
+
+function isPipeLike(element) {
+    const category = String(element?.category || "").toLowerCase();
+    const kind = String(element?.kind || element?.domain || "").toLowerCase();
+    return category.includes("pipe") || kind.includes("pipe") || element?.diameterM !== undefined || element?.diameter !== undefined;
 }

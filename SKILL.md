@@ -72,7 +72,10 @@ only the bare names appear, so the rules stay host-agnostic.
   `firePipeSizingRequests` produce proposal-only `resize_pipe` handoff steps
   when exact pipe identity, demand basis, and office standards are supplied;
   fire protection resize proposals remain critical-risk and require
-  fire-engineer review before any commit.
+  fire-engineer review before any commit. Clash analysis separates horizontal
+  main/branch distribution blockers from small vertical drops and equipment
+  connection details, so a model can report main distribution coordination
+  separately from local offset/fitting work.
 - `prepare_write_plan` — create/validate typed JSON plans; never writes
 - `preview_write_plan` — native or runtime-only preview; never writes
 - `commit_write_plan` — native deterministic commit; requires explicit
