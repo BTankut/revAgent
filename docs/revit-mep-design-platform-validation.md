@@ -23,6 +23,7 @@ Result:
 - JavaScript syntax check passed.
 - Safe execution guard tests passed.
 - Write-plan schema/state/risk tests passed.
+  - runtime report export executor wrote an approved CSV test file with `mutateModel: false` and `writesFiles: true`
 - Engineering calculation tests passed:
   - duct area, hydraulic diameter, velocity, and friction loss against hand-check values
   - equal-friction duct sizing proposal gate
@@ -153,6 +154,7 @@ Live read-only results captured on the active session:
   - Hydronic weighted graph example selected `pump -> riser -> coil-b` with `4300 Pa`.
   - Hydronic pump basis example returned `0.77 L/s` and `26.73 kPa` required head after allowances/safety factor.
   - Reporting foundation returned issue-list/design-log rows and CSV text previews without file writes.
+  - Runtime write-plan report executor supports approved CSV/JSON export for `export_boq_report` and `export_clash_report` without Revit model mutation.
 - Connector graph live probe succeeded:
   - Revit 2022 API docs resolved `Connector.AllRefs`, `Connector.Owner`, `Connector.IsConnected`, `MEPCurve.ConnectorManager`, and `FamilyInstance.MEPModel`.
   - HVAC graph summary: `27237` connector-owning element nodes, `41735` connectors, `708` open connectors, `20341` unique element edges, `25` open connector samples, `0` AllRefs errors.

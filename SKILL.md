@@ -56,7 +56,8 @@ only the bare names appear, so the rules stay host-agnostic.
 - `prepare_write_plan` — create/validate typed JSON plans; never writes
 - `preview_write_plan` — native or runtime-only preview; never writes
 - `commit_write_plan` — native deterministic commit; requires explicit
-  approval or a commit token
+  approval or a commit token. Report export plans write CSV/JSON files through
+  the runtime and do not mutate the Revit model.
 - `verify_write_plan` — read model state back after a commit/proposal
 - `get_workflow_state` — inspect local `planId`/`stepId`/`eId` mappings
 - `clear_workflow_state` — clear local workflow state by plan or all state

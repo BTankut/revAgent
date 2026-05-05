@@ -3,6 +3,7 @@ import { mergeOfficeStandards } from "../office-standards/defaults.js";
 import { formatJsonContent } from "../utils/revitToolHelpers.js";
 import { executeNativeWritePlan } from "../write-plan/nativeExecutorClient.js";
 import { requiresExplicitApproval } from "../write-plan/risk.js";
+import { commitRuntimeReportPlan, isRuntimeReportPlan } from "../write-plan/runtimeReportExecutor.js";
 import { normalizePlan } from "../write-plan/schemas.js";
 import { validateWritePlan } from "../write-plan/validators.js";
 import { addWorkflowMappings, getPlanRecord, getWorkflowMappings, hydratePlanTargetsFromMappings, updatePlanRecord } from "../write-plan/workflowStore.js";
@@ -38,7 +39,8 @@ export function registerCommitWritePlanTool(server) {
                 });
             }
             const officeStandards = mergeOfficeStandards(args.officeStandards || {});
-            const validation = validateWritePlan(plan, { mode: "commit", officeStandards, requireInitialOperationsOnly: true });
+            const runtimeReportPlan = isRuntimeReportPlan(plan);
+            const validation = validateWritePlan(plan, { mode: "commit", officeStandards, requireInitialOperationsOnly: !runtimeReportPlan });
             if (!validation.valid || validation.canCommit === false) {
                 return formatJsonContent({
                     success: false,
@@ -49,6 +51,21 @@ export function registerCommitWritePlanTool(server) {
                     errors: validation.errors,
                     warnings: validation.warnings,
                     canCommit: false,
+                });
+            }
+            if (runtimeReportPlan) {
+                const result = commitRuntimeReportPlan(plan);
+                updatePlanRecord(plan.planId, {
+                    status: result.success ? "committed" : "commit_failed",
+                    validation,
+                    commit: result,
+                    action: "commit_write_plan",
+                });
+                return formatJsonContent({
+                    ...result,
+                    validation,
+                    eIdHydration: hydrationResult.hydration,
+                    mutateModel: false,
                 });
             }
             const result = await executeNativeWritePlan({

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildPreviewRows } from "./previewFormatter.js";
 import { classifyPlanRisk } from "./risk.js";
+import { commitRuntimeReportPlan, isRuntimeReportPlan, previewRuntimeReportPlan } from "./runtimeReportExecutor.js";
 import { buildPlanFromArgs, normalizePlan } from "./schemas.js";
 import { validateWritePlan } from "./validators.js";
 import {
@@ -74,6 +76,45 @@ assert.equal(hydrated.plan.steps[0].targets.uniqueId, "unique-456");
 
 const commitValidation = validateWritePlan(plan, { mode: "commit" });
 assert.equal(commitValidation.valid, true);
+
+const reportOutputDir = path.join(os.tmpdir(), `revit-mcp-report-test-${process.pid}`);
+const reportPlan = normalizePlan({
+    schemaVersion: "1.0",
+    planId: "report-plan-001",
+    title: "Export BOQ report",
+    discipline: "general",
+    riskLevel: "low",
+    source: { userRequest: "export report", createdBy: "llm", revitVersion: "2022" },
+    context: { documentTitle: "test", activeViewId: 0, activeViewType: "" },
+    steps: [
+        {
+            stepId: "report-001",
+            operation: "export_boq_report",
+            dependsOn: [],
+            targets: {},
+            arguments: {
+                outputDirectory: reportOutputDir,
+                fileName: "boq.csv",
+                rows: [{ elementId: "123", category: "Ducts", quantity: 2 }],
+            },
+            preconditions: [],
+            riskLevel: "low",
+        },
+    ],
+});
+assert.equal(isRuntimeReportPlan(reportPlan), true);
+const reportValidation = validateWritePlan(reportPlan, { mode: "commit", requireInitialOperationsOnly: false });
+assert.equal(reportValidation.valid, true);
+const reportPreview = previewRuntimeReportPlan(reportPlan);
+assert.equal(reportPreview.success, true);
+assert.equal(reportPreview.mutateModel, false);
+assert.equal(reportPreview.previewRows[0].rowCount, 1);
+const reportCommit = commitRuntimeReportPlan(reportPlan);
+assert.equal(reportCommit.success, true);
+assert.equal(reportCommit.mutateModel, false);
+assert.equal(reportCommit.writesFiles, true);
+assert.equal(fs.existsSync(reportCommit.files[0].outputPath), true);
+assert(fs.readFileSync(reportCommit.files[0].outputPath, "utf8").includes("elementId"));
 
 clearWorkflowState();
 

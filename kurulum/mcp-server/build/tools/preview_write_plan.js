@@ -3,6 +3,7 @@ import { mergeOfficeStandards } from "../office-standards/defaults.js";
 import { formatJsonContent } from "../utils/revitToolHelpers.js";
 import { executeNativeWritePlan } from "../write-plan/nativeExecutorClient.js";
 import { buildPreviewRows } from "../write-plan/previewFormatter.js";
+import { isRuntimeReportPlan, previewRuntimeReportPlan } from "../write-plan/runtimeReportExecutor.js";
 import { normalizePlan } from "../write-plan/schemas.js";
 import { validateWritePlan } from "../write-plan/validators.js";
 import { getPlanRecord, getWorkflowMappings, hydratePlanTargetsFromMappings, updatePlanRecord, upsertPlanRecord } from "../write-plan/workflowStore.js";
@@ -22,7 +23,8 @@ export function registerPreviewWritePlanTool(server) {
             const hydrationResult = hydratePlanTargetsFromMappings(resolved.plan, getWorkflowMappings(resolved.plan.planId));
             const plan = hydrationResult.plan;
             const officeStandards = mergeOfficeStandards(args.officeStandards || {});
-            const validation = validateWritePlan(plan, { mode: "preview", officeStandards, requireInitialOperationsOnly: true });
+            const runtimeReportPlan = isRuntimeReportPlan(plan);
+            const validation = validateWritePlan(plan, { mode: "preview", officeStandards, requireInitialOperationsOnly: !runtimeReportPlan });
             const fallback = {
                 success: validation.valid,
                 mode: "preview",
@@ -34,7 +36,9 @@ export function registerPreviewWritePlanTool(server) {
                 mappings: [],
                 audit: { mode: "preview", nativeExecutor: false },
             };
-            const result = args.useNativeExecutor === false
+            const result = runtimeReportPlan
+                ? previewRuntimeReportPlan(plan)
+                : args.useNativeExecutor === false
                 ? fallback
                 : await executeNativeWritePlan({ mode: "preview", plan, validation });
             if (validation.valid) {

@@ -7,6 +7,8 @@ const operationRisk = {
     view_hide_elements: "low",
     view_unhide_elements: "low",
     view_apply_overrides: "low",
+    export_boq_report: "low",
+    export_clash_report: "low",
     change_type: "medium",
     place_family_instance: "medium",
     move_elements: "medium",
@@ -18,6 +20,11 @@ const operationRisk = {
     commit_reroute: "critical",
     replace_equipment: "critical",
 };
+
+const nonModelMutatingOperations = new Set([
+    "export_boq_report",
+    "export_clash_report",
+]);
 
 export function riskForOperation(operation) {
     return operationRisk[operation] || "medium";
@@ -44,5 +51,5 @@ export function requiresExplicitApproval(riskLevel) {
 }
 
 export function operationMutatesModel(operation) {
-    return Boolean(operationRisk[operation]);
+    return Boolean(operationRisk[operation]) && !nonModelMutatingOperations.has(operation);
 }

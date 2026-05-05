@@ -154,6 +154,21 @@ function validateOperationPayload(step, prefix, errors, warnings) {
             requireTargetElement(targets, prefix, errors);
             if (args.diameter == null) errors.push(`${prefix}.arguments.diameter is required`);
             break;
+        case "export_boq_report":
+        case "export_clash_report":
+            if (args.format && !["csv", "json"].includes(String(args.format).toLowerCase())) {
+                errors.push(`${prefix}.arguments.format must be csv or json`);
+            }
+            if (args.rows && !Array.isArray(args.rows)) {
+                errors.push(`${prefix}.arguments.rows must be an array when provided`);
+            }
+            if (args.reportRows && !Array.isArray(args.reportRows)) {
+                errors.push(`${prefix}.arguments.reportRows must be an array when provided`);
+            }
+            if (!args.rows && !args.reportRows) {
+                warnings.push(`${prefix} has no rows; report export will create an empty file`);
+            }
+            break;
         default:
             if (!initialOperations.includes(step.operation)) {
                 warnings.push(`${prefix}.operation is cataloged as a foundation operation; native execution may not be implemented yet`);
