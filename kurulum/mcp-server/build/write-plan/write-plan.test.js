@@ -77,6 +77,24 @@ assert.equal(hydrated.plan.steps[0].targets.uniqueId, "unique-456");
 const commitValidation = validateWritePlan(plan, { mode: "commit" });
 assert.equal(commitValidation.valid, true);
 
+const schedulePlan = buildPlanFromArgs({
+    title: "Create mechanical equipment schedule",
+    discipline: "general",
+    operation: "create_schedule_or_update_schedule",
+    targets: {},
+    arguments: {
+        scheduleName: "Codex Mechanical Equipment Schedule",
+        category: "OST_MechanicalEquipment",
+        fields: [
+            { builtInParameter: "ELEM_FAMILY_AND_TYPE_PARAM", heading: "Family and Type" },
+            { builtInParameter: "ALL_MODEL_MARK", heading: "Mark" },
+        ],
+    },
+});
+const scheduleValidation = validateWritePlan(schedulePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(scheduleValidation.valid, true);
+assert.equal(classifyPlanRisk(schedulePlan), "medium");
+
 const reportOutputDir = path.join(os.tmpdir(), `revit-mcp-report-test-${process.pid}`);
 const reportPlan = normalizePlan({
     schemaVersion: "1.0",

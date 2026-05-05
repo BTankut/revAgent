@@ -112,8 +112,9 @@ Initial committed operations:
 - `resize_duct`
 - `create_pipe_run`
 - `resize_pipe`
+- `create_schedule_or_update_schedule`
 
-`validate`, `preview`, and `verify` do not open a transaction. `commit` opens one transaction and rolls back on the first operation error.
+`validate`, `preview`, and `verify` do not open a transaction. `commit` opens one transaction and rolls back on the first operation error; when invoked from an already modifiable dynamic host context, it uses a rollback-capable `SubTransaction` to avoid nested transaction failures.
 
 ## Workflow Identity
 
@@ -184,7 +185,8 @@ Reporting foundation:
 - `boqOnly` runs short live Revit BOQ collectors without connector graph traversal for count/length report population.
 - `hydraulicResistanceOnly` runs short live hydronic pipe length/diameter sampling and returns resistance calibration rows.
 - `export_boq_report` and `export_clash_report` write-plans are handled by a runtime report executor for approved CSV/JSON file export.
-- Report export writes files only and returns `mutateModel: false`; model schedule creation remains a future native operation.
+- Report export writes files only and returns `mutateModel: false`.
+- `create_schedule_or_update_schedule` creates or updates native Revit schedules by category/name/id and can add requested fields by parameter name, `parameterId`, or `BuiltInParameter`.
 
 ## Safety Model
 

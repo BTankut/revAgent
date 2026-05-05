@@ -154,6 +154,21 @@ function validateOperationPayload(step, prefix, errors, warnings) {
             requireTargetElement(targets, prefix, errors);
             if (args.diameter == null) errors.push(`${prefix}.arguments.diameter is required`);
             break;
+        case "create_schedule_or_update_schedule":
+            if (!isNonEmptyString(args.scheduleName)) errors.push(`${prefix}.arguments.scheduleName is required`);
+            if (!Number.isFinite(Number(args.scheduleId)) &&
+                !Number.isFinite(Number(targets.elementId)) &&
+                !Number.isFinite(Number(args.categoryId)) &&
+                !isNonEmptyString(args.category)) {
+                errors.push(`${prefix}.arguments.category/categoryId or scheduleId/targets.elementId is required`);
+            }
+            if (args.fields && !Array.isArray(args.fields)) {
+                errors.push(`${prefix}.arguments.fields must be an array when provided`);
+            }
+            if (Array.isArray(args.fields) && args.fields.length === 0) {
+                warnings.push(`${prefix}.arguments.fields is empty; schedule will be created or renamed without adding fields`);
+            }
+            break;
         case "export_boq_report":
         case "export_clash_report":
             if (args.format && !["csv", "json"].includes(String(args.format).toLowerCase())) {

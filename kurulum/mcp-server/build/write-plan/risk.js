@@ -14,6 +14,7 @@ const operationRisk = {
     move_elements: "medium",
     resize_duct: "medium",
     resize_pipe: "medium",
+    create_schedule_or_update_schedule: "medium",
     create_duct_run: "high",
     create_pipe_run: "high",
     delete_elements: "critical",

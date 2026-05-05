@@ -85,6 +85,10 @@ Result:
 - A later compatibility build fixed the write-plan command interface to implement the active add-in's `RevitMCPSDK.API.Interfaces.IRevitCommand` rather than the older lowercase `revit_mcp_sdk` interface:
   `dotnet msbuild SampleCommandSet\SampleCommandSet.csproj /p:Configuration="Debug 2022" /p:Platform=x64 /p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\compat-verify\SampleCommandset\2022\ /m:1`
 - The compatibility build passed with the same Revit 2024 deprecation warnings.
+- Native schedule operation build check passed:
+  `dotnet build SampleCommandSet\SampleCommandSet.csproj -c "Debug 2022" -p:Platform=x64 -p:OutputPath=C:\Users\BT\Projects\revit-mcp-plugin\bld\schedule-final-2\`
+- The build passed with the same Revit 2024 deprecation warnings.
+- The schedule direct-load test DLL was built with unique assembly names because Revit locks loaded .NET assemblies for the session.
 
 ## Live Revit Validation Plan
 
@@ -196,6 +200,17 @@ Live read-only results captured on the active session:
   - Target: Mechanical Equipment element `386031`, type `14 kW`, UniqueId `ac8b9fc6-24ff-4c3b-a4c6-035f009e396e-0005e3ef`.
   - Plan `equipment-schedule-update-1777960000000` set `Comments` to `Codex equipment schedule proposal test 2026-05-05T00:00:00Z`.
   - Native preview returned one row; commit succeeded through `execute_write_plan`; verify succeeded; final readback matched.
+- Approved native schedule creation live write test succeeded in the disposable model:
+  - Plan `schedule-population-1777960000000`.
+  - Schedule name: `Codex MEP Equipment Schedule 2026-05-05`.
+  - New schedule element id: `1020916`.
+  - Category: Mechanical Equipment / `OST_MechanicalEquipment`.
+  - Fields requested by parameter id: `Family and Type` (`-1002052`), `Mark` (`-1001203`), and `Level` (`-1002062`).
+  - Native preview reported `scheduleAction: create`, `canCommit: true`, and did not mutate the model.
+  - First direct commit attempt against an older test DLL failed before mutation because nested `Transaction` was not permitted in the dynamic host context.
+  - Native executor was updated to use `SubTransaction` when `document.IsModifiable`; rebuilt with unique assembly name `SampleCommandSetScheduleOpTest2`.
+  - Commit then succeeded and returned mapping `codex-mech-equipment-schedule-001 -> 1020916`, `created: true`, and `addedFields: 3`.
+  - Native verify succeeded; final readback confirmed the schedule name and all three fields/headings.
 
 Write checks:
 
@@ -237,5 +252,5 @@ Write checks:
 - The installed MCP tool session currently exposes the previous six-tool runtime surface. The updated local runtime lists all 13 tools and was used for the new tool tests.
 - The registered Codex runtime path is `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js`; its `build` folder was updated from this repo and a fresh handshake against that path listed all 13 tools. The already-running MCP process still needs restart/reconnect before this chat exposes the new tool namespace.
 - The public Revit socket command registry can now call `execute_write_plan` in the current session after in-memory hot registration of the compat assembly. A normal Revit restart/reload is still recommended for operational confidence that the on-disk `commandRegistry.json` path loads the compat assembly from a clean AppDomain.
-- Runtime keeps a direct-assembly fallback for `validate`, `preview`, and `verify` so read-only/native validation can continue if a future session has an unavailable command registry. Direct fallback for `commit` is disabled unless `REVIT_MCP_ALLOW_DIRECT_EXECUTOR_COMMIT=true` is set.
+- Runtime keeps a direct-assembly fallback for `validate`, `preview`, and `verify` so read-only/native validation can continue if a future session has an unavailable command registry. Direct fallback for `commit` is disabled unless `REVIT_MCP_ALLOW_DIRECT_EXECUTOR_COMMIT=true` is set; the native executor itself can now run inside an already modifiable dynamic host context by using `SubTransaction`.
 - Production-model writes were intentionally not run; the live write acceptance test was limited to the user-approved disposable/test model.

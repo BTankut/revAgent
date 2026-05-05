@@ -19,9 +19,9 @@
 - Added native `execute_write_plan` command in the plugin repo.
 - Added ExternalEvent handler and deterministic executor.
 - Implemented validate/preview/commit/verify modes.
-- Implemented initial operation catalog for parameter writes, view operations, movement, placement, duct/pipe creation, and duct/pipe resize.
-- Commit mode uses a transaction and rolls back on error.
-- Plugin remote is archived/read-only, so the two plugin commits are exported in `docs/revit-mcp-plugin-native-write-plan-executor.patch`.
+- Implemented initial operation catalog for parameter writes, view operations, movement, placement, duct/pipe creation, duct/pipe resize, and native schedule create/update.
+- Commit mode uses a transaction and rolls back on error; dynamic-host direct execution can use `SubTransaction` when the document is already modifiable.
+- Plugin remote is archived/read-only, so plugin branch changes are exported in `docs/revit-mcp-plugin-native-write-plan-executor.patch`.
 
 ## Documentation
 
@@ -58,8 +58,13 @@
 - Added coupled multi-loop Hardy-Cross hydraulic balancing foundation with convergence/residual tests and runtime example.
 - Added live hydronic pipe resistance sampling/calibration and hydraulic resistance report rows from Revit pipe length/diameter data.
 - Live-tested approved equipment schedule note execution on Mechanical Equipment `386031` through native preview/commit/verify/readback.
+- Added native `create_schedule_or_update_schedule`, runtime validation/risk coverage, and live-tested approved schedule creation in the disposable model:
+  - Schedule `Codex MEP Equipment Schedule 2026-05-05`
+  - Element `1020916`
+  - Fields `Family and Type`, `Mark`, `Level`
+  - Native preview, commit, verify, and final readback all succeeded.
 
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from foundations to production-calibrated fitting/accessory/equipment loss extraction, native reroute commit verification, and native model schedule population workflows.
+- Expand engineering engines from foundations to production-calibrated fitting/accessory/equipment loss extraction and native reroute commit verification.

@@ -1,7 +1,7 @@
 ﻿From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 1/3] Add native write-plan executor
+Subject: [PATCH 1/4] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -61,10 +61,10 @@ index 0000000..7d29e44
 +            {
 +                _handler.Parameters = new JArray();
 +            }
-+            
++
 +            _handler.Reset();
 +            RaiseAndWaitForCompletion(15000);
-+            
++
 +            if (_handler.Exception != null)
 +            {
 +                return CommandResult.CreateError(_handler.Exception.Message);
@@ -99,7 +99,7 @@ index 0000000..c1fb7d0
 +        public JArray Parameters { get; set; }
 +        public Exception Exception { get; set; }
 +        public object Result { get; set; }
-+        
++
 +        public void Reset()
 +        {
 +            _resetEvent.Reset();
@@ -116,7 +116,7 @@ index 0000000..c1fb7d0
 +            {
 +                Exception = null;
 +                Result = null;
-+                
++
 +                string sourceCode = @"
 +using System;
 +using System.Collections.Generic;
@@ -150,7 +150,7 @@ index 0000000..c1fb7d0
 +                compilerParams.ReferencedAssemblies.Add("System.Data.dll");
 +                compilerParams.ReferencedAssemblies.Add("System.Xml.dll");
 +                compilerParams.ReferencedAssemblies.Add("System.Xml.Linq.dll");
-+                
++
 +                compilerParams.ReferencedAssemblies.Add(typeof(Document).Assembly.Location);
 +                compilerParams.ReferencedAssemblies.Add(typeof(UIApplication).Assembly.Location);
 +                compilerParams.ReferencedAssemblies.Add(typeof(JObject).Assembly.Location);
@@ -170,7 +170,7 @@ index 0000000..c1fb7d0
 +                Type type = results.CompiledAssembly.GetType("RevitMcpDynamicCode.DynamicExecutor");
 +                object instance = Activator.CreateInstance(type);
 +                MethodInfo method = type.GetMethod("Execute");
-+                
++
 +                Result = method.Invoke(instance, new object[] { app, Parameters });
 +            }
 +            catch (Exception ex)
@@ -1237,14 +1237,14 @@ index c9ebbed..55dff88 100644
 -}
 \ No newline at end of file
 +}
--- 
+--
 2.50.1.windows.1
 
 
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 2/3] Expand write-plan verification readback
+Subject: [PATCH 2/4] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1260,7 +1260,7 @@ index e6d710d..4add29c 100644
  using SampleCommandSet.Commands.WritePlan.Operations;
 +using System;
 +using System.Globalization;
- 
+
  namespace SampleCommandSet.Commands.WritePlan.Verification
  {
 @@ -27,24 +29,234 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
@@ -1288,7 +1288,7 @@ index e6d710d..4add29c 100644
 +                    warnings.Add(row["warning"].ToString());
                  }
              }
- 
+
              result["success"] = errors.Count == 0;
              return result;
          }
@@ -1508,14 +1508,14 @@ index e6d710d..4add29c 100644
 +        }
      }
  }
--- 
+--
 2.50.1.windows.1
 
 
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 3/3] Fix write-plan command SDK compatibility
+Subject: [PATCH 3/4] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1535,7 +1535,7 @@ index 2108b19..1d13dcb 100644
 +[Bb]uild-check-compat/
  [Ll]og/
  [Ll]ogs/
- 
+
 diff --git a/SampleCommandSet/Commands/WritePlan/ExecuteWritePlanCommand.cs b/SampleCommandSet/Commands/WritePlan/ExecuteWritePlanCommand.cs
 index 75dd5a3..bb6bdf8 100644
 --- a/SampleCommandSet/Commands/WritePlan/ExecuteWritePlanCommand.cs
@@ -1551,7 +1551,7 @@ index 75dd5a3..bb6bdf8 100644
 +using RevitMCPSDK.API.Models.Results;
 +using RevitMCPSDK.Exceptions;
  using System;
- 
+
  namespace SampleCommandSet.Commands.WritePlan
 diff --git a/SampleCommandSet/Commands/WritePlan/ExecuteWritePlanEventHandler.cs b/SampleCommandSet/Commands/WritePlan/ExecuteWritePlanEventHandler.cs
 index 04c1974..0e65260 100644
@@ -1581,6 +1581,551 @@ index b58ccae..6df80ee 100644
      <Reference Include="RevitAddInUtility, Version=24.0.0.0, Culture=neutral, processorArchitecture=MSIL">
        <HintPath>..\packages\Revit_API_x64.2024.0.2\lib\NET480\RevitAddInUtility.dll</HintPath>
        <Private>False</Private>
--- 
+--
+2.50.1.windows.1
+
+
+From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 09:12:36 +0300
+Subject: [PATCH 4/4] Add native schedule write-plan operation
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
+ .../Validators/WritePlanValidator.cs          |  25 +-
+ .../Verification/WritePlanVerifier.cs         |   2 +
+ 3 files changed, 397 insertions(+), 16 deletions(-)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index 718f0a4..ee089b6 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -58,31 +58,50 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 }
+                 JArray mappings = new JArray();
+                 Dictionary<string, ElementId> eIdMap = new Dictionary<string, ElementId>();
+-                using (Transaction tx = new Transaction(document, "MCP Execute Write Plan"))
++                if (document.IsModifiable)
+                 {
+-                    try
++                    using (SubTransaction tx = new SubTransaction(document))
+                     {
+-                        tx.Start();
+-                        JArray steps = plan["steps"] as JArray;
+-                        for (int i = 0; i < steps.Count; i++)
++                        try
+                         {
+-                            JObject step = steps[i] as JObject;
+-                            if (step == null) continue;
+-                            ExecuteStep(document, step, eIdMap, mappings, result);
+-                            if (!(bool)result["success"])
++                            tx.Start();
++                            if (!ExecutePlanSteps(document, plan, eIdMap, mappings, result))
+                             {
+                                 tx.RollBack();
+                                 return result;
+                             }
++                            tx.Commit();
++                        }
++                        catch (Exception ex)
++                        {
++                            if (tx.GetStatus() == TransactionStatus.Started)
++                                tx.RollBack();
++                            WritePlanResult.AddError(result, ex.Message);
++                            return result;
+                         }
+-                        tx.Commit();
+                     }
+-                    catch (Exception ex)
++                }
++                else
++                {
++                    using (Transaction tx = new Transaction(document, "MCP Execute Write Plan"))
+                     {
+-                        if (tx.GetStatus() == TransactionStatus.Started)
+-                            tx.RollBack();
+-                        WritePlanResult.AddError(result, ex.Message);
+-                        return result;
++                        try
++                        {
++                            tx.Start();
++                            if (!ExecutePlanSteps(document, plan, eIdMap, mappings, result))
++                            {
++                                tx.RollBack();
++                                return result;
++                            }
++                            tx.Commit();
++                        }
++                        catch (Exception ex)
++                        {
++                            if (tx.GetStatus() == TransactionStatus.Started)
++                                tx.RollBack();
++                            WritePlanResult.AddError(result, ex.Message);
++                            return result;
++                        }
+                     }
+                 }
+                 result["mappings"] = mappings;
+@@ -129,6 +148,15 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 row["sourceParameterName"] = StringValue(args, "sourceParameterName");
+                 row["targetParameterName"] = StringValue(args, "targetParameterName");
+             }
++            else if (operation == "create_schedule_or_update_schedule")
++            {
++                ViewSchedule schedule = FindSchedule(document, step, args);
++                row["scheduleName"] = StringValue(args, "scheduleName");
++                row["existingScheduleId"] = schedule != null ? schedule.Id.IntegerValue : 0;
++                row["scheduleAction"] = schedule != null ? "update" : "create";
++                row["requestedFields"] = RequestedFieldNames(args["fields"] as JArray);
++                row["existingFieldCount"] = schedule != null ? schedule.Definition.GetFieldOrder().Count : 0;
++            }
+             else
+             {
+                 row["arguments"] = args.DeepClone();
+@@ -156,11 +184,58 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             };
+         }
+
++        public static JObject VerifySchedule(Document document, JObject step)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            ViewSchedule schedule = FindSchedule(document, step, args);
++            JArray checks = new JArray();
++            bool ok = schedule != null;
++            if (schedule != null)
++            {
++                List<ScheduleFieldRequest> requests = ScheduleFieldRequests(args["fields"] as JArray);
++                foreach (ScheduleFieldRequest request in requests)
++                {
++                    ScheduleField field = FindScheduleField(document, schedule.Definition, request);
++                    bool fieldOk = field != null;
++                    ok = fieldOk && ok;
++                    checks.Add(new JObject
++                    {
++                        ["field"] = request.DisplayName,
++                        ["success"] = fieldOk
++                    });
++                }
++            }
++            return new JObject
++            {
++                ["success"] = ok,
++                ["stepId"] = StringValue(step, "stepId"),
++                ["operation"] = "create_schedule_or_update_schedule",
++                ["scheduleName"] = schedule != null ? schedule.Name : StringValue(args, "scheduleName"),
++                ["scheduleId"] = schedule != null ? schedule.Id.IntegerValue : 0,
++                ["checks"] = checks,
++                ["message"] = ok ? "verified" : "schedule or requested fields were not found"
++            };
++        }
++
+         public static string StringValue(JObject obj, string name)
+         {
+             return obj != null && obj[name] != null ? obj[name].ToString() : "";
+         }
+
++        private static bool ExecutePlanSteps(Document document, JObject plan, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
++        {
++            JArray steps = plan["steps"] as JArray;
++            for (int i = 0; i < steps.Count; i++)
++            {
++                JObject step = steps[i] as JObject;
++                if (step == null) continue;
++                ExecuteStep(document, step, eIdMap, mappings, result);
++                if (!(bool)result["success"])
++                    return false;
++            }
++            return true;
++        }
++
+         private static void ExecuteStep(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
+         {
+             string operation = StringValue(step, "operation");
+@@ -190,6 +265,8 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 CreatePipeRun(document, step, eIdMap, mappings, result);
+             else if (operation == "resize_pipe")
+                 ResizeCurve(document, step, eIdMap, result, false);
++            else if (operation == "create_schedule_or_update_schedule")
++                CreateOrUpdateSchedule(document, step, eIdMap, mappings, result);
+             else
+                 WritePlanResult.AddError(result, "Unsupported operation: " + operation);
+         }
+@@ -325,6 +402,68 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             }
+         }
+
++        private static void CreateOrUpdateSchedule(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            string scheduleName = StringValue(args, "scheduleName");
++            if (string.IsNullOrWhiteSpace(scheduleName))
++                throw new InvalidOperationException("create_schedule_or_update_schedule requires arguments.scheduleName.");
++
++            ViewSchedule schedule = FindSchedule(document, step, args);
++            bool created = false;
++            if (schedule == null)
++            {
++                ElementId categoryId = ResolveScheduleCategoryId(document, args);
++                if (categoryId == ElementId.InvalidElementId)
++                    throw new InvalidOperationException("create_schedule_or_update_schedule requires category or categoryId when creating a schedule.");
++                schedule = ViewSchedule.CreateSchedule(document, categoryId);
++                schedule.Name = scheduleName;
++                created = true;
++            }
++            else if (!string.Equals(schedule.Name, scheduleName, StringComparison.Ordinal))
++            {
++                schedule.Name = scheduleName;
++            }
++
++            ScheduleDefinition definition = schedule.Definition;
++            if (BoolValue(args["clearExistingFields"], false))
++                definition.ClearFields();
++
++            int added = 0;
++            List<ScheduleFieldRequest> requests = ScheduleFieldRequests(args["fields"] as JArray);
++            foreach (ScheduleFieldRequest request in requests)
++            {
++                ScheduleField field = FindScheduleField(document, definition, request);
++                if (field == null)
++                {
++                    SchedulableField schedulableField = FindSchedulableField(document, definition, request);
++                    if (schedulableField == null)
++                        throw new InvalidOperationException("Schedulable field not found: " + request.DisplayName);
++                    field = definition.AddField(schedulableField);
++                    added++;
++                }
++                ApplyScheduleFieldOptions(field, request);
++            }
++
++            JObject update = new JObject
++            {
++                ["operation"] = "create_schedule_or_update_schedule",
++                ["scheduleName"] = schedule.Name,
++                ["scheduleId"] = schedule.Id.IntegerValue,
++                ["created"] = created,
++                ["addedFields"] = added,
++                ["requestedFieldCount"] = requests.Count
++            };
++            JArray updates = result["scheduleUpdates"] as JArray;
++            if (updates == null)
++            {
++                updates = new JArray();
++                result["scheduleUpdates"] = updates;
++            }
++            updates.Add(update);
++            AddScheduleMapping(step, schedule, eIdMap, mappings, created);
++        }
++
+         private static void ResizeCurve(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JObject result, bool duct)
+         {
+             JObject args = step["arguments"] as JObject ?? new JObject();
+@@ -381,6 +520,176 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return ids;
+         }
+
++        private static int ScheduleIdValue(JObject step, JObject args)
++        {
++            if (args["scheduleId"] != null)
++                return IntValue(args["scheduleId"]);
++            JObject targets = step["targets"] as JObject ?? new JObject();
++            if (targets["elementId"] != null)
++                return IntValue(targets["elementId"]);
++            return 0;
++        }
++
++        private static ViewSchedule FindSchedule(Document document, JObject step, JObject args)
++        {
++            int scheduleId = ScheduleIdValue(step, args);
++            if (scheduleId > 0)
++            {
++                ViewSchedule targeted = document.GetElement(new ElementId(scheduleId)) as ViewSchedule;
++                if (targeted != null)
++                    return targeted;
++            }
++
++            string scheduleName = StringValue(args, "scheduleName");
++            if (string.IsNullOrWhiteSpace(scheduleName))
++                return null;
++            FilteredElementCollector collector = new FilteredElementCollector(document)
++                .OfClass(typeof(ViewSchedule));
++            foreach (ViewSchedule schedule in collector.Cast<ViewSchedule>())
++            {
++                if (!schedule.IsTemplate && string.Equals(schedule.Name, scheduleName, StringComparison.OrdinalIgnoreCase))
++                    return schedule;
++            }
++            return null;
++        }
++
++        private static ElementId ResolveScheduleCategoryId(Document document, JObject args)
++        {
++            if (args["categoryId"] != null)
++                return new ElementId(IntValue(args["categoryId"]));
++
++            string category = StringValue(args, "category");
++            if (string.IsNullOrWhiteSpace(category))
++                return ElementId.InvalidElementId;
++
++            BuiltInCategory builtInCategory;
++            if (Enum.TryParse<BuiltInCategory>(category, true, out builtInCategory))
++                return new ElementId((int)builtInCategory);
++
++            foreach (Category current in document.Settings.Categories)
++            {
++                if (string.Equals(current.Name, category, StringComparison.OrdinalIgnoreCase))
++                    return current.Id;
++            }
++            return ElementId.InvalidElementId;
++        }
++
++        private static List<ScheduleFieldRequest> ScheduleFieldRequests(JArray fields)
++        {
++            List<ScheduleFieldRequest> requests = new List<ScheduleFieldRequest>();
++            if (fields == null)
++                return requests;
++            foreach (JToken token in fields)
++            {
++                ScheduleFieldRequest request = new ScheduleFieldRequest();
++                JObject obj = token as JObject;
++                if (obj != null)
++                {
++                    request.Name = StringValue(obj, "name");
++                    request.Heading = StringValue(obj, "heading");
++                    request.BuiltInParameter = StringValue(obj, "builtInParameter");
++                    request.ParameterId = IntValue(obj["parameterId"]);
++                    if (obj["width"] != null)
++                    {
++                        request.Width = DoubleValue(obj["width"]);
++                        request.WidthUnit = StringValue(obj, "unit");
++                        request.HasWidth = true;
++                    }
++                }
++                else
++                {
++                    request.Name = JTokenText(token);
++                }
++
++                if (!string.IsNullOrWhiteSpace(request.Name) ||
++                    !string.IsNullOrWhiteSpace(request.BuiltInParameter) ||
++                    request.ParameterId != 0)
++                {
++                    requests.Add(request);
++                }
++            }
++            return requests;
++        }
++
++        private static ScheduleField FindScheduleField(Document document, ScheduleDefinition definition, ScheduleFieldRequest request)
++        {
++            foreach (ScheduleFieldId fieldId in definition.GetFieldOrder())
++            {
++                ScheduleField field = definition.GetField(fieldId);
++                if (FieldMatches(document, field.ParameterId, SafeScheduleFieldName(field), request))
++                    return field;
++            }
++            return null;
++        }
++
++        private static SchedulableField FindSchedulableField(Document document, ScheduleDefinition definition, ScheduleFieldRequest request)
++        {
++            foreach (SchedulableField field in definition.GetSchedulableFields())
++            {
++                if (FieldMatches(document, field.ParameterId, SafeSchedulableFieldName(document, field), request))
++                    return field;
++            }
++            return null;
++        }
++
++        private static bool FieldMatches(Document document, ElementId parameterId, string fieldName, ScheduleFieldRequest request)
++        {
++            if (request.ParameterId != 0 && parameterId != null && parameterId.IntegerValue == request.ParameterId)
++                return true;
++            if (!string.IsNullOrWhiteSpace(request.BuiltInParameter))
++            {
++                BuiltInParameter builtInParameter;
++                if (Enum.TryParse<BuiltInParameter>(request.BuiltInParameter, true, out builtInParameter) &&
++                    parameterId != null &&
++                    parameterId.IntegerValue == (int)builtInParameter)
++                    return true;
++            }
++            if (!string.IsNullOrWhiteSpace(request.Name) &&
++                string.Equals(fieldName, request.Name, StringComparison.OrdinalIgnoreCase))
++                return true;
++            return false;
++        }
++
++        private static void ApplyScheduleFieldOptions(ScheduleField field, ScheduleFieldRequest request)
++        {
++            if (!string.IsNullOrWhiteSpace(request.Heading))
++                field.ColumnHeading = request.Heading;
++            if (request.HasWidth && request.Width >= 0)
++                field.GridColumnWidth = ConvertToInternal(request.Width, request.WidthUnit);
++        }
++
++        private static JArray RequestedFieldNames(JArray fields)
++        {
++            JArray names = new JArray();
++            foreach (ScheduleFieldRequest request in ScheduleFieldRequests(fields))
++                names.Add(request.DisplayName);
++            return names;
++        }
++
++        private static string SafeScheduleFieldName(ScheduleField field)
++        {
++            try
++            {
++                return field.GetName();
++            }
++            catch
++            {
++                return "";
++            }
++        }
++
++        private static string SafeSchedulableFieldName(Document document, SchedulableField field)
++        {
++            try
++            {
++                return field.GetName(document);
++            }
++            catch
++            {
++                return "";
++            }
++        }
++
+         private static View ResolveView(Document document, JObject step)
+         {
+             JObject args = step["arguments"] as JObject ?? new JObject();
+@@ -480,6 +789,20 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             mappings.Add(BuildMapping(step, elem, false));
+         }
+
++        private static void AddScheduleMapping(JObject step, ViewSchedule schedule, Dictionary<string, ElementId> eIdMap, JArray mappings, bool created)
++        {
++            if (schedule == null) return;
++            string eId = StringValue(step, "eId");
++            if (string.IsNullOrWhiteSpace(eId))
++                eId = StringValue(step, "stepId");
++            if (!string.IsNullOrWhiteSpace(eId))
++                eIdMap[eId] = schedule.Id;
++            JObject mapping = BuildMapping(step, schedule, created);
++            mapping["eId"] = eId;
++            mapping["viewType"] = "Schedule";
++            mappings.Add(mapping);
++        }
++
+         private static void AddCreatedMapping(JObject step, Element elem, Dictionary<string, ElementId> eIdMap, JArray mappings, int segmentIndex = -1)
+         {
+             if (elem == null) return;
+@@ -579,6 +902,18 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return 0.0;
+         }
+
++        private static bool BoolValue(JToken token, bool defaultValue)
++        {
++            if (token == null) return defaultValue;
++            bool value;
++            if (bool.TryParse(token.ToString(), out value))
++                return value;
++            int intValue;
++            if (int.TryParse(token.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
++                return intValue != 0;
++            return defaultValue;
++        }
++
+         private static string JTokenText(JToken token)
+         {
+             if (token == null || token.Type == JTokenType.Null) return "";
+@@ -591,5 +926,26 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             foreach (JToken item in source)
+                 target.Add(item);
+         }
++
++        private class ScheduleFieldRequest
++        {
++            public string Name;
++            public string Heading;
++            public string BuiltInParameter;
++            public int ParameterId;
++            public bool HasWidth;
++            public double Width;
++            public string WidthUnit;
++
++            public string DisplayName
++            {
++                get
++                {
++                    if (!string.IsNullOrWhiteSpace(Name)) return Name;
++                    if (!string.IsNullOrWhiteSpace(BuiltInParameter)) return BuiltInParameter;
++                    return ParameterId.ToString(CultureInfo.InvariantCulture);
++                }
++            }
++        }
+     }
+ }
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index 808db79..779b253 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -24,7 +24,8 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+             "create_duct_run",
+             "resize_duct",
+             "create_pipe_run",
+-            "resize_pipe"
++            "resize_pipe",
++            "create_schedule_or_update_schedule"
+         };
+
+         public static JObject Validate(string mode, JObject plan, string commitToken)
+@@ -84,6 +85,8 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                         errors.Add("steps[" + i + "].targets must be an object");
+                     if (!(step["arguments"] is JObject))
+                         errors.Add("steps[" + i + "].arguments must be an object");
++                    else
++                        ValidateOperationPayload(step, i, errors, warnings);
+                 }
+             }
+
+@@ -112,6 +115,26 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 errors.Add(name + " is required");
+         }
+
++        private static void ValidateOperationPayload(JObject step, int index, JArray errors, JArray warnings)
++        {
++            string operation = StringValue(step, "operation");
++            if (operation != "create_schedule_or_update_schedule")
++                return;
++
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            if (string.IsNullOrWhiteSpace(StringValue(args, "scheduleName")))
++                errors.Add("steps[" + index + "].arguments.scheduleName is required");
++            bool hasScheduleId = args["scheduleId"] != null || ((step["targets"] as JObject) != null && (step["targets"] as JObject)["elementId"] != null);
++            bool hasCategory = args["categoryId"] != null || !string.IsNullOrWhiteSpace(StringValue(args, "category"));
++            if (!hasScheduleId && !hasCategory)
++                errors.Add("steps[" + index + "].arguments.category/categoryId or scheduleId/targets.elementId is required");
++            if (args["fields"] != null && !(args["fields"] is JArray))
++                errors.Add("steps[" + index + "].arguments.fields must be an array when provided");
++            JArray fields = args["fields"] as JArray;
++            if (args["fields"] == null || (fields != null && fields.Count == 0))
++                warnings.Add("steps[" + index + "].arguments.fields is empty; schedule will be created or renamed without adding fields");
++        }
++
+         private static string StringValue(JObject obj, string name)
+         {
+             return obj[name] == null ? "" : obj[name].ToString();
+diff --git a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+index 4add29c..31c47a5 100644
+--- a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
++++ b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+@@ -60,6 +60,8 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+                 return VerifyViewHidden(document, step, true);
+             if (operation == "view_unhide_elements")
+                 return VerifyViewHidden(document, step, false);
++            if (operation == "create_schedule_or_update_schedule")
++                return WritePlanExecutor.VerifySchedule(document, step);
+             return VerifyTargetExists(document, plan, step);
+         }
+
+--
 2.50.1.windows.1
 

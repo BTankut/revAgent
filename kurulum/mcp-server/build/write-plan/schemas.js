@@ -30,13 +30,13 @@ export const initialOperations = [
     "resize_duct",
     "create_pipe_run",
     "resize_pipe",
+    "create_schedule_or_update_schedule",
 ];
 
 export const futureOperations = [
     "pin_elements",
     "unpin_elements",
     "tag_elements",
-    "create_schedule_or_update_schedule",
     "export_boq_report",
     "rotate_elements",
     "align_elements",
