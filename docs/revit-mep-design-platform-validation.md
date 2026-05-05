@@ -46,6 +46,7 @@ Result:
   - orthogonal clash reroute preview with added-length calculation
   - multi-candidate orthogonal reroute solver with clearance validation
   - fan and pump candidate screening
+  - equipment schedule/report proposal rows and low-risk note update write-plan step
   - report issue-list/design-log rows and CSV text generation
 
 ## Plugin Build Check
@@ -180,6 +181,10 @@ Live read-only results captured on the active session:
   - Example original length: `5 m`; reroute length: `6 m`; added length: `1 m`.
   - Multi-candidate solver returned `4` candidates, selected a valid clearance route with `0` violations and `1.025 m` added length.
   - The result is explicitly preview/foundation only with `riskLevel: high` and `canCommit: false`.
+- Equipment schedule proposal runtime probe succeeded:
+  - Fan selection chose `fan-b`.
+  - Schedule proposal produced one report row and one low-risk `set_parameter` write-plan step targeting `eId: supply-fan-001`.
+  - The result is proposal-only with `canCommit: false` and performs no equipment replacement.
 
 Write checks:
 

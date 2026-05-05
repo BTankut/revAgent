@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } from "./clash/calculations.js";
 import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic-water/calculations.js";
-import { selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
+import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
 import { calculateSlopePercent, validateGravitySlope } from "./sanitary-storm/calculations.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
@@ -119,6 +119,21 @@ const pump = selectPumpCandidate({
 assert.equal(pump.success, true);
 assert.equal(pump.selected.id, "pump-b");
 assert.equal(pump.canCommit, false);
+
+const equipmentSchedule = buildEquipmentScheduleProposal({
+    equipmentKind: "fan",
+    requirement: { requiredFlowM3h: 5000, requiredPressurePa: 450 },
+    selection: fan,
+    targetElementId: 12345,
+});
+assert.equal(equipmentSchedule.success, true);
+assert.equal(equipmentSchedule.scheduleRows.length, 1);
+assert.equal(equipmentSchedule.scheduleRows[0].selectedId, "fan-b");
+assert.equal(equipmentSchedule.writePlanSteps.length, 1);
+assert.equal(equipmentSchedule.writePlanSteps[0].operation, "set_parameter");
+assert.equal(equipmentSchedule.writePlanSteps[0].targets.elementId, 12345);
+assert(equipmentSchedule.writePlanSteps[0].arguments.value.includes("selected=fan-b"));
+assert.equal(equipmentSchedule.canCommit, false);
 
 const report = buildAnalysisReport({
     analyses: [
