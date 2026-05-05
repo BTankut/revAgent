@@ -38,6 +38,10 @@ export async function readPathTargetedLocalLosses({
             categories,
         }), { transactionMode: "none" }))
         : { localLossSamples: [] };
+    const warnings = [
+        ...targetedReadWarnings("Candidate path local-loss ranking read", rankingLocalLossRead),
+        ...targetedReadWarnings("Selected path local-loss read", localLossRead),
+    ];
     return {
         pathRead,
         candidateTargetElementIds,
@@ -46,9 +50,25 @@ export async function readPathTargetedLocalLosses({
         targetElementIds,
         localLossRead,
         localLossSamples: localLossRead?.localLossSamples || [],
+        warnings,
     };
 }
 
 function unwrapRevitResult(response) {
     return response && response.result ? response.result : response;
+}
+
+function targetedReadWarnings(label, read) {
+    if (!read?.truncatedBySampleLimit) return [];
+    const uninspected = Number.isFinite(Number(read.uninspectedTargetCount))
+        ? Number(read.uninspectedTargetCount)
+        : undefined;
+    const requested = Number.isFinite(Number(read.requestedTargetCount))
+        ? Number(read.requestedTargetCount)
+        : undefined;
+    const suffix = [
+        requested !== undefined ? `requested ${requested}` : "",
+        uninspected !== undefined ? `uninspected ${uninspected}` : "",
+    ].filter(Boolean).join(", ");
+    return [`${label} was truncated by sample limit${suffix ? ` (${suffix})` : ""}.`];
 }

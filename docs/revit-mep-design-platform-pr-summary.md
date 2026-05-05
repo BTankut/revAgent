@@ -65,6 +65,7 @@
 - Added `localLossFromNetworkPath` critical-path targeting foundation: the runtime reads all reachable connector path candidates, ranks by explicit local-loss pressure drop when numeric loss samples are available, falls back to maximum hop count otherwise, then re-runs local-loss extraction only against the selected path's element ids. Live Revit evidence used path `392199 -> 392203 -> 392200`, selected terminal `392200`, skipped the two duct targets, sampled fitting `392203`, and carried `0.903187266396887 Pa` from `Pressure Drop`.
 - Consolidated the path-targeted local-loss workflow into a shared two-stage helper and added fake-executor test coverage for pathfinding read, candidate ranking read, and selected-path final read.
 - Hardened targeted local-loss collection for longer critical paths: explicit target reads now scale the sample limit to cover the requested target id set up to a guarded cap and return `uninspectedTargetCount`, `truncatedBySampleLimit`, and `targetedReadComplete` for audit.
+- Propagated targeted local-loss truncation into analysis-level warnings so incomplete candidate ranking or selected-path reads are visible without digging into raw Revit readback.
 - Live-tested approved equipment schedule note execution on Mechanical Equipment `386031` through native preview/commit/verify/readback.
 - Added native `create_schedule_or_update_schedule`, runtime validation/risk coverage, and live-tested approved schedule creation in the disposable model:
   - Schedule `Codex MEP Equipment Schedule 2026-05-05`

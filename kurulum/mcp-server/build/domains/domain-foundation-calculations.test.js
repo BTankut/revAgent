@@ -279,6 +279,9 @@ const pathTargetingResult = await readPathTargetedLocalLosses({
         assert(pathTargetingCalls[2].code.includes("int sampleLimit = 3;"));
         return {
             result: {
+                truncatedBySampleLimit: true,
+                requestedTargetCount: 3,
+                uninspectedTargetCount: 1,
                 localLossSamples: [
                     {
                         elementId: 60,
@@ -305,6 +308,9 @@ assert.equal(pathTargetingResult.criticalPathSelection.strategy, "max_local_loss
 assert.equal(pathTargetingResult.criticalPathSelection.selectedTerminalElementId, 502);
 assert.deepEqual(pathTargetingResult.targetElementIds, [10, 60, 502]);
 assert.equal(pathTargetingResult.localLossSamples[0].elementId, 60);
+assert.deepEqual(pathTargetingResult.warnings, [
+    "Selected path local-loss read was truncated by sample limit (requested 3, uninspected 1).",
+]);
 
 const targetedLocalLossCode = buildLocalLossOnlyCode({
     categories: ["OST_DuctFitting"],

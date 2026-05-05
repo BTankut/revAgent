@@ -92,6 +92,7 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
                 liveLocalLossFanPressureBasis,
                 warnings: [
                     ...(base.warnings || []),
+                    ...(pathTargeting.warnings || []),
                     ...(pathTargeting.criticalPathSelection.warnings || []),
                     ...(localLossExtraction.warnings || []),
                 ],

@@ -141,6 +141,7 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                 liveLocalLossPumpHeadBasis,
                 warnings: [
                     ...(base.warnings || []),
+                    ...(pathTargeting.warnings || []),
                     ...(pathTargeting.criticalPathSelection.warnings || []),
                     ...(localLossExtraction.warnings || []),
                 ],
