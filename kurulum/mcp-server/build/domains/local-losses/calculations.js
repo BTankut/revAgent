@@ -1,4 +1,58 @@
-export function summarizeLocalLossSamples({ discipline = "general", samples = [], sampleLimit } = {}) {
+export function selectCriticalConnectorPath({ connectorPathfinding } = {}) {
+    const terminalPaths = Array.isArray(connectorPathfinding?.terminalPaths)
+        ? connectorPathfinding.terminalPaths
+        : [];
+    const reachable = terminalPaths
+        .filter((path) => path?.reachable === true && Array.isArray(path.pathElementIds) && path.pathElementIds.length > 0)
+        .map((path) => ({
+            elementId: path.elementId,
+            hopCount: Number.isFinite(Number(path.hopCount)) ? Number(path.hopCount) : path.pathElementIds.length - 1,
+            pathElementIds: path.pathElementIds
+                .map((value) => Number.parseInt(String(value), 10))
+                .filter((value) => Number.isFinite(value) && value > 0),
+        }))
+        .filter((path) => path.pathElementIds.length > 0);
+    const warnings = [];
+    if (!connectorPathfinding) {
+        warnings.push("Connector pathfinding output was not supplied for critical-path local-loss targeting.");
+    }
+    if (reachable.length === 0) {
+        warnings.push("No reachable connector path was available for critical-path local-loss targeting.");
+        return {
+            success: false,
+            method: "Select live connector path with maximum hop count for targeted local-loss extraction",
+            strategy: "max_hop_count",
+            reachableTerminalCount: 0,
+            pathElementIds: [],
+            warnings,
+            canCommit: false,
+        };
+    }
+    reachable.sort((a, b) => {
+        const hopDiff = Number(b.hopCount || 0) - Number(a.hopCount || 0);
+        if (hopDiff !== 0) return hopDiff;
+        return b.pathElementIds.length - a.pathElementIds.length;
+    });
+    const selected = reachable[0];
+    return {
+        success: true,
+        method: "Select live connector path with maximum hop count for targeted local-loss extraction",
+        strategy: "max_hop_count",
+        selectedTerminalElementId: selected.elementId,
+        selectedHopCount: selected.hopCount,
+        reachableTerminalCount: reachable.length,
+        pathElementIds: selected.pathElementIds,
+        terminalPathSummaries: reachable.map((path) => ({
+            elementId: path.elementId,
+            hopCount: path.hopCount,
+            pathElementCount: path.pathElementIds.length,
+        })),
+        warnings,
+        canCommit: false,
+    };
+}
+
+export function summarizeLocalLossSamples({ discipline = "general", samples = [], sampleLimit, criticalPathSelection } = {}) {
     const safeSamples = Array.isArray(samples) ? samples : [];
     const rows = [];
     const countsByCategory = {};
@@ -76,6 +130,10 @@ export function summarizeLocalLossSamples({ discipline = "general", samples = []
         method: "Read-only fitting/accessory/equipment parameter extraction for local-loss calibration",
         discipline,
         sampleLimit: Number.isFinite(Number(sampleLimit)) ? Number(sampleLimit) : undefined,
+        ...(criticalPathSelection ? {
+            criticalPathSelection,
+            targetedByCriticalPath: criticalPathSelection.success === true,
+        } : {}),
         inspectedElementCount: safeSamples.length,
         elementsWithLossParameters,
         localLossParameterCount: rows.length,

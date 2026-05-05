@@ -1,6 +1,6 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { exampleAirsideFlowDirections, exampleAirsideTreeNetwork, exampleAirsideWeightedNetwork } from "../network/calculations.js";
-import { summarizeLocalLossSamples } from "../local-losses/calculations.js";
+import { selectCriticalConnectorPath, summarizeLocalLossSamples } from "../local-losses/calculations.js";
 import { buildLocalLossOnlyCode } from "../local-losses/revit-read.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
 import { calculateFanPressureBasis, sizeRectangularDuctEqualFriction } from "./calculations.js";
@@ -51,6 +51,58 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
         return base;
     }
     try {
+        if (networkPathRequest.localLossFromNetworkPath === true) {
+            const pathResponse = await executeRevitCode(buildHvacReadCode({
+                ...networkPathRequest,
+                pathfindingOnly: true,
+                localLossOnly: false,
+            }), { transactionMode: "none" });
+            const pathRead = pathResponse && pathResponse.result ? pathResponse.result : pathResponse;
+            const criticalPathSelection = selectCriticalConnectorPath({
+                connectorPathfinding: pathRead?.connectorPathfinding,
+            });
+            const sampleLimit = Number.parseInt(String(networkPathRequest.localLossSampleLimit || 25), 10);
+            const targetElementIds = criticalPathSelection.pathElementIds || [];
+            const lossResponse = targetElementIds.length > 0
+                ? await executeRevitCode(buildLocalLossOnlyCode({
+                    sampleLimit: Number.isFinite(sampleLimit) ? sampleLimit : 25,
+                    targetElementIds,
+                    categories: ["OST_DuctFitting", "OST_DuctAccessory", "OST_DuctTerminal", "OST_MechanicalEquipment"],
+                }), { transactionMode: "none" })
+                : { localLossSamples: [] };
+            const localLossRead = lossResponse && lossResponse.result ? lossResponse.result : lossResponse;
+            const revitRead = {
+                ...pathRead,
+                localLossFromNetworkPath: true,
+                criticalPathLocalLossTargetElementIds: targetElementIds,
+                localLossRead,
+                localLossSamples: localLossRead?.localLossSamples || [],
+            };
+            const localLossExtraction = summarizeLocalLossSamples({
+                discipline: "hvac",
+                samples: revitRead.localLossSamples,
+                sampleLimit: networkPathRequest.localLossSampleLimit,
+                criticalPathSelection,
+            });
+            const liveLocalLossFanPressureBasis = calculateFanPressureBasis({
+                network: fanPressureNetwork,
+                equipmentLossPa: 80,
+                localLossPressurePa: localLossExtraction.pressureContribution.totalPressureDropPa,
+                terminalAllowancePa: 40,
+                safetyFactor: 1.1,
+            });
+            return {
+                ...base,
+                revitRead,
+                localLossExtraction,
+                liveLocalLossFanPressureBasis,
+                warnings: [
+                    ...(base.warnings || []),
+                    ...(criticalPathSelection.warnings || []),
+                    ...(localLossExtraction.warnings || []),
+                ],
+            };
+        }
         const response = await executeRevitCode(buildHvacReadCode(networkPathRequest), { transactionMode: "none" });
         const revitRead = response && response.result ? response.result : response;
         const localLossExtraction = revitRead?.localLossSamples

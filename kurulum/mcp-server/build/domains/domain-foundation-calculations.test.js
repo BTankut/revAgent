@@ -3,7 +3,7 @@ import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } f
 import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic-water/calculations.js";
 import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
-import { summarizeLocalLossSamples } from "./local-losses/calculations.js";
+import { selectCriticalConnectorPath, summarizeLocalLossSamples } from "./local-losses/calculations.js";
 import { buildLocalLossOnlyCode } from "./local-losses/revit-read.js";
 import { calculateSlopePercent, validateGravitySlope } from "./sanitary-storm/calculations.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
@@ -191,6 +191,26 @@ assert.equal(localLossExtraction.pressureContribution.bySystem[0].systemName, "S
 assert.equal(localLossExtraction.pressureContribution.byCategory[0].category, "Duct Fittings");
 assert.equal(localLossExtraction.rows[0].rowType, "local_loss_parameter");
 assert.equal(localLossExtraction.canCommit, false);
+
+const criticalPathSelection = selectCriticalConnectorPath({
+    connectorPathfinding: {
+        terminalPaths: [
+            { elementId: 301, reachable: true, hopCount: 2, pathElementIds: [10, 20, 301] },
+            { elementId: 302, reachable: true, hopCount: 4, pathElementIds: [10, 21, 22, 23, 302] },
+            { elementId: 303, reachable: false, hopCount: -1, pathElementIds: [] },
+        ],
+    },
+});
+assert.equal(criticalPathSelection.success, true);
+assert.equal(criticalPathSelection.selectedTerminalElementId, 302);
+assert.deepEqual(criticalPathSelection.pathElementIds, [10, 21, 22, 23, 302]);
+const criticalPathLocalLossExtraction = summarizeLocalLossSamples({
+    discipline: "hvac",
+    samples: [],
+    criticalPathSelection,
+});
+assert.equal(criticalPathLocalLossExtraction.targetedByCriticalPath, true);
+assert.equal(criticalPathLocalLossExtraction.criticalPathSelection.selectedTerminalElementId, 302);
 
 const targetedLocalLossCode = buildLocalLossOnlyCode({
     categories: ["OST_DuctFitting"],

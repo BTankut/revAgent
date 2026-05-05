@@ -62,6 +62,7 @@
 - Added live HVAC/hydronic fitting/accessory/equipment local-loss parameter extraction and `local_loss` report rows; live probe returned HVAC `15` rows and hydronic `30` rows from the active test model.
 - Added local-loss pressure summary rows and explicit fan/pump basis contribution from numeric local-loss pressure drops; live probe carried HVAC `0.903 Pa` into fan pressure basis and hydronic `8.926 kPa` into pump head basis.
 - Added `localLossElementIds` targeted extraction input for known critical-path/circuit element sets; direct live targeted probe confirmed HVAC fitting `392203` and hydronic fitting `513769` pressure-drop values.
+- Added `localLossFromNetworkPath` critical-path targeting foundation: the runtime first selects a reachable connector terminal path by maximum hop count, then re-runs local-loss extraction only against that path's element ids. Live Revit evidence used path `392199 -> 392203 -> 392200`, selected terminal `392200`, skipped the two duct targets, sampled fitting `392203`, and carried `0.903187266396887 Pa` from `Pressure Drop`.
 - Live-tested approved equipment schedule note execution on Mechanical Equipment `386031` through native preview/commit/verify/readback.
 - Added native `create_schedule_or_update_schedule`, runtime validation/risk coverage, and live-tested approved schedule creation in the disposable model:
   - Schedule `Codex MEP Equipment Schedule 2026-05-05`
@@ -99,4 +100,4 @@
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from targeted local-loss extraction/reporting/basis-contribution foundations to production-calibrated final sizing from complete critical-path local-loss datasets and broader production reroute fitting behavior.
+- Expand engineering engines from path-targeted local-loss extraction/reporting/basis-contribution foundations to production-calibrated final sizing from complete critical-path local-loss datasets and broader production reroute fitting behavior.

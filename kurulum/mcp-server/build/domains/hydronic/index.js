@@ -1,6 +1,6 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { exampleHydronicFlowDirections, exampleHydronicTreeNetwork, exampleHydronicWeightedNetwork } from "../network/calculations.js";
-import { summarizeLocalLossSamples } from "../local-losses/calculations.js";
+import { selectCriticalConnectorPath, summarizeLocalLossSamples } from "../local-losses/calculations.js";
 import { buildLocalLossOnlyCode } from "../local-losses/revit-read.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
 import { calibratePipeResistanceSamples, calculateHydronicBalance, calculatePumpHeadBasis, pipeResistanceCoefficient, sizePipeByVelocityOrFriction, solveHardyCrossLoop, solveHardyCrossNetwork } from "./calculations.js";
@@ -99,6 +99,59 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
     };
     if (!includeRevitRead) return base;
     try {
+        if (networkPathRequest.localLossFromNetworkPath === true) {
+            const pathResponse = await executeRevitCode(buildPipeReadCode({
+                ...networkPathRequest,
+                pathfindingOnly: true,
+                localLossOnly: false,
+                hydraulicResistanceOnly: false,
+            }), { transactionMode: "none" });
+            const pathRead = pathResponse && pathResponse.result ? pathResponse.result : pathResponse;
+            const criticalPathSelection = selectCriticalConnectorPath({
+                connectorPathfinding: pathRead?.connectorPathfinding,
+            });
+            const sampleLimit = Number.parseInt(String(networkPathRequest.localLossSampleLimit || 25), 10);
+            const targetElementIds = criticalPathSelection.pathElementIds || [];
+            const lossResponse = targetElementIds.length > 0
+                ? await executeRevitCode(buildLocalLossOnlyCode({
+                    sampleLimit: Number.isFinite(sampleLimit) ? sampleLimit : 25,
+                    targetElementIds,
+                    categories: ["OST_PipeFitting", "OST_PipeAccessory", "OST_MechanicalEquipment"],
+                }), { transactionMode: "none" })
+                : { localLossSamples: [] };
+            const localLossRead = lossResponse && lossResponse.result ? lossResponse.result : lossResponse;
+            const revitRead = {
+                ...pathRead,
+                localLossFromNetworkPath: true,
+                criticalPathLocalLossTargetElementIds: targetElementIds,
+                localLossRead,
+                localLossSamples: localLossRead?.localLossSamples || [],
+            };
+            const localLossExtraction = summarizeLocalLossSamples({
+                discipline: "hydronic",
+                samples: revitRead.localLossSamples,
+                sampleLimit: networkPathRequest.localLossSampleLimit,
+                criticalPathSelection,
+            });
+            const liveLocalLossPumpHeadBasis = calculatePumpHeadBasis({
+                network: pumpHeadNetwork,
+                equipmentLossKPa: 12,
+                localLossPressurePa: localLossExtraction.pressureContribution.totalPressureDropPa,
+                terminalLossKPa: 8,
+                safetyFactor: 1.1,
+            });
+            return {
+                ...base,
+                revitRead,
+                localLossExtraction,
+                liveLocalLossPumpHeadBasis,
+                warnings: [
+                    ...(base.warnings || []),
+                    ...(criticalPathSelection.warnings || []),
+                    ...(localLossExtraction.warnings || []),
+                ],
+            };
+        }
         const response = await executeRevitCode(buildPipeReadCode(networkPathRequest), { transactionMode: "none" });
         const revitRead = response && response.result ? response.result : response;
         const resistanceCalibration = revitRead?.pipeResistanceSamples
