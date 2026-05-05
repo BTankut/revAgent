@@ -314,6 +314,11 @@ Write checks:
   - Commit copied source duct `392168` to disposable duct `1021032` and set `Comments` to `Codex disposable live commit 2026-05-05T00:00:00Z`.
   - `inspect_elements` verified the copied duct's `Comments` value and confirmed source duct `392168` still retained `Codex write-plan commit test 2026-05-05T00:00:00Z`.
   - Cleanup deleted `1021032`; final session counts returned to `744` ducts and `488` pipes.
+- Additional native socket preview audit after the latest runtime sync:
+  - A fresh stdio runtime handshake listed all `13` tools from `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js`.
+  - `preview_write_plan` was called through that runtime with `useNativeExecutor: true` for a preview-only `set_parameter` step on duct `392168`.
+  - The result used the normal `execute_write_plan` socket path (`directAssemblyFallback: false`), returned one preview row, and reported `mutateModel: false`.
+  - Re-reading duct `392168` after preview confirmed `Comments` remained `Codex write-plan commit test 2026-05-05T00:00:00Z`.
 
 ## Known Validation Limits
 
