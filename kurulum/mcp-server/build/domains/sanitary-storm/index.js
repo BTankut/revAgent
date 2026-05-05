@@ -1,8 +1,15 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
-import { calculateStormRunoffRational, checkVentContinuity, sizeGravityPipeByFixtureUnits, sizeStormPipeByFlow, traceGravityDrainageToStack, validateGravitySlope } from "./calculations.js";
+import { buildSanitaryStormPipeResizeProposal, calculateStormRunoffRational, checkVentContinuity, sizeGravityPipeByFixtureUnits, sizeStormPipeByFlow, traceGravityDrainageToStack, validateGravitySlope } from "./calculations.js";
 
-export function analyzeSanitaryStorm({ officeStandards = {} } = {}) {
+export function analyzeSanitaryStorm({ officeStandards = {}, pipeSizingRequests = [] } = {}) {
     const missingStandards = missingStandardsForDiscipline("sanitary", officeStandards);
+    const pipeSizingProposal = buildSanitaryStormPipeResizeProposal({
+        pipeSizingRequests,
+        sanitarySizingTable: officeStandards.sanitaryStorm?.pipeSizingTable,
+        stormSizingTable: officeStandards.sanitaryStorm?.stormPipeSizingTable,
+        rainfallIntensityMmH: officeStandards.sanitaryStorm?.rainfallIntensityMmH,
+        runoffCoefficient: officeStandards.sanitaryStorm?.runoffCoefficient,
+    });
     return {
         discipline: "sanitary",
         engine: "sanitary-storm-foundation",
@@ -17,6 +24,7 @@ export function analyzeSanitaryStorm({ officeStandards = {} } = {}) {
             "reverse slope issue check",
             "fixture-unit gravity pipe sizing proposal",
             "storm runoff and pipe sizing proposal",
+            "resize_pipe write-plan proposal from sanitary/storm sizing requests",
             "branch-to-stack reachability check",
             "vent continuity check",
         ],
@@ -61,6 +69,7 @@ export function analyzeSanitaryStorm({ officeStandards = {} } = {}) {
                 ],
             }),
         },
+        ...(Array.isArray(pipeSizingRequests) && pipeSizingRequests.length > 0 ? { pipeSizingProposal } : {}),
         canCommit: false,
     };
 }

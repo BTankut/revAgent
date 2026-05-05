@@ -370,6 +370,10 @@ Write checks:
   - The same plan with `officeStandards.enforceAllowedParameterNames: true` returned `success: false`, `validation.valid: false`, and the same condition as a validation error.
   - A follow-up exact-schema mapping probe used `exactSchemaMappings.approvedCustomNote.parameterName = "Approved Custom Note"`: targeting `Approved Custom Note` returned no warning, while targeting the logical alias `approvedCustomNote` returned an allowlist warning. This keeps mapping aliases from bypassing the parameter-name gate.
   - `get_revit_session_context` still confirmed the clean-restart model `rme_advanced_sample_project_codex_restart_test`, Revit `2022` build `22.0.2.392`, active view `WSHP 2-3 System View`, and live MEP counts including `728` ducts and `488` pipes.
+- Domestic/sanitary/storm pipe sizing proposal handoff audit:
+  - A fresh stdio runtime handshake listed all `13` tools.
+  - `analyze_mep_system` with `includeRevitRead: false`, one `domesticWaterPipeSizingRequests` item, two `sanitaryStormPipeSizingRequests` items, and complete test office standards returned `success: true`, `mutateModel: false`, and `writePlanProposal.validation.valid: true`.
+  - The top-level proposal included three proposal-only `resize_pipe` steps: domestic water pipe `601 -> 25 mm`, sanitary pipe `701 -> 75 mm`, and storm pipe `702 -> 100 mm`; the same rows appeared in `reporting.pipeSizingRows`.
 
 ## Known Validation Limits
 

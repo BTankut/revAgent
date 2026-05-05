@@ -190,6 +190,137 @@ export function sizeDomesticWaterPipe({
     };
 }
 
+export function buildDomesticWaterPipeResizeProposal({
+    pipeSizingRequests = [],
+    maxVelocityMps,
+    maxPressureLossPaPerM,
+    diametersMm,
+    demandCurve = null,
+    water,
+} = {}) {
+    const missingStandards = [];
+    if (!isPositive(maxVelocityMps)) missingStandards.push("domesticWater.pipeVelocityLimitMps");
+    if (!isPositive(maxPressureLossPaPerM)) missingStandards.push("domesticWater.pipeFrictionLimitPaPerM");
+    if (missingStandards.length > 0) {
+        return {
+            success: false,
+            status: "blocked_missing_office_standard",
+            requiresOfficeStandard: true,
+            missingStandards,
+            rows: [],
+            writePlanSteps: [],
+            canCommit: false,
+            riskLevel: "high",
+        };
+    }
+
+    const rows = [];
+    const writePlanSteps = [];
+    const warnings = [];
+    let skippedNoDemandCount = 0;
+    let skippedNoSizeCount = 0;
+    for (const request of Array.isArray(pipeSizingRequests) ? pipeSizingRequests : []) {
+        const target = targetForRequest(request);
+        const demand = domesticDemandForRequest(request, demandCurve);
+        if (!demand.success) {
+            skippedNoDemandCount++;
+            if (demand.warning) warnings.push(demand.warning);
+            continue;
+        }
+        const sizing = sizeDomesticWaterPipe({
+            flowLs: demand.flowLs,
+            maxVelocityMps,
+            maxPressureLossPaPerM,
+            diametersMm,
+            water,
+        });
+        if (!sizing.success || !sizing.selected) {
+            skippedNoSizeCount++;
+            continue;
+        }
+        const currentDiameterMm = currentDiameterForRequest(request);
+        const lengthM = Number(request?.lengthM);
+        const currentFriction = isPositive(currentDiameterMm)
+            ? pipeFrictionLossPaPerM(demand.flowLs, currentDiameterMm, water)
+            : null;
+        const selected = sizing.selected;
+        const resizeRequired = isPositive(currentDiameterMm)
+            ? Math.abs(Number(selected.diameterMm) - Number(currentDiameterMm)) > 1e-6
+            : true;
+        const currentLinearPressureLossPa = currentFriction?.success && Number.isFinite(lengthM) && lengthM > 0
+            ? currentFriction.output.pressureLossPaPerM * lengthM
+            : null;
+        const selectedLinearPressureLossPa = Number.isFinite(lengthM) && lengthM > 0
+            ? selected.pressureLossPaPerM * lengthM
+            : null;
+        rows.push({
+            rowType: "domestic_water_pipe_sizing_proposal",
+            elementId: positiveInteger(request?.elementId),
+            eId: isNonEmptyString(request?.eId) ? request.eId.trim() : "",
+            uniqueId: request?.uniqueId || "",
+            systemName: request?.systemName || "Domestic Water",
+            lengthM: Number.isFinite(lengthM) ? lengthM : null,
+            fixtureUnits: Number.isFinite(Number(request?.fixtureUnits)) ? Number(request.fixtureUnits) : null,
+            designFlowLs: demand.flowLs,
+            demandSource: demand.source,
+            currentDiameterMm: isPositive(currentDiameterMm) ? Number(currentDiameterMm) : null,
+            selectedDiameterMm: selected.diameterMm,
+            currentVelocityMps: currentFriction?.success ? currentFriction.output.velocityMps : null,
+            selectedVelocityMps: selected.velocityMps,
+            currentPressureLossPaPerM: currentFriction?.success ? currentFriction.output.pressureLossPaPerM : null,
+            selectedPressureLossPaPerM: selected.pressureLossPaPerM,
+            currentLinearPressureLossPa,
+            selectedLinearPressureLossPa,
+            resizeRequired,
+            status: "proposal_ready_for_review",
+            source: "domesticWaterPipeSizingRequests + officeStandards.domesticWater",
+            canCommit: false,
+        });
+        if (resizeRequired && target) {
+            writePlanSteps.push({
+                stepId: `resize-domestic-water-pipe-${target.label}`,
+                operation: "resize_pipe",
+                dependsOn: [],
+                targets: target.targets,
+                arguments: {
+                    diameter: selected.diameterMm,
+                    unit: "mm",
+                },
+                preconditions: [
+                    `Domestic water demand confirmed at ${round(demand.flowLs, 3)} L/s from ${demand.source}.`,
+                    `Velocity limit ${round(maxVelocityMps, 3)} m/s and friction limit ${round(maxPressureLossPaPerM, 3)} Pa/m applied.`,
+                    "Verify system classification, minimum code size, fittings, valves, meters, heaters, and diversity before commit.",
+                ],
+                riskLevel: "medium",
+            });
+        }
+    }
+    if (skippedNoDemandCount > 0) warnings.push(`Skipped ${skippedNoDemandCount} domestic water pipe sizing request(s) without confirmed flow or fixture-unit demand.`);
+    if (skippedNoSizeCount > 0) warnings.push(`Skipped ${skippedNoSizeCount} domestic water pipe sizing request(s) with no configured diameter satisfying limits.`);
+    return {
+        success: rows.length > 0,
+        method: "Domestic water resize_pipe proposal from demand basis and office velocity/friction limits",
+        status: rows.length > 0 ? "proposal_ready_for_review" : "blocked_no_sizable_pipe_requests",
+        assumptions: [
+            "Requests must identify exact Revit pipes by elementId or stable eId before a write-plan commit.",
+            "Generated resize_pipe steps are proposal-only and require preview, explicit approval, and verify.",
+        ],
+        dataCompleteness: proposalDataCompleteness({
+            requestCount: Array.isArray(pipeSizingRequests) ? pipeSizingRequests.length : 0,
+            rowCount: rows.length,
+            writePlanStepCount: writePlanSteps.length,
+            skippedNoDemandCount,
+            skippedNoSizeCount,
+            targetLabel: "domestic water pipe",
+        }),
+        rows,
+        writePlanSteps,
+        warnings,
+        canCommit: false,
+        riskLevel: "high",
+    };
+}
+
 export function checkRecirculationContinuity({ nodes = [], edges = [], requiredLoopNodeIds = [] } = {}) {
     const graph = new Map();
     for (const node of nodes) graph.set(String(node.id), new Set());
@@ -219,6 +350,88 @@ export function checkRecirculationContinuity({ nodes = [], edges = [], requiredL
         canCommit: false,
         riskLevel: "medium",
     };
+}
+
+function domesticDemandForRequest(request, demandCurve) {
+    const explicitFlow = Number(request?.flowLs ?? request?.demandFlowLs);
+    if (Number.isFinite(explicitFlow) && explicitFlow > 0) {
+        return { success: true, flowLs: explicitFlow, source: "explicit flowLs" };
+    }
+    const fixtureUnits = Number(request?.fixtureUnits);
+    if (Number.isFinite(fixtureUnits) && fixtureUnits >= 0) {
+        const demand = convertFixtureUnitsToDemand({ fixtureUnits, demandCurve });
+        if (demand.success) {
+            return { success: true, flowLs: demand.output.demandFlowLs, source: "fixture-unit demand curve" };
+        }
+        return {
+            success: false,
+            warning: `Domestic water request ${targetLabelForRequest(request)} has fixtureUnits but no valid fixture-unit demand curve.`,
+        };
+    }
+    return { success: false };
+}
+
+function currentDiameterForRequest(request) {
+    return Number(request?.currentDiameterMm ?? request?.diameterMm);
+}
+
+function targetForRequest(request) {
+    const elementId = positiveInteger(request?.elementId);
+    if (elementId) {
+        return { label: String(elementId), targets: { elementId } };
+    }
+    if (isNonEmptyString(request?.eId)) {
+        const eId = request.eId.trim();
+        return { label: safeId(eId), targets: { eId } };
+    }
+    return null;
+}
+
+function targetLabelForRequest(request) {
+    return targetForRequest(request)?.label || "(unidentified)";
+}
+
+function positiveInteger(value) {
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+function safeId(value) {
+    return String(value || "target").replace(/[^A-Za-z0-9_-]+/g, "-");
+}
+
+function round(value, digits = 3) {
+    const factor = 10 ** digits;
+    return Math.round(Number(value) * factor) / factor;
+}
+
+function proposalDataCompleteness({
+    requestCount,
+    rowCount,
+    writePlanStepCount,
+    skippedNoDemandCount,
+    skippedNoSizeCount,
+    targetLabel,
+}) {
+    const blockers = [];
+    if (requestCount <= 0) blockers.push(`No ${targetLabel} sizing requests were supplied.`);
+    if (rowCount <= 0) blockers.push(`No ${targetLabel} sizing proposal rows were produced.`);
+    if (skippedNoDemandCount > 0) blockers.push(`${skippedNoDemandCount} ${targetLabel} sizing request(s) lack confirmed demand.`);
+    if (skippedNoSizeCount > 0) blockers.push(`${skippedNoSizeCount} ${targetLabel} sizing request(s) have no configured size satisfying limits.`);
+    if (writePlanStepCount <= 0 && rowCount > 0) blockers.push(`No ${targetLabel} resize step was needed or target identity was incomplete.`);
+    return {
+        requestCount,
+        rowCount,
+        writePlanStepCount,
+        skippedNoDemandCount,
+        skippedNoSizeCount,
+        completeForProductionReview: blockers.length === 0,
+        blockers,
+    };
+}
+
+function isNonEmptyString(value) {
+    return typeof value === "string" && value.trim().length > 0;
 }
 
 function isPositive(value) {

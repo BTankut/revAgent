@@ -273,6 +273,105 @@ export function sizeStormPipeByFlow({
     };
 }
 
+export function buildSanitaryStormPipeResizeProposal({
+    pipeSizingRequests = [],
+    sanitarySizingTable = null,
+    stormSizingTable = null,
+    rainfallIntensityMmH = null,
+    runoffCoefficient = null,
+} = {}) {
+    const rows = [];
+    const writePlanSteps = [];
+    const warnings = [];
+    let skippedNoDemandCount = 0;
+    let skippedNoSizeCount = 0;
+    for (const request of Array.isArray(pipeSizingRequests) ? pipeSizingRequests : []) {
+        const drainageType = drainageTypeForRequest(request);
+        const demand = drainageDemandForRequest({ request, drainageType, rainfallIntensityMmH, runoffCoefficient });
+        if (!demand.success) {
+            skippedNoDemandCount++;
+            if (demand.warning) warnings.push(demand.warning);
+            continue;
+        }
+        const sizing = drainageType === "storm"
+            ? sizeStormPipeByFlow({ runoffFlowLs: demand.flowLs, sizingTable: stormSizingTable })
+            : sizeGravityPipeByFixtureUnits({ fixtureUnits: demand.fixtureUnits, sizingTable: sanitarySizingTable });
+        if (!sizing.success || !sizing.selected) {
+            skippedNoSizeCount++;
+            warnings.push(`Skipped ${drainageType} pipe request ${targetLabelForRequest(request)}: ${sizing.missingStandards?.join(", ") || sizing.error || "no configured size satisfies the demand"}.`);
+            continue;
+        }
+        const target = targetForRequest(request);
+        const currentDiameterMm = currentDiameterForRequest(request);
+        const selected = sizing.selected;
+        const resizeRequired = isPositive(currentDiameterMm)
+            ? Math.abs(Number(selected.diameterMm) - Number(currentDiameterMm)) > 1e-6
+            : true;
+        rows.push({
+            rowType: drainageType === "storm" ? "storm_pipe_sizing_proposal" : "sanitary_pipe_sizing_proposal",
+            drainageType,
+            elementId: positiveInteger(request?.elementId),
+            eId: isNonEmptyString(request?.eId) ? request.eId.trim() : "",
+            uniqueId: request?.uniqueId || "",
+            systemName: request?.systemName || (drainageType === "storm" ? "Storm Drainage" : "Sanitary"),
+            lengthM: Number.isFinite(Number(request?.lengthM)) ? Number(request.lengthM) : null,
+            fixtureUnits: demand.fixtureUnits ?? null,
+            designFlowLs: demand.flowLs ?? null,
+            demandSource: demand.source,
+            currentDiameterMm: isPositive(currentDiameterMm) ? Number(currentDiameterMm) : null,
+            selectedDiameterMm: selected.diameterMm,
+            selectedMinSlopePercent: Number.isFinite(Number(selected.minSlopePercent)) ? Number(selected.minSlopePercent) : null,
+            resizeRequired,
+            status: "proposal_ready_for_review",
+            source: "sanitaryStormPipeSizingRequests + officeStandards.sanitaryStorm",
+            canCommit: false,
+        });
+        if (resizeRequired && target) {
+            writePlanSteps.push({
+                stepId: `resize-${drainageType}-pipe-${target.label}`,
+                operation: "resize_pipe",
+                dependsOn: [],
+                targets: target.targets,
+                arguments: {
+                    diameter: selected.diameterMm,
+                    unit: "mm",
+                },
+                preconditions: [
+                    drainageType === "storm"
+                        ? `Storm runoff/design flow confirmed at ${round(demand.flowLs, 3)} L/s.`
+                        : `Sanitary fixture load confirmed at ${round(demand.fixtureUnits, 3)} fixture units.`,
+                    `Configured ${drainageType} sizing table selected ${round(selected.diameterMm, 3)} mm pipe.`,
+                    "Verify slope, invert continuity, stack/vent relationship, and local code requirements before commit.",
+                ],
+                riskLevel: "medium",
+            });
+        }
+    }
+    if (skippedNoDemandCount > 0) warnings.push(`Skipped ${skippedNoDemandCount} sanitary/storm pipe sizing request(s) without confirmed fixture units or storm flow.`);
+    if (skippedNoSizeCount > 0) warnings.push(`Skipped ${skippedNoSizeCount} sanitary/storm pipe sizing request(s) with no configured diameter satisfying demand.`);
+    return {
+        success: rows.length > 0,
+        method: "Sanitary/storm resize_pipe proposal from fixture-unit or runoff demand and configured sizing tables",
+        status: rows.length > 0 ? "proposal_ready_for_review" : "blocked_no_sizable_pipe_requests",
+        assumptions: [
+            "Drainage requests must identify exact Revit pipes by elementId or stable eId before a write-plan commit.",
+            "Generated resize_pipe steps are proposal-only and require slope/invert/vent review, preview, explicit approval, and verify.",
+        ],
+        dataCompleteness: proposalDataCompleteness({
+            requestCount: Array.isArray(pipeSizingRequests) ? pipeSizingRequests.length : 0,
+            rowCount: rows.length,
+            writePlanStepCount: writePlanSteps.length,
+            skippedNoDemandCount,
+            skippedNoSizeCount,
+        }),
+        rows,
+        writePlanSteps,
+        warnings,
+        canCommit: false,
+        riskLevel: "high",
+    };
+}
+
 function directedGraph(edges) {
     const graph = new Map();
     for (const edge of Array.isArray(edges) ? edges : []) {
@@ -296,6 +395,102 @@ function undirectedGraph(edges) {
         graph.get(to).add(from);
     }
     return graph;
+}
+
+function drainageDemandForRequest({ request, drainageType, rainfallIntensityMmH, runoffCoefficient }) {
+    if (drainageType === "storm") {
+        const explicitFlow = Number(request?.runoffFlowLs ?? request?.flowLs ?? request?.designFlowLs);
+        if (Number.isFinite(explicitFlow) && explicitFlow > 0) {
+            return { success: true, flowLs: explicitFlow, source: "explicit storm flow" };
+        }
+        const runoff = calculateStormRunoffRational({
+            catchmentAreaM2: request?.catchmentAreaM2,
+            rainfallIntensityMmH,
+            runoffCoefficient,
+        });
+        if (runoff.success) {
+            return { success: true, flowLs: runoff.output.runoffFlowLs, source: "rational-method runoff" };
+        }
+        return {
+            success: false,
+            warning: `Storm pipe request ${targetLabelForRequest(request)} has no valid runoff flow or catchment/rainfall basis.`,
+        };
+    }
+    const fixtureUnits = Number(request?.fixtureUnits);
+    if (Number.isFinite(fixtureUnits) && fixtureUnits > 0) {
+        return { success: true, fixtureUnits, source: "fixture units" };
+    }
+    return {
+        success: false,
+        warning: `Sanitary pipe request ${targetLabelForRequest(request)} has no valid fixture-unit basis.`,
+    };
+}
+
+function drainageTypeForRequest(request) {
+    const value = String(request?.drainageType || request?.kind || request?.type || "").toLowerCase();
+    return value.includes("storm") || value.includes("rain") ? "storm" : "sanitary";
+}
+
+function currentDiameterForRequest(request) {
+    return Number(request?.currentDiameterMm ?? request?.diameterMm);
+}
+
+function targetForRequest(request) {
+    const elementId = positiveInteger(request?.elementId);
+    if (elementId) {
+        return { label: String(elementId), targets: { elementId } };
+    }
+    if (isNonEmptyString(request?.eId)) {
+        const eId = request.eId.trim();
+        return { label: safeId(eId), targets: { eId } };
+    }
+    return null;
+}
+
+function targetLabelForRequest(request) {
+    return targetForRequest(request)?.label || "(unidentified)";
+}
+
+function positiveInteger(value) {
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+function safeId(value) {
+    return String(value || "target").replace(/[^A-Za-z0-9_-]+/g, "-");
+}
+
+function round(value, digits = 3) {
+    const factor = 10 ** digits;
+    return Math.round(Number(value) * factor) / factor;
+}
+
+function proposalDataCompleteness({
+    requestCount,
+    rowCount,
+    writePlanStepCount,
+    skippedNoDemandCount,
+    skippedNoSizeCount,
+}) {
+    const blockers = [];
+    if (requestCount <= 0) blockers.push("No sanitary/storm pipe sizing requests were supplied.");
+    if (rowCount <= 0) blockers.push("No sanitary/storm pipe sizing proposal rows were produced.");
+    if (skippedNoDemandCount > 0) blockers.push(`${skippedNoDemandCount} sanitary/storm pipe sizing request(s) lack confirmed demand.`);
+    if (skippedNoSizeCount > 0) blockers.push(`${skippedNoSizeCount} sanitary/storm pipe sizing request(s) have no configured size satisfying demand.`);
+    if (writePlanStepCount <= 0 && rowCount > 0) blockers.push("No sanitary/storm resize step was needed or target identity was incomplete.");
+    return {
+        requestCount,
+        rowCount,
+        writePlanStepCount,
+        skippedNoDemandCount,
+        skippedNoSizeCount,
+        completeForProductionReview: blockers.length === 0,
+        blockers,
+    };
+}
+
+function isNonEmptyString(value) {
+    return typeof value === "string" && value.trim().length > 0;
 }
 
 function isPositive(value) {

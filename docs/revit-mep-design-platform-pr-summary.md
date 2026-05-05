@@ -144,6 +144,7 @@
 - Re-generated plugin patch artifact as `19/19` and verified it applies cleanly with `git am --3way` on a temporary plugin `main` worktree.
 - Clean Revit restart/reload native registry audit passed on temporary model `rme_advanced_sample_project_codex_restart_test`; normal native socket preview ran without direct-assembly fallback and did not mutate duct `392168`.
 - Runtime write-plan validation now checks `set_parameter`, `clear_parameter`, and `copy_parameter_value` parameter names against `officeStandards.allowedParameterNames` plus `exactSchemaMappings`; unlisted names warn by default and become validation errors when `enforceAllowedParameterNames: true`.
+- Added domestic water and sanitary/storm pipe sizing proposal handoff: supplied demand/pipe identity requests can now produce proposal-only `resize_pipe` write-plan steps and pipe sizing report rows while staying `canCommit: false`. Runtime stdio probe returned valid resize proposals for domestic water, sanitary, and storm targets without mutating Revit.
 
 ## Remaining Work
 

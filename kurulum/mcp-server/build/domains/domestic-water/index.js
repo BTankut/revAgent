@@ -1,8 +1,15 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
-import { calculateDomesticWaterPressureLoss, calculateFixtureDemand, checkRecirculationContinuity, convertFixtureUnitsToDemand, sizeDomesticWaterPipe } from "./calculations.js";
+import { buildDomesticWaterPipeResizeProposal, calculateDomesticWaterPressureLoss, calculateFixtureDemand, checkRecirculationContinuity, convertFixtureUnitsToDemand, sizeDomesticWaterPipe } from "./calculations.js";
 
-export function analyzeDomesticWater({ officeStandards = {} } = {}) {
+export function analyzeDomesticWater({ officeStandards = {}, pipeSizingRequests = [] } = {}) {
     const missingStandards = missingStandardsForDiscipline("domestic_water", officeStandards);
+    const pipeSizingProposal = buildDomesticWaterPipeResizeProposal({
+        pipeSizingRequests,
+        maxVelocityMps: officeStandards.domesticWater?.pipeVelocityLimitMps,
+        maxPressureLossPaPerM: officeStandards.domesticWater?.pipeFrictionLimitPaPerM,
+        diametersMm: officeStandards.domesticWater?.pipeDiametersMm,
+        demandCurve: officeStandards.domesticWater?.fixtureUnitDemandCurve,
+    });
     return {
         discipline: "domestic_water",
         engine: "domestic-water-foundation",
@@ -18,6 +25,7 @@ export function analyzeDomesticWater({ officeStandards = {} } = {}) {
             "fixture-unit demand curve interpolation",
             "domestic water pressure loss basis",
             "domestic water pipe sizing proposal",
+            "resize_pipe write-plan proposal from domestic water sizing requests",
             "recirculation continuity issue check",
         ],
         calculationExamples: {
@@ -44,6 +52,7 @@ export function analyzeDomesticWater({ officeStandards = {} } = {}) {
                 requiredLoopNodeIds: ["heater", "riser-1"],
             }),
         },
+        ...(Array.isArray(pipeSizingRequests) && pipeSizingRequests.length > 0 ? { pipeSizingProposal } : {}),
         canCommit: false,
     };
 }

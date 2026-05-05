@@ -40,6 +40,8 @@ export function registerAnalyzeMepSystemTool(server) {
         networkTerminalElementIds: z.array(z.number()).optional().describe("Optional terminal Revit element ids for live connector graph pathfinding."),
         placementRequests: z.array(z.any()).optional().describe("Optional domain placement requests that become proposal-only place_family_instance write-plan steps, for example air_terminal, damper, valve, pump, or fire_cabinet."),
         defaultPlacementLevelId: z.number().optional().describe("Optional default Revit level id used by placementRequests when a request omits levelId."),
+        domesticWaterPipeSizingRequests: z.array(z.any()).optional().describe("Optional domestic water pipe sizing requests that become proposal-only resize_pipe write-plan steps when office standards and demand are complete."),
+        sanitaryStormPipeSizingRequests: z.array(z.any()).optional().describe("Optional sanitary/storm pipe sizing requests that become proposal-only resize_pipe write-plan steps when sizing tables and demand are complete."),
         officeStandards: z.any().optional().describe("Optional office standards override object."),
     }, async (args) => {
         const discipline = args.discipline || "all";
@@ -79,10 +81,16 @@ export function registerAnalyzeMepSystemTool(server) {
                 analyses.push(await analyzeHydronic({ includeRevitRead, officeStandards, networkPathRequest }));
             }
             if (discipline === "all" || discipline === "domestic_water" || discipline === "general") {
-                analyses.push(analyzeDomesticWater({ officeStandards }));
+                analyses.push(analyzeDomesticWater({
+                    officeStandards,
+                    pipeSizingRequests: args.domesticWaterPipeSizingRequests || [],
+                }));
             }
             if (discipline === "all" || discipline === "sanitary" || discipline === "general") {
-                analyses.push(analyzeSanitaryStorm({ officeStandards }));
+                analyses.push(analyzeSanitaryStorm({
+                    officeStandards,
+                    pipeSizingRequests: args.sanitaryStormPipeSizingRequests || [],
+                }));
             }
             if (discipline === "all" || discipline === "fire" || discipline === "sprinkler" || discipline === "general") {
                 analyses.push(await analyzeFireProtection({ includeRevitRead, officeStandards }));

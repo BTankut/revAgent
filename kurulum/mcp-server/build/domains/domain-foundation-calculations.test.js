@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } from "./clash/calculations.js";
-import { calculateDomesticWaterPressureLoss, calculateFixtureDemand, checkRecirculationContinuity, convertFixtureUnitsToDemand, sizeDomesticWaterPipe } from "./domestic-water/calculations.js";
+import { buildDomesticWaterPipeResizeProposal, calculateDomesticWaterPressureLoss, calculateFixtureDemand, checkRecirculationContinuity, convertFixtureUnitsToDemand, sizeDomesticWaterPipe } from "./domestic-water/calculations.js";
 import { buildEquipmentScheduleProposal, buildFamilyPlacementProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { calculateFireCabinetDemand, calculateFirePumpBasis, checkFireCabinetCoverage, checkSprinklerCoverage } from "./fire/calculations.js";
 import { analyzeHvacAirside } from "./hvac/index.js";
@@ -9,10 +9,11 @@ import { connectorPathElementIds, selectCriticalConnectorPath, summarizeLocalLos
 import { readPathTargetedLocalLosses } from "./local-losses/path-targeting.js";
 import { buildLocalLossOnlyCode } from "./local-losses/revit-read.js";
 import { analyzeDomainPlacement } from "./placement/index.js";
-import { calculateSlopePercent, calculateStormRunoffRational, checkVentContinuity, sizeGravityPipeByFixtureUnits, sizeStormPipeByFlow, traceGravityDrainageToStack, validateGravitySlope } from "./sanitary-storm/calculations.js";
+import { buildSanitaryStormPipeResizeProposal, calculateSlopePercent, calculateStormRunoffRational, checkVentContinuity, sizeGravityPipeByFixtureUnits, sizeStormPipeByFlow, traceGravityDrainageToStack, validateGravitySlope } from "./sanitary-storm/calculations.js";
 import { mergeOfficeStandards, missingStandardsForDiscipline } from "../office-standards/defaults.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 import { buildAnalysisWritePlanProposal } from "../tools/analysis_write_plan_proposal.js";
+import { validateStep } from "../write-plan/validators.js";
 
 const hvacMissingStandards = missingStandardsForDiscipline("hvac", mergeOfficeStandards());
 assert(hvacMissingStandards.includes("hvac.ductEqualFrictionTargetPaPerM"));
@@ -88,6 +89,29 @@ assert.equal(domesticPipeSizing.success, true);
 assert(domesticPipeSizing.selected.velocityMps <= 2.0);
 assert(domesticPipeSizing.selected.pressureLossPaPerM <= 500);
 
+const domesticPipeResizeProposal = buildDomesticWaterPipeResizeProposal({
+    pipeSizingRequests: [
+        { elementId: 601, uniqueId: "dw-601", systemName: "Domestic Cold Water", lengthM: 12, currentDiameterMm: 15, fixtureUnits: 16 },
+    ],
+    maxVelocityMps: 2.0,
+    maxPressureLossPaPerM: 500,
+    diametersMm: [15, 20, 25, 32],
+    demandCurve: [
+        { fixtureUnits: 10, flowLs: 0.3 },
+        { fixtureUnits: 20, flowLs: 0.45 },
+    ],
+});
+assert.equal(domesticPipeResizeProposal.success, true);
+assert.equal(domesticPipeResizeProposal.rows.length, 1);
+assert.equal(domesticPipeResizeProposal.rows[0].rowType, "domestic_water_pipe_sizing_proposal");
+assert.equal(domesticPipeResizeProposal.rows[0].elementId, 601);
+assert.equal(domesticPipeResizeProposal.rows[0].designFlowLs, 0.39);
+assert.equal(domesticPipeResizeProposal.writePlanSteps.length, 1);
+assert.equal(domesticPipeResizeProposal.writePlanSteps[0].operation, "resize_pipe");
+assert.equal(domesticPipeResizeProposal.writePlanSteps[0].targets.elementId, 601);
+assert.equal(validateStep(domesticPipeResizeProposal.writePlanSteps[0], 0).errors.length, 0);
+assert.equal(domesticPipeResizeProposal.canCommit, false);
+
 const continuity = checkRecirculationContinuity({
     nodes: [{ id: "a" }, { id: "b" }, { id: "c" }],
     edges: [{ from: "a", to: "b" }, { from: "b", to: "c" }, { from: "c", to: "a" }],
@@ -133,6 +157,33 @@ assert.equal(stormPipeSize.success, true);
 assert.equal(stormPipeSize.selected.diameterMm, 100);
 assert.equal(calculateStormRunoffRational({ catchmentAreaM2: 250 }).requiresOfficeStandard, true);
 assert.equal(sizeStormPipeByFlow({ runoffFlowLs: 7.5 }).requiresOfficeStandard, true);
+
+const sanitaryStormPipeResizeProposal = buildSanitaryStormPipeResizeProposal({
+    pipeSizingRequests: [
+        { elementId: 701, kind: "sanitary", systemName: "Sanitary", currentDiameterMm: 50, fixtureUnits: 12 },
+        { elementId: 702, kind: "storm", systemName: "Storm Drainage", currentDiameterMm: 75, catchmentAreaM2: 250 },
+    ],
+    sanitarySizingTable: [
+        { diameterMm: 50, maxFixtureUnits: 6, minSlopePercent: 2 },
+        { diameterMm: 75, maxFixtureUnits: 20, minSlopePercent: 1 },
+    ],
+    stormSizingTable: [
+        { diameterMm: 75, maxFlowLs: 5, minSlopePercent: 1 },
+        { diameterMm: 100, maxFlowLs: 12, minSlopePercent: 1 },
+    ],
+    rainfallIntensityMmH: 120,
+    runoffCoefficient: 0.9,
+});
+assert.equal(sanitaryStormPipeResizeProposal.success, true);
+assert.equal(sanitaryStormPipeResizeProposal.rows.length, 2);
+assert.equal(sanitaryStormPipeResizeProposal.rows[0].rowType, "sanitary_pipe_sizing_proposal");
+assert.equal(sanitaryStormPipeResizeProposal.rows[1].rowType, "storm_pipe_sizing_proposal");
+assert.equal(sanitaryStormPipeResizeProposal.writePlanSteps.length, 2);
+assert.equal(sanitaryStormPipeResizeProposal.writePlanSteps[0].operation, "resize_pipe");
+assert.equal(sanitaryStormPipeResizeProposal.writePlanSteps[1].arguments.diameter, 100);
+assert.equal(validateStep(sanitaryStormPipeResizeProposal.writePlanSteps[0], 0).errors.length, 0);
+assert.equal(validateStep(sanitaryStormPipeResizeProposal.writePlanSteps[1], 1).errors.length, 0);
+assert.equal(sanitaryStormPipeResizeProposal.canCommit, false);
 
 const stackTrace = traceGravityDrainageToStack({
     fixtureNodeIds: ["wc-1", "lav-1"],
