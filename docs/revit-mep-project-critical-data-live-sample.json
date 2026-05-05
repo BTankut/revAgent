@@ -1,0 +1,127 @@
+{
+  "sampleOnly": true,
+  "sourceModel": {
+    "documentTitle": "rme_advanced_sample_project_codex_restart_test",
+    "revitVersion": "2022",
+    "revitBuild": "22.0.2.392",
+    "activeViewName": "WSHP 2-3 System View",
+    "capturedBy": "inspect_elements",
+    "capturedFromLiveRevit": true
+  },
+  "reviewStatus": {
+    "requiresEngineerReview": true,
+    "doNotUseAsProductionFinal": true,
+    "canCommit": false,
+    "notes": [
+      "This file is a live model data sample showing how project-critical data can be captured.",
+      "It is not an approved office standard, not an approved critical-path calculation, and not production-final sizing input.",
+      "Use docs/revit-mep-project-critical-data-template.json for the real project data handoff."
+    ]
+  },
+  "hvacExample": {
+    "observedCriticalPathElementIds": [
+      392199,
+      392203,
+      392200
+    ],
+    "observedCriticalPathUniqueIds": [
+      "7485c179-9364-48d7-b68b-6736718012c4-0005fc07",
+      "7485c179-9364-48d7-b68b-6736718012c4-0005fc0b",
+      "7485c179-9364-48d7-b68b-6736718012c4-0005fc08"
+    ],
+    "observedSystemName": "Mechanical Supply Air 1",
+    "observedSystemType": "Supply Air",
+    "observedFlowBasis": {
+      "392199": {
+        "flowValueString": "100.0 L/s",
+        "designFlowM3hForReview": 360
+      },
+      "392200": {
+        "flowValueString": "100.0 L/s",
+        "designFlowM3hForReview": 360
+      }
+    },
+    "observedCurrentSizes": {
+      "392199": {
+        "widthMm": 450,
+        "heightMm": 200,
+        "lengthMm": 25
+      },
+      "392200": {
+        "widthMm": 450,
+        "heightMm": 200,
+        "lengthMm": 1313
+      }
+    },
+    "observedLocalLossElementIds": [
+      392203
+    ],
+    "observedLocalLossPressurePaForReview": 0.9,
+    "suggestedAnalyzeMepSystemArguments": {
+      "discipline": "hvac",
+      "includeRevitRead": true,
+      "ductSizingOnly": true,
+      "localLossElementIds": [
+        392203
+      ],
+      "criticalPathLocalLossPressurePa": 0.9,
+      "criticalPathLocalLossComplete": false,
+      "hvacDuctSizingTargetElementIds": [
+        392199,
+        392200
+      ],
+      "hvacDesignFlowsByElementId": {
+        "392199": 360,
+        "392200": 360
+      }
+    }
+  },
+  "hydronicExample": {
+    "observedCriticalCircuitElementIds": [
+      513756,
+      513769,
+      513637
+    ],
+    "observedCriticalCircuitUniqueIds": [
+      "810e919f-3214-4598-bcad-93bb149143c0-0007d6dc",
+      "810e919f-3214-4598-bcad-93bb149143c0-0007d6e9",
+      "810e919f-3214-4598-bcad-93bb149143c0-0007d665"
+    ],
+    "observedSystemName": "Hydronic Supply",
+    "observedPipeTargetElementIds": [
+      513756
+    ],
+    "observedCurrentSizes": {
+      "513756": {
+        "diameterMm": 150,
+        "lengthMm": 4795,
+        "flowValueString": "0.0 L/s"
+      }
+    },
+    "observedLocalLossElementIds": [
+      513769
+    ],
+    "observedLocalLossPressurePaForReview": 193.9,
+    "missingForProductionReview": [
+      "Engineer-confirmed hydronic design flow in L/s for pipe 513756.",
+      "Complete selected critical-circuit local-loss dataset and pressure sum.",
+      "Office hydronic velocity/friction limits from docs/revit-mep-office-standards-input-template.json."
+    ],
+    "suggestedAnalyzeMepSystemArgumentsAfterFlowReview": {
+      "discipline": "hydronic",
+      "includeRevitRead": true,
+      "hydraulicResistanceOnly": true,
+      "localLossElementIds": [
+        513769
+      ],
+      "criticalPathLocalLossPressurePa": 193.9,
+      "criticalPathLocalLossComplete": false,
+      "hydronicPipeSizingTargetElementIds": [
+        513756
+      ],
+      "hydronicDesignFlowsByElementId": {
+        "513756": null
+      }
+    }
+  }
+}

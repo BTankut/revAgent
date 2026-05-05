@@ -400,6 +400,9 @@ Write checks:
   - Plan `codex-live-param-smoke-2026-05-05T12-33-54-621Z` ran `prepare_write_plan -> preview_write_plan -> commit_write_plan -> verify_write_plan` through the normal native socket path.
   - `commit_write_plan` without token/approval was rejected first; explicit user-approved commit then returned `success: true`, `mutateModel: true`, `directAssemblyFallback: false`, and verify returned `success: true`, `mutateModel: false`.
   - Final `inspect_elements` readback confirmed `Comments = Codex live write-plan smoke 2026-05-05T12-33-54-621Z` on duct `392168`.
+- Live project-critical data sample:
+  - `inspect_elements` re-read HVAC path elements `392199 -> 392203 -> 392200` and hydronic sample elements `513756 -> 513769 -> 513637` from the open test model.
+  - The observed values were captured in `docs/revit-mep-project-critical-data-live-sample.json` as sample-only data with `requiresEngineerReview: true` and `canCommit: false`.
 
 ## Known Validation Limits
 

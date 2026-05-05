@@ -9,6 +9,7 @@ const repoRoot = findRepoRoot(toolsDir);
 
 const officeTemplate = readJson(join(repoRoot, "docs", "revit-mep-office-standards-input-template.json"));
 const criticalTemplate = readJson(join(repoRoot, "docs", "revit-mep-project-critical-data-template.json"));
+const liveSample = readJson(join(repoRoot, "docs", "revit-mep-project-critical-data-live-sample.json"));
 const analyzeSource = readFileSync(join(toolsDir, "analyze_mep_system.js"), "utf8");
 
 const expectedMissingStandards = [
@@ -43,6 +44,14 @@ for (const key of Object.keys(criticalTemplate.requestSchemas)) {
 }
 assert(Array.isArray(criticalTemplate.modelEvidenceRequired));
 assert(criticalTemplate.modelEvidenceRequired.length >= 5);
+
+assert.equal(liveSample.sampleOnly, true);
+assert.equal(liveSample.reviewStatus?.requiresEngineerReview, true);
+assert.equal(liveSample.reviewStatus?.canCommit, false);
+assert(Array.isArray(liveSample.hvacExample?.observedCriticalPathElementIds));
+assert(liveSample.hvacExample.observedCriticalPathElementIds.length >= 3);
+assert(Array.isArray(liveSample.hydronicExample?.missingForProductionReview));
+assert(liveSample.hydronicExample.missingForProductionReview.length >= 1);
 
 console.log("handoff template tests passed");
 
