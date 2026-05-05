@@ -24,7 +24,7 @@
 - Added native `commit_reroute` reconnection support: source connector references are captured before deletion, replacement route segments are connected to each other, source neighbors are reconnected to route endpoints, and verify re-reads physical external connections while filtering system proxy references.
 - Added native reroute fitting reference readback: reconnect verify now reports `routeFittingRefCount` and `routeFittingRefs` for duct/pipe fittings connected to replacement route segments.
 - Commit mode uses a transaction and rolls back on error; dynamic-host direct execution can use `SubTransaction` when the document is already modifiable.
-- Plugin remote is archived/read-only, so plugin branch changes are exported in `docs/revit-mcp-plugin-native-write-plan-executor.patch`.
+- Upstream plugin remote is archived/read-only, so the branch was pushed to the writable fork `BTankut/revit-mcp-plugin` and PR `https://github.com/BTankut/revit-mcp-plugin/pull/1` was opened. `docs/revit-mcp-plugin-native-write-plan-executor.patch` is retained as an offline fallback patch.
 
 ## Documentation
 
