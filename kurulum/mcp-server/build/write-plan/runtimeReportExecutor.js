@@ -64,6 +64,47 @@ export function commitRuntimeReportPlan(plan) {
     };
 }
 
+export function verifyRuntimeReportPlan(plan) {
+    const files = [];
+    const previewRows = [];
+    let success = true;
+    for (const step of plan.steps || []) {
+        const spec = buildReportSpec(plan, step);
+        const exists = fs.existsSync(spec.outputPath);
+        const actualContent = exists ? fs.readFileSync(spec.outputPath, "utf8") : "";
+        const contentMatches = exists && actualContent === spec.content;
+        if (!exists || !contentMatches) success = false;
+        files.push({
+            stepId: step.stepId,
+            operation: step.operation,
+            format: spec.format,
+            outputPath: spec.outputPath,
+            rowCount: spec.rows.length,
+            exists,
+            contentMatches,
+        });
+        previewRows.push({
+            ...buildReportPreviewRow(plan, step, contentMatches ? "verified" : exists ? "content_mismatch" : "missing", spec),
+            exists,
+            contentMatches,
+        });
+    }
+    return {
+        success,
+        mode: "verify",
+        planId: plan.planId,
+        riskLevel: plan.riskLevel,
+        warnings: [],
+        errors: success ? [] : ["One or more report files are missing or differ from the expected content."],
+        previewRows,
+        files,
+        mappings: [],
+        audit: buildAudit("verify", plan, { runtimeReportExecutor: true, fileCount: files.length }),
+        mutateModel: false,
+        writesFiles: false,
+    };
+}
+
 function buildReportPreviewRows(plan, status) {
     return (plan.steps || []).map((step) => {
         return buildReportPreviewRow(plan, step, status, buildReportSpec(plan, step));

@@ -26,6 +26,8 @@ export const initialOperations = [
     "view_hide_elements",
     "view_unhide_elements",
     "view_apply_overrides",
+    "export_boq_report",
+    "export_clash_report",
     "place_family_instance",
     "move_elements",
     "create_duct_run",
@@ -38,7 +40,6 @@ export const initialOperations = [
 
 export const futureOperations = [
     "tag_elements",
-    "export_boq_report",
     "rotate_elements",
     "align_elements",
     "delete_elements",
@@ -99,7 +100,6 @@ export const futureOperations = [
     "preview_reroute",
     "create_coordination_issue",
     "mark_clash_resolved",
-    "export_clash_report",
 ];
 
 export const supportedOperations = [...initialOperations, ...futureOperations];

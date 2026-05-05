@@ -52,7 +52,7 @@
 - Added deterministic clash reroute preview foundation around rectangular obstacle envelopes, with added-length calculation, tests, and runtime example.
 - Added weighted network shortest-path traversal, HVAC fan pressure basis, hydronic pump head basis, and reporting row/CSV foundations, with tests and runtime probes.
 - Added targeted live connector pathfinding inputs for `analyze_mep_system`; read-only HVAC pathfinding was live-tested in the disposable model on duct `392168`.
-- Added runtime report export handling for `export_boq_report` and `export_clash_report` write-plans; approved commits write CSV/JSON files with `mutateModel: false`.
+- Added runtime report export handling for `export_boq_report` and `export_clash_report` write-plans; approved commits write CSV/JSON files with `mutateModel: false`, and report verification now re-checks file existence/content through the runtime executor instead of the native Revit executor.
 - Added least-loss flow direction inference and hydronic critical-circuit balancing loss foundations, with tests and runtime examples.
 - Added BOQ-only live Revit collectors and report row population; hydronic live probe returned pipe/fitting/equipment counts and total pipe length from the active test model.
 - Added multi-candidate orthogonal reroute solver with clearance validation; runtime example selects a valid no-violation candidate.

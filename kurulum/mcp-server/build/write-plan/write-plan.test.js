@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildPreviewRows } from "./previewFormatter.js";
 import { classifyPlanRisk } from "./risk.js";
-import { commitRuntimeReportPlan, isRuntimeReportPlan, previewRuntimeReportPlan } from "./runtimeReportExecutor.js";
+import { commitRuntimeReportPlan, isRuntimeReportPlan, previewRuntimeReportPlan, verifyRuntimeReportPlan } from "./runtimeReportExecutor.js";
 import { buildPlanFromArgs, normalizePlan } from "./schemas.js";
 import { validateWritePlan } from "./validators.js";
 import {
@@ -218,7 +218,7 @@ const reportPlan = normalizePlan({
     ],
 });
 assert.equal(isRuntimeReportPlan(reportPlan), true);
-const reportValidation = validateWritePlan(reportPlan, { mode: "commit", requireInitialOperationsOnly: false });
+const reportValidation = validateWritePlan(reportPlan, { mode: "commit", requireInitialOperationsOnly: true });
 assert.equal(reportValidation.valid, true);
 const reportPreview = previewRuntimeReportPlan(reportPlan);
 assert.equal(reportPreview.success, true);
@@ -230,6 +230,12 @@ assert.equal(reportCommit.mutateModel, false);
 assert.equal(reportCommit.writesFiles, true);
 assert.equal(fs.existsSync(reportCommit.files[0].outputPath), true);
 assert(fs.readFileSync(reportCommit.files[0].outputPath, "utf8").includes("elementId"));
+const reportVerify = verifyRuntimeReportPlan(reportPlan);
+assert.equal(reportVerify.success, true);
+assert.equal(reportVerify.mutateModel, false);
+assert.equal(reportVerify.writesFiles, false);
+assert.equal(reportVerify.files[0].exists, true);
+assert.equal(reportVerify.files[0].contentMatches, true);
 
 clearWorkflowState();
 
