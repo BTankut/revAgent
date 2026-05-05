@@ -1,5 +1,5 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
-import { validateGravitySlope } from "./calculations.js";
+import { checkVentContinuity, sizeGravityPipeByFixtureUnits, traceGravityDrainageToStack, validateGravitySlope } from "./calculations.js";
 
 export function analyzeSanitaryStorm({ officeStandards = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("sanitary", officeStandards);
@@ -15,7 +15,9 @@ export function analyzeSanitaryStorm({ officeStandards = {} } = {}) {
         checksAvailable: [
             "gravity slope validation",
             "reverse slope issue check",
-            "vent continuity scaffold",
+            "fixture-unit gravity pipe sizing proposal",
+            "branch-to-stack reachability check",
+            "vent continuity check",
         ],
         calculationExamples: {
             slopeValidation: validateGravitySlope({
@@ -23,6 +25,26 @@ export function analyzeSanitaryStorm({ officeStandards = {} } = {}) {
                 endElevationM: 9.95,
                 lengthM: 5.0,
                 minSlopePercent: officeStandards.sanitaryStorm?.sanitarySlopeRules?.[0]?.minSlopePercent,
+            }),
+            pipeSizing: sizeGravityPipeByFixtureUnits({
+                fixtureUnits: 12,
+                sizingTable: officeStandards.sanitaryStorm?.pipeSizingTable,
+            }),
+            stackReachability: traceGravityDrainageToStack({
+                fixtureNodeIds: ["wc-1"],
+                stackNodeIds: ["stack-a"],
+                edges: [
+                    { from: "wc-1", to: "branch-a" },
+                    { from: "branch-a", to: "stack-a" },
+                ],
+            }),
+            ventContinuity: checkVentContinuity({
+                fixtureNodeIds: ["wc-1"],
+                ventNodeIds: ["vent-a"],
+                edges: [
+                    { from: "wc-1", to: "branch-a" },
+                    { from: "branch-a", to: "vent-a" },
+                ],
             }),
         },
         canCommit: false,

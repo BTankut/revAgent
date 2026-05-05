@@ -8,7 +8,7 @@ import { analyzeHydronic } from "./hydronic/index.js";
 import { connectorPathElementIds, selectCriticalConnectorPath, summarizeLocalLossSamples } from "./local-losses/calculations.js";
 import { readPathTargetedLocalLosses } from "./local-losses/path-targeting.js";
 import { buildLocalLossOnlyCode } from "./local-losses/revit-read.js";
-import { calculateSlopePercent, validateGravitySlope } from "./sanitary-storm/calculations.js";
+import { calculateSlopePercent, checkVentContinuity, sizeGravityPipeByFixtureUnits, traceGravityDrainageToStack, validateGravitySlope } from "./sanitary-storm/calculations.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 import { buildAnalysisWritePlanProposal } from "../tools/analysis_write_plan_proposal.js";
 
@@ -72,6 +72,47 @@ const reverseSlope = validateGravitySlope({ startElevationM: 9.95, endElevationM
 assert.equal(reverseSlope.success, false);
 assert(reverseSlope.issues.includes("reverse_slope"));
 assert.equal(validateGravitySlope({ startElevationM: 10, endElevationM: 9.95, lengthM: 5 }).requiresOfficeStandard, true);
+
+const gravityPipeSize = sizeGravityPipeByFixtureUnits({
+    fixtureUnits: 12,
+    sizingTable: [
+        { diameterMm: 50, maxFixtureUnits: 6, minSlopePercent: 2 },
+        { diameterMm: 75, maxFixtureUnits: 20, minSlopePercent: 1 },
+        { diameterMm: 100, maxFixtureUnits: 160, minSlopePercent: 1 },
+    ],
+});
+assert.equal(gravityPipeSize.success, true);
+assert.equal(gravityPipeSize.selected.diameterMm, 75);
+assert.equal(sizeGravityPipeByFixtureUnits({ fixtureUnits: 12 }).requiresOfficeStandard, true);
+
+const stackTrace = traceGravityDrainageToStack({
+    fixtureNodeIds: ["wc-1", "lav-1"],
+    stackNodeIds: ["stack-a"],
+    edges: [
+        { from: "wc-1", to: "branch-a" },
+        { from: "lav-1", to: "branch-a" },
+        { from: "branch-a", to: "stack-a" },
+    ],
+});
+assert.equal(stackTrace.success, true);
+assert.deepEqual(stackTrace.rows[0].pathNodeIds, ["wc-1", "branch-a", "stack-a"]);
+const brokenStackTrace = traceGravityDrainageToStack({
+    fixtureNodeIds: ["wc-1"],
+    stackNodeIds: ["stack-a"],
+    edges: [{ from: "wc-1", to: "branch-a" }],
+});
+assert.equal(brokenStackTrace.success, false);
+
+const ventContinuity = checkVentContinuity({
+    fixtureNodeIds: ["wc-1"],
+    ventNodeIds: ["vent-a"],
+    edges: [
+        { from: "wc-1", to: "branch-a" },
+        { from: "branch-a", to: "vent-a" },
+    ],
+});
+assert.equal(ventContinuity.success, true);
+assert.equal(checkVentContinuity({ fixtureNodeIds: ["wc-1"], edges: [] }).requiresOfficeStandard, true);
 
 const sprinklerOk = checkSprinklerCoverage({
     roomWidthM: 6,

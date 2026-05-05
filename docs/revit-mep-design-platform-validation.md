@@ -48,6 +48,7 @@ Result:
   - domestic water fixture-unit summation and recirculation continuity
   - domestic water fixture-unit demand interpolation, pressure-loss basis, and velocity/friction pipe sizing proposal
   - sanitary/storm slope and reverse-slope checks
+  - sanitary/storm fixture-unit gravity pipe sizing, branch-to-stack reachability, and vent continuity checks
   - sprinkler coverage/spacing standard gating
   - clash AABB hard/clearance classification
   - orthogonal clash reroute preview with added-length calculation
@@ -165,6 +166,9 @@ Live read-only results captured on the active session:
   - `analyze_mep_system` with `discipline: domestic_water`, `includeRevitRead: false`, and supplied fixture-unit demand/velocity/friction standards returned `requiresOfficeStandard: false`.
   - Fixture-unit demand conversion and domestic pipe sizing examples both returned `success: true`.
   - The analysis remained proposal-only with `canCommit: false` and top-level `mutateModel: false`.
+- Sanitary runtime probe succeeded without model mutation:
+  - `analyze_mep_system` with `discipline: sanitary`, `includeRevitRead: false`, and supplied slope/sizing standards returned pipe sizing, stack reachability, and vent continuity examples.
+  - The analysis remains issue/proposal-only with `canCommit: false`.
 - Workflow eId hydration live preview succeeded:
   - A temporary workflow state file stored a plan targeting only `eId: duct-preview-001`.
   - Runtime mapping resolved that eId to duct `1749785` / UniqueId `7e61ea08-330a-47b5-8b95-36e4bdc5bdf9-001ab319`.
