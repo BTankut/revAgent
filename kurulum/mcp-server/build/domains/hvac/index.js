@@ -114,6 +114,7 @@ function buildHvacReadCode(networkPathRequest = {}) {
         const sampleLimit = Number.parseInt(String(networkPathRequest.localLossSampleLimit || 25), 10);
         return buildLocalLossOnlyCode({
             sampleLimit: Number.isFinite(sampleLimit) ? sampleLimit : 25,
+            targetElementIds: networkPathRequest.localLossElementIds || [],
             categories: ["OST_DuctFitting", "OST_DuctAccessory", "OST_DuctTerminal", "OST_MechanicalEquipment"],
         });
     }

@@ -4,6 +4,7 @@ import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic
 import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
 import { summarizeLocalLossSamples } from "./local-losses/calculations.js";
+import { buildLocalLossOnlyCode } from "./local-losses/revit-read.js";
 import { calculateSlopePercent, validateGravitySlope } from "./sanitary-storm/calculations.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 
@@ -190,6 +191,15 @@ assert.equal(localLossExtraction.pressureContribution.bySystem[0].systemName, "S
 assert.equal(localLossExtraction.pressureContribution.byCategory[0].category, "Duct Fittings");
 assert.equal(localLossExtraction.rows[0].rowType, "local_loss_parameter");
 assert.equal(localLossExtraction.canCommit, false);
+
+const targetedLocalLossCode = buildLocalLossOnlyCode({
+    categories: ["OST_DuctFitting"],
+    targetElementIds: [101, "bad", 0],
+    sampleLimit: 5,
+});
+assert(targetedLocalLossCode.includes("int[] targetElementIds = new int[] { 101 };"));
+assert(targetedLocalLossCode.includes("targeted = targetElementIds.Length > 0"));
+assert(targetedLocalLossCode.includes("skippedTargetCount"));
 
 const report = buildAnalysisReport({
     analyses: [

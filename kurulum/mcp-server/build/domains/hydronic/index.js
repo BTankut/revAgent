@@ -164,6 +164,7 @@ function buildPipeReadCode(networkPathRequest = {}) {
         const sampleLimit = Number.parseInt(String(networkPathRequest.localLossSampleLimit || 25), 10);
         return buildLocalLossOnlyCode({
             sampleLimit: Number.isFinite(sampleLimit) ? sampleLimit : 25,
+            targetElementIds: networkPathRequest.localLossElementIds || [],
             categories: ["OST_PipeFitting", "OST_PipeAccessory", "OST_MechanicalEquipment"],
         });
     }

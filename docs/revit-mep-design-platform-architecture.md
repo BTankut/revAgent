@@ -185,7 +185,7 @@ Reporting foundation:
 - `analyze_mep_system` returns deterministic issue-list and design-log rows plus CSV text previews.
 - `boqOnly` runs short live Revit BOQ collectors without connector graph traversal for count/length report population.
 - `hydraulicResistanceOnly` runs short live hydronic pipe length/diameter sampling and returns resistance calibration rows.
-- `localLossOnly` runs short live HVAC/hydronic fitting/accessory/equipment parameter extraction and returns local-loss report rows plus local-loss pressure summary rows.
+- `localLossOnly` runs short live HVAC/hydronic fitting/accessory/equipment parameter extraction and returns local-loss report rows plus local-loss pressure summary rows. `localLossElementIds` can restrict extraction to a known critical path/circuit element set from a prior graph/pathfinding step.
 - `export_boq_report` and `export_clash_report` write-plans are handled by a runtime report executor for approved CSV/JSON file export.
 - Report export writes files only and returns `mutateModel: false`.
 - `create_schedule_or_update_schedule` creates or updates native Revit schedules by category/name/id and can add requested fields by parameter name, `parameterId`, or `BuiltInParameter`.

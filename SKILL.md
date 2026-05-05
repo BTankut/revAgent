@@ -58,7 +58,9 @@ only the bare names appear, so the rules stay host-agnostic.
   sampling and resistance report rows. Use `localLossOnly: true` for short
   live HVAC/hydronic fitting, accessory, terminal, and equipment local-loss
   parameter extraction, local-loss report rows, local-loss pressure summaries,
-  and explicit local-loss contribution to fan pressure / pump head basis.
+  and explicit local-loss contribution to fan pressure / pump head basis. Use
+  `localLossElementIds` when a pathfinding/critical-path step has already
+  identified the exact fitting/accessory/equipment ids to audit.
 - `prepare_write_plan` — create/validate typed JSON plans; never writes
 - `preview_write_plan` — native or runtime-only preview; never writes
 - `commit_write_plan` — native deterministic commit; requires explicit

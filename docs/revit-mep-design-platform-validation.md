@@ -190,6 +190,10 @@ Live read-only results captured on the active session:
   - HVAC `localLossOnly` carried `0.903 Pa` extracted pressure drop into `liveLocalLossFanPressureBasis.output.localLossPressurePa`; required fan pressure basis became `256.194 Pa`.
   - Hydronic `localLossOnly` carried `8925.566 Pa` extracted pressure drop into `liveLocalLossPumpHeadBasis.output.localLossContributionKPa`; required pump head basis became `36.548 kPa`.
   - Synced runtime build probe with `3` samples also succeeded: HVAC `0.903 Pa`, hydronic `4.560 kPa` local-loss contribution.
+- Targeted local-loss element probe succeeded:
+  - Direct live read of HVAC fitting `392203` confirmed category `Duct Fittings`, loss parameters `Loss Method Settings`, `Loss Method`, `Pressure Drop`, and numeric pressure-drop sum `0.903 Pa`.
+  - Direct live read of hydronic fitting `513769` confirmed category `Pipe Fittings`, the same three loss-like parameters, and numeric pressure-drop sum `193.936 Pa`.
+  - `localLossElementIds` code generation is covered by the domain foundation test so a pathfinding/critical-path element list can drive the same extraction instead of first-sample category collection.
 - Connector graph live probe succeeded:
   - Revit 2022 API docs resolved `Connector.AllRefs`, `Connector.Owner`, `Connector.IsConnected`, `MEPCurve.ConnectorManager`, and `FamilyInstance.MEPModel`.
   - HVAC graph summary: `27237` connector-owning element nodes, `41735` connectors, `708` open connectors, `20341` unique element edges, `25` open connector samples, `0` AllRefs errors.

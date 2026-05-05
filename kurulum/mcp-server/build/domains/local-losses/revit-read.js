@@ -1,10 +1,14 @@
-export function buildLocalLossOnlyCode({ categories = [], sampleLimit = 25 } = {}) {
+export function buildLocalLossOnlyCode({ categories = [], sampleLimit = 25, targetElementIds = [] } = {}) {
     const limit = Math.max(1, Math.min(200, Number.parseInt(String(sampleLimit), 10) || 25));
+    const targetIds = (Array.isArray(targetElementIds) ? targetElementIds : [])
+        .map((value) => Number.parseInt(String(value), 10))
+        .filter((value) => Number.isFinite(value) && value > 0);
     const categoryList = categories
         .filter((category) => /^OST_[A-Za-z0-9_]+$/.test(String(category || "")))
         .map((category) => `BuiltInCategory.${category}`)
         .join(",\n        ");
     const safeCategoryList = categoryList || "BuiltInCategory.OST_MechanicalEquipment";
+    const targetIdList = targetIds.join(", ");
     return `
 string SystemNameFor(Element elem)
 {
@@ -162,30 +166,64 @@ object LocalLossSample(Element elem)
     };
 }
 
+bool IsAllowedCategory(Element elem, BuiltInCategory[] categories)
+{
+    if (elem == null || elem.Category == null) return false;
+    int categoryId = elem.Category.Id.IntegerValue;
+    foreach (BuiltInCategory category in categories)
+    {
+        if (categoryId == (int)category) return true;
+    }
+    return false;
+}
+
 try
 {
     int sampleLimit = ${limit};
+    int[] targetElementIds = new int[] { ${targetIdList} };
     int inspected = 0;
+    int skippedTargetCount = 0;
     System.Collections.Generic.List<object> samples = new System.Collections.Generic.List<object>();
     BuiltInCategory[] categories = new BuiltInCategory[] {
         ${safeCategoryList}
     };
-    foreach (BuiltInCategory category in categories)
+    if (targetElementIds.Length > 0)
     {
-        FilteredElementCollector collector = new FilteredElementCollector(document)
-            .OfCategory(category)
-            .WhereElementIsNotElementType();
-        foreach (Element elem in collector.ToElements())
+        foreach (int elementId in targetElementIds)
         {
+            Element elem = document.GetElement(new ElementId(elementId));
             inspected++;
+            if (elem == null || !IsAllowedCategory(elem, categories))
+            {
+                skippedTargetCount++;
+                continue;
+            }
             samples.Add(LocalLossSample(elem));
             if (samples.Count >= sampleLimit) break;
         }
-        if (samples.Count >= sampleLimit) break;
+    }
+    else
+    {
+        foreach (BuiltInCategory category in categories)
+        {
+            FilteredElementCollector collector = new FilteredElementCollector(document)
+                .OfCategory(category)
+                .WhereElementIsNotElementType();
+            foreach (Element elem in collector.ToElements())
+            {
+                inspected++;
+                samples.Add(LocalLossSample(elem));
+                if (samples.Count >= sampleLimit) break;
+            }
+            if (samples.Count >= sampleLimit) break;
+        }
     }
     return new {
         success = true,
         localLossOnly = true,
+        targeted = targetElementIds.Length > 0,
+        requestedTargetCount = targetElementIds.Length,
+        skippedTargetCount = skippedTargetCount,
         inspectedElementCount = inspected,
         localLossSamples = samples.ToArray(),
         canCommit = false
