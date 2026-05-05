@@ -39,6 +39,8 @@ only the bare names appear, so the rules stay host-agnostic.
 - `send_code_to_revit_safe` — read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced
   `transactionMode: "none"`
+- `get_revit_mcp_status` — read the Revit MCP command gate/status without
+  queueing behind normal model commands
 - `get_revit_session_context` — first-call context for version/build/culture,
   document state, active view, selection, MEP counts, and link counts
 - `get_active_view_context` — model-view vs sheet-view context; sheets return
@@ -102,19 +104,22 @@ guesses API names.
 
 Default workflow for any non-trivial task:
 
-1. Call `get_revit_session_context` first to learn Revit version/build,
+1. Do not intentionally run multiple Revit MCP model commands in parallel.
+   The runtime and add-in gate overlapping commands, but sequential calls keep
+   Revit responsive. If a command appears stuck, call `get_revit_mcp_status`.
+2. Call `get_revit_session_context` first to learn Revit version/build,
    culture, active view type, document state, selection, MEP counts, and links.
-2. If the active view is a sheet or the task depends on view visibility, call
+3. If the active view is a sheet or the task depends on view visibility, call
    `get_active_view_context` before making view-level assumptions.
-3. Resolve API symbols with `resolve_api_symbols_bulk` and pass the active
+4. Resolve API symbols with `resolve_api_symbols_bulk` and pass the active
    `revit_version`. Use the single-symbol docs tools only for follow-up detail.
-4. Before writes or localized/shared parameter work, call
+5. Before writes or localized/shared parameter work, call
    `inspect_parameter_schema` with `parameterNameMatchMode: "exact"`; for
    element-specific tasks call `inspect_elements`.
-5. For model-changing work, generate a typed write-plan with
+6. For model-changing work, generate a typed write-plan with
    `prepare_write_plan`, run `preview_write_plan`, get explicit user commit
    approval, then call `commit_write_plan` and `verify_write_plan`.
-6. Use `send_code_to_revit_safe` for read-only probes and expert previews. It
+7. Use `send_code_to_revit_safe` for read-only probes and expert previews. It
    rejects `transactionMode: "auto"` and always executes with
    `transactionMode: "none"`. Use raw `send_code_to_revit` only as an expert
    fallback when the user explicitly asks for broad dynamic execution or the

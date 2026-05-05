@@ -1,5 +1,10 @@
 import { withRevitConnection } from "./ConnectionManager.js";
 
+export const REVIT_MCP_STATUS_COMMAND = "get_mcp_status";
+const DEFAULT_HANDSHAKE_WAIT_MS = 125000;
+const DEFAULT_HANDSHAKE_POLL_MS = 250;
+const DEFAULT_STATUS_TIMEOUT_MS = 3000;
+
 export function formatJsonContent(payload) {
     return {
         content: [
@@ -45,17 +50,89 @@ export async function executeRevitCode(code, options = {}) {
         parameters: options.parameters || [],
         transactionMode: options.transactionMode || "none",
     };
+    return await sendRevitCommand("send_code_to_revit", params, options);
+}
+
+export async function sendRevitCommand(command, params = {}, options = {}) {
     const response = await withRevitConnection(async (revitClient) => {
-        return await revitClient.sendCommand("send_code_to_revit", params);
+        if (options.handshake !== false && command !== REVIT_MCP_STATUS_COMMAND) {
+            await waitForRevitMcpReady(revitClient, command, params, options);
+        }
+        return await revitClient.sendCommand(command, params, { timeoutMs: options.timeoutMs });
+    }, {
+        command,
+        params,
+        gate: options.gate,
+        waitMs: options.gateWaitMs,
+        connectTimeoutMs: options.connectTimeoutMs,
     });
     return normalizeRevitExecutionResponse(response);
 }
 
-export async function sendRevitCommand(command, params = {}) {
-    const response = await withRevitConnection(async (revitClient) => {
-        return await revitClient.sendCommand(command, params);
-    });
-    return normalizeRevitExecutionResponse(response);
+export async function readRevitMcpStatus(options = {}) {
+    try {
+        const response = await withRevitConnection(async (revitClient) => {
+            return await revitClient.sendCommand(REVIT_MCP_STATUS_COMMAND, {}, {
+                timeoutMs: options.timeoutMs || DEFAULT_STATUS_TIMEOUT_MS,
+            });
+        }, {
+            command: REVIT_MCP_STATUS_COMMAND,
+            gate: false,
+            connectTimeoutMs: options.connectTimeoutMs,
+        });
+        return normalizeRevitExecutionResponse(response);
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (isStatusCommandUnavailable(message)) {
+            return { success: false, supported: false, error: message };
+        }
+        throw error;
+    }
+}
+
+async function waitForRevitMcpReady(revitClient, command, params, options) {
+    const waitMs = Number(options.handshakeWaitMs || process.env.REVIT_MCP_HANDSHAKE_WAIT_MS || DEFAULT_HANDSHAKE_WAIT_MS);
+    const pollMs = Number(process.env.REVIT_MCP_HANDSHAKE_POLL_MS || DEFAULT_HANDSHAKE_POLL_MS);
+    const startedAt = Date.now();
+
+    while (true) {
+        const status = await tryReadRevitMcpStatus(revitClient, options);
+        if (!status || status.supported === false || status.busy !== true) {
+            return;
+        }
+        if (Date.now() - startedAt >= waitMs) {
+            const active = status.activeCommand && typeof status.activeCommand === "object"
+                ? `${status.activeCommand.method || "unknown"}${status.activeCommand.planId ? ` planId=${status.activeCommand.planId}` : ""}`
+                : "another Revit MCP command";
+            throw new Error(`Revit MCP is busy running ${active}; handshake refused ${command}.`);
+        }
+        await sleep(pollMs);
+    }
+}
+
+async function tryReadRevitMcpStatus(revitClient, options) {
+    try {
+        const response = await revitClient.sendCommand(REVIT_MCP_STATUS_COMMAND, {}, {
+            timeoutMs: options.statusTimeoutMs || DEFAULT_STATUS_TIMEOUT_MS,
+        });
+        return normalizeRevitExecutionResponse(response);
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (isStatusCommandUnavailable(message)) {
+            return { supported: false };
+        }
+        throw error;
+    }
+}
+
+function isStatusCommandUnavailable(message) {
+    return message.includes(`Method '${REVIT_MCP_STATUS_COMMAND}' not found`) || message.includes("Method not found");
+}
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function csharpString(value) {

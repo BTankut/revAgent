@@ -27,6 +27,7 @@ Existing public tools remain:
 
 - `send_code_to_revit`
 - `send_code_to_revit_safe`
+- `get_revit_mcp_status`
 - `get_revit_session_context`
 - `get_active_view_context`
 - `inspect_elements`
@@ -51,6 +52,20 @@ kurulum/mcp-server/build/
   domains/
   office-standards/
 ```
+
+Revit command execution is guarded at two levels:
+
+- The runtime serializes normal Revit socket commands with an in-process queue
+  and a cross-process temp-file lock.
+- The Revit add-in exposes `get_mcp_status` and tracks `busy`,
+  `activeCommand`, `lastCompletedCommand`, `method`, `requestId`, `planId`,
+  `mode`, `riskLevel`, and step summary metadata before dispatching registry
+  commands.
+- The Revit add-in attempts to start the socket service automatically when a
+  document opens; the ribbon switch remains the manual fallback.
+
+Status requests bypass the busy gate so operators can inspect a running command
+without adding another model operation to Revit's ExternalEvent queue.
 
 ## Write-Plan Protocol
 
@@ -88,7 +103,7 @@ Modes:
 Plugin implementation is in:
 
 ```text
-C:\Users\BT\Projects\revit-mcp-plugin\SampleCommandSet\Commands\WritePlan\
+C:\Users\BT\Projects\revit-mcp-plugin\RevitMCPWritePlanCommandSet\Commands\WritePlan\
 ```
 
 Native command:
@@ -191,7 +206,7 @@ Reporting foundation:
 - `productionReadiness` combines office-standard completeness, proposal data-completeness, project-critical handoff completeness, and generated write-plan validation into a single blocker list for final-design review.
 - `productionReadiness.nextRequiredInputs` points to the exact handoff type and source artefact needed next: office standards, project-critical data, or proposal-validation fixes. Project-critical handoff errors/blockers are now carried into the same `project_critical_data` next input even when proposal data rows are otherwise complete.
 - `handoff_input_validator.js` gives those handoff artefacts a local production-review guard: placeholder office standards stay invalid, project-critical data can be shape-valid but production-incomplete, and sample-only live captures stay non-committable.
-- `analyze_mep_system.handoffValidation` surfaces that same guard without adding another public MCP tool, keeping the runtime surface at the targeted 13 tools.
+- `analyze_mep_system.handoffValidation` surfaces that same guard without adding more domain-action MCP tools; `get_revit_mcp_status` is the only operational status addition to the controlled runtime surface.
 - `boqOnly` runs short live Revit BOQ collectors without connector graph traversal for count/length report population.
 - `hydraulicResistanceOnly` runs short live hydronic pipe length/diameter sampling and returns resistance calibration rows.
 - Hydronic analysis can turn pipe resistance samples plus model-read `Flow`, `hydronicDesignFlowsByElementId`, optional `hydronicDefaultDesignFlowLs`, office velocity/friction limits, and critical-circuit local-loss pressure context into `pipe_sizing` report rows and proposal-only `resize_pipe` steps. When `localLossFromNetworkPath` is enabled, the hydronic branch can perform the selected-path local-loss reads first, then run a separate read-only pipe resistance sample for proposal output.

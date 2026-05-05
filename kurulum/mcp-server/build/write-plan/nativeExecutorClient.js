@@ -92,13 +92,9 @@ function resolveExecutorDllPath() {
     const candidates = [
         process.env.REVIT_MCP_WRITE_PLAN_EXECUTOR_DLL,
         process.env.APPDATA
-            ? path.join(process.env.APPDATA, "Autodesk", "Revit", "Addins", "2022", "revit_mcp_plugin", "Commands", "SampleCommandsetCompat", "2022", "SampleCommandSetCompat.dll")
+            ? path.join(process.env.APPDATA, "Autodesk", "Revit", "Addins", "2022", "revit_mcp_plugin", "Commands", "RevitMCPCommandSet", "2022", "RevitMCPWritePlanCommandSet.dll")
             : null,
-        process.env.APPDATA
-            ? path.join(process.env.APPDATA, "Autodesk", "Revit", "Addins", "2022", "revit_mcp_plugin", "Commands", "SampleCommandset", "2022", "SampleCommandSet.dll")
-            : null,
-        path.join(moduleDir, "..", "..", "..", "revit-plugin", "revit_mcp_plugin", "Commands", "SampleCommandsetCompat", "2022", "SampleCommandSetCompat.dll"),
-        path.join(moduleDir, "..", "..", "..", "revit-plugin", "revit_mcp_plugin", "Commands", "SampleCommandset", "2022", "SampleCommandSet.dll"),
+        path.join(moduleDir, "..", "..", "..", "revit-plugin", "revit_mcp_plugin", "Commands", "RevitMCPCommandSet", "2022", "RevitMCPWritePlanCommandSet.dll"),
     ].filter(Boolean);
     return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
@@ -130,7 +126,7 @@ try
     System.Reflection.MethodInfo parseMethod = jobjectType.GetMethod("Parse", new System.Type[] { typeof(string) });
     if (parseMethod == null) return "{\\"success\\":false,\\"error\\":\\"JObject.Parse not found\\"}";
     object plan = parseMethod.Invoke(null, new object[] { ${csharpString(planJson)} });
-    System.Type executorType = commandAssembly.GetType("SampleCommandSet.Commands.WritePlan.Operations.WritePlanExecutor");
+    System.Type executorType = commandAssembly.GetType("RevitMCPWritePlanCommandSet.Commands.WritePlan.Operations.WritePlanExecutor");
     if (executorType == null) return "{\\"success\\":false,\\"error\\":\\"WritePlanExecutor type not found\\"}";
     System.Reflection.MethodInfo executeMethod = executorType.GetMethod("Execute", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
     if (executeMethod == null) return "{\\"success\\":false,\\"error\\":\\"Execute method not found\\"}";

@@ -1,40 +1,70 @@
 import { RevitClientConnection } from "./SocketClient.js";
-/**
- * 连接到Revit客户端并执行操作
- * @param operation 连接成功后要执行的操作函数
- * @returns 操作的结果
- */
-export async function withRevitConnection(operation) {
-    const revitClient = new RevitClientConnection("localhost", 8080);
-    try {
-        // 连接到Revit客户端
-        if (!revitClient.isConnected) {
-            await new Promise((resolve, reject) => {
-                const onConnect = () => {
-                    revitClient.socket.removeListener("connect", onConnect);
-                    revitClient.socket.removeListener("error", onError);
-                    resolve();
-                };
-                const onError = (error) => {
-                    revitClient.socket.removeListener("connect", onConnect);
-                    revitClient.socket.removeListener("error", onError);
-                    reject(new Error("connect to revit client failed"));
-                };
-                revitClient.socket.on("connect", onConnect);
-                revitClient.socket.on("error", onError);
-                revitClient.connect();
-                setTimeout(() => {
-                    revitClient.socket.removeListener("connect", onConnect);
-                    revitClient.socket.removeListener("error", onError);
-                    reject(new Error("连接到Revit客户端失败"));
-                }, 5000);
-            });
+import { runWithRevitCommandGate } from "./RevitCommandGate.js";
+
+export async function withRevitConnection(operation, options = {}) {
+    const metadata = {
+        command: options.command || "unknown",
+        commandId: options.commandId,
+        planId: extractPlanId(options.params),
+        mode: extractMode(options.params),
+    };
+
+    return await runWithRevitCommandGate(metadata, async () => {
+        const revitClient = new RevitClientConnection("localhost", 8080);
+        try {
+            if (!revitClient.isConnected) {
+                await waitForConnection(revitClient, options.connectTimeoutMs || 5000);
+            }
+            return await operation(revitClient);
         }
-        // 执行操作
-        return await operation(revitClient);
+        finally {
+            revitClient.disconnect();
+        }
+    }, options);
+}
+
+function waitForConnection(revitClient, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => {
+            revitClient.socket.removeListener("connect", onConnect);
+            revitClient.socket.removeListener("error", onError);
+        };
+        const onConnect = () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve();
+        };
+        const onError = () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error("connect to revit client failed"));
+        };
+
+        revitClient.socket.on("connect", onConnect);
+        revitClient.socket.on("error", onError);
+        revitClient.connect();
+        setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(new Error("connect to revit client timed out"));
+        }, timeoutMs);
+    });
+}
+
+function extractPlanId(params) {
+    if (!params || typeof params !== "object") {
+        return null;
     }
-    finally {
-        // 断开连接
-        revitClient.disconnect();
+    if (params.plan && typeof params.plan === "object" && typeof params.plan.planId === "string") {
+        return params.plan.planId;
     }
+    return typeof params.planId === "string" ? params.planId : null;
+}
+
+function extractMode(params) {
+    return params && typeof params === "object" && typeof params.mode === "string" ? params.mode : null;
 }

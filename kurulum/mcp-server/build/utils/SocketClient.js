@@ -78,7 +78,7 @@ export class RevitClientConnection {
             console.error("Error parsing response:", error);
         }
     }
-    sendCommand(command, params = {}) {
+    sendCommand(command, params = {}, options = {}) {
         return new Promise((resolve, reject) => {
             try {
                 if (!this.isConnected) {
@@ -122,7 +122,7 @@ export class RevitClientConnection {
                         this.responseCallbacks.delete(requestId);
                         reject(new Error(`Command timed out after 2 minutes: ${command}`));
                     }
-                }, 120000); // 2分钟超时
+                }, options.timeoutMs || 120000); // 2分钟超时
             }
             catch (error) {
                 reject(error);

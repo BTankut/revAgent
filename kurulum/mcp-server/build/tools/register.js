@@ -1,5 +1,6 @@
 import { registerSendCodeToRevitTool } from "./send_code_to_revit.js";
 import { registerSendCodeToRevitSafeTool } from "./send_code_to_revit_safe.js";
+import { registerGetRevitMcpStatusTool } from "./get_revit_mcp_status.js";
 import { registerGetRevitSessionContextTool } from "./get_revit_session_context.js";
 import { registerGetActiveViewContextTool } from "./get_active_view_context.js";
 import { registerInspectElementsTool } from "./inspect_elements.js";
@@ -15,6 +16,7 @@ import { registerClearWorkflowStateTool } from "./clear_workflow_state.js";
 export async function registerTools(server) {
     registerSendCodeToRevitTool(server);
     registerSendCodeToRevitSafeTool(server);
+    registerGetRevitMcpStatusTool(server);
     registerGetRevitSessionContextTool(server);
     registerGetActiveViewContextTool(server);
     registerInspectElementsTool(server);
@@ -26,5 +28,5 @@ export async function registerTools(server) {
     registerVerifyWritePlanTool(server);
     registerGetWorkflowStateTool(server);
     registerClearWorkflowStateTool(server);
-    console.error("Registered 13 Revit MCP tools");
+    console.error("Registered 14 Revit MCP tools");
 }

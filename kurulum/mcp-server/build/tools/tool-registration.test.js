@@ -9,6 +9,7 @@ const registerSource = readFileSync(join(toolsDir, "register.js"), "utf8");
 const expectedRegistrars = [
     "registerSendCodeToRevitTool",
     "registerSendCodeToRevitSafeTool",
+    "registerGetRevitMcpStatusTool",
     "registerGetRevitSessionContextTool",
     "registerGetActiveViewContextTool",
     "registerInspectElementsTool",
@@ -26,11 +27,12 @@ const registrarCalls = [...registerSource.matchAll(/\b(register[A-Za-z0-9]+Tool)
     .map((match) => match[1]);
 
 assert.deepEqual(registrarCalls, expectedRegistrars);
-assert(registerSource.includes('console.error("Registered 13 Revit MCP tools")'));
+assert(registerSource.includes('console.error("Registered 14 Revit MCP tools")'));
 
 const expectedToolFiles = [
     "send_code_to_revit.js",
     "send_code_to_revit_safe.js",
+    "get_revit_mcp_status.js",
     "get_revit_session_context.js",
     "get_active_view_context.js",
     "inspect_elements.js",
@@ -52,6 +54,7 @@ for (const file of expectedToolFiles) {
 const expectedToolNamesByFile = [
     ["send_code_to_revit.js", "send_code_to_revit"],
     ["send_code_to_revit_safe.js", "send_code_to_revit_safe"],
+    ["get_revit_mcp_status.js", "get_revit_mcp_status"],
     ["get_revit_session_context.js", "get_revit_session_context"],
     ["get_active_view_context.js", "get_active_view_context"],
     ["inspect_elements.js", "inspect_elements"],
