@@ -20,6 +20,7 @@
 - Added ExternalEvent handler and deterministic executor.
 - Implemented validate/preview/commit/verify modes.
 - Implemented initial operation catalog for parameter writes, view operations, movement, placement, duct/pipe creation, duct/pipe resize, and native schedule create/update.
+- Added native `commit_reroute` source delete/replacement support: validation requires a `sourceElementId`, commit deletes the source after creating replacement route segments, and verify confirms the source no longer exists.
 - Commit mode uses a transaction and rolls back on error; dynamic-host direct execution can use `SubTransaction` when the document is already modifiable.
 - Plugin remote is archived/read-only, so plugin branch changes are exported in `docs/revit-mcp-plugin-native-write-plan-executor.patch`.
 
@@ -76,8 +77,14 @@
   - Verifier matched `2` actual segments to `2` expected segments
   - Expected and actual total route length both `6.56167979002624 ft`
   - Clearance checks returned `clearanceViolationCount: 0` against the expanded obstacle box.
+- Added native reroute source replacement/delete verification, with approved live test:
+  - Disposable source duct `1020938` was created at `300 x 300 mm`
+  - Commit plan `reroute-source-replace-1777962600000` deleted source `1020938` and created duct segments `1020941` and `1020943`
+  - Verify matched `2` actual segments to `2` expected segments with total length `6.5616797899999995 ft`
+  - Verify returned `clearanceViolationCount: 0` and `sourceReplacementCheck.exists: false`
+  - Final readback confirmed both new ducts at `300 x 300 mm` and source `1020938` not found.
 
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from targeted local-loss extraction/reporting/basis-contribution foundations to production-calibrated final sizing from complete critical-path local-loss datasets and production reroute replacement/reconnection.
+- Expand engineering engines from targeted local-loss extraction/reporting/basis-contribution foundations to production-calibrated final sizing from complete critical-path local-loss datasets and production reroute reconnection.

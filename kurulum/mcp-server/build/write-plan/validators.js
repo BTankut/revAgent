@@ -193,6 +193,11 @@ function validateOperationPayload(step, prefix, errors, warnings) {
             if (args.obstacles && !Array.isArray(args.obstacles)) {
                 errors.push(`${prefix}.arguments.obstacles must be an array when provided`);
             }
+            if ((args.deleteSource === true || args.replaceSource === true) &&
+                !Number.isFinite(Number(args.sourceElementId)) &&
+                !Number.isFinite(Number(targets.sourceElementId))) {
+                errors.push(`${prefix}.arguments.sourceElementId or targets.sourceElementId is required when deleteSource/replaceSource is true`);
+            }
             break;
         case "export_boq_report":
         case "export_clash_report":

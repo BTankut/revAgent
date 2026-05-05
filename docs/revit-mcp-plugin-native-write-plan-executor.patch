@@ -1,7 +1,7 @@
-From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
+﻿From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 1/6] Add native write-plan executor
+Subject: [PATCH 1/7] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 2/6] Expand write-plan verification readback
+Subject: [PATCH 2/7] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 3/6] Fix write-plan command SDK compatibility
+Subject: [PATCH 3/7] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 4/6] Add native schedule write-plan operation
+Subject: [PATCH 4/7] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 5/6] Add native reroute commit verification
+Subject: [PATCH 5/7] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2367,7 +2367,7 @@ index 31c47a5..0b76d2e 100644
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 6/6] Verify reroute obstacle clearance
+Subject: [PATCH 6/7] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2538,6 +2538,122 @@ index ba849b9..91431bb 100644
 +                errors.Add("steps[" + index + "].arguments.obstacleBoxes must be an array when provided");
 +            if (args["obstacles"] != null && !(args["obstacles"] is JArray))
 +                errors.Add("steps[" + index + "].arguments.obstacles must be an array when provided");
+         }
+
+         private static string StringValue(JObject obj, string name)
+--
+2.50.1.windows.1
+
+
+From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 10:11:18 +0300
+Subject: [PATCH 7/7] Support reroute source replacement
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
+ .../Validators/WritePlanValidator.cs          | 13 ++++++
+ 2 files changed, 57 insertions(+), 2 deletions(-)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index 68b1712..063a4f5 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -260,7 +260,9 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             JArray clearanceChecks = new JArray();
+             int clearanceViolationCount = VerifyRerouteClearance(document, ids, args, clearanceChecks);
+             bool clearanceOk = clearanceViolationCount == 0;
+-            bool ok = countOk && segmentCountOk && lengthOk && clearanceOk;
++            JObject sourceReplacementCheck = VerifyRerouteSourceReplacement(document, step, args);
++            bool sourceOk = sourceReplacementCheck["success"] == null || (bool)sourceReplacementCheck["success"];
++            bool ok = countOk && segmentCountOk && lengthOk && clearanceOk && sourceOk;
+             return new JObject
+             {
+                 ["success"] = ok,
+@@ -273,7 +275,8 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 ["clearanceViolationCount"] = clearanceViolationCount,
+                 ["checks"] = checks,
+                 ["clearanceChecks"] = clearanceChecks,
+-                ["message"] = ok ? "verified" : "reroute created segments do not match expected count, length, or clearance"
++                ["sourceReplacementCheck"] = sourceReplacementCheck,
++                ["message"] = ok ? "verified" : "reroute created segments do not match expected count, length, clearance, or source replacement"
+             };
+         }
+
+@@ -484,6 +487,7 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                     args["ductTypeId"] = args["typeId"].DeepClone();
+                 CreateDuctRun(document, step, eIdMap, mappings, result);
+             }
++            DeleteRerouteSourceIfRequested(document, step, args, result);
+         }
+
+         private static void CreateOrUpdateSchedule(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
+@@ -958,6 +962,44 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return total;
+         }
+
++        private static void DeleteRerouteSourceIfRequested(Document document, JObject step, JObject args, JObject result)
++        {
++            if (!BoolValue(args["deleteSource"], false) && !BoolValue(args["replaceSource"], false))
++                return;
++            int sourceElementId = RerouteSourceElementId(step, args);
++            Element source = GetElementById(document, sourceElementId);
++            if (source == null)
++                throw new InvalidOperationException("Reroute source element not found for replacement.");
++            document.Delete(source.Id);
++            result["deletedSourceElementId"] = sourceElementId;
++        }
++
++        private static JObject VerifyRerouteSourceReplacement(Document document, JObject step, JObject args)
++        {
++            bool expectsDelete = BoolValue(args["deleteSource"], false) || BoolValue(args["replaceSource"], false);
++            int sourceElementId = RerouteSourceElementId(step, args);
++            Element source = GetElementById(document, sourceElementId);
++            bool exists = source != null;
++            bool success = !expectsDelete || (sourceElementId > 0 && !exists);
++            return new JObject
++            {
++                ["success"] = success,
++                ["sourceElementId"] = sourceElementId,
++                ["expectedDeleted"] = expectsDelete,
++                ["exists"] = exists
++            };
++        }
++
++        private static int RerouteSourceElementId(JObject step, JObject args)
++        {
++            if (args["sourceElementId"] != null)
++                return IntValue(args["sourceElementId"]);
++            JObject targets = step["targets"] as JObject;
++            if (targets != null && targets["sourceElementId"] != null)
++                return IntValue(targets["sourceElementId"]);
++            return 0;
++        }
++
+         private static int VerifyRerouteClearance(Document document, ICollection<ElementId> ids, JObject args, JArray checks)
+         {
+             JArray obstacleBoxes = args["obstacleBoxes"] as JArray ?? args["obstacles"] as JArray;
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index 91431bb..f346aca 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -171,6 +171,19 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 errors.Add("steps[" + index + "].arguments.obstacleBoxes must be an array when provided");
+             if (args["obstacles"] != null && !(args["obstacles"] is JArray))
+                 errors.Add("steps[" + index + "].arguments.obstacles must be an array when provided");
++            bool deleteSource = BoolValue(args["deleteSource"]) || BoolValue(args["replaceSource"]);
++            JObject targets = step["targets"] as JObject;
++            bool hasSourceElement = args["sourceElementId"] != null || (targets != null && targets["sourceElementId"] != null);
++            if (deleteSource && !hasSourceElement)
++                errors.Add("steps[" + index + "].arguments.sourceElementId or targets.sourceElementId is required when deleteSource/replaceSource is true");
++        }
++
++        private static bool BoolValue(JToken token)
++        {
++            if (token == null) return false;
++            bool value;
++            if (bool.TryParse(token.ToString(), out value)) return value;
++            return token.ToString() == "1";
          }
 
          private static string StringValue(JObject obj, string name)

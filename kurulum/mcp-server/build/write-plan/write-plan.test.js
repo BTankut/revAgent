@@ -105,6 +105,8 @@ const reroutePlan = buildPlanFromArgs({
         systemTypeId: 11,
         ductTypeId: 22,
         levelId: 33,
+        sourceElementId: 44,
+        deleteSource: true,
         unit: "m",
         points: [
             { x: 0, y: 0, z: 3 },
@@ -120,6 +122,28 @@ const reroutePlan = buildPlanFromArgs({
 const rerouteValidation = validateWritePlan(reroutePlan, { mode: "commit", requireInitialOperationsOnly: true });
 assert.equal(rerouteValidation.valid, true);
 assert.equal(classifyPlanRisk(reroutePlan), "critical");
+
+const invalidDeleteSourceReroute = buildPlanFromArgs({
+    title: "Reject source delete without source element",
+    discipline: "clash",
+    operation: "commit_reroute",
+    targets: {},
+    arguments: {
+        curveType: "duct",
+        systemTypeId: 11,
+        ductTypeId: 22,
+        levelId: 33,
+        deleteSource: true,
+        unit: "m",
+        points: [
+            { x: 0, y: 0, z: 3 },
+            { x: 1, y: 0, z: 3 },
+        ],
+    },
+});
+const invalidDeleteSourceValidation = validateWritePlan(invalidDeleteSourceReroute, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidDeleteSourceValidation.valid, false);
+assert(invalidDeleteSourceValidation.errors.includes("steps[0].arguments.sourceElementId or targets.sourceElementId is required when deleteSource/replaceSource is true"));
 
 const reportOutputDir = path.join(os.tmpdir(), `revit-mcp-report-test-${process.pid}`);
 const reportPlan = normalizePlan({
