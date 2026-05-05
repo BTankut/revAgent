@@ -107,6 +107,9 @@ const reroutePlan = buildPlanFromArgs({
         levelId: 33,
         sourceElementId: 44,
         deleteSource: true,
+        reconnect: true,
+        requireReconnect: true,
+        expectedSourceConnectionCount: 2,
         unit: "m",
         points: [
             { x: 0, y: 0, z: 3 },
@@ -122,6 +125,28 @@ const reroutePlan = buildPlanFromArgs({
 const rerouteValidation = validateWritePlan(reroutePlan, { mode: "commit", requireInitialOperationsOnly: true });
 assert.equal(rerouteValidation.valid, true);
 assert.equal(classifyPlanRisk(reroutePlan), "critical");
+
+const invalidReconnectReroute = buildPlanFromArgs({
+    title: "Reject reconnect without source element",
+    discipline: "clash",
+    operation: "commit_reroute",
+    targets: {},
+    arguments: {
+        curveType: "duct",
+        systemTypeId: 11,
+        ductTypeId: 22,
+        levelId: 33,
+        reconnectSource: true,
+        unit: "m",
+        points: [
+            { x: 0, y: 0, z: 3 },
+            { x: 1, y: 0, z: 3 },
+        ],
+    },
+});
+const invalidReconnectValidation = validateWritePlan(invalidReconnectReroute, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidReconnectValidation.valid, false);
+assert(invalidReconnectValidation.errors.includes("steps[0].arguments.sourceElementId or targets.sourceElementId is required when reconnect/reconnectSource is true"));
 
 const invalidDeleteSourceReroute = buildPlanFromArgs({
     title: "Reject source delete without source element",

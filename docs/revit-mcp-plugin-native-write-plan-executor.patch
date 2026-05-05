@@ -1,7 +1,7 @@
 ﻿From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 1/7] Add native write-plan executor
+Subject: [PATCH 1/8] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 2/7] Expand write-plan verification readback
+Subject: [PATCH 2/8] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 3/7] Fix write-plan command SDK compatibility
+Subject: [PATCH 3/8] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 4/7] Add native schedule write-plan operation
+Subject: [PATCH 4/8] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 5/7] Add native reroute commit verification
+Subject: [PATCH 5/8] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2367,7 +2367,7 @@ index 31c47a5..0b76d2e 100644
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 6/7] Verify reroute obstacle clearance
+Subject: [PATCH 6/8] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2548,7 +2548,7 @@ index ba849b9..91431bb 100644
 From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:11:18 +0300
-Subject: [PATCH 7/7] Support reroute source replacement
+Subject: [PATCH 7/8] Support reroute source replacement
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
@@ -2657,6 +2657,590 @@ index 91431bb..f346aca 100644
          }
 
          private static string StringValue(JObject obj, string name)
+--
+2.50.1.windows.1
+
+
+From 6be1a8b287fb9d41bf5ee96c449eab360ced9f75 Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 10:24:33 +0300
+Subject: [PATCH 8/8] Reconnect reroute replacement endpoints
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 445 +++++++++++++++++-
+ .../Validators/WritePlanValidator.cs          |  13 +
+ 2 files changed, 452 insertions(+), 6 deletions(-)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index 063a4f5..9c3c4e0 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -262,7 +262,9 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             bool clearanceOk = clearanceViolationCount == 0;
+             JObject sourceReplacementCheck = VerifyRerouteSourceReplacement(document, step, args);
+             bool sourceOk = sourceReplacementCheck["success"] == null || (bool)sourceReplacementCheck["success"];
+-            bool ok = countOk && segmentCountOk && lengthOk && clearanceOk && sourceOk;
++            JObject reconnectCheck = VerifyRerouteReconnect(document, ids, step, args);
++            bool reconnectOk = reconnectCheck["success"] == null || (bool)reconnectCheck["success"];
++            bool ok = countOk && segmentCountOk && lengthOk && clearanceOk && sourceOk && reconnectOk;
+             return new JObject
+             {
+                 ["success"] = ok,
+@@ -276,7 +278,8 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 ["checks"] = checks,
+                 ["clearanceChecks"] = clearanceChecks,
+                 ["sourceReplacementCheck"] = sourceReplacementCheck,
+-                ["message"] = ok ? "verified" : "reroute created segments do not match expected count, length, clearance, or source replacement"
++                ["reconnectCheck"] = reconnectCheck,
++                ["message"] = ok ? "verified" : "reroute created segments do not match expected count, length, clearance, source replacement, or reconnection"
+             };
+         }
+
+@@ -431,8 +434,9 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             ElementTransformUtils.MoveElements(document, ids, vector);
+         }
+
+-        private static void CreateDuctRun(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
++        private static List<ElementId> CreateDuctRun(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
+         {
++            List<ElementId> createdIds = new List<ElementId>();
+             JObject args = step["arguments"] as JObject ?? new JObject();
+             ElementId systemTypeId = new ElementId(IntValue(args["systemTypeId"]));
+             ElementId ductTypeId = new ElementId(IntValue(args["ductTypeId"]));
+@@ -449,11 +453,14 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 if (args["height"] != null) SetNamedDouble(duct, "Height", args["height"], StringValue(args, "unit"));
+                 if (args["diameter"] != null) SetNamedDouble(duct, "Diameter", args["diameter"], StringValue(args, "unit"));
+                 AddCreatedMapping(step, duct, eIdMap, mappings, i);
++                createdIds.Add(duct.Id);
+             }
++            return createdIds;
+         }
+
+-        private static void CreatePipeRun(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
++        private static List<ElementId> CreatePipeRun(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
+         {
++            List<ElementId> createdIds = new List<ElementId>();
+             JObject args = step["arguments"] as JObject ?? new JObject();
+             ElementId systemTypeId = new ElementId(IntValue(args["systemTypeId"]));
+             ElementId pipeTypeId = new ElementId(IntValue(args["pipeTypeId"]));
+@@ -468,26 +475,37 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 Autodesk.Revit.DB.Plumbing.Pipe pipe = Autodesk.Revit.DB.Plumbing.Pipe.Create(document, systemTypeId, pipeTypeId, levelId, a, b);
+                 if (args["diameter"] != null) SetNamedDouble(pipe, "Diameter", args["diameter"], StringValue(args, "unit"));
+                 AddCreatedMapping(step, pipe, eIdMap, mappings, i);
++                createdIds.Add(pipe.Id);
+             }
++            return createdIds;
+         }
+
+         private static void CommitReroute(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
+         {
+             JObject args = step["arguments"] as JObject ?? new JObject();
+             string curveType = StringValue(args, "curveType").Trim().ToLowerInvariant();
++            List<ConnectorSnapshot> sourceConnections = CaptureRerouteSourceConnections(document, step, args);
++            List<ElementId> createdIds;
+             if (curveType == "pipe")
+             {
+                 if (args["pipeTypeId"] == null && args["typeId"] != null)
+                     args["pipeTypeId"] = args["typeId"].DeepClone();
+-                CreatePipeRun(document, step, eIdMap, mappings, result);
++                createdIds = CreatePipeRun(document, step, eIdMap, mappings, result);
+             }
+             else
+             {
+                 if (args["ductTypeId"] == null && args["typeId"] != null)
+                     args["ductTypeId"] = args["typeId"].DeepClone();
+-                CreateDuctRun(document, step, eIdMap, mappings, result);
++                createdIds = CreateDuctRun(document, step, eIdMap, mappings, result);
+             }
+             DeleteRerouteSourceIfRequested(document, step, args, result);
++            JObject reconnectReport = ReconnectRerouteIfRequested(document, step, args, createdIds, sourceConnections);
++            if (reconnectReport != null)
++            {
++                result["rerouteReconnect"] = reconnectReport;
++                if (BoolValue(args["requireReconnect"], false) && reconnectReport["success"] != null && !(bool)reconnectReport["success"])
++                    throw new InvalidOperationException("Reroute reconnection failed.");
++            }
+         }
+
+         private static void CreateOrUpdateSchedule(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
+@@ -962,6 +980,139 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return total;
+         }
+
++        private static List<ConnectorSnapshot> CaptureRerouteSourceConnections(Document document, JObject step, JObject args)
++        {
++            List<ConnectorSnapshot> snapshots = new List<ConnectorSnapshot>();
++            if (!RerouteReconnectSourceRequested(args))
++                return snapshots;
++            int sourceElementId = RerouteSourceElementId(step, args);
++            Element source = GetElementById(document, sourceElementId);
++            if (source == null)
++                throw new InvalidOperationException("Reroute source element not found for reconnection.");
++
++            foreach (Connector sourceConnector in ElementConnectors(source))
++            {
++                ConnectorSet refs = null;
++                try { refs = sourceConnector.AllRefs; }
++                catch { refs = null; }
++                if (refs == null) continue;
++                foreach (Connector refConnector in refs)
++                {
++                if (refConnector == null || refConnector.Owner == null) continue;
++                if (refConnector.Owner.Id.IntegerValue == source.Id.IntegerValue) continue;
++                if (IsSystemReferenceOwner(refConnector.Owner)) continue;
++                AddConnectorSnapshot(snapshots, sourceConnector, refConnector);
++            }
++        }
++            return snapshots;
++        }
++
++        private static void AddConnectorSnapshot(List<ConnectorSnapshot> snapshots, Connector sourceConnector, Connector refConnector)
++        {
++            XYZ neighborOrigin = SafeConnectorOrigin(refConnector);
++            XYZ sourceOrigin = SafeConnectorOrigin(sourceConnector);
++            int ownerId = refConnector.Owner.Id.IntegerValue;
++            foreach (ConnectorSnapshot existing in snapshots)
++            {
++                if (existing.OwnerId == ownerId && existing.NeighborOrigin.DistanceTo(neighborOrigin) < 0.001)
++                    return;
++            }
++            snapshots.Add(new ConnectorSnapshot
++            {
++                OwnerId = ownerId,
++                SourceOrigin = sourceOrigin,
++                NeighborOrigin = neighborOrigin,
++                Category = refConnector.Owner.Category != null ? refConnector.Owner.Category.Name : ""
++            });
++        }
++
++        private static JObject ReconnectRerouteIfRequested(Document document, JObject step, JObject args, List<ElementId> createdIds, List<ConnectorSnapshot> sourceConnections)
++        {
++            bool connectSegments = RerouteConnectSegmentsRequested(args);
++            bool reconnectSource = RerouteReconnectSourceRequested(args);
++            if (!connectSegments && !reconnectSource)
++                return null;
++
++            JArray failures = new JArray();
++            JArray segmentChecks = new JArray();
++            JArray sourceChecks = new JArray();
++            double tolerance = ConnectorToleranceInternal(args);
++            try { document.Regenerate(); }
++            catch { }
++
++            int segmentConnectionCount = 0;
++            if (connectSegments)
++            {
++                for (int i = 0; i < createdIds.Count - 1; i++)
++                {
++                    Element first = document.GetElement(createdIds[i]);
++                    Element second = document.GetElement(createdIds[i + 1]);
++                    if (TryConnectNearestConnectorPair(first, second, tolerance, failures, "segment-" + i.ToString(CultureInfo.InvariantCulture)))
++                        segmentConnectionCount++;
++                    segmentChecks.Add(new JObject
++                    {
++                        ["fromElementId"] = createdIds[i].IntegerValue,
++                        ["toElementId"] = createdIds[i + 1].IntegerValue
++                    });
++                }
++            }
++
++            int sourceConnectionCount = 0;
++            if (reconnectSource && createdIds.Count > 0)
++            {
++                JArray points = args["points"] as JArray;
++                XYZ startPoint = points != null && points.Count > 0 ? PointValue(points[0] as JObject, StringValue(args, "unit")) : null;
++                XYZ endPoint = points != null && points.Count > 1 ? PointValue(points[points.Count - 1] as JObject, StringValue(args, "unit")) : null;
++                Element firstRoute = document.GetElement(createdIds[0]);
++                Element lastRoute = document.GetElement(createdIds[createdIds.Count - 1]);
++                Connector startConnector = startPoint != null ? FindNearestConnector(firstRoute, startPoint, tolerance) : null;
++                Connector endConnector = endPoint != null ? FindNearestConnector(lastRoute, endPoint, tolerance) : null;
++
++                foreach (ConnectorSnapshot snapshot in sourceConnections)
++                {
++                    Element neighbor = GetElementById(document, snapshot.OwnerId);
++                    Connector neighborConnector = FindNearestConnector(neighbor, snapshot.NeighborOrigin, tolerance);
++                    double startDistance = startPoint != null ? snapshot.SourceOrigin.DistanceTo(startPoint) : double.MaxValue;
++                    double endDistance = endPoint != null ? snapshot.SourceOrigin.DistanceTo(endPoint) : double.MaxValue;
++                    bool useStart = startDistance <= endDistance;
++                    Connector routeConnector = useStart ? startConnector : endConnector;
++                    string endpoint = useStart ? "start" : "end";
++                    bool connected = TryConnectConnectors(routeConnector, neighborConnector, failures, "source-" + endpoint + "-" + snapshot.OwnerId.ToString(CultureInfo.InvariantCulture));
++                    if (connected) sourceConnectionCount++;
++                    sourceChecks.Add(new JObject
++                    {
++                        ["sourceEndpoint"] = endpoint,
++                        ["neighborElementId"] = snapshot.OwnerId,
++                        ["neighborCategory"] = snapshot.Category,
++                        ["connected"] = connected
++                    });
++                }
++            }
++
++            try { document.Regenerate(); }
++            catch { }
++
++            int expectedSegmentConnections = connectSegments ? Math.Max(0, createdIds.Count - 1) : 0;
++            int expectedSourceConnections = ExpectedSourceConnectionCount(step, args, sourceConnections.Count);
++            bool segmentOk = !connectSegments || segmentConnectionCount >= expectedSegmentConnections;
++            bool sourceOk = !reconnectSource || sourceConnectionCount >= expectedSourceConnections;
++            return new JObject
++            {
++                ["success"] = segmentOk && sourceOk && failures.Count == 0,
++                ["requested"] = true,
++                ["connectSegments"] = connectSegments,
++                ["reconnectSource"] = reconnectSource,
++                ["expectedSegmentConnectionCount"] = expectedSegmentConnections,
++                ["segmentConnectionCount"] = segmentConnectionCount,
++                ["expectedSourceConnectionCount"] = expectedSourceConnections,
++                ["sourceConnectionSnapshotCount"] = sourceConnections.Count,
++                ["sourceConnectionCount"] = sourceConnectionCount,
++                ["segmentChecks"] = segmentChecks,
++                ["sourceChecks"] = sourceChecks,
++                ["failures"] = failures
++            };
++        }
++
+         private static void DeleteRerouteSourceIfRequested(Document document, JObject step, JObject args, JObject result)
+         {
+             if (!BoolValue(args["deleteSource"], false) && !BoolValue(args["replaceSource"], false))
+@@ -1000,6 +1151,68 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return 0;
+         }
+
++        private static JObject VerifyRerouteReconnect(Document document, ICollection<ElementId> ids, JObject step, JObject args)
++        {
++            bool connectSegments = RerouteConnectSegmentsRequested(args);
++            bool reconnectSource = RerouteReconnectSourceRequested(args);
++            if (!connectSegments && !reconnectSource)
++                return new JObject { ["success"] = true, ["requested"] = false };
++
++            List<ElementId> routeIds = new List<ElementId>(ids);
++            JArray segmentChecks = new JArray();
++            JArray externalRefs = new JArray();
++            double tolerance = ConnectorToleranceInternal(args);
++            int segmentConnectionCount = 0;
++            for (int i = 0; i < routeIds.Count - 1; i++)
++            {
++                Element first = document.GetElement(routeIds[i]);
++                Element second = document.GetElement(routeIds[i + 1]);
++                bool connected = AreNearestConnectorPairConnected(first, second, tolerance);
++                if (connected) segmentConnectionCount++;
++                segmentChecks.Add(new JObject
++                {
++                    ["fromElementId"] = routeIds[i].IntegerValue,
++                    ["toElementId"] = routeIds[i + 1].IntegerValue,
++                    ["connected"] = connected
++                });
++            }
++
++            int externalConnectionCount = 0;
++            if (routeIds.Count > 0)
++            {
++                JArray points = args["points"] as JArray;
++                XYZ startPoint = points != null && points.Count > 0 ? PointValue(points[0] as JObject, StringValue(args, "unit")) : null;
++                XYZ endPoint = points != null && points.Count > 1 ? PointValue(points[points.Count - 1] as JObject, StringValue(args, "unit")) : null;
++                HashSet<int> routeOwnerIds = new HashSet<int>();
++                foreach (ElementId id in routeIds)
++                    routeOwnerIds.Add(id.IntegerValue);
++                Element firstRoute = document.GetElement(routeIds[0]);
++                Element lastRoute = document.GetElement(routeIds[routeIds.Count - 1]);
++                if (startPoint != null)
++                    externalConnectionCount += CountExternalConnectorRefs(FindNearestConnector(firstRoute, startPoint, tolerance), routeOwnerIds, "start", externalRefs);
++                if (endPoint != null)
++                    externalConnectionCount += CountExternalConnectorRefs(FindNearestConnector(lastRoute, endPoint, tolerance), routeOwnerIds, "end", externalRefs);
++            }
++
++            int expectedSegmentConnections = connectSegments ? Math.Max(0, routeIds.Count - 1) : 0;
++            int expectedSourceConnections = ExpectedSourceConnectionCount(step, args, -1);
++            bool segmentOk = !connectSegments || segmentConnectionCount >= expectedSegmentConnections;
++            bool sourceOk = !reconnectSource || expectedSourceConnections < 0 || externalConnectionCount >= expectedSourceConnections;
++            return new JObject
++            {
++                ["success"] = segmentOk && sourceOk,
++                ["requested"] = true,
++                ["connectSegments"] = connectSegments,
++                ["reconnectSource"] = reconnectSource,
++                ["expectedSegmentConnectionCount"] = expectedSegmentConnections,
++                ["segmentConnectionCount"] = segmentConnectionCount,
++                ["expectedSourceConnectionCount"] = expectedSourceConnections,
++                ["externalConnectionCount"] = externalConnectionCount,
++                ["segmentChecks"] = segmentChecks,
++                ["externalRefs"] = externalRefs
++            };
++        }
++
+         private static int VerifyRerouteClearance(Document document, ICollection<ElementId> ids, JObject args, JArray checks)
+         {
+             JArray obstacleBoxes = args["obstacleBoxes"] as JArray ?? args["obstacles"] as JArray;
+@@ -1101,6 +1314,218 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             return tMin <= tMax;
+         }
+
++        private static bool RerouteReconnectRequested(JObject args)
++        {
++            return RerouteConnectSegmentsRequested(args) || RerouteReconnectSourceRequested(args);
++        }
++
++        private static bool RerouteConnectSegmentsRequested(JObject args)
++        {
++            return BoolValue(args["reconnect"], false) || BoolValue(args["connectSegments"], false) || BoolValue(args["reconnectSource"], false);
++        }
++
++        private static bool RerouteReconnectSourceRequested(JObject args)
++        {
++            return BoolValue(args["reconnect"], false) || BoolValue(args["reconnectSource"], false);
++        }
++
++        private static double ConnectorToleranceInternal(JObject args)
++        {
++            if (args["connectorToleranceM"] != null)
++                return Math.Max(0.0, ConvertToInternal(DoubleValue(args["connectorToleranceM"]), "m"));
++            if (args["connectorTolerance"] != null)
++                return Math.Max(0.0, ConvertToInternal(DoubleValue(args["connectorTolerance"]), StringValue(args, "unit")));
++            return 0.05;
++        }
++
++        private static int ExpectedSourceConnectionCount(JObject step, JObject args, int defaultValue)
++        {
++            if (args["expectedSourceConnectionCount"] != null)
++                return IntValue(args["expectedSourceConnectionCount"]);
++            JObject targets = step["targets"] as JObject;
++            if (targets != null && targets["expectedSourceConnectionCount"] != null)
++                return IntValue(targets["expectedSourceConnectionCount"]);
++            return defaultValue;
++        }
++
++        private static List<Connector> ElementConnectors(Element elem)
++        {
++            List<Connector> connectors = new List<Connector>();
++            if (elem == null) return connectors;
++            MEPCurve curve = elem as MEPCurve;
++            if (curve != null && curve.ConnectorManager != null && curve.ConnectorManager.Connectors != null)
++            {
++                foreach (Connector connector in curve.ConnectorManager.Connectors)
++                    if (connector != null) connectors.Add(connector);
++            }
++            FamilyInstance instance = elem as FamilyInstance;
++            if (instance != null && instance.MEPModel != null && instance.MEPModel.ConnectorManager != null && instance.MEPModel.ConnectorManager.Connectors != null)
++            {
++                foreach (Connector connector in instance.MEPModel.ConnectorManager.Connectors)
++                    if (connector != null) connectors.Add(connector);
++            }
++            return connectors;
++        }
++
++        private static XYZ SafeConnectorOrigin(Connector connector)
++        {
++            try
++            {
++                return connector != null ? connector.Origin : XYZ.Zero;
++            }
++            catch
++            {
++                return XYZ.Zero;
++            }
++        }
++
++        private static Connector FindNearestConnector(Element elem, XYZ point, double tolerance)
++        {
++            if (elem == null || point == null) return null;
++            Connector best = null;
++            double bestDistance = double.MaxValue;
++            foreach (Connector connector in ElementConnectors(elem))
++            {
++                XYZ origin = SafeConnectorOrigin(connector);
++                double distance = origin.DistanceTo(point);
++                if (distance < bestDistance)
++                {
++                    bestDistance = distance;
++                    best = connector;
++                }
++            }
++            if (best == null) return null;
++            return bestDistance <= tolerance ? best : null;
++        }
++
++        private static bool TryConnectNearestConnectorPair(Element first, Element second, double tolerance, JArray failures, string context)
++        {
++            Connector firstConnector;
++            Connector secondConnector;
++            double distance;
++            FindNearestConnectorPair(first, second, out firstConnector, out secondConnector, out distance);
++            if (firstConnector == null || secondConnector == null || distance > tolerance)
++            {
++                failures.Add(new JObject
++                {
++                    ["context"] = context,
++                    ["message"] = "Nearest connector pair not found within tolerance",
++                    ["distance"] = distance
++                });
++                return false;
++            }
++            return TryConnectConnectors(firstConnector, secondConnector, failures, context);
++        }
++
++        private static bool AreNearestConnectorPairConnected(Element first, Element second, double tolerance)
++        {
++            Connector firstConnector;
++            Connector secondConnector;
++            double distance;
++            FindNearestConnectorPair(first, second, out firstConnector, out secondConnector, out distance);
++            if (firstConnector == null || secondConnector == null || distance > tolerance)
++                return false;
++            return SafeIsConnectedTo(firstConnector, secondConnector);
++        }
++
++        private static void FindNearestConnectorPair(Element first, Element second, out Connector firstConnector, out Connector secondConnector, out double distance)
++        {
++            firstConnector = null;
++            secondConnector = null;
++            distance = double.MaxValue;
++            foreach (Connector a in ElementConnectors(first))
++            {
++                XYZ aOrigin = SafeConnectorOrigin(a);
++                foreach (Connector b in ElementConnectors(second))
++                {
++                    XYZ bOrigin = SafeConnectorOrigin(b);
++                    double current = aOrigin.DistanceTo(bOrigin);
++                    if (current < distance)
++                    {
++                        distance = current;
++                        firstConnector = a;
++                        secondConnector = b;
++                    }
++                }
++            }
++        }
++
++        private static bool TryConnectConnectors(Connector first, Connector second, JArray failures, string context)
++        {
++            if (first == null || second == null)
++            {
++                failures.Add(new JObject { ["context"] = context, ["message"] = "Connector not found" });
++                return false;
++            }
++            try
++            {
++                if (first.Owner != null && second.Owner != null && first.Owner.Id.IntegerValue == second.Owner.Id.IntegerValue)
++                {
++                    failures.Add(new JObject { ["context"] = context, ["message"] = "Cannot connect connectors on the same owner" });
++                    return false;
++                }
++                if (SafeIsConnectedTo(first, second))
++                    return true;
++                first.ConnectTo(second);
++                return SafeIsConnectedTo(first, second);
++            }
++            catch (Exception ex)
++            {
++                failures.Add(new JObject
++                {
++                    ["context"] = context,
++                    ["message"] = ex.Message
++                });
++                return false;
++            }
++        }
++
++        private static bool SafeIsConnectedTo(Connector first, Connector second)
++        {
++            try
++            {
++                return first != null && second != null && first.IsConnectedTo(second);
++            }
++            catch
++            {
++                return false;
++            }
++        }
++
++        private static int CountExternalConnectorRefs(Connector connector, HashSet<int> routeOwnerIds, string endpoint, JArray refs)
++        {
++            if (connector == null) return 0;
++            int count = 0;
++            ConnectorSet allRefs = null;
++            try { allRefs = connector.AllRefs; }
++            catch { allRefs = null; }
++            if (allRefs == null) return 0;
++            foreach (Connector refConnector in allRefs)
++            {
++                if (refConnector == null || refConnector.Owner == null) continue;
++                int ownerId = refConnector.Owner.Id.IntegerValue;
++                if (routeOwnerIds.Contains(ownerId)) continue;
++                if (IsSystemReferenceOwner(refConnector.Owner)) continue;
++                count++;
++                refs.Add(new JObject
++                {
++                    ["endpoint"] = endpoint,
++                    ["ownerElementId"] = ownerId,
++                    ["category"] = refConnector.Owner.Category != null ? refConnector.Owner.Category.Name : ""
++                });
++            }
++            return count;
++        }
++
++        private static bool IsSystemReferenceOwner(Element owner)
++        {
++            if (owner == null) return false;
++            string category = owner.Category != null ? owner.Category.Name : "";
++            if (category.EndsWith(" Systems", StringComparison.OrdinalIgnoreCase)) return true;
++            if (category.EndsWith("Systems", StringComparison.OrdinalIgnoreCase)) return true;
++            return false;
++        }
++
+         private static double ConvertToInternal(double value, string unit)
+         {
+             string normalized = string.IsNullOrWhiteSpace(unit) ? "internal" : unit.Trim().ToLowerInvariant();
+@@ -1187,6 +1612,14 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             }
+         }
+
++        private class ConnectorSnapshot
++        {
++            public int OwnerId;
++            public XYZ SourceOrigin;
++            public XYZ NeighborOrigin;
++            public string Category;
++        }
++
+         private class RouteBox
+         {
+             public double MinX;
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index f346aca..f230ebf 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -172,10 +172,15 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+             if (args["obstacles"] != null && !(args["obstacles"] is JArray))
+                 errors.Add("steps[" + index + "].arguments.obstacles must be an array when provided");
+             bool deleteSource = BoolValue(args["deleteSource"]) || BoolValue(args["replaceSource"]);
++            bool reconnectSource = BoolValue(args["reconnect"]) || BoolValue(args["reconnectSource"]);
+             JObject targets = step["targets"] as JObject;
+             bool hasSourceElement = args["sourceElementId"] != null || (targets != null && targets["sourceElementId"] != null);
+             if (deleteSource && !hasSourceElement)
+                 errors.Add("steps[" + index + "].arguments.sourceElementId or targets.sourceElementId is required when deleteSource/replaceSource is true");
++            if (reconnectSource && !hasSourceElement)
++                errors.Add("steps[" + index + "].arguments.sourceElementId or targets.sourceElementId is required when reconnect/reconnectSource is true");
++            if (args["expectedSourceConnectionCount"] != null && IntValue(args["expectedSourceConnectionCount"]) < 0)
++                errors.Add("steps[" + index + "].arguments.expectedSourceConnectionCount must be non-negative when provided");
+         }
+
+         private static bool BoolValue(JToken token)
+@@ -186,6 +191,14 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+             return token.ToString() == "1";
+         }
+
++        private static int IntValue(JToken token)
++        {
++            if (token == null) return 0;
++            int value;
++            if (int.TryParse(token.ToString(), out value)) return value;
++            return 0;
++        }
++
+         private static string StringValue(JObject obj, string name)
+         {
+             return obj[name] == null ? "" : obj[name].ToString();
 --
 2.50.1.windows.1
 

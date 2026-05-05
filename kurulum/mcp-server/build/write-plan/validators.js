@@ -198,6 +198,14 @@ function validateOperationPayload(step, prefix, errors, warnings) {
                 !Number.isFinite(Number(targets.sourceElementId))) {
                 errors.push(`${prefix}.arguments.sourceElementId or targets.sourceElementId is required when deleteSource/replaceSource is true`);
             }
+            if ((args.reconnect === true || args.reconnectSource === true) &&
+                !Number.isFinite(Number(args.sourceElementId)) &&
+                !Number.isFinite(Number(targets.sourceElementId))) {
+                errors.push(`${prefix}.arguments.sourceElementId or targets.sourceElementId is required when reconnect/reconnectSource is true`);
+            }
+            if (args.expectedSourceConnectionCount !== undefined && (!Number.isInteger(Number(args.expectedSourceConnectionCount)) || Number(args.expectedSourceConnectionCount) < 0)) {
+                errors.push(`${prefix}.arguments.expectedSourceConnectionCount must be a non-negative integer when provided`);
+            }
             break;
         case "export_boq_report":
         case "export_clash_report":

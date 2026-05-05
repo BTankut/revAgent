@@ -21,6 +21,7 @@
 - Implemented validate/preview/commit/verify modes.
 - Implemented initial operation catalog for parameter writes, view operations, movement, placement, duct/pipe creation, duct/pipe resize, and native schedule create/update.
 - Added native `commit_reroute` source delete/replacement support: validation requires a `sourceElementId`, commit deletes the source after creating replacement route segments, and verify confirms the source no longer exists.
+- Added native `commit_reroute` reconnection support: source connector references are captured before deletion, replacement route segments are connected to each other, source neighbors are reconnected to route endpoints, and verify re-reads physical external connections while filtering system proxy references.
 - Commit mode uses a transaction and rolls back on error; dynamic-host direct execution can use `SubTransaction` when the document is already modifiable.
 - Plugin remote is archived/read-only, so plugin branch changes are exported in `docs/revit-mcp-plugin-native-write-plan-executor.patch`.
 
@@ -83,8 +84,14 @@
   - Verify matched `2` actual segments to `2` expected segments with total length `6.5616797899999995 ft`
   - Verify returned `clearanceViolationCount: 0` and `sourceReplacementCheck.exists: false`
   - Final readback confirmed both new ducts at `300 x 300 mm` and source `1020938` not found.
+- Added native reroute reconnection verification, with approved live test:
+  - Disposable connected duct chain created left neighbor `1020947`, source `1020949`, and right neighbor `1020951`
+  - Commit plan `reroute-reconnect-1777965200000` deleted source `1020949`, created replacement ducts `1020954` and `1020956`, connected the route segments, and reconnected both source neighbors
+  - Commit report returned `segmentConnectionCount: 1`, `sourceConnectionCount: 2`, and no reconnect failures
+  - Verify returned `segmentConnectionCount: 1`, `externalConnectionCount: 2`, external refs to physical ducts `1020947` and `1020951`, `sourceReplacementCheck.exists: false`, and `success: true`
+  - Final readback confirmed the two replacement ducts at `300 x 300 mm` with `openConnectorCount: 0`.
 
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from targeted local-loss extraction/reporting/basis-contribution foundations to production-calibrated final sizing from complete critical-path local-loss datasets and production reroute reconnection.
+- Expand engineering engines from targeted local-loss extraction/reporting/basis-contribution foundations to production-calibrated final sizing from complete critical-path local-loss datasets and broader production reroute fitting behavior.
