@@ -13,6 +13,7 @@ import { buildSanitaryStormPipeResizeProposal, calculateSlopePercent, calculateS
 import { mergeOfficeStandards, missingStandardsForDiscipline } from "../office-standards/defaults.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 import { buildAnalysisWritePlanProposal } from "../tools/analysis_write_plan_proposal.js";
+import { summarizeOfficeStandardsCompleteness } from "../tools/office_standards_completeness.js";
 import { validateStep } from "../write-plan/validators.js";
 
 const hvacMissingStandards = missingStandardsForDiscipline("hvac", mergeOfficeStandards());
@@ -922,6 +923,35 @@ const selectedPathReport = buildAnalysisReport({
 assert(selectedPathReport.localLossPressureRows.some((row) => row.rowType === "local_loss_selected_path_pressure_check"));
 assert(selectedPathReport.localLossPressureCsv.includes("local_loss_selected_path_pressure_check"));
 assert(selectedPathReport.localLossPressureCsv.includes("125"));
+
+const officeStandardsCompleteness = summarizeOfficeStandardsCompleteness([
+    {
+        discipline: "hvac",
+        engine: "hvac-airside-foundation",
+        requiresOfficeStandard: true,
+        missingStandards: ["hvac.ductEqualFrictionTargetPaPerM"],
+    },
+    {
+        discipline: "hydronic",
+        engine: "hydronic-pipe-foundation",
+        requiresOfficeStandard: false,
+        missingStandards: [],
+    },
+    {
+        discipline: "fire",
+        engine: "fire-sprinkler-foundation",
+        requiresOfficeStandard: true,
+        missingStandards: ["fire.hydraulicStandard", "hvac.ductEqualFrictionTargetPaPerM"],
+    },
+]);
+assert.equal(officeStandardsCompleteness.completeForProductionReview, false);
+assert.equal(officeStandardsCompleteness.requiresOfficeStandard, true);
+assert.deepEqual(officeStandardsCompleteness.missingStandards, [
+    "fire.hydraulicStandard",
+    "hvac.ductEqualFrictionTargetPaPerM",
+]);
+assert.equal(officeStandardsCompleteness.rows.length, 3);
+assert.equal(officeStandardsCompleteness.canCommit, false);
 
 const writePlanProposal = buildAnalysisWritePlanProposal({
     discipline: "all",

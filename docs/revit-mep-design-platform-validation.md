@@ -379,6 +379,10 @@ Write checks:
   - A fresh stdio runtime handshake listed all `13` tools.
   - `analyze_mep_system` with `discipline: fire`, `includeRevitRead: false`, one `firePipeSizingRequests` item, and complete test fire standards returned `success: true`, `mutateModel: false`, `writePlanProposal.validation.valid: true`, and plan risk `critical`.
   - The top-level proposal included one critical proposal-only `resize_pipe` step for fire pipe `801 -> 80 mm`; `reporting.pipeSizingRows` included `fire_pipe_sizing_proposal`, `designFlowLpm: 500`, and `demandType: cabinet_plus_sprinkler`.
+- Office standards completeness summary audit:
+  - A fresh stdio runtime handshake listed all `13` tools.
+  - `analyze_mep_system` with `discipline: all` and `includeRevitRead: false` returned `success: true`, `mutateModel: false`, and top-level `officeStandardsCompleteness`.
+  - The summary returned `completeForProductionReview: false`, `requiresOfficeStandard: true`, `28` unique missing standards, `7` per-engine rows, and blocked rows for `hvac`, `hydronic`, `domestic_water`, `sanitary`, and `fire`.
 
 ## Known Validation Limits
 

@@ -10,6 +10,7 @@ import { analyzeSanitaryStorm } from "../domains/sanitary-storm/index.js";
 import { mergeOfficeStandards } from "../office-standards/defaults.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 import { buildAnalysisWritePlanProposal } from "./analysis_write_plan_proposal.js";
+import { summarizeOfficeStandardsCompleteness } from "./office_standards_completeness.js";
 import { formatJsonContent } from "../utils/revitToolHelpers.js";
 
 export function registerAnalyzeMepSystemTool(server) {
@@ -117,6 +118,7 @@ export function registerAnalyzeMepSystemTool(server) {
                 analyses,
                 delimiter: officeStandards.reporting?.csvDelimiter,
             });
+            const officeStandardsCompleteness = summarizeOfficeStandardsCompleteness(analyses);
             const writePlanProposal = buildAnalysisWritePlanProposal({
                 analyses,
                 discipline,
@@ -127,6 +129,7 @@ export function registerAnalyzeMepSystemTool(server) {
                 success: true,
                 discipline,
                 mutateModel: false,
+                officeStandardsCompleteness,
                 analyses,
                 reporting,
                 writePlanProposal,
