@@ -1,0 +1,112 @@
+{
+  "mergeTarget": "analyze_mep_system.officeStandards",
+  "requiredMissingStandardPaths": [
+    "domesticWater.fixtureUnitDemandCurve",
+    "domesticWater.fixtureUnitStandard",
+    "domesticWater.pipeFrictionLimitPaPerM",
+    "domesticWater.pipeVelocityLimitMps",
+    "domesticWater.pressureLossMethod",
+    "domesticWater.sizingMethod",
+    "fire.fireCabinetFlowLpm",
+    "fire.fireCabinetMaxHoseReachM",
+    "fire.fireCabinetPressureBar",
+    "fire.hydraulicStandard",
+    "fire.pipeFrictionLimitPaPerM",
+    "fire.pipeVelocityLimitMps",
+    "fire.simultaneousFireCabinetCount",
+    "fire.sprinklerSpacingRules",
+    "hvac.ductEqualFrictionTargetPaPerM",
+    "hvac.ductVelocityLimitsMps.branch",
+    "hvac.ductVelocityLimitsMps.main",
+    "hvac.ductVelocityLimitsMps.terminal",
+    "hydronic.pipeFrictionLimitPaPerM",
+    "hydronic.pipeVelocityLimitsMps.branch",
+    "hydronic.pipeVelocityLimitsMps.main",
+    "sanitaryStorm.pipeSizingTable",
+    "sanitaryStorm.rainfallIntensityMmH",
+    "sanitaryStorm.runoffCoefficient",
+    "sanitaryStorm.sanitarySlopeRules",
+    "sanitaryStorm.stackNodeIds",
+    "sanitaryStorm.stormPipeSizingTable",
+    "sanitaryStorm.ventNodeIds"
+  ],
+  "officeStandards": {
+    "domesticWater": {
+      "fixtureUnitDemandCurve": [],
+      "fixtureUnitStandard": null,
+      "pipeFrictionLimitPaPerM": null,
+      "pipeVelocityLimitMps": null,
+      "pressureLossMethod": null,
+      "sizingMethod": null
+    },
+    "fire": {
+      "fireCabinetFlowLpm": null,
+      "fireCabinetMaxHoseReachM": null,
+      "fireCabinetPressureBar": null,
+      "hydraulicStandard": null,
+      "pipeFrictionLimitPaPerM": null,
+      "pipeVelocityLimitMps": null,
+      "simultaneousFireCabinetCount": null,
+      "sprinklerSpacingRules": []
+    },
+    "hvac": {
+      "ductEqualFrictionTargetPaPerM": null,
+      "ductVelocityLimitsMps": {
+        "branch": null,
+        "main": null,
+        "terminal": null
+      }
+    },
+    "hydronic": {
+      "pipeFrictionLimitPaPerM": null,
+      "pipeVelocityLimitsMps": {
+        "branch": null,
+        "main": null
+      }
+    },
+    "sanitaryStorm": {
+      "pipeSizingTable": [],
+      "rainfallIntensityMmH": null,
+      "runoffCoefficient": null,
+      "sanitarySlopeRules": [],
+      "stackNodeIds": [],
+      "stormPipeSizingTable": [],
+      "ventNodeIds": []
+    }
+  },
+  "fieldHints": {
+    "domesticWater.fixtureUnitDemandCurve": "Array of approved fixture-unit demand curve rows used by the domestic-water sizing engine.",
+    "domesticWater.fixtureUnitStandard": "Office standard name or code basis for fixture-unit demand.",
+    "domesticWater.pipeFrictionLimitPaPerM": "Maximum domestic-water pipe friction in Pa/m.",
+    "domesticWater.pipeVelocityLimitMps": "Maximum domestic-water pipe velocity in m/s.",
+    "domesticWater.pressureLossMethod": "Approved domestic-water pressure-loss method name.",
+    "domesticWater.sizingMethod": "Approved domestic-water sizing method name.",
+    "fire.fireCabinetFlowLpm": "Design fire-cabinet flow in L/min.",
+    "fire.fireCabinetMaxHoseReachM": "Maximum fire-cabinet hose reach in m.",
+    "fire.fireCabinetPressureBar": "Required fire-cabinet pressure in bar.",
+    "fire.hydraulicStandard": "Approved fire/sprinkler hydraulic standard name.",
+    "fire.pipeFrictionLimitPaPerM": "Maximum fire pipe friction in Pa/m.",
+    "fire.pipeVelocityLimitMps": "Maximum fire pipe velocity in m/s.",
+    "fire.simultaneousFireCabinetCount": "Approved simultaneous fire-cabinet count.",
+    "fire.sprinklerSpacingRules": "Array of approved sprinkler spacing/coverage rule rows.",
+    "hvac.ductEqualFrictionTargetPaPerM": "HVAC duct equal-friction target in Pa/m.",
+    "hvac.ductVelocityLimitsMps.branch": "Branch duct velocity limit in m/s.",
+    "hvac.ductVelocityLimitsMps.main": "Main duct velocity limit in m/s.",
+    "hvac.ductVelocityLimitsMps.terminal": "Terminal duct velocity limit in m/s.",
+    "hydronic.pipeFrictionLimitPaPerM": "Maximum hydronic pipe friction in Pa/m.",
+    "hydronic.pipeVelocityLimitsMps.branch": "Branch hydronic pipe velocity limit in m/s.",
+    "hydronic.pipeVelocityLimitsMps.main": "Main hydronic pipe velocity limit in m/s.",
+    "sanitaryStorm.pipeSizingTable": "Array of approved sanitary pipe sizing rows.",
+    "sanitaryStorm.rainfallIntensityMmH": "Storm rainfall intensity in mm/h.",
+    "sanitaryStorm.runoffCoefficient": "Storm runoff coefficient.",
+    "sanitaryStorm.sanitarySlopeRules": "Array of approved sanitary slope rule rows.",
+    "sanitaryStorm.stackNodeIds": "Array of confirmed stack node ids for the project model.",
+    "sanitaryStorm.stormPipeSizingTable": "Array of approved storm pipe sizing rows.",
+    "sanitaryStorm.ventNodeIds": "Array of confirmed vent node ids for the project model."
+  },
+  "notes": [
+    "Replace null and empty-array placeholders with approved office/project standards before production review.",
+    "Pass only the officeStandards object as the analyze_mep_system officeStandards override.",
+    "Do not treat this template as design approval; preview, explicit approval, and verify are still required for any model write."
+  ]
+}
