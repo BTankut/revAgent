@@ -37,6 +37,13 @@ export function summarizeProductionReadiness({
         writePlanProposalValid,
         blockerCount: blockers.length,
         blockers,
+        nextRequiredInputs: buildNextRequiredInputs({
+            officeStandardsComplete,
+            officeStandardsCompleteness,
+            dataCompletenessRows,
+            writePlanProposalValid,
+            writePlanProposal,
+        }),
         rows: [
             {
                 rowType: "office_standards_readiness",
@@ -65,6 +72,90 @@ export function summarizeProductionReadiness({
         ],
         canCommit: false,
     };
+}
+
+function buildNextRequiredInputs({
+    officeStandardsComplete,
+    officeStandardsCompleteness,
+    dataCompletenessRows,
+    writePlanProposalValid,
+    writePlanProposal,
+}) {
+    const inputs = [];
+    if (!officeStandardsComplete) {
+        inputs.push({
+            inputType: "office_standards",
+            status: "required",
+            mergeTarget: "analyze_mep_system.officeStandards",
+            sourceArtifact: "docs/revit-mep-office-standards-input-template.json",
+            missingStandardCount: Array.isArray(officeStandardsCompleteness?.missingStandards)
+                ? officeStandardsCompleteness.missingStandards.length
+                : 0,
+            missingStandards: Array.isArray(officeStandardsCompleteness?.missingStandards)
+                ? officeStandardsCompleteness.missingStandards
+                : [],
+            template: officeStandardsCompleteness?.officeStandardsInputTemplate || null,
+        });
+    }
+    const incompleteRows = dataCompletenessRows.filter((row) => !row.completeForProductionReview);
+    if (incompleteRows.length > 0) {
+        inputs.push({
+            inputType: "project_critical_data",
+            status: "required",
+            mergeTarget: "analyze_mep_system arguments",
+            sourceArtifact: "docs/revit-mep-project-critical-data-template.json",
+            blockedProposalCount: incompleteRows.length,
+            requiredArgumentGroups: requiredArgumentGroupsForRows(incompleteRows),
+            blockedProposalRows: incompleteRows,
+        });
+    }
+    if (!writePlanProposalValid) {
+        const errors = Array.isArray(writePlanProposal?.validation?.errors)
+            ? writePlanProposal.validation.errors
+            : [];
+        inputs.push({
+            inputType: "write_plan_proposal_validation",
+            status: "required",
+            mergeTarget: "analyze_mep_system.officeStandards and proposal inputs",
+            validationErrorCount: errors.length,
+            validationErrors: errors,
+            guidance: "Adjust allowed parameter names, exact schema mappings, target identities, or proposal request data before preview/commit.",
+        });
+    }
+    return inputs;
+}
+
+function requiredArgumentGroupsForRows(rows) {
+    const groups = new Set();
+    for (const row of rows) {
+        if (row.discipline === "hvac" && row.proposalName === "ductSizingProposal") {
+            groups.add("hvacDuctSizingTargetElementIds");
+            groups.add("hvacDesignFlowsByElementId");
+            groups.add("localLossElementIds");
+            groups.add("criticalPathLocalLossPressurePa");
+            groups.add("criticalPathLocalLossComplete");
+        }
+        else if (row.discipline === "hydronic" && row.proposalName === "pipeSizingProposal") {
+            groups.add("hydronicPipeSizingTargetElementIds");
+            groups.add("hydronicDesignFlowsByElementId");
+            groups.add("localLossElementIds");
+            groups.add("criticalPathLocalLossPressurePa");
+            groups.add("criticalPathLocalLossComplete");
+        }
+        else if (row.discipline === "domestic_water" && row.proposalName === "pipeSizingProposal") {
+            groups.add("domesticWaterPipeSizingRequests");
+        }
+        else if (row.discipline === "sanitary" && row.proposalName === "pipeSizingProposal") {
+            groups.add("sanitaryStormPipeSizingRequests");
+        }
+        else if ((row.discipline === "fire" || row.discipline === "sprinkler") && row.proposalName === "pipeSizingProposal") {
+            groups.add("firePipeSizingRequests");
+        }
+        else {
+            groups.add(`${row.discipline}.${row.proposalName}`);
+        }
+    }
+    return [...groups].sort();
 }
 
 function collectDataCompletenessRows(analyses = []) {

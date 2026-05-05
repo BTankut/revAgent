@@ -393,6 +393,7 @@ Write checks:
   - A fresh stdio runtime handshake listed all `13` tools.
   - `analyze_mep_system` with `discipline: all`, `includeRevitRead: false`, and enforced parameter allowlist allowing only `Mark` returned `success: true`, `mutateModel: false`, and top-level `productionReadiness`.
   - The summary returned `completeForProductionReview: false`, `officeStandardsComplete: false`, `proposalDataComplete: true`, `writePlanProposalValid: false`, and two blockers: missing office standards plus generated write-plan proposal invalid because the equipment note proposal targeted `Comments`.
+  - Follow-up runtime probe confirmed `productionReadiness.nextRequiredInputs` returned `office_standards` and `write_plan_proposal_validation`, including `docs/revit-mep-office-standards-input-template.json` as the office standards handoff source artefact, without mutating Revit.
 - Current clean-restart normal socket commit smoke:
   - A fresh stdio runtime handshake against `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js` listed all `13` tools.
   - `inspect_parameter_schema` confirmed duct `392168` has writable instance `Comments` / `ALL_MODEL_INSTANCE_COMMENTS`.

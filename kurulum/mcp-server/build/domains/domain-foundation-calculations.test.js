@@ -1000,6 +1000,12 @@ assert(productionReadiness.blockers.some((blocker) => blocker.includes("Missing 
 assert(productionReadiness.blockers.some((blocker) => blocker.includes("ductSizingProposal data is incomplete")));
 assert(productionReadiness.blockers.some((blocker) => blocker.includes("Generated write-plan proposal is invalid")));
 assert(productionReadiness.rows.some((row) => row.rowType === "proposal_data_readiness" && row.status === "blocked"));
+assert.equal(productionReadiness.nextRequiredInputs.length, 3);
+assert(productionReadiness.nextRequiredInputs.some((input) => input.inputType === "office_standards" && input.missingStandardCount === 2));
+assert(productionReadiness.nextRequiredInputs.some((input) => input.inputType === "project_critical_data" &&
+    input.requiredArgumentGroups.includes("hvacDesignFlowsByElementId") &&
+    input.requiredArgumentGroups.includes("criticalPathLocalLossPressurePa")));
+assert(productionReadiness.nextRequiredInputs.some((input) => input.inputType === "write_plan_proposal_validation" && input.validationErrorCount === 1));
 assert.equal(productionReadiness.canCommit, false);
 
 const writePlanProposal = buildAnalysisWritePlanProposal({
