@@ -1,0 +1,110 @@
+{
+  "mergeTarget": "analyze_mep_system arguments",
+  "purpose": "Capture project-specific critical path, critical circuit, demand, and target identity data needed before production-final sizing review.",
+  "analyzeMepSystemArguments": {
+    "discipline": "all",
+    "includeRevitRead": true,
+    "localLossOnly": false,
+    "localLossFromNetworkPath": false,
+    "localLossElementIds": [],
+    "criticalPathLocalLossComplete": false,
+    "hvacDuctSizingTargetElementIds": [],
+    "hvacDesignFlowsByElementId": {},
+    "hydronicPipeSizingTargetElementIds": [],
+    "hydronicDesignFlowsByElementId": {},
+    "domesticWaterPipeSizingRequests": [],
+    "sanitaryStormPipeSizingRequests": [],
+    "firePipeSizingRequests": []
+  },
+  "optionalScalarArguments": {
+    "criticalPathLocalLossPressurePa": null,
+    "hvacDefaultDesignFlowM3h": null,
+    "hydronicDefaultDesignFlowLs": null
+  },
+  "requestSchemas": {
+    "domesticWaterPipeSizingRequests": [
+      {
+        "elementId": null,
+        "eId": "",
+        "uniqueId": "",
+        "systemName": "Domestic Water",
+        "lengthM": null,
+        "currentDiameterMm": null,
+        "fixtureUnits": null,
+        "flowLs": null
+      }
+    ],
+    "sanitaryStormPipeSizingRequests": [
+      {
+        "elementId": null,
+        "eId": "",
+        "uniqueId": "",
+        "systemName": "Sanitary",
+        "drainageType": "sanitary",
+        "lengthM": null,
+        "currentDiameterMm": null,
+        "fixtureUnits": null
+      },
+      {
+        "elementId": null,
+        "eId": "",
+        "uniqueId": "",
+        "systemName": "Storm Drainage",
+        "drainageType": "storm",
+        "lengthM": null,
+        "currentDiameterMm": null,
+        "runoffFlowLs": null,
+        "catchmentAreaM2": null
+      }
+    ],
+    "firePipeSizingRequests": [
+      {
+        "elementId": null,
+        "eId": "",
+        "uniqueId": "",
+        "systemName": "Fire Protection",
+        "lengthM": null,
+        "currentDiameterMm": null,
+        "flowLpm": null,
+        "flowLs": null,
+        "cabinetCount": null,
+        "sprinklerDemandLpm": null
+      }
+    ]
+  },
+  "fieldHints": {
+    "localLossElementIds": "Exact fitting/accessory/equipment ids on the verified HVAC critical path or hydronic critical circuit. Use only after path/circuit review.",
+    "criticalPathLocalLossPressurePa": "Externally verified total local-loss pressure for the selected critical path/circuit in Pa.",
+    "criticalPathLocalLossComplete": "Set true only when the local-loss pressure covers the complete selected path/circuit and has been engineer-reviewed.",
+    "hvacDuctSizingTargetElementIds": "Duct element ids to include in HVAC resize proposals.",
+    "hvacDesignFlowsByElementId": "Map of duct element id to confirmed design airflow in m3/h.",
+    "hvacDefaultDesignFlowM3h": "Optional fallback airflow in m3/h for sampled ducts without explicit per-element flow.",
+    "hydronicPipeSizingTargetElementIds": "Pipe element ids to include in hydronic resize proposals.",
+    "hydronicDesignFlowsByElementId": "Map of pipe element id to confirmed design flow in L/s.",
+    "hydronicDefaultDesignFlowLs": "Optional fallback flow in L/s for sampled hydronic pipes without explicit per-element flow.",
+    "domesticWaterPipeSizingRequests.elementId": "Exact domestic water pipe ElementId targeted for proposal-only resize_pipe handoff.",
+    "domesticWaterPipeSizingRequests.fixtureUnits": "Confirmed fixture-unit demand when flowLs is not directly supplied.",
+    "domesticWaterPipeSizingRequests.flowLs": "Confirmed domestic water design flow in L/s; overrides fixture-unit curve conversion.",
+    "sanitaryStormPipeSizingRequests.drainageType": "Use sanitary for fixture-unit sizing or storm for runoff-flow sizing.",
+    "sanitaryStormPipeSizingRequests.fixtureUnits": "Confirmed sanitary fixture units.",
+    "sanitaryStormPipeSizingRequests.runoffFlowLs": "Confirmed storm runoff/design flow in L/s; overrides catchment/rainfall calculation.",
+    "sanitaryStormPipeSizingRequests.catchmentAreaM2": "Storm catchment area in m2 when runoffFlowLs is not supplied.",
+    "firePipeSizingRequests.flowLpm": "Confirmed fire demand in L/min; overrides cabinet/sprinkler demand calculation.",
+    "firePipeSizingRequests.cabinetCount": "Number of fire cabinets served by the target pipe when using office cabinet demand rules.",
+    "firePipeSizingRequests.sprinklerDemandLpm": "Confirmed sprinkler demand contribution in L/min."
+  },
+  "modelEvidenceRequired": [
+    "Exact ElementId and UniqueId for each target duct or pipe.",
+    "System name/classification for each target.",
+    "Current size and length for each target.",
+    "Engineer-confirmed design flow or demand basis for each target.",
+    "Critical path/circuit element list and total local-loss pressure when production-final HVAC/hydronic sizing is requested.",
+    "Fire-engineer approval for fire/sprinkler demand and hydraulic standard before any fire resize commit."
+  ],
+  "notes": [
+    "Combine this payload with docs/revit-mep-office-standards-input-template.json after replacing placeholders with approved values.",
+    "The analyzeMepSystemArguments object is directly passable after filling arrays/maps; copy optionalScalarArguments into it only after replacing null placeholders with numbers.",
+    "Passing this data to analyze_mep_system can produce proposal-only writePlanProposal steps; it is not commit approval.",
+    "Any generated write-plan still requires prepare_write_plan, preview_write_plan, explicit approval, commit_write_plan, verify_write_plan, and engineer review."
+  ]
+}
