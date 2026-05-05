@@ -30,10 +30,12 @@ Result:
   - duct area, hydraulic diameter, velocity, and friction loss against hand-check values
   - equal-friction duct sizing proposal gate
   - HVAC duct resize proposal rows and validator-approved `resize_duct` write-plan step generation
+  - HVAC duct resize proposal data-completeness summary and production-review blockers
   - pipe area, velocity, and friction loss against hand-check values
   - pipe resistance coefficient calibration from length/diameter/reference flow samples
   - hydronic pipe sizing proposal gate
   - hydronic pipe resize proposal rows and validator-approved `resize_pipe` write-plan step generation
+  - hydronic pipe resize proposal data-completeness summary and production-review blockers
   - missing office standard blockers for HVAC and hydronic sizing
   - rooted-tree branch flow aggregation for airside and hydronic sample networks
   - weighted shortest-path traversal for cyclic network foundations
@@ -189,6 +191,10 @@ Live read-only results captured on the active session:
   - Domestic water missing standards included sizing method, pressure-loss method, fixture-unit standard, demand curve, velocity limit, and friction limit.
   - Sanitary/storm missing standards included slope, sanitary sizing, rainfall/runoff, storm sizing, stack nodes, and vent nodes.
   - Fire missing standards included hydraulic standard, sprinkler spacing, cabinet flow/pressure/reach, and simultaneous cabinet count.
+- Sizing proposal data-completeness runtime probe succeeded:
+  - `analyze_mep_system` with `discipline: all`, `includeRevitRead: false`, and complete HVAC/hydronic office standards returned `mutateModel: false`.
+  - HVAC example `ductResizeProposal.dataCompleteness` reported `sampleCount: 1`, `proposalRowCount: 1`, `writePlanStepCount: 1`, `skippedNoFlowCount: 0`, `skippedNoSizeCount: 0`, `localLossDatasetComplete: true`, `completeForProductionReview: true`, and no blockers.
+  - Hydronic example `pipeResizeProposal.dataCompleteness` reported the same complete/no-blocker shape.
 - HVAC/hydronic network foundation runtime probe succeeded:
   - HVAC methods include rooted tree branch airflow aggregation and critical path by accumulated edge loss.
   - HVAC example returned total demand `400`, critical path `fan -> main -> branch-b -> term-b`, and total loss `112 Pa`.

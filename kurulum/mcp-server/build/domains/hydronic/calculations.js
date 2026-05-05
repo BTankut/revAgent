@@ -258,6 +258,16 @@ export function buildHydronicPipeResizeProposal({
     if (skippedNoSizeCount > 0) {
         warnings.push(`Skipped ${skippedNoSizeCount} pipe sample(s) with no configured diameter satisfying velocity/friction limits.`);
     }
+    const dataCompleteness = proposalDataCompleteness({
+        sampleCount: Array.isArray(pipeSamples) ? pipeSamples.length : 0,
+        targetCount: targetSet.size,
+        rowCount: rows.length,
+        writePlanStepCount: writePlanSteps.length,
+        skippedNoFlowCount,
+        skippedNoSizeCount,
+        localLossContext,
+        targetLabel: "pipe",
+    });
 
     return {
         success: rows.length > 0,
@@ -280,11 +290,41 @@ export function buildHydronicPipeResizeProposal({
             maxPressureLossPaPerM: Number(maxPressureLossPaPerM),
         },
         localLossContext,
+        dataCompleteness,
         rows,
         writePlanSteps,
         warnings,
         canCommit: false,
         riskLevel: "high",
+    };
+}
+
+function proposalDataCompleteness({
+    sampleCount,
+    targetCount,
+    rowCount,
+    writePlanStepCount,
+    skippedNoFlowCount,
+    skippedNoSizeCount,
+    localLossContext,
+    targetLabel,
+}) {
+    const blockers = [];
+    if (rowCount <= 0) blockers.push(`No sizable ${targetLabel} samples produced proposal rows.`);
+    if (targetCount > 0 && rowCount < targetCount) blockers.push(`Only ${rowCount} of ${targetCount} requested ${targetLabel} targets produced proposal rows.`);
+    if (skippedNoFlowCount > 0) blockers.push(`${skippedNoFlowCount} ${targetLabel} sample(s) lack confirmed design flow.`);
+    if (skippedNoSizeCount > 0) blockers.push(`${skippedNoSizeCount} ${targetLabel} sample(s) have no configured size satisfying limits.`);
+    if (!localLossContext.complete) blockers.push("Complete selected critical-circuit local-loss dataset is missing or inconsistent.");
+    return {
+        sampleCount,
+        targetCount,
+        proposalRowCount: rowCount,
+        writePlanStepCount,
+        skippedNoFlowCount,
+        skippedNoSizeCount,
+        localLossDatasetComplete: localLossContext.complete,
+        completeForProductionReview: blockers.length === 0,
+        blockers,
     };
 }
 

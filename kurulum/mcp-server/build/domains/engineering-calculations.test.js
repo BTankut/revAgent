@@ -85,6 +85,8 @@ const ductResizeProposal = buildHvacDuctResizeProposal({
 assert.equal(ductResizeProposal.success, true);
 assert.equal(ductResizeProposal.status, "proposal_ready_for_review");
 assert.equal(ductResizeProposal.localLossContext.complete, true);
+assert.equal(ductResizeProposal.dataCompleteness.completeForProductionReview, true);
+assert.deepEqual(ductResizeProposal.dataCompleteness.blockers, []);
 assert.equal(ductResizeProposal.rows.length, 1);
 assert.equal(ductResizeProposal.rows[0].elementId, 201);
 assert.equal(ductResizeProposal.rows[0].designFlowM3h, 1800);
@@ -161,6 +163,8 @@ const pipeResizeProposal = buildHydronicPipeResizeProposal({
 assert.equal(pipeResizeProposal.success, true);
 assert.equal(pipeResizeProposal.status, "proposal_ready_for_review");
 assert.equal(pipeResizeProposal.localLossContext.complete, true);
+assert.equal(pipeResizeProposal.dataCompleteness.completeForProductionReview, true);
+assert.deepEqual(pipeResizeProposal.dataCompleteness.blockers, []);
 assert.equal(pipeResizeProposal.rows.length, 1);
 assert.equal(pipeResizeProposal.rows[0].elementId, 101);
 assert.equal(pipeResizeProposal.rows[0].designFlowLs, 1.0);
@@ -184,6 +188,8 @@ const incompleteLocalLossResizeProposal = buildHydronicPipeResizeProposal({
 assert.equal(incompleteLocalLossResizeProposal.success, true);
 assert.equal(incompleteLocalLossResizeProposal.status, "needs_complete_critical_path_local_loss");
 assert.equal(incompleteLocalLossResizeProposal.localLossContext.complete, false);
+assert.equal(incompleteLocalLossResizeProposal.dataCompleteness.completeForProductionReview, false);
+assert(incompleteLocalLossResizeProposal.dataCompleteness.blockers.some((text) => text.includes("local-loss dataset")));
 assert(incompleteLocalLossResizeProposal.warnings.some((warning) => warning.includes("Complete critical-circuit local-loss pressure dataset")));
 
 const airNetwork = exampleAirsideTreeNetwork();
