@@ -143,6 +143,11 @@ function validateOperationPayload(step, prefix, errors, warnings) {
         case "rotate_elements":
         case "align_elements":
             if (!hasAnyTargetElements(targets)) errors.push(`${prefix}.targets.elementIds or elementId is required`);
+            if (step.operation === "view_apply_overrides" &&
+                !args.projectionLineColor &&
+                args.projectionLineWeight == null) {
+                errors.push(`${prefix}.arguments.projectionLineColor or projectionLineWeight is required`);
+            }
             if (step.operation === "tag_elements") {
                 if (!args.point) errors.push(`${prefix}.arguments.point is required`);
             }

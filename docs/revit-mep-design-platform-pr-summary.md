@@ -109,7 +109,8 @@
 - Added native `copy_elements`, runtime validation/risk coverage, native preview/commit/verify support, and live-tested approved commit plan `copy-elements-live-1777970200001`: source duct `392168` stayed in place, copy `1020974` was created, verifier confirmed the requested `2 m` translation, and cleanup deleted the copy.
 - Added native `rotate_elements`, runtime validation/risk coverage, native preview/commit/verify support, and live-tested approved commit plan `rotate-elements-live-1777971200002`: disposable duct `1020976` remained after preview, commit rotated it `90` degrees around the requested vertical axis, verifier matched expected `LocationCurve` endpoints, and cleanup deleted the duct.
 - Added native `align_elements`, runtime validation/risk coverage, native preview/commit/verify support, and live-tested approved commit plan `align-elements-live-1777972200003`: disposable duct `1020981` remained fixed during preview, commit aligned it by the requested constrained x-axis translation, verifier matched expected `LocationCurve` endpoints with `0` internal start-point error, cleanup deleted the duct, and a final read-only check returned `exists: false`.
-- Re-generated plugin patch artifact as `15/15` and verified it applies cleanly with `git am --3way` on a temporary plugin `main` worktree.
+- Strengthened native `view_apply_overrides` validation and verifier readback for projection line color/weight, and live-tested approved commit plan `view-override-live-1777974200002` on duct `392168` in view `378466`: preview left overrides at `invalid;w=-1`, commit applied `255,0,0;w=5`, verifier matched color and line weight, restore returned the view override to `invalid;w=-1`, and final read-only check reported `restored: true`.
+- Re-generated plugin patch artifact as `16/16` and verified it applies cleanly with `git am --3way` on a temporary plugin `main` worktree.
 
 ## Remaining Work
 

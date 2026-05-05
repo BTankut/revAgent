@@ -161,6 +161,28 @@ const invalidTagValidation = validateWritePlan(invalidTagPlan, { mode: "commit",
 assert.equal(invalidTagValidation.valid, false);
 assert(invalidTagValidation.errors.includes("steps[0].arguments.point is required"));
 
+const overridePlan = buildPlanFromArgs({
+    title: "Apply view override",
+    discipline: "general",
+    operation: "view_apply_overrides",
+    targets: { elementIds: [275] },
+    arguments: { projectionLineColor: { red: 255, green: 0, blue: 0 }, projectionLineWeight: 5 },
+});
+const overrideValidation = validateWritePlan(overridePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(overrideValidation.valid, true);
+assert.equal(classifyPlanRisk(overridePlan), "low");
+
+const invalidOverridePlan = buildPlanFromArgs({
+    title: "Reject empty view override",
+    discipline: "general",
+    operation: "view_apply_overrides",
+    targets: { elementIds: [275] },
+    arguments: {},
+});
+const invalidOverrideValidation = validateWritePlan(invalidOverridePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidOverrideValidation.valid, false);
+assert(invalidOverrideValidation.errors.includes("steps[0].arguments.projectionLineColor or projectionLineWeight is required"));
+
 const copyPlan = buildPlanFromArgs({
     title: "Copy disposable model elements",
     discipline: "general",
