@@ -157,6 +157,7 @@ export function sizeRectangularDuctEqualFriction({
 export function calculateFanPressureBasis({
     network,
     equipmentLossPa = 0,
+    localLossPressurePa = 0,
     terminalAllowancePa = 0,
     safetyFactor = 1.1,
 } = {}) {
@@ -184,6 +185,7 @@ export function calculateFanPressureBasis({
     }, 0);
     const basePressurePa = Number(traversal.criticalPath.totalLossPa || 0) +
         Math.max(0, Number(equipmentLossPa || 0)) +
+        Math.max(0, Number(localLossPressurePa || 0)) +
         Math.max(0, Number(terminalAllowancePa || 0));
     const factor = Number.isFinite(Number(safetyFactor)) && Number(safetyFactor) > 0
         ? Number(safetyFactor)
@@ -198,12 +200,14 @@ export function calculateFanPressureBasis({
         ],
         input: {
             equipmentLossPa: Number(equipmentLossPa || 0),
+            localLossPressurePa: Number(localLossPressurePa || 0),
             terminalAllowancePa: Number(terminalAllowancePa || 0),
             safetyFactor: factor,
         },
         output: {
             requiredFlowM3h,
             criticalPathLossPa: traversal.criticalPath.totalLossPa,
+            localLossPressurePa: Math.max(0, Number(localLossPressurePa || 0)),
             basePressurePa,
             requiredPressurePa: basePressurePa * factor,
             criticalPath: traversal.criticalPath,

@@ -9,8 +9,11 @@ export function summarizeLocalLossSamples({ discipline = "general", samples = []
     let lossCoefficientParameterCount = 0;
     let equivalentLengthParameterCount = 0;
     let totalPressureDropPa = 0;
+    const pressureDropBySystem = {};
+    const pressureDropByCategory = {};
     for (const sample of safeSamples) {
         const category = sample.category || "";
+        const systemName = sample.systemName || "(unassigned)";
         countsByCategory[category || "(uncategorized)"] = (countsByCategory[category || "(uncategorized)"] || 0) + 1;
         const parameters = Array.isArray(sample.lossParameters) ? sample.lossParameters : [];
         if (parameters.length > 0) {
@@ -24,6 +27,8 @@ export function summarizeLocalLossSamples({ discipline = "general", samples = []
                 if (valueKind === "pressure_drop_pa") {
                     pressureDropParameterCount++;
                     totalPressureDropPa += numericValue;
+                    pressureDropBySystem[systemName] = (pressureDropBySystem[systemName] || 0) + numericValue;
+                    pressureDropByCategory[category || "(uncategorized)"] = (pressureDropByCategory[category || "(uncategorized)"] || 0) + numericValue;
                 }
                 if (valueKind === "loss_coefficient") {
                     lossCoefficientParameterCount++;
@@ -79,6 +84,13 @@ export function summarizeLocalLossSamples({ discipline = "general", samples = []
         lossCoefficientParameterCount,
         equivalentLengthParameterCount,
         totalPressureDropPa,
+        pressureContribution: buildPressureContribution({
+            discipline,
+            pressureDropParameterCount,
+            totalPressureDropPa,
+            pressureDropBySystem,
+            pressureDropByCategory,
+        }),
         countsByCategory,
         parameterNameCounts,
         rows,
@@ -90,6 +102,42 @@ export function summarizeLocalLossSamples({ discipline = "general", samples = []
         ],
         canCommit: false,
     };
+}
+
+function buildPressureContribution({
+    discipline,
+    pressureDropParameterCount,
+    totalPressureDropPa,
+    pressureDropBySystem,
+    pressureDropByCategory,
+}) {
+    const bySystem = objectToRows(pressureDropBySystem, "systemName");
+    const byCategory = objectToRows(pressureDropByCategory, "category");
+    return {
+        success: true,
+        discipline,
+        method: "Sum of explicit numeric pressure-drop parameters extracted from live Revit local-loss elements",
+        pressureDropParameterCount,
+        totalPressureDropPa,
+        totalPressureDropKPa: totalPressureDropPa / 1000.0,
+        bySystem,
+        byCategory,
+        assumptions: [
+            "Only numeric parameters classified as pressure_drop_pa are included in this pressure contribution.",
+            "Rows are suitable as additional fan pressure or pump head input only after confirming the sampled elements belong to the design critical path/circuit.",
+        ],
+        canCommit: false,
+    };
+}
+
+function objectToRows(valuesByKey, keyName) {
+    return Object.entries(valuesByKey || {})
+        .map(([key, value]) => ({
+            [keyName]: key || "(unassigned)",
+            pressureDropPa: value,
+            pressureDropKPa: value / 1000.0,
+        }))
+        .sort((a, b) => Number(b.pressureDropPa || 0) - Number(a.pressureDropPa || 0));
 }
 
 function finiteOrNull(value) {

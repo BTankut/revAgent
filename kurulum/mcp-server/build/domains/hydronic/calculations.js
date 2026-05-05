@@ -132,6 +132,8 @@ export function sizePipeByVelocityOrFriction({
 export function calculatePumpHeadBasis({
     network,
     equipmentLossKPa = 0,
+    localLossPressurePa = 0,
+    localLossKPa = 0,
     terminalLossKPa = 0,
     safetyFactor = 1.1,
 } = {}) {
@@ -158,8 +160,11 @@ export function calculatePumpHeadBasis({
         return sum + (Number.isFinite(demand) && demand > 0 ? demand : 0);
     }, 0);
     const criticalCircuitLossKPa = Number(traversal.criticalPath.totalLossPa || 0) / 1000.0;
+    const localLossContributionKPa = Math.max(0, Number(localLossKPa || 0)) +
+        Math.max(0, Number(localLossPressurePa || 0)) / 1000.0;
     const baseHeadKPa = criticalCircuitLossKPa +
         Math.max(0, Number(equipmentLossKPa || 0)) +
+        localLossContributionKPa +
         Math.max(0, Number(terminalLossKPa || 0));
     const factor = Number.isFinite(Number(safetyFactor)) && Number(safetyFactor) > 0
         ? Number(safetyFactor)
@@ -174,12 +179,15 @@ export function calculatePumpHeadBasis({
         ],
         input: {
             equipmentLossKPa: Number(equipmentLossKPa || 0),
+            localLossPressurePa: Number(localLossPressurePa || 0),
+            localLossKPa: Number(localLossKPa || 0),
             terminalLossKPa: Number(terminalLossKPa || 0),
             safetyFactor: factor,
         },
         output: {
             requiredFlowLs,
             criticalCircuitLossKPa,
+            localLossContributionKPa,
             baseHeadKPa,
             requiredHeadKPa: baseHeadKPa * factor,
             criticalPath: traversal.criticalPath,

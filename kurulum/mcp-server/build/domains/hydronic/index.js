@@ -7,6 +7,7 @@ import { calibratePipeResistanceSamples, calculateHydronicBalance, calculatePump
 
 export async function analyzeHydronic({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("hydronic", officeStandards);
+    const pumpHeadNetwork = examplePumpHeadNetwork();
     const base = {
         discipline: "hydronic",
         engine: "hydronic-pipe-foundation",
@@ -42,19 +43,7 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
             weightedPathfinding: exampleHydronicWeightedNetwork(),
             flowDirectionInference: exampleHydronicFlowDirections(),
             pumpHeadBasis: calculatePumpHeadBasis({
-                network: {
-                    rootNodeId: "pump",
-                    nodes: ["pump", "riser", "coil-a", "coil-b"],
-                    edges: [
-                        { from: "pump", to: "riser", pressureLossPa: 1200 },
-                        { from: "riser", to: "coil-a", pressureLossPa: 2400 },
-                        { from: "riser", to: "coil-b", pressureLossPa: 3100 },
-                    ],
-                    terminalDemands: {
-                        "coil-a": 0.35,
-                        "coil-b": 0.42,
-                    },
-                },
+                network: pumpHeadNetwork,
                 equipmentLossKPa: 12,
                 terminalLossKPa: 8,
                 safetyFactor: 1.1,
@@ -125,12 +114,22 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                 sampleLimit: networkPathRequest.localLossSampleLimit,
             })
             : undefined;
+        const liveLocalLossPumpHeadBasis = localLossExtraction
+            ? calculatePumpHeadBasis({
+                network: pumpHeadNetwork,
+                equipmentLossKPa: 12,
+                localLossPressurePa: localLossExtraction.pressureContribution.totalPressureDropPa,
+                terminalLossKPa: 8,
+                safetyFactor: 1.1,
+            })
+            : undefined;
         return {
             ...base,
             revitRead,
             ...(resistanceCalibration ? { resistanceCalibration } : {}),
             ...(localLossExtraction ? {
                 localLossExtraction,
+                liveLocalLossPumpHeadBasis,
                 warnings: [...(base.warnings || []), ...(localLossExtraction.warnings || [])],
             } : {}),
         };
@@ -138,6 +137,22 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
     catch (error) {
         return { ...base, warnings: [error instanceof Error ? error.message : String(error)] };
     }
+}
+
+function examplePumpHeadNetwork() {
+    return {
+        rootNodeId: "pump",
+        nodes: ["pump", "riser", "coil-a", "coil-b"],
+        edges: [
+            { from: "pump", to: "riser", pressureLossPa: 1200 },
+            { from: "riser", to: "coil-a", pressureLossPa: 2400 },
+            { from: "riser", to: "coil-b", pressureLossPa: 3100 },
+        ],
+        terminalDemands: {
+            "coil-a": 0.35,
+            "coil-b": 0.42,
+        },
+    };
 }
 
 function buildPipeReadCode(networkPathRequest = {}) {

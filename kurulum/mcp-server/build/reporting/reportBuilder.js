@@ -172,26 +172,76 @@ export function buildLocalLossRows({ analyses = [] } = {}) {
     return rows;
 }
 
+export function buildLocalLossPressureRows({ analyses = [] } = {}) {
+    const rows = [];
+    for (const analysis of Array.isArray(analyses) ? analyses : []) {
+        const contribution = analysis.localLossExtraction?.pressureContribution;
+        if (!contribution) continue;
+        rows.push({
+            rowType: "local_loss_pressure_total",
+            discipline: analysis.discipline || contribution.discipline || "general",
+            engine: analysis.engine || "",
+            systemName: "(all sampled)",
+            category: "(all sampled)",
+            pressureDropPa: contribution.totalPressureDropPa,
+            pressureDropKPa: contribution.totalPressureDropKPa,
+            pressureDropParameterCount: contribution.pressureDropParameterCount,
+            source: "localLossExtraction.pressureContribution",
+            canCommit: false,
+        });
+        for (const row of contribution.bySystem || []) {
+            rows.push({
+                rowType: "local_loss_pressure_by_system",
+                discipline: analysis.discipline || contribution.discipline || "general",
+                engine: analysis.engine || "",
+                systemName: row.systemName || "(unassigned)",
+                category: "",
+                pressureDropPa: row.pressureDropPa,
+                pressureDropKPa: row.pressureDropKPa,
+                source: "localLossExtraction.pressureContribution.bySystem",
+                canCommit: false,
+            });
+        }
+        for (const row of contribution.byCategory || []) {
+            rows.push({
+                rowType: "local_loss_pressure_by_category",
+                discipline: analysis.discipline || contribution.discipline || "general",
+                engine: analysis.engine || "",
+                systemName: "",
+                category: row.category || "(uncategorized)",
+                pressureDropPa: row.pressureDropPa,
+                pressureDropKPa: row.pressureDropKPa,
+                source: "localLossExtraction.pressureContribution.byCategory",
+                canCommit: false,
+            });
+        }
+    }
+    return rows;
+}
+
 export function buildAnalysisReport({ analyses = [], delimiter = defaultDelimiter } = {}) {
     const issueRows = buildAnalysisIssueRows({ analyses });
     const designLogRows = buildDesignLogRows({ analyses });
     const boqRows = buildBoqRows({ analyses });
     const hydraulicResistanceRows = buildHydraulicResistanceRows({ analyses });
     const localLossRows = buildLocalLossRows({ analyses });
+    const localLossPressureRows = buildLocalLossPressureRows({ analyses });
     return {
         success: true,
         mutateModel: false,
-        reportKinds: ["issue_list", "design_log", "boq", "hydraulic_resistance", "local_loss"],
+        reportKinds: ["issue_list", "design_log", "boq", "hydraulic_resistance", "local_loss", "local_loss_pressure"],
         issueRows,
         designLogRows,
         boqRows,
         hydraulicResistanceRows,
         localLossRows,
+        localLossPressureRows,
         issueCsv: toDelimitedText(issueRows, { delimiter }),
         designLogCsv: toDelimitedText(designLogRows, { delimiter }),
         boqCsv: toDelimitedText(boqRows, { delimiter }),
         hydraulicResistanceCsv: toDelimitedText(hydraulicResistanceRows, { delimiter }),
         localLossCsv: toDelimitedText(localLossRows, { delimiter }),
+        localLossPressureCsv: toDelimitedText(localLossPressureRows, { delimiter }),
         writePlanOperations: [
             "export_boq_report",
             "export_clash_report",
@@ -202,6 +252,7 @@ export function buildAnalysisReport({ analyses = [], delimiter = defaultDelimite
             "BOQ rows are populated from live read-only Revit summaries when analyses include revitRead counts and lengths.",
             "Hydraulic resistance rows are populated from live read-only Revit pipe length/diameter samples when hydronic resistance calibration is requested.",
             "Local-loss rows are populated from live read-only fitting/accessory/equipment parameter extraction when local-loss sampling is requested.",
+            "Local-loss pressure rows aggregate numeric pressure-drop parameters for use as fan pressure or pump head basis inputs after critical-path validation.",
             "Identity columns are emitted as text-compatible values for spreadsheet workflows.",
         ],
         canCommit: false,

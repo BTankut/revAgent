@@ -7,6 +7,7 @@ import { calculateFanPressureBasis, sizeRectangularDuctEqualFriction } from "./c
 
 export async function analyzeHvacAirside({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("hvac", officeStandards);
+    const fanPressureNetwork = exampleFanPressureNetwork();
     const base = {
         discipline: "hvac",
         engine: "hvac-airside-foundation",
@@ -38,21 +39,7 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
             weightedPathfinding: exampleAirsideWeightedNetwork(),
             flowDirectionInference: exampleAirsideFlowDirections(),
             fanPressureBasis: calculateFanPressureBasis({
-                network: {
-                    rootNodeId: "fan",
-                    nodes: ["fan", "main", "branch-a", "branch-b", "term-a", "term-b"],
-                    edges: [
-                        { from: "fan", to: "main", pressureLossPa: 35 },
-                        { from: "main", to: "branch-a", pressureLossPa: 18 },
-                        { from: "main", to: "branch-b", pressureLossPa: 22 },
-                        { from: "branch-a", to: "term-a", pressureLossPa: 40 },
-                        { from: "branch-b", to: "term-b", pressureLossPa: 55 },
-                    ],
-                    terminalDemands: {
-                        "term-a": 180,
-                        "term-b": 220,
-                    },
-                },
+                network: fanPressureNetwork,
                 equipmentLossPa: 80,
                 terminalAllowancePa: 40,
                 safetyFactor: 1.1,
@@ -73,11 +60,21 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
                 sampleLimit: networkPathRequest.localLossSampleLimit,
             })
             : undefined;
+        const liveLocalLossFanPressureBasis = localLossExtraction
+            ? calculateFanPressureBasis({
+                network: fanPressureNetwork,
+                equipmentLossPa: 80,
+                localLossPressurePa: localLossExtraction.pressureContribution.totalPressureDropPa,
+                terminalAllowancePa: 40,
+                safetyFactor: 1.1,
+            })
+            : undefined;
         return {
             ...base,
             revitRead,
             ...(localLossExtraction ? {
                 localLossExtraction,
+                liveLocalLossFanPressureBasis,
                 warnings: [...(base.warnings || []), ...(localLossExtraction.warnings || [])],
             } : {}),
         };
@@ -88,6 +85,24 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
             warnings: [error instanceof Error ? error.message : String(error)],
         };
     }
+}
+
+function exampleFanPressureNetwork() {
+    return {
+        rootNodeId: "fan",
+        nodes: ["fan", "main", "branch-a", "branch-b", "term-a", "term-b"],
+        edges: [
+            { from: "fan", to: "main", pressureLossPa: 35 },
+            { from: "main", to: "branch-a", pressureLossPa: 18 },
+            { from: "main", to: "branch-b", pressureLossPa: 22 },
+            { from: "branch-a", to: "term-a", pressureLossPa: 40 },
+            { from: "branch-b", to: "term-b", pressureLossPa: 55 },
+        ],
+        terminalDemands: {
+            "term-a": 180,
+            "term-b": 220,
+        },
+    };
 }
 
 function buildHvacReadCode(networkPathRequest = {}) {

@@ -184,6 +184,10 @@ assert.equal(localLossExtraction.localLossParameterCount, 2);
 assert.equal(localLossExtraction.pressureDropParameterCount, 1);
 assert.equal(localLossExtraction.lossCoefficientParameterCount, 1);
 assert.equal(localLossExtraction.totalPressureDropPa, 42);
+assert.equal(localLossExtraction.pressureContribution.totalPressureDropPa, 42);
+assert(Math.abs(localLossExtraction.pressureContribution.totalPressureDropKPa - 0.042) < 1e-12);
+assert.equal(localLossExtraction.pressureContribution.bySystem[0].systemName, "Supply Air");
+assert.equal(localLossExtraction.pressureContribution.byCategory[0].category, "Duct Fittings");
 assert.equal(localLossExtraction.rows[0].rowType, "local_loss_parameter");
 assert.equal(localLossExtraction.canCommit, false);
 
@@ -230,12 +234,14 @@ assert.equal(report.designLogRows.length, 1);
 assert.equal(report.boqRows.length, 4);
 assert.equal(report.hydraulicResistanceRows.length, 1);
 assert.equal(report.localLossRows.length, 2);
+assert.equal(report.localLossPressureRows.length, 3);
 assert(report.issueCsv.includes("missing_standard"));
 assert(report.designLogCsv.includes("weighted graph shortest path traversal"));
 assert(report.boqCsv.includes("Total duct length"));
 assert(report.boqCsv.includes("Supply Air"));
 assert(report.hydraulicResistanceCsv.includes("Hydronic Supply"));
 assert(report.localLossCsv.includes("Pressure Drop"));
+assert(report.localLossPressureCsv.includes("local_loss_pressure_total"));
 assert.equal(report.canCommit, false);
 
 console.log("domain foundation calculation tests passed");

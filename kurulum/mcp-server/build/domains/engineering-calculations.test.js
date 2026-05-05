@@ -154,6 +154,21 @@ assert.equal(fanBasis.success, true);
 assert.equal(fanBasis.output.requiredFlowM3h, 400);
 close(fanBasis.output.requiredPressurePa, 255.2, 1e-9, "fan pressure basis");
 
+const fanBasisWithLocalLoss = calculateFanPressureBasis({
+    network: {
+        rootNodeId: "fan",
+        edges: [{ from: "fan", to: "terminal", pressureLossPa: 100 }],
+        terminalDemands: { terminal: 100 },
+    },
+    equipmentLossPa: 10,
+    localLossPressurePa: 25,
+    terminalAllowancePa: 5,
+    safetyFactor: 1,
+});
+assert.equal(fanBasisWithLocalLoss.success, true);
+close(fanBasisWithLocalLoss.output.requiredPressurePa, 140, 1e-9, "fan local-loss pressure basis");
+close(fanBasisWithLocalLoss.output.localLossPressurePa, 25, 1e-9, "fan local-loss pressure output");
+
 const hydronicNetwork = exampleHydronicTreeNetwork();
 assert.equal(hydronicNetwork.success, true);
 assert.equal(hydronicNetwork.isTree, true);
@@ -190,6 +205,21 @@ const pumpBasis = calculatePumpHeadBasis({
 assert.equal(pumpBasis.success, true);
 close(pumpBasis.output.requiredFlowLs, 0.77, 1e-9, "pump basis flow");
 close(pumpBasis.output.requiredHeadKPa, 26.73, 1e-9, "pump head basis");
+
+const pumpBasisWithLocalLoss = calculatePumpHeadBasis({
+    network: {
+        rootNodeId: "pump",
+        edges: [{ from: "pump", to: "coil", pressureLossPa: 1000 }],
+        terminalDemands: { coil: 1 },
+    },
+    equipmentLossKPa: 2,
+    localLossPressurePa: 2500,
+    terminalLossKPa: 3,
+    safetyFactor: 1,
+});
+assert.equal(pumpBasisWithLocalLoss.success, true);
+close(pumpBasisWithLocalLoss.output.requiredHeadKPa, 8.5, 1e-9, "pump local-loss head basis");
+close(pumpBasisWithLocalLoss.output.localLossContributionKPa, 2.5, 1e-9, "pump local-loss contribution");
 
 const hydronicBalance = calculateHydronicBalance({
     network: {

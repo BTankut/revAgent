@@ -58,6 +58,7 @@
 - Added coupled multi-loop Hardy-Cross hydraulic balancing foundation with convergence/residual tests and runtime example.
 - Added live hydronic pipe resistance sampling/calibration and hydraulic resistance report rows from Revit pipe length/diameter data.
 - Added live HVAC/hydronic fitting/accessory/equipment local-loss parameter extraction and `local_loss` report rows; live probe returned HVAC `15` rows and hydronic `30` rows from the active test model.
+- Added local-loss pressure summary rows and explicit fan/pump basis contribution from numeric local-loss pressure drops; live probe carried HVAC `0.903 Pa` into fan pressure basis and hydronic `8.926 kPa` into pump head basis.
 - Live-tested approved equipment schedule note execution on Mechanical Equipment `386031` through native preview/commit/verify/readback.
 - Added native `create_schedule_or_update_schedule`, runtime validation/risk coverage, and live-tested approved schedule creation in the disposable model:
   - Schedule `Codex MEP Equipment Schedule 2026-05-05`
@@ -78,4 +79,4 @@
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from local-loss extraction/reporting foundations to production-calibrated use of fitting/accessory/equipment losses and production reroute replacement/reconnection.
+- Expand engineering engines from local-loss extraction/reporting/basis-contribution foundations to production-calibrated final sizing from complete critical-path local-loss datasets and production reroute replacement/reconnection.
