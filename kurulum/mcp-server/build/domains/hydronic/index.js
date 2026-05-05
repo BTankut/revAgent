@@ -1,4 +1,5 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
+import { exampleHydronicTreeNetwork } from "../network/calculations.js";
 import { executeRevitCode } from "../../utils/revitToolHelpers.js";
 import { sizePipeByVelocityOrFriction } from "./calculations.js";
 
@@ -16,6 +17,8 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
         engineeringMethods: [
             "pipe system summary",
             "element-to-element connector graph summary",
+            "rooted tree branch flow aggregation",
+            "critical circuit by accumulated edge loss",
             "pipe pressure loss by Darcy-Weisbach",
             "velocity/friction pipe sizing proposal",
         ],
@@ -25,6 +28,7 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                 maxVelocityMps: officeStandards.hydronic?.pipeVelocityLimitsMps?.main,
                 maxPressureLossPaPerM: officeStandards.hydronic?.pipeFrictionLimitPaPerM,
             }),
+            branchFlowAndCriticalPath: exampleHydronicTreeNetwork(),
         },
         canCommit: false,
     };

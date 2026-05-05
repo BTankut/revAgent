@@ -1,4 +1,5 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
+import { exampleAirsideTreeNetwork } from "../network/calculations.js";
 import { executeRevitCode } from "../../utils/revitToolHelpers.js";
 import { sizeRectangularDuctEqualFriction } from "./calculations.js";
 
@@ -16,6 +17,8 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
         engineeringMethods: [
             "connector/open connector summary",
             "element-to-element connector graph summary",
+            "rooted tree branch airflow aggregation",
+            "critical path by accumulated edge loss",
             "duct friction loss by Darcy-Weisbach",
             "equal-friction rectangular duct sizing proposal",
         ],
@@ -25,6 +28,7 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
                 targetPaPerM: officeStandards.hvac?.ductEqualFrictionTargetPaPerM,
                 maxVelocityMps: officeStandards.hvac?.ductVelocityLimitsMps?.main,
             }),
+            branchFlowAndCriticalPath: exampleAirsideTreeNetwork(),
         },
         canCommit: false,
     };

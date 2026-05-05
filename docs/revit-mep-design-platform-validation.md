@@ -29,6 +29,9 @@ Result:
   - pipe area, velocity, and friction loss against hand-check values
   - hydronic pipe sizing proposal gate
   - missing office standard blockers for HVAC and hydronic sizing
+  - rooted-tree branch flow aggregation for airside and hydronic sample networks
+  - accumulated-loss critical path / critical circuit selection
+  - cyclic network warning path for branch aggregation assumptions
 - Domain foundation calculation tests passed:
   - domestic water fixture-unit summation and recirculation continuity
   - sanitary/storm slope and reverse-slope checks
@@ -134,6 +137,12 @@ Live read-only results captured on the active session:
 - Domain foundation runtime probe succeeded:
   - `analyze_mep_system` with `discipline: all` and `includeRevitRead: false` returned calculation examples for HVAC, hydronic, domestic water, sanitary/storm, fire/sprinkler, clash, and equipment.
   - Every domain foundation returned `canCommit: false`.
+- HVAC/hydronic network foundation runtime probe succeeded:
+  - HVAC methods include rooted tree branch airflow aggregation and critical path by accumulated edge loss.
+  - HVAC example returned total demand `400`, critical path `fan -> main -> branch-b -> term-b`, and total loss `112 Pa`.
+  - Hydronic methods include rooted tree branch flow aggregation and critical circuit by accumulated edge loss.
+  - Hydronic example returned total demand `0.77`, critical path `pump -> riser -> coil-b`, and total loss `4300 Pa`.
+  - Both examples explicitly state the tree assumption and keep `canCommit: false`.
 - Connector graph live probe succeeded:
   - Revit 2022 API docs resolved `Connector.AllRefs`, `Connector.Owner`, `Connector.IsConnected`, `MEPCurve.ConnectorManager`, and `FamilyInstance.MEPModel`.
   - HVAC graph summary: `27237` connector-owning element nodes, `41735` connectors, `708` open connectors, `20341` unique element edges, `25` open connector samples, `0` AllRefs errors.

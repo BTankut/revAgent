@@ -12,6 +12,11 @@ import {
     pipeVelocityMps,
     sizePipeByVelocityOrFriction,
 } from "./hydronic/calculations.js";
+import {
+    analyzeTreeNetwork,
+    exampleAirsideTreeNetwork,
+    exampleHydronicTreeNetwork,
+} from "./network/calculations.js";
 
 function close(actual, expected, tolerance, label) {
     assert(Math.abs(actual - expected) <= tolerance, `${label}: expected ${expected}, got ${actual}`);
@@ -77,5 +82,34 @@ assert.deepEqual(pipeMissingStandards.missingStandards, [
     "hydronic.pipeVelocityLimitsMps",
     "hydronic.pipeFrictionLimitPaPerM",
 ]);
+
+const airNetwork = exampleAirsideTreeNetwork();
+assert.equal(airNetwork.success, true);
+assert.equal(airNetwork.isTree, true);
+assert.equal(airNetwork.totalDemand, 400);
+assert.deepEqual(airNetwork.criticalPath.nodeIds, ["fan", "main", "branch-b", "term-b"]);
+close(airNetwork.criticalPath.totalLossPa, 112, 1e-9, "airside critical path loss");
+const airBranch = airNetwork.branchFlows.find((branch) => branch.from === "fan" && branch.to === "main");
+assert.equal(airBranch.flow, 400);
+
+const hydronicNetwork = exampleHydronicTreeNetwork();
+assert.equal(hydronicNetwork.success, true);
+assert.equal(hydronicNetwork.isTree, true);
+close(hydronicNetwork.totalDemand, 0.77, 1e-9, "hydronic total branch flow");
+assert.deepEqual(hydronicNetwork.criticalPath.nodeIds, ["pump", "riser", "coil-b"]);
+close(hydronicNetwork.criticalPath.totalLossPa, 4300, 1e-9, "hydronic critical circuit loss");
+
+const cyclicNetwork = analyzeTreeNetwork({
+    rootNodeId: "a",
+    edges: [
+        { from: "a", to: "b", pressureLossPa: 1 },
+        { from: "b", to: "c", pressureLossPa: 1 },
+        { from: "c", to: "a", pressureLossPa: 1 },
+    ],
+    terminalDemands: { c: 1 },
+});
+assert.equal(cyclicNetwork.success, true);
+assert.equal(cyclicNetwork.isTree, false);
+assert(cyclicNetwork.warnings.some((warning) => warning.includes("cycles")));
 
 console.log("engineering calculation tests passed");
