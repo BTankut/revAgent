@@ -42,6 +42,7 @@ export function registerAnalyzeMepSystemTool(server) {
         defaultPlacementLevelId: z.number().optional().describe("Optional default Revit level id used by placementRequests when a request omits levelId."),
         domesticWaterPipeSizingRequests: z.array(z.any()).optional().describe("Optional domestic water pipe sizing requests that become proposal-only resize_pipe write-plan steps when office standards and demand are complete."),
         sanitaryStormPipeSizingRequests: z.array(z.any()).optional().describe("Optional sanitary/storm pipe sizing requests that become proposal-only resize_pipe write-plan steps when sizing tables and demand are complete."),
+        firePipeSizingRequests: z.array(z.any()).optional().describe("Optional fire protection pipe sizing requests that become critical proposal-only resize_pipe write-plan steps when fire demand and office hydraulic standards are complete."),
         officeStandards: z.any().optional().describe("Optional office standards override object."),
     }, async (args) => {
         const discipline = args.discipline || "all";
@@ -93,7 +94,11 @@ export function registerAnalyzeMepSystemTool(server) {
                 }));
             }
             if (discipline === "all" || discipline === "fire" || discipline === "sprinkler" || discipline === "general") {
-                analyses.push(await analyzeFireProtection({ includeRevitRead, officeStandards }));
+                analyses.push(await analyzeFireProtection({
+                    includeRevitRead,
+                    officeStandards,
+                    pipeSizingRequests: args.firePipeSizingRequests || [],
+                }));
             }
             if (discipline === "all" || discipline === "clash" || discipline === "general") {
                 analyses.push(analyzeClashCoordination());

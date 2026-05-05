@@ -64,7 +64,12 @@ only the bare names appear, so the rules stay host-agnostic.
   `placementRequests` for devices such as air terminals, dampers, valves,
   pumps, fire cabinets, or equipment produce proposal-only
   `place_family_instance` write-plan steps; preview/approval/verify is still
-  required before any placement commit.
+  required before any placement commit. Optional
+  `domesticWaterPipeSizingRequests`, `sanitaryStormPipeSizingRequests`, and
+  `firePipeSizingRequests` produce proposal-only `resize_pipe` handoff steps
+  when exact pipe identity, demand basis, and office standards are supplied;
+  fire protection resize proposals remain critical-risk and require
+  fire-engineer review before any commit.
 - `prepare_write_plan` — create/validate typed JSON plans; never writes
 - `preview_write_plan` — native or runtime-only preview; never writes
 - `commit_write_plan` — native deterministic commit; requires explicit

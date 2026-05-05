@@ -1,3 +1,5 @@
+import { pipeFrictionLossPaPerM, sizePipeByVelocityOrFriction } from "../hydronic/calculations.js";
+
 export function checkSprinklerCoverage({
     roomWidthM,
     roomLengthM,
@@ -218,6 +220,144 @@ export function calculateFirePumpBasis({
     };
 }
 
+export function buildFireProtectionPipeResizeProposal({
+    pipeSizingRequests = [],
+    flowLpmPerCabinet = null,
+    simultaneousFireCabinetCount = null,
+    maxVelocityMps = null,
+    maxPressureLossPaPerM = null,
+    diametersMm,
+    water,
+} = {}) {
+    const missingStandards = [];
+    if (!isPositive(maxVelocityMps)) missingStandards.push("fire.pipeVelocityLimitMps");
+    if (!isPositive(maxPressureLossPaPerM)) missingStandards.push("fire.pipeFrictionLimitPaPerM");
+    if (missingStandards.length > 0) {
+        return {
+            success: false,
+            status: "blocked_missing_office_standard",
+            requiresOfficeStandard: true,
+            missingStandards,
+            rows: [],
+            writePlanSteps: [],
+            canCommit: false,
+            riskLevel: "critical",
+        };
+    }
+
+    const rows = [];
+    const writePlanSteps = [];
+    const warnings = [];
+    let skippedNoDemandCount = 0;
+    let skippedNoSizeCount = 0;
+    for (const request of Array.isArray(pipeSizingRequests) ? pipeSizingRequests : []) {
+        const target = targetForRequest(request);
+        const demand = fireDemandForRequest({
+            request,
+            flowLpmPerCabinet,
+            simultaneousFireCabinetCount,
+        });
+        if (!demand.success) {
+            skippedNoDemandCount++;
+            if (demand.warning) warnings.push(demand.warning);
+            continue;
+        }
+        const sizing = sizePipeByVelocityOrFriction({
+            flowLs: demand.flowLs,
+            maxVelocityMps,
+            maxPressureLossPaPerM,
+            diametersMm,
+            water,
+        });
+        if (!sizing.success || !sizing.selected) {
+            skippedNoSizeCount++;
+            continue;
+        }
+        const currentDiameterMm = currentDiameterForRequest(request);
+        const lengthM = Number(request?.lengthM);
+        const currentFriction = isPositive(currentDiameterMm)
+            ? pipeFrictionLossPaPerM(demand.flowLs, currentDiameterMm, water)
+            : null;
+        const selected = sizing.selected;
+        const resizeRequired = isPositive(currentDiameterMm)
+            ? Math.abs(Number(selected.diameterMm) - Number(currentDiameterMm)) > 1e-6
+            : true;
+        const currentLinearPressureLossPa = currentFriction?.success && Number.isFinite(lengthM) && lengthM > 0
+            ? currentFriction.output.pressureLossPaPerM * lengthM
+            : null;
+        const selectedLinearPressureLossPa = Number.isFinite(lengthM) && lengthM > 0
+            ? selected.pressureLossPaPerM * lengthM
+            : null;
+        rows.push({
+            rowType: "fire_pipe_sizing_proposal",
+            elementId: positiveInteger(request?.elementId),
+            eId: isNonEmptyString(request?.eId) ? request.eId.trim() : "",
+            uniqueId: request?.uniqueId || "",
+            systemName: request?.systemName || "Fire Protection",
+            demandType: demand.demandType,
+            lengthM: Number.isFinite(lengthM) ? lengthM : null,
+            cabinetCount: Number.isFinite(Number(request?.cabinetCount)) ? Number(request.cabinetCount) : null,
+            sprinklerDemandLpm: Number.isFinite(Number(request?.sprinklerDemandLpm)) ? Number(request.sprinklerDemandLpm) : 0,
+            designFlowLpm: demand.flowLpm,
+            designFlowLs: demand.flowLs,
+            demandSource: demand.source,
+            currentDiameterMm: isPositive(currentDiameterMm) ? Number(currentDiameterMm) : null,
+            selectedDiameterMm: selected.diameterMm,
+            currentVelocityMps: currentFriction?.success ? currentFriction.output.velocityMps : null,
+            selectedVelocityMps: selected.velocityMps,
+            currentPressureLossPaPerM: currentFriction?.success ? currentFriction.output.pressureLossPaPerM : null,
+            selectedPressureLossPaPerM: selected.pressureLossPaPerM,
+            currentLinearPressureLossPa,
+            selectedLinearPressureLossPa,
+            resizeRequired,
+            status: "proposal_ready_for_fire_engineer_review",
+            source: "firePipeSizingRequests + officeStandards.fire",
+            canCommit: false,
+        });
+        if (resizeRequired && target) {
+            writePlanSteps.push({
+                stepId: `resize-fire-pipe-${target.label}`,
+                operation: "resize_pipe",
+                dependsOn: [],
+                targets: target.targets,
+                arguments: {
+                    diameter: selected.diameterMm,
+                    unit: "mm",
+                },
+                preconditions: [
+                    `Fire protection demand confirmed at ${round(demand.flowLpm, 3)} L/min from ${demand.source}.`,
+                    `Velocity limit ${round(maxVelocityMps, 3)} m/s and friction limit ${round(maxPressureLossPaPerM, 3)} Pa/m applied.`,
+                    "Fire authority basis, hydraulic standard, hose streams, sprinkler demand, residual pressure, and pump basis must be approved before commit.",
+                ],
+                riskLevel: "critical",
+            });
+        }
+    }
+    if (skippedNoDemandCount > 0) warnings.push(`Skipped ${skippedNoDemandCount} fire pipe sizing request(s) without confirmed fire flow demand.`);
+    if (skippedNoSizeCount > 0) warnings.push(`Skipped ${skippedNoSizeCount} fire pipe sizing request(s) with no configured diameter satisfying limits.`);
+    return {
+        success: rows.length > 0,
+        method: "Fire protection resize_pipe proposal from fire demand basis and office velocity/friction limits",
+        status: rows.length > 0 ? "proposal_ready_for_fire_engineer_review" : "blocked_no_sizable_fire_pipe_requests",
+        assumptions: [
+            "Fire pipe sizing requests must identify exact Revit pipes by elementId or stable eId before a write-plan commit.",
+            "Generated resize_pipe steps are proposal-only and require fire-engineer review, preview, explicit approval, and verify.",
+        ],
+        dataCompleteness: proposalDataCompleteness({
+            requestCount: Array.isArray(pipeSizingRequests) ? pipeSizingRequests.length : 0,
+            rowCount: rows.length,
+            writePlanStepCount: writePlanSteps.length,
+            skippedNoDemandCount,
+            skippedNoSizeCount,
+        }),
+        rows,
+        writePlanSteps,
+        warnings,
+        canCommit: false,
+        riskLevel: "critical",
+    };
+}
+
 function nearestCabinet(target, cabinets) {
     let nearest = null;
     for (const [index, cabinet] of (Array.isArray(cabinets) ? cabinets : []).entries()) {
@@ -228,6 +368,124 @@ function nearestCabinet(target, cabinets) {
         }
     }
     return nearest;
+}
+
+function fireDemandForRequest({ request, flowLpmPerCabinet, simultaneousFireCabinetCount }) {
+    const explicitLpm = Number(request?.flowLpm ?? request?.demandFlowLpm);
+    if (Number.isFinite(explicitLpm) && explicitLpm > 0) {
+        return {
+            success: true,
+            flowLpm: explicitLpm,
+            flowLs: explicitLpm / 60.0,
+            demandType: "explicit_fire_flow",
+            source: "explicit flowLpm",
+        };
+    }
+    const explicitLs = Number(request?.flowLs ?? request?.demandFlowLs);
+    if (Number.isFinite(explicitLs) && explicitLs > 0) {
+        return {
+            success: true,
+            flowLpm: explicitLs * 60.0,
+            flowLs: explicitLs,
+            demandType: "explicit_fire_flow",
+            source: "explicit flowLs",
+        };
+    }
+    const cabinetCount = Number(request?.cabinetCount);
+    const sprinklerDemandLpm = Math.max(0, Number(request?.sprinklerDemandLpm) || 0);
+    if (Number.isFinite(cabinetCount) && cabinetCount > 0) {
+        const cabinetDemand = calculateFireCabinetDemand({
+            cabinetCount,
+            flowLpmPerCabinet,
+            simultaneousCabinetCount: simultaneousFireCabinetCount,
+        });
+        if (cabinetDemand.success) {
+            const flowLpm = cabinetDemand.output.totalFlowLpm + sprinklerDemandLpm;
+            return {
+                success: flowLpm > 0,
+                flowLpm,
+                flowLs: flowLpm / 60.0,
+                demandType: sprinklerDemandLpm > 0 ? "cabinet_plus_sprinkler" : "fire_cabinet",
+                source: "configured cabinet demand basis",
+            };
+        }
+        return {
+            success: false,
+            warning: `Fire pipe request ${targetLabelForRequest(request)} has cabinetCount but no valid cabinet flow/simultaneous standard.`,
+        };
+    }
+    if (sprinklerDemandLpm > 0) {
+        return {
+            success: true,
+            flowLpm: sprinklerDemandLpm,
+            flowLs: sprinklerDemandLpm / 60.0,
+            demandType: "sprinkler",
+            source: "explicit sprinklerDemandLpm",
+        };
+    }
+    return { success: false };
+}
+
+function currentDiameterForRequest(request) {
+    return Number(request?.currentDiameterMm ?? request?.diameterMm);
+}
+
+function targetForRequest(request) {
+    const elementId = positiveInteger(request?.elementId);
+    if (elementId) {
+        return { label: String(elementId), targets: { elementId } };
+    }
+    if (isNonEmptyString(request?.eId)) {
+        const eId = request.eId.trim();
+        return { label: safeId(eId), targets: { eId } };
+    }
+    return null;
+}
+
+function targetLabelForRequest(request) {
+    return targetForRequest(request)?.label || "(unidentified)";
+}
+
+function positiveInteger(value) {
+    const numeric = Number(value);
+    return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
+}
+
+function safeId(value) {
+    return String(value || "target").replace(/[^A-Za-z0-9_-]+/g, "-");
+}
+
+function round(value, digits = 3) {
+    const factor = 10 ** digits;
+    return Math.round(Number(value) * factor) / factor;
+}
+
+function proposalDataCompleteness({
+    requestCount,
+    rowCount,
+    writePlanStepCount,
+    skippedNoDemandCount,
+    skippedNoSizeCount,
+}) {
+    const blockers = [];
+    if (requestCount <= 0) blockers.push("No fire pipe sizing requests were supplied.");
+    if (rowCount <= 0) blockers.push("No fire pipe sizing proposal rows were produced.");
+    if (skippedNoDemandCount > 0) blockers.push(`${skippedNoDemandCount} fire pipe sizing request(s) lack confirmed demand.`);
+    if (skippedNoSizeCount > 0) blockers.push(`${skippedNoSizeCount} fire pipe sizing request(s) have no configured size satisfying demand.`);
+    if (writePlanStepCount <= 0 && rowCount > 0) blockers.push("No fire pipe resize step was needed or target identity was incomplete.");
+    return {
+        requestCount,
+        rowCount,
+        writePlanStepCount,
+        skippedNoDemandCount,
+        skippedNoSizeCount,
+        completeForProductionReview: blockers.length === 0,
+        blockers,
+    };
+}
+
+function isNonEmptyString(value) {
+    return typeof value === "string" && value.trim().length > 0;
 }
 
 function isPositive(value) {

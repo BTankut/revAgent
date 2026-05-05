@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } from "./clash/calculations.js";
 import { buildDomesticWaterPipeResizeProposal, calculateDomesticWaterPressureLoss, calculateFixtureDemand, checkRecirculationContinuity, convertFixtureUnitsToDemand, sizeDomesticWaterPipe } from "./domestic-water/calculations.js";
 import { buildEquipmentScheduleProposal, buildFamilyPlacementProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
-import { calculateFireCabinetDemand, calculateFirePumpBasis, checkFireCabinetCoverage, checkSprinklerCoverage } from "./fire/calculations.js";
+import { buildFireProtectionPipeResizeProposal, calculateFireCabinetDemand, calculateFirePumpBasis, checkFireCabinetCoverage, checkSprinklerCoverage } from "./fire/calculations.js";
 import { analyzeHvacAirside } from "./hvac/index.js";
 import { analyzeHydronic } from "./hydronic/index.js";
 import { connectorPathElementIds, selectCriticalConnectorPath, summarizeLocalLossSamples } from "./local-losses/calculations.js";
@@ -42,6 +42,8 @@ assert(sanitaryMissingStandards.includes("sanitaryStorm.ventNodeIds"));
 
 const fireMissingStandards = missingStandardsForDiscipline("fire", mergeOfficeStandards());
 assert(fireMissingStandards.includes("fire.simultaneousFireCabinetCount"));
+assert(fireMissingStandards.includes("fire.pipeVelocityLimitMps"));
+assert(fireMissingStandards.includes("fire.pipeFrictionLimitPaPerM"));
 
 const fixtureDemand = calculateFixtureDemand({
     fixtureUnitTable: {
@@ -255,6 +257,27 @@ assert.equal(firePumpBasis.output.requiredFlowLpm, 500);
 assert(Math.abs(firePumpBasis.output.requiredPressureKPa - 575.37315) < 1e-5);
 assert.equal(calculateFireCabinetDemand({ cabinetCount: 1 }).requiresOfficeStandard, true);
 assert.equal(calculateFirePumpBasis({ cabinetDemand }).requiresOfficeStandard, true);
+
+const firePipeResizeProposal = buildFireProtectionPipeResizeProposal({
+    pipeSizingRequests: [
+        { elementId: 801, systemName: "Fire Cabinet", currentDiameterMm: 50, cabinetCount: 3, sprinklerDemandLpm: 300, lengthM: 20 },
+    ],
+    flowLpmPerCabinet: 100,
+    simultaneousFireCabinetCount: 2,
+    maxVelocityMps: 3.0,
+    maxPressureLossPaPerM: 800,
+    diametersMm: [50, 65, 80, 100, 125],
+});
+assert.equal(firePipeResizeProposal.success, true);
+assert.equal(firePipeResizeProposal.rows.length, 1);
+assert.equal(firePipeResizeProposal.rows[0].rowType, "fire_pipe_sizing_proposal");
+assert.equal(firePipeResizeProposal.rows[0].elementId, 801);
+assert.equal(firePipeResizeProposal.rows[0].designFlowLpm, 500);
+assert.equal(firePipeResizeProposal.writePlanSteps.length, 1);
+assert.equal(firePipeResizeProposal.writePlanSteps[0].operation, "resize_pipe");
+assert.equal(firePipeResizeProposal.writePlanSteps[0].riskLevel, "critical");
+assert.equal(validateStep(firePipeResizeProposal.writePlanSteps[0], 0).errors.length, 0);
+assert.equal(firePipeResizeProposal.canCommit, false);
 
 const hardClash = classifyAabbClash({
     boxA: { min: { x: 0, y: 0, z: 0 }, max: { x: 1, y: 1, z: 1 } },
@@ -838,6 +861,22 @@ const report = buildAnalysisReport({
                         resizeRequired: true,
                         status: "proposal_ready_for_review",
                     },
+                    {
+                        rowType: "fire_pipe_sizing_proposal",
+                        elementId: 801,
+                        uniqueId: "fire-801",
+                        systemName: "Fire Cabinet",
+                        demandType: "cabinet_plus_sprinkler",
+                        lengthM: 20,
+                        designFlowLpm: 500,
+                        designFlowLs: 8.333333333333334,
+                        currentDiameterMm: 50,
+                        selectedDiameterMm: 80,
+                        selectedVelocityMps: 1.658,
+                        selectedPressureLossPaPerM: 350,
+                        resizeRequired: true,
+                        status: "proposal_ready_for_fire_engineer_review",
+                    },
                 ],
             },
             localLossExtraction,
@@ -851,7 +890,7 @@ assert.equal(report.issueRows.length, 1);
 assert.equal(report.designLogRows.length, 1);
 assert.equal(report.boqRows.length, 4);
 assert.equal(report.hydraulicResistanceRows.length, 1);
-assert.equal(report.pipeSizingRows.length, 1);
+assert.equal(report.pipeSizingRows.length, 2);
 assert.equal(report.ductSizingRows.length, 1);
 assert.equal(report.localLossRows.length, 2);
 assert.equal(report.localLossPressureRows.length, 3);
@@ -861,6 +900,8 @@ assert(report.boqCsv.includes("Total duct length"));
 assert(report.boqCsv.includes("Supply Air"));
 assert(report.hydraulicResistanceCsv.includes("Hydronic Supply"));
 assert(report.pipeSizingCsv.includes("hydronic_pipe_sizing_proposal"));
+assert(report.pipeSizingCsv.includes("fire_pipe_sizing_proposal"));
+assert(report.pipeSizingCsv.includes("cabinet_plus_sprinkler"));
 assert(report.pipeSizingCsv.includes("proposal_ready_for_review"));
 assert(report.ductSizingCsv.includes("hvac_duct_sizing_proposal"));
 assert(report.ductSizingCsv.includes("proposal_ready_for_review"));

@@ -1,9 +1,17 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { executeRevitCode } from "../../utils/revitToolHelpers.js";
-import { calculateFireCabinetDemand, calculateFirePumpBasis, checkFireCabinetCoverage, checkSprinklerCoverage } from "./calculations.js";
+import { buildFireProtectionPipeResizeProposal, calculateFireCabinetDemand, calculateFirePumpBasis, checkFireCabinetCoverage, checkSprinklerCoverage } from "./calculations.js";
 
-export async function analyzeFireProtection({ includeRevitRead = true, officeStandards = {} } = {}) {
+export async function analyzeFireProtection({ includeRevitRead = true, officeStandards = {}, pipeSizingRequests = [] } = {}) {
     const missingStandards = missingStandardsForDiscipline("fire", officeStandards);
+    const pipeSizingProposal = buildFireProtectionPipeResizeProposal({
+        pipeSizingRequests,
+        flowLpmPerCabinet: officeStandards.fire?.fireCabinetFlowLpm,
+        simultaneousFireCabinetCount: officeStandards.fire?.simultaneousFireCabinetCount,
+        maxVelocityMps: officeStandards.fire?.pipeVelocityLimitMps,
+        maxPressureLossPaPerM: officeStandards.fire?.pipeFrictionLimitPaPerM,
+        diametersMm: officeStandards.fire?.pipeDiametersMm,
+    });
     const base = {
         discipline: "fire",
         engine: "fire-sprinkler-foundation",
@@ -19,6 +27,7 @@ export async function analyzeFireProtection({ includeRevitRead = true, officeSta
             "fire cabinet hose reach screening",
             "fire cabinet demand basis",
             "fire pump flow/pressure basis",
+            "resize_pipe write-plan proposal from fire pipe sizing requests",
         ],
         calculationExamples: {
             sprinklerCoverage: checkSprinklerCoverage({
@@ -50,6 +59,7 @@ export async function analyzeFireProtection({ includeRevitRead = true, officeSta
                 safetyFactor: 1.1,
             }),
         },
+        ...(Array.isArray(pipeSizingRequests) && pipeSizingRequests.length > 0 ? { pipeSizingProposal } : {}),
         canCommit: false,
     };
     if (!includeRevitRead) return base;

@@ -374,6 +374,10 @@ Write checks:
   - A fresh stdio runtime handshake listed all `13` tools.
   - `analyze_mep_system` with `includeRevitRead: false`, one `domesticWaterPipeSizingRequests` item, two `sanitaryStormPipeSizingRequests` items, and complete test office standards returned `success: true`, `mutateModel: false`, and `writePlanProposal.validation.valid: true`.
   - The top-level proposal included three proposal-only `resize_pipe` steps: domestic water pipe `601 -> 25 mm`, sanitary pipe `701 -> 75 mm`, and storm pipe `702 -> 100 mm`; the same rows appeared in `reporting.pipeSizingRows`.
+- Fire pipe sizing proposal handoff audit:
+  - A fresh stdio runtime handshake listed all `13` tools.
+  - `analyze_mep_system` with `discipline: fire`, `includeRevitRead: false`, one `firePipeSizingRequests` item, and complete test fire standards returned `success: true`, `mutateModel: false`, `writePlanProposal.validation.valid: true`, and plan risk `critical`.
+  - The top-level proposal included one critical proposal-only `resize_pipe` step for fire pipe `801 -> 80 mm`; `reporting.pipeSizingRows` included `fire_pipe_sizing_proposal`, `designFlowLpm: 500`, and `demandType: cabinet_plus_sprinkler`.
 
 ## Known Validation Limits
 

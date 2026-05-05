@@ -49,6 +49,9 @@ export const defaultOfficeStandards = {
         fireCabinetMaxHoseReachM: null,
         simultaneousFireCabinetCount: null,
         hydraulicStandard: null,
+        pipeVelocityLimitMps: null,
+        pipeFrictionLimitPaPerM: null,
+        pipeDiametersMm: [25, 32, 40, 50, 65, 80, 100, 125, 150, 200],
     },
     reporting: {
         csvDelimiter: ";",
@@ -161,6 +164,12 @@ export function missingStandardsForDiscipline(discipline, standards = defaultOff
         }
         if (standards.fire?.simultaneousFireCabinetCount == null) {
             missing.push("fire.simultaneousFireCabinetCount");
+        }
+        if (standards.fire?.pipeVelocityLimitMps == null) {
+            missing.push("fire.pipeVelocityLimitMps");
+        }
+        if (standards.fire?.pipeFrictionLimitPaPerM == null) {
+            missing.push("fire.pipeFrictionLimitPaPerM");
         }
     }
     return missing;
