@@ -258,6 +258,46 @@ const invalidAlignValidation = validateWritePlan(invalidAlignPlan, { mode: "comm
 assert.equal(invalidAlignValidation.valid, false);
 assert(invalidAlignValidation.errors.includes("steps[0].arguments.sourcePoint and targetPoint are required"));
 
+const ductRunPlan = buildPlanFromArgs({
+    title: "Create simple duct run",
+    discipline: "hvac",
+    operation: "create_duct_run",
+    targets: {},
+    arguments: {
+        systemTypeId: 11,
+        ductTypeId: 22,
+        levelId: 33,
+        unit: "m",
+        points: [
+            { x: 0, y: 0, z: 3 },
+            { x: 2, y: 0, z: 3 },
+        ],
+        width: 0.3,
+        height: 0.3,
+    },
+});
+const ductRunValidation = validateWritePlan(ductRunPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(ductRunValidation.valid, true);
+assert.equal(classifyPlanRisk(ductRunPlan), "high");
+
+const invalidDuctRunPlan = buildPlanFromArgs({
+    title: "Reject duct run without type ids",
+    discipline: "hvac",
+    operation: "create_duct_run",
+    targets: {},
+    arguments: {
+        points: [
+            { x: 0, y: 0, z: 3 },
+            { x: 2, y: 0, z: 3 },
+        ],
+    },
+});
+const invalidDuctRunValidation = validateWritePlan(invalidDuctRunPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidDuctRunValidation.valid, false);
+assert(invalidDuctRunValidation.errors.includes("steps[0].arguments.systemTypeId is required"));
+assert(invalidDuctRunValidation.errors.includes("steps[0].arguments.ductTypeId or typeId is required"));
+assert(invalidDuctRunValidation.errors.includes("steps[0].arguments.levelId is required"));
+
 const reroutePlan = buildPlanFromArgs({
     title: "Commit explicit reroute geometry",
     discipline: "clash",

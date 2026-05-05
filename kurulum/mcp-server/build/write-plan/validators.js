@@ -166,8 +166,16 @@ function validateOperationPayload(step, prefix, errors, warnings) {
             if (!args.familySymbolId && !(args.familyName && args.typeName)) warnings.push(`${prefix} should identify a family symbol by id or by familyName/typeName`);
             break;
         case "create_duct_run":
+            if (!Array.isArray(args.points) || args.points.length < 2) errors.push(`${prefix}.arguments.points must contain at least two points`);
+            if (!Number.isFinite(Number(args.systemTypeId))) errors.push(`${prefix}.arguments.systemTypeId is required`);
+            if (!Number.isFinite(Number(args.ductTypeId)) && !Number.isFinite(Number(args.typeId))) errors.push(`${prefix}.arguments.ductTypeId or typeId is required`);
+            if (!Number.isFinite(Number(args.levelId))) errors.push(`${prefix}.arguments.levelId is required`);
+            break;
         case "create_pipe_run":
             if (!Array.isArray(args.points) || args.points.length < 2) errors.push(`${prefix}.arguments.points must contain at least two points`);
+            if (!Number.isFinite(Number(args.systemTypeId))) errors.push(`${prefix}.arguments.systemTypeId is required`);
+            if (!Number.isFinite(Number(args.pipeTypeId)) && !Number.isFinite(Number(args.typeId))) errors.push(`${prefix}.arguments.pipeTypeId or typeId is required`);
+            if (!Number.isFinite(Number(args.levelId))) errors.push(`${prefix}.arguments.levelId is required`);
             break;
         case "resize_duct":
             requireTargetElement(targets, prefix, errors);
