@@ -14,6 +14,7 @@ const operationRisk = {
     change_type: "medium",
     place_family_instance: "medium",
     move_elements: "medium",
+    copy_elements: "medium",
     resize_duct: "medium",
     resize_pipe: "medium",
     create_schedule_or_update_schedule: "medium",

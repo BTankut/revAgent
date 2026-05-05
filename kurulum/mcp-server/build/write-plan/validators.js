@@ -138,8 +138,9 @@ function validateOperationPayload(step, prefix, errors, warnings) {
         case "view_unhide_elements":
         case "view_apply_overrides":
         case "move_elements":
+        case "copy_elements":
             if (!hasAnyTargetElements(targets)) errors.push(`${prefix}.targets.elementIds or elementId is required`);
-            if (step.operation === "move_elements" && !args.vector) errors.push(`${prefix}.arguments.vector is required`);
+            if ((step.operation === "move_elements" || step.operation === "copy_elements") && !args.vector) errors.push(`${prefix}.arguments.vector is required`);
             break;
         case "place_family_instance":
             if (!args.point) errors.push(`${prefix}.arguments.point is required`);

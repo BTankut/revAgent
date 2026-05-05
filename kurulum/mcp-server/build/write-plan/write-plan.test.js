@@ -139,6 +139,28 @@ const invalidDeleteValidation = validateWritePlan(invalidDeletePlan, { mode: "co
 assert.equal(invalidDeleteValidation.valid, false);
 assert(invalidDeleteValidation.errors.includes("steps[0].targets.elementIds or elementId is required"));
 
+const copyPlan = buildPlanFromArgs({
+    title: "Copy disposable model elements",
+    discipline: "general",
+    operation: "copy_elements",
+    targets: { elementIds: [301] },
+    arguments: { vector: { x: 1, y: 0, z: 0 }, unit: "m" },
+});
+const copyValidation = validateWritePlan(copyPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(copyValidation.valid, true);
+assert.equal(classifyPlanRisk(copyPlan), "medium");
+
+const invalidCopyPlan = buildPlanFromArgs({
+    title: "Reject copy without vector",
+    discipline: "general",
+    operation: "copy_elements",
+    targets: { elementIds: [301] },
+    arguments: {},
+});
+const invalidCopyValidation = validateWritePlan(invalidCopyPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidCopyValidation.valid, false);
+assert(invalidCopyValidation.errors.includes("steps[0].arguments.vector is required"));
+
 const reroutePlan = buildPlanFromArgs({
     title: "Commit explicit reroute geometry",
     discipline: "clash",

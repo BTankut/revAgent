@@ -1,7 +1,7 @@
 From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 01/11] Add native write-plan executor
+Subject: [PATCH 01/12] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 02/11] Expand write-plan verification readback
+Subject: [PATCH 02/12] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 03/11] Fix write-plan command SDK compatibility
+Subject: [PATCH 03/12] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 04/11] Add native schedule write-plan operation
+Subject: [PATCH 04/12] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 05/11] Add native reroute commit verification
+Subject: [PATCH 05/12] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2367,7 +2367,7 @@ index 31c47a5..0b76d2e 100644
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 06/11] Verify reroute obstacle clearance
+Subject: [PATCH 06/12] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2548,7 +2548,7 @@ index ba849b9..91431bb 100644
 From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:11:18 +0300
-Subject: [PATCH 07/11] Support reroute source replacement
+Subject: [PATCH 07/12] Support reroute source replacement
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
@@ -2664,7 +2664,7 @@ index 91431bb..f346aca 100644
 From 6be1a8b287fb9d41bf5ee96c449eab360ced9f75 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:24:33 +0300
-Subject: [PATCH 08/11] Reconnect reroute replacement endpoints
+Subject: [PATCH 08/12] Reconnect reroute replacement endpoints
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 445 +++++++++++++++++-
@@ -3248,7 +3248,7 @@ index f346aca..f230ebf 100644
 From 0b3c09ff5eb9c55916f46cbaa5829e241542ecd7 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:59:59 +0300
-Subject: [PATCH 09/11] Report reroute fitting references
+Subject: [PATCH 09/12] Report reroute fitting references
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 58 +++++++++++++++++--
@@ -3357,7 +3357,7 @@ index 9c3c4e0..08ab8e9 100644
 From 4d1672f96c751579511eb03c46bd5ae8166a61d9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:12:20 +0300
-Subject: [PATCH 10/11] Add native pin element operations
+Subject: [PATCH 10/12] Add native pin element operations
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 24 ++++++++++++++
@@ -3512,7 +3512,7 @@ index 0b76d2e..7b69f41 100644
 From 57644057abdf3023af59358e5940af51c04fc41e Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:27:07 +0300
-Subject: [PATCH 11/11] Add native delete element operation
+Subject: [PATCH 11/12] Add native delete element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 30 +++++++++++++++++++
@@ -3643,6 +3643,274 @@ index 7b69f41..af2da46 100644
          private static bool VerifyDoubleParameter(Element elem, string parameterName, JToken expectedToken, string unit, JArray checks)
          {
              Parameter p = elem != null ? elem.LookupParameter(parameterName) : null;
+--
+2.50.1.windows.1
+
+
+From a4b7f6f034cbb18e6f29596db615a12f9042d9d4 Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 11:34:06 +0300
+Subject: [PATCH 12/12] Add native copy element operation
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs |  38 +++++
+ .../Validators/WritePlanValidator.cs          |  10 ++
+ .../Verification/WritePlanVerifier.cs         | 130 ++++++++++++++++++
+ 3 files changed, 178 insertions(+)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index d97532a..f23843d 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -175,6 +175,11 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 row["targetElementCount"] = GetTargetElementIds(step).Count;
+                 row["expectedDeleted"] = true;
+             }
++            else if (operation == "copy_elements")
++            {
++                row["targetElementCount"] = GetTargetElementIds(step).Count;
++                row["vector"] = args["vector"] != null ? args["vector"].DeepClone() : null;
++            }
+             else
+             {
+                 row["arguments"] = args.DeepClone();
+@@ -339,6 +344,8 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 PlaceFamilyInstance(document, step, eIdMap, mappings, result);
+             else if (operation == "move_elements")
+                 MoveElements(document, step, result);
++            else if (operation == "copy_elements")
++                CopyElements(document, step, eIdMap, mappings, result);
+             else if (operation == "create_duct_run")
+                 CreateDuctRun(document, step, eIdMap, mappings, result);
+             else if (operation == "resize_duct")
+@@ -488,6 +495,37 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             ElementTransformUtils.MoveElements(document, ids, vector);
+         }
+
++        private static void CopyElements(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            XYZ vector = PointValue(args["vector"] as JObject, StringValue(args, "unit"));
++            ICollection<ElementId> ids = GetTargetElementIds(step);
++            if (ids.Count == 0)
++                throw new InvalidOperationException("No target element ids supplied.");
++            foreach (ElementId id in ids)
++            {
++                Element elem = document.GetElement(id);
++                if (elem == null)
++                    throw new InvalidOperationException("Target element not found: " + id.IntegerValue.ToString(CultureInfo.InvariantCulture));
++            }
++            ICollection<ElementId> copiedIds = ElementTransformUtils.CopyElements(document, ids, vector);
++            JArray copied = result["copiedElementIds"] as JArray;
++            if (copied == null)
++            {
++                copied = new JArray();
++                result["copiedElementIds"] = copied;
++            }
++            int copyIndex = 0;
++            foreach (ElementId id in copiedIds)
++            {
++                copied.Add(id.IntegerValue);
++                Element elem = document.GetElement(id);
++                AddCreatedMapping(step, elem, eIdMap, mappings, copiedIds.Count > 1 ? copyIndex : -1);
++                copyIndex++;
++            }
++            result["copiedElementCount"] = copied.Count;
++        }
++
+         private static List<ElementId> CreateDuctRun(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
+         {
+             List<ElementId> createdIds = new List<ElementId>();
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index fe2ac9d..1039060 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -19,6 +19,7 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+             "pin_elements",
+             "unpin_elements",
+             "delete_elements",
++            "copy_elements",
+             "view_hide_elements",
+             "view_unhide_elements",
+             "view_apply_overrides",
+@@ -138,6 +139,15 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 if (!HasTargetElement(targets))
+                     errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
+             }
++            if (operation == "copy_elements")
++            {
++                JObject targets = step["targets"] as JObject;
++                JObject args = step["arguments"] as JObject ?? new JObject();
++                if (!HasTargetElement(targets))
++                    errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
++                if (!(args["vector"] is JObject))
++                    errors.Add("steps[" + index + "].arguments.vector is required");
++            }
+         }
+
+         private static void ValidateSchedulePayload(JObject step, int index, JArray errors, JArray warnings)
+diff --git a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+index af2da46..1b22f12 100644
+--- a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
++++ b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+@@ -2,6 +2,7 @@ using Autodesk.Revit.DB;
+ using Newtonsoft.Json.Linq;
+ using SampleCommandSet.Commands.WritePlan.Operations;
+ using System;
++using System.Collections.Generic;
+ using System.Globalization;
+
+ namespace SampleCommandSet.Commands.WritePlan.Verification
+@@ -60,6 +61,8 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+                 return VerifyPinned(document, step, false);
+             if (operation == "delete_elements")
+                 return VerifyDeleted(document, step);
++            if (operation == "copy_elements")
++                return VerifyCopied(document, step);
+             if (operation == "resize_duct" || operation == "resize_pipe")
+                 return VerifyResize(document, step, operation);
+             if (operation == "view_hide_elements")
+@@ -229,6 +232,50 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             };
+         }
+
++        private static JObject VerifyCopied(Document document, JObject step)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            List<ElementId> sourceIds = SourceElementIdsForCopy(step);
++            List<ElementId> copiedIds = CopiedElementIdsForCopy(step);
++            JArray rows = new JArray();
++            bool ok = copiedIds.Count > 0;
++            XYZ vector = args["vector"] is JObject ? PointValue(args["vector"] as JObject, WritePlanExecutor.StringValue(args, "unit")) : null;
++            for (int i = 0; i < copiedIds.Count; i++)
++            {
++                ElementId copiedId = copiedIds[i];
++                Element copied = document.GetElement(copiedId);
++                Element source = i < sourceIds.Count ? document.GetElement(sourceIds[i]) : null;
++                bool exists = copied != null;
++                bool geometryChecked = false;
++                bool geometryMatches = true;
++                if (exists && source != null && vector != null)
++                {
++                    geometryChecked = TryVerifyTranslation(source, copied, vector, out geometryMatches);
++                    if (geometryChecked && !geometryMatches)
++                        ok = false;
++                }
++                if (!exists)
++                    ok = false;
++                rows.Add(new JObject
++                {
++                    ["copiedElementId"] = copiedId.IntegerValue,
++                    ["sourceElementId"] = source != null ? source.Id.IntegerValue : 0,
++                    ["exists"] = exists,
++                    ["geometryChecked"] = geometryChecked,
++                    ["translationMatches"] = geometryMatches
++                });
++            }
++            return new JObject
++            {
++                ["success"] = ok,
++                ["stepId"] = WritePlanExecutor.StringValue(step, "stepId"),
++                ["operation"] = "copy_elements",
++                ["expectedCopiedCount"] = copiedIds.Count,
++                ["checks"] = rows,
++                ["message"] = ok ? "verified" : "copied elements are missing or do not match the requested translation"
++            };
++        }
++
+         private static bool VerifyDoubleParameter(Element elem, string parameterName, JToken expectedToken, string unit, JArray checks)
+         {
+             Parameter p = elem != null ? elem.LookupParameter(parameterName) : null;
+@@ -271,6 +318,89 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             return ids;
+         }
+
++        private static List<ElementId> SourceElementIdsForCopy(JObject step)
++        {
++            JObject targets = step["targets"] as JObject ?? new JObject();
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            List<ElementId> ids = ElementIdsFromToken(targets["sourceElementIds"]);
++            if (ids.Count == 0)
++                ids = ElementIdsFromToken(args["sourceElementIds"]);
++            if (ids.Count == 0)
++                ids = ElementIdsFromToken(targets["elementIds"]);
++            if (ids.Count == 0 && targets["sourceElementId"] != null)
++                ids.Add(new ElementId(IntValue(targets["sourceElementId"])));
++            if (ids.Count == 0 && args["sourceElementId"] != null)
++                ids.Add(new ElementId(IntValue(args["sourceElementId"])));
++            return ids;
++        }
++
++        private static List<ElementId> CopiedElementIdsForCopy(JObject step)
++        {
++            JObject targets = step["targets"] as JObject ?? new JObject();
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            List<ElementId> ids = ElementIdsFromToken(targets["copiedElementIds"]);
++            if (ids.Count == 0)
++                ids = ElementIdsFromToken(targets["createdElementIds"]);
++            if (ids.Count == 0)
++                ids = ElementIdsFromToken(args["expectedCopiedElementIds"]);
++            if (ids.Count == 0 && targets["elementId"] != null && (targets["resolvedFromEId"] != null || targets["elementIds"] == null))
++                ids.Add(new ElementId(IntValue(targets["elementId"])));
++            return ids;
++        }
++
++        private static List<ElementId> ElementIdsFromToken(JToken token)
++        {
++            List<ElementId> ids = new List<ElementId>();
++            JArray array = token as JArray;
++            if (array != null)
++            {
++                foreach (JToken item in array)
++                    ids.Add(new ElementId(IntValue(item)));
++            }
++            else if (token != null)
++            {
++                ids.Add(new ElementId(IntValue(token)));
++            }
++            return ids;
++        }
++
++        private static bool TryVerifyTranslation(Element source, Element copied, XYZ vector, out bool matches)
++        {
++            const double tolerance = 0.001;
++            matches = true;
++            LocationCurve sourceCurve = source.Location as LocationCurve;
++            LocationCurve copiedCurve = copied.Location as LocationCurve;
++            if (sourceCurve != null && copiedCurve != null && sourceCurve.Curve != null && copiedCurve.Curve != null)
++            {
++                XYZ expectedStart = sourceCurve.Curve.GetEndPoint(0) + vector;
++                XYZ expectedEnd = sourceCurve.Curve.GetEndPoint(1) + vector;
++                XYZ actualStart = copiedCurve.Curve.GetEndPoint(0);
++                XYZ actualEnd = copiedCurve.Curve.GetEndPoint(1);
++                matches = expectedStart.DistanceTo(actualStart) <= tolerance && expectedEnd.DistanceTo(actualEnd) <= tolerance;
++                return true;
++            }
++
++            LocationPoint sourcePoint = source.Location as LocationPoint;
++            LocationPoint copiedPoint = copied.Location as LocationPoint;
++            if (sourcePoint != null && copiedPoint != null)
++            {
++                matches = (sourcePoint.Point + vector).DistanceTo(copiedPoint.Point) <= tolerance;
++                return true;
++            }
++
++            return false;
++        }
++
++        private static XYZ PointValue(JObject obj, string unit)
++        {
++            if (obj == null)
++                return null;
++            return new XYZ(
++                ConvertToInternal(DoubleValue(obj["x"]), unit),
++                ConvertToInternal(DoubleValue(obj["y"]), unit),
++                ConvertToInternal(DoubleValue(obj["z"]), unit));
++        }
++
+         private static View ResolveView(Document document, JObject step)
+         {
+             JObject args = step["arguments"] as JObject ?? new JObject();
 --
 2.50.1.windows.1
 
