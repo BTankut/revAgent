@@ -24,6 +24,7 @@ export const initialOperations = [
     "pin_elements",
     "unpin_elements",
     "delete_elements",
+    "tag_elements",
     "view_hide_elements",
     "view_unhide_elements",
     "view_apply_overrides",
@@ -43,7 +44,6 @@ export const initialOperations = [
 ];
 
 export const futureOperations = [
-    "tag_elements",
     "create_opening_or_sleeve",
     "place_support_or_hanger",
     "create_duct_branch",

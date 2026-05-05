@@ -134,6 +134,7 @@ function validateOperationPayload(step, prefix, errors, warnings) {
         case "pin_elements":
         case "unpin_elements":
         case "delete_elements":
+        case "tag_elements":
         case "view_hide_elements":
         case "view_unhide_elements":
         case "view_apply_overrides":
@@ -142,6 +143,9 @@ function validateOperationPayload(step, prefix, errors, warnings) {
         case "rotate_elements":
         case "align_elements":
             if (!hasAnyTargetElements(targets)) errors.push(`${prefix}.targets.elementIds or elementId is required`);
+            if (step.operation === "tag_elements") {
+                if (!args.point) errors.push(`${prefix}.arguments.point is required`);
+            }
             if ((step.operation === "move_elements" || step.operation === "copy_elements") && !args.vector) errors.push(`${prefix}.arguments.vector is required`);
             if (step.operation === "align_elements") {
                 if (!args.sourcePoint || !args.targetPoint) errors.push(`${prefix}.arguments.sourcePoint and targetPoint are required`);

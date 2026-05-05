@@ -12,6 +12,7 @@ const operationRisk = {
     export_boq_report: "low",
     export_clash_report: "low",
     change_type: "medium",
+    tag_elements: "medium",
     place_family_instance: "medium",
     move_elements: "medium",
     copy_elements: "medium",

@@ -139,6 +139,28 @@ const invalidDeleteValidation = validateWritePlan(invalidDeletePlan, { mode: "co
 assert.equal(invalidDeleteValidation.valid, false);
 assert(invalidDeleteValidation.errors.includes("steps[0].targets.elementIds or elementId is required"));
 
+const tagPlan = buildPlanFromArgs({
+    title: "Tag disposable model elements",
+    discipline: "general",
+    operation: "tag_elements",
+    targets: { elementIds: [251] },
+    arguments: { point: { x: 0, y: 0, z: 0 }, unit: "m" },
+});
+const tagValidation = validateWritePlan(tagPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(tagValidation.valid, true);
+assert.equal(classifyPlanRisk(tagPlan), "medium");
+
+const invalidTagPlan = buildPlanFromArgs({
+    title: "Reject tag without point",
+    discipline: "general",
+    operation: "tag_elements",
+    targets: { elementIds: [251] },
+    arguments: {},
+});
+const invalidTagValidation = validateWritePlan(invalidTagPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidTagValidation.valid, false);
+assert(invalidTagValidation.errors.includes("steps[0].arguments.point is required"));
+
 const copyPlan = buildPlanFromArgs({
     title: "Copy disposable model elements",
     discipline: "general",

@@ -1,7 +1,7 @@
 From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 01/14] Add native write-plan executor
+Subject: [PATCH 01/15] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 02/14] Expand write-plan verification readback
+Subject: [PATCH 02/15] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 03/14] Fix write-plan command SDK compatibility
+Subject: [PATCH 03/15] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 04/14] Add native schedule write-plan operation
+Subject: [PATCH 04/15] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 05/14] Add native reroute commit verification
+Subject: [PATCH 05/15] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2367,7 +2367,7 @@ index 31c47a5..0b76d2e 100644
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 06/14] Verify reroute obstacle clearance
+Subject: [PATCH 06/15] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2548,7 +2548,7 @@ index ba849b9..91431bb 100644
 From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:11:18 +0300
-Subject: [PATCH 07/14] Support reroute source replacement
+Subject: [PATCH 07/15] Support reroute source replacement
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
@@ -2664,7 +2664,7 @@ index 91431bb..f346aca 100644
 From 6be1a8b287fb9d41bf5ee96c449eab360ced9f75 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:24:33 +0300
-Subject: [PATCH 08/14] Reconnect reroute replacement endpoints
+Subject: [PATCH 08/15] Reconnect reroute replacement endpoints
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 445 +++++++++++++++++-
@@ -3248,7 +3248,7 @@ index f346aca..f230ebf 100644
 From 0b3c09ff5eb9c55916f46cbaa5829e241542ecd7 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:59:59 +0300
-Subject: [PATCH 09/14] Report reroute fitting references
+Subject: [PATCH 09/15] Report reroute fitting references
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 58 +++++++++++++++++--
@@ -3357,7 +3357,7 @@ index 9c3c4e0..08ab8e9 100644
 From 4d1672f96c751579511eb03c46bd5ae8166a61d9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:12:20 +0300
-Subject: [PATCH 10/14] Add native pin element operations
+Subject: [PATCH 10/15] Add native pin element operations
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 24 ++++++++++++++
@@ -3512,7 +3512,7 @@ index 0b76d2e..7b69f41 100644
 From 57644057abdf3023af59358e5940af51c04fc41e Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:27:07 +0300
-Subject: [PATCH 11/14] Add native delete element operation
+Subject: [PATCH 11/15] Add native delete element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 30 +++++++++++++++++++
@@ -3650,7 +3650,7 @@ index 7b69f41..af2da46 100644
 From a4b7f6f034cbb18e6f29596db615a12f9042d9d4 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:34:06 +0300
-Subject: [PATCH 12/14] Add native copy element operation
+Subject: [PATCH 12/15] Add native copy element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  38 +++++
@@ -3918,7 +3918,7 @@ index af2da46..1b22f12 100644
 From cac42e1db4d4cdb868a2b4bb6b79e2ba9e243621 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:42:35 +0300
-Subject: [PATCH 13/14] Add native rotate element operation
+Subject: [PATCH 13/15] Add native rotate element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 54 +++++++++++++
@@ -4150,7 +4150,7 @@ index 1b22f12..ea6fddd 100644
 From 4330cdc41a7b370cb9f325e7d292b64e2c4155e1 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:54:41 +0300
-Subject: [PATCH 14/14] Add native align element operation
+Subject: [PATCH 14/15] Add native align element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 83 +++++++++++++++++++
@@ -4411,6 +4411,271 @@ index ea6fddd..fec394e 100644
          private static XYZ PointValue(JObject obj, string unit)
          {
              if (obj == null)
+-- 
+2.50.1.windows.1
+
+
+From ff7a4e1ea1f0d321b21b08408805fc3092d2ce5c Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 12:08:09 +0300
+Subject: [PATCH 15/15] Add native tag element operation
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 80 +++++++++++++++++++
+ .../Validators/WritePlanValidator.cs          | 10 +++
+ .../Verification/WritePlanVerifier.cs         | 78 ++++++++++++++++++
+ 3 files changed, 168 insertions(+)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index c9e2a2e..d08f14d 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -175,6 +175,15 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 row["targetElementCount"] = GetTargetElementIds(step).Count;
+                 row["expectedDeleted"] = true;
+             }
++            else if (operation == "tag_elements")
++            {
++                row["targetElementCount"] = GetTargetElementIds(step).Count;
++                row["viewId"] = ResolveView(document, step).Id.IntegerValue;
++                row["tagHeadPoint"] = args["point"] != null ? args["point"].DeepClone() : null;
++                row["tagMode"] = StringValue(args, "tagMode");
++                row["tagOrientation"] = StringValue(args, "orientation");
++                row["addLeader"] = BoolValue(args["addLeader"], false);
++            }
+             else if (operation == "copy_elements")
+             {
+                 row["targetElementCount"] = GetTargetElementIds(step).Count;
+@@ -348,6 +357,8 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 SetPinned(document, step, false, mappings);
+             else if (operation == "delete_elements")
+                 DeleteElements(document, step, result);
++            else if (operation == "tag_elements")
++                TagElements(document, step, eIdMap, mappings, result);
+             else if (operation == "view_hide_elements")
+                 SetViewHidden(document, step, true, result);
+             else if (operation == "view_unhide_elements")
+@@ -459,6 +470,55 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             result["deletedElementCount"] = deleted.Count;
+         }
+ 
++        private static void TagElements(Document document, JObject step, Dictionary<string, ElementId> eIdMap, JArray mappings, JObject result)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            View view = ResolveView(document, step);
++            if (view == null || view.IsTemplate)
++                throw new InvalidOperationException("A non-template view is required for tag_elements.");
++            XYZ point = PointValue(args["point"] as JObject, StringValue(args, "unit"));
++            bool addLeader = BoolValue(args["addLeader"], false);
++            TagOrientation orientation = ParseTagOrientation(StringValue(args, "orientation"));
++            TagMode mode = ParseTagMode(StringValue(args, "tagMode"));
++            ElementId tagTypeId = args["tagTypeId"] != null ? new ElementId(IntValue(args["tagTypeId"])) : ElementId.InvalidElementId;
++
++            ICollection<ElementId> ids = GetTargetElementIds(step);
++            if (ids.Count == 0)
++                throw new InvalidOperationException("No target element ids supplied.");
++
++            JArray tagIds = result["tagElementIds"] as JArray;
++            if (tagIds == null)
++            {
++                tagIds = new JArray();
++                result["tagElementIds"] = tagIds;
++            }
++            JArray taggedIds = result["taggedElementIds"] as JArray;
++            if (taggedIds == null)
++            {
++                taggedIds = new JArray();
++                result["taggedElementIds"] = taggedIds;
++            }
++
++            int index = 0;
++            foreach (ElementId id in ids)
++            {
++                Element elem = document.GetElement(id);
++                if (elem == null)
++                    throw new InvalidOperationException("Target element not found: " + id.IntegerValue.ToString(CultureInfo.InvariantCulture));
++                Reference reference = new Reference(elem);
++                IndependentTag tag = tagTypeId != ElementId.InvalidElementId
++                    ? IndependentTag.Create(document, tagTypeId, view.Id, reference, addLeader, orientation, point)
++                    : IndependentTag.Create(document, view.Id, reference, addLeader, mode, orientation, point);
++                if (tag == null)
++                    throw new InvalidOperationException("Tag creation failed for target: " + id.IntegerValue.ToString(CultureInfo.InvariantCulture));
++                tagIds.Add(tag.Id.IntegerValue);
++                taggedIds.Add(id.IntegerValue);
++                AddCreatedMapping(step, tag, eIdMap, mappings, ids.Count > 1 ? index : -1);
++                index++;
++            }
++            result["tagElementCount"] = tagIds.Count;
++        }
++
+         private static void SetViewHidden(Document document, JObject step, bool hidden, JObject result)
+         {
+             View view = ResolveView(document, step);
+@@ -1115,6 +1175,26 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 ConvertToInternal(DoubleValue(obj["z"]), unit));
+         }
+ 
++        private static TagMode ParseTagMode(string value)
++        {
++            string normalized = string.IsNullOrWhiteSpace(value) ? "category" : value.Trim().ToLowerInvariant();
++            if (normalized == "material" || normalized == "by_material")
++                return TagMode.TM_ADDBY_MATERIAL;
++            if (normalized == "multi" || normalized == "multicategory" || normalized == "multi_category" || normalized == "by_multicategory")
++                return TagMode.TM_ADDBY_MULTICATEGORY;
++            return TagMode.TM_ADDBY_CATEGORY;
++        }
++
++        private static TagOrientation ParseTagOrientation(string value)
++        {
++            string normalized = string.IsNullOrWhiteSpace(value) ? "horizontal" : value.Trim().ToLowerInvariant();
++            if (normalized == "vertical")
++                return TagOrientation.Vertical;
++            if (normalized == "model" || normalized == "anymodeldirection" || normalized == "any_model_direction")
++                return TagOrientation.AnyModelDirection;
++            return TagOrientation.Horizontal;
++        }
++
+         private static XYZ AlignVector(JObject args)
+         {
+             string unit = StringValue(args, "unit");
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index cdaea3f..170b5fd 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -19,6 +19,7 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+             "pin_elements",
+             "unpin_elements",
+             "delete_elements",
++            "tag_elements",
+             "copy_elements",
+             "rotate_elements",
+             "align_elements",
+@@ -141,6 +142,15 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 if (!HasTargetElement(targets))
+                     errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
+             }
++            if (operation == "tag_elements")
++            {
++                JObject targets = step["targets"] as JObject;
++                JObject args = step["arguments"] as JObject ?? new JObject();
++                if (!HasTargetElement(targets))
++                    errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
++                if (!(args["point"] is JObject))
++                    errors.Add("steps[" + index + "].arguments.point is required");
++            }
+             if (operation == "copy_elements")
+             {
+                 JObject targets = step["targets"] as JObject;
+diff --git a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+index fec394e..f31f5eb 100644
+--- a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
++++ b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+@@ -61,6 +61,8 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+                 return VerifyPinned(document, step, false);
+             if (operation == "delete_elements")
+                 return VerifyDeleted(document, step);
++            if (operation == "tag_elements")
++                return VerifyTagged(document, step);
+             if (operation == "copy_elements")
+                 return VerifyCopied(document, step);
+             if (operation == "rotate_elements")
+@@ -236,6 +238,48 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             };
+         }
+ 
++        private static JObject VerifyTagged(Document document, JObject step)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            List<ElementId> targetIds = new List<ElementId>(TargetElementIds(step));
++            List<ElementId> tagIds = TagElementIdsForTag(step);
++            JArray rows = new JArray();
++            bool ok = tagIds.Count > 0;
++            XYZ expectedPoint = args["point"] is JObject ? PointValue(args["point"] as JObject, WritePlanExecutor.StringValue(args, "unit")) : null;
++            for (int i = 0; i < tagIds.Count; i++)
++            {
++                ElementId tagId = tagIds[i];
++                IndependentTag tag = document.GetElement(tagId) as IndependentTag;
++                ElementId expectedTargetId = i < targetIds.Count ? targetIds[i] : ElementId.InvalidElementId;
++                bool exists = tag != null;
++                bool targetChecked = exists && expectedTargetId != ElementId.InvalidElementId;
++                bool targetMatches = !targetChecked || TagReferencesTarget(tag, expectedTargetId);
++                bool pointChecked = exists && expectedPoint != null;
++                bool pointMatches = !pointChecked || tag.TagHeadPosition.DistanceTo(expectedPoint) <= 0.001;
++                if (!exists || !targetMatches || !pointMatches)
++                    ok = false;
++                rows.Add(new JObject
++                {
++                    ["tagElementId"] = tagId.IntegerValue,
++                    ["expectedTargetElementId"] = expectedTargetId != ElementId.InvalidElementId ? expectedTargetId.IntegerValue : 0,
++                    ["exists"] = exists,
++                    ["targetChecked"] = targetChecked,
++                    ["targetMatches"] = targetMatches,
++                    ["pointChecked"] = pointChecked,
++                    ["tagHeadPositionMatches"] = pointMatches
++                });
++            }
++            return new JObject
++            {
++                ["success"] = ok,
++                ["stepId"] = WritePlanExecutor.StringValue(step, "stepId"),
++                ["operation"] = "tag_elements",
++                ["expectedTagCount"] = tagIds.Count,
++                ["checks"] = rows,
++                ["message"] = ok ? "verified" : "created tags are missing or do not match expected targets/positions"
++            };
++        }
++
+         private static JObject VerifyCopied(Document document, JObject step)
+         {
+             JObject args = step["arguments"] as JObject ?? new JObject();
+@@ -440,6 +484,20 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             return ids;
+         }
+ 
++        private static List<ElementId> TagElementIdsForTag(JObject step)
++        {
++            JObject targets = step["targets"] as JObject ?? new JObject();
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            List<ElementId> ids = ElementIdsFromToken(targets["tagElementIds"]);
++            if (ids.Count == 0)
++                ids = ElementIdsFromToken(targets["createdElementIds"]);
++            if (ids.Count == 0)
++                ids = ElementIdsFromToken(args["expectedTagElementIds"]);
++            if (ids.Count == 0 && targets["tagElementId"] != null)
++                ids.Add(new ElementId(IntValue(targets["tagElementId"])));
++            return ids;
++        }
++
+         private static List<ElementId> ElementIdsFromToken(JToken token)
+         {
+             List<ElementId> ids = new List<ElementId>();
+@@ -456,6 +514,26 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             return ids;
+         }
+ 
++        private static bool TagReferencesTarget(IndependentTag tag, ElementId expectedTargetId)
++        {
++            if (tag == null || expectedTargetId == ElementId.InvalidElementId)
++                return false;
++            try
++            {
++                ISet<ElementId> ids = tag.GetTaggedLocalElementIds();
++                if (ids != null)
++                {
++                    foreach (ElementId id in ids)
++                    {
++                        if (id.IntegerValue == expectedTargetId.IntegerValue)
++                            return true;
++                    }
++                }
++            }
++            catch { }
++            return false;
++        }
++
+         private static bool TryVerifyTranslation(Element source, Element copied, XYZ vector, out bool matches)
+         {
+             const double tolerance = 0.001;
 -- 
 2.50.1.windows.1
 
