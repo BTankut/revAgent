@@ -37,6 +37,8 @@ export function registerAnalyzeMepSystemTool(server) {
         hvacDuctSizingTargetElementIds: z.array(z.number()).optional().describe("Optional duct element ids to include in HVAC resize proposal output."),
         networkRootElementId: z.number().optional().describe("Optional Revit element id used as the root for live connector graph pathfinding in HVAC/hydronic analyses."),
         networkTerminalElementIds: z.array(z.number()).optional().describe("Optional terminal Revit element ids for live connector graph pathfinding."),
+        placementRequests: z.array(z.any()).optional().describe("Optional domain placement requests that become proposal-only place_family_instance write-plan steps, for example air_terminal, damper, valve, pump, or fire_cabinet."),
+        defaultPlacementLevelId: z.number().optional().describe("Optional default Revit level id used by placementRequests when a request omits levelId."),
         officeStandards: z.any().optional().describe("Optional office standards override object."),
     }, async (args) => {
         const discipline = args.discipline || "all";
@@ -88,7 +90,10 @@ export function registerAnalyzeMepSystemTool(server) {
                 analyses.push(analyzeClashCoordination());
             }
             if (discipline === "all" || discipline === "equipment" || discipline === "general") {
-                analyses.push(analyzeEquipmentSelection());
+                analyses.push(analyzeEquipmentSelection({
+                    placementRequests: args.placementRequests || [],
+                    defaultPlacementLevelId: args.defaultPlacementLevelId,
+                }));
             }
             const reporting = buildAnalysisReport({
                 analyses,

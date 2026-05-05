@@ -81,6 +81,49 @@ export function buildEquipmentScheduleProposal({
     };
 }
 
+export function buildFamilyPlacementProposal({
+    discipline = "general",
+    placementKind = "equipment",
+    requests = [],
+    defaultLevelId,
+} = {}) {
+    const normalizedRequests = Array.isArray(requests) ? requests : [];
+    const rows = [];
+    const writePlanSteps = [];
+    const errors = [];
+    normalizedRequests.forEach((request, index) => {
+        const normalized = normalizePlacementRequest({
+            request,
+            index,
+            discipline,
+            placementKind,
+            defaultLevelId,
+        });
+        rows.push(normalized.row);
+        if (normalized.errors.length > 0) {
+            errors.push(...normalized.errors);
+            return;
+        }
+        writePlanSteps.push(normalized.step);
+    });
+    return {
+        success: errors.length === 0 && writePlanSteps.length > 0,
+        method: "Domain placement proposal mapped to native place_family_instance write-plan steps",
+        discipline,
+        placementKind,
+        rows,
+        writePlanSteps,
+        errors,
+        assumptions: [
+            "Placement requests are proposal-only and use the generic native place_family_instance operation.",
+            "Family/type availability, hosting, orientation, connector tie-in, and system assignment must be confirmed by preview/readback before commit.",
+            "Air terminals, dampers, valves, pumps, and fire cabinets usually need domain-specific connection steps after placement.",
+        ],
+        canCommit: false,
+        riskLevel: "medium",
+    };
+}
+
 function selectCandidate({ requiredPrimary, requiredSecondary, candidates, primaryKey, secondaryKey, equipmentKind }) {
     const viable = [];
     for (const candidate of candidates) {
@@ -109,6 +152,69 @@ function selectCandidate({ requiredPrimary, requiredSecondary, candidates, prima
         canCommit: false,
         riskLevel: "critical",
     };
+}
+
+function normalizePlacementRequest({ request = {}, index, discipline, placementKind, defaultLevelId }) {
+    const kind = normalizeKind(request.placementKind || request.kind || placementKind);
+    const eId = request.eId || `${kind}-${String(index + 1).padStart(3, "0")}`;
+    const args = {
+        point: request.point,
+        unit: request.unit || "m",
+    };
+    if (request.familySymbolId !== undefined) args.familySymbolId = Number(request.familySymbolId);
+    if (request.familyName) args.familyName = String(request.familyName);
+    if (request.typeName) args.typeName = String(request.typeName);
+    const levelId = request.levelId ?? defaultLevelId;
+    if (levelId !== undefined && levelId !== null && String(levelId).trim() !== "") args.levelId = Number(levelId);
+    if (request.rotationDegrees !== undefined) args.rotationDegrees = Number(request.rotationDegrees);
+    if (request.hostElementId !== undefined) args.hostElementId = Number(request.hostElementId);
+    const errors = [];
+    if (!args.point || typeof args.point !== "object") {
+        errors.push(`placementRequests[${index}].point is required`);
+    }
+    if (!Number.isFinite(Number(args.familySymbolId)) && !(args.familyName && args.typeName)) {
+        errors.push(`placementRequests[${index}].familySymbolId or familyName/typeName is required`);
+    }
+    const row = {
+        rowType: "family_placement_proposal",
+        discipline,
+        placementKind: kind,
+        eId,
+        familySymbolId: Number.isFinite(Number(args.familySymbolId)) ? Number(args.familySymbolId) : "",
+        familyName: args.familyName || "",
+        typeName: args.typeName || "",
+        levelId: Number.isFinite(Number(args.levelId)) ? Number(args.levelId) : "",
+        point: args.point || null,
+        status: errors.length === 0 ? "proposal_ready_for_preview" : "proposal_invalid",
+        canCommit: false,
+        errors,
+    };
+    return {
+        errors,
+        row,
+        step: {
+            stepId: `${kind}-placement-${String(index + 1).padStart(3, "0")}`,
+            eId,
+            operation: "place_family_instance",
+            dependsOn: [],
+            targets: {},
+            arguments: args,
+            preconditions: [
+                `${kind} family/type must be loaded and suitable for the active Revit 2022 model.`,
+                "Preview must confirm insertion point, level, host/orientation, and no unintended model mutation.",
+                "Connector/system assignment is not implied by this placement proposal.",
+            ],
+            riskLevel: "medium",
+        },
+    };
+}
+
+function normalizeKind(value) {
+    return String(value || "equipment")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "") || "equipment";
 }
 
 function equipmentScheduleNote({ equipmentKind, requirement, selected }) {

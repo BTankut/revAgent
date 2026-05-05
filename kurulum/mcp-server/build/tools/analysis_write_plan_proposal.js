@@ -8,6 +8,7 @@ export function buildAnalysisWritePlanProposal({
     revitVersion = "2022",
 } = {}) {
     const steps = uniqueSteps(collectProposalSteps(analyses));
+    const proposalErrors = collectProposalErrors(analyses);
     const validationRows = steps.map((step, index) => {
         const result = validateStep(step, index);
         return {
@@ -18,7 +19,10 @@ export function buildAnalysisWritePlanProposal({
             warnings: result.warnings,
         };
     });
-    const errors = validationRows.flatMap((row) => row.errors);
+    const errors = [
+        ...proposalErrors,
+        ...validationRows.flatMap((row) => row.errors),
+    ];
     const warnings = validationRows.flatMap((row) => row.warnings);
     const plan = steps.length > 0
         ? normalizePlan({
@@ -69,9 +73,20 @@ export function collectProposalSteps(analyses = []) {
         appendSteps(steps, analysis?.writePlanSteps);
         appendSteps(steps, analysis?.ductSizingProposal?.writePlanSteps);
         appendSteps(steps, analysis?.pipeSizingProposal?.writePlanSteps);
+        appendSteps(steps, analysis?.placementProposal?.writePlanSteps);
         appendSteps(steps, analysis?.calculationExamples?.scheduleProposal?.writePlanSteps);
     }
     return steps;
+}
+
+export function collectProposalErrors(analyses = []) {
+    const errors = [];
+    for (const analysis of Array.isArray(analyses) ? analyses : []) {
+        appendErrors(errors, analysis?.placementProposal?.errors);
+        appendErrors(errors, analysis?.ductSizingProposal?.errors);
+        appendErrors(errors, analysis?.pipeSizingProposal?.errors);
+    }
+    return errors;
 }
 
 function appendSteps(target, maybeSteps) {
@@ -86,6 +101,14 @@ function appendSteps(target, maybeSteps) {
                 "Review analysis proposal and run write-plan preview before commit.",
             ],
         });
+    }
+}
+
+function appendErrors(target, maybeErrors) {
+    if (!Array.isArray(maybeErrors)) return;
+    for (const error of maybeErrors) {
+        if (error === null || error === undefined) continue;
+        target.push(String(error));
     }
 }
 

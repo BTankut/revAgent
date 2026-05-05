@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } from "./clash/calculations.js";
 import { calculateDomesticWaterPressureLoss, calculateFixtureDemand, checkRecirculationContinuity, convertFixtureUnitsToDemand, sizeDomesticWaterPipe } from "./domestic-water/calculations.js";
-import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
+import { buildEquipmentScheduleProposal, buildFamilyPlacementProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { calculateFireCabinetDemand, calculateFirePumpBasis, checkFireCabinetCoverage, checkSprinklerCoverage } from "./fire/calculations.js";
 import { analyzeHvacAirside } from "./hvac/index.js";
 import { analyzeHydronic } from "./hydronic/index.js";
@@ -260,6 +260,42 @@ assert.equal(equipmentSchedule.writePlanSteps[0].operation, "set_parameter");
 assert.equal(equipmentSchedule.writePlanSteps[0].targets.elementId, 12345);
 assert(equipmentSchedule.writePlanSteps[0].arguments.value.includes("selected=fan-b"));
 assert.equal(equipmentSchedule.canCommit, false);
+
+const placementProposal = buildFamilyPlacementProposal({
+    discipline: "hvac",
+    placementKind: "air_terminal",
+    defaultLevelId: 378117,
+    requests: [
+        {
+            kind: "air_terminal",
+            eId: "supply-air-terminal-001",
+            familyName: "Supply Diffuser",
+            typeName: "600x600",
+            point: { x: 1, y: 2, z: 3 },
+        },
+        {
+            kind: "damper",
+            eId: "volume-damper-001",
+            familySymbolId: 701,
+            point: { x: 2, y: 2, z: 3 },
+            levelId: 378118,
+        },
+    ],
+});
+assert.equal(placementProposal.success, true);
+assert.equal(placementProposal.writePlanSteps.length, 2);
+assert.equal(placementProposal.writePlanSteps[0].operation, "place_family_instance");
+assert.equal(placementProposal.writePlanSteps[0].arguments.familyName, "Supply Diffuser");
+assert.equal(placementProposal.writePlanSteps[0].arguments.levelId, 378117);
+assert.equal(placementProposal.writePlanSteps[1].arguments.familySymbolId, 701);
+assert.equal(placementProposal.writePlanSteps[1].arguments.levelId, 378118);
+assert.equal(placementProposal.canCommit, false);
+
+const invalidPlacementProposal = buildFamilyPlacementProposal({
+    requests: [{ kind: "valve", point: { x: 0, y: 0, z: 0 } }],
+});
+assert.equal(invalidPlacementProposal.success, false);
+assert(invalidPlacementProposal.errors[0].includes("familySymbolId or familyName/typeName"));
 
 const localLossExtraction = summarizeLocalLossSamples({
     discipline: "hvac",
@@ -775,17 +811,34 @@ const writePlanProposal = buildAnalysisWritePlanProposal({
                 ],
             },
         },
+        {
+            discipline: "general",
+            placementProposal,
+        },
     ],
 });
 assert.equal(writePlanProposal.success, true);
-assert.equal(writePlanProposal.stepCount, 2);
-assert.deepEqual(writePlanProposal.operations, ["resize_duct", "resize_pipe"]);
+assert.equal(writePlanProposal.stepCount, 4);
+assert.deepEqual(writePlanProposal.operations, ["resize_duct", "resize_pipe", "place_family_instance"]);
 assert.equal(writePlanProposal.plan.discipline, "general");
 assert.equal(writePlanProposal.plan.riskLevel, "medium");
 assert.equal(writePlanProposal.plan.steps[0].operation, "resize_duct");
 assert.equal(writePlanProposal.plan.steps[1].operation, "resize_pipe");
+assert.equal(writePlanProposal.plan.steps[2].operation, "place_family_instance");
 assert(writePlanProposal.plan.steps[0].preconditions.some((text) => text.includes("preview before commit")));
 assert.equal(writePlanProposal.validation.valid, true);
 assert.equal(writePlanProposal.canCommit, false);
+
+const invalidWritePlanProposal = buildAnalysisWritePlanProposal({
+    discipline: "general",
+    analyses: [
+        {
+            discipline: "general",
+            placementProposal: invalidPlacementProposal,
+        },
+    ],
+});
+assert.equal(invalidWritePlanProposal.success, false);
+assert(invalidWritePlanProposal.validation.errors[0].includes("familySymbolId or familyName/typeName"));
 
 console.log("domain foundation calculation tests passed");

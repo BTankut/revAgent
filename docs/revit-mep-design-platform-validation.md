@@ -61,6 +61,7 @@ Result:
   - duct sizing proposal rows and CSV text generation
   - model-read flow fields on duct/pipe samples feeding proposal sizing without external design-flow maps
   - top-level `writePlanProposal` aggregation from domain proposal `writePlanSteps`, with validator coverage for `resize_duct` and `resize_pipe` steps
+  - domain placement proposal handoff for air-terminal/damper/valve/equipment-style requests, producing validator-approved `place_family_instance` steps
   - HVAC duct sizing analyzer branch with fake-executor coverage for read-only duct sample collection and proposal-only `resize_duct` output
   - hydronic path-targeted local-loss branch with fake-executor coverage for pathfinding, ranking, selected-path extraction, pipe resistance read, and proposal-only `resize_pipe` output
 
@@ -254,6 +255,11 @@ Live read-only results captured on the active session:
   - Fan selection chose `fan-b`.
   - Schedule proposal produced one report row and one low-risk `set_parameter` write-plan step targeting `eId: supply-fan-001`.
   - The result is proposal-only with `canCommit: false` and performs no equipment replacement.
+- Equipment/domain placement proposal runtime probe succeeded:
+  - `analyze_mep_system` with `discipline: equipment`, `includeRevitRead: false`, `defaultPlacementLevelId: 378117`, and two `placementRequests` produced `place_family_instance` proposal steps for `air_terminal` and `valve`.
+  - Fresh stdio runtime handshake listed `13` tools; `writePlanProposal.validation.valid` was `true`.
+  - The first generated step used `operation: place_family_instance`, `eId: supply-air-terminal-001`, family/type `Supply Diffuser / 600x600`, point `{ x: 1, y: 2, z: 3 }`, level `378117`, risk `medium`, and preview-before-commit preconditions.
+  - The result is proposal-only; connector/system assignment remains an explicit post-placement precondition and no Revit mutation was performed.
 - Approved equipment schedule update live write test succeeded in the disposable model:
   - Target: Mechanical Equipment element `386031`, type `14 kW`, UniqueId `ac8b9fc6-24ff-4c3b-a4c6-035f009e396e-0005e3ef`.
   - Plan `equipment-schedule-update-1777960000000` set `Comments` to `Codex equipment schedule proposal test 2026-05-05T00:00:00Z`.
