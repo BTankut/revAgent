@@ -14,6 +14,7 @@ import { mergeOfficeStandards, missingStandardsForDiscipline } from "../office-s
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 import { buildAnalysisWritePlanProposal } from "../tools/analysis_write_plan_proposal.js";
 import { summarizeOfficeStandardsCompleteness } from "../tools/office_standards_completeness.js";
+import { summarizeProductionReadiness } from "../tools/production_readiness.js";
 import { validateStep } from "../write-plan/validators.js";
 
 const hvacMissingStandards = missingStandardsForDiscipline("hvac", mergeOfficeStandards());
@@ -952,6 +953,45 @@ assert.deepEqual(officeStandardsCompleteness.missingStandards, [
 ]);
 assert.equal(officeStandardsCompleteness.rows.length, 3);
 assert.equal(officeStandardsCompleteness.canCommit, false);
+
+const productionReadiness = summarizeProductionReadiness({
+    analyses: [
+        {
+            discipline: "hvac",
+            engine: "hvac-airside-foundation",
+            ductSizingProposal: {
+                dataCompleteness: {
+                    sampleCount: 2,
+                    targetCount: 1,
+                    rowCount: 1,
+                    writePlanStepCount: 1,
+                    skippedNoFlowCount: 0,
+                    skippedNoSizeCount: 0,
+                    localLossDatasetComplete: false,
+                    completeForProductionReview: false,
+                    blockers: ["Complete selected critical-path local-loss dataset is missing or inconsistent."],
+                },
+            },
+        },
+    ],
+    officeStandardsCompleteness,
+    writePlanProposal: {
+        stepCount: 1,
+        validation: {
+            valid: false,
+            errors: ["analysis proposal validation failed"],
+        },
+    },
+});
+assert.equal(productionReadiness.completeForProductionReview, false);
+assert.equal(productionReadiness.officeStandardsComplete, false);
+assert.equal(productionReadiness.proposalDataComplete, false);
+assert.equal(productionReadiness.writePlanProposalValid, false);
+assert(productionReadiness.blockers.some((blocker) => blocker.includes("Missing office standards")));
+assert(productionReadiness.blockers.some((blocker) => blocker.includes("ductSizingProposal data is incomplete")));
+assert(productionReadiness.blockers.some((blocker) => blocker.includes("Generated write-plan proposal is invalid")));
+assert(productionReadiness.rows.some((row) => row.rowType === "proposal_data_readiness" && row.status === "blocked"));
+assert.equal(productionReadiness.canCommit, false);
 
 const writePlanProposal = buildAnalysisWritePlanProposal({
     discipline: "all",

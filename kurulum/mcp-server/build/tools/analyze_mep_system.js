@@ -11,6 +11,7 @@ import { mergeOfficeStandards } from "../office-standards/defaults.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 import { buildAnalysisWritePlanProposal } from "./analysis_write_plan_proposal.js";
 import { summarizeOfficeStandardsCompleteness } from "./office_standards_completeness.js";
+import { summarizeProductionReadiness } from "./production_readiness.js";
 import { formatJsonContent } from "../utils/revitToolHelpers.js";
 
 export function registerAnalyzeMepSystemTool(server) {
@@ -125,11 +126,17 @@ export function registerAnalyzeMepSystemTool(server) {
                 revitVersion: args.revitVersion || "2022",
                 officeStandards,
             });
+            const productionReadiness = summarizeProductionReadiness({
+                analyses,
+                officeStandardsCompleteness,
+                writePlanProposal,
+            });
             return formatJsonContent({
                 success: true,
                 discipline,
                 mutateModel: false,
                 officeStandardsCompleteness,
+                productionReadiness,
                 analyses,
                 reporting,
                 writePlanProposal,
