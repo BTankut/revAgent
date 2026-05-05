@@ -53,6 +53,74 @@ function Get-AssemblyVersion {
     }
 }
 
+function Test-RevitCommandPackage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PluginRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$RevitVersion
+    )
+
+    $commandsRoot = Join-Path $PluginRoot "Commands"
+    $registryPath = Join-Path $commandsRoot "commandRegistry.json"
+    if (-not (Test-Path $registryPath)) {
+        throw "Revit MCP command registry was not found: $registryPath"
+    }
+
+    $registry = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $registry.Commands -or $registry.Commands.Count -eq 0) {
+        throw "Revit MCP command registry has no commands: $registryPath"
+    }
+
+    foreach ($command in $registry.Commands) {
+        $name = [string]$command.commandName
+        $assemblyPath = [string]$command.assemblyPath
+        if ($name -match "sample" -or $assemblyPath -match "sample" -or ([string]$command.description) -match "sample") {
+            throw "Sample command naming is not allowed in the production package: $name"
+        }
+
+        $expandedPath = $assemblyPath.Replace("{VERSION}", $RevitVersion)
+        $absolutePath = if ([System.IO.Path]::IsPathRooted($expandedPath)) {
+            $expandedPath
+        }
+        else {
+            Join-Path $commandsRoot $expandedPath
+        }
+        if (-not (Test-Path $absolutePath)) {
+            throw "Command '$name' points to a missing assembly: $absolutePath"
+        }
+    }
+
+    $manifestPaths = Get-ChildItem -LiteralPath $commandsRoot -Recurse -Filter "command.json" | Select-Object -ExpandProperty FullName
+    if (-not $manifestPaths -or $manifestPaths.Count -eq 0) {
+        throw "No command.json files were found under $commandsRoot"
+    }
+
+    foreach ($manifestPath in $manifestPaths) {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (([string]$manifest.name) -match "sample" -or ([string]$manifest.description) -match "sample") {
+            throw "Sample command set naming is not allowed in the production package: $manifestPath"
+        }
+        foreach ($command in $manifest.commands) {
+            $name = [string]$command.commandName
+            $assemblyPath = [string]$command.assemblyPath
+            if ($name -match "sample" -or $assemblyPath -match "sample" -or ([string]$command.description) -match "sample") {
+                throw "Sample command naming is not allowed in command manifest ${manifestPath}: $name"
+            }
+            $manifestDir = Split-Path -Parent $manifestPath
+            $absolutePath = if ([System.IO.Path]::IsPathRooted($assemblyPath)) {
+                $assemblyPath
+            }
+            else {
+                Join-Path $manifestDir $assemblyPath
+            }
+            if (-not (Test-Path $absolutePath)) {
+                throw "Command manifest '$manifestPath' entry '$name' points to a missing assembly: $absolutePath"
+            }
+        }
+    }
+}
+
 function Resolve-CompatibleDependencyPath {
     param(
         [Parameter(Mandatory = $true)]
@@ -185,6 +253,8 @@ if (Test-Path $customDllDir) {
             "{3}") -f $RevitVersion, ($missingRuntimeFiles -join ", "), $bundledRuntimeDir, $detail
     }
 }
+
+Test-RevitCommandPackage -PluginRoot $pluginTarget -RevitVersion $RevitVersion
 
 $duplicateAddin = Join-Path $addinRoot "revit-mcp.addin"
 if (Test-Path $duplicateAddin) {

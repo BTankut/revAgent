@@ -61,11 +61,19 @@ Revit command execution is guarded at two levels:
   `activeCommand`, `lastCompletedCommand`, `method`, `requestId`, `planId`,
   `mode`, `riskLevel`, and step summary metadata before dispatching registry
   commands.
+- `get_revit_mcp_status` also reports local command package diagnostics from
+  the installed add-in folder: registry parse state, command count, resolved
+  assembly paths, command manifest checks, and sample-name guards.
 - The Revit add-in attempts to start the socket service automatically when a
   document opens; the ribbon switch remains the manual fallback.
 
 Status requests bypass the busy gate so operators can inspect a running command
 without adding another model operation to Revit's ExternalEvent queue.
+
+Live testing also showed that the upstream add-in log can emit English
+`Failed to create command instance` text on the command registration path even
+when commands are usable. Operational health must therefore be checked by
+`get_revit_mcp_status` plus a real command probe, not by that log line alone.
 
 ## Write-Plan Protocol
 
@@ -237,3 +245,7 @@ Rules:
 - Fire/sprinkler/hydraulic outputs remain proposal/assumption-driven unless standards are configured.
 - Clash/reroute work cannot auto-commit.
 - Raw `send_code_to_revit` remains an expert fallback, not the normal production write path.
+- Level-based MEP family placements must normalize Z as an offset from the
+  supplied level for tested air terminal and sprinkler symbols; duct and pipe
+  curves continue to use absolute model coordinates. This prevents multi-level
+  terminal/head placement from drifting upward after live commits.

@@ -11,27 +11,27 @@
     {
       "commandName": "get_current_view_elements",
       "description": "Get current view elements",
-      "assemblyPath": "RevitMCPCommandSet.dll"
+      "assemblyPath": "2022/RevitMCPCommandSet.dll"
     },
     {
       "commandName": "get_current_view_info",
       "description": "Get current view info",
-      "assemblyPath": "RevitMCPCommandSet.dll"
+      "assemblyPath": "2022/RevitMCPCommandSet.dll"
     },
     {
       "commandName": "get_selected_elements",
       "description": "Get selected elements",
-      "assemblyPath": "RevitMCPCommandSet.dll"
+      "assemblyPath": "2022/RevitMCPCommandSet.dll"
     },
     {
       "commandName": "send_code_to_revit",
       "description": "Execute dynamic C# code in Revit with access to the Document and Revit API",
-      "assemblyPath": "RevitMCPCommandSet.dll"
+      "assemblyPath": "2022/RevitMCPCommandSet.dll"
     },
     {
       "commandName": "execute_write_plan",
       "description": "Validate, preview, commit, or verify typed Revit write-plans",
-      "assemblyPath": "RevitMCPWritePlanCommandSet.dll"
+      "assemblyPath": "2022/RevitMCPWritePlanCommandSet.dll"
     }
   ]
 }

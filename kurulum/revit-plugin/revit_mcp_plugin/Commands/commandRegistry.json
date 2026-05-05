@@ -2,7 +2,7 @@
   "Commands": [
     {
       "commandName": "get_current_view_elements",
-      "assemblyPath": "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+      "assemblyPath": "RevitMCPCommandSet\\2022\\RevitMCPCommandSet.dll",
       "enabled": true,
       "supportedRevitVersions": [
         "2022"
@@ -17,7 +17,7 @@
     },
     {
       "commandName": "get_current_view_info",
-      "assemblyPath": "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+      "assemblyPath": "RevitMCPCommandSet\\2022\\RevitMCPCommandSet.dll",
       "enabled": true,
       "supportedRevitVersions": [
         "2022"
@@ -32,7 +32,7 @@
     },
     {
       "commandName": "get_selected_elements",
-      "assemblyPath": "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+      "assemblyPath": "RevitMCPCommandSet\\2022\\RevitMCPCommandSet.dll",
       "enabled": true,
       "supportedRevitVersions": [
         "2022"
@@ -47,7 +47,7 @@
     },
     {
       "commandName": "send_code_to_revit",
-      "assemblyPath": "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+      "assemblyPath": "RevitMCPCommandSet\\2022\\RevitMCPCommandSet.dll",
       "enabled": true,
       "supportedRevitVersions": [
         "2022"
@@ -62,7 +62,7 @@
     },
     {
       "commandName": "execute_write_plan",
-      "assemblyPath": "RevitMCPCommandSet\\\\2022\\\\RevitMCPWritePlanCommandSet.dll",
+      "assemblyPath": "RevitMCPCommandSet\\2022\\RevitMCPWritePlanCommandSet.dll",
       "enabled": true,
       "supportedRevitVersions": [
         "2022"

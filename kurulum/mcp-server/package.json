@@ -10,7 +10,8 @@
   "scripts": {
     "clean": "rimraf build",
     "prebuild": "npm run clean",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "node build/tools/tool-registration.test.js && node build/tools/revit-plugin-diagnostics.test.js && node build/utils/revit-command-gate.test.js"
   },
   "files": [
     "build"

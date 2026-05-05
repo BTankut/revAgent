@@ -39,8 +39,9 @@ only the bare names appear, so the rules stay host-agnostic.
 - `send_code_to_revit_safe` — read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced
   `transactionMode: "none"`
-- `get_revit_mcp_status` — read the Revit MCP command gate/status without
-  queueing behind normal model commands
+- `get_revit_mcp_status` — read the Revit MCP command gate/status and local
+  command registry/manifest diagnostics without queueing behind normal model
+  commands
 - `get_revit_session_context` — first-call context for version/build/culture,
   document state, active view, selection, MEP counts, and link counts
 - `get_active_view_context` — model-view vs sheet-view context; sheets return
@@ -107,6 +108,8 @@ Default workflow for any non-trivial task:
 1. Do not intentionally run multiple Revit MCP model commands in parallel.
    The runtime and add-in gate overlapping commands, but sequential calls keep
    Revit responsive. If a command appears stuck, call `get_revit_mcp_status`.
+   If `pluginDiagnostics.ok` is false, treat it as an installation/package
+   issue before sending model commands.
 2. Call `get_revit_session_context` first to learn Revit version/build,
    culture, active view type, document state, selection, MEP counts, and links.
 3. If the active view is a sheet or the task depends on view visibility, call
@@ -177,6 +180,12 @@ Hard rules from live Revit 2022 testing:
 - `DuctFitting`, `DuctAccessory`, `PipeFitting`, and `PipeAccessory`
   do not compile as direct classes; collect them by category plus
   `FamilyInstance`.
+- For level-based MEP family placement with
+  `NewFamilyInstance(XYZ, symbol, level, ...)`, live Revit 2022 testing showed
+  the placement Z behaves as a level-relative offset for the tested air terminal
+  and sprinkler symbols. Pass the intended offset above the supplied level, not
+  absolute project elevation. `Duct.Create` and `Pipe.Create` endpoints remain
+  absolute model coordinates.
 
 ---
 
