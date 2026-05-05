@@ -168,7 +168,7 @@ Engineering calculation foundations:
 - Fire/sprinkler rectangular room spacing/coverage screening with explicit fire-design assumptions.
 - Clash AABB hard/clearance clash classification and multi-candidate orthogonal reroute solving with clearance validation.
 - Fan/pump candidate screening from required flow and pressure/head plus equipment schedule/report update proposals without replacement.
-- Fitting/accessory/equipment local losses are explicitly excluded from these first-pass calculations.
+- HVAC/hydronic fitting/accessory/equipment local-loss parameters can be extracted from live Revit samples for calibration/reporting; applying those losses to final production sizing still requires office/manufacturer standards.
 - Calculation outputs remain proposals with `canCommit: false`.
 
 MEP graph foundation:
@@ -185,6 +185,7 @@ Reporting foundation:
 - `analyze_mep_system` returns deterministic issue-list and design-log rows plus CSV text previews.
 - `boqOnly` runs short live Revit BOQ collectors without connector graph traversal for count/length report population.
 - `hydraulicResistanceOnly` runs short live hydronic pipe length/diameter sampling and returns resistance calibration rows.
+- `localLossOnly` runs short live HVAC/hydronic fitting/accessory/equipment parameter extraction and returns local-loss report rows.
 - `export_boq_report` and `export_clash_report` write-plans are handled by a runtime report executor for approved CSV/JSON file export.
 - Report export writes files only and returns `mutateModel: false`.
 - `create_schedule_or_update_schedule` creates or updates native Revit schedules by category/name/id and can add requested fields by parameter name, `parameterId`, or `BuiltInParameter`.

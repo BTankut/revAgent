@@ -142,23 +142,56 @@ export function buildHydraulicResistanceRows({ analyses = [] } = {}) {
     return rows;
 }
 
+export function buildLocalLossRows({ analyses = [] } = {}) {
+    const rows = [];
+    for (const analysis of Array.isArray(analyses) ? analyses : []) {
+        const extraction = analysis.localLossExtraction;
+        if (!extraction || !Array.isArray(extraction.rows)) continue;
+        for (const row of extraction.rows) {
+            rows.push({
+                rowType: row.rowType || "local_loss_parameter",
+                discipline: row.discipline || analysis.discipline || "general",
+                engine: analysis.engine || "",
+                elementId: row.elementId,
+                uniqueId: row.uniqueId || "",
+                category: row.category || "",
+                systemName: row.systemName || "(unassigned)",
+                familyName: row.familyName || "",
+                typeName: row.typeName || "",
+                parameterName: row.parameterName || "",
+                parameterSource: row.parameterSource || "instance",
+                valueKind: row.valueKind || "unknown",
+                numericValue: row.numericValue,
+                displayValue: row.displayValue || "",
+                storageType: row.storageType || "",
+                source: "localLossExtraction.rows",
+                canCommit: false,
+            });
+        }
+    }
+    return rows;
+}
+
 export function buildAnalysisReport({ analyses = [], delimiter = defaultDelimiter } = {}) {
     const issueRows = buildAnalysisIssueRows({ analyses });
     const designLogRows = buildDesignLogRows({ analyses });
     const boqRows = buildBoqRows({ analyses });
     const hydraulicResistanceRows = buildHydraulicResistanceRows({ analyses });
+    const localLossRows = buildLocalLossRows({ analyses });
     return {
         success: true,
         mutateModel: false,
-        reportKinds: ["issue_list", "design_log", "boq", "hydraulic_resistance"],
+        reportKinds: ["issue_list", "design_log", "boq", "hydraulic_resistance", "local_loss"],
         issueRows,
         designLogRows,
         boqRows,
         hydraulicResistanceRows,
+        localLossRows,
         issueCsv: toDelimitedText(issueRows, { delimiter }),
         designLogCsv: toDelimitedText(designLogRows, { delimiter }),
         boqCsv: toDelimitedText(boqRows, { delimiter }),
         hydraulicResistanceCsv: toDelimitedText(hydraulicResistanceRows, { delimiter }),
+        localLossCsv: toDelimitedText(localLossRows, { delimiter }),
         writePlanOperations: [
             "export_boq_report",
             "export_clash_report",
@@ -168,6 +201,7 @@ export function buildAnalysisReport({ analyses = [], delimiter = defaultDelimite
             "Report builder returns deterministic rows and CSV text only; file export is handled by approved write-plan/report steps.",
             "BOQ rows are populated from live read-only Revit summaries when analyses include revitRead counts and lengths.",
             "Hydraulic resistance rows are populated from live read-only Revit pipe length/diameter samples when hydronic resistance calibration is requested.",
+            "Local-loss rows are populated from live read-only fitting/accessory/equipment parameter extraction when local-loss sampling is requested.",
             "Identity columns are emitted as text-compatible values for spreadsheet workflows.",
         ],
         canCommit: false,

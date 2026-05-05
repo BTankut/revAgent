@@ -1,5 +1,7 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { exampleAirsideFlowDirections, exampleAirsideTreeNetwork, exampleAirsideWeightedNetwork } from "../network/calculations.js";
+import { summarizeLocalLossSamples } from "../local-losses/calculations.js";
+import { buildLocalLossOnlyCode } from "../local-losses/revit-read.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
 import { calculateFanPressureBasis, sizeRectangularDuctEqualFriction } from "./calculations.js";
 
@@ -24,6 +26,7 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
             "fan flow/pressure basis from critical path",
             "duct friction loss by Darcy-Weisbach",
             "equal-friction rectangular duct sizing proposal",
+            "live fitting/accessory/equipment local-loss parameter extraction",
         ],
         calculationExamples: {
             equalFrictionSizing: sizeRectangularDuctEqualFriction({
@@ -62,9 +65,21 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
     }
     try {
         const response = await executeRevitCode(buildHvacReadCode(networkPathRequest), { transactionMode: "none" });
+        const revitRead = response && response.result ? response.result : response;
+        const localLossExtraction = revitRead?.localLossSamples
+            ? summarizeLocalLossSamples({
+                discipline: "hvac",
+                samples: revitRead.localLossSamples,
+                sampleLimit: networkPathRequest.localLossSampleLimit,
+            })
+            : undefined;
         return {
             ...base,
-            revitRead: response && response.result ? response.result : response,
+            revitRead,
+            ...(localLossExtraction ? {
+                localLossExtraction,
+                warnings: [...(base.warnings || []), ...(localLossExtraction.warnings || [])],
+            } : {}),
         };
     }
     catch (error) {
@@ -80,6 +95,13 @@ function buildHvacReadCode(networkPathRequest = {}) {
     const terminalElementIds = csharpIntArray(networkPathRequest.terminalElementIds || []);
     const includeConnectorGraph = networkPathRequest.includeConnectorGraph !== false ? "true" : "false";
     const networkPathfindingOnly = networkPathRequest.pathfindingOnly === true ? "true" : "false";
+    if (networkPathRequest.localLossOnly === true) {
+        const sampleLimit = Number.parseInt(String(networkPathRequest.localLossSampleLimit || 25), 10);
+        return buildLocalLossOnlyCode({
+            sampleLimit: Number.isFinite(sampleLimit) ? sampleLimit : 25,
+            categories: ["OST_DuctFitting", "OST_DuctAccessory", "OST_DuctTerminal", "OST_MechanicalEquipment"],
+        });
+    }
     if (networkPathRequest.boqOnly === true) {
         return buildHvacBoqOnlyCode();
     }

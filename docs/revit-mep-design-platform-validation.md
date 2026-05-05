@@ -180,6 +180,10 @@ Live read-only results captured on the active session:
   - Read-only collector returned `5` pipe length/diameter samples from the active test model.
   - First sample: element `513756`, system `Hydronic Supply`, length `4.795 m`, diameter `150 mm`.
   - Calibration produced `5` hydraulic resistance rows; first coefficient was `1.683 Pa/(L/s)^2` at `1 L/s`.
+- Live local-loss extraction probe succeeded:
+  - HVAC `localLossOnly` read `5` duct fitting samples, produced `15` local-loss parameter rows and `5` numeric pressure-drop values; first numeric row was element `392203`, `Pressure Drop = 0.903 Pa`.
+  - Hydronic `localLossOnly` read `5` pipe fitting samples, produced `30` local-loss parameter rows, `5` numeric pressure-drop values, and `5` loss-coefficient values; first numeric row was element `513769`, `Pressure Drop = 193.936 Pa`.
+  - Report builder now emits `local_loss` rows and CSV text with `canCommit: false`.
 - Connector graph live probe succeeded:
   - Revit 2022 API docs resolved `Connector.AllRefs`, `Connector.Owner`, `Connector.IsConnected`, `MEPCurve.ConnectorManager`, and `FamilyInstance.MEPModel`.
   - HVAC graph summary: `27237` connector-owning element nodes, `41735` connectors, `708` open connectors, `20341` unique element edges, `25` open connector samples, `0` AllRefs errors.

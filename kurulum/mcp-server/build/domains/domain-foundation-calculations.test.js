@@ -3,6 +3,7 @@ import { classifyAabbClash, proposeOrthogonalReroute, solveOrthogonalReroute } f
 import { calculateFixtureDemand, checkRecirculationContinuity } from "./domestic-water/calculations.js";
 import { buildEquipmentScheduleProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { checkSprinklerCoverage } from "./fire/calculations.js";
+import { summarizeLocalLossSamples } from "./local-losses/calculations.js";
 import { calculateSlopePercent, validateGravitySlope } from "./sanitary-storm/calculations.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 
@@ -135,6 +136,57 @@ assert.equal(equipmentSchedule.writePlanSteps[0].targets.elementId, 12345);
 assert(equipmentSchedule.writePlanSteps[0].arguments.value.includes("selected=fan-b"));
 assert.equal(equipmentSchedule.canCommit, false);
 
+const localLossExtraction = summarizeLocalLossSamples({
+    discipline: "hvac",
+    sampleLimit: 2,
+    samples: [
+        {
+            elementId: 201,
+            uniqueId: "u-201",
+            category: "Duct Fittings",
+            systemName: "Supply Air",
+            familyName: "Mitered Elbow",
+            typeName: "300x300",
+            lossParameters: [
+                {
+                    parameterName: "Pressure Drop",
+                    parameterSource: "instance",
+                    storageType: "Double",
+                    valueKind: "pressure_drop_pa",
+                    numericValue: 42,
+                    displayValue: "42 Pa",
+                },
+                {
+                    parameterName: "Loss Coefficient",
+                    parameterSource: "type",
+                    storageType: "Double",
+                    valueKind: "loss_coefficient",
+                    numericValue: 0.35,
+                    displayValue: "0.35",
+                },
+            ],
+        },
+        {
+            elementId: 202,
+            uniqueId: "u-202",
+            category: "Duct Accessories",
+            systemName: "Supply Air",
+            familyName: "Damper",
+            typeName: "300x300",
+            lossParameters: [],
+        },
+    ],
+});
+assert.equal(localLossExtraction.success, true);
+assert.equal(localLossExtraction.inspectedElementCount, 2);
+assert.equal(localLossExtraction.elementsWithLossParameters, 1);
+assert.equal(localLossExtraction.localLossParameterCount, 2);
+assert.equal(localLossExtraction.pressureDropParameterCount, 1);
+assert.equal(localLossExtraction.lossCoefficientParameterCount, 1);
+assert.equal(localLossExtraction.totalPressureDropPa, 42);
+assert.equal(localLossExtraction.rows[0].rowType, "local_loss_parameter");
+assert.equal(localLossExtraction.canCommit, false);
+
 const report = buildAnalysisReport({
     analyses: [
         {
@@ -166,6 +218,7 @@ const report = buildAnalysisReport({
                     },
                 ],
             },
+            localLossExtraction,
             canCommit: false,
         },
     ],
@@ -176,11 +229,13 @@ assert.equal(report.issueRows.length, 1);
 assert.equal(report.designLogRows.length, 1);
 assert.equal(report.boqRows.length, 4);
 assert.equal(report.hydraulicResistanceRows.length, 1);
+assert.equal(report.localLossRows.length, 2);
 assert(report.issueCsv.includes("missing_standard"));
 assert(report.designLogCsv.includes("weighted graph shortest path traversal"));
 assert(report.boqCsv.includes("Total duct length"));
 assert(report.boqCsv.includes("Supply Air"));
 assert(report.hydraulicResistanceCsv.includes("Hydronic Supply"));
+assert(report.localLossCsv.includes("Pressure Drop"));
 assert.equal(report.canCommit, false);
 
 console.log("domain foundation calculation tests passed");

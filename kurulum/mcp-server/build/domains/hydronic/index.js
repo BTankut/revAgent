@@ -1,5 +1,7 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
 import { exampleHydronicFlowDirections, exampleHydronicTreeNetwork, exampleHydronicWeightedNetwork } from "../network/calculations.js";
+import { summarizeLocalLossSamples } from "../local-losses/calculations.js";
+import { buildLocalLossOnlyCode } from "../local-losses/revit-read.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
 import { calibratePipeResistanceSamples, calculateHydronicBalance, calculatePumpHeadBasis, pipeResistanceCoefficient, sizePipeByVelocityOrFriction, solveHardyCrossLoop, solveHardyCrossNetwork } from "./calculations.js";
 
@@ -28,6 +30,7 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
             "pipe pressure loss by Darcy-Weisbach",
             "velocity/friction pipe sizing proposal",
             "live pipe resistance coefficient calibration from Revit length/diameter samples",
+            "live fitting/accessory/equipment local-loss parameter extraction",
         ],
         calculationExamples: {
             pipeSizing: sizePipeByVelocityOrFriction({
@@ -115,10 +118,21 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                 referenceFlowLs: networkPathRequest.referenceFlowLs || 1,
             })
             : undefined;
+        const localLossExtraction = revitRead?.localLossSamples
+            ? summarizeLocalLossSamples({
+                discipline: "hydronic",
+                samples: revitRead.localLossSamples,
+                sampleLimit: networkPathRequest.localLossSampleLimit,
+            })
+            : undefined;
         return {
             ...base,
             revitRead,
             ...(resistanceCalibration ? { resistanceCalibration } : {}),
+            ...(localLossExtraction ? {
+                localLossExtraction,
+                warnings: [...(base.warnings || []), ...(localLossExtraction.warnings || [])],
+            } : {}),
         };
     }
     catch (error) {
@@ -131,6 +145,13 @@ function buildPipeReadCode(networkPathRequest = {}) {
     const terminalElementIds = csharpIntArray(networkPathRequest.terminalElementIds || []);
     const includeConnectorGraph = networkPathRequest.includeConnectorGraph !== false ? "true" : "false";
     const networkPathfindingOnly = networkPathRequest.pathfindingOnly === true ? "true" : "false";
+    if (networkPathRequest.localLossOnly === true) {
+        const sampleLimit = Number.parseInt(String(networkPathRequest.localLossSampleLimit || 25), 10);
+        return buildLocalLossOnlyCode({
+            sampleLimit: Number.isFinite(sampleLimit) ? sampleLimit : 25,
+            categories: ["OST_PipeFitting", "OST_PipeAccessory", "OST_MechanicalEquipment"],
+        });
+    }
     if (networkPathRequest.hydraulicResistanceOnly === true) {
         const sampleLimit = Number.parseInt(String(networkPathRequest.sampleLimit || 25), 10);
         return buildHydronicResistanceOnlyCode(Number.isFinite(sampleLimit) ? sampleLimit : 25);

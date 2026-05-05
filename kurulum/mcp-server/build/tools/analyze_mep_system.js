@@ -20,6 +20,8 @@ export function registerAnalyzeMepSystemTool(server) {
         hydraulicResistanceOnly: z.boolean().optional().describe("When true for hydronic analysis, run short read-only pipe length/diameter sampling and resistance calibration."),
         resistanceSampleLimit: z.number().optional().describe("Maximum number of pipe samples for hydraulicResistanceOnly. Defaults 25."),
         referenceFlowLs: z.number().optional().describe("Reference flow in L/s for pipe resistance calibration. Defaults 1."),
+        localLossOnly: z.boolean().optional().describe("When true for HVAC/hydronic analysis, run short read-only fitting/accessory/equipment local-loss parameter extraction."),
+        localLossSampleLimit: z.number().optional().describe("Maximum number of fitting/accessory/equipment samples for localLossOnly. Defaults 25."),
         networkRootElementId: z.number().optional().describe("Optional Revit element id used as the root for live connector graph pathfinding in HVAC/hydronic analyses."),
         networkTerminalElementIds: z.array(z.number()).optional().describe("Optional terminal Revit element ids for live connector graph pathfinding."),
         officeStandards: z.any().optional().describe("Optional office standards override object."),
@@ -37,6 +39,8 @@ export function registerAnalyzeMepSystemTool(server) {
             hydraulicResistanceOnly: args.hydraulicResistanceOnly === true,
             sampleLimit: args.resistanceSampleLimit,
             referenceFlowLs: args.referenceFlowLs,
+            localLossOnly: args.localLossOnly === true,
+            localLossSampleLimit: args.localLossSampleLimit,
         };
         try {
             const analyses = [];
