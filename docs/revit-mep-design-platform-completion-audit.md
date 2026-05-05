@@ -35,7 +35,7 @@ Concrete deliverables:
 | Native executor exposed by normal Revit command registry | Reflection showed the open registry initially lacked `execute_write_plan`; plugin command SDK mismatch was fixed; compat assembly was hot-registered in the active session; normal socket preview now succeeds without direct fallback. Installed registry points to `SampleCommandsetCompat\2022\SampleCommandSetCompat.dll` for next restart. | Done |
 | Native executor live preview | Direct assembly fallback preview succeeded first; after SDK compatibility fix and hot-register, normal socket `execute_write_plan` preview also succeeded and did not mutate model. | Done |
 | Native executor verification coverage | Expanded verifier build passed; verifier reads back set/clear parameter, type change, resize, view hide/unhide, and target existence. Normal socket preview is live-proven; clean restart loading from on-disk compat registry remains recommended. | Partially Done |
-| Native executor live commit/verify on test model | No disposable/test model active and no explicit write approval. | Blocked |
+| Native executor live commit/verify on test model | User opened disposable model `rme_advanced_sample_project - Kopya` and explicitly approved commit testing. Plan `test-model-commit-1777956608565` set duct `392168` `Comments`; preview did not mutate, commit succeeded, verify succeeded, final readback matched. | Done |
 | HVAC duct analysis real model read-only | Live `analyze_mep_system` read `8840` ducts, `7996.625 m` duct length, `41735` connectors, `708` open connectors. | Done |
 | Hydronic/domestic/sanitary/fire/clash/equipment foundations | Foundation modules exist and return assumptions/missing standards; HVAC/fire/hydronic have live/read collectors; all domain foundations now expose deterministic calculation/issue examples with `canCommit: false`. | Partially Done |
 | MEP graph foundation | HVAC and hydronic live connector graph summaries read `Connector.AllRefs`, node counts, unique element edge counts, and open connector samples with `0` AllRefs errors. | Partially Done |
@@ -54,8 +54,7 @@ Concrete deliverables:
 
 ## Current Blocking Items
 
-- Clean Revit restart/reload should be run to prove the on-disk compat registry path loads `execute_write_plan` without the temporary in-memory hot-register step.
-- A disposable/test model must be active and explicit user approval must be given before any live write commit test.
+- Clean Revit restart/reload is recommended for operational confidence that the on-disk compat registry path loads `execute_write_plan` without the temporary in-memory hot-register step.
 - Plugin repo needs a writable fork/remote before branch push can succeed.
 - Full engineering engines remain beyond the current implemented foundation.
 

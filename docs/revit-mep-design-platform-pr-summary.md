@@ -44,9 +44,9 @@
 - Expanded native verifier readback coverage for parameter clear/set, type changes, duct/pipe resize, view hide/unhide, and target existence.
 - Added calculation/issue foundations for domestic water, sanitary/storm, fire/sprinkler, clash, and equipment selection, with tests and runtime probe coverage.
 - Added live-tested HVAC/hydronic connector graph summaries using `Connector.AllRefs`.
+- Completed the live write acceptance test in user-approved disposable model `rme_advanced_sample_project - Kopya`: `prepare_write_plan -> preview_write_plan -> commit_write_plan -> verify_write_plan` set duct `392168` `Comments`, preview did not mutate, commit succeeded, verify succeeded, and final readback matched.
 
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Run write-plan commit/verify only after confirming a disposable/test model is active.
 - Expand engineering engines from calculation foundations to full graph traversal, branch flow aggregation, critical path, clash reroute, and report workflows.

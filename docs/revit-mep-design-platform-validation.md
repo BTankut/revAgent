@@ -141,15 +141,43 @@ Live read-only results captured on the active session:
 
 Write checks:
 
-- Run only in a disposable/test model.
-- Start with one `set_parameter` plan.
-- Required sequence:
-  `prepare_write_plan` -> `preview_write_plan` -> explicit approval/token -> `commit_write_plan` -> `verify_write_plan`.
+- Production-model writes were not run.
+- Disposable/test model opened by the user:
+  - Document: `rme_advanced_sample_project - Kopya`
+  - Workshared: `false`
+  - Active view: `Level 1 HVAC Plan`
+- Target parameter preflight:
+  - Element `392168`
+  - Category `Ducts`
+  - Class `Autodesk.Revit.DB.Mechanical.Duct`
+  - Parameter `Comments`
+  - Built-in parameter `ALL_MODEL_INSTANCE_COMMENTS`
+  - Storage type `String`
+  - Read-only: `false`
+- Required sequence passed:
+  `prepare_write_plan` -> `preview_write_plan` -> explicit approval -> `commit_write_plan` -> `verify_write_plan`.
+- Plan id: `test-model-commit-1777956608565`.
+- Preview result:
+  - `success: true`
+  - `mutateModel: false`
+  - old `Comments`: empty
+  - new preview value: `Codex write-plan commit test 2026-05-05T00:00:00Z`
+  - readback after preview still empty, proving preview did not mutate the model.
+- Commit result:
+  - `success: true`
+  - `mutateModel: true`
+  - mapping returned for `eId: test-duct-comments-001` to element `392168`
+  - no direct assembly fallback marker; normal socket executor path was used.
+- Verify result:
+  - `success: true`
+  - expected and actual `Comments` both matched `Codex write-plan commit test 2026-05-05T00:00:00Z`
+  - `mutateModel: false`
+- Final readback matched the committed value.
 
 ## Known Validation Limits
 
 - The installed MCP tool session currently exposes the previous six-tool runtime surface. The updated local runtime lists all 13 tools and was used for the new tool tests.
 - The registered Codex runtime path is `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js`; its `build` folder was updated from this repo and a fresh handshake against that path listed all 13 tools. The already-running MCP process still needs restart/reconnect before this chat exposes the new tool namespace.
-- The public Revit socket command registry can now call `execute_write_plan` in the current session after in-memory hot registration of the compat assembly. A normal Revit restart/reload is still recommended to prove the on-disk `commandRegistry.json` path loads the compat assembly from a clean AppDomain.
+- The public Revit socket command registry can now call `execute_write_plan` in the current session after in-memory hot registration of the compat assembly. A normal Revit restart/reload is still recommended for operational confidence that the on-disk `commandRegistry.json` path loads the compat assembly from a clean AppDomain.
 - Runtime keeps a direct-assembly fallback for `validate`, `preview`, and `verify` so read-only/native validation can continue if a future session has an unavailable command registry. Direct fallback for `commit` is disabled unless `REVIT_MCP_ALLOW_DIRECT_EXECUTOR_COMMIT=true` is set.
-- Production-model writes were intentionally not run. The active document is a workshared project model, not a confirmed disposable/test model.
+- Production-model writes were intentionally not run; the live write acceptance test was limited to the user-approved disposable/test model.
