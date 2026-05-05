@@ -951,6 +951,15 @@ assert.deepEqual(officeStandardsCompleteness.missingStandards, [
     "fire.hydraulicStandard",
     "hvac.ductEqualFrictionTargetPaPerM",
 ]);
+assert.equal(officeStandardsCompleteness.officeStandardsInputTemplate.mergeTarget, "analyze_mep_system.officeStandards");
+assert.deepEqual(officeStandardsCompleteness.officeStandardsInputTemplate.requiredMissingStandardPaths, [
+    "fire.hydraulicStandard",
+    "hvac.ductEqualFrictionTargetPaPerM",
+]);
+assert.deepEqual(officeStandardsCompleteness.officeStandardsInputTemplate.officeStandards, {
+    fire: { hydraulicStandard: null },
+    hvac: { ductEqualFrictionTargetPaPerM: null },
+});
 assert.equal(officeStandardsCompleteness.rows.length, 3);
 assert.equal(officeStandardsCompleteness.canCommit, false);
 

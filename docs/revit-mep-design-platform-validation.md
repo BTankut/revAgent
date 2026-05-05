@@ -383,6 +383,7 @@ Write checks:
   - A fresh stdio runtime handshake listed all `13` tools.
   - `analyze_mep_system` with `discipline: all` and `includeRevitRead: false` returned `success: true`, `mutateModel: false`, and top-level `officeStandardsCompleteness`.
   - The summary returned `completeForProductionReview: false`, `requiresOfficeStandard: true`, `28` unique missing standards, `7` per-engine rows, and blocked rows for `hvac`, `hydronic`, `domestic_water`, `sanitary`, and `fire`.
+  - Follow-up runtime probe confirmed `officeStandardsCompleteness.officeStandardsInputTemplate` returned `28` required paths, `mergeTarget: analyze_mep_system.officeStandards`, and fillable `hvac`, `domesticWater`, and `fire` placeholders without mutating Revit.
 - Production readiness summary audit:
   - A fresh stdio runtime handshake listed all `13` tools.
   - `analyze_mep_system` with `discipline: all`, `includeRevitRead: false`, and enforced parameter allowlist allowing only `Mark` returned `success: true`, `mutateModel: false`, and top-level `productionReadiness`.

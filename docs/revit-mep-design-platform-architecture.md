@@ -187,6 +187,7 @@ Reporting foundation:
 
 - `analyze_mep_system` returns deterministic issue-list and design-log rows plus CSV text previews.
 - It also returns `officeStandardsCompleteness`, a top-level production-review gate that aggregates per-engine missing office standards into one sorted list and per-discipline status rows without mutating Revit.
+- `officeStandardsCompleteness.officeStandardsInputTemplate` turns the missing-standard paths into a fillable `officeStandards` override skeleton for `analyze_mep_system`, so the next review can use the same exact keys instead of a prose-only handoff.
 - `productionReadiness` combines office-standard completeness, proposal data-completeness, and generated write-plan validation into a single blocker list for final-design review.
 - `boqOnly` runs short live Revit BOQ collectors without connector graph traversal for count/length report population.
 - `hydraulicResistanceOnly` runs short live hydronic pipe length/diameter sampling and returns resistance calibration rows.
