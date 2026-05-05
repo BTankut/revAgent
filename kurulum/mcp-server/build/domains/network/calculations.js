@@ -128,6 +128,125 @@ export function analyzeWeightedNetwork({
     };
 }
 
+export function inferFlowDirections({
+    nodes = [],
+    edges = [],
+    rootNodeId,
+    terminalDemands = {},
+    terminalNodeIds = [],
+    directed = false,
+} = {}) {
+    const traversal = analyzeWeightedNetwork({
+        nodes,
+        edges,
+        rootNodeId,
+        terminalDemands,
+        terminalNodeIds,
+        directed,
+    });
+    if (!traversal.success) {
+        return {
+            success: false,
+            errors: traversal.errors || [],
+            warnings: traversal.warnings || [],
+            canCommit: false,
+        };
+    }
+
+    const root = normalizeId(rootNodeId);
+    const edgeByPair = new Map();
+    const adjacency = buildWeightedAdjacency({ nodes, edges, directed, edgeByPair });
+    const shortest = shortestPathsByLoss(adjacency, root);
+    const warnings = [...(traversal.warnings || [])];
+    if (traversal.cycleDetected) {
+        warnings.push("flow directions in cyclic networks are inferred on least-loss root-to-terminal paths; hydraulic flow split is not solved");
+    }
+
+    const terminals = terminalIdsFrom({ terminalDemands, terminalNodeIds });
+    const directedFlowByKey = new Map();
+    const terminalPaths = [];
+    const unresolvedTerminals = [];
+    for (const terminalId of terminals) {
+        const demand = terminalDemandFor(terminalId, terminalDemands);
+        const nodePath = pathToNode(shortest.previous, root, terminalId);
+        const reachable = nodePath.length > 0;
+        const totalLossPa = shortest.distances.get(terminalId);
+        const terminalPath = {
+            terminalNodeId: terminalId,
+            demand,
+            reachable,
+            totalLossPa: reachable && Number.isFinite(totalLossPa) ? totalLossPa : null,
+            nodeIds: nodePath,
+        };
+        terminalPaths.push(terminalPath);
+        if (!reachable) {
+            unresolvedTerminals.push(terminalId);
+            continue;
+        }
+        if (demand <= 0) continue;
+        for (let index = 0; index < nodePath.length - 1; index++) {
+            const from = nodePath[index];
+            const to = nodePath[index + 1];
+            const pairKey = undirectedEdgeKey(from, to);
+            const edge = edgeByPair.get(pairKey) || {};
+            const key = edgeKey(from, to);
+            const current = directedFlowByKey.get(key) || {
+                from,
+                to,
+                flow: 0,
+                lossPa: edgeLossPa(edge),
+                lengthM: Number(edge.lengthM ?? 0) || null,
+                sourceEdge: {
+                    from: normalizeId(edge.from) || from,
+                    to: normalizeId(edge.to) || to,
+                },
+                terminalNodeIds: [],
+            };
+            current.flow += demand;
+            current.terminalNodeIds.push(terminalId);
+            directedFlowByKey.set(key, current);
+        }
+    }
+
+    const usedPairs = new Set([...directedFlowByKey.values()].map((flow) => undirectedEdgeKey(flow.from, flow.to)));
+    const unusedEdges = [];
+    for (const edge of edges) {
+        const from = normalizeId(edge.from);
+        const to = normalizeId(edge.to);
+        if (!from || !to || from === to) continue;
+        const pairKey = undirectedEdgeKey(from, to);
+        if (!usedPairs.has(pairKey)) {
+            unusedEdges.push({ from, to, lossPa: edgeLossPa(edge) });
+        }
+    }
+    if (unusedEdges.length > 0) {
+        warnings.push(`${unusedEdges.length} edge(s) are not on inferred terminal flow paths`);
+    }
+
+    return {
+        success: true,
+        errors: [],
+        warnings,
+        assumptions: [
+            "Flow directions are inferred from the root toward terminal demands along least-loss paths.",
+            "Terminal demand values define branch flow units; the function preserves the caller's flow unit.",
+            "Loops are not hydraulically split; unused or parallel loop edges are reported for engineering review.",
+        ],
+        rootNodeId: root,
+        terminalCount: terminals.length,
+        unresolvedTerminals,
+        totalDemand: terminalPaths.reduce((sum, path) => sum + (path.reachable ? path.demand : 0), 0),
+        directedEdges: [...directedFlowByKey.values()].map((flow) => ({
+            ...flow,
+            terminalNodeIds: [...new Set(flow.terminalNodeIds)].sort(),
+        })),
+        unusedEdges,
+        terminalPaths,
+        traversal,
+        canCommit: false,
+    };
+}
+
 export function analyzeTreeNetwork({ nodes = [], edges = [], rootNodeId, terminalDemands = {} } = {}) {
     const nodeIds = new Set(nodes.map(normalizeId).filter(Boolean));
     for (const edge of edges) {
@@ -285,6 +404,26 @@ export function exampleAirsideWeightedNetwork() {
     });
 }
 
+export function exampleAirsideFlowDirections() {
+    return inferFlowDirections({
+        rootNodeId: "fan",
+        nodes: ["fan", "main", "branch-a", "branch-b", "term-a", "term-b", "bypass"],
+        edges: [
+            { from: "fan", to: "main", pressureLossPa: 35 },
+            { from: "main", to: "branch-a", pressureLossPa: 18 },
+            { from: "main", to: "branch-b", pressureLossPa: 22 },
+            { from: "branch-a", to: "term-a", pressureLossPa: 40 },
+            { from: "branch-b", to: "term-b", pressureLossPa: 55 },
+            { from: "main", to: "bypass", pressureLossPa: 30 },
+            { from: "bypass", to: "term-b", pressureLossPa: 95 },
+        ],
+        terminalDemands: {
+            "term-a": 180,
+            "term-b": 220,
+        },
+    });
+}
+
 export function exampleHydronicTreeNetwork() {
     return analyzeTreeNetwork({
         rootNodeId: "pump",
@@ -317,6 +456,62 @@ export function exampleHydronicWeightedNetwork() {
             "coil-b": 0.42,
         },
     });
+}
+
+export function exampleHydronicFlowDirections() {
+    return inferFlowDirections({
+        rootNodeId: "pump",
+        nodes: ["pump", "riser", "coil-a", "coil-b", "bypass"],
+        edges: [
+            { from: "pump", to: "riser", pressureLossPa: 1200 },
+            { from: "riser", to: "coil-a", pressureLossPa: 2400 },
+            { from: "riser", to: "coil-b", pressureLossPa: 3100 },
+            { from: "riser", to: "bypass", pressureLossPa: 700 },
+            { from: "bypass", to: "coil-b", pressureLossPa: 4500 },
+        ],
+        terminalDemands: {
+            "coil-a": 0.35,
+            "coil-b": 0.42,
+        },
+    });
+}
+
+function buildWeightedAdjacency({ nodes, edges, directed, edgeByPair }) {
+    const nodeIds = collectNodeIds({ nodes, edges, terminalNodeIds: [], terminalDemands: {} });
+    const adjacency = new Map();
+    for (const node of nodeIds) adjacency.set(node, []);
+    for (const edge of edges) {
+        const from = normalizeId(edge.from);
+        const to = normalizeId(edge.to);
+        if (!from || !to || from === to) continue;
+        if (!adjacency.has(from)) adjacency.set(from, []);
+        if (!adjacency.has(to)) adjacency.set(to, []);
+        const lossPa = edgeLossPa(edge);
+        adjacency.get(from).push({ to, lossPa, edge });
+        if (!directed) adjacency.get(to).push({ to: from, lossPa, edge });
+        const pairKey = undirectedEdgeKey(from, to);
+        if (!edgeByPair.has(pairKey) || lossPa < edgeLossPa(edgeByPair.get(pairKey))) {
+            edgeByPair.set(pairKey, edge);
+        }
+    }
+    return adjacency;
+}
+
+function terminalIdsFrom({ terminalDemands = {}, terminalNodeIds = [] } = {}) {
+    return [...new Set([
+        ...Object.entries(terminalDemands)
+            .filter(([, demand]) => Number.isFinite(Number(demand)) && Number(demand) > 0)
+            .map(([node]) => normalizeId(node)),
+        ...terminalNodeIds.map(normalizeId),
+    ].filter(Boolean))].sort();
+}
+
+function terminalDemandFor(nodeId, terminalDemands) {
+    const exact = Number(terminalDemands[nodeId] ?? 0);
+    if (Number.isFinite(exact) && exact > 0) return exact;
+    const matchedKey = Object.keys(terminalDemands || {}).find((key) => normalizeId(key) === nodeId);
+    const matched = Number(terminalDemands[matchedKey] ?? 0);
+    return Number.isFinite(matched) && matched > 0 ? matched : 0;
 }
 
 function collectNodeIds({ nodes, edges, terminalNodeIds, terminalDemands }) {

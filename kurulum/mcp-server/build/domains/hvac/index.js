@@ -1,5 +1,5 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
-import { exampleAirsideTreeNetwork, exampleAirsideWeightedNetwork } from "../network/calculations.js";
+import { exampleAirsideFlowDirections, exampleAirsideTreeNetwork, exampleAirsideWeightedNetwork } from "../network/calculations.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
 import { calculateFanPressureBasis, sizeRectangularDuctEqualFriction } from "./calculations.js";
 
@@ -18,6 +18,7 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
             "connector/open connector summary",
             "element-to-element connector graph summary",
             "weighted graph shortest path traversal",
+            "least-loss flow direction inference",
             "rooted tree branch airflow aggregation",
             "critical path by accumulated edge loss",
             "fan flow/pressure basis from critical path",
@@ -32,6 +33,7 @@ export async function analyzeHvacAirside({ includeRevitRead = true, officeStanda
             }),
             branchFlowAndCriticalPath: exampleAirsideTreeNetwork(),
             weightedPathfinding: exampleAirsideWeightedNetwork(),
+            flowDirectionInference: exampleAirsideFlowDirections(),
             fanPressureBasis: calculateFanPressureBasis({
                 network: {
                     rootNodeId: "fan",

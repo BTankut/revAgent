@@ -1,7 +1,7 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
-import { exampleHydronicTreeNetwork, exampleHydronicWeightedNetwork } from "../network/calculations.js";
+import { exampleHydronicFlowDirections, exampleHydronicTreeNetwork, exampleHydronicWeightedNetwork } from "../network/calculations.js";
 import { csharpIntArray, executeRevitCode } from "../../utils/revitToolHelpers.js";
-import { calculatePumpHeadBasis, sizePipeByVelocityOrFriction } from "./calculations.js";
+import { calculateHydronicBalance, calculatePumpHeadBasis, sizePipeByVelocityOrFriction } from "./calculations.js";
 
 export async function analyzeHydronic({ includeRevitRead = true, officeStandards = {}, networkPathRequest = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("hydronic", officeStandards);
@@ -18,8 +18,10 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
             "pipe system summary",
             "element-to-element connector graph summary",
             "weighted graph shortest path traversal",
+            "least-loss flow direction inference",
             "rooted tree branch flow aggregation",
             "critical circuit by accumulated edge loss",
+            "terminal balancing loss by critical-circuit equalization",
             "pump flow/head basis from critical circuit",
             "pipe pressure loss by Darcy-Weisbach",
             "velocity/friction pipe sizing proposal",
@@ -32,6 +34,7 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
             }),
             branchFlowAndCriticalPath: exampleHydronicTreeNetwork(),
             weightedPathfinding: exampleHydronicWeightedNetwork(),
+            flowDirectionInference: exampleHydronicFlowDirections(),
             pumpHeadBasis: calculatePumpHeadBasis({
                 network: {
                     rootNodeId: "pump",
@@ -49,6 +52,23 @@ export async function analyzeHydronic({ includeRevitRead = true, officeStandards
                 equipmentLossKPa: 12,
                 terminalLossKPa: 8,
                 safetyFactor: 1.1,
+            }),
+            hydraulicBalance: calculateHydronicBalance({
+                network: {
+                    rootNodeId: "pump",
+                    nodes: ["pump", "riser", "coil-a", "coil-b"],
+                    edges: [
+                        { from: "pump", to: "riser", pressureLossPa: 1200 },
+                        { from: "riser", to: "coil-a", pressureLossPa: 2400 },
+                        { from: "riser", to: "coil-b", pressureLossPa: 3100 },
+                    ],
+                    terminalDemands: {
+                        "coil-a": 0.35,
+                        "coil-b": 0.42,
+                    },
+                },
+                pumpHeadKPa: 30,
+                terminalPressureAllowanceKPa: 8,
             }),
         },
         canCommit: false,

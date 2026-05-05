@@ -1,4 +1,4 @@
-import { analyzeWeightedNetwork } from "../network/calculations.js";
+import { analyzeWeightedNetwork, inferFlowDirections } from "../network/calculations.js";
 
 const defaultWater = {
     densityKgM3: 998.2,
@@ -185,6 +185,78 @@ export function calculatePumpHeadBasis({
             criticalPath: traversal.criticalPath,
         },
         traversal,
+        canCommit: false,
+        riskLevel: "high",
+    };
+}
+
+export function calculateHydronicBalance({
+    network,
+    pumpHeadKPa,
+    terminalPressureAllowanceKPa = 0,
+} = {}) {
+    const inferred = inferFlowDirections(network || {});
+    if (!inferred.success) {
+        return {
+            success: false,
+            errors: inferred.errors || [],
+            warnings: inferred.warnings || [],
+            canCommit: false,
+        };
+    }
+    const reachableTerminalPaths = inferred.terminalPaths.filter((path) => path.reachable && path.demand > 0);
+    if (reachableTerminalPaths.length === 0) {
+        return {
+            success: false,
+            errors: ["At least one reachable terminal demand is required for balancing."],
+            warnings: inferred.warnings || [],
+            canCommit: false,
+        };
+    }
+    const criticalPath = reachableTerminalPaths.reduce((selected, candidate) => {
+        if (!selected || candidate.totalLossPa > selected.totalLossPa) return candidate;
+        return selected;
+    }, null);
+    const criticalLossKPa = Number(criticalPath.totalLossPa || 0) / 1000.0;
+    const allowanceKPa = Math.max(0, Number(terminalPressureAllowanceKPa || 0));
+    const requiredPumpHeadKPa = criticalLossKPa + allowanceKPa;
+    const availablePumpHeadKPa = Number(pumpHeadKPa);
+    const hasPumpHead = Number.isFinite(availablePumpHeadKPa) && availablePumpHeadKPa > 0;
+    const terminalBalance = reachableTerminalPaths.map((path) => {
+        const pathLossKPa = Number(path.totalLossPa || 0) / 1000.0;
+        const balancingLossKPa = Math.max(0, criticalLossKPa - pathLossKPa);
+        return {
+            terminalNodeId: path.terminalNodeId,
+            flowLs: path.demand,
+            pathLossKPa,
+            balancingLossKPa,
+            requiredTerminalSetpointKPa: pathLossKPa + balancingLossKPa + allowanceKPa,
+            availableResidualKPa: hasPumpHead ? availablePumpHeadKPa - pathLossKPa - allowanceKPa : null,
+            meetsAvailablePumpHead: hasPumpHead ? availablePumpHeadKPa >= pathLossKPa + allowanceKPa : null,
+            isCritical: path.terminalNodeId === criticalPath.terminalNodeId,
+            pathNodeIds: path.nodeIds,
+        };
+    });
+    return {
+        success: true,
+        method: "Hydronic terminal balance from inferred branch flows and critical-circuit equalization",
+        assumptions: [
+            "Uses inferred least-loss root-to-terminal flow directions.",
+            "Balancing loss is the additional terminal/branch resistance needed to match the critical circuit.",
+            "This is not a full looped hydraulic solver; pump/valve authority and flow split require detailed standards and manufacturer data.",
+        ],
+        output: {
+            totalFlowLs: inferred.totalDemand,
+            criticalTerminalNodeId: criticalPath.terminalNodeId,
+            criticalCircuitLossKPa: criticalLossKPa,
+            terminalPressureAllowanceKPa: allowanceKPa,
+            requiredPumpHeadKPa,
+            availablePumpHeadKPa: hasPumpHead ? availablePumpHeadKPa : null,
+            pumpHeadAdequate: hasPumpHead ? availablePumpHeadKPa >= requiredPumpHeadKPa : null,
+            terminalBalance,
+            directedEdges: inferred.directedEdges,
+        },
+        inference: inferred,
         canCommit: false,
         riskLevel: "high",
     };

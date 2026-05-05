@@ -50,8 +50,9 @@
 - Added weighted network shortest-path traversal, HVAC fan pressure basis, hydronic pump head basis, and reporting row/CSV foundations, with tests and runtime probes.
 - Added targeted live connector pathfinding inputs for `analyze_mep_system`; read-only HVAC pathfinding was live-tested in the disposable model on duct `392168`.
 - Added runtime report export handling for `export_boq_report` and `export_clash_report` write-plans; approved commits write CSV/JSON files with `mutateModel: false`.
+- Added least-loss flow direction inference and hydronic critical-circuit balancing loss foundations, with tests and runtime examples.
 
 ## Remaining Work
 
 - Restart/reload Revit once to prove the on-disk compat command registry path loads `execute_write_plan` from a clean AppDomain.
-- Expand engineering engines from foundations to production flow-direction inference, hydraulic network balancing, production reroute solving, equipment schedule integration, and live-model BOQ/report population workflows.
+- Expand engineering engines from foundations to production looped hydraulic solving, production reroute solving, equipment schedule integration, and live-model BOQ/report population workflows.

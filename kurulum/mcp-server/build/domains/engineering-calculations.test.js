@@ -9,6 +9,7 @@ import {
 } from "./hvac/calculations.js";
 import {
     calculatePumpHeadBasis,
+    calculateHydronicBalance,
     circularAreaM2,
     pipeFrictionLossPaPerM,
     pipeVelocityMps,
@@ -17,8 +18,11 @@ import {
 import {
     analyzeTreeNetwork,
     analyzeWeightedNetwork,
+    inferFlowDirections,
+    exampleAirsideFlowDirections,
     exampleAirsideWeightedNetwork,
     exampleAirsideTreeNetwork,
+    exampleHydronicFlowDirections,
     exampleHydronicWeightedNetwork,
     exampleHydronicTreeNetwork,
 } from "./network/calculations.js";
@@ -103,6 +107,13 @@ assert.equal(weightedAirNetwork.componentCount, 1);
 assert.deepEqual(weightedAirNetwork.criticalPath.nodeIds, ["fan", "main", "branch-b", "term-b"]);
 close(weightedAirNetwork.criticalPath.totalLossPa, 112, 1e-9, "weighted airside critical path loss");
 
+const airDirections = exampleAirsideFlowDirections();
+assert.equal(airDirections.success, true);
+assert.equal(airDirections.totalDemand, 400);
+const fanMainFlow = airDirections.directedEdges.find((edge) => edge.from === "fan" && edge.to === "main");
+assert.equal(fanMainFlow.flow, 400);
+assert(airDirections.unusedEdges.some((edge) => edge.from === "main" && edge.to === "bypass"));
+
 const fanBasis = calculateFanPressureBasis({
     network: {
         rootNodeId: "fan",
@@ -134,6 +145,12 @@ assert.equal(weightedHydronicNetwork.cycleDetected, true);
 assert.deepEqual(weightedHydronicNetwork.criticalPath.nodeIds, ["pump", "riser", "coil-b"]);
 close(weightedHydronicNetwork.criticalPath.totalLossPa, 4300, 1e-9, "weighted hydronic critical circuit loss");
 
+const hydronicDirections = exampleHydronicFlowDirections();
+assert.equal(hydronicDirections.success, true);
+close(hydronicDirections.totalDemand, 0.77, 1e-9, "hydronic inferred total flow");
+const riserCoilBFlow = hydronicDirections.directedEdges.find((edge) => edge.from === "riser" && edge.to === "coil-b");
+close(riserCoilBFlow.flow, 0.42, 1e-9, "riser to coil-b inferred flow");
+
 const pumpBasis = calculatePumpHeadBasis({
     network: {
         rootNodeId: "pump",
@@ -151,6 +168,28 @@ const pumpBasis = calculatePumpHeadBasis({
 assert.equal(pumpBasis.success, true);
 close(pumpBasis.output.requiredFlowLs, 0.77, 1e-9, "pump basis flow");
 close(pumpBasis.output.requiredHeadKPa, 26.73, 1e-9, "pump head basis");
+
+const hydronicBalance = calculateHydronicBalance({
+    network: {
+        rootNodeId: "pump",
+        edges: [
+            { from: "pump", to: "riser", pressureLossPa: 1200 },
+            { from: "riser", to: "coil-a", pressureLossPa: 2400 },
+            { from: "riser", to: "coil-b", pressureLossPa: 3100 },
+        ],
+        terminalDemands: { "coil-a": 0.35, "coil-b": 0.42 },
+    },
+    pumpHeadKPa: 30,
+    terminalPressureAllowanceKPa: 8,
+});
+assert.equal(hydronicBalance.success, true);
+close(hydronicBalance.output.requiredPumpHeadKPa, 12.3, 1e-9, "hydronic balance required pump head");
+assert.equal(hydronicBalance.output.pumpHeadAdequate, true);
+const coilABalance = hydronicBalance.output.terminalBalance.find((row) => row.terminalNodeId === "coil-a");
+close(coilABalance.balancingLossKPa, 0.7, 1e-9, "coil-a balancing loss");
+const coilBBalance = hydronicBalance.output.terminalBalance.find((row) => row.terminalNodeId === "coil-b");
+assert.equal(coilBBalance.isCritical, true);
+close(coilBBalance.balancingLossKPa, 0, 1e-9, "coil-b balancing loss");
 
 const cyclicNetwork = analyzeTreeNetwork({
     rootNodeId: "a",
@@ -176,5 +215,15 @@ const disconnectedWeighted = analyzeWeightedNetwork({
 assert.equal(disconnectedWeighted.success, true);
 assert.equal(disconnectedWeighted.terminalPaths[0].reachable, false);
 assert(disconnectedWeighted.warnings.some((warning) => warning.includes("disconnected")));
+
+const inferredDisconnected = inferFlowDirections({
+    rootNodeId: "source",
+    edges: [
+        { from: "source", to: "a", pressureLossPa: 1 },
+        { from: "orphan", to: "terminal", pressureLossPa: 1 },
+    ],
+    terminalDemands: { terminal: 1 },
+});
+assert.deepEqual(inferredDisconnected.unresolvedTerminals, ["terminal"]);
 
 console.log("engineering calculation tests passed");

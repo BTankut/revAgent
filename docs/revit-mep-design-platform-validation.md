@@ -32,8 +32,10 @@ Result:
   - missing office standard blockers for HVAC and hydronic sizing
   - rooted-tree branch flow aggregation for airside and hydronic sample networks
   - weighted shortest-path traversal for cyclic network foundations
+  - least-loss flow direction inference for airside and hydronic sample networks
   - accumulated-loss critical path / critical circuit selection
   - HVAC fan pressure basis and hydronic pump head basis
+  - hydronic critical-circuit balancing loss and pump-head adequacy
   - cyclic network warning path for branch aggregation assumptions
 - Domain foundation calculation tests passed:
   - domestic water fixture-unit summation and recirculation continuity
@@ -150,9 +152,12 @@ Live read-only results captured on the active session:
   - Both examples explicitly state the tree assumption and keep `canCommit: false`.
 - Weighted path/hydraulic/report foundation runtime probe succeeded:
   - HVAC weighted graph example selected `fan -> main -> branch-b -> term-b` with `112 Pa`.
+  - HVAC flow direction inference returned `400` total demand and `400` flow through `fan -> main`.
   - HVAC fan basis example returned `400 m3/h` and `255.2 Pa` required pressure after allowances/safety factor.
   - Hydronic weighted graph example selected `pump -> riser -> coil-b` with `4300 Pa`.
+  - Hydronic flow direction inference returned `0.77 L/s` total flow and `0.42 L/s` through `riser -> coil-b`.
   - Hydronic pump basis example returned `0.77 L/s` and `26.73 kPa` required head after allowances/safety factor.
+  - Hydronic balancing example returned `12.3 kPa` required pump head, adequate `30 kPa` available head, and `0.7 kPa` balancing loss for `coil-a`.
   - Reporting foundation returned issue-list/design-log rows and CSV text previews without file writes.
   - Runtime write-plan report executor supports approved CSV/JSON export for `export_boq_report` and `export_clash_report` without Revit model mutation.
 - Connector graph live probe succeeded:
