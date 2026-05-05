@@ -60,4 +60,4 @@ Concrete deliverables:
 
 ## Completion Decision
 
-Do not mark the goal complete yet. The platform foundation is implemented and live read-only/native preview validation is strong, but several acceptance criteria are blocked or incomplete.
+Do not mark the goal complete yet. The platform foundation is implemented, normal native socket preview/verify works, and the user-approved disposable-model write-plan commit/verify acceptance test passed. Remaining blockers are outside the current committed foundation: the plugin upstream is archived/read-only so its branch cannot be pushed, and the full production engineering engines are still foundation-level rather than complete live graph/reroute/hydraulic/report workflows.
