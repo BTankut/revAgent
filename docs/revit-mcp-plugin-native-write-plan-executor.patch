@@ -1,7 +1,7 @@
 From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 01/18] Add native write-plan executor
+Subject: [PATCH 01/19] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 02/18] Expand write-plan verification readback
+Subject: [PATCH 02/19] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 03/18] Fix write-plan command SDK compatibility
+Subject: [PATCH 03/19] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 04/18] Add native schedule write-plan operation
+Subject: [PATCH 04/19] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 05/18] Add native reroute commit verification
+Subject: [PATCH 05/19] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2367,7 +2367,7 @@ index 31c47a5..0b76d2e 100644
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 06/18] Verify reroute obstacle clearance
+Subject: [PATCH 06/19] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2548,7 +2548,7 @@ index ba849b9..91431bb 100644
 From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:11:18 +0300
-Subject: [PATCH 07/18] Support reroute source replacement
+Subject: [PATCH 07/19] Support reroute source replacement
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
@@ -2664,7 +2664,7 @@ index 91431bb..f346aca 100644
 From 6be1a8b287fb9d41bf5ee96c449eab360ced9f75 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:24:33 +0300
-Subject: [PATCH 08/18] Reconnect reroute replacement endpoints
+Subject: [PATCH 08/19] Reconnect reroute replacement endpoints
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 445 +++++++++++++++++-
@@ -3248,7 +3248,7 @@ index f346aca..f230ebf 100644
 From 0b3c09ff5eb9c55916f46cbaa5829e241542ecd7 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:59:59 +0300
-Subject: [PATCH 09/18] Report reroute fitting references
+Subject: [PATCH 09/19] Report reroute fitting references
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 58 +++++++++++++++++--
@@ -3357,7 +3357,7 @@ index 9c3c4e0..08ab8e9 100644
 From 4d1672f96c751579511eb03c46bd5ae8166a61d9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:12:20 +0300
-Subject: [PATCH 10/18] Add native pin element operations
+Subject: [PATCH 10/19] Add native pin element operations
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 24 ++++++++++++++
@@ -3512,7 +3512,7 @@ index 0b76d2e..7b69f41 100644
 From 57644057abdf3023af59358e5940af51c04fc41e Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:27:07 +0300
-Subject: [PATCH 11/18] Add native delete element operation
+Subject: [PATCH 11/19] Add native delete element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 30 +++++++++++++++++++
@@ -3650,7 +3650,7 @@ index 7b69f41..af2da46 100644
 From a4b7f6f034cbb18e6f29596db615a12f9042d9d4 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:34:06 +0300
-Subject: [PATCH 12/18] Add native copy element operation
+Subject: [PATCH 12/19] Add native copy element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  38 +++++
@@ -3918,7 +3918,7 @@ index af2da46..1b22f12 100644
 From cac42e1db4d4cdb868a2b4bb6b79e2ba9e243621 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:42:35 +0300
-Subject: [PATCH 13/18] Add native rotate element operation
+Subject: [PATCH 13/19] Add native rotate element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 54 +++++++++++++
@@ -4150,7 +4150,7 @@ index 1b22f12..ea6fddd 100644
 From 4330cdc41a7b370cb9f325e7d292b64e2c4155e1 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 11:54:41 +0300
-Subject: [PATCH 14/18] Add native align element operation
+Subject: [PATCH 14/19] Add native align element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 83 +++++++++++++++++++
@@ -4418,7 +4418,7 @@ index ea6fddd..fec394e 100644
 From ff7a4e1ea1f0d321b21b08408805fc3092d2ce5c Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:08:09 +0300
-Subject: [PATCH 15/18] Add native tag element operation
+Subject: [PATCH 15/19] Add native tag element operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 80 +++++++++++++++++++
@@ -4683,7 +4683,7 @@ index fec394e..f31f5eb 100644
 From 2d2169d8cee9ac46d6b8ffc8acdc65769f6a662b Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:19:18 +0300
-Subject: [PATCH 16/18] Verify native view override operation
+Subject: [PATCH 16/19] Verify native view override operation
 
 ---
  .../Validators/WritePlanValidator.cs          |  9 ++
@@ -4840,7 +4840,7 @@ index f31f5eb..90697b7 100644
 From 9064ea3aa975c607d4b58b623c902d4f03a9f11b Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 12:33:59 +0300
-Subject: [PATCH 17/18] Validate direct duct and pipe run creation
+Subject: [PATCH 17/19] Validate direct duct and pipe run creation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs |  4 +--
@@ -4920,7 +4920,7 @@ index d938965..92711fa 100644
 From bf0a7f324670da04947151d02246b927519356ca Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 13:01:26 +0300
-Subject: [PATCH 18/18] Verify copied parameter values in write plans
+Subject: [PATCH 18/19] Verify copied parameter values in write plans
 
 ---
  .../Validators/WritePlanValidator.cs          | 70 +++++++++++++++++++
@@ -5090,6 +5090,237 @@ index 90697b7..4814466 100644
          private static System.Collections.Generic.ICollection<ElementId> TargetElementIds(JObject step)
          {
              System.Collections.Generic.List<ElementId> ids = new System.Collections.Generic.List<ElementId>();
+-- 
+2.50.1.windows.1
+
+
+From 750a33290d25f7613fa65693562c1a1093a657fc Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 13:12:40 +0300
+Subject: [PATCH 19/19] Verify move and placement write-plan operations
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs |  45 ++++++-
+ .../Verification/WritePlanVerifier.cs         | 126 +++++++++++++++++-
+ 2 files changed, 169 insertions(+), 2 deletions(-)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index b2b6efd..adaa763 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -559,10 +559,53 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             if (!symbol.IsActive)
+                 symbol.Activate();
+             XYZ point = PointValue(args["point"] as JObject, StringValue(args, "unit"));
+-            FamilyInstance instance = document.Create.NewFamilyInstance(point, symbol, StructuralType.NonStructural);
++            Level level = null;
++            if (args["levelId"] != null)
++            {
++                level = document.GetElement(new ElementId(IntValue(args["levelId"]))) as Level;
++                if (level == null)
++                    throw new InvalidOperationException("Level not found: " + IntValue(args["levelId"]).ToString(CultureInfo.InvariantCulture));
++            }
++            FamilyInstance instance = CreateFamilyInstance(document, point, symbol, level);
++            document.Regenerate();
++            MoveLocationPointToRequestedPoint(document, instance, point);
+             AddCreatedMapping(step, instance, eIdMap, mappings);
+         }
+ 
++        private static FamilyInstance CreateFamilyInstance(Document document, XYZ point, FamilySymbol symbol, Level level)
++        {
++            if (level != null)
++            {
++                System.Reflection.MethodInfo method = document.Create.GetType().GetMethod(
++                    "NewFamilyInstance",
++                    new Type[] { typeof(XYZ), typeof(FamilySymbol), typeof(Level), typeof(StructuralType) });
++                if (method != null)
++                {
++                    FamilyInstance reflected = method.Invoke(
++                        document.Create,
++                        new object[] { point, symbol, level, StructuralType.NonStructural }) as FamilyInstance;
++                    if (reflected != null)
++                        return reflected;
++                }
++            }
++            return document.Create.NewFamilyInstance(point, symbol, StructuralType.NonStructural);
++        }
++
++        private static void MoveLocationPointToRequestedPoint(Document document, Element elem, XYZ requestedPoint)
++        {
++            if (elem == null || requestedPoint == null)
++                return;
++            LocationPoint location = elem.Location as LocationPoint;
++            if (location == null)
++                return;
++            XYZ translation = requestedPoint - location.Point;
++            if (translation.GetLength() <= 0.001)
++                return;
++            List<ElementId> ids = new List<ElementId>();
++            ids.Add(elem.Id);
++            ElementTransformUtils.MoveElements(document, ids, translation);
++        }
++
+         private static void MoveElements(Document document, JObject step, JObject result)
+         {
+             JObject args = step["arguments"] as JObject ?? new JObject();
+diff --git a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+index 4814466..1f164aa 100644
+--- a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
++++ b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+@@ -79,6 +79,10 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+                 return VerifyViewHidden(document, step, false);
+             if (operation == "view_apply_overrides")
+                 return VerifyViewOverrides(document, step);
++            if (operation == "place_family_instance")
++                return VerifyPlacedFamilyInstance(document, step);
++            if (operation == "move_elements")
++                return VerifyMoved(document, step);
+             if (operation == "create_schedule_or_update_schedule")
+                 return WritePlanExecutor.VerifySchedule(document, step);
+             if (operation == "commit_reroute")
+@@ -251,6 +255,115 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             };
+         }
+ 
++        private static JObject VerifyPlacedFamilyInstance(Document document, JObject step)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            List<ElementId> ids = TargetElementIdList(step);
++            JArray rows = new JArray();
++            bool ok = ids.Count > 0;
++            int expectedSymbolId = IntValue(args["familySymbolId"]);
++            int expectedLevelId = IntValue(args["levelId"]);
++            JObject expectedPointJson = args["expectedLocationPoint"] as JObject ?? args["point"] as JObject;
++            for (int i = 0; i < ids.Count; i++)
++            {
++                ElementId id = ids[i];
++                Element elem = document.GetElement(id);
++                FamilyInstance instance = elem as FamilyInstance;
++                bool exists = elem != null;
++                bool isFamilyInstance = instance != null;
++                int actualSymbolId = elem != null && elem.GetTypeId() != null ? elem.GetTypeId().IntegerValue : 0;
++                bool symbolChecked = expectedSymbolId != 0;
++                bool symbolMatches = !symbolChecked || actualSymbolId == expectedSymbolId;
++                int actualLevelId = elem != null && elem.LevelId != null ? elem.LevelId.IntegerValue : 0;
++                bool levelChecked = expectedLevelId != 0;
++                bool levelMatches = !levelChecked || actualLevelId == expectedLevelId;
++                bool pointChecked = false;
++                bool pointMatches = true;
++                if (exists && expectedPointJson != null)
++                {
++                    pointChecked = TryVerifyLocationPoint(elem, expectedPointJson, WritePlanExecutor.StringValue(args, "unit"), out pointMatches);
++                    if (!pointChecked)
++                        pointMatches = false;
++                }
++                bool rowOk = exists && isFamilyInstance && symbolMatches && levelMatches && pointMatches;
++                ok = rowOk && ok;
++                rows.Add(new JObject
++                {
++                    ["elementId"] = id.IntegerValue,
++                    ["exists"] = exists,
++                    ["isFamilyInstance"] = isFamilyInstance,
++                    ["expectedSymbolId"] = expectedSymbolId,
++                    ["actualSymbolId"] = actualSymbolId,
++                    ["symbolChecked"] = symbolChecked,
++                    ["symbolMatches"] = symbolMatches,
++                    ["expectedLevelId"] = expectedLevelId,
++                    ["actualLevelId"] = actualLevelId,
++                    ["levelChecked"] = levelChecked,
++                    ["levelMatches"] = levelMatches,
++                    ["pointChecked"] = pointChecked,
++                    ["locationPointMatches"] = pointMatches,
++                    ["success"] = rowOk
++                });
++            }
++            return new JObject
++            {
++                ["success"] = ok,
++                ["stepId"] = WritePlanExecutor.StringValue(step, "stepId"),
++                ["operation"] = "place_family_instance",
++                ["checks"] = rows,
++                ["message"] = ok ? "verified" : "placed family instance is missing or does not match expected symbol/location"
++            };
++        }
++
++        private static JObject VerifyMoved(Document document, JObject step)
++        {
++            JObject args = step["arguments"] as JObject ?? new JObject();
++            JArray expectedCurves = args["expectedLocationCurves"] as JArray;
++            JArray expectedPoints = args["expectedLocationPoints"] as JArray;
++            JArray rows = new JArray();
++            bool ok = true;
++            int index = 0;
++            foreach (ElementId id in TargetElementIds(step))
++            {
++                Element elem = document.GetElement(id);
++                JObject expectedCurve = ExpectedCurveForElement(expectedCurves, id, index);
++                JObject expectedPoint = ExpectedPointForElement(expectedPoints, id, index);
++                bool exists = elem != null;
++                bool expectedProvided = expectedCurve != null || expectedPoint != null;
++                bool geometryChecked = false;
++                bool geometryMatches = true;
++                if (exists && expectedCurve != null)
++                {
++                    geometryChecked = TryVerifyLocationCurve(elem, expectedCurve, WritePlanExecutor.StringValue(args, "unit"), out geometryMatches);
++                }
++                else if (exists && expectedPoint != null)
++                {
++                    geometryChecked = TryVerifyLocationPoint(elem, expectedPoint, WritePlanExecutor.StringValue(args, "unit"), out geometryMatches);
++                }
++                if (!exists || (expectedProvided && (!geometryChecked || !geometryMatches)))
++                    ok = false;
++                rows.Add(new JObject
++                {
++                    ["elementId"] = id.IntegerValue,
++                    ["exists"] = exists,
++                    ["geometryChecked"] = geometryChecked,
++                    ["locationMatches"] = geometryMatches,
++                    ["success"] = exists && (!expectedProvided || (geometryChecked && geometryMatches))
++                });
++                index++;
++            }
++            if (index == 0)
++                ok = false;
++            return new JObject
++            {
++                ["success"] = ok,
++                ["stepId"] = WritePlanExecutor.StringValue(step, "stepId"),
++                ["operation"] = "move_elements",
++                ["checks"] = rows,
++                ["message"] = ok ? "verified" : "moved elements are missing or do not match expected locations"
++            };
++        }
++
+         private static JObject VerifyTargetExists(Document document, JObject plan, JObject step)
+         {
+             Element elem = TargetElement(document, step);
+@@ -567,7 +680,12 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+ 
+         private static System.Collections.Generic.ICollection<ElementId> TargetElementIds(JObject step)
+         {
+-            System.Collections.Generic.List<ElementId> ids = new System.Collections.Generic.List<ElementId>();
++            return TargetElementIdList(step);
++        }
++
++        private static List<ElementId> TargetElementIdList(JObject step)
++        {
++            List<ElementId> ids = new List<ElementId>();
+             JObject targets = step["targets"] as JObject ?? new JObject();
+             if (targets["elementId"] != null)
+                 ids.Add(new ElementId(IntValue(targets["elementId"])));
+@@ -577,6 +695,12 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+                 foreach (JToken token in array)
+                     ids.Add(new ElementId(IntValue(token)));
+             }
++            JArray created = targets["createdElementIds"] as JArray;
++            if (created != null)
++            {
++                foreach (JToken token in created)
++                    ids.Add(new ElementId(IntValue(token)));
++            }
+             return ids;
+         }
+ 
 -- 
 2.50.1.windows.1
 

@@ -256,6 +256,50 @@ const invalidCopyValidation = validateWritePlan(invalidCopyPlan, { mode: "commit
 assert.equal(invalidCopyValidation.valid, false);
 assert(invalidCopyValidation.errors.includes("steps[0].arguments.vector is required"));
 
+const movePlan = buildPlanFromArgs({
+    title: "Move disposable model elements",
+    discipline: "general",
+    operation: "move_elements",
+    targets: { elementIds: [351] },
+    arguments: { vector: { x: 1, y: 0, z: 0 }, unit: "m" },
+});
+const moveValidation = validateWritePlan(movePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(moveValidation.valid, true);
+assert.equal(classifyPlanRisk(movePlan), "medium");
+
+const invalidMovePlan = buildPlanFromArgs({
+    title: "Reject move without vector",
+    discipline: "general",
+    operation: "move_elements",
+    targets: { elementIds: [351] },
+    arguments: {},
+});
+const invalidMoveValidation = validateWritePlan(invalidMovePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidMoveValidation.valid, false);
+assert(invalidMoveValidation.errors.includes("steps[0].arguments.vector is required"));
+
+const placePlan = buildPlanFromArgs({
+    title: "Place family instance",
+    discipline: "general",
+    operation: "place_family_instance",
+    targets: {},
+    arguments: { familySymbolId: 701, point: { x: 0, y: 0, z: 0 }, unit: "m" },
+});
+const placeValidation = validateWritePlan(placePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(placeValidation.valid, true);
+assert.equal(classifyPlanRisk(placePlan), "medium");
+
+const invalidPlacePlan = buildPlanFromArgs({
+    title: "Reject place without symbol",
+    discipline: "general",
+    operation: "place_family_instance",
+    targets: {},
+    arguments: { point: { x: 0, y: 0, z: 0 }, unit: "m" },
+});
+const invalidPlaceValidation = validateWritePlan(invalidPlacePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidPlaceValidation.valid, false);
+assert(invalidPlaceValidation.errors.includes("steps[0].arguments.familySymbolId or familyName/typeName is required"));
+
 const rotatePlan = buildPlanFromArgs({
     title: "Rotate disposable model elements",
     discipline: "general",

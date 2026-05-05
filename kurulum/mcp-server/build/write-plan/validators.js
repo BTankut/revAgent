@@ -163,7 +163,7 @@ function validateOperationPayload(step, prefix, errors, warnings) {
             break;
         case "place_family_instance":
             if (!args.point) errors.push(`${prefix}.arguments.point is required`);
-            if (!args.familySymbolId && !(args.familyName && args.typeName)) warnings.push(`${prefix} should identify a family symbol by id or by familyName/typeName`);
+            if (!args.familySymbolId && !(args.familyName && args.typeName)) errors.push(`${prefix}.arguments.familySymbolId or familyName/typeName is required`);
             break;
         case "create_duct_run":
             if (!Array.isArray(args.points) || args.points.length < 2) errors.push(`${prefix}.arguments.points must contain at least two points`);
