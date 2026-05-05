@@ -149,6 +149,7 @@
 - Added top-level `productionReadiness` to combine office standards, proposal data completeness, and generated write-plan validation blockers. Runtime stdio probe showed missing standards and enforced parameter allowlist failure in one non-mutating readiness summary.
 - Added domestic water and sanitary/storm pipe sizing proposal handoff: supplied demand/pipe identity requests can now produce proposal-only `resize_pipe` write-plan steps and pipe sizing report rows while staying `canCommit: false`. Runtime stdio probe returned valid resize proposals for domestic water, sanitary, and storm targets without mutating Revit.
 - Added fire protection pipe sizing proposal handoff: supplied fire demand/pipe identity requests can now produce critical-risk proposal-only `resize_pipe` write-plan steps and fire pipe sizing report rows while staying `canCommit: false`. Runtime stdio probe returned a valid `801 -> 80 mm` proposal at `500 L/min` without mutating Revit.
+- Current clean-restart normal socket commit smoke passed: plan `codex-live-param-smoke-2026-05-05T12-33-54-621Z` first proved `commit_write_plan` rejects without approval, then explicit user-approved commit set duct `392168` `Comments`; `verify_write_plan` and final `inspect_elements` readback matched, with `directAssemblyFallback: false`.
 
 ## Remaining Work
 

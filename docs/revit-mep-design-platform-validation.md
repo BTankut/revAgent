@@ -387,6 +387,12 @@ Write checks:
   - A fresh stdio runtime handshake listed all `13` tools.
   - `analyze_mep_system` with `discipline: all`, `includeRevitRead: false`, and enforced parameter allowlist allowing only `Mark` returned `success: true`, `mutateModel: false`, and top-level `productionReadiness`.
   - The summary returned `completeForProductionReview: false`, `officeStandardsComplete: false`, `proposalDataComplete: true`, `writePlanProposalValid: false`, and two blockers: missing office standards plus generated write-plan proposal invalid because the equipment note proposal targeted `Comments`.
+- Current clean-restart normal socket commit smoke:
+  - A fresh stdio runtime handshake against `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js` listed all `13` tools.
+  - `inspect_parameter_schema` confirmed duct `392168` has writable instance `Comments` / `ALL_MODEL_INSTANCE_COMMENTS`.
+  - Plan `codex-live-param-smoke-2026-05-05T12-33-54-621Z` ran `prepare_write_plan -> preview_write_plan -> commit_write_plan -> verify_write_plan` through the normal native socket path.
+  - `commit_write_plan` without token/approval was rejected first; explicit user-approved commit then returned `success: true`, `mutateModel: true`, `directAssemblyFallback: false`, and verify returned `success: true`, `mutateModel: false`.
+  - Final `inspect_elements` readback confirmed `Comments = Codex live write-plan smoke 2026-05-05T12-33-54-621Z` on duct `392168`.
 
 ## Known Validation Limits
 
