@@ -21,6 +21,8 @@ export const initialOperations = [
     "clear_parameter",
     "copy_parameter_value",
     "change_type",
+    "pin_elements",
+    "unpin_elements",
     "view_hide_elements",
     "view_unhide_elements",
     "view_apply_overrides",
@@ -35,8 +37,6 @@ export const initialOperations = [
 ];
 
 export const futureOperations = [
-    "pin_elements",
-    "unpin_elements",
     "tag_elements",
     "export_boq_report",
     "rotate_elements",

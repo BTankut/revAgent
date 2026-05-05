@@ -95,6 +95,28 @@ const scheduleValidation = validateWritePlan(schedulePlan, { mode: "commit", req
 assert.equal(scheduleValidation.valid, true);
 assert.equal(classifyPlanRisk(schedulePlan), "medium");
 
+const pinPlan = buildPlanFromArgs({
+    title: "Pin protected model elements",
+    discipline: "general",
+    operation: "pin_elements",
+    targets: { elementIds: [101, 102] },
+    arguments: {},
+});
+const pinValidation = validateWritePlan(pinPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(pinValidation.valid, true);
+assert.equal(classifyPlanRisk(pinPlan), "low");
+
+const invalidPinPlan = buildPlanFromArgs({
+    title: "Reject pin without targets",
+    discipline: "general",
+    operation: "pin_elements",
+    targets: {},
+    arguments: {},
+});
+const invalidPinValidation = validateWritePlan(invalidPinPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidPinValidation.valid, false);
+assert(invalidPinValidation.errors.includes("steps[0].targets.elementIds or elementId is required"));
+
 const reroutePlan = buildPlanFromArgs({
     title: "Commit explicit reroute geometry",
     discipline: "clash",

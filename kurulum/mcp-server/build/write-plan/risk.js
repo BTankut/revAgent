@@ -4,6 +4,8 @@ const operationRisk = {
     set_parameter: "low",
     clear_parameter: "low",
     copy_parameter_value: "low",
+    pin_elements: "low",
+    unpin_elements: "low",
     view_hide_elements: "low",
     view_unhide_elements: "low",
     view_apply_overrides: "low",

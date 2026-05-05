@@ -19,7 +19,7 @@
 - Added native `execute_write_plan` command in the plugin repo.
 - Added ExternalEvent handler and deterministic executor.
 - Implemented validate/preview/commit/verify modes.
-- Implemented initial operation catalog for parameter writes, view operations, movement, placement, duct/pipe creation, duct/pipe resize, and native schedule create/update.
+- Implemented initial operation catalog for parameter writes, pin/unpin, view operations, movement, placement, duct/pipe creation, duct/pipe resize, and native schedule create/update.
 - Added native `commit_reroute` source delete/replacement support: validation requires a `sourceElementId`, commit deletes the source after creating replacement route segments, and verify confirms the source no longer exists.
 - Added native `commit_reroute` reconnection support: source connector references are captured before deletion, replacement route segments are connected to each other, source neighbors are reconnected to route endpoints, and verify re-reads physical external connections while filtering system proxy references.
 - Added native reroute fitting reference readback: reconnect verify now reports `routeFittingRefCount` and `routeFittingRefs` for duct/pipe fittings connected to replacement route segments.
@@ -102,8 +102,9 @@
   - Commit plan `reroute-l-reconnect-1777967000000` deleted source `1020960` and created replacement ducts `1020965`, `1020967`, and `1020969`
   - Commit and verify both returned `segmentConnectionCount: 2`, `externalConnectionCount: 2`, `sourceReplacementCheck.exists: false`, and `success: true`
   - Final readback confirmed all three replacement ducts at `300 x 300 mm` with `openConnectorCount: 0`.
-- Added reroute fitting-reference verify readback in plugin patch `9/9`; plugin `Debug 2022|x64` build passed and live read-only probe on L-shaped replacement ducts `1020965`, `1020967`, `1020969` returned `routeFittingRefCount: 0`, making the no-separate-fitting behavior explicit.
-- Re-generated plugin patch artifact as `9/9` and verified it applies cleanly with `git am --3way` on a temporary plugin `main` worktree.
+- Added reroute fitting-reference verify readback in plugin patch `09/10`; plugin `Debug 2022|x64` build passed and live read-only probe on L-shaped replacement ducts `1020965`, `1020967`, `1020969` returned `routeFittingRefCount: 0`, making the no-separate-fitting behavior explicit.
+- Added native `pin_elements` / `unpin_elements`, runtime validation/risk coverage, native preview/commit/verify support, and live-tested reversible commit on duct `392168`: preview did not mutate, commit pinned, verify reported `actualPinned: true`, restore unpinned, and final pinned state returned to the original `false`.
+- Re-generated plugin patch artifact as `10/10` and verified it applies cleanly with `git am --3way` on a temporary plugin `main` worktree.
 
 ## Remaining Work
 

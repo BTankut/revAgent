@@ -131,6 +131,8 @@ function validateOperationPayload(step, prefix, errors, warnings) {
             requireTargetElement(targets, prefix, errors);
             if (!Number.isFinite(Number(args.typeId))) errors.push(`${prefix}.arguments.typeId is required`);
             break;
+        case "pin_elements":
+        case "unpin_elements":
         case "view_hide_elements":
         case "view_unhide_elements":
         case "view_apply_overrides":

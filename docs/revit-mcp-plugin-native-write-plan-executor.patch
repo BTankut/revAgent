@@ -1,7 +1,7 @@
 From 4e962e32957e3d74ae5c8f7ae027e6c7d7778ee6 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:29:46 +0300
-Subject: [PATCH 1/9] Add native write-plan executor
+Subject: [PATCH 01/10] Add native write-plan executor
 
 ---
  .../Commands/Test/SendCodeToRevitCommand.cs   |  41 ++
@@ -1244,7 +1244,7 @@ index c9ebbed..55dff88 100644
 From a5470f6a5e7fd8d19da908132761f77dc3b2a455 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 01:47:50 +0300
-Subject: [PATCH 2/9] Expand write-plan verification readback
+Subject: [PATCH 02/10] Expand write-plan verification readback
 
 ---
  .../Verification/WritePlanVerifier.cs         | 232 +++++++++++++++++-
@@ -1515,7 +1515,7 @@ index e6d710d..4add29c 100644
 From 7d2feac2c09553a726afe9a2d48e755d2dfeae5f Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 02:32:32 +0300
-Subject: [PATCH 3/9] Fix write-plan command SDK compatibility
+Subject: [PATCH 03/10] Fix write-plan command SDK compatibility
 
 ---
  .gitignore                                                 | 1 +
@@ -1588,7 +1588,7 @@ index b58ccae..6df80ee 100644
 From 38473ebf9ef27b320b86e59340c94d2527bc09c5 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:12:36 +0300
-Subject: [PATCH 4/9] Add native schedule write-plan operation
+Subject: [PATCH 04/10] Add native schedule write-plan operation
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 386 +++++++++++++++++-
@@ -2133,7 +2133,7 @@ index 4add29c..31c47a5 100644
 From b45f5bdd9c290f2708e154aef54f44433a708404 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:20:42 +0300
-Subject: [PATCH 5/9] Add native reroute commit verification
+Subject: [PATCH 05/10] Add native reroute commit verification
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 91 +++++++++++++++++++
@@ -2367,7 +2367,7 @@ index 31c47a5..0b76d2e 100644
 From c8d526ccb17599642a111a2c7248c1d841ee5fe9 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 09:41:57 +0300
-Subject: [PATCH 6/9] Verify reroute obstacle clearance
+Subject: [PATCH 06/10] Verify reroute obstacle clearance
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 120 +++++++++++++++++-
@@ -2548,7 +2548,7 @@ index ba849b9..91431bb 100644
 From 9c0e50c8b11a7363351a3852208c8f62834be8ff Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:11:18 +0300
-Subject: [PATCH 7/9] Support reroute source replacement
+Subject: [PATCH 07/10] Support reroute source replacement
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 46 ++++++++++++++++++-
@@ -2664,7 +2664,7 @@ index 91431bb..f346aca 100644
 From 6be1a8b287fb9d41bf5ee96c449eab360ced9f75 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:24:33 +0300
-Subject: [PATCH 8/9] Reconnect reroute replacement endpoints
+Subject: [PATCH 08/10] Reconnect reroute replacement endpoints
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 445 +++++++++++++++++-
@@ -3248,7 +3248,7 @@ index f346aca..f230ebf 100644
 From 0b3c09ff5eb9c55916f46cbaa5829e241542ecd7 Mon Sep 17 00:00:00 2001
 From: BarisT <baris.tankut@gmail.com>
 Date: Tue, 5 May 2026 10:59:59 +0300
-Subject: [PATCH 9/9] Report reroute fitting references
+Subject: [PATCH 09/10] Report reroute fitting references
 
 ---
  .../WritePlan/Operations/WritePlanExecutor.cs | 58 +++++++++++++++++--
@@ -3350,6 +3350,161 @@ index 9c3c4e0..08ab8e9 100644
          private static bool IsSystemReferenceOwner(Element owner)
          {
              if (owner == null) return false;
+--
+2.50.1.windows.1
+
+
+From 4d1672f96c751579511eb03c46bd5ae8166a61d9 Mon Sep 17 00:00:00 2001
+From: BarisT <baris.tankut@gmail.com>
+Date: Tue, 5 May 2026 11:12:20 +0300
+Subject: [PATCH 10/10] Add native pin element operations
+
+---
+ .../WritePlan/Operations/WritePlanExecutor.cs | 24 ++++++++++++++
+ .../Validators/WritePlanValidator.cs          | 16 ++++++++++
+ .../Verification/WritePlanVerifier.cs         | 32 +++++++++++++++++++
+ 3 files changed, 72 insertions(+)
+
+diff --git a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+index 08ab8e9..da6a01e 100644
+--- a/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
++++ b/SampleCommandSet/Commands/WritePlan/Operations/WritePlanExecutor.cs
+@@ -165,6 +165,11 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 row["targetElementCount"] = GetTargetElementIds(step).Count;
+                 row["arguments"] = args.DeepClone();
+             }
++            else if (operation == "pin_elements" || operation == "unpin_elements")
++            {
++                row["targetElementCount"] = GetTargetElementIds(step).Count;
++                row["expectedPinned"] = operation == "pin_elements";
++            }
+             else
+             {
+                 row["arguments"] = args.DeepClone();
+@@ -313,6 +318,10 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+                 CopyParameterValue(document, step, eIdMap, mappings, result);
+             else if (operation == "change_type")
+                 ChangeType(document, step, eIdMap, mappings, result);
++            else if (operation == "pin_elements")
++                SetPinned(document, step, true, mappings);
++            else if (operation == "unpin_elements")
++                SetPinned(document, step, false, mappings);
+             else if (operation == "view_hide_elements")
+                 SetViewHidden(document, step, true, result);
+             else if (operation == "view_unhide_elements")
+@@ -380,6 +389,21 @@ namespace SampleCommandSet.Commands.WritePlan.Operations
+             AddExistingMapping(step, elem, mappings);
+         }
+
++        private static void SetPinned(Document document, JObject step, bool pinned, JArray mappings)
++        {
++            ICollection<ElementId> ids = GetTargetElementIds(step);
++            if (ids.Count == 0)
++                throw new InvalidOperationException("No target element ids supplied.");
++            foreach (ElementId id in ids)
++            {
++                Element elem = document.GetElement(id);
++                if (elem == null)
++                    throw new InvalidOperationException("Target element not found: " + id.IntegerValue.ToString(CultureInfo.InvariantCulture));
++                elem.Pinned = pinned;
++                AddExistingMapping(step, elem, mappings);
++            }
++        }
++
+         private static void SetViewHidden(Document document, JObject step, bool hidden, JObject result)
+         {
+             View view = ResolveView(document, step);
+diff --git a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+index f230ebf..c91b7c2 100644
+--- a/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
++++ b/SampleCommandSet/Commands/WritePlan/Validators/WritePlanValidator.cs
+@@ -16,6 +16,8 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+             "clear_parameter",
+             "copy_parameter_value",
+             "change_type",
++            "pin_elements",
++            "unpin_elements",
+             "view_hide_elements",
+             "view_unhide_elements",
+             "view_apply_overrides",
+@@ -129,6 +131,12 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+                 ValidateReroutePayload(step, index, errors);
+                 return;
+             }
++            if (operation == "pin_elements" || operation == "unpin_elements")
++            {
++                JObject targets = step["targets"] as JObject;
++                if (!HasTargetElement(targets))
++                    errors.Add("steps[" + index + "].targets.elementIds or elementId is required");
++            }
+         }
+
+         private static void ValidateSchedulePayload(JObject step, int index, JArray errors, JArray warnings)
+@@ -199,6 +207,14 @@ namespace SampleCommandSet.Commands.WritePlan.Validators
+             return 0;
+         }
+
++        private static bool HasTargetElement(JObject targets)
++        {
++            if (targets == null) return false;
++            if (targets["elementId"] != null) return true;
++            JArray ids = targets["elementIds"] as JArray;
++            return ids != null && ids.Count > 0;
++        }
++
+         private static string StringValue(JObject obj, string name)
+         {
+             return obj[name] == null ? "" : obj[name].ToString();
+diff --git a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+index 0b76d2e..7b69f41 100644
+--- a/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
++++ b/SampleCommandSet/Commands/WritePlan/Verification/WritePlanVerifier.cs
+@@ -54,6 +54,10 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+                 return VerifyClearParameter(document, step);
+             if (operation == "change_type")
+                 return VerifyChangeType(document, step);
++            if (operation == "pin_elements")
++                return VerifyPinned(document, step, true);
++            if (operation == "unpin_elements")
++                return VerifyPinned(document, step, false);
+             if (operation == "resize_duct" || operation == "resize_pipe")
+                 return VerifyResize(document, step, operation);
+             if (operation == "view_hide_elements")
+@@ -168,6 +172,34 @@ namespace SampleCommandSet.Commands.WritePlan.Verification
+             return row;
+         }
+
++        private static JObject VerifyPinned(Document document, JObject step, bool expectedPinned)
++        {
++            JArray rows = new JArray();
++            bool ok = true;
++            foreach (ElementId id in TargetElementIds(step))
++            {
++                Element elem = document.GetElement(id);
++                bool actual = elem != null && elem.Pinned;
++                if (elem == null || actual != expectedPinned)
++                    ok = false;
++                rows.Add(new JObject
++                {
++                    ["elementId"] = id.IntegerValue,
++                    ["exists"] = elem != null,
++                    ["expectedPinned"] = expectedPinned,
++                    ["actualPinned"] = actual
++                });
++            }
++            return new JObject
++            {
++                ["success"] = ok,
++                ["stepId"] = WritePlanExecutor.StringValue(step, "stepId"),
++                ["operation"] = expectedPinned ? "pin_elements" : "unpin_elements",
++                ["checks"] = rows,
++                ["message"] = ok ? "verified" : "pinned state does not match expected value"
++            };
++        }
++
+         private static bool VerifyDoubleParameter(Element elem, string parameterName, JToken expectedToken, string unit, JArray checks)
+         {
+             Parameter p = elem != null ? elem.LookupParameter(parameterName) : null;
 --
 2.50.1.windows.1
 
