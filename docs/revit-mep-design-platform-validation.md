@@ -334,11 +334,20 @@ Write checks:
   - `preview_write_plan` was called through that runtime with `useNativeExecutor: true` for a preview-only `set_parameter` step on duct `392168`.
   - The result used the normal `execute_write_plan` socket path (`directAssemblyFallback: false`), returned one preview row, and reported `mutateModel: false`.
   - Re-reading duct `392168` after preview confirmed `Comments` remained `Codex write-plan commit test 2026-05-05T00:00:00Z`.
+- Clean Revit restart/reload native registry audit succeeded:
+  - Revit was closed and restarted on a temporary copy of the sample model:
+    `C:\Users\BT\AppData\Local\Temp\revit-mcp-live-test\rme_advanced_sample_project_codex_restart_test.rvt`.
+  - The `Add-Ins` tab was opened and `Revit MCP Switch` was clicked through UI Automation.
+  - `get_revit_session_context` confirmed the new Revit 2022 process, document `rme_advanced_sample_project_codex_restart_test`, active view `WSHP 2-3 System View`, and live MEP counts including `728` ducts and `488` pipes.
+  - A fresh stdio runtime handshake against `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js` listed all `13` tools.
+  - Plan `restart-native-preview-1777980684540` called `preview_write_plan` with `useNativeExecutor: true` for duct `392168`.
+  - The preview returned `success: true`, `warnings: []`, one normal native preview row, `mutateModel: false`, and no direct-assembly fallback warning/marker.
+  - Re-reading duct `392168` after preview confirmed `Comments` remained empty, proving the clean-restart preview did not mutate the model.
 
 ## Known Validation Limits
 
 - The installed MCP tool session currently exposes the previous six-tool runtime surface. The updated local runtime lists all 13 tools and was used for the new tool tests.
 - The registered Codex runtime path is `C:\Users\BT\Projects\revit-mcp-runtime\build\index.js`; its `build` folder was updated from this repo and a fresh handshake against that path listed all 13 tools. The already-running MCP process still needs restart/reconnect before this chat exposes the new tool namespace.
-- The public Revit socket command registry can now call `execute_write_plan` in the current session after in-memory hot registration of the compat assembly. A normal Revit restart/reload is still recommended for operational confidence that the on-disk `commandRegistry.json` path loads the compat assembly from a clean AppDomain.
+- The public Revit socket command registry can call `execute_write_plan` after clean Revit restart/reload through the installed compat command assembly path. The restart audit above proves the on-disk registry path loads without the temporary in-memory hot-register step.
 - Runtime keeps a direct-assembly fallback for `validate`, `preview`, and `verify` so read-only/native validation can continue if a future session has an unavailable command registry. Direct fallback for `commit` is disabled unless `REVIT_MCP_ALLOW_DIRECT_EXECUTOR_COMMIT=true` is set; the native executor itself can now run inside an already modifiable dynamic host context by using `SubTransaction`.
 - Production-model writes were intentionally not run; the live write acceptance test was limited to the user-approved disposable/test model.

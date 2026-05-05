@@ -42,6 +42,7 @@
 - Updated local runtime `analyze_mep_system` read the active model without mutation.
 - Native write-plan preview was live-tested through the registered runtime using direct assembly fallback because the open Revit process had not reloaded `execute_write_plan`; preview succeeded and did not mutate the sampled duct.
 - Fixed the native write-plan command SDK/interface mismatch against the active add-in's `RevitMCPSDK` interface, packaged a compat command assembly, hot-registered it in the open Revit session, and live-tested normal socket `execute_write_plan` preview without direct assembly fallback.
+- Revit was then cleanly restarted on a temporary sample-model copy, the `Revit MCP Switch` add-in button was clicked through UI Automation, MCP reconnected to the new Revit process, and a fresh stdio runtime `preview_write_plan` call on duct `392168` succeeded with `warnings: []`, one normal native preview row, `mutateModel: false`, and no direct-fallback marker. Post-preview `Comments` readback stayed empty.
 - Added deterministic HVAC and hydronic calculation foundations with hand-check tests and missing office standard blockers.
 - Added workflow eId hydration from stored mappings into preview/commit/verify plans, with a live read-only preview test resolving an eId to a real duct.
 - Expanded native verifier readback coverage for parameter set/clear/copy, type changes, duct/pipe resize, view hide/unhide, and target existence.
