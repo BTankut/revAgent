@@ -240,6 +240,36 @@ const pressureCriticalPathSelection = selectCriticalConnectorPath({
 assert.equal(pressureCriticalPathSelection.strategy, "max_local_loss_pressure_drop");
 assert.equal(pressureCriticalPathSelection.selectedTerminalElementId, 402);
 assert.equal(pressureCriticalPathSelection.selectedTotalPressureDropPa, 125);
+const pressureMatchedLocalLossExtraction = summarizeLocalLossSamples({
+    discipline: "hvac",
+    criticalPathSelection: pressureCriticalPathSelection,
+    samples: [
+        {
+            elementId: 40,
+            category: "Duct Fittings",
+            lossParameters: [
+                { parameterName: "Pressure Drop", valueKind: "pressure_drop_pa", numericValue: 125 },
+            ],
+        },
+    ],
+});
+assert.equal(pressureMatchedLocalLossExtraction.selectedPathPressureCheck.consistent, true);
+assert.equal(pressureMatchedLocalLossExtraction.selectedPathPressureCheck.deltaPa, 0);
+const pressureMismatchLocalLossExtraction = summarizeLocalLossSamples({
+    discipline: "hvac",
+    criticalPathSelection: pressureCriticalPathSelection,
+    samples: [
+        {
+            elementId: 40,
+            category: "Duct Fittings",
+            lossParameters: [
+                { parameterName: "Pressure Drop", valueKind: "pressure_drop_pa", numericValue: 50 },
+            ],
+        },
+    ],
+});
+assert.equal(pressureMismatchLocalLossExtraction.selectedPathPressureCheck.consistent, false);
+assert(pressureMismatchLocalLossExtraction.warnings.some((warning) => warning.includes("Selected path local-loss pressure check mismatch")));
 const pathTargetingCalls = [];
 const pathTargetingResult = await readPathTargetedLocalLosses({
     pathCode: "pathfinding-code",

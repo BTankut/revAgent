@@ -168,6 +168,13 @@ export function summarizeLocalLossSamples({ discipline = "general", samples = []
     else if (pressureDropParameterCount === 0 && lossCoefficientParameterCount === 0 && equivalentLengthParameterCount === 0) {
         warnings.push("Local-loss parameters were found, but none were classified as pressure drop, loss coefficient, or equivalent length.");
     }
+    const selectedPathPressureCheck = buildSelectedPathPressureCheck({
+        criticalPathSelection,
+        totalPressureDropPa,
+    });
+    if (selectedPathPressureCheck?.consistent === false) {
+        warnings.push(`Selected path local-loss pressure check mismatch: ranking selected ${selectedPathPressureCheck.selectedPathPressureDropPa} Pa, final extraction returned ${selectedPathPressureCheck.extractedPressureDropPa} Pa.`);
+    }
     return {
         success: true,
         method: "Read-only fitting/accessory/equipment parameter extraction for local-loss calibration",
@@ -185,6 +192,7 @@ export function summarizeLocalLossSamples({ discipline = "general", samples = []
         lossCoefficientParameterCount,
         equivalentLengthParameterCount,
         totalPressureDropPa,
+        ...(selectedPathPressureCheck ? { selectedPathPressureCheck } : {}),
         pressureContribution: buildPressureContribution({
             discipline,
             pressureDropParameterCount,
@@ -245,6 +253,23 @@ function finiteOrNull(value) {
     if (value === null || value === undefined || value === "") return null;
     const numeric = Number(value);
     return Number.isFinite(numeric) ? numeric : null;
+}
+
+function buildSelectedPathPressureCheck({ criticalPathSelection, totalPressureDropPa }) {
+    if (!criticalPathSelection) return undefined;
+    const selectedPathPressureDropPa = finiteOrNull(criticalPathSelection.selectedTotalPressureDropPa);
+    const extractedPressureDropPa = finiteOrNull(totalPressureDropPa) || 0;
+    const deltaPa = selectedPathPressureDropPa === null
+        ? null
+        : extractedPressureDropPa - selectedPathPressureDropPa;
+    return {
+        success: true,
+        selectedPathPressureDropPa,
+        extractedPressureDropPa,
+        deltaPa,
+        consistent: deltaPa === null ? undefined : Math.abs(deltaPa) <= 1e-6,
+        canCommit: false,
+    };
 }
 
 function pressureDropByElementId(samples) {
