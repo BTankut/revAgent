@@ -164,7 +164,7 @@ Engineering calculation foundations:
 - Hydronic circular pipe velocity, Darcy-Weisbach pressure loss, velocity/friction size proposal, and proposal-only `resize_pipe` write-plan step generation from live pipe samples plus supplied design flows.
 - Weighted network shortest-path traversal, rooted tree branch flow aggregation, least-loss flow direction inference, HVAC fan pressure basis, hydronic pump head basis, hydronic pipe resistance calibration, hydronic terminal balancing loss, and single/multi-loop Hardy-Cross hydraulic balancing.
 - Domestic water fixture-unit summation, fixture-unit demand interpolation, pipe pressure-loss basis, velocity/friction pipe sizing proposal, and recirculation continuity issue screening.
-- Sanitary/storm gravity slope and reverse-slope validation, fixture-unit gravity pipe sizing proposal, branch-to-stack reachability, and vent continuity checks.
+- Sanitary/storm gravity slope and reverse-slope validation, fixture-unit gravity pipe sizing proposal, rational-method storm runoff and pipe sizing proposal, branch-to-stack reachability, and vent continuity checks.
 - Fire/sprinkler rectangular room spacing/coverage screening, fire cabinet hose-reach coverage screening, fire cabinet demand basis, and fire pump flow/pressure basis with explicit fire-design assumptions.
 - Clash AABB hard/clearance clash classification and multi-candidate orthogonal reroute solving with clearance validation.
 - Fan/pump candidate screening from required flow and pressure/head plus equipment schedule/report update proposals without replacement.

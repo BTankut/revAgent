@@ -35,6 +35,9 @@ export const defaultOfficeStandards = {
     sanitaryStorm: {
         sanitarySlopeRules: [],
         pipeSizingTable: [],
+        rainfallIntensityMmH: null,
+        runoffCoefficient: null,
+        stormPipeSizingTable: [],
         stackNodeIds: [],
         ventNodeIds: [],
         stormSizingMethod: null,
@@ -101,6 +104,15 @@ export function missingStandardsForDiscipline(discipline, standards = defaultOff
         }
         if (!Array.isArray(standards.sanitaryStorm?.pipeSizingTable) || standards.sanitaryStorm.pipeSizingTable.length === 0) {
             missing.push("sanitaryStorm.pipeSizingTable");
+        }
+        if (standards.sanitaryStorm?.rainfallIntensityMmH == null) {
+            missing.push("sanitaryStorm.rainfallIntensityMmH");
+        }
+        if (standards.sanitaryStorm?.runoffCoefficient == null) {
+            missing.push("sanitaryStorm.runoffCoefficient");
+        }
+        if (!Array.isArray(standards.sanitaryStorm?.stormPipeSizingTable) || standards.sanitaryStorm.stormPipeSizingTable.length === 0) {
+            missing.push("sanitaryStorm.stormPipeSizingTable");
         }
     }
     if (discipline === "fire" || discipline === "sprinkler" || discipline === "general") {

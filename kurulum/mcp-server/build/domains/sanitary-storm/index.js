@@ -1,5 +1,5 @@
 import { missingStandardsForDiscipline } from "../../office-standards/defaults.js";
-import { checkVentContinuity, sizeGravityPipeByFixtureUnits, traceGravityDrainageToStack, validateGravitySlope } from "./calculations.js";
+import { calculateStormRunoffRational, checkVentContinuity, sizeGravityPipeByFixtureUnits, sizeStormPipeByFlow, traceGravityDrainageToStack, validateGravitySlope } from "./calculations.js";
 
 export function analyzeSanitaryStorm({ officeStandards = {} } = {}) {
     const missingStandards = missingStandardsForDiscipline("sanitary", officeStandards);
@@ -16,6 +16,7 @@ export function analyzeSanitaryStorm({ officeStandards = {} } = {}) {
             "gravity slope validation",
             "reverse slope issue check",
             "fixture-unit gravity pipe sizing proposal",
+            "storm runoff and pipe sizing proposal",
             "branch-to-stack reachability check",
             "vent continuity check",
         ],
@@ -29,6 +30,19 @@ export function analyzeSanitaryStorm({ officeStandards = {} } = {}) {
             pipeSizing: sizeGravityPipeByFixtureUnits({
                 fixtureUnits: 12,
                 sizingTable: officeStandards.sanitaryStorm?.pipeSizingTable,
+            }),
+            stormRunoff: calculateStormRunoffRational({
+                catchmentAreaM2: 250,
+                rainfallIntensityMmH: officeStandards.sanitaryStorm?.rainfallIntensityMmH,
+                runoffCoefficient: officeStandards.sanitaryStorm?.runoffCoefficient,
+            }),
+            stormPipeSizing: sizeStormPipeByFlow({
+                runoffFlowLs: calculateStormRunoffRational({
+                    catchmentAreaM2: 250,
+                    rainfallIntensityMmH: officeStandards.sanitaryStorm?.rainfallIntensityMmH,
+                    runoffCoefficient: officeStandards.sanitaryStorm?.runoffCoefficient,
+                }).output?.runoffFlowLs,
+                sizingTable: officeStandards.sanitaryStorm?.stormPipeSizingTable,
             }),
             stackReachability: traceGravityDrainageToStack({
                 fixtureNodeIds: ["wc-1"],

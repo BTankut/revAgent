@@ -182,6 +182,97 @@ export function checkVentContinuity({ edges = [], fixtureNodeIds = [], ventNodeI
     };
 }
 
+export function calculateStormRunoffRational({
+    catchmentAreaM2,
+    rainfallIntensityMmH = null,
+    runoffCoefficient = null,
+} = {}) {
+    const missingStandards = [];
+    if (!isPositive(rainfallIntensityMmH)) missingStandards.push("sanitaryStorm.rainfallIntensityMmH");
+    if (!isPositive(runoffCoefficient)) missingStandards.push("sanitaryStorm.runoffCoefficient");
+    if (missingStandards.length > 0) {
+        return {
+            success: false,
+            requiresOfficeStandard: true,
+            missingStandards,
+            canCommit: false,
+        };
+    }
+    const area = Number(catchmentAreaM2);
+    if (!Number.isFinite(area) || area <= 0) {
+        return {
+            success: false,
+            error: "catchmentAreaM2 must be greater than zero",
+            canCommit: false,
+        };
+    }
+    const flowLs = Number(rainfallIntensityMmH) * area * Number(runoffCoefficient) / 3600.0;
+    return {
+        success: true,
+        method: "Rational-method storm runoff foundation",
+        input: {
+            catchmentAreaM2: area,
+            rainfallIntensityMmH: Number(rainfallIntensityMmH),
+            runoffCoefficient: Number(runoffCoefficient),
+        },
+        output: {
+            runoffFlowLs: flowLs,
+        },
+        assumptions: [
+            "Rainfall intensity and runoff coefficient must be supplied by the office standard or governing hydrology basis.",
+            "Time of concentration, roof drain limits, ponding, overflow routes, and local code criteria are not evaluated.",
+        ],
+        canCommit: false,
+        riskLevel: "medium",
+    };
+}
+
+export function sizeStormPipeByFlow({
+    runoffFlowLs,
+    sizingTable = null,
+} = {}) {
+    if (!Array.isArray(sizingTable) || sizingTable.length === 0) {
+        return {
+            success: false,
+            requiresOfficeStandard: true,
+            missingStandards: ["sanitaryStorm.stormPipeSizingTable"],
+            canCommit: false,
+        };
+    }
+    const flow = Number(runoffFlowLs);
+    if (!Number.isFinite(flow) || flow <= 0) {
+        return {
+            success: false,
+            error: "runoffFlowLs must be greater than zero",
+            canCommit: false,
+        };
+    }
+    const candidates = sizingTable
+        .map((row) => ({
+            diameterMm: Number(row.diameterMm),
+            maxFlowLs: Number(row.maxFlowLs),
+            minSlopePercent: Number(row.minSlopePercent),
+        }))
+        .filter((row) => Number.isFinite(row.diameterMm) && row.diameterMm > 0 &&
+            Number.isFinite(row.maxFlowLs) && row.maxFlowLs >= flow)
+        .sort((a, b) => a.diameterMm - b.diameterMm);
+    return {
+        success: candidates.length > 0,
+        method: "Smallest configured storm pipe size satisfying runoff flow",
+        input: {
+            runoffFlowLs: flow,
+        },
+        selected: candidates[0] || null,
+        candidateCount: candidates.length,
+        assumptions: [
+            "Pipe capacity table must come from the office standard or governing drainage calculation method.",
+            "Final storm drainage design requires roof drain, overflow, slope, and local code review.",
+        ],
+        canCommit: false,
+        riskLevel: "medium",
+    };
+}
+
 function directedGraph(edges) {
     const graph = new Map();
     for (const edge of Array.isArray(edges) ? edges : []) {
@@ -205,6 +296,10 @@ function undirectedGraph(edges) {
         graph.get(to).add(from);
     }
     return graph;
+}
+
+function isPositive(value) {
+    return value !== null && value !== undefined && Number.isFinite(Number(value)) && Number(value) > 0;
 }
 
 function findDirectedPathToAny(start, targets, graph) {

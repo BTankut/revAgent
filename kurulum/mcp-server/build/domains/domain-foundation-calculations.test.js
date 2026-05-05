@@ -8,7 +8,7 @@ import { analyzeHydronic } from "./hydronic/index.js";
 import { connectorPathElementIds, selectCriticalConnectorPath, summarizeLocalLossSamples } from "./local-losses/calculations.js";
 import { readPathTargetedLocalLosses } from "./local-losses/path-targeting.js";
 import { buildLocalLossOnlyCode } from "./local-losses/revit-read.js";
-import { calculateSlopePercent, checkVentContinuity, sizeGravityPipeByFixtureUnits, traceGravityDrainageToStack, validateGravitySlope } from "./sanitary-storm/calculations.js";
+import { calculateSlopePercent, calculateStormRunoffRational, checkVentContinuity, sizeGravityPipeByFixtureUnits, sizeStormPipeByFlow, traceGravityDrainageToStack, validateGravitySlope } from "./sanitary-storm/calculations.js";
 import { buildAnalysisReport } from "../reporting/reportBuilder.js";
 import { buildAnalysisWritePlanProposal } from "../tools/analysis_write_plan_proposal.js";
 
@@ -84,6 +84,25 @@ const gravityPipeSize = sizeGravityPipeByFixtureUnits({
 assert.equal(gravityPipeSize.success, true);
 assert.equal(gravityPipeSize.selected.diameterMm, 75);
 assert.equal(sizeGravityPipeByFixtureUnits({ fixtureUnits: 12 }).requiresOfficeStandard, true);
+
+const stormRunoff = calculateStormRunoffRational({
+    catchmentAreaM2: 250,
+    rainfallIntensityMmH: 120,
+    runoffCoefficient: 0.9,
+});
+assert.equal(stormRunoff.success, true);
+assert(Math.abs(stormRunoff.output.runoffFlowLs - 7.5) < 1e-12);
+const stormPipeSize = sizeStormPipeByFlow({
+    runoffFlowLs: stormRunoff.output.runoffFlowLs,
+    sizingTable: [
+        { diameterMm: 75, maxFlowLs: 5, minSlopePercent: 1 },
+        { diameterMm: 100, maxFlowLs: 12, minSlopePercent: 1 },
+    ],
+});
+assert.equal(stormPipeSize.success, true);
+assert.equal(stormPipeSize.selected.diameterMm, 100);
+assert.equal(calculateStormRunoffRational({ catchmentAreaM2: 250 }).requiresOfficeStandard, true);
+assert.equal(sizeStormPipeByFlow({ runoffFlowLs: 7.5 }).requiresOfficeStandard, true);
 
 const stackTrace = traceGravityDrainageToStack({
     fixtureNodeIds: ["wc-1", "lav-1"],

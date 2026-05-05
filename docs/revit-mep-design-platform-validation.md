@@ -48,7 +48,7 @@ Result:
   - domestic water fixture-unit summation and recirculation continuity
   - domestic water fixture-unit demand interpolation, pressure-loss basis, and velocity/friction pipe sizing proposal
   - sanitary/storm slope and reverse-slope checks
-  - sanitary/storm fixture-unit gravity pipe sizing, branch-to-stack reachability, and vent continuity checks
+  - sanitary/storm fixture-unit gravity pipe sizing, rational-method storm runoff and pipe sizing, branch-to-stack reachability, and vent continuity checks
   - sprinkler coverage/spacing standard gating
   - fire cabinet coverage, fire cabinet demand basis, and fire pump flow/pressure basis
   - clash AABB hard/clearance classification
@@ -168,7 +168,7 @@ Live read-only results captured on the active session:
   - Fixture-unit demand conversion and domestic pipe sizing examples both returned `success: true`.
   - The analysis remained proposal-only with `canCommit: false` and top-level `mutateModel: false`.
 - Sanitary runtime probe succeeded without model mutation:
-  - `analyze_mep_system` with `discipline: sanitary`, `includeRevitRead: false`, and supplied slope/sizing standards returned pipe sizing, stack reachability, and vent continuity examples.
+  - `analyze_mep_system` with `discipline: sanitary`, `includeRevitRead: false`, and supplied slope/sizing standards returned pipe sizing, storm runoff/pipe sizing, stack reachability, and vent continuity examples.
   - The analysis remains issue/proposal-only with `canCommit: false`.
 - Fire runtime probe succeeded without model mutation:
   - `analyze_mep_system` with `discipline: fire`, `includeRevitRead: false`, and supplied sprinkler/cabinet/fire-pump standards returned sprinkler coverage, cabinet coverage, cabinet demand, and pump basis examples.
