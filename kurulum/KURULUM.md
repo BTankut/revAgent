@@ -81,6 +81,11 @@ Yeni `get_revit_mcp_status` araci aktif gorev, gecen sure ve son tamamlanan
 veya hata alan gorevleri doner. Bu status cagrisi aktif komut kilidini
 beklemez; uzun bir Revit MCP komutu calisirken de durum sorgulanabilir.
 
+Runtime, status disindaki her Revit komutundan once otomatik status preflight
+yapar. `activeTask` doluysa yeni komut Revit'e gonderilmez ve busy mesaji
+doner. Baska bir Revit MCP gorevi calisirken cagrilabilecek tek arac
+`get_revit_mcp_status` olmalidir.
+
 Bundled Revit add-in, Revit acilistan sonra idle duruma gelince socket
 servisini otomatik baslatir. Ayarli portu kullanir; doluysa `+20`'ye kadar
 siradaki bos porta gecer, bu nedenle birden cok acik Revit ayri portlarda

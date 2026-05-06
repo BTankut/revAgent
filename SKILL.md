@@ -13,7 +13,7 @@ description: >
   "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
   "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
 license: MIT
-version: 0.4.2
+version: 0.4.3
 ---
 
 # Revit MCP — MEP Automation Expert
@@ -72,24 +72,29 @@ docs server as a hard dependency, not an optional add-on. If it is not
 connected, surface that as a setup problem before writing code that
 guesses API names.
 
-Default workflow for any non-trivial task:
+Default workflow for every Revit runtime task:
 
-0. Do not run Revit MCP runtime tools in parallel. Revit API execution is
+0. Before sending any non-status Revit MCP runtime command, call
+   `get_revit_mcp_status`. If `activeTask` is not null, do not send a new
+   Revit command. Report the active task name and elapsed time, then wait or
+   poll `get_revit_mcp_status` until the active task clears. This preflight is
+   required even before the first context call.
+1. Do not run Revit MCP runtime tools in parallel. Revit API execution is
    single-threaded through the Revit UI process, and overlapping MCP calls can
    leave the socket service alive while the command handler is still busy.
    Run one runtime call, wait for it to return, then send the next one. The
    exception is `get_revit_mcp_status`, which is designed to query status while
    a long task is already running.
-1. Call `get_revit_session_context` first to learn Revit version/build,
+2. Call `get_revit_session_context` first to learn Revit version/build,
    culture, active view type, document state, selection, MEP counts, and links.
-2. If the active view is a sheet or the task depends on view visibility, call
+3. If the active view is a sheet or the task depends on view visibility, call
    `get_active_view_context` before making view-level assumptions.
-3. Resolve API symbols with `resolve_api_symbols_bulk` and pass the active
+4. Resolve API symbols with `resolve_api_symbols_bulk` and pass the active
    `revit_version`. Use the single-symbol docs tools only for follow-up detail.
-4. Before writes or localized/shared parameter work, call
+5. Before writes or localized/shared parameter work, call
    `inspect_parameter_schema` with `parameterNameMatchMode: "exact"`; for
    element-specific tasks call `inspect_elements`.
-5. Use `send_code_to_revit_safe` for read-only probes and write previews. It
+6. Use `send_code_to_revit_safe` for read-only probes and write previews. It
    rejects `transactionMode: "auto"` and always executes with
    `transactionMode: "none"`. Use raw `send_code_to_revit` only when the user
    explicitly asks for broad dynamic execution or a confirmed write.

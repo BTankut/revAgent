@@ -97,6 +97,11 @@ elapsed time, recent completed/failed tasks, and service port. Status calls
 bypass the per-port command lock so Codex can query progress during a long
 Revit operation.
 
+The runtime performs a status preflight before every non-status Revit command.
+If `activeTask` is present, the new command is rejected with a busy message
+instead of being sent into Revit. `get_revit_mcp_status` remains the only tool
+that may be called while another Revit MCP task is running.
+
 The bundled Revit add-in starts the socket service automatically when Revit
 becomes idle after startup. It uses the configured port, then auto-increments
 to the next free port up to `+20`, so multiple open Revit processes can listen

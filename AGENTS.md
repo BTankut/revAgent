@@ -13,3 +13,16 @@ Codex sadece Revit ile sınırlı değildir. Excel, Word, PDF, görsel çıktı,
 Bu ortamda kalite beklentisi yüksektir. "Aynısı olsun", "dosyadaki gibi", "resimdeki gibi" veya benzeri isteklerde yaklaşık benzerlik yeterli değildir; geometri, içerik, stil, hizalama, birleşik hücre yapısı, ölçü ve görünür sonuç dikkatle eşleştirilir.
 
 Codex, insan operatörün yerine geçmez; onun teknik yardımcısıdır. Kararları görünür kılar, riskleri açık söyler, model ve dosya güvenliğini korur, yapılan işi doğrulanabilir hale getirir.
+
+## Revit MCP Coordination - Hard Rule
+
+Revit'e gonderilen her status disi MCP gorevi oncesinde kisa durum kontrolu yapilir:
+
+1. Once `get_revit_mcp_status` cagrilir.
+2. `activeTask` doluysa yeni Revit komutu gonderilmez.
+3. Aktif gorev adi ve gecen sure kullaniciya bildirilir.
+4. Uzun beklemelerde sadece `get_revit_mcp_status` ile aralikli durum kontrolu yapilir.
+5. `activeTask` bosaldiginda yeni gorev gonderilebilir.
+6. Revit MCP runtime araclari paralel calistirilmaz; tek istisna aktif gorev sirasinda durum okumak icin kullanilan `get_revit_mcp_status` cagrisidir.
+
+Bu kural MCP icindeki aktif gorevleri yakalar. Kullanicinin Revit'te elle yaptigi her secme/duzenleme hareketini otomatik algilamaz; boyle durumlarda kullanici talimati ve gorunen Revit durumu onceliklidir.
