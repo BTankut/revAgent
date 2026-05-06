@@ -98,9 +98,9 @@ export function registerListRevitInstancesTool(server) {
         ports: z.array(z.union([z.number(), z.string()])).optional().describe("Ports to scan. Defaults to REVIT_MCP_PORTS, or 8080-8085."),
         includeRegistry: z.boolean().optional().describe("Include targets from the Revit MCP instance registry file. Defaults true."),
         includeUnreachable: z.boolean().optional().describe("Include unreachable ports in the result. Defaults false."),
-        timeoutMs: z.number().int().positive().max(5000).optional().describe("Per-port connection timeout in milliseconds. Defaults 750."),
+        timeoutMs: z.number().int().positive().max(15000).optional().describe("Per-port connection timeout in milliseconds. Defaults 3000."),
     }, async (args) => {
-        const timeoutMs = args.timeoutMs || 750;
+        const timeoutMs = args.timeoutMs || 3000;
         const targets = getCandidateRevitTargets({
             host: args.host,
             ports: args.ports,

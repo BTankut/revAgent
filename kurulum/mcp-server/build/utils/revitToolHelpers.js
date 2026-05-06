@@ -48,16 +48,20 @@ export function formatJsonContent(payload) {
     };
 }
 
-function parseJsonLike(value) {
+function parseJsonLike(value, depth = 0) {
     if (typeof value !== "string") {
         return value;
     }
     const text = value.trim();
-    if (!text.startsWith("{") && !text.startsWith("[")) {
+    if (!text.startsWith("{") && !text.startsWith("[") && !text.startsWith("\"")) {
         return value;
     }
     try {
-        return JSON.parse(text);
+        const parsed = JSON.parse(text);
+        if (depth < 2 && typeof parsed === "string") {
+            return parseJsonLike(parsed, depth + 1);
+        }
+        return parsed;
     }
     catch {
         return value;

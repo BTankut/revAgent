@@ -158,12 +158,13 @@ export class RevitClientConnection {
                     }
                 });
                 this.socket.write(JSON.stringify(commandObj));
+                const timeoutMs = options.timeoutMs || 120000;
                 timeoutHandle = setTimeout(() => {
                     if (this.responseCallbacks.has(requestId)) {
                         this.responseCallbacks.delete(requestId);
-                        reject(new Error(`Command timed out after 2 minutes: ${command}`));
+                        reject(new Error(`Command timed out after ${this.formatElapsed(timeoutMs)}: ${command}`));
                     }
-                }, options.timeoutMs || 120000);
+                }, timeoutMs);
                 if (typeof timeoutHandle.unref === "function") {
                     timeoutHandle.unref();
                 }
