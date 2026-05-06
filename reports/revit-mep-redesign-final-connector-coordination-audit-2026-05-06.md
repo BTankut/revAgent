@@ -9,7 +9,7 @@ Path: `C:\Users\BT\AppData\Local\Temp\revit-mcp-live-test\rme_advanced_sample_pr
 ## Current Saved State
 
 ```text
-FINAL_SAVED_POST_DELETE_AUDIT|modified=False|rooms=78|spaces=89|ceilings=43|ducts=205|ductConn=223/577|ductFittings=3|air=183/183|pipes=880|pipeConn=1205/1760|pipeFittings=439|spr=239/239|fireCabinets=6|deleted1024041Exists=False
+FINAL_SAVED_POST_ORPHAN_DELETE_AUDIT|modified=False|rooms=78|spaces=89|ceilings=43|ducts=205|ductConn=223/577|ductFittings=3|air=183/183|pipes=873|pipeConn=1205/1746|pipeFittings=439|spr=239/239|fireCabinets=6|deletedTargetStillExists=0
 ```
 
 ## Device Connector Result
@@ -25,9 +25,10 @@ FINAL_SAVED_POST_DELETE_AUDIT|modified=False|rooms=78|spaces=89|ceilings=43|duct
 FINAL_COORDINATION_RECHECK|pipeDuctClashes=0|largePipeDuctClashes=0|ceilingHorizontalProblems=0|ceilingVerticalExpected=133|modified=False
 COORD_LIGHT_AUDIT|modified=False|ducts=205|pipes=881|ceilings=43|pipeDuctBoxHits=0|pipeDuctLargeBoxHits=0|checkedPairs=180605|horizontalCurves=717|verticalCurves=368|horizontalCeilingBoxHits=0|verticalCeilingBoxHits=133
 POST_DELETE_CEILING_AUDIT|modified=True|ceilings=43|curves=1085|horizontalCurves=716|verticalCurves=368|horizontalCeilingBoxHits=0|verticalCeilingBoxHits=133
+POST_ORPHAN_DELETE_AUDIT|modified=True|ducts=205|supply=121|return=62|exhaust=22|ductConn=223/577|pipes=873|hydSup=132|hydRet=129|domCold=24|domHot=10|sanitary=18|vent=23|fireWet=537|pipeConn=1205/1746|air=183/183|spr=239/239|fireCabinets=6|pipeDuctBoxHits=0|largePipeDuctBoxHits=0|horizontalCeilingBoxHits=0|verticalCeilingBoxHits=133|horizontalCurves=709|verticalCurves=368|pipeOpen=541|pipeCoincidentPairs=49|pipeSameDir=49|pipeOpposite=0|pipeAngled=0|sameDirWithOpenOtherEnd=0
 ```
 
-After the orphan-stub cleanup described below, the model was saved through Revit UI `Ctrl+S`; the final save audit returned `modified=False`.
+After the orphan-stub and orphan-overlap cleanups described below, the model was saved through Revit UI `Ctrl+S`; the final save audit returned `modified=False`.
 
 ## Preserved Architectural Basis
 
@@ -42,7 +43,7 @@ After the orphan-stub cleanup described below, the model was saved through Revit
 The visible distribution geometry, outlet/device connector continuity, pipe-duct coordination, and suspended-ceiling horizontal coordination now pass the live audits. Full segment-to-segment connector/fitting continuity is still not complete:
 
 - Duct connectors: `223/577` connected
-- Pipe connectors: `1205/1760` connected
+- Pipe connectors: `1205/1746` connected
 - Duct fittings: `3`
 - Pipe fittings: `439`
 
@@ -60,11 +61,20 @@ The remaining single angled fire-pipe candidate was not a valid elbow target. El
 POST_DELETE_AUDIT|modified=True|ducts=205|supply=121|return=62|exhaust=22|ductConn=223/577|pipes=880|hydSup=133|hydRet=129|domCold=24|domHot=10|sanitary=18|vent=23|fireWet=543|pipeConn=1205/1760|air=183/183|spr=239/239|fireCabinets=6|pipeDuctBoxHits=0|largePipeDuctBoxHits=0|pipeOpen=555|pipeCoincidentPairs=54|pipeSameDir=54|pipeOpposite=0|pipeAngled=0
 ```
 
+A second residual-overlap audit found five same-direction overlap pairs where at least one overlapping pipe had its opposite connector open. Seven fully orphan pipe elements were removed through write-plan `df2da867-38b2-4ddb-b23a-273978edea7f` after preview:
+
+```text
+deletedElementIds=1023005,1023006,1023068,1023069,1023306,1023307,1023334,1023335,1023824,1023825,1023852,1023853,1026824,1026825
+```
+
+The seven targeted pipe ids were `1023005`, `1023068`, `1023306`, `1023334`, `1023824`, `1023852`, and `1026824`; each target had `connectorCount=2` and `openConnectorCount=2`.
+
 Residual endpoint/fitting limitation:
 
 - No same-system coincident duct endpoint pairs remain in the final classification.
 - Pipe residual coincident pairs are same-direction overlap/duplicate-like geometry, not valid direct fitting candidates.
-- No opposite-direction or angled coincident pipe endpoint fitting candidates remain after the orphan-stub cleanup.
+- No opposite-direction or angled coincident pipe endpoint fitting candidates remain after the orphan cleanup.
+- No remaining same-direction pipe overlap pair has an open opposite connector after orphan cleanup; the residual 49 pairs have connected opposite ends and require tee/header normalization, not deletion or simple endpoint stitching.
 
 ## Application Lessons
 
