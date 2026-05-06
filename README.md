@@ -111,7 +111,10 @@ the port. Set `REVIT_MCP_AUTOSTART=0` to disable automatic startup.
 While a Revit MCP command is running, the add-in shows a small topmost status
 window in Revit with the task name, elapsed time, and a warning not to use
 Revit until the task finishes. Completed and failed states are shown briefly
-with recent task history and stay visible until the user clicks `OK`.
+with recent task history and stay visible until the user clicks `OK`. The
+window close button is treated as acknowledge/hide after completion; during a
+running task it is ignored so closing the status window cannot close or crash
+Revit.
 
 Then:
 
