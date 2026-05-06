@@ -249,6 +249,10 @@ function validateOperationPayload(step, prefix, errors, warnings, officeStandard
             }
             validateConnectedReroutePayload(args, prefix, errors);
             break;
+        case "connect_ducts":
+        case "connect_pipes":
+            validateEndpointConnectionPayload(step.operation, targets, args, prefix, errors, warnings);
+            break;
         case "export_boq_report":
         case "export_clash_report":
             if (args.format && !["csv", "json"].includes(String(args.format).toLowerCase())) {
@@ -270,6 +274,52 @@ function validateOperationPayload(step, prefix, errors, warnings, officeStandard
             }
             break;
     }
+}
+
+function validateEndpointConnectionPayload(operation, targets, args, prefix, errors, warnings) {
+    const targetIds = Array.isArray(targets.elementIds) ? targets.elementIds : [];
+    const hasExplicitPair = targetIds.length === 2 ||
+        (Number.isFinite(Number(targets.sourceElementId)) && Number.isFinite(Number(targets.targetElementId))) ||
+        (Number.isFinite(Number(args.sourceElementId)) && Number.isFinite(Number(args.targetElementId)));
+    if (!hasExplicitPair) {
+        errors.push(`${prefix}.targets.elementIds with exactly two ids or source/target element ids is required`);
+    }
+    if (targetIds.length > 0 && targetIds.length !== 2) {
+        errors.push(`${prefix}.targets.elementIds must contain exactly two ids for ${operation}`);
+    }
+    const mode = String(args.connectionMode || args.mode || "");
+    if (mode !== "endpoint_to_endpoint") {
+        errors.push(`${prefix}.arguments.connectionMode must be endpoint_to_endpoint`);
+    }
+    const maxDistanceMm = Number(args.maxDistanceMm);
+    if (!Number.isFinite(maxDistanceMm) || maxDistanceMm <= 0 || maxDistanceMm > 500) {
+        errors.push(`${prefix}.arguments.maxDistanceMm must be greater than 0 and no more than 500`);
+    }
+    if (args.requireSameSystemType !== true) {
+        errors.push(`${prefix}.arguments.requireSameSystemType must be true for endpoint connection commits`);
+    }
+    if (args.rollbackPreviewRequired !== true) {
+        errors.push(`${prefix}.arguments.rollbackPreviewRequired must be true`);
+    }
+    if (args.commitBatchSize !== 1) {
+        errors.push(`${prefix}.arguments.commitBatchSize must be 1`);
+    }
+    if (args.heartbeatRequired !== true) {
+        errors.push(`${prefix}.arguments.heartbeatRequired must be true`);
+    }
+    if (args.postCommitAudit !== true) {
+        errors.push(`${prefix}.arguments.postCommitAudit must be true`);
+    }
+    if (args.forbidNewElementCreation !== true) {
+        errors.push(`${prefix}.arguments.forbidNewElementCreation must be true for endpoint stitching`);
+    }
+    if (!Number.isInteger(Number(args.expectedConnectedConnectorIncrease)) || Number(args.expectedConnectedConnectorIncrease) < 2) {
+        errors.push(`${prefix}.arguments.expectedConnectedConnectorIncrease must be an integer of at least 2`);
+    }
+    if (!isNonEmptyString(args.timeoutRecoveryPlan)) {
+        errors.push(`${prefix}.arguments.timeoutRecoveryPlan is required`);
+    }
+    warnings.push(`${prefix}.operation requires native executor support with per-pair transaction finalization; dynamic code commits are not acceptable for endpoint stitching`);
 }
 
 function validateConnectedReroutePayload(args, prefix, errors) {

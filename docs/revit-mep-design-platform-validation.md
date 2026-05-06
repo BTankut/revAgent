@@ -457,3 +457,8 @@ Write checks:
 - The public Revit socket command registry can call `execute_write_plan` after clean Revit restart/reload through the installed compat command assembly path. The restart audit above proves the on-disk registry path loads without the temporary in-memory hot-register step.
 - Runtime keeps a direct-assembly fallback for `validate`, `preview`, and `verify` so read-only/native validation can continue if a future session has an unavailable command registry. Direct fallback for `commit` is disabled unless `REVIT_MCP_ALLOW_DIRECT_EXECUTOR_COMMIT=true` is set; the native executor itself can now run inside an already modifiable dynamic host context by using `SubTransaction`.
 - Production-model writes were intentionally not run; the live write acceptance test was limited to the user-approved disposable/test model.
+- Endpoint stitching safety audit from the live redesigned model:
+  - Air terminals were connected `183/183` and sprinklers `239/239`; pipe/duct clashes and horizontal ceiling coordination remained clear.
+  - Remaining duct/pipe segment endpoint stitching was tested separately because many open endpoints were coincident.
+  - A single duct endpoint rollback probe succeeded, but the same pair timed out during real dynamic-code commit finalization; a 5-pair batch also timed out and left counts unchanged.
+  - Runtime validation now accepts `connect_ducts` / `connect_pipes` only as guarded preview plans requiring exactly two elements, `endpoint_to_endpoint`, `commitBatchSize: 1`, rollback preview, heartbeat, timeout recovery, no new element creation, and post-commit audit. Commit remains rejected by `requireInitialOperationsOnly` until the native executor implements the operation.

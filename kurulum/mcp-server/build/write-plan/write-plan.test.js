@@ -625,6 +625,58 @@ assert(invalidConnectedRerouteValidation.errors.includes("steps[0].arguments.exp
 assert(invalidConnectedRerouteValidation.errors.includes("steps[0].arguments.forbidNewClashElementIds must be true when preserving an external connector"));
 assert(invalidConnectedRerouteValidation.errors.includes("steps[0].arguments.postCommitAudit must be true when preserving an external connector"));
 
+const endpointStitchPlan = buildPlanFromArgs({
+    title: "Preview duct endpoint stitch",
+    discipline: "hvac",
+    operation: "connect_ducts",
+    targets: { elementIds: [1021038, 1021044] },
+    arguments: {
+        connectionMode: "endpoint_to_endpoint",
+        maxDistanceMm: 5,
+        requireSameSystemType: true,
+        rollbackPreviewRequired: true,
+        commitBatchSize: 1,
+        heartbeatRequired: true,
+        postCommitAudit: true,
+        forbidNewElementCreation: true,
+        expectedConnectedConnectorIncrease: 2,
+        timeoutRecoveryPlan: "Abort the single-pair transaction, report the pair id, and require Revit failure state cleanup before retry.",
+    },
+});
+const endpointStitchValidation = validateWritePlan(endpointStitchPlan, { mode: "preview" });
+assert.equal(endpointStitchValidation.valid, true);
+assert.equal(classifyPlanRisk(endpointStitchPlan), "critical");
+assert(endpointStitchValidation.warnings.some((warning) => warning.includes("dynamic code commits are not acceptable for endpoint stitching")));
+
+const endpointStitchCommitValidation = validateWritePlan(endpointStitchPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(endpointStitchCommitValidation.valid, false);
+assert(endpointStitchCommitValidation.errors.includes("Operation is cataloged but not implemented in the native starter executor: connect_ducts"));
+
+const invalidEndpointStitchPlan = buildPlanFromArgs({
+    title: "Reject unsafe pipe endpoint stitch",
+    discipline: "hydronic",
+    operation: "connect_pipes",
+    targets: { elementIds: [1021788, 1021810, 1021816] },
+    arguments: {
+        connectionMode: "endpoint_to_endpoint",
+        maxDistanceMm: 1000,
+        requireSameSystemType: false,
+        commitBatchSize: 5,
+    },
+});
+const invalidEndpointStitchValidation = validateWritePlan(invalidEndpointStitchPlan, { mode: "preview" });
+assert.equal(invalidEndpointStitchValidation.valid, false);
+assert(invalidEndpointStitchValidation.errors.includes("steps[0].targets.elementIds must contain exactly two ids for connect_pipes"));
+assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.maxDistanceMm must be greater than 0 and no more than 500"));
+assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.requireSameSystemType must be true for endpoint connection commits"));
+assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.rollbackPreviewRequired must be true"));
+assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.commitBatchSize must be 1"));
+assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.heartbeatRequired must be true"));
+assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.postCommitAudit must be true"));
+assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.forbidNewElementCreation must be true for endpoint stitching"));
+assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.expectedConnectedConnectorIncrease must be an integer of at least 2"));
+assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.timeoutRecoveryPlan is required"));
+
 const invalidDeleteSourceReroute = buildPlanFromArgs({
     title: "Reject source delete without source element",
     discipline: "clash",

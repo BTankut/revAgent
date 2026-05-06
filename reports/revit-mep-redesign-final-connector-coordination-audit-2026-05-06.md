@@ -49,7 +49,7 @@ An endpoint proximity audit found many unconnected duct and pipe segment ends at
 OPEN_ENDPOINT_PROXIMITY|ductOpen=394|ductNearest01=45|ductNearest05=45|ductNearest20=45|ductNearest50=47|pipeOpen=1232|pipeNearest01=781|pipeNearest05=781|pipeNearest20=792|pipeNearest50=832
 ```
 
-A rollback batch test for direct duct endpoint-to-endpoint `ConnectTo` timed out in Revit, so broad automatic endpoint stitching was not applied to the saved model. This should be handled by a dedicated native command with per-operation transaction control, status heartbeat, and timeout-safe rollback rather than large dynamic-code batches.
+A single direct duct endpoint-to-endpoint rollback probe succeeded on `1021038 -> 1021044`, but the same pair timed out during real dynamic-code commit finalization. A 5-pair commit batch also timed out and left the connector counts unchanged. Broad automatic endpoint stitching was therefore not applied to the saved model. This should be handled by a dedicated native command with per-operation transaction control, status heartbeat, and timeout-safe rollback rather than dynamic-code commits.
 
 ## Application Lessons
 
