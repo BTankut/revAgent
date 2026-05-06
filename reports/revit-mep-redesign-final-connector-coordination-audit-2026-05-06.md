@@ -9,7 +9,7 @@ Path: `C:\Users\BT\AppData\Local\Temp\revit-mcp-live-test\rme_advanced_sample_pr
 ## Current Saved State
 
 ```text
-FINAL_MODEL_SAVE_AUDIT|modified=False|path=C:\\Users\\BT\\AppData\\Local\\Temp\\revit-mcp-live-test\\rme_advanced_sample_project_codex_restart_test.rvt|rooms=78|spaces=89|ceilings=43|ducts=205|ductConn=183/577|ductsWithAny=99|ductFittings=0|airTerminals=183|airConn=183/183|airWithAny=183|mechanicalEquipment=53|fireCabinets=6|pipes=886|pipeConn=540/1772|pipesWithAny=479|pipeFittings=153|plumbingFixtures=11|sprinklers=239|sprConn=239/239|sprWithAny=239
+FINAL_CONNECTOR_SAVE_AUDIT|modified=False|rooms=78|spaces=89|ceilings=43|ducts=205|ductConn=223/577|ductFittings=3|air=183/183|mechanicalEquipment=53|fireCabinets=6|pipes=881|pipeConn=1205/1762|pipeFittings=439|plumbingFixtures=11|spr=239/239
 ```
 
 ## Device Connector Result
@@ -22,7 +22,7 @@ FINAL_MODEL_SAVE_AUDIT|modified=False|path=C:\\Users\\BT\\AppData\\Local\\Temp\\
 ## Coordination Result
 
 ```text
-FINAL_COORDINATION_AUDIT|ducts=205|pipes=886|ceilings=43|pipeDuctClashes=0|largePipeDuctClashes=0|ceilingHorizontalProblems=0|ductCeilingHorizontal=0|pipeCeilingHorizontal=0|ceilingVerticalExpected=133|pipeCeilingVertical=133|modified=True
+FINAL_COORDINATION_RECHECK|pipeDuctClashes=0|largePipeDuctClashes=0|ceilingHorizontalProblems=0|ceilingVerticalExpected=133|modified=False
 ```
 
 After this audit, the model was saved through Revit UI `Ctrl+S`; the final save audit returned `modified=False`.
@@ -38,10 +38,10 @@ After this audit, the model was saved through Revit UI `Ctrl+S`; the final save 
 
 The visible distribution geometry, outlet/device connector continuity, pipe-duct coordination, and suspended-ceiling horizontal coordination now pass the live audits. Full segment-to-segment connector/fitting continuity is still not complete:
 
-- Duct connectors: `183/577` connected
-- Pipe connectors: `540/1772` connected
-- Duct fittings: `0`
-- Pipe fittings: `153`
+- Duct connectors: `223/577` connected
+- Pipe connectors: `1205/1762` connected
+- Duct fittings: `3`
+- Pipe fittings: `439`
 
 An endpoint proximity audit found many unconnected duct and pipe segment ends at the same coordinate:
 
@@ -49,7 +49,13 @@ An endpoint proximity audit found many unconnected duct and pipe segment ends at
 OPEN_ENDPOINT_PROXIMITY|ductOpen=394|ductNearest01=45|ductNearest05=45|ductNearest20=45|ductNearest50=47|pipeOpen=1232|pipeNearest01=781|pipeNearest05=781|pipeNearest20=792|pipeNearest50=832
 ```
 
-A single direct duct endpoint-to-endpoint rollback probe succeeded on `1021038 -> 1021044`, but the same pair timed out during real dynamic-code commit finalization. A 5-pair commit batch also timed out and left the connector counts unchanged. Broad automatic endpoint stitching was therefore not applied to the saved model. This should be handled by a dedicated native command with per-operation transaction control, status heartbeat, and timeout-safe rollback rather than dynamic-code commits.
+Further filtered endpoint work was applied after the initial report. Same-system, same-size, opposite-direction duct endpoints were connected directly; different-size opposite-direction duct endpoints were connected with transition fittings. Same-system, same-size, opposite-direction pipe endpoints were connected directly, and same-system, same-size angled pipe endpoints were connected with elbow fittings. The dynamic approach was only stable after excluding same-direction pairs and a specific problematic elbow pair (`1024038 -> 1024041`); invalid same-direction pairs can still timeout during commit finalization.
+
+Residual endpoint/fitting limitation:
+
+- No same-system coincident duct endpoint pairs remain in the final classification.
+- Pipe residual coincident pairs are mostly same-direction overlap/duplicate-like geometry, not valid direct fitting candidates.
+- One angled fire pipe pair (`1024038 -> 1024041`) timed out as a single elbow commit and was left unconnected.
 
 ## Application Lessons
 

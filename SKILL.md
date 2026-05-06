@@ -131,14 +131,15 @@ Default workflow for any non-trivial task:
    fallback when the user explicitly asks for broad dynamic execution or the
    typed write-plan path cannot express the task.
 
-Connector stitching safety: do not commit duct/pipe endpoint-to-endpoint
-`Connector.ConnectTo` batches through raw dynamic code. Live Revit 2022
-testing showed rollback probes can succeed while real commit finalization can
-timeout. Endpoint stitching must be represented as `connect_ducts` or
-`connect_pipes` write-plan preview data with exactly one pair per commit,
-rollback preview evidence, heartbeat, timeout recovery, and post-commit audit;
-until the native executor implements that operation, treat it as a blocker
-rather than forcing repeated dynamic commits.
+Connector stitching safety: do not commit blind duct/pipe endpoint batches
+through raw dynamic code. Live Revit 2022 testing showed invalid same-direction
+or otherwise unsuitable pairs can timeout during commit finalization even when
+nearby rollback probes pass. Endpoint stitching should be represented as
+`connect_ducts` or `connect_pipes` write-plan preview data with exactly one
+pair per risky commit, rollback preview evidence, heartbeat, timeout recovery,
+and post-commit audit. If raw expert fallback is explicitly used, first filter
+to same-system/same-size/opposite endpoint pairs or verified fitting candidates,
+skip known timeout pairs, and save/audit after small batches.
 
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known — e.g. the bundled patterns under
