@@ -101,9 +101,13 @@ the port. Set `REVIT_MCP_AUTOSTART=0` to disable automatic startup.
 Then:
 
 1. Open Revit.
-2. Click `Settings` in the `mcp-servers-for-revit` ribbon tab.
-3. Enable the commands you want and save.
-4. Run `/skills reload` inside Codex, or restart Codex.
+2. If Revit asks about the unsigned add-in publisher, choose `Always Load`.
+   This can appear once after a fresh install or DLL update.
+3. The MCP socket service starts automatically; the `Revit MCP Switch` button is
+   only a manual on/off override.
+4. Click `Settings` in the `mcp-servers-for-revit` ribbon tab if you need to
+   enable or review command availability.
+5. Run `/skills reload` inside Codex, or restart Codex.
 
 The installer copies this repo into `%USERPROFILE%\.codex\skills\revit-mcp`
 and installs `AGENTS.md` globally at `%USERPROFILE%\.codex\AGENTS.md`.

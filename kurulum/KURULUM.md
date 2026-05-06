@@ -83,6 +83,10 @@ siradaki bos porta gecer, bu nedenle birden cok acik Revit ayri portlarda
 dinleyebilir. Revit kapanirken servis durdurulur ve port serbest kalir.
 Otomatik baslatmayi kapatmak icin `REVIT_MCP_AUTOSTART=0` verilebilir.
 
+Temiz kurulumda veya DLL guncellemesinden sonra Revit unsigned add-in uyarisi
+gosterirse `Always Load` sec. Bu normalde bir kez sorulur. `Revit MCP Switch`
+dugmesine her acilista basmak gerekmez; socket servis otomatik baslar.
+
 Installer ayrica repo kokunu global Codex skill olarak
 `%USERPROFILE%\.codex\skills\revit-mcp` altina kopyalar ve `AGENTS.md`
 dosyasini `%USERPROFILE%\.codex\AGENTS.md` global talimat dosyasi olarak
