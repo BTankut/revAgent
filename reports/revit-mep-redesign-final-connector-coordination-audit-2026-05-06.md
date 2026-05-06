@@ -96,6 +96,52 @@ POST_TIMEOUT_BRANCH_TEE_STATE|modified=False|1022539Exists=True|1022601Exists=Tr
 
 The remaining 49 connected overlap pairs were then resolved through the native typed `normalize_pipe_header_overlap` operation rather than raw dynamic commits. The command previews and commits one pair at a time, with rollback, for direct fitting-to-branch pipe tees, short pipe-offset branch tees, and orphan open fitting cleanup. Final audit after this native pass returned `pipeCoincidentPairs=0`, `pipeSameDir=0`, preserved `air=183/183` and `spr=239/239`, and preserved zero pipe/duct and horizontal-ceiling clashes.
 
+## Objective Completion Audit
+
+Objective restated as concrete deliverables:
+
+1. Preserve/analyze the architectural basis: rooms, spaces, ceilings.
+2. Draw/model ventilation, heating, cooling, sanitary, domestic water, sprinkler, and fire hose cabinet systems.
+3. Keep terminal devices connected where applicable.
+4. Run superposition/clash control and preserve minimum suspended-ceiling coordination.
+5. Optimize residual overlapping/duplicate mechanical geometry enough for a real engineering model.
+
+Live evidence after the native pipe-header normalization pass:
+
+```text
+BASIC_COMPLETION_AUDIT|modified=False|rooms=78|spaces=89|ceilings=43
+SYSTEM_COMPLETION_AUDIT|ducts=205|ductConn=223/577|ductOpen=354|ductFittings=3|pipes=870|pipeConn=1240/1740|pipeOpen=500|pipeFittings=437
+DEVICE_COMPLETION_AUDIT|air=183/183|sprinklers=239/239|plumbingFixtures=11|fireCabinets=6
+DUCT_SYSTEM_GROUPS|Supply Air=121;Return Air=62;Exhaust Air=22
+PIPE_SYSTEM_GROUPS|Hydronic Supply=132;Hydronic Return=129;Domestic Cold Water=24;Vent=23;Sanitary=16;Domestic Hot Water=10;Fire Protection Wet=536
+COORD_COMPLETION_AUDIT|pipeDuctBoxHits=0|largePipeDuctBoxHits=0|horizontalCeilingBoxHits=0|verticalCeilingBoxHits=133|horizontalCurves=707|verticalCurves=368|minHorizontalMepToCeilingClearanceMm=176.7|clearanceSamples=913
+RESIDUAL_COMPLETION_AUDIT|openPipeConnectors=500|openDuctConnectors=354|openPipeCoincidentPairs=2|openDuctCoincidentPairs=0|pipeOverlapAll=43|pipeOverlapConnected=0
+```
+
+Prompt-to-artifact checklist:
+
+| Requirement | Evidence | Status |
+|---|---|---|
+| Architectural basis analyzed/preserved | `rooms=78`, `spaces=89`, `ceilings=43` | Pass |
+| Ventilation modeled | `Supply Air=121`, `Return Air=62`, `Exhaust Air=22`, `air=183/183` | Pass for visual/device test; connector/fitting continuity still weak |
+| Heating/cooling modeled | `Hydronic Supply=132`, `Hydronic Return=129` | Pass for routed hydronic distribution; 2 same-point different-size open end pairs remain |
+| Sanitary and vent modeled | `Sanitary=16`, `Vent=23`, `plumbingFixtures=11` | Pass for routed plumbing basis |
+| Domestic water modeled | `Domestic Cold Water=24`, `Domestic Hot Water=10` | Pass for routed domestic water basis |
+| Sprinkler modeled | `Fire Protection Wet=536`, `sprinklers=239/239` | Pass for device connectivity; 43 residual same-line fire-pipe overlaps remain |
+| Fire hose cabinets modeled | `fireCabinets=6` | Pass |
+| Superposition/pipe-duct clash control | `pipeDuctBoxHits=0`, `largePipeDuctBoxHits=0` | Pass |
+| Minimum suspended ceiling coordination | `horizontalCeilingBoxHits=0`, minimum horizontal MEP-to-ceiling clearance `176.7 mm`; vertical crossings counted as expected penetrations | Pass for horizontal ceiling coordination |
+| Fully optimized real engineering geometry | `pipeOverlapConnected=0`, but `pipeOverlapAll=43`; `openPipeCoincidentPairs=2`; `ductConn=223/577`, `pipeConn=1240/1740` | Not complete |
+
+Residual overlap clusters are all `Fire Protection Wet`, mostly same-line sprinkler branch manifolds. They are no longer the previously resolved connected same-direction open-end header overlaps; they are serial/collinear manifold overlaps where multiple sprinkler branch pipes share the same line and common node. This needs a separate native normalizer that converts star-like overlapping sprinkler branch manifolds into segmented headers with tee/fitting continuity, plus a reducing tee/transition normalizer for the two hydronic same-point different-size pairs:
+
+```text
+OPEN_PIPE_COINCIDENT|a=1021788|b=1021810|x=-11.777916|y=-18.000000|z=7.558962
+OPEN_PIPE_COINCIDENT|a=1021794|b=1021816|x=-11.077916|y=-20.000000|z=7.308962
+```
+
+Completion status: not achieved for the full objective. The model is ready for realistic visual/coordination testing, but not yet a fully optimized engineering-grade connected/fitting-complete network.
+
 ## Application Lessons
 
 1. Revit requests must be serialized behind a command gate with a visible busy state and heartbeat.
@@ -119,4 +165,4 @@ The model is ready for realistic visual and coordination testing of the current 
 - horizontal ceiling coordination clear,
 - model saved and not modified.
 
-The broader "fully engineered/fitting-complete network" goal should remain open for future duct segment fitting/connector continuity work, but the pipe same-direction header overlap blocker is now resolved by native preview/commit workflow.
+The broader "fully engineered/fitting-complete network" goal remains open. The pipe same-direction header overlap blocker is resolved by native preview/commit workflow, but sprinkler branch manifold overlaps, two hydronic reducing-connection pairs, and broader duct/pipe segment fitting continuity still require follow-up native operations.
