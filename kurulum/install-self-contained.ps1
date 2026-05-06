@@ -2,6 +2,7 @@ param(
     [ValidateSet("2022")]
     [string]$RevitVersion = "2022",
     [string]$ServerTarget = "C:\Projects\revit-mcp",
+    [string]$WorkspaceAgentsTarget = "",
     [switch]$SkipCodexSkillInstall
 )
 
@@ -15,6 +16,10 @@ $docsServerSource = Join-Path $PSScriptRoot "revit-api-docs-mcp"
 $addinRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitVersion"
 $pluginTarget = Join-Path $addinRoot "revit_mcp_plugin"
 $revitInstallRoot = Join-Path ${env:ProgramFiles} "Autodesk\Revit $RevitVersion"
+if ([string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
+    $serverParent = Split-Path -Parent $ServerTarget
+    $WorkspaceAgentsTarget = Join-Path $serverParent "AGENTS.md"
+}
 
 $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
 if ($runningRevit) {
@@ -201,6 +206,7 @@ if (Test-Path $duplicateAddin) {
 
 $codexSkillTarget = $null
 $codexAgentsTarget = $null
+$workspaceAgentsInstalled = $null
 if (-not $SkipCodexSkillInstall) {
     $codexRoot = Join-Path $env:USERPROFILE ".codex"
     $codexSkillsRoot = Join-Path $codexRoot "skills"
@@ -236,6 +242,24 @@ if (-not $SkipCodexSkillInstall) {
         }
 
         Copy-Item -LiteralPath $agentsSource -Destination $codexAgentsTarget -Force
+
+        if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
+            $workspaceAgentsDir = Split-Path -Parent $WorkspaceAgentsTarget
+            if (-not [string]::IsNullOrWhiteSpace($workspaceAgentsDir)) {
+                New-Item -ItemType Directory -Path $workspaceAgentsDir -Force | Out-Null
+            }
+
+            if (Test-Path -LiteralPath $WorkspaceAgentsTarget) {
+                $existingWorkspaceAgents = Get-Item -LiteralPath $WorkspaceAgentsTarget
+                if ($existingWorkspaceAgents.Length -gt 0) {
+                    $workspaceAgentsBackup = $WorkspaceAgentsTarget + ".backup-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+                    Copy-Item -LiteralPath $WorkspaceAgentsTarget -Destination $workspaceAgentsBackup -Force
+                }
+            }
+
+            Copy-Item -LiteralPath $agentsSource -Destination $WorkspaceAgentsTarget -Force
+            $workspaceAgentsInstalled = $WorkspaceAgentsTarget
+        }
     }
 }
 
@@ -246,6 +270,9 @@ Write-Host "Required docs server path: $docsServerSource"
 if (-not $SkipCodexSkillInstall) {
     Write-Host "Codex skill path: $codexSkillTarget"
     Write-Host "Codex global AGENTS.md: $codexAgentsTarget"
+    if ($workspaceAgentsInstalled) {
+        Write-Host "Workspace AGENTS.md: $workspaceAgentsInstalled"
+    }
 }
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow

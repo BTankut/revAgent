@@ -104,7 +104,9 @@ dugmesine her acilista basmak gerekmez; socket servis otomatik baslar.
 Installer ayrica repo kokunu global Codex skill olarak
 `%USERPROFILE%\.codex\skills\revit-mcp` altina kopyalar ve `AGENTS.md`
 dosyasini `%USERPROFILE%\.codex\AGENTS.md` global talimat dosyasi olarak
-kurar. Mevcut global `AGENTS.md` doluysa once yedek alir. Bu davranisi
+kurar. Ayni dosyayi varsayilan kurulumda `C:\Projects\AGENTS.md` olarak da
+kurar; `-ServerTarget` farkli verilirse bu hedef server klasorunun ust
+klasorudur. Mevcut `AGENTS.md` dosyalari doluysa once yedek alir. Bu davranisi
 istemiyorsan installer'a `-SkipCodexSkillInstall` gec.
 
 ## Manuel kurulum
@@ -224,6 +226,7 @@ Self-contained installer bu adimi otomatik yapar. Manuel kurulumda:
 ```powershell
 xcopy /E /I /Y . "%USERPROFILE%\.codex\skills\revit-mcp"
 copy /Y AGENTS.md "%USERPROFILE%\.codex\AGENTS.md"
+copy /Y AGENTS.md "C:\Projects\AGENTS.md"
 ```
 
 Ardindan Codex icinde:

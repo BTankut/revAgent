@@ -126,8 +126,12 @@ Then:
 
 The installer copies this repo into `%USERPROFILE%\.codex\skills\revit-mcp`
 and installs `AGENTS.md` globally at `%USERPROFILE%\.codex\AGENTS.md`.
+It also installs the same workstation role file at the workspace root next to
+the runtime target, defaulting to `C:\Projects\AGENTS.md` when `-ServerTarget`
+is `C:\Projects\revit-mcp`.
 If an existing non-empty global `AGENTS.md` is present, the installer backs it
-up before replacing it. Pass `-SkipCodexSkillInstall` to skip that behavior.
+up before replacing it; the workspace `AGENTS.md` is backed up the same way.
+Pass `-SkipCodexSkillInstall` to skip that behavior.
 
 ## What the installer deploys
 
@@ -147,6 +151,7 @@ After install, the same payload is copied into the real system locations below:
 - Codex skill and workstation role:
   - `%USERPROFILE%\.codex\skills\revit-mcp`
   - `%USERPROFILE%\.codex\AGENTS.md`
+  - `C:\Projects\AGENTS.md` by default
 
 The installer removes any previous `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin` tree before copying, so the add-in payload is not left nested under `revit_mcp_plugin\revit_mcp_plugin`.
 
