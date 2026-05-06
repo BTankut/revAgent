@@ -1,7 +1,8 @@
 param(
     [ValidateSet("2022")]
     [string]$RevitVersion = "2022",
-    [string]$ServerTarget = "C:\Projects\revit-mcp"
+    [string]$ServerTarget = "C:\Projects\revit-mcp",
+    [switch]$SkipCodexSkillInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,6 +63,7 @@ function Resolve-CompatibleDependencyPath {
         [Parameter(Mandatory = $true)]
         [string[]]$SearchRoots,
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [System.Collections.Generic.List[string]]$RejectedVersions
     )
 
@@ -197,10 +199,54 @@ if (Test-Path $duplicateAddin) {
     Move-Item -LiteralPath $duplicateAddin -Destination $disabled
 }
 
+$codexSkillTarget = $null
+$codexAgentsTarget = $null
+if (-not $SkipCodexSkillInstall) {
+    $codexRoot = Join-Path $env:USERPROFILE ".codex"
+    $codexSkillsRoot = Join-Path $codexRoot "skills"
+    $codexSkillTarget = Join-Path $codexSkillsRoot "revit-mcp"
+    $codexAgentsTarget = Join-Path $codexRoot "AGENTS.md"
+
+    New-Item -ItemType Directory -Path $codexSkillsRoot -Force | Out-Null
+
+    if (Test-Path -LiteralPath $codexSkillTarget) {
+        $backupStamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $skillBackup = Join-Path $codexSkillsRoot "revit-mcp.backup-$backupStamp"
+        Move-Item -LiteralPath $codexSkillTarget -Destination $skillBackup
+    }
+
+    New-Item -ItemType Directory -Path $codexSkillTarget -Force | Out-Null
+    Get-ChildItem -LiteralPath $repoRoot -Force |
+        Where-Object { $_.Name -notin @(".git", "node_modules") } |
+        Copy-Item -Destination $codexSkillTarget -Recurse -Force
+
+    $agentsSource = Join-Path $repoRoot "AGENTS.md"
+    if (Test-Path -LiteralPath $agentsSource) {
+        New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
+
+        $shouldBackupAgents = $false
+        if (Test-Path -LiteralPath $codexAgentsTarget) {
+            $existingAgents = Get-Item -LiteralPath $codexAgentsTarget
+            $shouldBackupAgents = $existingAgents.Length -gt 0
+        }
+
+        if ($shouldBackupAgents) {
+            $agentsBackup = Join-Path $codexRoot ("AGENTS.md.backup-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+            Copy-Item -LiteralPath $codexAgentsTarget -Destination $agentsBackup -Force
+        }
+
+        Copy-Item -LiteralPath $agentsSource -Destination $codexAgentsTarget -Force
+    }
+}
+
 Write-Host "Self-contained Revit MCP bundle installed for Revit $RevitVersion" -ForegroundColor Green
 Write-Host "Plugin path: $addinRoot"
 Write-Host "Runtime server path: $ServerTarget"
 Write-Host "Required docs server path: $docsServerSource"
+if (-not $SkipCodexSkillInstall) {
+    Write-Host "Codex skill path: $codexSkillTarget"
+    Write-Host "Codex global AGENTS.md: $codexAgentsTarget"
+}
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "1. cd $ServerTarget"
@@ -208,7 +254,8 @@ Write-Host "2. npm install --omit=dev"
 Write-Host "3. codex mcp add revit-mcp -- node `"$ServerTarget\build\index.js`""
 Write-Host "4. cd $docsServerSource"
 Write-Host "5. npm install --omit=dev"
-Write-Host "6. codex mcp add revit-api-docs -- node `"$docsServerSource\build\index.js`""
-Write-Host "7. Confirm both servers with: codex mcp list"
-Write-Host "8. Copy this repo to %USERPROFILE%\.codex\skills\revit-mcp and run /skills reload"
-Write-Host "9. Open Revit and enable commands from the mcp-servers-for-revit ribbon Settings button"
+Write-Host "6. npm run build-index"
+Write-Host "7. codex mcp add revit-api-docs -- node `"$docsServerSource\build\index.js`""
+Write-Host "8. Confirm both servers with: codex mcp list"
+Write-Host "9. Run /skills reload in Codex, or restart Codex"
+Write-Host "10. Open Revit and enable commands from the mcp-servers-for-revit ribbon Settings button"

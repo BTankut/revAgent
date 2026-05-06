@@ -12,6 +12,23 @@ Bu paket sunlari bundled olarak saglar:
 3. Revit API DLL + XML dokumantasyonunu indeksleyen required companion MCP server (`revit-api-docs`)
 4. Dynamic command execution icin `RevitMCPCommandSet.dll` payload'u
 
+## On kosullar
+
+- Autodesk Revit 2022
+- Git for Windows; repo gelecekte `git pull` ile guncellenebilmelidir
+- Node.js 20+; bundled runtime lock Node 24 ile test edilmistir
+- Codex CLI
+
+Terminal internet cikisi proxy gerektiriyorsa `npm`, `git` ve `codex`
+komutlarindan once kullanici ortam degiskenlerini kalici ayarla:
+
+```powershell
+[Environment]::SetEnvironmentVariable("HTTP_PROXY", "http://192.168.90.10:6588", "User")
+[Environment]::SetEnvironmentVariable("HTTPS_PROXY", "http://192.168.90.10:6588", "User")
+[Environment]::SetEnvironmentVariable("ALL_PROXY", "http://192.168.90.10:6588", "User")
+[Environment]::SetEnvironmentVariable("NO_PROXY", "localhost,127.0.0.1,::1", "User")
+```
+
 ## Hizli yol
 
 Komutlari repo root'tan calistir. Kuruluma baslamadan once Revit'i kapat.
@@ -37,6 +54,12 @@ Iki MCP server da zorunludur:
 - `revit-api-docs`: lokal Revit DLL + XML dokumantasyonundan class/member imzalarini dogrular.
 
 Skill, iki server'in da bagli oldugunu varsayar.
+
+Installer ayrica repo kokunu global Codex skill olarak
+`%USERPROFILE%\.codex\skills\revit-mcp` altina kopyalar ve `AGENTS.md`
+dosyasini `%USERPROFILE%\.codex\AGENTS.md` global talimat dosyasi olarak
+kurar. Mevcut global `AGENTS.md` doluysa once yedek alir. Bu davranisi
+istemiyorsan installer'a `-SkipCodexSkillInstall` gec.
 
 ## Manuel kurulum
 
@@ -113,6 +136,10 @@ cd C:\Projects\revit-mcp
 npm install --omit=dev
 ```
 
+`better-sqlite3` Node 24 uyumlu surume kilitlidir. Bu sayede temiz Windows
+kurulumunda Python veya Visual Studio Build Tools olmadan prebuilt binary
+indirilebilir.
+
 ### 4. Codex CLI'a runtime MCP server ekle
 
 ```powershell
@@ -146,8 +173,11 @@ Listede iki satiri da gormelisin:
 
 ### 6. Skill'i Codex'e yukle
 
+Self-contained installer bu adimi otomatik yapar. Manuel kurulumda:
+
 ```powershell
 xcopy /E /I /Y . "%USERPROFILE%\.codex\skills\revit-mcp"
+copy /Y AGENTS.md "%USERPROFILE%\.codex\AGENTS.md"
 ```
 
 Ardindan Codex icinde:
@@ -198,6 +228,18 @@ Docs server (`revit-api-docs`):
 5. `send_code_to_revit` ile kucuk okuma snippet'i
 6. non-trivial API gerektiren bir is icin once `revit-api-docs` lookup testi
 7. gercek model sorgusu veya rapor testi
+
+## Temiz Windows notlari
+
+- `git` komutu yoksa Git for Windows kur ve repoyu ZIP yerine clone olarak al.
+  ZIP ile indirilen klasor gelecekte `git pull` yapamaz.
+- `node` veya `npm` Codex uygulamasinin icinden gorunuyor ama terminalden
+  calismiyorsa sistem Node.js kur.
+- `codex mcp list` terminalde calismiyorsa Codex CLI'i ayri kur ve sonra MCP
+  serverlari kaydet.
+- Runtime `npm install` native derlemeye duserse once Node surumunu ve
+  `better-sqlite3` lock surumunu kontrol et; normal son kullanici kurulumunda
+  Python/build tools zorunlu olmamalidir.
 
 ## Bu pakette ne guncellendi?
 

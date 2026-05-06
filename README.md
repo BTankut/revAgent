@@ -32,8 +32,19 @@ This repo stays self-contained, but keeps its execution contract aligned with cu
 
 - Windows 10 or 11
 - Autodesk Revit 2022
-- Node.js 18+
+- Git for Windows, if you want to pull future updates from this repo
+- Node.js 20+; Node 24 is supported by the bundled runtime dependency lock
 - Codex CLI
+
+On proxy-limited networks, make sure terminal tools can reach the internet
+before running `npm install`:
+
+```powershell
+[Environment]::SetEnvironmentVariable("HTTP_PROXY", "http://192.168.90.10:6588", "User")
+[Environment]::SetEnvironmentVariable("HTTPS_PROXY", "http://192.168.90.10:6588", "User")
+[Environment]::SetEnvironmentVariable("ALL_PROXY", "http://192.168.90.10:6588", "User")
+[Environment]::SetEnvironmentVariable("NO_PROXY", "localhost,127.0.0.1,::1", "User")
+```
 
 ## Quick start
 
@@ -50,6 +61,7 @@ codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
 
 cd "$RepoRoot\kurulum\revit-api-docs-mcp"
 npm install --omit=dev
+npm run build-index
 codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
 
@@ -60,8 +72,12 @@ Then:
 1. Open Revit.
 2. Click `Settings` in the `mcp-servers-for-revit` ribbon tab.
 3. Enable the commands you want and save.
-4. Copy this repo root into `%USERPROFILE%\.codex\skills\revit-mcp`.
-5. Run `/skills reload` inside Codex.
+4. Run `/skills reload` inside Codex, or restart Codex.
+
+The installer copies this repo into `%USERPROFILE%\.codex\skills\revit-mcp`
+and installs `AGENTS.md` globally at `%USERPROFILE%\.codex\AGENTS.md`.
+If an existing non-empty global `AGENTS.md` is present, the installer backs it
+up before replacing it. Pass `-SkipCodexSkillInstall` to skip that behavior.
 
 ## What the installer deploys
 
@@ -78,6 +94,9 @@ After install, the same payload is copied into the real system locations below:
   - the `-ServerTarget` path you chose, for example `C:\Projects\revit-mcp`
 - Required docs MCP server:
   - kept under `kurulum\revit-api-docs-mcp` and registered from the repo root
+- Codex skill and workstation role:
+  - `%USERPROFILE%\.codex\skills\revit-mcp`
+  - `%USERPROFILE%\.codex\AGENTS.md`
 
 The installer removes any previous `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin` tree before copying, so the add-in payload is not left nested under `revit_mcp_plugin\revit_mcp_plugin`.
 
@@ -110,7 +129,8 @@ Use this order on a fresh machine from the repo root:
 
 1. Install the prerequisites:
    - Autodesk Revit 2022
-   - Node.js 18+
+   - Git for Windows
+   - Node.js 20+; Node 24 is supported by the bundled dependency lock
    - Codex CLI
 2. Clone or download this repo.
 3. Close Revit.
@@ -139,12 +159,21 @@ codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
 ```powershell
 cd "$RepoRoot\kurulum\revit-api-docs-mcp"
 npm install --omit=dev
+npm run build-index
 codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
 
-8. Install the skill last:
-   - copy this repo root to `%USERPROFILE%\.codex\skills\revit-mcp`
-   - run `/skills reload`
+8. Reload Codex skills:
+
+```text
+/skills reload
+```
+
+The installer already installs the global Codex skill and global
+`AGENTS.md`. If you skipped that with `-SkipCodexSkillInstall`, copy this repo
+root to `%USERPROFILE%\.codex\skills\revit-mcp` and copy `AGENTS.md` to
+`%USERPROFILE%\.codex\AGENTS.md` manually.
+
 9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
 10. Verify that both MCP servers are registered:
 
@@ -186,6 +215,7 @@ Install it after the runtime server (Quick start already shows this step):
 $RepoRoot = (Resolve-Path .).Path
 cd "$RepoRoot\kurulum\revit-api-docs-mcp"
 npm install --omit=dev
+npm run build-index
 codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
 
@@ -343,3 +373,7 @@ Node dependencies still need to be installed on the target machine with:
 ```powershell
 npm install --omit=dev
 ```
+
+The bundled runtime server pins `better-sqlite3` to a Node 24-compatible
+version so clean Windows installs do not need Python or Visual Studio Build
+Tools just to compile that native dependency.
