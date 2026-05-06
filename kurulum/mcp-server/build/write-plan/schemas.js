@@ -64,6 +64,7 @@ export const futureOperations = [
     "place_pump",
     "place_coil_connection",
     "connect_pipes",
+    "normalize_pipe_header_overlap",
     "apply_pipe_insulation",
     "assign_hydronic_system",
     "calculate_pipe_pressure_loss",

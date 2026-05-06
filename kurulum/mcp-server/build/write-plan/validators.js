@@ -253,6 +253,9 @@ function validateOperationPayload(step, prefix, errors, warnings, officeStandard
         case "connect_pipes":
             validateEndpointConnectionPayload(step.operation, targets, args, prefix, errors, warnings);
             break;
+        case "normalize_pipe_header_overlap":
+            validatePipeHeaderOverlapPayload(targets, args, prefix, errors, warnings);
+            break;
         case "export_boq_report":
         case "export_clash_report":
             if (args.format && !["csv", "json"].includes(String(args.format).toLowerCase())) {
@@ -320,6 +323,67 @@ function validateEndpointConnectionPayload(operation, targets, args, prefix, err
         errors.push(`${prefix}.arguments.timeoutRecoveryPlan is required`);
     }
     warnings.push(`${prefix}.operation requires native executor support with per-pair transaction finalization; dynamic code commits are not acceptable for endpoint stitching`);
+}
+
+function validatePipeHeaderOverlapPayload(targets, args, prefix, errors, warnings) {
+    const targetIds = Array.isArray(targets.elementIds) ? targets.elementIds : [];
+    const hasExplicitPair = targetIds.length === 2 ||
+        (Number.isFinite(Number(targets.headerPipeId)) && Number.isFinite(Number(targets.overlapPipeId))) ||
+        (Number.isFinite(Number(args.headerPipeId)) && Number.isFinite(Number(args.overlapPipeId)));
+    if (!hasExplicitPair) {
+        errors.push(`${prefix}.targets.elementIds with exactly two pipe ids or header/overlap pipe ids is required`);
+    }
+    if (targetIds.length > 0 && targetIds.length !== 2) {
+        errors.push(`${prefix}.targets.elementIds must contain exactly two ids for normalize_pipe_header_overlap`);
+    }
+    const mode = String(args.normalizationMode || args.mode || "");
+    if (mode !== "overlap_to_tee_header") {
+        errors.push(`${prefix}.arguments.normalizationMode must be overlap_to_tee_header`);
+    }
+    if (args.requireSameSystemType !== true) {
+        errors.push(`${prefix}.arguments.requireSameSystemType must be true`);
+    }
+    if (args.requireCollinearOverlap !== true) {
+        errors.push(`${prefix}.arguments.requireCollinearOverlap must be true`);
+    }
+    if (args.requireSameDiameter !== true) {
+        errors.push(`${prefix}.arguments.requireSameDiameter must be true`);
+    }
+    if (args.requireBothOppositeEndsConnected !== true) {
+        errors.push(`${prefix}.arguments.requireBothOppositeEndsConnected must be true`);
+    }
+    if (args.preserveBranchConnectivity !== true) {
+        errors.push(`${prefix}.arguments.preserveBranchConnectivity must be true`);
+    }
+    if (args.allowFittingReplacement !== true) {
+        errors.push(`${prefix}.arguments.allowFittingReplacement must be true`);
+    }
+    const branchRequirement = String(args.branchConnectorOwnerRequirement || "");
+    if (branchRequirement !== "pipe_or_flex_pipe") {
+        errors.push(`${prefix}.arguments.branchConnectorOwnerRequirement must be pipe_or_flex_pipe`);
+    }
+    if (args.rollbackPreviewRequired !== true) {
+        errors.push(`${prefix}.arguments.rollbackPreviewRequired must be true`);
+    }
+    if (args.commitBatchSize !== 1) {
+        errors.push(`${prefix}.arguments.commitBatchSize must be 1`);
+    }
+    if (args.heartbeatRequired !== true) {
+        errors.push(`${prefix}.arguments.heartbeatRequired must be true`);
+    }
+    if (args.postCommitAudit !== true) {
+        errors.push(`${prefix}.arguments.postCommitAudit must be true`);
+    }
+    if (args.expectedDeviceConnectivityUnchanged !== true) {
+        errors.push(`${prefix}.arguments.expectedDeviceConnectivityUnchanged must be true`);
+    }
+    if (args.expectedClashIncrease !== 0) {
+        errors.push(`${prefix}.arguments.expectedClashIncrease must be 0`);
+    }
+    if (!isNonEmptyString(args.timeoutRecoveryPlan)) {
+        errors.push(`${prefix}.arguments.timeoutRecoveryPlan is required`);
+    }
+    warnings.push(`${prefix}.operation requires native header/tee normalization support; dynamic code commits are not acceptable for connected same-direction overlaps`);
 }
 
 function validateConnectedReroutePayload(args, prefix, errors) {

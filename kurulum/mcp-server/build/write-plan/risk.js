@@ -28,6 +28,7 @@ const operationRisk = {
     connect_pipes: "critical",
     create_duct_branch: "critical",
     create_pipe_branch: "critical",
+    normalize_pipe_header_overlap: "critical",
     create_sprinkler_branch: "critical",
     delete_elements: "critical",
     commit_reroute: "critical",

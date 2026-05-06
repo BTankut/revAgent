@@ -85,6 +85,14 @@ POST_ROLLBACK_TEE_PROBE_STATE|modified=False|pipe1022539=True|pipe1022601=True
 
 The probe confirms that `PlumbingUtils.BreakCurve` can split the header in rollback, but `Document.Create.NewTeeFitting` cannot use a pipe-fitting connector as the branch connector. A production normalizer must therefore create or preserve a real branch pipe connector, replace/rewire the adjacent fitting when needed, and execute one tee/header normalization at a time with rollback preview and post-commit audits.
 
+A follow-up rollback strategy tried to delete the duplicate pipe and existing elbow, then create the tee using the real downstream branch-pipe connector. That branch-pipe strategy timed out at the dynamic execution layer. The post-timeout audit confirmed the model was unchanged:
+
+```text
+POST_TIMEOUT_BRANCH_TEE_STATE|modified=False|1022539Exists=True|1022601Exists=True|1027607Exists=True|1022598Exists=True|air=183/183|spr=239/239
+```
+
+This is why the remaining 49 connected overlap pairs are now represented as a future typed operation rather than raw dynamic commits: `normalize_pipe_header_overlap` validates preview intent and safety requirements, but the starter native executor intentionally rejects commit until a dedicated per-pair implementation exists.
+
 ## Application Lessons
 
 1. Revit requests must be serialized behind a command gate with a visible busy state and heartbeat.
@@ -94,7 +102,7 @@ The probe confirms that `PlumbingUtils.BreakCurve` can split the header in rollb
    - device-to-duct/pipe curve,
    - endpoint-to-endpoint stitch,
    - fitting-required branch/takeoff.
-4. Overlapping pipe-header normalization is a separate operation from endpoint stitching: it needs `PlumbingUtils.BreakCurve`, real pipe-owned tee branch connectors, fitting replacement/rewiring when the existing external connector belongs to `Pipe Fittings`, and one-pair rollback preview before commit.
+4. Overlapping pipe-header normalization is a separate operation from endpoint stitching: it needs `PlumbingUtils.BreakCurve`, real pipe-owned tee branch connectors, fitting replacement/rewiring when the existing external connector belongs to `Pipe Fittings`, one-pair rollback preview before commit, and native timeout/failure recovery.
 5. Any native executor should support rollback-tested preview, commit token, and clear failure recovery so Revit is not left in a modal or failure-processing state.
 6. Device connector completion can be solved safely with direct connector `ConnectTo` when rollback confirms the exact candidate pair.
 

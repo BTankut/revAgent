@@ -677,6 +677,75 @@ assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.forbi
 assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.expectedConnectedConnectorIncrease must be an integer of at least 2"));
 assert(invalidEndpointStitchValidation.errors.includes("steps[0].arguments.timeoutRecoveryPlan is required"));
 
+const pipeHeaderOverlapPlan = buildPlanFromArgs({
+    title: "Preview pipe header overlap normalization",
+    discipline: "domestic_water",
+    operation: "normalize_pipe_header_overlap",
+    targets: { elementIds: [1022539, 1022601] },
+    arguments: {
+        normalizationMode: "overlap_to_tee_header",
+        requireSameSystemType: true,
+        requireCollinearOverlap: true,
+        requireSameDiameter: true,
+        requireBothOppositeEndsConnected: true,
+        preserveBranchConnectivity: true,
+        allowFittingReplacement: true,
+        branchConnectorOwnerRequirement: "pipe_or_flex_pipe",
+        rollbackPreviewRequired: true,
+        commitBatchSize: 1,
+        heartbeatRequired: true,
+        postCommitAudit: true,
+        expectedDeviceConnectivityUnchanged: true,
+        expectedClashIncrease: 0,
+        timeoutRecoveryPlan: "Abort the single overlap normalization, roll back the transaction, report the header/overlap pair and failure stage, then require Revit failure state cleanup before retry.",
+    },
+});
+const pipeHeaderOverlapValidation = validateWritePlan(pipeHeaderOverlapPlan, { mode: "preview" });
+assert.equal(pipeHeaderOverlapValidation.valid, true);
+assert.equal(classifyPlanRisk(pipeHeaderOverlapPlan), "critical");
+assert(pipeHeaderOverlapValidation.warnings.some((warning) => warning.includes("native header/tee normalization support")));
+
+const pipeHeaderOverlapCommitValidation = validateWritePlan(pipeHeaderOverlapPlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(pipeHeaderOverlapCommitValidation.valid, false);
+assert(pipeHeaderOverlapCommitValidation.errors.includes("Operation is cataloged but not implemented in the native starter executor: normalize_pipe_header_overlap"));
+
+const invalidPipeHeaderOverlapPlan = buildPlanFromArgs({
+    title: "Reject unsafe pipe header overlap normalization",
+    discipline: "domestic_water",
+    operation: "normalize_pipe_header_overlap",
+    targets: { elementIds: [1022539, 1022601, 1022607] },
+    arguments: {
+        normalizationMode: "endpoint_to_endpoint",
+        requireSameSystemType: false,
+        requireCollinearOverlap: false,
+        requireSameDiameter: false,
+        requireBothOppositeEndsConnected: false,
+        preserveBranchConnectivity: false,
+        allowFittingReplacement: false,
+        branchConnectorOwnerRequirement: "any_connector",
+        commitBatchSize: 5,
+        expectedClashIncrease: 1,
+    },
+});
+const invalidPipeHeaderOverlapValidation = validateWritePlan(invalidPipeHeaderOverlapPlan, { mode: "preview" });
+assert.equal(invalidPipeHeaderOverlapValidation.valid, false);
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].targets.elementIds must contain exactly two ids for normalize_pipe_header_overlap"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.normalizationMode must be overlap_to_tee_header"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.requireSameSystemType must be true"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.requireCollinearOverlap must be true"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.requireSameDiameter must be true"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.requireBothOppositeEndsConnected must be true"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.preserveBranchConnectivity must be true"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.allowFittingReplacement must be true"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.branchConnectorOwnerRequirement must be pipe_or_flex_pipe"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.rollbackPreviewRequired must be true"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.commitBatchSize must be 1"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.heartbeatRequired must be true"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.postCommitAudit must be true"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.expectedDeviceConnectivityUnchanged must be true"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.expectedClashIncrease must be 0"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.timeoutRecoveryPlan is required"));
+
 const invalidDeleteSourceReroute = buildPlanFromArgs({
     title: "Reject source delete without source element",
     discipline: "clash",

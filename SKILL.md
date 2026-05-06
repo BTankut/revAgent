@@ -151,7 +151,10 @@ replace/rewire adjacent fittings when needed, run one overlap pair per
 rollback preview/commit, and audit device connectivity plus clashes after
 each commit. Do not delete same-direction overlap pairs when both opposite
 ends are connected; those are header/branch normalization candidates, not
-orphan geometry.
+orphan geometry. A later branch-pipe tee rollback probe on the same sample
+timed out while leaving the model unchanged, so connected overlap
+normalization should be represented as typed `normalize_pipe_header_overlap`
+write-plan data until a native per-pair executor exists.
 
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known — e.g. the bundled patterns under
