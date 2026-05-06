@@ -2,8 +2,11 @@ param(
     [ValidateSet("2022")]
     [string]$RevitVersion = "2022",
     [string]$ServerTarget = "C:\Projects\revit-mcp",
+    [string[]]$LegacyServerTargets = @(),
     [string]$WorkspaceAgentsTarget = "",
-    [switch]$SkipCodexSkillInstall
+    [switch]$SkipCodexSkillInstall,
+    [switch]$Uninstall,
+    [switch]$RemoveAgents
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +19,16 @@ $docsServerSource = Join-Path $PSScriptRoot "revit-api-docs-mcp"
 $addinRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitVersion"
 $pluginTarget = Join-Path $addinRoot "revit_mcp_plugin"
 $revitInstallRoot = Join-Path ${env:ProgramFiles} "Autodesk\Revit $RevitVersion"
+$codexRoot = Join-Path $env:USERPROFILE ".codex"
+$codexSkillsRoot = Join-Path $codexRoot "skills"
+$codexSkillTarget = Join-Path $codexSkillsRoot "revit-mcp"
+$codexSkillBackupsRoot = Join-Path $codexRoot "skill-backups"
+$codexAgentsTarget = Join-Path $codexRoot "AGENTS.md"
+$defaultLegacyServerTargets = @(
+    "C:\Projects\revit-mcp-server",
+    "C:\Projects\mcp-server-for-revit",
+    "C:\Projects\mcp-servers-for-revit"
+)
 if ([string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
     $serverParent = Split-Path -Parent $ServerTarget
     $WorkspaceAgentsTarget = Join-Path $serverParent "AGENTS.md"
@@ -88,6 +101,224 @@ function Resolve-CompatibleDependencyPath {
     return $null
 }
 
+function Get-NormalizedPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
+    if (-not [System.IO.Path]::IsPathRooted($expanded)) {
+        $expanded = Join-Path (Get-Location).Path $expanded
+    }
+
+    return [System.IO.Path]::GetFullPath($expanded).TrimEnd("\")
+}
+
+function Test-SamePath {
+    param(
+        [string]$Left,
+        [string]$Right
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) {
+        return $false
+    }
+
+    return [string]::Equals(
+        (Get-NormalizedPath -Path $Left),
+        (Get-NormalizedPath -Path $Right),
+        [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-RevitMcpCleanupPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Label,
+        [string]$AllowedNamePattern = "(?i)(^revit[-_]mcp($|[-_.])|^revit_mcp_plugin$|^mcp[-_]servers?[-_]for[-_]revit|^mcp-server-for-revit|^RevitMCP|^AGENTS\.md$)"
+    )
+
+    $fullPath = Get-NormalizedPath -Path $Path
+    $rootPath = [System.IO.Path]::GetPathRoot($fullPath).TrimEnd("\")
+    $leaf = Split-Path -Leaf $fullPath
+    $blockedRoots = @(
+        $rootPath,
+        (Get-NormalizedPath -Path $env:USERPROFILE),
+        (Get-NormalizedPath -Path $env:APPDATA),
+        (Get-NormalizedPath -Path $env:LOCALAPPDATA),
+        (Get-NormalizedPath -Path $env:ProgramFiles),
+        (Get-NormalizedPath -Path (Join-Path $env:APPDATA "Autodesk")),
+        (Get-NormalizedPath -Path (Join-Path $env:APPDATA "Autodesk\Revit")),
+        (Get-NormalizedPath -Path $addinRoot),
+        (Get-NormalizedPath -Path $codexRoot),
+        (Get-NormalizedPath -Path $codexSkillsRoot),
+        (Get-NormalizedPath -Path (Split-Path -Parent $ServerTarget))
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($blocked in $blockedRoots) {
+        if ([string]::Equals($fullPath, $blocked, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to clean $Label because the target is too broad: $fullPath"
+        }
+    }
+
+    if ($leaf -notmatch $AllowedNamePattern) {
+        throw "Refusing to clean $Label because it is not a known Revit MCP path: $fullPath"
+    }
+
+    return $fullPath
+}
+
+function Remove-RevitMcpPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Label,
+        [switch]$Recurse,
+        [string]$AllowedNamePattern
+    )
+
+    if ([string]::IsNullOrWhiteSpace($AllowedNamePattern)) {
+        $fullPath = Assert-RevitMcpCleanupPath -Path $Path -Label $Label
+    }
+    else {
+        $fullPath = Assert-RevitMcpCleanupPath -Path $Path -Label $Label -AllowedNamePattern $AllowedNamePattern
+    }
+
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+        return
+    }
+
+    if ($Recurse) {
+        Remove-Item -LiteralPath $fullPath -Recurse -Force
+    }
+    else {
+        Remove-Item -LiteralPath $fullPath -Force
+    }
+
+    Write-Host "Removed ${Label}: $fullPath"
+}
+
+function Disable-LegacyAddinManifest {
+    $legacyAddin = Join-Path $addinRoot "revit-mcp.addin"
+    if (-not (Test-Path -LiteralPath $legacyAddin)) {
+        return
+    }
+
+    $disabledAddin = Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained"
+    Assert-RevitMcpCleanupPath -Path $legacyAddin -Label "legacy Revit MCP addin manifest" | Out-Null
+    Assert-RevitMcpCleanupPath -Path $disabledAddin -Label "disabled legacy Revit MCP addin manifest" | Out-Null
+
+    if (Test-Path -LiteralPath $disabledAddin) {
+        Remove-Item -LiteralPath $disabledAddin -Force
+    }
+
+    Move-Item -LiteralPath $legacyAddin -Destination $disabledAddin -Force
+    Write-Host "Disabled legacy Revit MCP addin manifest: $legacyAddin"
+}
+
+function Get-RuntimeCleanupTargets {
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $targets = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($candidate in @($ServerTarget) + $defaultLegacyServerTargets + $LegacyServerTargets) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        $normalized = Get-NormalizedPath -Path $candidate
+        if ($seen.Add($normalized)) {
+            $targets.Add($normalized)
+        }
+    }
+
+    return $targets
+}
+
+function Test-RevitMcpRuntimeDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $true
+    }
+
+    if (Test-Path -LiteralPath (Join-Path $Path ".revit-mcp-self-contained-install")) {
+        return $true
+    }
+
+    $packagePath = Join-Path $Path "package.json"
+    if (-not ((Test-Path -LiteralPath $packagePath) -and
+        (Test-Path -LiteralPath (Join-Path $Path "build\index.js")))) {
+        return $false
+    }
+
+    try {
+        $package = Get-Content -Raw -LiteralPath $packagePath | ConvertFrom-Json
+        return $package.name -eq "revit-mcp" -and
+            [string]$package.description -like "*self-contained Revit MCP*"
+    }
+    catch {
+        return $false
+    }
+}
+
+function Remove-StaleSkillBackups {
+    if (-not (Test-Path -LiteralPath $codexSkillsRoot)) {
+        return
+    }
+
+    Get-ChildItem -LiteralPath $codexSkillsRoot -Directory -Filter "revit-mcp.backup-*" -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            Remove-RevitMcpPath -Path $_.FullName -Label "active skill backup directory" -Recurse
+        }
+}
+
+function Invoke-RevitMcpCleanup {
+    param(
+        [switch]$ForUninstall
+    )
+
+    Remove-RevitMcpPath -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -Label "Revit MCP addin manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
+    Remove-RevitMcpPath -Path (Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy Revit MCP addin manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
+    Remove-RevitMcpPath -Path $pluginTarget -Label "Revit MCP addin payload directory" -Recurse
+    Remove-RevitMcpPath -Path (Join-Path $env:LOCALAPPDATA "revit-mcp-plugin") -Label "Revit MCP LocalAppData command directory" -Recurse
+
+    foreach ($target in Get-RuntimeCleanupTargets) {
+        if (-not (Test-RevitMcpRuntimeDirectory -Path $target)) {
+            Write-Warning "Skipping runtime cleanup because the directory does not look like a Revit MCP runtime install: $target"
+            continue
+        }
+
+        Remove-RevitMcpPath -Path $target -Label "runtime MCP server directory" -Recurse
+    }
+
+    Remove-StaleSkillBackups
+
+    if ($ForUninstall) {
+        Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex Revit MCP skill directory" -Recurse
+        if ($RemoveAgents) {
+            Remove-RevitMcpPath -Path $codexAgentsTarget -Label "Codex global AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
+            if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
+                Remove-RevitMcpPath -Path $WorkspaceAgentsTarget -Label "workspace AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
+            }
+        }
+    }
+    else {
+        Disable-LegacyAddinManifest
+    }
+}
+
+Invoke-RevitMcpCleanup -ForUninstall:$Uninstall
+
+if ($Uninstall) {
+    Write-Host "Self-contained Revit MCP bundle uninstalled for Revit $RevitVersion" -ForegroundColor Green
+    Write-Host "Autodesk Revit program files and Windows system files were not touched."
+    Write-Host "If MCP entries were registered in Codex, remove them with: codex mcp remove revit-mcp ; codex mcp remove revit-api-docs"
+    return
+}
+
 New-Item -ItemType Directory -Path $addinRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $ServerTarget -Force | Out-Null
 
@@ -98,6 +329,7 @@ if (Test-Path $pluginTarget) {
 Copy-Item -LiteralPath (Join-Path $pluginSource "revit_mcp_plugin") -Destination $addinRoot -Recurse -Force
 # Expand the bundled runtime server contents into the target directory.
 Copy-Item -Path (Join-Path $serverSource "*") -Destination $ServerTarget -Recurse -Force
+Set-Content -LiteralPath (Join-Path $ServerTarget ".revit-mcp-self-contained-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
 
 # The required Revit API docs MCP server remains in the repo under kurulum\revit-api-docs-mcp.
 # It is registered from that path after npm install; see the final Next steps.
@@ -195,28 +427,14 @@ if (Test-Path $customDllDir) {
     }
 }
 
-$duplicateAddin = Join-Path $addinRoot "revit-mcp.addin"
-if (Test-Path $duplicateAddin) {
-    $disabled = Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained"
-    if (Test-Path $disabled) {
-        Remove-Item -LiteralPath $disabled -Force
-    }
-    Move-Item -LiteralPath $duplicateAddin -Destination $disabled
-}
-
-$codexSkillTarget = $null
-$codexAgentsTarget = $null
 $workspaceAgentsInstalled = $null
-$codexRoot = Join-Path $env:USERPROFILE ".codex"
-$codexSkillsRoot = Join-Path $codexRoot "skills"
-$codexSkillTarget = Join-Path $codexSkillsRoot "revit-mcp"
-$codexAgentsTarget = Join-Path $codexRoot "AGENTS.md"
 if (-not $SkipCodexSkillInstall) {
     New-Item -ItemType Directory -Path $codexSkillsRoot -Force | Out-Null
 
     if (Test-Path -LiteralPath $codexSkillTarget) {
         $backupStamp = Get-Date -Format "yyyyMMdd-HHmmss"
-        $skillBackup = Join-Path $codexSkillsRoot "revit-mcp.backup-$backupStamp"
+        New-Item -ItemType Directory -Path $codexSkillBackupsRoot -Force | Out-Null
+        $skillBackup = Join-Path $codexSkillBackupsRoot "revit-mcp.backup-$backupStamp"
         Move-Item -LiteralPath $codexSkillTarget -Destination $skillBackup
     }
 

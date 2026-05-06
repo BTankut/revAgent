@@ -110,6 +110,27 @@ klasorudur. Mevcut `AGENTS.md` dosyalari doluysa once yedek alir.
 `-SkipCodexSkillInstall` sadece skill klasoru kopyasini atlar; `AGENTS.md`
 kurulumunu atlamaz.
 
+Installer kopyalama oncesi yalnizca Revit MCP'ye ait bilinen kurulum
+hedeflerini temizler: Revit MCP add-in manifest'i, `revit_mcp_plugin` add-in
+klasoru, `%LOCALAPPDATA%\revit-mcp-plugin`, runtime `-ServerTarget`, bilinen
+eski runtime hedefleri ve aktif Codex skills altindaki `revit-mcp.backup-*`
+klasorleri. Bu temizlik eski dosyalarin dizin/layout degisikliginden sonra
+calismaya devam edip cakisma cikarmasini engeller.
+
+Temizlik guvenlik kontrolludur; Autodesk Revit program dosyalari,
+Windows sistem klasorleri, `%APPDATA%\Autodesk\Revit\Addins\2022` kok
+klasoru veya genis kullanici/workspace klasorleri silinmez.
+
+Sadece kaldirmak icin:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022 -ServerTarget C:\Projects\revit-mcp -Uninstall
+```
+
+`AGENTS.md` dosyalarini da kaldirmak istersen `-Uninstall -RemoveAgents`
+kullan. Bir bilgisayarda daha eski runtime klasor adi kullanildiysa ayni
+guvenlik kontrolleriyle temizlemek icin `-LegacyServerTargets` ver.
+
 ## Manuel kurulum
 
 Kuruluma baslamadan once Revit kapali olmali.

@@ -154,7 +154,25 @@ After install, the same payload is copied into the real system locations below:
   - `%USERPROFILE%\.codex\AGENTS.md`
   - `C:\Projects\AGENTS.md` by default
 
-The installer removes any previous `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin` tree before copying, so the add-in payload is not left nested under `revit_mcp_plugin\revit_mcp_plugin`.
+Before copying, the installer cleans the known Revit MCP install locations it
+owns: the Revit MCP add-in manifest, `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin`,
+`%LOCALAPPDATA%\revit-mcp-plugin`, the runtime `-ServerTarget`, known legacy
+runtime targets, and stale `revit-mcp.backup-*` folders under active Codex
+skills. This prevents old files from surviving directory/layout changes.
+Cleanup is guarded by path checks and does not delete Autodesk Revit program
+files, Windows system folders, `%APPDATA%\Autodesk\Revit\Addins\2022` itself,
+or broad workspace/user directories.
+
+To remove the self-contained install without installing a fresh copy:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022 -ServerTarget C:\Projects\revit-mcp -Uninstall
+```
+
+Use `-RemoveAgents` with `-Uninstall` only when you also want to remove the
+global and workspace `AGENTS.md` files. If a workstation used an older runtime
+directory name, pass it explicitly with `-LegacyServerTargets` so it is cleaned
+under the same safety checks.
 
 ## Roslyn dependency model
 
