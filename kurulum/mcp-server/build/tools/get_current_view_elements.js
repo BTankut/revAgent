@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
+import {
+    connectionOptionsFromArgs,
+    connectionTargetSchema,
+} from "../utils/revitToolHelpers.js";
 export function registerGetCurrentViewElementsTool(server) {
     server.tool("get_current_view_elements", "Get elements from the current active view in Revit. You can filter by model categories (like Walls, Floors) or annotation categories (like Dimensions, Text). Use includeHidden to show/hide invisible elements and limit to control the number of returned elements.", {
+        ...connectionTargetSchema(z),
         modelCategoryList: z
             .array(z.string())
             .optional()
@@ -28,7 +33,7 @@ export function registerGetCurrentViewElementsTool(server) {
         try {
             const response = await withRevitConnection(async (revitClient) => {
                 return await revitClient.sendCommand("get_current_view_elements", params);
-            });
+            }, connectionOptionsFromArgs(args));
             return {
                 content: [
                     {

@@ -55,6 +55,34 @@ Iki MCP server da zorunludur:
 
 Skill, iki server'in da bagli oldugunu varsayar.
 
+## Coklu Revit / coklu port hedefleme
+
+Bundled runtime MCP server artik tek `localhost:8080` varsayimina bagli degil.
+Tum runtime araclari su opsiyonel hedef alanlarini kabul eder:
+
+- `port`: dogrudan Revit socket portu, ornek `8081`
+- `host`: socket host, varsayilan `localhost`
+- `target`: kayitli instance adi, `8081` gibi port string'i veya `host:port`
+
+Ortam degiskenleriyle varsayilan hedefler verilebilir:
+
+```powershell
+$env:REVIT_MCP_PORT = "8080"
+$env:REVIT_MCP_PORTS = "8080,8081,8082"
+$env:REVIT_MCP_TARGET = "localhost:8080"
+```
+
+Yeni `list_revit_instances` araci tanimli portlari tarar ve ulasilabilen
+Revit instance'lari icin dokuman, process id, aktif view ve versiyon bilgisi
+doner. Varsa `%TEMP%\revit-mcp-instances.json` veya
+`REVIT_MCP_INSTANCE_REGISTRY` dosyasini da okur.
+
+Not: Revit add-in DLL tarafinin da her Revit instance'ini farkli portta
+baslatabilmesi gerekir. Sadece tek Revit process'i port dinliyorsa runtime
+yalnizca o process'i hedefleyebilir. Mevcut upstream add-in kaynak kodunda
+port `8080` olarak sabitlenmistir; iki acik Revit.exe'yi ayni anda kontrol
+etmek icin add-in'in port-configurable build'i gerekir.
+
 Installer ayrica repo kokunu global Codex skill olarak
 `%USERPROFILE%\.codex\skills\revit-mcp` altina kopyalar ve `AGENTS.md`
 dosyasini `%USERPROFILE%\.codex\AGENTS.md` global talimat dosyasi olarak

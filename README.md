@@ -67,6 +67,37 @@ codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build
 
 Both MCP servers are required — the runtime server executes code, the docs server resolves the API surface against the locally installed Revit DLLs and XML. The skill assumes both are connected.
 
+## Multi-instance / multi-port runtime targeting
+
+The bundled runtime MCP server no longer assumes a single Revit socket at
+`localhost:8080`.
+
+Every runtime tool accepts these optional target fields:
+
+- `port`: direct Revit socket port, for example `8081`
+- `host`: socket host, defaulting to `localhost`
+- `target`: registered instance name, a port string such as `8081`, or
+  `host:port`
+
+Environment defaults are also supported:
+
+```powershell
+$env:REVIT_MCP_PORT = "8080"
+$env:REVIT_MCP_PORTS = "8080,8081,8082"
+$env:REVIT_MCP_TARGET = "localhost:8080"
+```
+
+The runtime also exposes `list_revit_instances`, which scans configured ports
+and reports the reachable Revit document, process id, active view, and version.
+If present, it also reads `%TEMP%\revit-mcp-instances.json` or the path in
+`REVIT_MCP_INSTANCE_REGISTRY`.
+
+Important: the Revit add-in DLL must still start each Revit instance on a
+different socket port. If only one Revit process is listening, the runtime can
+only target that one process. The current upstream add-in source hard-wires
+`8080`; rebuild or replace the add-in with a port-configurable build before
+expecting two open Revit.exe processes to be reachable at once.
+
 Then:
 
 1. Open Revit.

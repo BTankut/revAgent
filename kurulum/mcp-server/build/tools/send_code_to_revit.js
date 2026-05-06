@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
+import {
+    connectionOptionsFromArgs,
+    connectionTargetSchema,
+} from "../utils/revitToolHelpers.js";
 export function registerSendCodeToRevitTool(server) {
     server.tool("send_code_to_revit", "Send C# code to Revit for execution. The code will be inserted into a template with access to the Revit Document and parameters. Your code should be written to work within the Execute method of the template.", {
+        ...connectionTargetSchema(z),
         code: z
             .string()
             .describe("The C# code to execute in Revit. This code will be inserted into the Execute method of a template with access to Document and parameters."),
@@ -22,7 +27,7 @@ export function registerSendCodeToRevitTool(server) {
         try {
             const response = await withRevitConnection(async (revitClient) => {
                 return await revitClient.sendCommand("send_code_to_revit", params);
-            });
+            }, connectionOptionsFromArgs(args));
             return {
                 content: [
                     {

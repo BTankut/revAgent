@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
+import {
+    connectionOptionsFromArgs,
+    connectionTargetSchema,
+} from "../utils/revitToolHelpers.js";
 export function registerGetSelectedElementsTool(server) {
     server.tool("get_selected_elements", "Get elements currently selected in Revit. You can limit the number of returned elements.", {
+        ...connectionTargetSchema(z),
         limit: z
             .number()
             .optional()
@@ -13,7 +18,7 @@ export function registerGetSelectedElementsTool(server) {
         try {
             const response = await withRevitConnection(async (revitClient) => {
                 return await revitClient.sendCommand("get_selected_elements", params);
-            });
+            }, connectionOptionsFromArgs(args));
             return {
                 content: [
                     {

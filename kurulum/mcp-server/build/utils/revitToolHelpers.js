@@ -1,5 +1,21 @@
 import { withRevitConnection } from "./ConnectionManager.js";
 
+export function connectionTargetSchema(z) {
+    return {
+        target: z.string().optional().describe("Optional Revit target: registered instance name, port number such as 8081, or host:port. Defaults to REVIT_MCP_TARGET/REVIT_MCP_PORT/8080."),
+        host: z.string().optional().describe("Optional Revit socket host. Defaults to REVIT_MCP_HOST or localhost."),
+        port: z.number().int().positive().max(65535).optional().describe("Optional Revit socket port. Defaults to REVIT_MCP_PORT or 8080."),
+    };
+}
+
+export function connectionOptionsFromArgs(args = {}) {
+    return {
+        target: args.target,
+        host: args.host,
+        port: args.port,
+    };
+}
+
 export function formatJsonContent(payload) {
     return {
         content: [
@@ -47,14 +63,14 @@ export async function executeRevitCode(code, options = {}) {
     };
     const response = await withRevitConnection(async (revitClient) => {
         return await revitClient.sendCommand("send_code_to_revit", params);
-    });
+    }, options);
     return normalizeRevitExecutionResponse(response);
 }
 
-export async function sendRevitCommand(command, params = {}) {
+export async function sendRevitCommand(command, params = {}, options = {}) {
     const response = await withRevitConnection(async (revitClient) => {
         return await revitClient.sendCommand(command, params);
-    });
+    }, options);
     return normalizeRevitExecutionResponse(response);
 }
 
@@ -122,7 +138,7 @@ export function extractElementIdsFromSelectionResponse(response) {
     return [...ids].filter((id) => Number.isFinite(id) && id > 0);
 }
 
-export async function getSelectionElementIds(limit = 100) {
-    const response = await sendRevitCommand("get_selected_elements", { limit });
+export async function getSelectionElementIds(limit = 100, options = {}) {
+    const response = await sendRevitCommand("get_selected_elements", { limit }, options);
     return extractElementIdsFromSelectionResponse(response).slice(0, limit);
 }

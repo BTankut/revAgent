@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+    connectionOptionsFromArgs,
+    connectionTargetSchema,
     executeRevitCode,
     formatJsonContent,
     getSelectionElementIds,
@@ -138,15 +140,20 @@ catch (Exception ex)
 
 export function registerGetRevitSessionContextTool(server) {
     server.tool("get_revit_session_context", "Read-only Revit session summary: version/build/culture/document state/active view/MEP counts/link counts/selection IDs.", {
+        ...connectionTargetSchema(z),
         includeCategoryCounts: z.boolean().optional().describe("Include known MEP category counts. Defaults true."),
         includeLinks: z.boolean().optional().describe("Include Revit link and linked room/space counts. Defaults true."),
         includeSelection: z.boolean().optional().describe("Include selected element ids using the existing Revit selection command. Defaults true."),
     }, async (args) => {
+        const connectionOptions = connectionOptionsFromArgs(args);
         try {
-            const response = await executeRevitCode(buildSessionContextCode(args), { transactionMode: "none" });
+            const response = await executeRevitCode(buildSessionContextCode(args), {
+                ...connectionOptions,
+                transactionMode: "none",
+            });
             const payload = payloadFromExecution(response);
             if (args.includeSelection !== false && payload && typeof payload === "object") {
-                const ids = await getSelectionElementIds(100);
+                const ids = await getSelectionElementIds(100, connectionOptions);
                 payload.selection = {
                     count: ids.length,
                     elementIds: ids,

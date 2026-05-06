@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+    connectionOptionsFromArgs,
+    connectionTargetSchema,
     csharpStringArray,
     executeRevitCode,
     formatJsonContent,
@@ -117,13 +119,17 @@ catch (Exception ex)
 
 export function registerGetActiveViewContextTool(server) {
     server.tool("get_active_view_context", "Read-only active view context. Handles model views and DrawingSheet views; sheets return placed viewport/view data instead of pretending MEP model elements are directly visible.", {
+        ...connectionTargetSchema(z),
         includeSheetViewports: z.boolean().optional().describe("When active view is a sheet, include placed viewports. Defaults true."),
         includeModelElements: z.boolean().optional().describe("When active view is a model view, collect limited model elements from modelCategoryList. Defaults false."),
         modelCategoryList: z.array(z.string()).optional().describe("BuiltInCategory names such as OST_DuctCurves or OST_DuctTerminal."),
         limit: z.number().int().positive().max(500).optional().describe("Maximum model elements to return. Defaults 100."),
     }, async (args) => {
         try {
-            const response = await executeRevitCode(buildActiveViewContextCode(args), { transactionMode: "none" });
+            const response = await executeRevitCode(buildActiveViewContextCode(args), {
+                ...connectionOptionsFromArgs(args),
+                transactionMode: "none",
+            });
             return formatJsonContent(response && response.result ? response.result : response);
         }
         catch (error) {

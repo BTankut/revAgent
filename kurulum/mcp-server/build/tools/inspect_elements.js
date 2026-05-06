@@ -1,5 +1,7 @@
 import { z } from "zod";
 import {
+    connectionOptionsFromArgs,
+    connectionTargetSchema,
     csharpIntArray,
     csharpStringArray,
     executeRevitCode,
@@ -7,13 +9,13 @@ import {
     getSelectionElementIds,
 } from "../utils/revitToolHelpers.js";
 
-async function resolveElementIds(args) {
+async function resolveElementIds(args, connectionOptions) {
     const explicit = Array.isArray(args.elementIds) ? args.elementIds : [];
     let ids = explicit
         .map((value) => Number.parseInt(String(value), 10))
         .filter((value) => Number.isFinite(value) && value > 0);
     if (args.useSelection) {
-        ids = ids.concat(await getSelectionElementIds(args.limit || 20));
+        ids = ids.concat(await getSelectionElementIds(args.limit || 20, connectionOptions));
     }
     return [...new Set(ids)].slice(0, args.limit || 20);
 }
@@ -207,6 +209,7 @@ catch (Exception ex)
 
 export function registerInspectElementsTool(server) {
     server.tool("inspect_elements", "Read-only inspection for selected or targeted Revit elements: class/category/type/level/key parameters/connector summary.", {
+        ...connectionTargetSchema(z),
         elementIds: z.array(z.union([z.number(), z.string()])).optional().describe("Element ids to inspect."),
         useSelection: z.boolean().optional().describe("When true, inspect the current Revit selection."),
         limit: z.number().int().positive().max(100).optional().describe("Maximum elements to inspect. Defaults 20."),
@@ -215,8 +218,9 @@ export function registerInspectElementsTool(server) {
         includeConnectors: z.boolean().optional().describe("Include connector counts when available. Defaults true."),
         parameterNames: z.array(z.string()).optional().describe("Optional targeted parameter names."),
     }, async (args) => {
+        const connectionOptions = connectionOptionsFromArgs(args);
         try {
-            const ids = await resolveElementIds(args);
+            const ids = await resolveElementIds(args, connectionOptions);
             if (ids.length === 0) {
                 return formatJsonContent({
                     success: true,
@@ -224,7 +228,10 @@ export function registerInspectElementsTool(server) {
                     warnings: ["No element ids supplied and no selected elements found."],
                 });
             }
-            const response = await executeRevitCode(buildInspectElementsCode(ids, args), { transactionMode: "none" });
+            const response = await executeRevitCode(buildInspectElementsCode(ids, args), {
+                ...connectionOptions,
+                transactionMode: "none",
+            });
             return formatJsonContent(response && response.result ? response.result : response);
         }
         catch (error) {
