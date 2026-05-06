@@ -76,6 +76,15 @@ Residual endpoint/fitting limitation:
 - No opposite-direction or angled coincident pipe endpoint fitting candidates remain after the orphan cleanup.
 - No remaining same-direction pipe overlap pair has an open opposite connector after orphan cleanup; the residual 49 pairs have connected opposite ends and require tee/header normalization, not deletion or simple endpoint stitching.
 
+Rollback tee/header normalization probe:
+
+```text
+ROLLBACK_TEE_PROBE2|success=False|stage=tee|header=1022539|duplicate=1022601|newPipe=1029153|externalOwner=1027607|externalClass=Autodesk.Revit.DB.FamilyInstance|externalCategory=Pipe Fittings|mainConnectorCount=2|teeError=The owner should be (flex) duct or pipe. Parameter name: connector3
+POST_ROLLBACK_TEE_PROBE_STATE|modified=False|pipe1022539=True|pipe1022601=True
+```
+
+The probe confirms that `PlumbingUtils.BreakCurve` can split the header in rollback, but `Document.Create.NewTeeFitting` cannot use a pipe-fitting connector as the branch connector. A production normalizer must therefore create or preserve a real branch pipe connector, replace/rewire the adjacent fitting when needed, and execute one tee/header normalization at a time with rollback preview and post-commit audits.
+
 ## Application Lessons
 
 1. Revit requests must be serialized behind a command gate with a visible busy state and heartbeat.
@@ -85,8 +94,9 @@ Residual endpoint/fitting limitation:
    - device-to-duct/pipe curve,
    - endpoint-to-endpoint stitch,
    - fitting-required branch/takeoff.
-4. Any native executor should support rollback-tested preview, commit token, and clear failure recovery so Revit is not left in a modal or failure-processing state.
-5. Device connector completion can be solved safely with direct connector `ConnectTo` when rollback confirms the exact candidate pair.
+4. Overlapping pipe-header normalization is a separate operation from endpoint stitching: it needs `PlumbingUtils.BreakCurve`, real pipe-owned tee branch connectors, fitting replacement/rewiring when the existing external connector belongs to `Pipe Fittings`, and one-pair rollback preview before commit.
+5. Any native executor should support rollback-tested preview, commit token, and clear failure recovery so Revit is not left in a modal or failure-processing state.
+6. Device connector completion can be solved safely with direct connector `ConnectTo` when rollback confirms the exact candidate pair.
 
 ## Completion Decision
 

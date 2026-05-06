@@ -141,6 +141,18 @@ and post-commit audit. If raw expert fallback is explicitly used, first filter
 to same-system/same-size/opposite endpoint pairs or verified fitting candidates,
 skip known timeout pairs, and save/audit after small batches.
 
+Overlapping pipe-header normalization is not endpoint stitching. Live Revit
+2022 testing on same-direction overlapping pipe residuals showed
+`PlumbingUtils.BreakCurve` can split a header in rollback, but
+`Document.Create.NewTeeFitting` rejects a branch connector whose owner is a
+pipe fitting (`The owner should be (flex) duct or pipe`). A production
+normalizer must create or preserve a real pipe-owned branch connector,
+replace/rewire adjacent fittings when needed, run one overlap pair per
+rollback preview/commit, and audit device connectivity plus clashes after
+each commit. Do not delete same-direction overlap pairs when both opposite
+ends are connected; those are header/branch normalization candidates, not
+orphan geometry.
+
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known — e.g. the bundled patterns under
 `references/patterns/`.
