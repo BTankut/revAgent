@@ -106,6 +106,11 @@ export function readLockOwner(lockFile = getCommandGateConfig().lockFile) {
 
 function removeStaleLock(lockFile, staleMs) {
     try {
+        const owner = readLockOwner(lockFile);
+        if (owner && owner.pid && !isProcessAlive(owner.pid)) {
+            fs.unlinkSync(lockFile);
+            return;
+        }
         const stat = fs.statSync(lockFile);
         if (Date.now() - stat.mtimeMs >= staleMs) {
             fs.unlinkSync(lockFile);
@@ -115,6 +120,20 @@ function removeStaleLock(lockFile, staleMs) {
         if (!error || error.code !== "ENOENT") {
             throw error;
         }
+    }
+}
+
+function isProcessAlive(pid) {
+    const value = Number(pid);
+    if (!Number.isInteger(value) || value <= 0) {
+        return true;
+    }
+    try {
+        process.kill(value, 0);
+        return true;
+    }
+    catch (error) {
+        return Boolean(error && error.code === "EPERM");
     }
 }
 

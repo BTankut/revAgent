@@ -110,14 +110,22 @@ function inspectRegistryCommand(commandsRoot, revitVersion, command = {}) {
     if (!item.assemblyExists) {
         item.errors.push(`${commandName} assembly does not exist: ${absoluteAssemblyPath}`);
     }
-    if (commandName === "execute_write_plan" && path.basename(absoluteAssemblyPath) !== "RevitMCPWritePlanCommandSet.dll") {
-        item.errors.push("execute_write_plan must resolve to RevitMCPWritePlanCommandSet.dll.");
-    }
-    if (commandName !== "execute_write_plan" && commandName && path.basename(absoluteAssemblyPath) !== "RevitMCPCommandSet.dll") {
-        item.errors.push(`${commandName} must resolve to RevitMCPCommandSet.dll.`);
+    const expectedAssembly = expectedAssemblyForCommand(commandName);
+    if (expectedAssembly && path.basename(absoluteAssemblyPath) !== expectedAssembly) {
+        item.errors.push(`${commandName} must resolve to ${expectedAssembly}.`);
     }
 
     return item;
+}
+
+function expectedAssemblyForCommand(commandName) {
+    if (commandName === "execute_write_plan") {
+        return "RevitMCPWritePlanCommandSet.dll";
+    }
+    if (commandName === "normalize_pipe_header_overlap") {
+        return "RevitMCPPipeHeaderNormalizeCommandSet.dll";
+    }
+    return commandName ? "RevitMCPCommandSet.dll" : "";
 }
 
 function inspectCommandManifests(commandsRoot) {

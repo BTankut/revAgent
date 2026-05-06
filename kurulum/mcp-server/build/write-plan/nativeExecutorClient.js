@@ -8,6 +8,14 @@ const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 export async function executeNativeWritePlan({ mode, plan, commitToken, validation, allowRuntimePreviewFallback = true, allowDirectAssemblyFallback = true }) {
     try {
+        if (isPipeHeaderOverlapPlan(plan)) {
+            const response = await sendRevitCommand("normalize_pipe_header_overlap", {
+                mode,
+                plan,
+                commitToken: commitToken || "",
+            });
+            return normalizeNativeResult(response, mode, plan);
+        }
         const response = await sendRevitCommand("execute_write_plan", {
             mode,
             plan,
@@ -60,6 +68,11 @@ export async function executeNativeWritePlan({ mode, plan, commitToken, validati
             audit: buildAudit(mode, plan, { nativeExecutor: "failed" }),
         };
     }
+}
+
+function isPipeHeaderOverlapPlan(plan) {
+    const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+    return steps.length === 1 && steps[0]?.operation === "normalize_pipe_header_overlap";
 }
 
 async function executeDirectAssemblyFallback({ mode, plan, commitToken }) {

@@ -145,16 +145,16 @@ Overlapping pipe-header normalization is not endpoint stitching. Live Revit
 2022 testing on same-direction overlapping pipe residuals showed
 `PlumbingUtils.BreakCurve` can split a header in rollback, but
 `Document.Create.NewTeeFitting` rejects a branch connector whose owner is a
-pipe fitting (`The owner should be (flex) duct or pipe`). A production
-normalizer must create or preserve a real pipe-owned branch connector,
-replace/rewire adjacent fittings when needed, run one overlap pair per
-rollback preview/commit, and audit device connectivity plus clashes after
-each commit. Do not delete same-direction overlap pairs when both opposite
-ends are connected; those are header/branch normalization candidates, not
-orphan geometry. A later branch-pipe tee rollback probe on the same sample
-timed out while leaving the model unchanged, so connected overlap
-normalization should be represented as typed `normalize_pipe_header_overlap`
-write-plan data until a native per-pair executor exists.
+pipe fitting (`The owner should be (flex) duct or pipe`). Use the native
+`normalize_pipe_header_overlap` write-plan command for these cases, one pair
+per preview/commit. The native normalizer supports direct fitting-to-branch
+pipe tees, short pipe-offset branches, and orphan open fitting cleanup; it
+projects a real pipe-owned branch connector to the header centerline, adjusts
+only collinear branch endpoints, deletes the obsolete overlap/fitting/offset
+geometry, runs `PlumbingUtils.BreakCurve`, creates the tee, and rolls back the
+single transaction on failure. Do not use broad raw dynamic commits for these
+pairs; audit device connectivity, pipe/duct clashes, ceiling crossings, and
+remaining overlap pairs after each batch.
 
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known — e.g. the bundled patterns under

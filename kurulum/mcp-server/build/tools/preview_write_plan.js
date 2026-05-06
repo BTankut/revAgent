@@ -24,7 +24,7 @@ export function registerPreviewWritePlanTool(server) {
             const plan = hydrationResult.plan;
             const officeStandards = mergeOfficeStandards(args.officeStandards || {});
             const runtimeReportPlan = isRuntimeReportPlan(plan);
-            const validation = validateWritePlan(plan, { mode: "preview", officeStandards, requireInitialOperationsOnly: !runtimeReportPlan });
+            const validation = validateWritePlan(plan, { mode: "preview", officeStandards, requireInitialOperationsOnly: false });
             const fallback = {
                 success: validation.valid,
                 mode: "preview",

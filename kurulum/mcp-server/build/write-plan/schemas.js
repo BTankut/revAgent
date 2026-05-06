@@ -41,6 +41,7 @@ export const initialOperations = [
     "resize_pipe",
     "create_schedule_or_update_schedule",
     "commit_reroute",
+    "normalize_pipe_header_overlap",
 ];
 
 export const futureOperations = [
@@ -64,7 +65,6 @@ export const futureOperations = [
     "place_pump",
     "place_coil_connection",
     "connect_pipes",
-    "normalize_pipe_header_overlap",
     "apply_pipe_insulation",
     "assign_hydronic_system",
     "calculate_pipe_pressure_loss",
@@ -113,6 +113,8 @@ export function normalizeDiscipline(value) {
 
 export function buildPlanFromArgs(args = {}, context = {}) {
     const now = new Date().toISOString();
+    const targets = parseJsonObject(args.targets, {});
+    const stepArguments = parseJsonObject(args.arguments, {});
     const steps = Array.isArray(args.steps) && args.steps.length > 0
         ? args.steps
         : [
@@ -121,8 +123,8 @@ export function buildPlanFromArgs(args = {}, context = {}) {
                 eId: args.eId,
                 operation: args.operation,
                 dependsOn: [],
-                targets: args.targets || {},
-                arguments: args.arguments || {},
+                targets,
+                arguments: stepArguments,
                 preconditions: args.preconditions || [],
             },
         ];
@@ -152,6 +154,20 @@ export function buildPlanFromArgs(args = {}, context = {}) {
     });
     normalized.riskLevel = classifyPlanRisk(normalized);
     return normalized;
+}
+
+function parseJsonObject(value, fallback) {
+    if (!value) return fallback;
+    if (typeof value === "string") {
+        try {
+            const parsed = JSON.parse(value);
+            return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
+        }
+        catch {
+            return fallback;
+        }
+    }
+    return value && typeof value === "object" && !Array.isArray(value) ? value : fallback;
 }
 
 export function normalizePlan(input = {}) {

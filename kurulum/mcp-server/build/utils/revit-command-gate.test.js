@@ -29,12 +29,17 @@ assert.deepEqual(results, ["first", "second", "third"]);
 assert.equal(maxActive, 1);
 assert.equal(fs.existsSync(lockFile), false);
 
-fs.writeFileSync(lockFile, JSON.stringify({ pid: 1, command: "blocked-command" }));
+fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, command: "blocked-command" }));
 await assert.rejects(
     runWithRevitCommandGate({ command: "new-command" }, async () => "never"),
     /Revit MCP is busy running blocked-command/,
 );
 fs.unlinkSync(lockFile);
+
+fs.writeFileSync(lockFile, JSON.stringify({ pid: 99999999, command: "dead-command" }));
+const staleResult = await runWithRevitCommandGate({ command: "stale-cleared" }, async () => "stale-cleared");
+assert.equal(staleResult, "stale-cleared");
+assert.equal(fs.existsSync(lockFile), false);
 
 console.log("revit command gate tests passed");
 

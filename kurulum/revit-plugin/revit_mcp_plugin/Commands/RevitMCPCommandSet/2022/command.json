@@ -32,6 +32,11 @@
       "commandName": "execute_write_plan",
       "description": "Validate, preview, commit, or verify typed Revit write-plans",
       "assemblyPath": "RevitMCPWritePlanCommandSet.dll"
+    },
+    {
+      "commandName": "normalize_pipe_header_overlap",
+      "description": "Preview or commit connected same-direction pipe header overlap normalization",
+      "assemblyPath": "RevitMCPPipeHeaderNormalizeCommandSet.dll"
     }
   ]
 }

@@ -74,6 +74,21 @@
         "organization": "revit-mcp"
       },
       "description": "Validate, preview, commit, or verify typed Revit write-plans"
+    },
+    {
+      "commandName": "normalize_pipe_header_overlap",
+      "assemblyPath": "RevitMCPCommandSet\\2022\\RevitMCPPipeHeaderNormalizeCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "revit-mcp",
+        "email": "",
+        "website": "",
+        "organization": "revit-mcp"
+      },
+      "description": "Preview or commit connected same-direction pipe header overlap normalization"
     }
   ]
 }

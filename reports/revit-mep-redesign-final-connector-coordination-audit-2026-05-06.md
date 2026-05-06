@@ -26,9 +26,12 @@ FINAL_COORDINATION_RECHECK|pipeDuctClashes=0|largePipeDuctClashes=0|ceilingHoriz
 COORD_LIGHT_AUDIT|modified=False|ducts=205|pipes=881|ceilings=43|pipeDuctBoxHits=0|pipeDuctLargeBoxHits=0|checkedPairs=180605|horizontalCurves=717|verticalCurves=368|horizontalCeilingBoxHits=0|verticalCeilingBoxHits=133
 POST_DELETE_CEILING_AUDIT|modified=True|ceilings=43|curves=1085|horizontalCurves=716|verticalCurves=368|horizontalCeilingBoxHits=0|verticalCeilingBoxHits=133
 POST_ORPHAN_DELETE_AUDIT|modified=True|ducts=205|supply=121|return=62|exhaust=22|ductConn=223/577|pipes=873|hydSup=132|hydRet=129|domCold=24|domHot=10|sanitary=18|vent=23|fireWet=537|pipeConn=1205/1746|air=183/183|spr=239/239|fireCabinets=6|pipeDuctBoxHits=0|largePipeDuctBoxHits=0|horizontalCeilingBoxHits=0|verticalCeilingBoxHits=133|horizontalCurves=709|verticalCurves=368|pipeOpen=541|pipeCoincidentPairs=49|pipeSameDir=49|pipeOpposite=0|pipeAngled=0|sameDirWithOpenOtherEnd=0
+FINAL_PIPE_NORMALIZE_AUDIT|modified=True|ducts=205|ductFittings=3|pipes=870|pipeConn=1240/1740|pipeFittings=437|pipeOpen=500|air=183/183|spr=239/239|pipeCoincidentPairs=0|pipeSameDir=0|pipeOpposite=0|pipeAngled=0
+FINAL_COORD_NORMALIZE_AUDIT|pipeDuctBoxHits=0|largePipeDuctBoxHits=0|horizontalCeilingBoxHits=0|verticalCeilingBoxHits=133|horizontalCurves=707|verticalCurves=368
+FINAL_SAVED_STATE|modified=False|path=C:\Users\BT\AppData\Local\Temp\revit-mcp-live-test\rme_advanced_sample_project_codex_restart_test.rvt
 ```
 
-After the orphan-stub and orphan-overlap cleanups described below, the model was saved through Revit UI `Ctrl+S`; the final save audit returned `modified=False`.
+After the orphan-stub, orphan-overlap, and native pipe-header normalization cleanups described below, the model was saved through Revit UI `Ctrl+S`; the final save audit returned `modified=False`.
 
 ## Preserved Architectural Basis
 
@@ -91,7 +94,7 @@ A follow-up rollback strategy tried to delete the duplicate pipe and existing el
 POST_TIMEOUT_BRANCH_TEE_STATE|modified=False|1022539Exists=True|1022601Exists=True|1027607Exists=True|1022598Exists=True|air=183/183|spr=239/239
 ```
 
-This is why the remaining 49 connected overlap pairs are now represented as a future typed operation rather than raw dynamic commits: `normalize_pipe_header_overlap` validates preview intent and safety requirements, but the starter native executor intentionally rejects commit until a dedicated per-pair implementation exists.
+The remaining 49 connected overlap pairs were then resolved through the native typed `normalize_pipe_header_overlap` operation rather than raw dynamic commits. The command previews and commits one pair at a time, with rollback, for direct fitting-to-branch pipe tees, short pipe-offset branch tees, and orphan open fitting cleanup. Final audit after this native pass returned `pipeCoincidentPairs=0`, `pipeSameDir=0`, preserved `air=183/183` and `spr=239/239`, and preserved zero pipe/duct and horizontal-ceiling clashes.
 
 ## Application Lessons
 
@@ -116,4 +119,4 @@ The model is ready for realistic visual and coordination testing of the current 
 - horizontal ceiling coordination clear,
 - model saved and not modified.
 
-The broader "fully engineered/fitting-complete network" goal should remain open until the remaining duct and pipe segment connector/fitting continuity is solved with a safer native endpoint/fitting command.
+The broader "fully engineered/fitting-complete network" goal should remain open for future duct segment fitting/connector continuity work, but the pipe same-direction header overlap blocker is now resolved by native preview/commit workflow.

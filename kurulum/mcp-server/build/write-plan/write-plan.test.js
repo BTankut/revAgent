@@ -706,8 +706,33 @@ assert.equal(classifyPlanRisk(pipeHeaderOverlapPlan), "critical");
 assert(pipeHeaderOverlapValidation.warnings.some((warning) => warning.includes("native header/tee normalization support")));
 
 const pipeHeaderOverlapCommitValidation = validateWritePlan(pipeHeaderOverlapPlan, { mode: "commit", requireInitialOperationsOnly: true });
-assert.equal(pipeHeaderOverlapCommitValidation.valid, false);
-assert(pipeHeaderOverlapCommitValidation.errors.includes("Operation is cataloged but not implemented in the native starter executor: normalize_pipe_header_overlap"));
+assert.equal(pipeHeaderOverlapCommitValidation.valid, true);
+
+const pipeHeaderOverlapStringPayloadPlan = buildPlanFromArgs({
+    title: "Preview pipe header overlap normalization from tool strings",
+    discipline: "domestic_water",
+    operation: "normalize_pipe_header_overlap",
+    targets: JSON.stringify({ elementIds: [1022539, 1022601] }),
+    arguments: JSON.stringify({
+        normalizationMode: "overlap_to_tee_header",
+        requireSameSystemType: true,
+        requireCollinearOverlap: true,
+        requireSameDiameter: true,
+        requireBothOppositeEndsConnected: true,
+        preserveBranchConnectivity: true,
+        allowFittingReplacement: true,
+        branchConnectorOwnerRequirement: "pipe_or_flex_pipe",
+        rollbackPreviewRequired: true,
+        commitBatchSize: 1,
+        heartbeatRequired: true,
+        postCommitAudit: true,
+        expectedDeviceConnectivityUnchanged: true,
+        expectedClashIncrease: 0,
+        timeoutRecoveryPlan: "Abort and roll back the single pair.",
+    }),
+});
+assert.deepEqual(pipeHeaderOverlapStringPayloadPlan.steps[0].targets.elementIds, [1022539, 1022601]);
+assert.equal(validateWritePlan(pipeHeaderOverlapStringPayloadPlan, { mode: "preview" }).valid, true);
 
 const invalidPipeHeaderOverlapPlan = buildPlanFromArgs({
     title: "Reject unsafe pipe header overlap normalization",

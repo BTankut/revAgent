@@ -12,7 +12,7 @@ assert.equal(diagnostics.ok, true, JSON.stringify({
     errors: diagnostics.errors,
     warnings: diagnostics.warnings,
 }, null, 2));
-assert.equal(diagnostics.commandRegistry.commandCount, 5);
+assert.equal(diagnostics.commandRegistry.commandCount, 6);
 
 const registryCommands = diagnostics.commandRegistry.commands.map((command) => [
     command.commandName,
@@ -25,6 +25,7 @@ assert.deepEqual(registryCommands, [
     ["get_selected_elements", "RevitMCPCommandSet.dll"],
     ["send_code_to_revit", "RevitMCPCommandSet.dll"],
     ["execute_write_plan", "RevitMCPWritePlanCommandSet.dll"],
+    ["normalize_pipe_header_overlap", "RevitMCPPipeHeaderNormalizeCommandSet.dll"],
 ]);
 
 console.log("revit plugin diagnostics tests passed");
