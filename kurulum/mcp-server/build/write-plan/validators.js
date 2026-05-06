@@ -247,6 +247,7 @@ function validateOperationPayload(step, prefix, errors, warnings, officeStandard
             if (args.expectedFittingCount !== undefined && (!Number.isInteger(Number(args.expectedFittingCount)) || Number(args.expectedFittingCount) < 0)) {
                 errors.push(`${prefix}.arguments.expectedFittingCount must be a non-negative integer when provided`);
             }
+            validateConnectedReroutePayload(args, prefix, errors);
             break;
         case "export_boq_report":
         case "export_clash_report":
@@ -268,6 +269,45 @@ function validateOperationPayload(step, prefix, errors, warnings, officeStandard
                 warnings.push(`${prefix}.operation is cataloged as a foundation operation; native execution may not be implemented yet`);
             }
             break;
+    }
+}
+
+function validateConnectedReroutePayload(args, prefix, errors) {
+    const policy = args.connectedEndpointPolicy || (args.preserveExternalConnector === true ? "preserve_external_connector" : "");
+    if (!policy) {
+        return;
+    }
+    const allowed = ["preserve_external_connector", "open_connector_only"];
+    if (!allowed.includes(String(policy))) {
+        errors.push(`${prefix}.arguments.connectedEndpointPolicy must be preserve_external_connector or open_connector_only when provided`);
+        return;
+    }
+    if (policy === "open_connector_only") {
+        if (args.expectedSourceConnectionCount !== undefined && Number(args.expectedSourceConnectionCount) !== 0) {
+            errors.push(`${prefix}.arguments.expectedSourceConnectionCount must be 0 when connectedEndpointPolicy is open_connector_only`);
+        }
+        return;
+    }
+    if (!Number.isInteger(Number(args.expectedSourceConnectionCount)) || Number(args.expectedSourceConnectionCount) < 1) {
+        errors.push(`${prefix}.arguments.expectedSourceConnectionCount must be at least 1 when preserving an external connector`);
+    }
+    if (!Number.isInteger(Number(args.expectedOpenConnectorCount)) || Number(args.expectedOpenConnectorCount) < 0) {
+        errors.push(`${prefix}.arguments.expectedOpenConnectorCount is required when preserving an external connector`);
+    }
+    if (!Array.isArray(args.preserveConnectedOwnerIds) || args.preserveConnectedOwnerIds.length === 0) {
+        errors.push(`${prefix}.arguments.preserveConnectedOwnerIds must contain the fitting/equipment owner ids to preserve`);
+    }
+    if (!Number.isFinite(Number(args.expectedClashReduction)) || Number(args.expectedClashReduction) < 1) {
+        errors.push(`${prefix}.arguments.expectedClashReduction must be at least 1 when preserving an external connector`);
+    }
+    if (args.forbidNewClashElementIds !== true) {
+        errors.push(`${prefix}.arguments.forbidNewClashElementIds must be true when preserving an external connector`);
+    }
+    if (args.commitBatchSize !== undefined && (!Number.isInteger(Number(args.commitBatchSize)) || Number(args.commitBatchSize) !== 1)) {
+        errors.push(`${prefix}.arguments.commitBatchSize must be 1 when preserving an external connector`);
+    }
+    if (args.postCommitAudit !== true) {
+        errors.push(`${prefix}.arguments.postCommitAudit must be true when preserving an external connector`);
     }
 }
 

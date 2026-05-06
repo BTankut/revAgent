@@ -566,6 +566,65 @@ const invalidReconnectValidation = validateWritePlan(invalidReconnectReroute, { 
 assert.equal(invalidReconnectValidation.valid, false);
 assert(invalidReconnectValidation.errors.includes("steps[0].arguments.sourceElementId or targets.sourceElementId is required when reconnect/reconnectSource is true"));
 
+const connectedReroutePlan = buildPlanFromArgs({
+    title: "Commit connected pipe drop reroute",
+    discipline: "clash",
+    operation: "commit_reroute",
+    targets: {},
+    arguments: {
+        curveType: "pipe",
+        systemTypeId: 11,
+        pipeTypeId: 22,
+        levelId: 33,
+        sourceElementId: 1021819,
+        connectedEndpointPolicy: "preserve_external_connector",
+        expectedSourceConnectionCount: 1,
+        expectedOpenConnectorCount: 1,
+        preserveConnectedOwnerIds: [1026094],
+        expectedClashReduction: 1,
+        forbidNewClashElementIds: true,
+        commitBatchSize: 1,
+        postCommitAudit: true,
+        unit: "m",
+        points: [
+            { x: 0, y: 0, z: 0 },
+            { x: 0, y: -1, z: 0 },
+            { x: 0, y: -1, z: 1 },
+        ],
+    },
+});
+const connectedRerouteValidation = validateWritePlan(connectedReroutePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(connectedRerouteValidation.valid, true);
+assert.equal(classifyPlanRisk(connectedReroutePlan), "critical");
+
+const invalidConnectedReroutePlan = buildPlanFromArgs({
+    title: "Reject connected pipe drop reroute without safety contract",
+    discipline: "clash",
+    operation: "commit_reroute",
+    targets: {},
+    arguments: {
+        curveType: "pipe",
+        systemTypeId: 11,
+        pipeTypeId: 22,
+        levelId: 33,
+        sourceElementId: 1021819,
+        connectedEndpointPolicy: "preserve_external_connector",
+        expectedSourceConnectionCount: 1,
+        unit: "m",
+        points: [
+            { x: 0, y: 0, z: 0 },
+            { x: 0, y: -1, z: 0 },
+        ],
+    },
+});
+const invalidConnectedRerouteValidation = validateWritePlan(invalidConnectedReroutePlan, { mode: "commit", requireInitialOperationsOnly: true });
+assert.equal(invalidConnectedRerouteValidation.valid, false);
+assert(invalidConnectedRerouteValidation.errors.includes("steps[0].arguments.expectedOpenConnectorCount is required when preserving an external connector"));
+assert(invalidConnectedRerouteValidation.errors.includes("steps[0].arguments.preserveConnectedOwnerIds must contain the fitting/equipment owner ids to preserve"));
+assert(invalidConnectedRerouteValidation.errors.includes("steps[0].arguments.expectedClashReduction must be at least 1 when preserving an external connector"));
+assert(invalidConnectedRerouteValidation.errors.includes("steps[0].arguments.forbidNewClashElementIds must be true when preserving an external connector"));
+assert(invalidConnectedRerouteValidation.errors.includes("steps[0].arguments.postCommitAudit must be true when preserving an external connector"));
+
 const invalidDeleteSourceReroute = buildPlanFromArgs({
     title: "Reject source delete without source element",
     discipline: "clash",

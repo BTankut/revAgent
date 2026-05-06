@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { classifyAabbClash, classifyMepClashPriority, proposeOrthogonalReroute, solveOrthogonalReroute, summarizeMepClashPriorities } from "./clash/calculations.js";
+import { classifyAabbClash, classifyMepClashPriority, evaluateConnectedDropDoglegCandidate, proposeOrthogonalReroute, solveOrthogonalReroute, summarizeMepClashPriorities } from "./clash/calculations.js";
 import { buildDomesticWaterPipeResizeProposal, calculateDomesticWaterPressureLoss, calculateFixtureDemand, checkRecirculationContinuity, convertFixtureUnitsToDemand, sizeDomesticWaterPipe } from "./domestic-water/calculations.js";
 import { buildEquipmentScheduleProposal, buildFamilyPlacementProposal, selectFanCandidate, selectPumpCandidate } from "./equipment/calculations.js";
 import { buildFireProtectionPipeResizeProposal, calculateFireCabinetDemand, calculateFirePumpBasis, checkFireCabinetCoverage, checkSprinklerCoverage } from "./fire/calculations.js";
@@ -379,6 +379,40 @@ assert.equal(mepClashPrioritySummary.summary.total, 2);
 assert.equal(mepClashPrioritySummary.summary.mainDistributionBlockers, 1);
 assert.equal(mepClashPrioritySummary.summary.localDropOrConnectionDetails, 1);
 assert.equal(mepClashPrioritySummary.summary.majorDistributionClear, false);
+
+const connectedDropCandidate = evaluateConnectedDropDoglegCandidate({
+    sourceElementId: 1021819,
+    targetDuctId: 1021677,
+    currentHitIds: [1021675, 1021677],
+    candidateHitIds: [1021675],
+    endpointInsideHitIds: [1021675],
+    sourceConnectorCount: 2,
+    sourceOpenConnectorCount: 1,
+    connectedOwnerIds: [1026094],
+    connectedOwnerCategories: ["Pipe Fittings"],
+});
+assert.equal(connectedDropCandidate.success, true);
+assert.equal(connectedDropCandidate.geometryFeasible, true);
+assert.equal(connectedDropCandidate.hasConnectedEndpoint, true);
+assert.equal(connectedDropCandidate.safetyClass, "connected_drop_write_plan_required");
+assert.equal(connectedDropCandidate.action, "preview_connected_reroute_before_commit");
+assert.equal(connectedDropCandidate.reduction, 1);
+assert.deepEqual(connectedDropCandidate.newHitIds, []);
+assert.deepEqual(connectedDropCandidate.removedHitIds, ["1021677"]);
+assert.equal(connectedDropCandidate.canCommit, false);
+assert.equal(connectedDropCandidate.riskLevel, "critical");
+
+const blockedDropCandidate = evaluateConnectedDropDoglegCandidate({
+    sourceElementId: 1021819,
+    targetDuctId: 1021677,
+    currentHitIds: [1021675, 1021677],
+    candidateHitIds: [1021675, 1022000],
+    sourceConnectorCount: 2,
+    sourceOpenConnectorCount: 1,
+});
+assert.equal(blockedDropCandidate.geometryFeasible, false);
+assert.equal(blockedDropCandidate.safetyClass, "blocked");
+assert(blockedDropCandidate.blockers.some((blocker) => blocker.includes("creates new clash ids")));
 
 const fan = selectFanCandidate({
     requiredFlowM3h: 5000,

@@ -155,6 +155,92 @@ export function summarizeMepClashPriorities(clashes = [], options = {}) {
     };
 }
 
+export function evaluateConnectedDropDoglegCandidate({
+    sourceElementId,
+    targetDuctId,
+    currentHitIds = [],
+    candidateHitIds = [],
+    endpointInsideHitIds = [],
+    sourceConnectorCount = 0,
+    sourceOpenConnectorCount = 0,
+    connectedOwnerIds = [],
+    connectedOwnerCategories = [],
+    requiredReduction = 1,
+} = {}) {
+    const currentHits = normalizeIdSet(currentHitIds);
+    const candidateHits = normalizeIdSet(candidateHitIds);
+    const endpointInsideHits = normalizeIdSet(endpointInsideHitIds);
+    const newHitIds = setDifference(candidateHits, currentHits);
+    const removedHitIds = setDifference(currentHits, candidateHits);
+    const targetCleared = targetDuctId == null || !candidateHits.has(String(targetDuctId));
+    const createsNewHits = newHitIds.length > 0;
+    const reduction = currentHits.size - candidateHits.size;
+    const connectedConnectorCount = Math.max(0, Number(sourceConnectorCount || 0) - Number(sourceOpenConnectorCount || 0));
+    const hasConnectedEndpoint = connectedConnectorCount > 0 ||
+        normalizeIdSet(connectedOwnerIds).size > 0 ||
+        (Array.isArray(connectedOwnerCategories) && connectedOwnerCategories.length > 0);
+    const hasEndpointInside = endpointInsideHits.size > 0;
+    const geometryFeasible = currentHits.size > 0 &&
+        candidateHits.size < currentHits.size &&
+        reduction >= Number(requiredReduction || 1) &&
+        targetCleared &&
+        !createsNewHits;
+
+    let safetyClass = "blocked";
+    let action = "do_not_commit";
+    const blockers = [];
+    const preconditions = [];
+
+    if (currentHits.size === 0) blockers.push("currentHitIds is empty");
+    if (!targetCleared) blockers.push("candidate route still hits target duct");
+    if (createsNewHits) blockers.push(`candidate route creates new clash ids: ${newHitIds.join(",")}`);
+    if (reduction < Number(requiredReduction || 1)) blockers.push("candidate route does not meet required clash reduction");
+
+    if (geometryFeasible && hasConnectedEndpoint) {
+        safetyClass = "connected_drop_write_plan_required";
+        action = "preview_connected_reroute_before_commit";
+        preconditions.push("preserve the external connected fitting/connector");
+        preconditions.push("commit one source pipe at a time");
+        preconditions.push("verify source deletion/replacement, fitting count, and post-commit clash reduction");
+        if (hasEndpointInside) {
+            preconditions.push("remaining endpoint-inside-duct-depth clashes must be accepted or resolved by moving the connection point/adjacent branch");
+        }
+    }
+    else if (geometryFeasible) {
+        safetyClass = hasEndpointInside ? "open_drop_partial_detail_candidate" : "open_drop_auto_reroute_candidate";
+        action = hasEndpointInside ? "reroute_only_after_detail_rule" : "safe_open_connector_reroute_candidate";
+        if (hasEndpointInside) {
+            preconditions.push("dogleg clears the target duct but endpoint-inside clashes remain");
+        }
+    }
+    else if (hasEndpointInside) {
+        safetyClass = "connection_or_equipment_move_required";
+        action = "move_connection_point_or_adjacent_branch";
+    }
+
+    return {
+        success: true,
+        sourceElementId,
+        targetDuctId,
+        currentHitIds: [...currentHits],
+        candidateHitIds: [...candidateHits],
+        endpointInsideHitIds: [...endpointInsideHits],
+        newHitIds,
+        removedHitIds,
+        reduction,
+        geometryFeasible,
+        hasConnectedEndpoint,
+        connectedConnectorCount,
+        hasEndpointInside,
+        safetyClass,
+        action,
+        blockers,
+        preconditions,
+        canCommit: false,
+        riskLevel: hasConnectedEndpoint ? "critical" : geometryFeasible ? "high" : "medium",
+    };
+}
+
 export function proposeOrthogonalReroute({ routePoints = [], obstacleBox, clearanceM = 0.1, offsetAxis = "y" } = {}) {
     if (!Array.isArray(routePoints) || routePoints.length < 2) {
         return {
@@ -333,6 +419,24 @@ function point(value) {
         y: Number(value?.y ?? 0),
         z: Number(value?.z ?? 0),
     };
+}
+
+function normalizeIdSet(values = []) {
+    const set = new Set();
+    const list = Array.isArray(values) ? values : [values];
+    for (const value of list) {
+        if (value === null || value === undefined || value === "") continue;
+        set.add(String(value));
+    }
+    return set;
+}
+
+function setDifference(a, b) {
+    const rows = [];
+    for (const value of a) {
+        if (!b.has(value)) rows.push(value);
+    }
+    return rows;
 }
 
 function expandBox(box, clearance) {
