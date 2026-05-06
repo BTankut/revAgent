@@ -9,7 +9,7 @@ Path: `C:\Users\BT\AppData\Local\Temp\revit-mcp-live-test\rme_advanced_sample_pr
 ## Current Saved State
 
 ```text
-FINAL_CONNECTOR_SAVE_AUDIT|modified=False|rooms=78|spaces=89|ceilings=43|ducts=205|ductConn=223/577|ductFittings=3|air=183/183|mechanicalEquipment=53|fireCabinets=6|pipes=881|pipeConn=1205/1762|pipeFittings=439|plumbingFixtures=11|spr=239/239
+FINAL_SAVED_POST_DELETE_AUDIT|modified=False|rooms=78|spaces=89|ceilings=43|ducts=205|ductConn=223/577|ductFittings=3|air=183/183|pipes=880|pipeConn=1205/1760|pipeFittings=439|spr=239/239|fireCabinets=6|deleted1024041Exists=False
 ```
 
 ## Device Connector Result
@@ -23,9 +23,11 @@ FINAL_CONNECTOR_SAVE_AUDIT|modified=False|rooms=78|spaces=89|ceilings=43|ducts=2
 
 ```text
 FINAL_COORDINATION_RECHECK|pipeDuctClashes=0|largePipeDuctClashes=0|ceilingHorizontalProblems=0|ceilingVerticalExpected=133|modified=False
+COORD_LIGHT_AUDIT|modified=False|ducts=205|pipes=881|ceilings=43|pipeDuctBoxHits=0|pipeDuctLargeBoxHits=0|checkedPairs=180605|horizontalCurves=717|verticalCurves=368|horizontalCeilingBoxHits=0|verticalCeilingBoxHits=133
+POST_DELETE_CEILING_AUDIT|modified=True|ceilings=43|curves=1085|horizontalCurves=716|verticalCurves=368|horizontalCeilingBoxHits=0|verticalCeilingBoxHits=133
 ```
 
-After this audit, the model was saved through Revit UI `Ctrl+S`; the final save audit returned `modified=False`.
+After the orphan-stub cleanup described below, the model was saved through Revit UI `Ctrl+S`; the final save audit returned `modified=False`.
 
 ## Preserved Architectural Basis
 
@@ -33,13 +35,14 @@ After this audit, the model was saved through Revit UI `Ctrl+S`; the final save 
 - MEP spaces: 89
 - Ceilings: 43
 - Plumbing fixtures: 11
+- Codex fire hose cabinets: 6 `DirectShape` elements in `Mechanical Equipment` named `Codex Fire Hose Cabinet 1..6`
 
 ## Remaining Engineering Limitation
 
 The visible distribution geometry, outlet/device connector continuity, pipe-duct coordination, and suspended-ceiling horizontal coordination now pass the live audits. Full segment-to-segment connector/fitting continuity is still not complete:
 
 - Duct connectors: `223/577` connected
-- Pipe connectors: `1205/1762` connected
+- Pipe connectors: `1205/1760` connected
 - Duct fittings: `3`
 - Pipe fittings: `439`
 
@@ -49,13 +52,19 @@ An endpoint proximity audit found many unconnected duct and pipe segment ends at
 OPEN_ENDPOINT_PROXIMITY|ductOpen=394|ductNearest01=45|ductNearest05=45|ductNearest20=45|ductNearest50=47|pipeOpen=1232|pipeNearest01=781|pipeNearest05=781|pipeNearest20=792|pipeNearest50=832
 ```
 
-Further filtered endpoint work was applied after the initial report. Same-system, same-size, opposite-direction duct endpoints were connected directly; different-size opposite-direction duct endpoints were connected with transition fittings. Same-system, same-size, opposite-direction pipe endpoints were connected directly, and same-system, same-size angled pipe endpoints were connected with elbow fittings. The dynamic approach was only stable after excluding same-direction pairs and a specific problematic elbow pair (`1024038 -> 1024041`); invalid same-direction pairs can still timeout during commit finalization.
+Further filtered endpoint work was applied after the initial report. Same-system, same-size, opposite-direction duct endpoints were connected directly; different-size opposite-direction duct endpoints were connected with transition fittings. Same-system, same-size, opposite-direction pipe endpoints were connected directly, and same-system, same-size angled pipe endpoints were connected with elbow fittings. The dynamic approach was only stable after excluding same-direction pairs; invalid same-direction pairs can still timeout during commit finalization.
+
+The remaining single angled fire-pipe candidate was not a valid elbow target. Element `1024041` was a 23 mm long `Fire Protection Wet` pipe stub with `connectorCount=2` and `openConnectorCount=2`. It was removed through write-plan `c500f50e-c570-4554-8f79-229d871c1cd8` as a one-element critical `delete_elements` commit after preview. Revit also deleted dependent element `1024042`. Post-save verification:
+
+```text
+POST_DELETE_AUDIT|modified=True|ducts=205|supply=121|return=62|exhaust=22|ductConn=223/577|pipes=880|hydSup=133|hydRet=129|domCold=24|domHot=10|sanitary=18|vent=23|fireWet=543|pipeConn=1205/1760|air=183/183|spr=239/239|fireCabinets=6|pipeDuctBoxHits=0|largePipeDuctBoxHits=0|pipeOpen=555|pipeCoincidentPairs=54|pipeSameDir=54|pipeOpposite=0|pipeAngled=0
+```
 
 Residual endpoint/fitting limitation:
 
 - No same-system coincident duct endpoint pairs remain in the final classification.
-- Pipe residual coincident pairs are mostly same-direction overlap/duplicate-like geometry, not valid direct fitting candidates.
-- One angled fire pipe pair (`1024038 -> 1024041`) timed out as a single elbow commit and was left unconnected.
+- Pipe residual coincident pairs are same-direction overlap/duplicate-like geometry, not valid direct fitting candidates.
+- No opposite-direction or angled coincident pipe endpoint fitting candidates remain after the orphan-stub cleanup.
 
 ## Application Lessons
 
