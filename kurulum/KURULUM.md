@@ -77,11 +77,19 @@ Revit instance'lari icin dokuman, process id, aktif view ve versiyon bilgisi
 doner. Varsa `%TEMP%\revit-mcp-instances.json` veya
 `REVIT_MCP_INSTANCE_REGISTRY` dosyasini da okur.
 
+Yeni `get_revit_mcp_status` araci aktif gorev, gecen sure ve son tamamlanan
+veya hata alan gorevleri doner. Bu status cagrisi aktif komut kilidini
+beklemez; uzun bir Revit MCP komutu calisirken de durum sorgulanabilir.
+
 Bundled Revit add-in, Revit acilistan sonra idle duruma gelince socket
 servisini otomatik baslatir. Ayarli portu kullanir; doluysa `+20`'ye kadar
 siradaki bos porta gecer, bu nedenle birden cok acik Revit ayri portlarda
 dinleyebilir. Revit kapanirken servis durdurulur ve port serbest kalir.
 Otomatik baslatmayi kapatmak icin `REVIT_MCP_AUTOSTART=0` verilebilir.
+
+MCP komutu calisirken Revit icinde kucuk bir uyari/durum penceresi acilir.
+Pencere gorev adini, gecen sureyi ve Revit'e dokunulmamasi gerektigini
+gosterir; komut bitince basarili veya hatali sonucu kisa sure gosterip kapanir.
 
 Temiz kurulumda veya DLL guncellemesinden sonra Revit unsigned add-in uyarisi
 gosterirse `Always Load` sec. Bu normalde bir kez sorulur. `Revit MCP Switch`
@@ -236,6 +244,8 @@ Ardindan Codex icinde:
 
 Runtime server (`revit-mcp`):
 
+- `list_revit_instances`
+- `get_revit_mcp_status`
 - `send_code_to_revit`
 - `send_code_to_revit_safe`
 - `get_revit_session_context`

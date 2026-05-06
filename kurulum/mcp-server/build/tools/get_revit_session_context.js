@@ -5,6 +5,8 @@ import {
     executeRevitCode,
     formatJsonContent,
     getSelectionElementIds,
+    taskMetadataSchema,
+    taskOptionsFromArgs,
 } from "../utils/revitToolHelpers.js";
 
 function payloadFromExecution(response) {
@@ -141,6 +143,7 @@ catch (Exception ex)
 export function registerGetRevitSessionContextTool(server) {
     server.tool("get_revit_session_context", "Read-only Revit session summary: version/build/culture/document state/active view/MEP counts/link counts/selection IDs.", {
         ...connectionTargetSchema(z),
+        ...taskMetadataSchema(z),
         includeCategoryCounts: z.boolean().optional().describe("Include known MEP category counts. Defaults true."),
         includeLinks: z.boolean().optional().describe("Include Revit link and linked room/space counts. Defaults true."),
         includeSelection: z.boolean().optional().describe("Include selected element ids using the existing Revit selection command. Defaults true."),
@@ -149,11 +152,16 @@ export function registerGetRevitSessionContextTool(server) {
         try {
             const response = await executeRevitCode(buildSessionContextCode(args), {
                 ...connectionOptions,
+                ...taskOptionsFromArgs(args, "Read Revit session context"),
                 transactionMode: "none",
             });
             const payload = payloadFromExecution(response);
             if (args.includeSelection !== false && payload && typeof payload === "object") {
-                const ids = await getSelectionElementIds(100, connectionOptions);
+                const ids = await getSelectionElementIds(100, {
+                    ...connectionOptions,
+                    taskName: args.taskName ? `${args.taskName}: selection` : "Read Revit selection",
+                    taskId: args.taskId,
+                });
                 payload.selection = {
                     count: ids.length,
                     elementIds: ids,

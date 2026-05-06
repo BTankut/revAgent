@@ -4,7 +4,9 @@ import {
     connectionTargetSchema,
     csharpStringArray,
     executeRevitCode,
+    executionOptionsFromArgs,
     formatJsonContent,
+    taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
 
 function buildActiveViewContextCode(args) {
@@ -120,6 +122,7 @@ catch (Exception ex)
 export function registerGetActiveViewContextTool(server) {
     server.tool("get_active_view_context", "Read-only active view context. Handles model views and DrawingSheet views; sheets return placed viewport/view data instead of pretending MEP model elements are directly visible.", {
         ...connectionTargetSchema(z),
+        ...taskMetadataSchema(z),
         includeSheetViewports: z.boolean().optional().describe("When active view is a sheet, include placed viewports. Defaults true."),
         includeModelElements: z.boolean().optional().describe("When active view is a model view, collect limited model elements from modelCategoryList. Defaults false."),
         modelCategoryList: z.array(z.string()).optional().describe("BuiltInCategory names such as OST_DuctCurves or OST_DuctTerminal."),
@@ -127,7 +130,7 @@ export function registerGetActiveViewContextTool(server) {
     }, async (args) => {
         try {
             const response = await executeRevitCode(buildActiveViewContextCode(args), {
-                ...connectionOptionsFromArgs(args),
+                ...executionOptionsFromArgs(args, "Read active Revit view context"),
                 transactionMode: "none",
             });
             return formatJsonContent(response && response.result ? response.result : response);

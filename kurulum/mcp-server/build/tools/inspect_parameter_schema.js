@@ -6,7 +6,9 @@ import {
     csharpString,
     csharpStringArray,
     executeRevitCode,
+    executionOptionsFromArgs,
     formatJsonContent,
+    taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
 
 function buildInspectParameterSchemaCode(args) {
@@ -173,6 +175,7 @@ catch (Exception ex)
 export function registerInspectParameterSchemaTool(server) {
     server.tool("inspect_parameter_schema", "Read-only parameter schema inspection for selected ids or a category sample: BIP, storage type, unit type, shared/read-only flags, raw and display values.", {
         ...connectionTargetSchema(z),
+        ...taskMetadataSchema(z),
         elementIds: z.array(z.union([z.number(), z.string()])).optional().describe("Element ids to inspect."),
         category: z.string().optional().describe("BuiltInCategory name such as OST_DuctCurves or OST_DuctTerminal."),
         sampleLimit: z.number().int().positive().max(25).optional().describe("Maximum sample elements. Defaults 5."),
@@ -191,7 +194,7 @@ export function registerInspectParameterSchemaTool(server) {
         }
         try {
             const response = await executeRevitCode(buildInspectParameterSchemaCode(args), {
-                ...connectionOptionsFromArgs(args),
+                ...executionOptionsFromArgs(args, "Inspect Revit parameter schema"),
                 transactionMode: "none",
             });
             return formatJsonContent(response && response.result ? response.result : response);

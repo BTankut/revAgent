@@ -8,11 +8,32 @@ export function connectionTargetSchema(z) {
     };
 }
 
+export function taskMetadataSchema(z) {
+    return {
+        taskName: z.string().optional().describe("Optional display name shown in Revit while this MCP task is running."),
+        taskId: z.string().optional().describe("Optional client task identifier forwarded to Revit status history."),
+    };
+}
+
 export function connectionOptionsFromArgs(args = {}) {
     return {
         target: args.target,
         host: args.host,
         port: args.port,
+    };
+}
+
+export function taskOptionsFromArgs(args = {}, defaultTaskName) {
+    return {
+        taskName: args.taskName || defaultTaskName,
+        taskId: args.taskId,
+    };
+}
+
+export function executionOptionsFromArgs(args = {}, defaultTaskName) {
+    return {
+        ...connectionOptionsFromArgs(args),
+        ...taskOptionsFromArgs(args, defaultTaskName),
     };
 }
 
@@ -60,7 +81,11 @@ export async function executeRevitCode(code, options = {}) {
         code,
         parameters: options.parameters || [],
         transactionMode: options.transactionMode || "none",
+        taskName: options.taskName || "Run Revit code",
     };
+    if (options.taskId) {
+        params.taskId = options.taskId;
+    }
     const response = await withRevitConnection(async (revitClient) => {
         return await revitClient.sendCommand("send_code_to_revit", params);
     }, options);
@@ -68,8 +93,17 @@ export async function executeRevitCode(code, options = {}) {
 }
 
 export async function sendRevitCommand(command, params = {}, options = {}) {
+    const commandParams = {
+        ...params,
+    };
+    if (!commandParams.taskName) {
+        commandParams.taskName = options.taskName || command;
+    }
+    if (options.taskId && !commandParams.taskId) {
+        commandParams.taskId = options.taskId;
+    }
     const response = await withRevitConnection(async (revitClient) => {
-        return await revitClient.sendCommand(command, params);
+        return await revitClient.sendCommand(command, commandParams);
     }, options);
     return normalizeRevitExecutionResponse(response);
 }

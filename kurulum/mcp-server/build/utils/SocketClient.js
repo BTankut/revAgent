@@ -85,7 +85,7 @@ export class RevitClientConnection {
         }
     }
 
-    sendCommand(command, params = {}) {
+    sendCommand(command, params = {}, options = {}) {
         return new Promise((resolve, reject) => {
             let timeoutHandle;
             try {
@@ -125,7 +125,7 @@ export class RevitClientConnection {
                         this.responseCallbacks.delete(requestId);
                         reject(new Error(`Command timed out after 2 minutes: ${command}`));
                     }
-                }, 120000);
+                }, options.timeoutMs || 120000);
                 if (typeof timeoutHandle.unref === "function") {
                     timeoutHandle.unref();
                 }

@@ -257,7 +257,9 @@ async function acquireRevitCommandLock(target, waitMs = LOCK_WAIT_MS) {
 
 export async function withRevitConnection(operation, options = {}) {
     const target = resolveRevitConnectionTarget(options);
-    const releaseLock = await acquireRevitCommandLock(target, options.lockWaitMs || LOCK_WAIT_MS);
+    const releaseLock = options.skipLock === true
+        ? () => { }
+        : await acquireRevitCommandLock(target, options.lockWaitMs || LOCK_WAIT_MS);
     const revitClient = new RevitClientConnection(target.host, target.port, {
         logErrors: options.logSocketErrors !== false,
     });

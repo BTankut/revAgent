@@ -58,7 +58,8 @@ async function probeTarget(target, timeoutMs) {
                 code: INSTANCE_INFO_CODE,
                 parameters: [`${resolvedTarget.host}:${resolvedTarget.port}`],
                 transactionMode: "none",
-            });
+                taskName: "Probe Revit instance",
+            }, { timeoutMs });
         }, {
             host: target.host,
             port: target.port,

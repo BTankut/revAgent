@@ -5,6 +5,8 @@ import {
     executeRevitCode,
     formatJsonContent,
     normalizeRevitExecutionResponse,
+    taskMetadataSchema,
+    taskOptionsFromArgs,
     truncateText,
 } from "../utils/revitToolHelpers.js";
 import { findWritePatterns } from "./send_code_to_revit_safe_guards.js";
@@ -12,6 +14,7 @@ import { findWritePatterns } from "./send_code_to_revit_safe_guards.js";
 export function registerSendCodeToRevitSafeTool(server) {
     server.tool("send_code_to_revit_safe", "Run Revit C# through the existing dynamic execution command with read/preview safety checks, JSON result parsing, and output trimming. This MVP does not commit writes.", {
         ...connectionTargetSchema(z),
+        ...taskMetadataSchema(z),
         code: z.string().min(1).describe("Body of Execute(Document document, object[] parameters)."),
         parameters: z.array(z.union([z.string(), z.number(), z.boolean()])).optional().describe("Simple execution parameters. Prefer strings for host portability."),
         transactionMode: z.enum(["auto", "none"]).optional().describe("Safe wrapper execution mode. Only none is executed; auto is rejected for read/preview safety."),
@@ -46,6 +49,7 @@ export function registerSendCodeToRevitSafeTool(server) {
         try {
             const response = await executeRevitCode(args.code, {
                 ...connectionOptionsFromArgs(args),
+                ...taskOptionsFromArgs(args, "Run safe Revit read"),
                 parameters: args.parameters || [],
                 transactionMode: "none",
             });

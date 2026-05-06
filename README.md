@@ -92,11 +92,21 @@ and reports the reachable Revit document, process id, active view, and version.
 If present, it also reads `%TEMP%\revit-mcp-instances.json` or the path in
 `REVIT_MCP_INSTANCE_REGISTRY`.
 
+The runtime also exposes `get_revit_mcp_status`. It reports the active task,
+elapsed time, recent completed/failed tasks, and service port. Status calls
+bypass the per-port command lock so Codex can query progress during a long
+Revit operation.
+
 The bundled Revit add-in starts the socket service automatically when Revit
 becomes idle after startup. It uses the configured port, then auto-increments
 to the next free port up to `+20`, so multiple open Revit processes can listen
 on separate ports. The service is stopped during Revit shutdown, which releases
 the port. Set `REVIT_MCP_AUTOSTART=0` to disable automatic startup.
+
+While a Revit MCP command is running, the add-in shows a small topmost status
+window in Revit with the task name, elapsed time, and a warning not to use
+Revit until the task finishes. Completed and failed states are shown briefly
+before the window hides.
 
 Then:
 
@@ -225,6 +235,8 @@ Expected MCP servers:
 
 Expected bundled runtime commands:
 
+- `list_revit_instances`
+- `get_revit_mcp_status`
 - `send_code_to_revit`
 - `send_code_to_revit_safe`
 - `get_revit_session_context`
@@ -337,6 +349,8 @@ Host-specific notes:
 
 The runtime MCP server intentionally exposes raw dynamic execution plus a small set of high-value context primitives:
 
+- `list_revit_instances`
+- `get_revit_mcp_status`
 - `send_code_to_revit`
 - `send_code_to_revit_safe`
 - `get_revit_session_context`

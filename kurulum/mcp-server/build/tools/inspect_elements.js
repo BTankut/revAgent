@@ -7,6 +7,8 @@ import {
     executeRevitCode,
     formatJsonContent,
     getSelectionElementIds,
+    taskMetadataSchema,
+    taskOptionsFromArgs,
 } from "../utils/revitToolHelpers.js";
 
 async function resolveElementIds(args, connectionOptions) {
@@ -210,6 +212,7 @@ catch (Exception ex)
 export function registerInspectElementsTool(server) {
     server.tool("inspect_elements", "Read-only inspection for selected or targeted Revit elements: class/category/type/level/key parameters/connector summary.", {
         ...connectionTargetSchema(z),
+        ...taskMetadataSchema(z),
         elementIds: z.array(z.union([z.number(), z.string()])).optional().describe("Element ids to inspect."),
         useSelection: z.boolean().optional().describe("When true, inspect the current Revit selection."),
         limit: z.number().int().positive().max(100).optional().describe("Maximum elements to inspect. Defaults 20."),
@@ -230,6 +233,7 @@ export function registerInspectElementsTool(server) {
             }
             const response = await executeRevitCode(buildInspectElementsCode(ids, args), {
                 ...connectionOptions,
+                ...taskOptionsFromArgs(args, "Inspect Revit elements"),
                 transactionMode: "none",
             });
             return formatJsonContent(response && response.result ? response.result : response);

@@ -34,6 +34,9 @@ only the bare names appear, so the rules stay host-agnostic.
 
 **Runtime server (`revit-mcp`)** — dynamic execution plus read-only context:
 
+- `list_revit_instances` — discover reachable Revit MCP instances and ports
+- `get_revit_mcp_status` — read active/recent task status without waiting
+  behind the active command lock
 - `send_code_to_revit` — raw dynamic execution for explicit, broad control
 - `send_code_to_revit_safe` — read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced
@@ -74,7 +77,9 @@ Default workflow for any non-trivial task:
 0. Do not run Revit MCP runtime tools in parallel. Revit API execution is
    single-threaded through the Revit UI process, and overlapping MCP calls can
    leave the socket service alive while the command handler is still busy.
-   Run one runtime call, wait for it to return, then send the next one.
+   Run one runtime call, wait for it to return, then send the next one. The
+   exception is `get_revit_mcp_status`, which is designed to query status while
+   a long task is already running.
 1. Call `get_revit_session_context` first to learn Revit version/build,
    culture, active view type, document state, selection, MEP counts, and links.
 2. If the active view is a sheet or the task depends on view visibility, call
