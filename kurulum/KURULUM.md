@@ -89,7 +89,8 @@ Otomatik baslatmayi kapatmak icin `REVIT_MCP_AUTOSTART=0` verilebilir.
 
 MCP komutu calisirken Revit icinde kucuk bir uyari/durum penceresi acilir.
 Pencere gorev adini, gecen sureyi ve Revit'e dokunulmamasi gerektigini
-gosterir; komut bitince basarili veya hatali sonucu kisa sure gosterip kapanir.
+gosterir. Komut bitince basarili veya hatali sonuc ve son gorev gecmisi
+ekranda kalir; kullanici `OK` dugmesine basana kadar kapanmaz.
 
 Temiz kurulumda veya DLL guncellemesinden sonra Revit unsigned add-in uyarisi
 gosterirse `Always Load` sec. Bu normalde bir kez sorulur. `Revit MCP Switch`
