@@ -213,6 +213,8 @@ namespace RevitMCPPipeHeaderNormalizeCommandSet.Commands
         {
             PairAnalysis analysis = new PairAnalysis();
             analysis.Operation = "normalize_pipe_header_overlap";
+            JObject args = step["arguments"] as JObject;
+            analysis.AllowReducingBranch = BoolValue(args, "allowReducingBranch", false);
             int firstId;
             int secondId;
             if (!TryGetPairIds(step, out firstId, out secondId))
@@ -259,10 +261,30 @@ namespace RevitMCPPipeHeaderNormalizeCommandSet.Commands
 
             Pipe header = analysis.FirstLengthMm >= analysis.SecondLengthMm ? first : second;
             Pipe overlap = analysis.FirstLengthMm >= analysis.SecondLengthMm ? second : first;
+            if (!analysis.SameDiameter && analysis.AllowReducingBranch)
+            {
+                if (first.Diameter >= second.Diameter)
+                {
+                    header = first;
+                    overlap = second;
+                }
+                else
+                {
+                    header = second;
+                    overlap = first;
+                }
+            }
             Connector overlapBranchConnector = analysis.FirstLengthMm >= analysis.SecondLengthMm ? secondOpposite : firstOpposite;
             LocationCurve headerCurve = analysis.FirstLengthMm >= analysis.SecondLengthMm ? firstCurve : secondCurve;
+            if (!analysis.SameDiameter && analysis.AllowReducingBranch)
+            {
+                overlapBranchConnector = header.Id.IntegerValue == first.Id.IntegerValue ? secondOpposite : firstOpposite;
+                headerCurve = header.Id.IntegerValue == first.Id.IntegerValue ? firstCurve : secondCurve;
+            }
             analysis.HeaderPipeId = header.Id.IntegerValue;
             analysis.OverlapPipeId = overlap.Id.IntegerValue;
+            analysis.HeaderDiameterMm = header.Diameter * 304.8;
+            analysis.OverlapDiameterMm = overlap.Diameter * 304.8;
 
             Connector fittingConnector;
             Connector branchConnector;
@@ -291,7 +313,15 @@ namespace RevitMCPPipeHeaderNormalizeCommandSet.Commands
             }
 
             if (!analysis.SameSystemType) analysis.Errors.Add("Pipe system types differ.");
-            if (!analysis.SameDiameter) analysis.Errors.Add("Pipe diameters differ.");
+            if (!analysis.SameDiameter && !analysis.AllowReducingBranch) analysis.Errors.Add("Pipe diameters differ.");
+            if (!analysis.SameDiameter && analysis.AllowReducingBranch && overlap.Diameter >= header.Diameter)
+            {
+                analysis.Errors.Add("Reducing branch normalization requires the overlap pipe to be smaller than the header pipe.");
+            }
+            if (!analysis.SameDiameter && analysis.AllowReducingBranch && branchPipe != null && Math.Abs(branchPipe.Diameter - overlap.Diameter) > 0.0001)
+            {
+                analysis.Errors.Add("Reducing branch pipe diameter must match the smaller overlap pipe diameter.");
+            }
             if (!analysis.Collinear) analysis.Errors.Add("Pipe curves are not collinear.");
             if (analysis.OverlapMm <= 1.0) analysis.Errors.Add("Pipe curves do not have meaningful overlap.");
             if (!analysis.HasSharedOpenEndpoint) analysis.Errors.Add("Pipes do not share a coincident open endpoint.");
@@ -796,6 +826,13 @@ namespace RevitMCPPipeHeaderNormalizeCommandSet.Commands
             int value;
             return token != null && int.TryParse(token.ToString(), out value) ? value : fallback;
         }
+
+        private static bool BoolValue(JObject obj, string key, bool fallback)
+        {
+            JToken token = obj != null ? obj[key] : null;
+            bool value;
+            return token != null && bool.TryParse(token.ToString(), out value) ? value : fallback;
+        }
     }
 
     internal class PairAnalysis
@@ -809,6 +846,8 @@ namespace RevitMCPPipeHeaderNormalizeCommandSet.Commands
         public int BranchPipeId;
         public int BranchOffsetPipeId;
         public string NormalizationStrategy;
+        public double HeaderDiameterMm;
+        public double OverlapDiameterMm;
         public double FirstLengthMm;
         public double SecondLengthMm;
         public double FirstDiameterMm;
@@ -818,6 +857,7 @@ namespace RevitMCPPipeHeaderNormalizeCommandSet.Commands
         public double TeePointEndClearanceMm;
         public bool SameSystemType;
         public bool SameDiameter;
+        public bool AllowReducingBranch;
         public bool Collinear;
         public bool HasSharedOpenEndpoint;
         public bool FirstOppositeConnected;
@@ -854,6 +894,8 @@ namespace RevitMCPPipeHeaderNormalizeCommandSet.Commands
                 ["branchPipeId"] = BranchPipeId,
                 ["branchOffsetPipeId"] = BranchOffsetPipeId,
                 ["normalizationStrategy"] = NormalizationStrategy ?? "",
+                ["headerDiameterMm"] = Math.Round(HeaderDiameterMm, 1),
+                ["overlapDiameterMm"] = Math.Round(OverlapDiameterMm, 1),
                 ["firstLengthMm"] = Math.Round(FirstLengthMm, 1),
                 ["secondLengthMm"] = Math.Round(SecondLengthMm, 1),
                 ["firstDiameterMm"] = Math.Round(FirstDiameterMm, 1),
@@ -863,6 +905,7 @@ namespace RevitMCPPipeHeaderNormalizeCommandSet.Commands
                 ["teePointEndClearanceMm"] = Math.Round(TeePointEndClearanceMm, 1),
                 ["sameSystemType"] = SameSystemType,
                 ["sameDiameter"] = SameDiameter,
+                ["allowReducingBranch"] = AllowReducingBranch,
                 ["collinear"] = Collinear,
                 ["hasSharedOpenEndpoint"] = HasSharedOpenEndpoint,
                 ["bothOppositeEndsConnected"] = FirstOppositeConnected && SecondOppositeConnected,

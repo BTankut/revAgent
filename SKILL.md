@@ -148,7 +148,8 @@ Overlapping pipe-header normalization is not endpoint stitching. Live Revit
 pipe fitting (`The owner should be (flex) duct or pipe`). Use the native
 `normalize_pipe_header_overlap` write-plan command for these cases, one pair
 per preview/commit. The native normalizer supports direct fitting-to-branch
-pipe tees, short pipe-offset branches, and orphan open fitting cleanup; it
+pipe tees, reducing smaller-branch tees, short pipe-offset branches, and
+orphan open fitting cleanup; it
 projects a real pipe-owned branch connector to the header centerline, adjusts
 only collinear branch endpoints, deletes the obsolete overlap/fitting/offset
 geometry, runs `PlumbingUtils.BreakCurve`, creates the tee, and rolls back the

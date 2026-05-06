@@ -734,6 +734,32 @@ const pipeHeaderOverlapStringPayloadPlan = buildPlanFromArgs({
 assert.deepEqual(pipeHeaderOverlapStringPayloadPlan.steps[0].targets.elementIds, [1022539, 1022601]);
 assert.equal(validateWritePlan(pipeHeaderOverlapStringPayloadPlan, { mode: "preview" }).valid, true);
 
+const reducingPipeHeaderOverlapPlan = buildPlanFromArgs({
+    title: "Preview reducing pipe header overlap normalization",
+    discipline: "hydronic",
+    operation: "normalize_pipe_header_overlap",
+    targets: { elementIds: [1021788, 1021810] },
+    arguments: {
+        normalizationMode: "overlap_to_tee_header",
+        requireSameSystemType: true,
+        requireCollinearOverlap: true,
+        requireSameDiameter: false,
+        allowReducingBranch: true,
+        requireBothOppositeEndsConnected: true,
+        preserveBranchConnectivity: true,
+        allowFittingReplacement: true,
+        branchConnectorOwnerRequirement: "pipe_or_flex_pipe",
+        rollbackPreviewRequired: true,
+        commitBatchSize: 1,
+        heartbeatRequired: true,
+        postCommitAudit: true,
+        expectedDeviceConnectivityUnchanged: true,
+        expectedClashIncrease: 0,
+        timeoutRecoveryPlan: "Abort and roll back the single reducing pair.",
+    },
+});
+assert.equal(validateWritePlan(reducingPipeHeaderOverlapPlan, { mode: "preview" }).valid, true);
+
 const invalidPipeHeaderOverlapPlan = buildPlanFromArgs({
     title: "Reject unsafe pipe header overlap normalization",
     discipline: "domestic_water",
@@ -758,7 +784,7 @@ assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].targets.elem
 assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.normalizationMode must be overlap_to_tee_header"));
 assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.requireSameSystemType must be true"));
 assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.requireCollinearOverlap must be true"));
-assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.requireSameDiameter must be true"));
+assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.requireSameDiameter must be true unless arguments.allowReducingBranch is true"));
 assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.requireBothOppositeEndsConnected must be true"));
 assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.preserveBranchConnectivity must be true"));
 assert(invalidPipeHeaderOverlapValidation.errors.includes("steps[0].arguments.allowFittingReplacement must be true"));

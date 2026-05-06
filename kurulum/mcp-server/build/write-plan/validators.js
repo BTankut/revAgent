@@ -346,8 +346,8 @@ function validatePipeHeaderOverlapPayload(targets, args, prefix, errors, warning
     if (args.requireCollinearOverlap !== true) {
         errors.push(`${prefix}.arguments.requireCollinearOverlap must be true`);
     }
-    if (args.requireSameDiameter !== true) {
-        errors.push(`${prefix}.arguments.requireSameDiameter must be true`);
+    if (args.requireSameDiameter !== true && args.allowReducingBranch !== true) {
+        errors.push(`${prefix}.arguments.requireSameDiameter must be true unless arguments.allowReducingBranch is true`);
     }
     if (args.requireBothOppositeEndsConnected !== true) {
         errors.push(`${prefix}.arguments.requireBothOppositeEndsConnected must be true`);
