@@ -77,11 +77,11 @@ Revit instance'lari icin dokuman, process id, aktif view ve versiyon bilgisi
 doner. Varsa `%TEMP%\revit-mcp-instances.json` veya
 `REVIT_MCP_INSTANCE_REGISTRY` dosyasini da okur.
 
-Not: Revit add-in DLL tarafinin da her Revit instance'ini farkli portta
-baslatabilmesi gerekir. Sadece tek Revit process'i port dinliyorsa runtime
-yalnizca o process'i hedefleyebilir. Mevcut upstream add-in kaynak kodunda
-port `8080` olarak sabitlenmistir; iki acik Revit.exe'yi ayni anda kontrol
-etmek icin add-in'in port-configurable build'i gerekir.
+Bundled Revit add-in, Revit acilistan sonra idle duruma gelince socket
+servisini otomatik baslatir. Ayarli portu kullanir; doluysa `+20`'ye kadar
+siradaki bos porta gecer, bu nedenle birden cok acik Revit ayri portlarda
+dinleyebilir. Revit kapanirken servis durdurulur ve port serbest kalir.
+Otomatik baslatmayi kapatmak icin `REVIT_MCP_AUTOSTART=0` verilebilir.
 
 Installer ayrica repo kokunu global Codex skill olarak
 `%USERPROFILE%\.codex\skills\revit-mcp` altina kopyalar ve `AGENTS.md`

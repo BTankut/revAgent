@@ -92,11 +92,11 @@ and reports the reachable Revit document, process id, active view, and version.
 If present, it also reads `%TEMP%\revit-mcp-instances.json` or the path in
 `REVIT_MCP_INSTANCE_REGISTRY`.
 
-Important: the Revit add-in DLL must still start each Revit instance on a
-different socket port. If only one Revit process is listening, the runtime can
-only target that one process. The current upstream add-in source hard-wires
-`8080`; rebuild or replace the add-in with a port-configurable build before
-expecting two open Revit.exe processes to be reachable at once.
+The bundled Revit add-in starts the socket service automatically when Revit
+becomes idle after startup. It uses the configured port, then auto-increments
+to the next free port up to `+20`, so multiple open Revit processes can listen
+on separate ports. The service is stopped during Revit shutdown, which releases
+the port. Set `REVIT_MCP_AUTOSTART=0` to disable automatic startup.
 
 Then:
 
