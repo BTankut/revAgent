@@ -101,13 +101,14 @@ Temiz kurulumda veya DLL guncellemesinden sonra Revit unsigned add-in uyarisi
 gosterirse `Always Load` sec. Bu normalde bir kez sorulur. `Revit MCP Switch`
 dugmesine her acilista basmak gerekmez; socket servis otomatik baslar.
 
-Installer ayrica repo kokunu global Codex skill olarak
-`%USERPROFILE%\.codex\skills\revit-mcp` altina kopyalar ve `AGENTS.md`
-dosyasini `%USERPROFILE%\.codex\AGENTS.md` global talimat dosyasi olarak
-kurar. Ayni dosyayi varsayilan kurulumda `C:\Projects\AGENTS.md` olarak da
-kurar; `-ServerTarget` farkli verilirse bu hedef server klasorunun ust
-klasorudur. Mevcut `AGENTS.md` dosyalari doluysa once yedek alir. Bu davranisi
-istemiyorsan installer'a `-SkipCodexSkillInstall` gec.
+Installer repo kokunu global Codex skill olarak
+`%USERPROFILE%\.codex\skills\revit-mcp` altina kopyalar. `AGENTS.md`
+dosyasini her durumda `%USERPROFILE%\.codex\AGENTS.md` global talimat dosyasi
+olarak kurar. Ayni dosyayi varsayilan kurulumda `C:\Projects\AGENTS.md` olarak
+da kurar; `-ServerTarget` farkli verilirse bu hedef server klasorunun ust
+klasorudur. Mevcut `AGENTS.md` dosyalari doluysa once yedek alir.
+`-SkipCodexSkillInstall` sadece skill klasoru kopyasini atlar; `AGENTS.md`
+kurulumunu atlamaz.
 
 ## Manuel kurulum
 

@@ -125,13 +125,14 @@ Then:
 5. Run `/skills reload` inside Codex, or restart Codex.
 
 The installer copies this repo into `%USERPROFILE%\.codex\skills\revit-mcp`
-and installs `AGENTS.md` globally at `%USERPROFILE%\.codex\AGENTS.md`.
+and always installs `AGENTS.md` globally at `%USERPROFILE%\.codex\AGENTS.md`.
 It also installs the same workstation role file at the workspace root next to
 the runtime target, defaulting to `C:\Projects\AGENTS.md` when `-ServerTarget`
 is `C:\Projects\revit-mcp`.
 If an existing non-empty global `AGENTS.md` is present, the installer backs it
 up before replacing it; the workspace `AGENTS.md` is backed up the same way.
-Pass `-SkipCodexSkillInstall` to skip that behavior.
+Pass `-SkipCodexSkillInstall` only to skip copying the skill folder; it does
+not skip `AGENTS.md` installation.
 
 ## What the installer deploys
 
@@ -225,9 +226,9 @@ codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build
 ```
 
 The installer already installs the global Codex skill and global
-`AGENTS.md`. If you skipped that with `-SkipCodexSkillInstall`, copy this repo
-root to `%USERPROFILE%\.codex\skills\revit-mcp` and copy `AGENTS.md` to
-`%USERPROFILE%\.codex\AGENTS.md` manually.
+`AGENTS.md`. If you skipped the skill copy with `-SkipCodexSkillInstall`, copy
+this repo root to `%USERPROFILE%\.codex\skills\revit-mcp` manually. The
+installer still installs `AGENTS.md` globally.
 
 9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
 10. Verify that both MCP servers are registered:

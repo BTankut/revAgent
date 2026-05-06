@@ -207,12 +207,11 @@ if (Test-Path $duplicateAddin) {
 $codexSkillTarget = $null
 $codexAgentsTarget = $null
 $workspaceAgentsInstalled = $null
+$codexRoot = Join-Path $env:USERPROFILE ".codex"
+$codexSkillsRoot = Join-Path $codexRoot "skills"
+$codexSkillTarget = Join-Path $codexSkillsRoot "revit-mcp"
+$codexAgentsTarget = Join-Path $codexRoot "AGENTS.md"
 if (-not $SkipCodexSkillInstall) {
-    $codexRoot = Join-Path $env:USERPROFILE ".codex"
-    $codexSkillsRoot = Join-Path $codexRoot "skills"
-    $codexSkillTarget = Join-Path $codexSkillsRoot "revit-mcp"
-    $codexAgentsTarget = Join-Path $codexRoot "AGENTS.md"
-
     New-Item -ItemType Directory -Path $codexSkillsRoot -Force | Out-Null
 
     if (Test-Path -LiteralPath $codexSkillTarget) {
@@ -225,42 +224,44 @@ if (-not $SkipCodexSkillInstall) {
     Get-ChildItem -LiteralPath $repoRoot -Force |
         Where-Object { $_.Name -notin @(".git", "node_modules") } |
         Copy-Item -Destination $codexSkillTarget -Recurse -Force
+}
 
-    $agentsSource = Join-Path $repoRoot "AGENTS.md"
-    if (Test-Path -LiteralPath $agentsSource) {
-        New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
+$agentsSource = Join-Path $repoRoot "AGENTS.md"
+if (-not (Test-Path -LiteralPath $agentsSource)) {
+    throw "Required AGENTS.md was not found: $agentsSource"
+}
 
-        $shouldBackupAgents = $false
-        if (Test-Path -LiteralPath $codexAgentsTarget) {
-            $existingAgents = Get-Item -LiteralPath $codexAgentsTarget
-            $shouldBackupAgents = $existingAgents.Length -gt 0
-        }
+New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
 
-        if ($shouldBackupAgents) {
-            $agentsBackup = Join-Path $codexRoot ("AGENTS.md.backup-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
-            Copy-Item -LiteralPath $codexAgentsTarget -Destination $agentsBackup -Force
-        }
+$shouldBackupAgents = $false
+if (Test-Path -LiteralPath $codexAgentsTarget) {
+    $existingAgents = Get-Item -LiteralPath $codexAgentsTarget
+    $shouldBackupAgents = $existingAgents.Length -gt 0
+}
 
-        Copy-Item -LiteralPath $agentsSource -Destination $codexAgentsTarget -Force
+if ($shouldBackupAgents) {
+    $agentsBackup = Join-Path $codexRoot ("AGENTS.md.backup-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+    Copy-Item -LiteralPath $codexAgentsTarget -Destination $agentsBackup -Force
+}
 
-        if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
-            $workspaceAgentsDir = Split-Path -Parent $WorkspaceAgentsTarget
-            if (-not [string]::IsNullOrWhiteSpace($workspaceAgentsDir)) {
-                New-Item -ItemType Directory -Path $workspaceAgentsDir -Force | Out-Null
-            }
+Copy-Item -LiteralPath $agentsSource -Destination $codexAgentsTarget -Force
 
-            if (Test-Path -LiteralPath $WorkspaceAgentsTarget) {
-                $existingWorkspaceAgents = Get-Item -LiteralPath $WorkspaceAgentsTarget
-                if ($existingWorkspaceAgents.Length -gt 0) {
-                    $workspaceAgentsBackup = $WorkspaceAgentsTarget + ".backup-" + (Get-Date -Format "yyyyMMdd-HHmmss")
-                    Copy-Item -LiteralPath $WorkspaceAgentsTarget -Destination $workspaceAgentsBackup -Force
-                }
-            }
+if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
+    $workspaceAgentsDir = Split-Path -Parent $WorkspaceAgentsTarget
+    if (-not [string]::IsNullOrWhiteSpace($workspaceAgentsDir)) {
+        New-Item -ItemType Directory -Path $workspaceAgentsDir -Force | Out-Null
+    }
 
-            Copy-Item -LiteralPath $agentsSource -Destination $WorkspaceAgentsTarget -Force
-            $workspaceAgentsInstalled = $WorkspaceAgentsTarget
+    if (Test-Path -LiteralPath $WorkspaceAgentsTarget) {
+        $existingWorkspaceAgents = Get-Item -LiteralPath $WorkspaceAgentsTarget
+        if ($existingWorkspaceAgents.Length -gt 0) {
+            $workspaceAgentsBackup = $WorkspaceAgentsTarget + ".backup-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+            Copy-Item -LiteralPath $WorkspaceAgentsTarget -Destination $workspaceAgentsBackup -Force
         }
     }
+
+    Copy-Item -LiteralPath $agentsSource -Destination $WorkspaceAgentsTarget -Force
+    $workspaceAgentsInstalled = $WorkspaceAgentsTarget
 }
 
 Write-Host "Self-contained Revit MCP bundle installed for Revit $RevitVersion" -ForegroundColor Green
@@ -269,10 +270,10 @@ Write-Host "Runtime server path: $ServerTarget"
 Write-Host "Required docs server path: $docsServerSource"
 if (-not $SkipCodexSkillInstall) {
     Write-Host "Codex skill path: $codexSkillTarget"
-    Write-Host "Codex global AGENTS.md: $codexAgentsTarget"
-    if ($workspaceAgentsInstalled) {
-        Write-Host "Workspace AGENTS.md: $workspaceAgentsInstalled"
-    }
+}
+Write-Host "Codex global AGENTS.md: $codexAgentsTarget"
+if ($workspaceAgentsInstalled) {
+    Write-Host "Workspace AGENTS.md: $workspaceAgentsInstalled"
 }
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
