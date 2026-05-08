@@ -420,21 +420,20 @@ try {
     Move-Item -LiteralPath $extractRoot -Destination $PackageTarget
 
     $installer = Join-Path $PackageTarget "kurulum\install-self-contained.ps1"
-    $installArgs = @(
-        "-RevitVersion", $RevitVersion,
-        "-InstallRoot", $InstallRoot,
-        "-ServerTarget", $ServerTarget,
-        "-RevitInstallRoot", $RevitInstallRoot
-    )
+    $installArgs = @{
+        RevitVersion = $RevitVersion
+        InstallRoot = $InstallRoot
+        ServerTarget = $ServerTarget
+        RevitInstallRoot = $RevitInstallRoot
+    }
     if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
-        $installArgs += @("-WorkspaceAgentsTarget", $WorkspaceAgentsTarget)
+        $installArgs["WorkspaceAgentsTarget"] = $WorkspaceAgentsTarget
     }
     if ($LegacyServerTargets.Count -gt 0) {
-        $installArgs += "-LegacyServerTargets"
-        $installArgs += $LegacyServerTargets
+        $installArgs["LegacyServerTargets"] = $LegacyServerTargets
     }
     if ($SkipCodexUserIntegration) {
-        $installArgs += "-SkipCodexUserIntegration"
+        $installArgs["SkipCodexUserIntegration"] = $true
     }
 
     & $installer @installArgs
@@ -510,7 +509,6 @@ try {
 }
 catch {
     $message = $_.Exception.Message
-    Write-Error $message
     Write-UpdateReport -Status "failed" -Message $message -Channel $channel -InstalledState $installedState -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
     throw
 }

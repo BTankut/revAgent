@@ -62,6 +62,41 @@ function Invoke-InitialUpdateCheck {
     & $UpdaterPath -ConfigPath $UpdaterConfigPath
 }
 
+function Write-UpdaterCommandFiles {
+    param(
+        [string]$UpdaterPath,
+        [string]$UpdaterConfigPath,
+        [string]$UpdaterWorkRoot,
+        [switch]$InstallStartupFallback
+    )
+
+    $manualCommandPath = Join-Path $UpdaterWorkRoot "Update-Revit-MCP-Now.cmd"
+    $manualCommandLines = @(
+        "@echo off",
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`"",
+        "pause"
+    )
+    $manualCommandLines | Set-Content -LiteralPath $manualCommandPath -Encoding ASCII
+
+    if ($InstallStartupFallback) {
+        $startupRoot = [Environment]::GetFolderPath("Startup")
+        if ([string]::IsNullOrWhiteSpace($startupRoot)) {
+            throw "Could not resolve the current user's Startup folder."
+        }
+
+        New-Item -ItemType Directory -Path $startupRoot -Force | Out-Null
+        $startupCommandPath = Join-Path $startupRoot "Revit MCP Auto Update.cmd"
+        $startupCommandLines = @(
+            "@echo off",
+            "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`""
+        )
+        $startupCommandLines | Set-Content -LiteralPath $startupCommandPath -Encoding ASCII
+        Write-Host "Startup fallback: $startupCommandPath" -ForegroundColor Yellow
+    }
+
+    return $manualCommandPath
+}
+
 function Resolve-RevitInstallRoot {
     param(
         [string]$RequestedRoot,
@@ -161,10 +196,11 @@ $config = [ordered]@{
     installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
 }
 Write-JsonFile -Path $configPath -Value $config
+$manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot
 
 if ($NoScheduledTask) {
     Write-Host "Updater installed without scheduled task."
-    Write-Host "Run manually: powershell -ExecutionPolicy Bypass -File `"$localUpdater`" -ConfigPath `"$configPath`""
+    Write-Host "Run manually: $manualCommandPath"
     if ($RunNow) {
         Write-Host ""
         Write-Host "Running initial update check..."
@@ -184,12 +220,18 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Description "Checks the NAS Revit MCP channel and updates this workstation when Revit is closed." -Force | Out-Null
+try {
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Description "Checks the NAS Revit MCP channel and updates this workstation when Revit is closed." -Force | Out-Null
+    Write-Host "Task registered : $TaskName" -ForegroundColor Green
+}
+catch {
+    Write-Warning "Scheduled task could not be registered: $($_.Exception.Message)"
+    Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -InstallStartupFallback | Out-Null
+}
 
 Write-Host "Updater installed: $localUpdater" -ForegroundColor Green
 Write-Host "Config written  : $configPath" -ForegroundColor Green
-Write-Host "Task registered : $TaskName" -ForegroundColor Green
-Write-Host "Run now         : powershell -ExecutionPolicy Bypass -File `"$localUpdater`" -ConfigPath `"$configPath`""
+Write-Host "Run manually    : $manualCommandPath" -ForegroundColor Green
 
 if ($RunNow) {
     Write-Host ""
