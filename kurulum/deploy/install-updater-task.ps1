@@ -13,10 +13,12 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ChannelManifestPath,
 
-    [string]$WorkRoot = "C:\Projects\revit-mcp-install",
-    [string]$PackageTarget = "C:\Projects\revit-mcp-skill",
-    [string]$ServerTarget = "C:\Projects\revit-mcp",
+    [string]$InstallRoot = "",
+    [string]$WorkRoot = "",
+    [string]$PackageTarget = "",
+    [string]$ServerTarget = "",
     [string]$WorkspaceAgentsTarget = "",
+    [string]$RevitInstallRoot = "",
     [ValidateSet("2022")]
     [string]$RevitVersion = "2022",
     [string[]]$LegacyServerTargets = @(),
@@ -25,6 +27,7 @@ param(
     [string]$DailyAt = "09:00",
     [switch]$SkipNpmInstall,
     [switch]$SkipCodexMcpRegistration,
+    [switch]$SkipCodexUserIntegration,
     [switch]$NoScheduledTask,
     [switch]$RunNow
 )
@@ -59,6 +62,74 @@ function Invoke-InitialUpdateCheck {
     & $UpdaterPath -ConfigPath $UpdaterConfigPath
 }
 
+function Resolve-RevitInstallRoot {
+    param(
+        [string]$RequestedRoot,
+        [string]$Version
+    )
+
+    $candidates = @(
+        $RequestedRoot,
+        $env:REVIT_INSTALL_ROOT,
+        (Join-Path ${env:ProgramFiles} "Autodesk\Revit $Version"),
+        (Join-Path ${env:ProgramFiles} "Autodesk\Revit$Version"),
+        (Join-Path ${env:ProgramFiles(x86)} "Autodesk\Revit $Version")
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    $registryCandidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($registryRoot in @(
+            "HKLM:\SOFTWARE\Autodesk\Revit\$Version",
+            "HKLM:\SOFTWARE\Autodesk\Revit\Autodesk Revit $Version",
+            "HKLM:\SOFTWARE\WOW6432Node\Autodesk\Revit\$Version",
+            "HKLM:\SOFTWARE\WOW6432Node\Autodesk\Revit\Autodesk Revit $Version"
+        )) {
+        if (-not (Test-Path -LiteralPath $registryRoot)) { continue }
+        try {
+            $item = Get-ItemProperty -LiteralPath $registryRoot -ErrorAction Stop
+            foreach ($name in @("InstallationLocation", "InstallLocation", "InstallDir", "ProductInstallPath")) {
+                if ($item.PSObject.Properties.Name -contains $name) {
+                    $value = [string]$item.$name
+                    if (-not [string]::IsNullOrWhiteSpace($value)) {
+                        $registryCandidates.Add($value)
+                    }
+                }
+            }
+        }
+        catch {}
+    }
+    $candidates += $registryCandidates.ToArray()
+
+    foreach ($candidate in $candidates) {
+        $full = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($candidate)).TrimEnd("\")
+        if ((Test-Path -LiteralPath $full -PathType Container) -and
+            (Test-Path -LiteralPath (Join-Path $full "Revit.exe")) -and
+            (Test-Path -LiteralPath (Join-Path $full "RevitAPI.dll"))) {
+            Write-Host "Revit $Version found: $full"
+            return $full
+        }
+    }
+
+    throw "Revit $Version install directory could not be found. Checked: $($candidates -join '; ')"
+}
+
+$programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
+if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
+    $InstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
+}
+if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
+    $WorkRoot = Join-Path $InstallRoot "updater"
+}
+if ([string]::IsNullOrWhiteSpace($PackageTarget)) {
+    $PackageTarget = Join-Path $InstallRoot "package"
+}
+if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
+    $ServerTarget = Join-Path $InstallRoot "runtime"
+}
+if ([string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
+    $WorkspaceAgentsTarget = Join-Path $InstallRoot "codex\AGENTS.md"
+}
+$RevitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
+
 New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
 
 $localUpdater = Join-Path $WorkRoot "update-from-nas.ps1"
@@ -75,15 +146,18 @@ $config = [ordered]@{
     schemaVersion = 1
     app = "revit-mcp-skill"
     channelManifestPath = $ChannelManifestPath
+    installRoot = $InstallRoot
     workRoot = $WorkRoot
     packageTarget = $PackageTarget
     serverTarget = $ServerTarget
     workspaceAgentsTarget = $WorkspaceAgentsTarget
+    revitInstallRoot = $RevitInstallRoot
     revitVersion = $RevitVersion
     legacyServerTargets = $LegacyServerTargets
     reportsRoot = $ReportsRoot
     skipNpmInstall = [bool]$SkipNpmInstall
     skipCodexMcpRegistration = [bool]$SkipCodexMcpRegistration
+    skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
     installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
 }
 Write-JsonFile -Path $configPath -Value $config

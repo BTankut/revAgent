@@ -8,7 +8,7 @@
     "revit-api-docs-mcp": "./build/index.js"
   },
   "scripts": {
-    "build-index": "powershell -ExecutionPolicy Bypass -File ./scripts/build-index.ps1 -OutputPath \"%LOCALAPPDATA%\\revit-api-docs-mcp\\cache\\revit-api-docs-2022.json\""
+    "build-index": "powershell -ExecutionPolicy Bypass -File ./scripts/build-index.ps1 -OutputPath \"%ProgramData%\\DPE\\RevitMCP\\state\\revit-api-docs\\cache\\revit-api-docs-2022.json\""
   },
   "files": [
     "build",

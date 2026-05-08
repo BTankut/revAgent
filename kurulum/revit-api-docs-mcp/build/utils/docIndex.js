@@ -1,7 +1,6 @@
 import { spawn } from "child_process";
 import { existsSync } from "fs";
 import { mkdir, readFile, readdir, stat } from "fs/promises";
-import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -37,6 +36,13 @@ function defaultRevitRoot(version) {
     return path.join("C:\\Program Files\\Autodesk", `Revit ${version}`);
 }
 
+function defaultCacheDir() {
+    if (process.env.ProgramData) {
+        return path.join(process.env.ProgramData, "DPE", "RevitMCP", "state", "revit-api-docs", "cache");
+    }
+    return path.join("C:\\ProgramData", "DPE", "RevitMCP", "state", "revit-api-docs", "cache");
+}
+
 async function discoverAssemblyPairs(rootPath) {
     const entries = await readdir(rootPath, { withFileTypes: true });
     return entries
@@ -64,8 +70,7 @@ async function getConfig(options = {}) {
     if (assemblyPairs.length === 0) {
         throw new Error(`No RevitAPI*.dll + .xml pairs were found under ${rootPath}`);
     }
-    const cacheDir = process.env.REVIT_API_DOCS_CACHE_DIR ||
-        path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "revit-api-docs-mcp", "cache");
+    const cacheDir = process.env.REVIT_API_DOCS_CACHE_DIR || defaultCacheDir();
     const cacheFile = path.join(cacheDir, `revit-api-docs-${revitVersion}.json`);
     return {
         revitVersion,

@@ -31,20 +31,35 @@ komutlarindan once kullanici ortam degiskenlerini kalici ayarla:
 
 ## Hizli yol
 
-Komutlari repo root'tan calistir. Kuruluma baslamadan once Revit'i kapat.
+Ofis bilgisayarlarinda onerilen yol DPE-NAS updater'dir. Bu yol kurulumu
+standart Windows makine klasorune yapar:
+
+```text
+C:\ProgramData\DPE\RevitMCP
+```
+
+Yeni bilgisayarda NAS uzerindeki su dosyaya cift tikla:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater.cmd
+```
+
+Kuruluma baslamadan once Revit'i kapat. Revit aciksa updater islemi erteler.
+
+Repo root'tan manuel kurulum gerekiyorsa:
 
 ```powershell
 $RepoRoot = (Resolve-Path .).Path
 
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022 -ServerTarget C:\Projects\revit-mcp
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022
 
-cd C:\Projects\revit-mcp
+cd C:\ProgramData\DPE\RevitMCP\runtime
 npm install --omit=dev
-codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
+codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
 
 cd "$RepoRoot\kurulum\revit-api-docs-mcp"
 npm install --omit=dev
-npm run build-index
+powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
 codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
 
@@ -156,30 +171,36 @@ Temiz kurulumda veya DLL guncellemesinden sonra Revit unsigned add-in uyarisi
 gosterirse `Always Load` sec. Bu normalde bir kez sorulur. `Revit MCP Switch`
 dugmesine her acilista basmak gerekmez; socket servis otomatik baslar.
 
-Installer repo kokunu global Codex skill olarak
-`%USERPROFILE%\.codex\skills\revit-mcp` altina kopyalar. `AGENTS.md`
-dosyasini her durumda `%USERPROFILE%\.codex\AGENTS.md` global talimat dosyasi
-olarak kurar. Ayni dosyayi varsayilan kurulumda `C:\Projects\AGENTS.md` olarak
-da kurar; `-ServerTarget` farkli verilirse bu hedef server klasorunun ust
-klasorudur. Mevcut `AGENTS.md` dosyalari doluysa once yedek alir.
-`-SkipCodexSkillInstall` sadece skill klasoru kopyasini atlar; `AGENTS.md`
-kurulumunu atlamaz.
+Installer ana payload'u makine seviyesinde
+`C:\ProgramData\DPE\RevitMCP` altina kurar. Revit add-in manifest'i all-users
+standart klasore yazilir:
+
+```text
+C:\ProgramData\Autodesk\Revit\Addins\2022
+```
+
+Codex skill ve `AGENTS.md` icin merkezi kopya
+`C:\ProgramData\DPE\RevitMCP\codex` altindadir. Codex'in kullanici profili
+beklentisi nedeniyle installer gerekirse `%USERPROFILE%\.codex` altina yalnizca
+junction/hardlink entegrasyonu olusturur; bu ana kurulum yeri degildir.
+`-SkipCodexUserIntegration` verilirse kullanici profiline hic dokunulmaz.
 
 Installer kopyalama oncesi yalnizca Revit MCP'ye ait bilinen kurulum
 hedeflerini temizler: Revit MCP add-in manifest'i, `revit_mcp_plugin` add-in
 klasoru, `%LOCALAPPDATA%\revit-mcp-plugin`, runtime `-ServerTarget`, bilinen
-eski runtime hedefleri ve aktif Codex skills altindaki `revit-mcp.backup-*`
+eski `C:\Projects\...` runtime hedefleri ve aktif Codex skills altindaki `revit-mcp.backup-*`
 klasorleri. Bu temizlik eski dosyalarin dizin/layout degisikliginden sonra
 calismaya devam edip cakisma cikarmasini engeller.
 
 Temizlik guvenlik kontrolludur; Autodesk Revit program dosyalari,
-Windows sistem klasorleri, `%APPDATA%\Autodesk\Revit\Addins\2022` kok
+Windows sistem klasorleri, `%APPDATA%\Autodesk\Revit\Addins\2022` veya
+`C:\ProgramData\Autodesk\Revit\Addins\2022` kok
 klasoru veya genis kullanici/workspace klasorleri silinmez.
 
 Sadece kaldirmak icin:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022 -ServerTarget C:\Projects\revit-mcp -Uninstall
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022 -Uninstall
 ```
 
 `AGENTS.md` dosyalarini da kaldirmak istersen `-Uninstall -RemoveAgents`
@@ -192,7 +213,8 @@ Kuruluma baslamadan once Revit kapali olmali.
 
 ### 1. Revit plugin payload'unu kopyala
 
-Asagidaki bundled icerigi `%APPDATA%\Autodesk\Revit\Addins\2022\` altina kopyala:
+Asagidaki bundled icerigi standart makine kurulum kokune kopyala ve all-users
+addin manifest'ini `C:\ProgramData\Autodesk\Revit\Addins\2022\` altina yaz:
 
 ```text
 kurulum\revit-plugin\mcp-servers-for-revit.addin
@@ -256,8 +278,8 @@ NuGet ancak `RevitMCPCommandSet.dll` kaynaktan yeniden derleniyorsa build-time b
 ### 3. Yerel runtime MCP server'i kopyala
 
 ```powershell
-xcopy /E /I /Y kurulum\mcp-server C:\Projects\revit-mcp
-cd C:\Projects\revit-mcp
+xcopy /E /I /Y kurulum\mcp-server C:\ProgramData\DPE\RevitMCP\runtime
+cd C:\ProgramData\DPE\RevitMCP\runtime
 npm install --omit=dev
 ```
 
@@ -268,7 +290,7 @@ indirilebilir.
 ### 4. Codex CLI'a runtime MCP server ekle
 
 ```powershell
-codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
+codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
 ```
 
 ### 5. Required companion docs MCP server'i kur ve Codex CLI'a ekle
@@ -279,7 +301,7 @@ Repo root'tan:
 $RepoRoot = (Resolve-Path .).Path
 cd "$RepoRoot\kurulum\revit-api-docs-mcp"
 npm install --omit=dev
-npm run build-index
+powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
 codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
 
@@ -298,13 +320,16 @@ Listede iki satiri da gormelisin:
 
 ### 6. Skill'i Codex'e yukle
 
-Self-contained installer bu adimi otomatik yapar. Manuel kurulumda:
+Self-contained installer bu adimi otomatik yapar. Makine seviyesindeki ana
+kopya artik su klasoredir:
 
-```powershell
-xcopy /E /I /Y . "%USERPROFILE%\.codex\skills\revit-mcp"
-copy /Y AGENTS.md "%USERPROFILE%\.codex\AGENTS.md"
-copy /Y AGENTS.md "C:\Projects\AGENTS.md"
+```text
+C:\ProgramData\DPE\RevitMCP\codex\
 ```
+
+Codex kullanici profili entegrasyonu icin installer mumkunse bu merkezi kopyaya
+junction/hardlink olusturur; olmazsa uyumluluk icin kucuk bir kullanici kopyasi
+birakir.
 
 Ardindan Codex icinde:
 

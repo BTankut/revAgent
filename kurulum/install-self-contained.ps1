@@ -1,10 +1,15 @@
 param(
     [ValidateSet("2022")]
     [string]$RevitVersion = "2022",
-    [string]$ServerTarget = "C:\Projects\revit-mcp",
+    [string]$InstallRoot = "",
+    [string]$ServerTarget = "",
+    [string]$RevitInstallRoot = "",
+    [string]$AllUsersAddinRoot = "",
     [string[]]$LegacyServerTargets = @(),
     [string]$WorkspaceAgentsTarget = "",
     [switch]$SkipCodexSkillInstall,
+    [switch]$SkipCodexUserIntegration,
+    [switch]$SkipLegacyCleanup,
     [switch]$Uninstall,
     [switch]$RemoveAgents
 )
@@ -16,22 +21,40 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $pluginSource = Join-Path $PSScriptRoot "revit-plugin"
 $serverSource = Join-Path $PSScriptRoot "mcp-server"
 $docsServerSource = Join-Path $PSScriptRoot "revit-api-docs-mcp"
-$addinRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitVersion"
-$pluginTarget = Join-Path $addinRoot "revit_mcp_plugin"
-$revitInstallRoot = Join-Path ${env:ProgramFiles} "Autodesk\Revit $RevitVersion"
+$programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
+$defaultInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
+if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
+    $InstallRoot = $defaultInstallRoot
+}
+if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
+    $ServerTarget = Join-Path $InstallRoot "runtime"
+}
+if ([string]::IsNullOrWhiteSpace($AllUsersAddinRoot)) {
+    $AllUsersAddinRoot = Join-Path $programDataRoot "Autodesk\Revit\Addins\$RevitVersion"
+}
+$addinRoot = $AllUsersAddinRoot
+$legacyUserAddinRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitVersion"
+$pluginRoot = Join-Path $InstallRoot "revit-plugin"
+$pluginTarget = Join-Path $pluginRoot "revit_mcp_plugin"
+$commandSetRoot = Join-Path $InstallRoot "commands\CommandSet"
+$stateRoot = Join-Path $InstallRoot "state"
+$codexMachineRoot = Join-Path $InstallRoot "codex"
+$codexMachineSkillsRoot = Join-Path $codexMachineRoot "skills"
+$codexMachineSkillTarget = Join-Path $codexMachineSkillsRoot "revit-mcp"
+$codexMachineAgentsTarget = Join-Path $codexMachineRoot "AGENTS.md"
 $codexRoot = Join-Path $env:USERPROFILE ".codex"
 $codexSkillsRoot = Join-Path $codexRoot "skills"
 $codexSkillTarget = Join-Path $codexSkillsRoot "revit-mcp"
 $codexSkillBackupsRoot = Join-Path $codexRoot "skill-backups"
 $codexAgentsTarget = Join-Path $codexRoot "AGENTS.md"
 $defaultLegacyServerTargets = @(
+    "C:\Projects\revit-mcp",
     "C:\Projects\revit-mcp-server",
     "C:\Projects\mcp-server-for-revit",
     "C:\Projects\mcp-servers-for-revit"
 )
 if ([string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
-    $serverParent = Split-Path -Parent $ServerTarget
-    $WorkspaceAgentsTarget = Join-Path $serverParent "AGENTS.md"
+    $WorkspaceAgentsTarget = $codexMachineAgentsTarget
 }
 
 $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
@@ -131,13 +154,191 @@ function Test-SamePath {
         [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Resolve-ExistingDirectoryFromCandidates {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Label,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$Candidates,
+        [switch]$Required
+    )
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($candidate in $Candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        $expanded = [Environment]::ExpandEnvironmentVariables($candidate)
+        if (-not [System.IO.Path]::IsPathRooted($expanded)) { continue }
+        $full = [System.IO.Path]::GetFullPath($expanded).TrimEnd("\")
+        if (-not $seen.Add($full)) { continue }
+        if (Test-Path -LiteralPath $full -PathType Container) {
+            Write-Host "$Label found: $full"
+            return $full
+        }
+    }
+
+    $message = "$Label could not be found. Checked: " + (($seen.ToArray()) -join "; ")
+    if ($Required) {
+        throw $message
+    }
+
+    Write-Warning $message
+    return $null
+}
+
+function Get-RevitRegistryInstallCandidates {
+    param([string]$Version)
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $registryRoots = @(
+        "HKLM:\SOFTWARE\Autodesk\Revit\$Version",
+        "HKLM:\SOFTWARE\Autodesk\Revit\Autodesk Revit $Version",
+        "HKLM:\SOFTWARE\WOW6432Node\Autodesk\Revit\$Version",
+        "HKLM:\SOFTWARE\WOW6432Node\Autodesk\Revit\Autodesk Revit $Version"
+    )
+
+    foreach ($root in $registryRoots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        try {
+            $item = Get-ItemProperty -LiteralPath $root -ErrorAction Stop
+            foreach ($name in @("InstallationLocation", "InstallLocation", "InstallDir", "ProductInstallPath")) {
+                if ($item.PSObject.Properties.Name -contains $name) {
+                    $value = [string]$item.$name
+                    if (-not [string]::IsNullOrWhiteSpace($value)) {
+                        $candidates.Add($value)
+                    }
+                }
+            }
+        }
+        catch {}
+    }
+
+    return $candidates.ToArray()
+}
+
+function Resolve-RevitInstallRoot {
+    param(
+        [string]$RequestedRoot,
+        [string]$Version
+    )
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($candidate in @(
+            $RequestedRoot,
+            $env:REVIT_INSTALL_ROOT,
+            (Join-Path ${env:ProgramFiles} "Autodesk\Revit $Version"),
+            (Join-Path ${env:ProgramFiles} "Autodesk\Revit$Version"),
+            (Join-Path ${env:ProgramFiles(x86)} "Autodesk\Revit $Version")
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $candidates.Add($candidate)
+        }
+    }
+    foreach ($candidate in Get-RevitRegistryInstallCandidates -Version $Version) {
+        $candidates.Add($candidate)
+    }
+
+    $resolved = Resolve-ExistingDirectoryFromCandidates -Label "Revit $Version install directory" -Candidates $candidates.ToArray() -Required
+    foreach ($requiredFile in @("Revit.exe", "RevitAPI.dll", "RevitAPI.xml")) {
+        $requiredPath = Join-Path $resolved $requiredFile
+        if (-not (Test-Path -LiteralPath $requiredPath)) {
+            throw "Revit $Version install directory was found, but required file is missing: $requiredPath"
+        }
+    }
+
+    return $resolved
+}
+
+function Write-AddinManifest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$AssemblyPath
+    )
+
+    $escapedAssembly = [System.Security.SecurityElement]::Escape($AssemblyPath)
+    $content = @"
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>mcp-servers-for-revit</Name>
+    <Assembly>$escapedAssembly</Assembly>
+    <FullClassName>revit_mcp_plugin.Core.Application</FullClassName>
+    <ClientId>090A4C8C-61DC-426D-87DF-E4BAE0F80EC1</ClientId>
+    <VendorId>mcp-servers-for-revit</VendorId>
+    <VendorDescription>https://github.com/mcp-servers-for-revit/mcp-servers-for-revit</VendorDescription>
+  </AddIn>
+</RevitAddIns>
+"@
+
+    Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
+}
+
+function New-ReparsePointOrCopyDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-RevitMcpPath -Path $Destination -Label "Codex skill integration directory" -Recurse
+    }
+
+    $parent = Split-Path -Parent $Destination
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+
+    try {
+        New-Item -ItemType Junction -Path $Destination -Target $Source -Force | Out-Null
+        Write-Host "Linked Codex skill to machine install: $Destination -> $Source"
+    }
+    catch {
+        Write-Warning "Could not create Codex skill junction; copying instead. $($_.Exception.Message)"
+        New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+        Get-ChildItem -LiteralPath $Source -Force |
+            Copy-Item -Destination $Destination -Recurse -Force
+    }
+}
+
+function New-HardLinkOrCopyFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-RevitMcpPath -Path $Destination -Label "Codex AGENTS.md integration file" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
+    }
+
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null
+    try {
+        New-Item -ItemType HardLink -Path $Destination -Target $Source -Force | Out-Null
+        Write-Host "Linked Codex AGENTS.md to machine install: $Destination -> $Source"
+    }
+    catch {
+        Write-Warning "Could not create AGENTS.md hard link; copying instead. $($_.Exception.Message)"
+        Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    }
+}
+
+if ($Uninstall -and [string]::IsNullOrWhiteSpace($RevitInstallRoot)) {
+    $revitInstallRoot = ""
+}
+else {
+    $revitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
+}
+
 function Assert-RevitMcpCleanupPath {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path,
         [Parameter(Mandatory = $true)]
         [string]$Label,
-        [string]$AllowedNamePattern = "(?i)(^revit[-_]mcp($|[-_.])|^revit_mcp_plugin$|^mcp[-_]servers?[-_]for[-_]revit|^mcp-server-for-revit|^RevitMCP|^AGENTS\.md$)"
+        [string]$AllowedNamePattern = "(?i)(^revit[-_]mcp($|[-_.])|^revit_mcp_plugin$|^mcp[-_]servers?[-_]for[-_]revit|^mcp-server-for-revit|^RevitMCP|^runtime$|^package$|^updater$|^state$|^revit-plugin$|^codex$|^AGENTS\.md$)"
     )
 
     $fullPath = Get-NormalizedPath -Path $Path
@@ -149,9 +350,14 @@ function Assert-RevitMcpCleanupPath {
         (Get-NormalizedPath -Path $env:APPDATA),
         (Get-NormalizedPath -Path $env:LOCALAPPDATA),
         (Get-NormalizedPath -Path $env:ProgramFiles),
+        (Get-NormalizedPath -Path $programDataRoot),
+        (Get-NormalizedPath -Path (Join-Path $programDataRoot "Autodesk")),
+        (Get-NormalizedPath -Path (Join-Path $programDataRoot "Autodesk\Revit")),
+        (Get-NormalizedPath -Path (Join-Path $programDataRoot "Autodesk\Revit\Addins")),
         (Get-NormalizedPath -Path (Join-Path $env:APPDATA "Autodesk")),
         (Get-NormalizedPath -Path (Join-Path $env:APPDATA "Autodesk\Revit")),
         (Get-NormalizedPath -Path $addinRoot),
+        (Get-NormalizedPath -Path $InstallRoot),
         (Get-NormalizedPath -Path $codexRoot),
         (Get-NormalizedPath -Path $codexSkillsRoot),
         (Get-NormalizedPath -Path (Split-Path -Parent $ServerTarget))
@@ -202,12 +408,16 @@ function Remove-RevitMcpPath {
 }
 
 function Disable-LegacyAddinManifest {
-    $legacyAddin = Join-Path $addinRoot "revit-mcp.addin"
+    param(
+        [string]$Root = $addinRoot
+    )
+
+    $legacyAddin = Join-Path $Root "revit-mcp.addin"
     if (-not (Test-Path -LiteralPath $legacyAddin)) {
         return
     }
 
-    $disabledAddin = Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained"
+    $disabledAddin = Join-Path $Root "revit-mcp.addin.disabled-self-contained"
     Assert-RevitMcpCleanupPath -Path $legacyAddin -Label "legacy Revit MCP addin manifest" | Out-Null
     Assert-RevitMcpCleanupPath -Path $disabledAddin -Label "disabled legacy Revit MCP addin manifest" | Out-Null
 
@@ -223,7 +433,13 @@ function Get-RuntimeCleanupTargets {
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $targets = [System.Collections.Generic.List[string]]::new()
 
-    foreach ($candidate in @($ServerTarget) + $defaultLegacyServerTargets + $LegacyServerTargets) {
+    $candidates = @($ServerTarget)
+    if (-not $SkipLegacyCleanup) {
+        $candidates += $defaultLegacyServerTargets
+    }
+    $candidates += $LegacyServerTargets
+
+    foreach ($candidate in $candidates) {
         if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
         $normalized = Get-NormalizedPath -Path $candidate
         if ($seen.Add($normalized)) {
@@ -282,8 +498,16 @@ function Invoke-RevitMcpCleanup {
 
     Remove-RevitMcpPath -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -Label "Revit MCP addin manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
     Remove-RevitMcpPath -Path (Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy Revit MCP addin manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
+    if (-not $SkipLegacyCleanup) {
+        Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "mcp-servers-for-revit.addin") -Label "legacy user Revit MCP addin manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
+        Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy user Revit MCP addin manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
+        Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit_mcp_plugin") -Label "legacy user Revit MCP addin payload directory" -Recurse
+    }
     Remove-RevitMcpPath -Path $pluginTarget -Label "Revit MCP addin payload directory" -Recurse
-    Remove-RevitMcpPath -Path (Join-Path $env:LOCALAPPDATA "revit-mcp-plugin") -Label "Revit MCP LocalAppData command directory" -Recurse
+    Remove-RevitMcpPath -Path $commandSetRoot -Label "Revit MCP machine command directory" -Recurse -AllowedNamePattern "(?i)(^CommandSet$)"
+    if (-not $SkipLegacyCleanup) {
+        Remove-RevitMcpPath -Path (Join-Path $env:LOCALAPPDATA "revit-mcp-plugin") -Label "Revit MCP LocalAppData command directory" -Recurse
+    }
 
     foreach ($target in Get-RuntimeCleanupTargets) {
         if (-not (Test-RevitMcpRuntimeDirectory -Path $target)) {
@@ -298,15 +522,20 @@ function Invoke-RevitMcpCleanup {
 
     if ($ForUninstall) {
         Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex Revit MCP skill directory" -Recurse
+        Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex Revit MCP skill directory" -Recurse
         if ($RemoveAgents) {
             Remove-RevitMcpPath -Path $codexAgentsTarget -Label "Codex global AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
+            Remove-RevitMcpPath -Path $codexMachineAgentsTarget -Label "machine AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
             if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
                 Remove-RevitMcpPath -Path $WorkspaceAgentsTarget -Label "workspace AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
             }
         }
     }
     else {
-        Disable-LegacyAddinManifest
+        Disable-LegacyAddinManifest -Root $addinRoot
+        if (-not $SkipLegacyCleanup) {
+            Disable-LegacyAddinManifest -Root $legacyUserAddinRoot
+        }
     }
 }
 
@@ -319,17 +548,21 @@ if ($Uninstall) {
     return
 }
 
+New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $addinRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $pluginRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $ServerTarget -Force | Out-Null
 
-Copy-Item -LiteralPath (Join-Path $pluginSource "mcp-servers-for-revit.addin") -Destination (Join-Path $addinRoot "mcp-servers-for-revit.addin") -Force
 if (Test-Path $pluginTarget) {
     Remove-Item -LiteralPath $pluginTarget -Recurse -Force
 }
-Copy-Item -LiteralPath (Join-Path $pluginSource "revit_mcp_plugin") -Destination $addinRoot -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $pluginSource "revit_mcp_plugin") -Destination $pluginRoot -Recurse -Force
+Write-AddinManifest -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -AssemblyPath (Join-Path $pluginTarget "RevitMCPPlugin.dll")
 # Expand the bundled runtime server contents into the target directory.
 Copy-Item -Path (Join-Path $serverSource "*") -Destination $ServerTarget -Recurse -Force
 Set-Content -LiteralPath (Join-Path $ServerTarget ".revit-mcp-self-contained-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
+Set-Content -LiteralPath (Join-Path $InstallRoot ".revit-mcp-programdata-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
 
 # The required Revit API docs MCP server remains in the repo under kurulum\revit-api-docs-mcp.
 # It is registered from that path after npm install; see the final Next steps.
@@ -340,21 +573,20 @@ if (-not (Test-Path $docsServerSource)) {
 # Copy Custom_DLL payload so dynamic command compilation works after install.
 $customDllDir = Join-Path $PSScriptRoot "Custom_DLL"
 if (Test-Path $customDllDir) {
-    # 1. LocalAppData command locations
-    $localAppCmdSet2022 = Join-Path $env:LOCALAPPDATA "revit-mcp-plugin\commands\CommandSet\$RevitVersion"
-    $localAppCmdSet = Join-Path $env:LOCALAPPDATA "revit-mcp-plugin\commands\CommandSet"
+    # 1. Machine-wide command cache locations
+    $machineCmdSet2022 = Join-Path $commandSetRoot $RevitVersion
+    $machineCmdSet = $commandSetRoot
 
-    New-Item -ItemType Directory -Path $localAppCmdSet2022 -Force | Out-Null
+    New-Item -ItemType Directory -Path $machineCmdSet2022 -Force | Out-Null
 
-    # Copy files into LocalAppData
-    Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $localAppCmdSet2022 -Force
-    Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $localAppCmdSet -Force
-    Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $localAppCmdSet2022 -Force
-    Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $localAppCmdSet -Force
+    Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $machineCmdSet2022 -Force
+    Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $machineCmdSet -Force
+    Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $machineCmdSet2022 -Force
+    Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $machineCmdSet -Force
 
     # 2. Mirror the same files into the Revit add-in command folders
-    $roamingCmdSet2022 = Join-Path $addinRoot "revit_mcp_plugin\Commands\RevitMCPCommandSet\$RevitVersion"
-    $roamingCmdSet = Join-Path $addinRoot "revit_mcp_plugin\Commands\RevitMCPCommandSet"
+    $roamingCmdSet2022 = Join-Path $pluginTarget "Commands\RevitMCPCommandSet\$RevitVersion"
+    $roamingCmdSet = Join-Path $pluginTarget "Commands\RevitMCPCommandSet"
 
     New-Item -ItemType Directory -Path $roamingCmdSet2022 -Force | Out-Null
     Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $roamingCmdSet2022 -Force
@@ -370,7 +602,7 @@ if (Test-Path $customDllDir) {
     $bundledRuntimeDir = Join-Path $customDllDir "runtime\$RevitVersion"
     $dependencySearchRoots = @(
         $bundledRuntimeDir,
-        $localAppCmdSet,
+        $machineCmdSet,
         $revitInstallRoot,
         (Join-Path $revitInstallRoot "AddIns\CoordinationModel"),
         (Join-Path $revitInstallRoot "AddIns\DynamoForRevit"),
@@ -393,7 +625,7 @@ if (Test-Path $customDllDir) {
         @{ File = "System.Numerics.Vectors.dll"; Version = "4.1.4.0"; Required = $true }
     )
 
-    $runtimeDestinations = @($localAppCmdSet2022, $roamingCmdSet2022)
+    $runtimeDestinations = @($machineCmdSet2022, $roamingCmdSet2022)
     $missingRuntimeFiles = @()
     $rejectedRuntimeFiles = [System.Collections.Generic.List[string]]::new()
 
@@ -429,19 +661,29 @@ if (Test-Path $customDllDir) {
 
 $workspaceAgentsInstalled = $null
 if (-not $SkipCodexSkillInstall) {
-    New-Item -ItemType Directory -Path $codexSkillsRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $codexMachineSkillsRoot -Force | Out-Null
 
-    if (Test-Path -LiteralPath $codexSkillTarget) {
-        $backupStamp = Get-Date -Format "yyyyMMdd-HHmmss"
-        New-Item -ItemType Directory -Path $codexSkillBackupsRoot -Force | Out-Null
-        $skillBackup = Join-Path $codexSkillBackupsRoot "revit-mcp.backup-$backupStamp"
-        Move-Item -LiteralPath $codexSkillTarget -Destination $skillBackup
+    if (Test-Path -LiteralPath $codexMachineSkillTarget) {
+        Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex Revit MCP skill directory" -Recurse
     }
 
-    New-Item -ItemType Directory -Path $codexSkillTarget -Force | Out-Null
+    New-Item -ItemType Directory -Path $codexMachineSkillTarget -Force | Out-Null
     Get-ChildItem -LiteralPath $repoRoot -Force |
         Where-Object { $_.Name -notin @(".git", "node_modules") } |
-        Copy-Item -Destination $codexSkillTarget -Recurse -Force
+        Copy-Item -Destination $codexMachineSkillTarget -Recurse -Force
+
+    if (-not $SkipCodexUserIntegration) {
+        New-Item -ItemType Directory -Path $codexSkillsRoot -Force | Out-Null
+
+        if (Test-Path -LiteralPath $codexSkillTarget) {
+            $backupStamp = Get-Date -Format "yyyyMMdd-HHmmss"
+            New-Item -ItemType Directory -Path $codexSkillBackupsRoot -Force | Out-Null
+            $skillBackup = Join-Path $codexSkillBackupsRoot "revit-mcp.backup-$backupStamp"
+            Move-Item -LiteralPath $codexSkillTarget -Destination $skillBackup
+        }
+
+        New-ReparsePointOrCopyDirectory -Source $codexMachineSkillTarget -Destination $codexSkillTarget
+    }
 }
 
 $agentsSource = Join-Path $repoRoot "AGENTS.md"
@@ -449,20 +691,25 @@ if (-not (Test-Path -LiteralPath $agentsSource)) {
     throw "Required AGENTS.md was not found: $agentsSource"
 }
 
-New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $codexMachineRoot -Force | Out-Null
+Copy-Item -LiteralPath $agentsSource -Destination $codexMachineAgentsTarget -Force
 
-$shouldBackupAgents = $false
-if (Test-Path -LiteralPath $codexAgentsTarget) {
-    $existingAgents = Get-Item -LiteralPath $codexAgentsTarget
-    $shouldBackupAgents = $existingAgents.Length -gt 0
+if (-not $SkipCodexUserIntegration) {
+    New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
+
+    $shouldBackupAgents = $false
+    if (Test-Path -LiteralPath $codexAgentsTarget) {
+        $existingAgents = Get-Item -LiteralPath $codexAgentsTarget
+        $shouldBackupAgents = $existingAgents.Length -gt 0
+    }
+
+    if ($shouldBackupAgents) {
+        $agentsBackup = Join-Path $codexRoot ("AGENTS.md.backup-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+        Copy-Item -LiteralPath $codexAgentsTarget -Destination $agentsBackup -Force
+    }
+
+    New-HardLinkOrCopyFile -Source $codexMachineAgentsTarget -Destination $codexAgentsTarget
 }
-
-if ($shouldBackupAgents) {
-    $agentsBackup = Join-Path $codexRoot ("AGENTS.md.backup-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
-    Copy-Item -LiteralPath $codexAgentsTarget -Destination $agentsBackup -Force
-}
-
-Copy-Item -LiteralPath $agentsSource -Destination $codexAgentsTarget -Force
 
 if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
     $workspaceAgentsDir = Split-Path -Parent $WorkspaceAgentsTarget
@@ -478,18 +725,27 @@ if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
         }
     }
 
-    Copy-Item -LiteralPath $agentsSource -Destination $WorkspaceAgentsTarget -Force
+    Copy-Item -LiteralPath $codexMachineAgentsTarget -Destination $WorkspaceAgentsTarget -Force
     $workspaceAgentsInstalled = $WorkspaceAgentsTarget
 }
 
 Write-Host "Self-contained Revit MCP bundle installed for Revit $RevitVersion" -ForegroundColor Green
-Write-Host "Plugin path: $addinRoot"
+Write-Host "Install root: $InstallRoot"
+Write-Host "Revit install root: $revitInstallRoot"
+Write-Host "Revit addin manifest path: $addinRoot"
+Write-Host "Plugin payload path: $pluginTarget"
 Write-Host "Runtime server path: $ServerTarget"
 Write-Host "Required docs server path: $docsServerSource"
 if (-not $SkipCodexSkillInstall) {
-    Write-Host "Codex skill path: $codexSkillTarget"
+    Write-Host "Machine Codex skill path: $codexMachineSkillTarget"
+    if (-not $SkipCodexUserIntegration) {
+        Write-Host "Codex user skill integration: $codexSkillTarget"
+    }
 }
-Write-Host "Codex global AGENTS.md: $codexAgentsTarget"
+Write-Host "Machine AGENTS.md: $codexMachineAgentsTarget"
+if (-not $SkipCodexUserIntegration) {
+    Write-Host "Codex global AGENTS.md integration: $codexAgentsTarget"
+}
 if ($workspaceAgentsInstalled) {
     Write-Host "Workspace AGENTS.md: $workspaceAgentsInstalled"
 }
@@ -500,7 +756,7 @@ Write-Host "2. npm install --omit=dev"
 Write-Host "3. codex mcp add revit-mcp -- node `"$ServerTarget\build\index.js`""
 Write-Host "4. cd $docsServerSource"
 Write-Host "5. npm install --omit=dev"
-Write-Host "6. npm run build-index"
+Write-Host "6. powershell -ExecutionPolicy Bypass -File `"$docsServerSource\scripts\build-index.ps1`" -RevitRoot `"$revitInstallRoot`" -OutputPath `"$stateRoot\revit-api-docs\cache\revit-api-docs-$RevitVersion.json`""
 Write-Host "7. codex mcp add revit-api-docs -- node `"$docsServerSource\build\index.js`""
 Write-Host "8. Confirm both servers with: codex mcp list"
 Write-Host "9. Run /skills reload in Codex, or restart Codex"

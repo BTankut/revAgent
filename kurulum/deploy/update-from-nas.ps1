@@ -13,10 +13,12 @@
 param(
     [string]$ConfigPath = "",
     [string]$ChannelManifestPath = "",
-    [string]$WorkRoot = "C:\Projects\revit-mcp-install",
-    [string]$PackageTarget = "C:\Projects\revit-mcp-skill",
-    [string]$ServerTarget = "C:\Projects\revit-mcp",
+    [string]$InstallRoot = "",
+    [string]$WorkRoot = "",
+    [string]$PackageTarget = "",
+    [string]$ServerTarget = "",
     [string]$WorkspaceAgentsTarget = "",
+    [string]$RevitInstallRoot = "",
     [ValidateSet("2022")]
     [string]$RevitVersion = "2022",
     [string[]]$LegacyServerTargets = @(),
@@ -25,6 +27,7 @@ param(
     [switch]$AuditOnly,
     [switch]$SkipNpmInstall,
     [switch]$SkipCodexMcpRegistration,
+    [switch]$SkipCodexUserIntegration,
     [switch]$AllowReplaceGitPackageTarget
 )
 
@@ -67,13 +70,20 @@ function Resolve-ReleasePath {
 function Assert-ManagedDirectoryTarget {
     param(
         [string]$Path,
-        [string]$ExpectedLeaf
+        [string[]]$ExpectedLeafNames
     )
 
     $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd("\")
     $leaf = Split-Path -Leaf $fullPath
-    if (-not [string]::Equals($leaf, $ExpectedLeaf, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to replace managed package target because the leaf folder is not '$ExpectedLeaf': $fullPath"
+    $leafOk = $false
+    foreach ($expectedLeaf in $ExpectedLeafNames) {
+        if ([string]::Equals($leaf, $expectedLeaf, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $leafOk = $true
+            break
+        }
+    }
+    if (-not $leafOk) {
+        throw "Refusing to replace managed package target because the leaf folder is not one of '$($ExpectedLeafNames -join ", ")': $fullPath"
     }
 
     $blocked = @(
@@ -90,6 +100,82 @@ function Assert-ManagedDirectoryTarget {
     }
 
     return $fullPath
+}
+
+function Resolve-RequiredCommand {
+    param(
+        [string]$Name,
+        [string[]]$Candidates = @()
+    )
+
+    $command = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    foreach ($candidate in $Candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        $expanded = [Environment]::ExpandEnvironmentVariables($candidate)
+        if (Test-Path -LiteralPath $expanded -PathType Leaf) {
+            return $expanded
+        }
+    }
+
+    throw "Required command '$Name' was not found. Install it or add it to PATH, then run the updater again."
+}
+
+function Resolve-RevitInstallRoot {
+    param(
+        [string]$RequestedRoot,
+        [string]$Version
+    )
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($candidate in @(
+            $RequestedRoot,
+            $env:REVIT_INSTALL_ROOT,
+            (Join-Path ${env:ProgramFiles} "Autodesk\Revit $Version"),
+            (Join-Path ${env:ProgramFiles} "Autodesk\Revit$Version"),
+            (Join-Path ${env:ProgramFiles(x86)} "Autodesk\Revit $Version")
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $candidates.Add($candidate)
+        }
+    }
+    foreach ($registryRoot in @(
+            "HKLM:\SOFTWARE\Autodesk\Revit\$Version",
+            "HKLM:\SOFTWARE\Autodesk\Revit\Autodesk Revit $Version",
+            "HKLM:\SOFTWARE\WOW6432Node\Autodesk\Revit\$Version",
+            "HKLM:\SOFTWARE\WOW6432Node\Autodesk\Revit\Autodesk Revit $Version"
+        )) {
+        if (-not (Test-Path -LiteralPath $registryRoot)) { continue }
+        try {
+            $item = Get-ItemProperty -LiteralPath $registryRoot -ErrorAction Stop
+            foreach ($name in @("InstallationLocation", "InstallLocation", "InstallDir", "ProductInstallPath")) {
+                if ($item.PSObject.Properties.Name -contains $name) {
+                    $value = [string]$item.$name
+                    if (-not [string]::IsNullOrWhiteSpace($value)) {
+                        $candidates.Add($value)
+                    }
+                }
+            }
+        }
+        catch {}
+    }
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        $full = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($candidate)).TrimEnd("\")
+        if (-not $seen.Add($full)) { continue }
+        if ((Test-Path -LiteralPath $full -PathType Container) -and
+            (Test-Path -LiteralPath (Join-Path $full "Revit.exe")) -and
+            (Test-Path -LiteralPath (Join-Path $full "RevitAPI.dll"))) {
+            return $full
+        }
+    }
+
+    throw "Revit $Version install directory could not be found. Checked: $($seen.ToArray() -join '; ')"
 }
 
 function Invoke-External {
@@ -164,9 +250,11 @@ function Write-UpdateReport {
         targetVersion = if ($Channel) { $Channel.version } else { $null }
         installedVersion = if ($InstalledState) { $InstalledState.version } else { $null }
         paths = [ordered]@{
+            installRoot = $InstallRoot
             packageTarget = $PackageTarget
             serverTarget = $ServerTarget
             workRoot = $WorkRoot
+            revitInstallRoot = $RevitInstallRoot
             channelManifestPath = $ChannelManifestPath
         }
     }
@@ -190,23 +278,46 @@ function Write-UpdateReport {
 $config = Import-UpdaterConfig -Path $ConfigPath
 if ($config) {
     if ([string]::IsNullOrWhiteSpace($ChannelManifestPath) -and $config.channelManifestPath) { $ChannelManifestPath = [string]$config.channelManifestPath }
+    if ($config.installRoot) { $InstallRoot = [string]$config.installRoot }
     if ($config.workRoot) { $WorkRoot = [string]$config.workRoot }
     if ($config.packageTarget) { $PackageTarget = [string]$config.packageTarget }
     if ($config.serverTarget) { $ServerTarget = [string]$config.serverTarget }
     if ($config.workspaceAgentsTarget) { $WorkspaceAgentsTarget = [string]$config.workspaceAgentsTarget }
+    if ($config.revitInstallRoot) { $RevitInstallRoot = [string]$config.revitInstallRoot }
     if ($config.revitVersion) { $RevitVersion = [string]$config.revitVersion }
     if ($config.legacyServerTargets) { $LegacyServerTargets = @($config.legacyServerTargets) }
     if ($config.reportsRoot) { $ReportsRoot = [string]$config.reportsRoot }
     if ($config.skipNpmInstall) { $SkipNpmInstall = $true }
     if ($config.skipCodexMcpRegistration) { $SkipCodexMcpRegistration = $true }
+    if ($config.skipCodexUserIntegration) { $SkipCodexUserIntegration = $true }
 }
 
 if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) {
     throw "ChannelManifestPath is required. Pass it directly or through -ConfigPath."
 }
 
+$programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
+if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
+    $InstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
+}
+if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
+    $WorkRoot = Join-Path $InstallRoot "updater"
+}
+if ([string]::IsNullOrWhiteSpace($PackageTarget)) {
+    $PackageTarget = Join-Path $InstallRoot "package"
+}
+if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
+    $ServerTarget = Join-Path $InstallRoot "runtime"
+}
+if ([string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
+    $WorkspaceAgentsTarget = Join-Path $InstallRoot "codex\AGENTS.md"
+}
+
+$InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
 $WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
-$PackageTarget = Assert-ManagedDirectoryTarget -Path $PackageTarget -ExpectedLeaf "revit-mcp-skill"
+$PackageTarget = Assert-ManagedDirectoryTarget -Path $PackageTarget -ExpectedLeafNames @("package", "revit-mcp-skill")
+$ServerTarget = [System.IO.Path]::GetFullPath($ServerTarget)
+$RevitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
 $statePath = Join-Path $WorkRoot "installed.json"
 $localReportPath = Join-Path $WorkRoot "last-update-report.json"
 $cacheRoot = Join-Path $WorkRoot "cache"
@@ -309,7 +420,12 @@ try {
     Move-Item -LiteralPath $extractRoot -Destination $PackageTarget
 
     $installer = Join-Path $PackageTarget "kurulum\install-self-contained.ps1"
-    $installArgs = @("-RevitVersion", $RevitVersion, "-ServerTarget", $ServerTarget)
+    $installArgs = @(
+        "-RevitVersion", $RevitVersion,
+        "-InstallRoot", $InstallRoot,
+        "-ServerTarget", $ServerTarget,
+        "-RevitInstallRoot", $RevitInstallRoot
+    )
     if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
         $installArgs += @("-WorkspaceAgentsTarget", $WorkspaceAgentsTarget)
     }
@@ -317,30 +433,55 @@ try {
         $installArgs += "-LegacyServerTargets"
         $installArgs += $LegacyServerTargets
     }
+    if ($SkipCodexUserIntegration) {
+        $installArgs += "-SkipCodexUserIntegration"
+    }
 
     & $installer @installArgs
 
     if (-not $SkipNpmInstall) {
-        Invoke-External -FilePath "npm" -Arguments @("install", "--omit=dev") -WorkingDirectory $ServerTarget
+        $npmPath = Resolve-RequiredCommand -Name "npm.cmd" -Candidates @(
+            (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
+            (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
+        )
+        $powershellPath = Resolve-RequiredCommand -Name "powershell" -Candidates @(
+            (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
+        )
+
+        Invoke-External -FilePath $npmPath -Arguments @("install", "--omit=dev") -WorkingDirectory $ServerTarget
 
         $docsServerPath = Join-Path $PackageTarget "kurulum\revit-api-docs-mcp"
-        Invoke-External -FilePath "npm" -Arguments @("install", "--omit=dev") -WorkingDirectory $docsServerPath
-        Invoke-External -FilePath "npm" -Arguments @("run", "build-index") -WorkingDirectory $docsServerPath
+        Invoke-External -FilePath $npmPath -Arguments @("install", "--omit=dev") -WorkingDirectory $docsServerPath
+
+        $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
+        Invoke-External -FilePath $powershellPath -Arguments @(
+            "-ExecutionPolicy", "Bypass",
+            "-File", (Join-Path $docsServerPath "scripts\build-index.ps1"),
+            "-RevitRoot", $RevitInstallRoot,
+            "-OutputPath", $docsCachePath
+        ) -WorkingDirectory $docsServerPath
     }
 
     if (-not $SkipCodexMcpRegistration) {
+        $codexPath = Resolve-RequiredCommand -Name "codex.cmd" -Candidates @(
+            (Join-Path $env:APPDATA "npm\codex.cmd")
+        )
+        $nodePath = Resolve-RequiredCommand -Name "node.exe" -Candidates @(
+            (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
+            (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")
+        )
         $docsServerPath = Join-Path $PackageTarget "kurulum\revit-api-docs-mcp"
         try {
-            & codex mcp remove revit-mcp 2>$null | Out-Null
+            & $codexPath mcp remove revit-mcp 2>$null | Out-Null
         }
         catch {}
         try {
-            & codex mcp remove revit-api-docs 2>$null | Out-Null
+            & $codexPath mcp remove revit-api-docs 2>$null | Out-Null
         }
         catch {}
 
-        Invoke-External -FilePath "codex" -Arguments @("mcp", "add", "revit-mcp", "--", "node", (Join-Path $ServerTarget "build\index.js")) -WorkingDirectory $WorkRoot
-        Invoke-External -FilePath "codex" -Arguments @("mcp", "add", "revit-api-docs", "--", "node", (Join-Path $docsServerPath "build\index.js")) -WorkingDirectory $WorkRoot
+        Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-mcp", "--", $nodePath, (Join-Path $ServerTarget "build\index.js")) -WorkingDirectory $WorkRoot
+        Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-api-docs", "--", $nodePath, (Join-Path $docsServerPath "build\index.js")) -WorkingDirectory $WorkRoot
     }
 
     $newState = [ordered]@{
@@ -353,10 +494,13 @@ try {
         packagePath = $packagePath
         manifestPath = $channel.manifestPath
         updaterVersion = $updaterVersion
+        skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
         paths = [ordered]@{
+            installRoot = $InstallRoot
             packageTarget = $PackageTarget
             serverTarget = $ServerTarget
             workRoot = $WorkRoot
+            revitInstallRoot = $RevitInstallRoot
             channelManifestPath = $ChannelManifestPath
         }
     }

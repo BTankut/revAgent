@@ -49,20 +49,27 @@ before running `npm install`:
 
 ## Quick start
 
-Run these commands from the repo root. Close Revit before running the installer.
+For office workstations, prefer the NAS updater in `kurulum/deploy/README.md`.
+It installs into the standard machine-wide root:
+
+```text
+C:\ProgramData\DPE\RevitMCP
+```
+
+For a manual repo-root install, close Revit and run:
 
 ```powershell
 $RepoRoot = (Resolve-Path .).Path
 
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022 -ServerTarget C:\Projects\revit-mcp
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022
 
-cd C:\Projects\revit-mcp
+cd C:\ProgramData\DPE\RevitMCP\runtime
 npm install --omit=dev
-codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
+codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
 
 cd "$RepoRoot\kurulum\revit-api-docs-mcp"
 npm install --omit=dev
-npm run build-index
+powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
 codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
 
@@ -80,6 +87,8 @@ pulling and reinstalling on every machine.
 - Tested beta packages are promoted to stable with `promote-nas-release.ps1`.
 - Workstations run `update-from-nas.ps1`, usually through a scheduled task
   installed by `install-updater-task.ps1`.
+- Workstations install under `C:\ProgramData\DPE\RevitMCP`, not under
+  `C:\Projects` or user AppData folders.
 
 See `kurulum/deploy/README.md` for the full first-time workflow.
 
@@ -143,15 +152,11 @@ Then:
    enable or review command availability.
 5. Run `/skills reload` inside Codex, or restart Codex.
 
-The installer copies this repo into `%USERPROFILE%\.codex\skills\revit-mcp`
-and always installs `AGENTS.md` globally at `%USERPROFILE%\.codex\AGENTS.md`.
-It also installs the same workstation role file at the workspace root next to
-the runtime target, defaulting to `C:\Projects\AGENTS.md` when `-ServerTarget`
-is `C:\Projects\revit-mcp`.
-If an existing non-empty global `AGENTS.md` is present, the installer backs it
-up before replacing it; the workspace `AGENTS.md` is backed up the same way.
-Pass `-SkipCodexSkillInstall` only to skip copying the skill folder; it does
-not skip `AGENTS.md` installation.
+The installer keeps the canonical Codex payload under
+`C:\ProgramData\DPE\RevitMCP\codex`. Because Codex currently reads user-profile
+skill and `AGENTS.md` locations, the installer may create a junction/hardlink
+under `%USERPROFILE%\.codex` as a compatibility integration. Pass
+`-SkipCodexUserIntegration` to leave the user profile untouched.
 
 ## What the installer deploys
 
@@ -159,33 +164,32 @@ The files under `kurulum/` are source payloads kept in the repo for redistributi
 After install, the same payload is copied into the real system locations below:
 
 - Revit add-in manifest:
-  - `%APPDATA%\Autodesk\Revit\Addins\2022\mcp-servers-for-revit.addin`
+  - `C:\ProgramData\Autodesk\Revit\Addins\2022\mcp-servers-for-revit.addin`
 - Revit add-in payload:
-  - `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin\...`
+  - `C:\ProgramData\DPE\RevitMCP\revit-plugin\revit_mcp_plugin\...`
 - Dynamic command payload mirror:
-  - `%LOCALAPPDATA%\revit-mcp-plugin\commands\CommandSet\...`
+  - `C:\ProgramData\DPE\RevitMCP\commands\CommandSet\...`
 - Local runtime MCP server bundle:
-  - the `-ServerTarget` path you chose, for example `C:\Projects\revit-mcp`
+  - `C:\ProgramData\DPE\RevitMCP\runtime`
 - Required docs MCP server:
-  - kept under `kurulum\revit-api-docs-mcp` and registered from the repo root
+  - kept under the managed package copy and registered from there by the NAS updater
 - Codex skill and workstation role:
-  - `%USERPROFILE%\.codex\skills\revit-mcp`
-  - `%USERPROFILE%\.codex\AGENTS.md`
-  - `C:\Projects\AGENTS.md` by default
+  - `C:\ProgramData\DPE\RevitMCP\codex\skills\revit-mcp`
+  - `C:\ProgramData\DPE\RevitMCP\codex\AGENTS.md`
 
 Before copying, the installer cleans the known Revit MCP install locations it
-owns: the Revit MCP add-in manifest, `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin`,
-`%LOCALAPPDATA%\revit-mcp-plugin`, the runtime `-ServerTarget`, known legacy
-runtime targets, and stale `revit-mcp.backup-*` folders under active Codex
+owns: the Revit MCP add-in manifest, old `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin`,
+old `%LOCALAPPDATA%\revit-mcp-plugin`, the runtime `-ServerTarget`, known
+legacy `C:\Projects\...` runtime targets, and stale `revit-mcp.backup-*` folders under active Codex
 skills. This prevents old files from surviving directory/layout changes.
 Cleanup is guarded by path checks and does not delete Autodesk Revit program
-files, Windows system folders, `%APPDATA%\Autodesk\Revit\Addins\2022` itself,
-or broad workspace/user directories.
+files, Windows system folders, Revit add-in root folders themselves, or broad
+workspace/user directories.
 
 To remove the self-contained install without installing a fresh copy:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022 -ServerTarget C:\Projects\revit-mcp -Uninstall
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022 -Uninstall
 ```
 
 Use `-RemoveAgents` with `-Uninstall` only when you also want to remove the
@@ -218,7 +222,14 @@ NuGet is only relevant if you are rebuilding `RevitMCPCommandSet.dll` from sourc
 
 ## Clean machine checklist
 
-Use this order on a fresh machine from the repo root:
+Use this order on a fresh machine. In the office, the preferred path is to
+double-click the NAS updater:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater.cmd
+```
+
+Manual repo-root install:
 
 1. Install the prerequisites:
    - Autodesk Revit 2022
@@ -231,20 +242,20 @@ Use this order on a fresh machine from the repo root:
 
 ```powershell
 $RepoRoot = (Resolve-Path .).Path
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022 -ServerTarget C:\Projects\revit-mcp
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022
 ```
 
 5. Install Node dependencies in the deployed runtime server target:
 
 ```powershell
-cd C:\Projects\revit-mcp
+cd C:\ProgramData\DPE\RevitMCP\runtime
 npm install --omit=dev
 ```
 
 6. Register the runtime MCP server in Codex:
 
 ```powershell
-codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
+codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
 ```
 
 7. Install and register the required docs MCP server:
@@ -252,7 +263,7 @@ codex mcp add revit-mcp -- node "C:\Projects\revit-mcp\build\index.js"
 ```powershell
 cd "$RepoRoot\kurulum\revit-api-docs-mcp"
 npm install --omit=dev
-npm run build-index
+powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
 codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
 
@@ -262,10 +273,9 @@ codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build
 /skills reload
 ```
 
-The installer already installs the global Codex skill and global
-`AGENTS.md`. If you skipped the skill copy with `-SkipCodexSkillInstall`, copy
-this repo root to `%USERPROFILE%\.codex\skills\revit-mcp` manually. The
-installer still installs `AGENTS.md` globally.
+The installer already installs the machine-level Codex payload under
+`C:\ProgramData\DPE\RevitMCP\codex` and creates user-profile integration unless
+`-SkipCodexUserIntegration` is passed.
 
 9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
 10. Verify that both MCP servers are registered:
@@ -310,7 +320,7 @@ Install it after the runtime server (Quick start already shows this step):
 $RepoRoot = (Resolve-Path .).Path
 cd "$RepoRoot\kurulum\revit-api-docs-mcp"
 npm install --omit=dev
-npm run build-index
+powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
 codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
 
@@ -318,7 +328,7 @@ On first query, the docs server builds a local cache from the installed `RevitAP
 
 Default cache path:
 
-- `%LOCALAPPDATA%\revit-api-docs-mcp\cache`
+- `C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache`
 
 Bundled docs tools:
 

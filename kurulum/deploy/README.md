@@ -86,14 +86,25 @@ powershell -ExecutionPolicy Bypass -File "$ReleaseRoot\tools\install-updater-tas
   -RunNow
 ```
 
-Script updater'i `C:\Projects\revit-mcp-install` altina kopyalar ve zamanlanmis
-gorev kurar.
+Script updater'i varsayilan olarak `C:\ProgramData\DPE\RevitMCP\updater`
+altina kopyalar ve zamanlanmis gorev kurar. Ana paket, runtime, cache, log ve
+durum dosyalari ayni standart kok altinda tutulur:
+
+```text
+C:\ProgramData\DPE\RevitMCP\
+  package\
+  runtime\
+  updater\
+  state\
+  revit-plugin\
+  codex\
+```
 
 ## 3. Manuel update kontrolu
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Projects\revit-mcp-install\update-from-nas.ps1" `
-  -ConfigPath "C:\Projects\revit-mcp-install\updater-config.json"
+powershell -ExecutionPolicy Bypass -File "C:\ProgramData\DPE\RevitMCP\updater\update-from-nas.ps1" `
+  -ConfigPath "C:\ProgramData\DPE\RevitMCP\updater\updater-config.json"
 ```
 
 Revit aciksa update ertelenir ve rapora `deferred-revit-running` yazilir.
@@ -101,7 +112,7 @@ Revit kapaliyken:
 
 - Paket NAS'tan kopyalanir.
 - SHA256 dogrulanir.
-- `C:\Projects\revit-mcp-skill` managed paket kopyasi yenilenir.
+- `C:\ProgramData\DPE\RevitMCP\package` managed paket kopyasi yenilenir.
 - `install-self-contained.ps1` calisir.
 - Runtime ve docs MCP icin `npm install --omit=dev` calisir.
 - Codex MCP kayitlari yenilenir.
@@ -111,10 +122,13 @@ Revit kapaliyken:
 
 - Revit acikken plugin DLL degistirilmez.
 - Paket hash'i dogrulanmadan kurulum yapilmaz.
-- Updater, varsayilan olarak `C:\Projects\revit-mcp-skill` klasorunu yonetir.
+- Updater, varsayilan olarak `C:\ProgramData\DPE\RevitMCP` kokunu yonetir.
 - Bu hedef bir git working tree ise, yanlislikla gelistirme reposunu silmemek
   icin update durur. Bilerek izin vermek icin `-AllowReplaceGitPackageTarget`
   kullanilir.
+- Kurulum Revit 2022 kokunu otomatik arar: once kullanici/ortam degiskeni,
+  sonra standart `C:\Program Files\Autodesk\Revit 2022` ve registry adaylari
+  denenir. Bulunamazsa kurulum acik hata ile durur.
 - Installer tarafindaki eski dizin temizligi sadece bilinen Revit MCP
   hedefleriyle sinirlidir; Autodesk Revit veya Windows sistem klasorleri
   silinmez.
