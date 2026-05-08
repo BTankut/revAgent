@@ -6,7 +6,8 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 - Changed the Revit MCP status window to show without stealing foreground focus from other applications.
 - Updated the NAS updater to apply non-Revit payload updates while Revit is open, and to defer only when Revit add-in or command files changed.
-- Replaced updater ZIP extraction with a direct .NET extraction path to avoid intermittent PowerShell archive cleanup errors.
+- Made the updater compare the actual installed Revit add-in and command DLL hashes, so stale Revit payloads are repaired even when the package version already matches.
+- Replaced updater ZIP extraction with a custom .NET ZipArchive extraction path to avoid intermittent PowerShell archive cleanup errors.
 - Renamed the canonical install payload folder from `kurulum/` to `installer/`.
 - Renamed deployment helpers to `installer/nas/`, runtime payload to `installer/runtime-mcp-server/`, and command payload to `installer/command-payload/`.
 - Added release-package compatibility that still generates a legacy `kurulum/` alias for older workstation updaters.

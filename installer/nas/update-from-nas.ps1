@@ -572,6 +572,76 @@ function Get-InstalledComponentSha256 {
     return ""
 }
 
+function Get-ActualRevitPayloadPathMapping {
+    param(
+        [string]$RelativePath,
+        [string]$InstallRoot,
+        [string]$RevitVersion
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+        return [pscustomobject][ordered]@{
+            isMapped = $false
+            shouldCompare = $false
+            paths = @()
+        }
+    }
+
+    $normalizedPath = $RelativePath.Replace("/", "\")
+    if ($normalizedPath.StartsWith("kurulum\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $normalizedPath = "installer\" + $normalizedPath.Substring("kurulum\".Length)
+    }
+
+    if ([string]::Equals($normalizedPath, "installer\revit-plugin\mcp-servers-for-revit.addin", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject][ordered]@{
+            isMapped = $true
+            shouldCompare = $false
+            paths = @()
+        }
+    }
+
+    $paths = [System.Collections.Generic.List[string]]::new()
+    $pluginPrefix = "installer\revit-plugin\revit_mcp_plugin\"
+    if ($normalizedPath.StartsWith($pluginPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $suffix = $normalizedPath.Substring($pluginPrefix.Length)
+        [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\" + $suffix)))
+        return [pscustomobject][ordered]@{
+            isMapped = $true
+            shouldCompare = $true
+            paths = @($paths.ToArray())
+        }
+    }
+
+    $commandPayloadPrefix = "installer\command-payload\"
+    if ($normalizedPath.StartsWith($commandPayloadPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $suffix = $normalizedPath.Substring($commandPayloadPrefix.Length)
+        $runtimePrefix = "runtime\$RevitVersion\"
+        if ($suffix.StartsWith($runtimePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $runtimeSuffix = $suffix.Substring($runtimePrefix.Length)
+            [void]$paths.Add((Join-Path $InstallRoot ("commands\CommandSet\$RevitVersion\" + $runtimeSuffix)))
+            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet\$RevitVersion\" + $runtimeSuffix)))
+        }
+        else {
+            [void]$paths.Add((Join-Path $InstallRoot ("commands\CommandSet\$RevitVersion\" + $suffix)))
+            [void]$paths.Add((Join-Path $InstallRoot ("commands\CommandSet\" + $suffix)))
+            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet\$RevitVersion\" + $suffix)))
+            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet\" + $suffix)))
+        }
+
+        return [pscustomobject][ordered]@{
+            isMapped = $true
+            shouldCompare = $true
+            paths = @($paths.ToArray())
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        isMapped = $false
+        shouldCompare = $false
+        paths = @()
+    }
+}
+
 function Test-RevitPayloadComponentPath {
     param([string]$RelativePath)
 
@@ -641,7 +711,9 @@ function Get-RevitPayloadChanges {
     param(
         [object]$TargetManifest,
         [object]$InstalledManifest,
-        [string]$PackageTarget
+        [string]$PackageTarget,
+        [string]$InstallRoot,
+        [string]$RevitVersion
     )
 
     $changes = [System.Collections.Generic.List[object]]::new()
@@ -660,6 +732,38 @@ function Get-RevitPayloadChanges {
             continue
         }
 
+        $componentPath = Get-ComponentPath -Component $targetComponent
+        $actualMapping = Get-ActualRevitPayloadPathMapping -RelativePath $componentPath -InstallRoot $InstallRoot -RevitVersion $RevitVersion
+        if ($actualMapping.isMapped) {
+            if (-not $actualMapping.shouldCompare) {
+                continue
+            }
+
+            $mismatchedPaths = [System.Collections.Generic.List[string]]::new()
+            foreach ($actualPath in @($actualMapping.paths)) {
+                $actualSha = ""
+                if (Test-Path -LiteralPath $actualPath -PathType Leaf) {
+                    $actualSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $actualPath).Hash
+                }
+
+                if (-not [string]::Equals($actualSha, $targetSha, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    [void]$mismatchedPaths.Add($actualPath)
+                }
+            }
+
+            if ($mismatchedPaths.Count -eq 0) {
+                continue
+            }
+
+            [void]$changes.Add([pscustomobject][ordered]@{
+                    key = $key
+                    path = $componentPath
+                    oldSha = "actual mismatch: " + ($mismatchedPaths.ToArray() -join "; ")
+                    newSha = $targetSha
+                })
+            continue
+        }
+
         $installedSha = Get-InstalledComponentSha256 -Key $key -TargetComponent $targetComponent -InstalledManifest $InstalledManifest -PackageTarget $PackageTarget
         if ([string]::Equals($installedSha, $targetSha, [System.StringComparison]::OrdinalIgnoreCase)) {
             continue
@@ -667,7 +771,7 @@ function Get-RevitPayloadChanges {
 
         [void]$changes.Add([pscustomobject][ordered]@{
                 key = $key
-                path = Get-ComponentPath -Component $targetComponent
+                path = $componentPath
                 oldSha = $installedSha
                 newSha = $targetSha
             })
@@ -852,24 +956,10 @@ try {
     Write-Host "Version change   : $installedVersionLabel -> $targetVersion"
     Write-Host "Package          : $packagePath"
 
-    if (-not $Force -and $installedVersion -eq $targetVersion -and $installedSha -eq $targetSha) {
-        $message = "Already up to date."
-        Write-Host $message -ForegroundColor Green
-        Write-UpdateReport -Status "current" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
-        return
-    }
-
-    if ($AuditOnly) {
-        $message = "Update available: $installedVersionLabel -> $targetVersion"
-        Write-Host $message -ForegroundColor Yellow
-        Write-UpdateReport -Status "update-available" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
-        return
-    }
-
     $installedManifest = Get-InstalledReleaseManifest -InstalledState $installedState -PackageTarget $PackageTarget
-    $revitPayloadChanges = Get-RevitPayloadChanges -TargetManifest $releaseManifest -InstalledManifest $installedManifest -PackageTarget $PackageTarget
+    $revitPayloadChanges = @(Get-RevitPayloadChanges -TargetManifest $releaseManifest -InstalledManifest $installedManifest -PackageTarget $PackageTarget -InstallRoot $InstallRoot -RevitVersion $RevitVersion)
     $releaseComponents = Get-JsonPropertyValue -Object $releaseManifest -Name "components"
-    $requiresRevitClosed = ($null -eq $installedState) -or ($null -eq $releaseManifest) -or ($null -eq $releaseComponents) -or ($revitPayloadChanges.Count -gt 0)
+    $requiresRevitClosed = ($null -eq $releaseManifest) -or ($null -eq $releaseComponents) -or ($revitPayloadChanges.Count -gt 0)
     $skipRevitPayloadInstall = $false
     $revitChangeLabels = @($revitPayloadChanges | ForEach-Object {
             if (-not [string]::IsNullOrWhiteSpace([string]$_.path)) {
@@ -879,6 +969,29 @@ try {
                 [string]$_.key
             }
         })
+    $isPackageCurrent = ($installedVersion -eq $targetVersion -and $installedSha -eq $targetSha)
+
+    if (-not $Force -and $isPackageCurrent -and -not $requiresRevitClosed) {
+        $message = "Already up to date."
+        Write-Host $message -ForegroundColor Green
+        Write-UpdateReport -Status "current" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        return
+    }
+    elseif ($isPackageCurrent -and $revitPayloadChanges.Count -gt 0) {
+        Write-Warning "Package version is current, but installed Revit add-in/command files do not match the package. A Revit payload repair is required."
+    }
+
+    if ($AuditOnly) {
+        $message = if ($isPackageCurrent -and $revitPayloadChanges.Count -gt 0) {
+            "Revit payload repair required for current version: $targetVersion"
+        }
+        else {
+            "Update available: $installedVersionLabel -> $targetVersion"
+        }
+        Write-Host $message -ForegroundColor Yellow
+        Write-UpdateReport -Status "update-available" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        return
+    }
 
     if ($requiresRevitClosed) {
         Write-Host "Revit payload    : changed or unknown; Revit must be closed before applying this update." -ForegroundColor Yellow
