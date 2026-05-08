@@ -18,17 +18,15 @@ DLL built from a different source revision.
 ## Safe Transition Rules
 
 - Work only on `main` unless a deliberate temporary branch is agreed first.
-- Keep `kurulum` stable while production machines are updating from NAS.
+- Keep installer layout changes backward-compatible while production machines are updating from NAS.
 - Build plugin source with `scripts/build-revit-plugin.ps1`.
 - Commit source and generated installer payload together.
 - Publish to NAS only after the repo is clean.
 - Keep the old plugin repository private and archived after this monorepo is
   verified in production.
 
-## What Was Not Moved Yet
+## Layout Update
 
-The runtime MCP server and docs MCP server still live under `kurulum` because
-the installer and NAS updater currently depend on that stable payload layout.
-They can be moved to `src` in a later cleanup after one production cycle.
-
-That later cleanup should be a separate release because it changes many paths.
+The Turkish `kurulum/` folder was replaced by the canonical English
+`installer/` folder. NAS packages still include a generated `kurulum/`
+compatibility alias for older workstation updaters.

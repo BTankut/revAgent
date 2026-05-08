@@ -19,7 +19,7 @@ $ProgressPreference = "SilentlyContinue"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $pluginSource = Join-Path $PSScriptRoot "revit-plugin"
-$serverSource = Join-Path $PSScriptRoot "mcp-server"
+$serverSource = Join-Path $PSScriptRoot "runtime-mcp-server"
 $docsServerSource = Join-Path $PSScriptRoot "revit-api-docs-mcp"
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
 $defaultInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
@@ -262,8 +262,8 @@ function Write-AddinManifest {
     <Assembly>$escapedAssembly</Assembly>
     <FullClassName>revit_mcp_plugin.Core.Application</FullClassName>
     <ClientId>090A4C8C-61DC-426D-87DF-E4BAE0F80EC1</ClientId>
-    <VendorId>mcp-servers-for-revit</VendorId>
-    <VendorDescription>https://github.com/mcp-servers-for-revit/mcp-servers-for-revit</VendorDescription>
+    <VendorId>DPE</VendorId>
+    <VendorDescription>DPE internal Revit MCP add-in</VendorDescription>
   </AddIn>
 </RevitAddIns>
 "@
@@ -560,14 +560,14 @@ Copy-Item -Path (Join-Path $serverSource "*") -Destination $ServerTarget -Recurs
 Set-Content -LiteralPath (Join-Path $ServerTarget ".revit-mcp-self-contained-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
 Set-Content -LiteralPath (Join-Path $InstallRoot ".revit-mcp-programdata-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
 
-# The required Revit API docs MCP server remains in the repo under kurulum\revit-api-docs-mcp.
+# The required Revit API docs MCP server remains in the repo under installer\revit-api-docs-mcp.
 # It is registered from that path after npm install; see the final Next steps.
 if (-not (Test-Path $docsServerSource)) {
     throw "Required docs server source was not found: $docsServerSource"
 }
 
-# Copy Custom_DLL payload so dynamic command compilation works after install.
-$customDllDir = Join-Path $PSScriptRoot "Custom_DLL"
+# Copy command payload so dynamic command compilation works after install.
+$customDllDir = Join-Path $PSScriptRoot "command-payload"
 if (Test-Path $customDllDir) {
     # 1. Machine-wide command cache locations
     $machineCmdSet2022 = Join-Path $commandSetRoot $RevitVersion

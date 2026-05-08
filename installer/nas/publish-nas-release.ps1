@@ -144,12 +144,28 @@ function Get-RelativeFileHash {
     }
 }
 
+function Add-LegacyPackageCompatibility {
+    param([string]$PackageRoot)
+
+    $canonicalInstallerRoot = Join-Path $PackageRoot "installer"
+    $legacyInstallerRoot = Join-Path $PackageRoot "kurulum"
+    if (-not (Test-Path -LiteralPath $canonicalInstallerRoot -PathType Container)) {
+        throw "Canonical installer folder was not staged: $canonicalInstallerRoot"
+    }
+    if (Test-Path -LiteralPath $legacyInstallerRoot) {
+        Remove-Item -LiteralPath $legacyInstallerRoot -Recurse -Force
+    }
+
+    Copy-DirectoryFiltered -Source $canonicalInstallerRoot -Destination $legacyInstallerRoot
+    Write-Host "Added legacy package alias: kurulum -> installer" -ForegroundColor Yellow
+}
+
 Write-Section "Validate repository"
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "SKILL.md"))) {
     throw "SKILL.md was not found under RepoRoot: $RepoRoot"
 }
-if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "kurulum\install-self-contained.ps1"))) {
+if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\install-self-contained.ps1"))) {
     throw "Installer was not found under RepoRoot: $RepoRoot"
 }
 
@@ -204,6 +220,7 @@ New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 try {
     Write-Section "Stage package"
     Copy-DirectoryFiltered -Source $RepoRoot -Destination $packageRoot
+    Add-LegacyPackageCompatibility -PackageRoot $packageRoot
 
     $releaseInfo = [ordered]@{
         schemaVersion = 1
@@ -236,11 +253,12 @@ try {
         revitPluginSourceReadme = "src\revit-plugin\README.md"
         revitPluginSourceProject = "src\revit-plugin\revit-mcp-plugin\revit-mcp-plugin.csproj"
         revitPluginBuildScript = "scripts\build-revit-plugin.ps1"
-        installer = "kurulum\install-self-contained.ps1"
-        revitPlugin = "kurulum\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
-        commandSet = "kurulum\Custom_DLL\RevitMCPCommandSet.dll"
-        runtimePackageLock = "kurulum\mcp-server\package-lock.json"
-        docsPackageLock = "kurulum\revit-api-docs-mcp\package-lock.json"
+        installer = "installer\install-self-contained.ps1"
+        revitPlugin = "installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
+        commandSet = "installer\command-payload\RevitMCPCommandSet.dll"
+        runtimePackageLock = "installer\runtime-mcp-server\package-lock.json"
+        docsPackageLock = "installer\revit-api-docs-mcp\package-lock.json"
+        legacyInstaller = "kurulum\install-self-contained.ps1"
     }
 
     $components = [ordered]@{}
@@ -268,7 +286,9 @@ try {
             sizeBytes = $zipItem.Length
         }
         installer = [ordered]@{
-            entryPoint = "kurulum\install-self-contained.ps1"
+            entryPoint = "installer\install-self-contained.ps1"
+            docsServerPath = "installer\revit-api-docs-mcp"
+            legacyEntryPoint = "kurulum\install-self-contained.ps1"
             updaterMinimumVersion = "0.1.0"
         }
         components = $components

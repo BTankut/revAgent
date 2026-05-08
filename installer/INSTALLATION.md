@@ -1,0 +1,94 @@
+# Revit MCP Self-Contained Installation
+
+This folder contains the installable workstation payload for the Revit MCP
+package. End users should normally install through the NAS updater rather than
+running these scripts manually.
+
+## Contents
+
+- `install-self-contained.ps1`: installs the local payload into standard Windows machine locations.
+- `nas/`: NAS release publishing and workstation updater tools.
+- `revit-plugin/`: bundled Revit add-in payload for Revit 2022.
+- `runtime-mcp-server/`: bundled runtime MCP server build for live Revit execution.
+- `revit-api-docs-mcp/`: required companion MCP server for local Revit API documentation lookup.
+- `command-payload/`: dynamic command execution DLL and exact runtime dependencies.
+
+## Requirements
+
+- Autodesk Revit 2022.
+- Node.js 20 or newer.
+- Git for Windows for development machines.
+- Codex CLI for the current office installer flow, or another MCP-capable host if registered manually.
+
+## Recommended Office Install
+
+On a workstation, close Revit and run the NAS updater installer:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater-GUI.cmd
+```
+
+The updater installs into:
+
+```text
+C:\ProgramData\DPE\RevitMCP
+```
+
+It writes install and update logs under:
+
+```text
+C:\ProgramData\DPE\RevitMCP\updater\logs
+```
+
+## Manual Repo-Root Install
+
+Use this only for development or emergency repair. Close Revit first.
+
+```powershell
+$RepoRoot = (Resolve-Path .).Path
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022
+
+cd C:\ProgramData\DPE\RevitMCP\runtime
+npm install --omit=dev
+codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
+
+cd "$RepoRoot\installer\revit-api-docs-mcp"
+npm install --omit=dev
+powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
+codex mcp add revit-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
+```
+
+Both MCP servers are required:
+
+- `revit-mcp`: live Revit execution and inspection.
+- `revit-api-docs`: local Revit API class/member lookup.
+
+## Uninstall
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022 -Uninstall
+```
+
+Use `-RemoveAgents` with `-Uninstall` only when the workstation-wide `AGENTS.md`
+and skill integration should also be removed.
+
+## Safety Notes
+
+- Revit must be closed before install/update because the add-in DLL is replaced.
+- The installer manages only known Revit MCP paths.
+- Autodesk Revit program files, Windows system folders, and broad user folders are not deleted.
+- Revit 2022 is detected from explicit input, environment variables, standard install paths, and registry candidates.
+- If Revit cannot be found, the installer stops with a clear error.
+
+## Release Publishing
+
+Development machines publish release ZIPs through:
+
+```powershell
+$ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps1" `
+  -ReleaseRoot $ReleaseRoot `
+  -Channel beta
+```
+
+See `installer\nas\README.md` for the full NAS deployment workflow.

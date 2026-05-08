@@ -6,7 +6,7 @@ This folder contains the Revit add-in source that used to live in the separate
 The canonical production payload is still kept under:
 
 ```text
-kurulum\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll
+installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll
 ```
 
 Do not edit those binaries by hand. Change the source here, then refresh the

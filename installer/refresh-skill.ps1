@@ -27,10 +27,10 @@
     Skip per-target confirmation prompts. Use only in unattended runs.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\kurulum\refresh-skill.ps1
+    powershell -ExecutionPolicy Bypass -File .\installer\refresh-skill.ps1
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\kurulum\refresh-skill.ps1 `
+    powershell -ExecutionPolicy Bypass -File .\installer\refresh-skill.ps1 `
         -RepoRoot C:\src\revit-mcp-skill `
         -ExtraPaths C:\Projects\my-revit\.claude\skills\revit-mcp `
         -NoConfirm

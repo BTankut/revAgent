@@ -8,16 +8,16 @@ It is the single canonical source for production office deployment.
 
 ## What this repo provides
 
-- `SKILL.md`: Codex skill instructions for Revit MEP work
+- `SKILL.md`: host-agnostic skill instructions for Revit MEP work
 - `AGENTS.md`: workstation-wide coordination rules copied during install
 - `src/revit-plugin/`: Revit add-in source code
 - `scripts/build-revit-plugin.ps1`: builds the add-in source and refreshes the installer payload binaries
-- `kurulum/revit-plugin/`: bundled Revit add-in payload
-- `kurulum/Custom_DLL/`: command set DLL and manifest backup
-- `kurulum/mcp-server/`: bundled local runtime MCP server build for live Revit execution
-- `kurulum/revit-api-docs-mcp/`: required companion local MCP server for Revit API DLL + XML documentation search
-- `kurulum/install-self-contained.ps1`: self-contained installer script
-- `kurulum/deploy/`: NAS release publishing, workstation updater, and scheduled update bootstrap scripts
+- `installer/revit-plugin/`: bundled Revit add-in payload
+- `installer/command-payload/`: command set DLL and manifest backup
+- `installer/runtime-mcp-server/`: bundled local runtime MCP server build for live Revit execution
+- `installer/revit-api-docs-mcp/`: required companion local MCP server for Revit API DLL + XML documentation search
+- `installer/install-self-contained.ps1`: self-contained installer script
+- `installer/nas/`: NAS release publishing, workstation updater, and scheduled update bootstrap scripts
 - `docs/`: repository structure and migration notes
 - `evals/evals.json`: eval set aligned to the current `send_code_to_revit` contract
 
@@ -26,7 +26,7 @@ It is the single canonical source for production office deployment.
 Development and production releases both happen from `main` in this repository.
 Historical branches in the old repositories are not part of office deployment.
 
-`src/revit-plugin` is source code. `kurulum/revit-plugin` is install payload.
+`src/revit-plugin` is source code. `installer/revit-plugin` is install payload.
 When the Revit add-in changes, build the source and refresh the payload binaries
 with:
 
@@ -58,7 +58,7 @@ explicit:
 - Autodesk Revit 2022
 - Git for Windows, if you want to pull future updates from this repo
 - Node.js 20+; Node 24 is supported by the bundled runtime dependency lock
-- Codex CLI
+- Codex CLI or another MCP/skill-capable LLM host
 
 On proxy-limited networks, make sure terminal tools can reach the internet
 before running `npm install`:
@@ -72,7 +72,7 @@ before running `npm install`:
 
 ## Quick start
 
-For office workstations, prefer the NAS updater in `kurulum/deploy/README.md`.
+For office workstations, prefer the NAS updater in `installer/nas/README.md`.
 It installs into the standard machine-wide root:
 
 ```text
@@ -84,23 +84,23 @@ For a manual repo-root install, close Revit and run:
 ```powershell
 $RepoRoot = (Resolve-Path .).Path
 
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022
 
 cd C:\ProgramData\DPE\RevitMCP\runtime
 npm install --omit=dev
 codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
 
-cd "$RepoRoot\kurulum\revit-api-docs-mcp"
+cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev
 powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
-codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
+codex mcp add revit-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
 
 Both MCP servers are required: the runtime server executes code, the docs server resolves the API surface against the locally installed Revit DLLs and XML. The skill assumes both are connected.
 
 ## NAS-based office deployment
 
-For multiple office workstations, use `kurulum/deploy/` instead of manually
+For multiple office workstations, use `installer/nas/` instead of manually
 pulling and reinstalling on every machine.
 
 - GitHub remains the source history.
@@ -113,7 +113,7 @@ pulling and reinstalling on every machine.
 - Workstations install under `C:\ProgramData\DPE\RevitMCP`, not under
   `C:\Projects` or user AppData folders.
 
-See `kurulum/deploy/README.md` for the full first-time workflow.
+See `installer/nas/README.md` for the full first-time workflow.
 
 ## Multi-instance / multi-port runtime targeting
 
@@ -183,7 +183,7 @@ under `%USERPROFILE%\.codex` as a compatibility integration. Pass
 
 ## What the installer deploys
 
-The files under `kurulum/` are source payloads kept in the repo for redistribution.
+The files under `installer/` are source payloads kept in the repo for redistribution.
 After install, the same payload is copied into the real system locations below:
 
 - Revit add-in manifest:
@@ -212,7 +212,7 @@ workspace/user directories.
 To remove the self-contained install without installing a fresh copy:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022 -Uninstall
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022 -Uninstall
 ```
 
 Use `-RemoveAgents` with `-Uninstall` only when you also want to remove the
@@ -258,14 +258,14 @@ Manual repo-root install:
    - Autodesk Revit 2022
    - Git for Windows
    - Node.js 20+; Node 24 is supported by the bundled dependency lock
-   - Codex CLI
+   - Codex CLI or another MCP/skill-capable LLM host
 2. Clone or download this repo.
 3. Close Revit.
 4. Capture the repo root and run the installer:
 
 ```powershell
 $RepoRoot = (Resolve-Path .).Path
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\kurulum\install-self-contained.ps1" -RevitVersion 2022
+powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022
 ```
 
 5. Install Node dependencies in the deployed runtime server target:
@@ -284,10 +284,10 @@ codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index
 7. Install and register the required docs MCP server:
 
 ```powershell
-cd "$RepoRoot\kurulum\revit-api-docs-mcp"
+cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev
 powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
-codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
+codex mcp add revit-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
 
 8. Reload Codex skills:
@@ -341,10 +341,10 @@ Install it after the runtime server (Quick start already shows this step):
 
 ```powershell
 $RepoRoot = (Resolve-Path .).Path
-cd "$RepoRoot\kurulum\revit-api-docs-mcp"
+cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev
 powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
-codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
+codex mcp add revit-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
 
 On first query, the docs server builds a local cache from the installed `RevitAPI*.dll` and matching `RevitAPI*.xml` files under the Revit install folder.
@@ -380,15 +380,15 @@ revit-mcp-skill/
 |       `-- diffuser-count.cs
 |-- evals/
 |   `-- evals.json
-`-- kurulum/
-    |-- KURULUM.md
+`-- installer/
+    |-- INSTALLATION.md
     |-- install-self-contained.ps1
     |-- revit-api-docs-mcp/
     |-- revit-plugin/
     |   |-- mcp-servers-for-revit.addin
     |   `-- revit_mcp_plugin/
-    |-- Custom_DLL/
-    `-- mcp-server/
+    |-- command-payload/
+    `-- runtime-mcp-server/
 ```
 
 ## Refreshing an existing install
@@ -396,7 +396,7 @@ revit-mcp-skill/
 When a new version of the skill lands in this repo, run the refresh script. It detects how the skill was previously installed (git clone, symlink, or plain copy) under each known host location and updates each install with the matching strategy (`git pull` for clones, no-op for symlinks, backup + resync for copies).
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\kurulum\refresh-skill.ps1
+powershell -ExecutionPolicy Bypass -File .\installer\refresh-skill.ps1
 ```
 
 Useful flags:
@@ -413,7 +413,7 @@ After the script finishes:
 
 ## Host compatibility
 
-The installation steps above are written for Codex CLI on Windows, but the skill itself is host-agnostic. Every host must register both MCP servers:
+The office installation flow currently registers MCP servers through Codex CLI on Windows. The skill itself is host-agnostic: any MCP/skill-capable LLM host can use it if both MCP servers are registered:
 
 - `revit-mcp` for live Revit execution and inspection
 - `revit-api-docs` for required API class/member lookup
@@ -486,13 +486,13 @@ That is why `send_code_to_revit` should remain the first-class runtime tool in b
 
 ## Installer note
 
-The self-contained installer also copies the `Custom_DLL` payload so dynamic code execution works after a clean install without manual DLL repair steps.
+The self-contained installer also copies the `command-payload` payload so dynamic code execution works after a clean install without manual DLL repair steps.
 
 It now also mirrors the required Roslyn runtime assemblies from the local Revit 2022 installation into the deployed command folders, and it fails early if those files are missing.
 
 The copied command manifests are kept in sync with the bundled Revit low-level commands required by the Node runtime tools.
 
-The docs server remains under `kurulum\revit-api-docs-mcp`; register it as a required companion MCP server after running the installer.
+The docs server remains under `installer\revit-api-docs-mcp`; register it as a required companion MCP server after running the installer.
 
 ## Note
 

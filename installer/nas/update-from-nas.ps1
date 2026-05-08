@@ -138,6 +138,60 @@ function Resolve-ReleasePath {
     return Join-Path $BaseDirectory $expanded
 }
 
+function Resolve-PackageLayout {
+    param(
+        [string]$Root,
+        [object]$ReleaseManifest = $null
+    )
+
+    $installerCandidates = [System.Collections.Generic.List[string]]::new()
+    if ($ReleaseManifest -and $ReleaseManifest.installer -and $ReleaseManifest.installer.entryPoint) {
+        $installerCandidates.Add([string]$ReleaseManifest.installer.entryPoint)
+    }
+    foreach ($candidate in @(
+            "installer\install-self-contained.ps1",
+            "kurulum\install-self-contained.ps1"
+        )) {
+        if (-not $installerCandidates.Contains($candidate)) {
+            $installerCandidates.Add($candidate)
+        }
+    }
+
+    foreach ($installerRelative in $installerCandidates) {
+        $installerPath = Join-Path $Root $installerRelative
+        if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+            continue
+        }
+
+        $installerRelativeRoot = Split-Path -Parent $installerRelative
+        $docsCandidates = [System.Collections.Generic.List[string]]::new()
+        if ($ReleaseManifest -and $ReleaseManifest.installer -and $ReleaseManifest.installer.docsServerPath) {
+            $docsCandidates.Add([string]$ReleaseManifest.installer.docsServerPath)
+        }
+        $defaultDocs = Join-Path $installerRelativeRoot "revit-api-docs-mcp"
+        if (-not $docsCandidates.Contains($defaultDocs)) {
+            $docsCandidates.Add($defaultDocs)
+        }
+        foreach ($legacyDocs in @("installer\revit-api-docs-mcp", "kurulum\revit-api-docs-mcp")) {
+            if (-not $docsCandidates.Contains($legacyDocs)) {
+                $docsCandidates.Add($legacyDocs)
+            }
+        }
+
+        foreach ($docsRelative in $docsCandidates) {
+            $docsPath = Join-Path $Root $docsRelative
+            if (Test-Path -LiteralPath (Join-Path $docsPath "package.json") -PathType Leaf) {
+                return [ordered]@{
+                    installerRelativePath = $installerRelative
+                    docsServerRelativePath = $docsRelative
+                }
+            }
+        }
+    }
+
+    throw "Extracted package does not look like revit-mcp-skill: $Root"
+}
+
 function Assert-ManagedDirectoryTarget {
     param(
         [string]$Path,
@@ -462,6 +516,11 @@ try {
     $targetVersion = [string]$channel.version
     $targetSha = [string]$channel.sha256
     $packagePath = Resolve-ReleasePath -Path ([string]$channel.packagePath) -BaseDirectory $channelDir
+    $releaseManifest = $null
+    $releaseManifestPath = Resolve-ReleasePath -Path ([string]$channel.manifestPath) -BaseDirectory $channelDir
+    if (-not [string]::IsNullOrWhiteSpace($releaseManifestPath) -and (Test-Path -LiteralPath $releaseManifestPath -PathType Leaf)) {
+        $releaseManifest = Get-Content -Raw -LiteralPath $releaseManifestPath | ConvertFrom-Json
+    }
 
     if ([string]::IsNullOrWhiteSpace($packagePath)) {
         throw "Channel manifest does not contain packagePath: $ChannelManifestPath"
@@ -521,9 +580,7 @@ try {
     New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
     Expand-Archive -LiteralPath $cachedPackage -DestinationPath $extractRoot -Force
 
-    if (-not (Test-Path -LiteralPath (Join-Path $extractRoot "kurulum\install-self-contained.ps1"))) {
-        throw "Extracted package does not look like revit-mcp-skill: $extractRoot"
-    }
+    $packageLayout = Resolve-PackageLayout -Root $extractRoot -ReleaseManifest $releaseManifest
 
     if (Test-Path -LiteralPath $PackageTarget) {
         $backupPath = Join-Path $backupRoot ("revit-mcp-skill.backup-" + $stamp)
@@ -533,7 +590,8 @@ try {
     New-Item -ItemType Directory -Path (Split-Path -Parent $PackageTarget) -Force | Out-Null
     Move-Item -LiteralPath $extractRoot -Destination $PackageTarget
 
-    $installer = Join-Path $PackageTarget "kurulum\install-self-contained.ps1"
+    $installer = Join-Path $PackageTarget $packageLayout.installerRelativePath
+    $docsServerPath = Join-Path $PackageTarget $packageLayout.docsServerRelativePath
     $installArgs = @{
         RevitVersion = $RevitVersion
         InstallRoot = $InstallRoot
@@ -563,7 +621,6 @@ try {
 
         Invoke-External -FilePath $npmPath -Arguments @("install", "--omit=dev") -WorkingDirectory $ServerTarget
 
-        $docsServerPath = Join-Path $PackageTarget "kurulum\revit-api-docs-mcp"
         Invoke-External -FilePath $npmPath -Arguments @("install", "--omit=dev") -WorkingDirectory $docsServerPath
 
         $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
@@ -583,7 +640,6 @@ try {
             (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
             (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")
         )
-        $docsServerPath = Join-Path $PackageTarget "kurulum\revit-api-docs-mcp"
         try {
             & $codexPath mcp remove revit-mcp 2>$null | Out-Null
         }

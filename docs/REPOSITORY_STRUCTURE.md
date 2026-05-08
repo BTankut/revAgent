@@ -22,13 +22,13 @@ package.
 |       |-- revit-mcp-plugin.sln
 |       |-- revit-mcp-plugin/
 |       `-- SampleCommandSet/
-`-- kurulum/
-    |-- KURULUM.md
+`-- installer/
+    |-- INSTALLATION.md
     |-- install-self-contained.ps1
-    |-- deploy/
-    |-- mcp-server/
+    |-- nas/
+    |-- runtime-mcp-server/
     |-- revit-api-docs-mcp/
-    |-- Custom_DLL/
+    |-- command-payload/
     `-- revit-plugin/
 ```
 
@@ -36,7 +36,7 @@ package.
 
 `src/revit-plugin` is source code. It is where Revit add-in development happens.
 
-`kurulum/revit-plugin` is install payload. Production installers copy from this
+`installer/revit-plugin` is install payload. Production installers copy from this
 folder into `C:\ProgramData\DPE\RevitMCP`. Do not edit the binary payload by
 hand. Build the source and refresh the payload binaries with:
 
@@ -59,9 +59,11 @@ this repository's `main` branch.
 NAS releases are still produced with:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\kurulum\deploy\publish-nas-release.ps1 `
+powershell -ExecutionPolicy Bypass -File .\installer\nas\publish-nas-release.ps1 `
   -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy" `
   -Channel stable
 ```
 
-The generated release ZIP remains self-contained for office workstations.
+The generated release ZIP remains self-contained for office workstations. During
+packaging, `publish-nas-release.ps1` also adds a legacy `kurulum/` alias inside
+the ZIP so older workstation updaters can install the renamed layout safely.

@@ -4,6 +4,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## 2026-05-08
 
+- Renamed the canonical install payload folder from `kurulum/` to `installer/`.
+- Renamed deployment helpers to `installer/nas/`, runtime payload to `installer/runtime-mcp-server/`, and command payload to `installer/command-payload/`.
+- Added release-package compatibility that still generates a legacy `kurulum/` alias for older workstation updaters.
+- Updated GitHub repository description to describe MCP/skill-capable LLM hosts instead of Claude Code only.
 - Consolidated the Revit add-in source into this repository under `src/revit-plugin`.
 - Added `scripts/build-revit-plugin.ps1` to rebuild the add-in and refresh the installer payload.
 - Added monorepo structure and migration documentation under `docs/`.

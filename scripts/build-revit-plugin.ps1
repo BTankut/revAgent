@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     The source of the Revit add-in lives under src\revit-plugin. The installer
-    still consumes the stable payload path under kurulum\revit-plugin. This
+    still consumes the stable payload path under installer\revit-plugin. This
     script is the explicit bridge between source development and production
     packaging.
 #>
@@ -94,7 +94,7 @@ if (-not (Test-Path -LiteralPath $builtDll -PathType Leaf)) {
 }
 
 if (-not $SkipPayloadCopy) {
-    $payloadDir = Join-Path $RepoRoot "kurulum\revit-plugin\revit_mcp_plugin"
+    $payloadDir = Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin"
     if (-not (Test-Path -LiteralPath $payloadDir -PathType Container)) {
         throw "Installer payload directory was not found: $payloadDir"
     }
