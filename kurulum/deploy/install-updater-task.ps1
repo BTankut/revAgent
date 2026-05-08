@@ -160,9 +160,6 @@ if ([string]::IsNullOrWhiteSpace($PackageTarget)) {
 if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
     $ServerTarget = Join-Path $InstallRoot "runtime"
 }
-if ([string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
-    $WorkspaceAgentsTarget = Join-Path $InstallRoot "codex\AGENTS.md"
-}
 $RevitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
 
 New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null

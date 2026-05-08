@@ -53,10 +53,6 @@ $defaultLegacyServerTargets = @(
     "C:\Projects\mcp-server-for-revit",
     "C:\Projects\mcp-servers-for-revit"
 )
-if ([string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
-    $WorkspaceAgentsTarget = $codexMachineAgentsTarget
-}
-
 $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
 if ($runningRevit) {
     throw "Close Revit before running install-self-contained.ps1. The installer replaces files under $addinRoot and cannot do that safely while Revit is running."
@@ -712,21 +708,27 @@ if (-not $SkipCodexUserIntegration) {
 }
 
 if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
-    $workspaceAgentsDir = Split-Path -Parent $WorkspaceAgentsTarget
+    $workspaceAgentsFullPath = [System.IO.Path]::GetFullPath($WorkspaceAgentsTarget)
+    $machineAgentsFullPath = [System.IO.Path]::GetFullPath($codexMachineAgentsTarget)
+}
+
+if ((-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) -and
+    (-not [string]::Equals($workspaceAgentsFullPath, $machineAgentsFullPath, [System.StringComparison]::OrdinalIgnoreCase))) {
+    $workspaceAgentsDir = Split-Path -Parent $workspaceAgentsFullPath
     if (-not [string]::IsNullOrWhiteSpace($workspaceAgentsDir)) {
         New-Item -ItemType Directory -Path $workspaceAgentsDir -Force | Out-Null
     }
 
-    if (Test-Path -LiteralPath $WorkspaceAgentsTarget) {
-        $existingWorkspaceAgents = Get-Item -LiteralPath $WorkspaceAgentsTarget
+    if (Test-Path -LiteralPath $workspaceAgentsFullPath) {
+        $existingWorkspaceAgents = Get-Item -LiteralPath $workspaceAgentsFullPath
         if ($existingWorkspaceAgents.Length -gt 0) {
-            $workspaceAgentsBackup = $WorkspaceAgentsTarget + ".backup-" + (Get-Date -Format "yyyyMMdd-HHmmss")
-            Copy-Item -LiteralPath $WorkspaceAgentsTarget -Destination $workspaceAgentsBackup -Force
+            $workspaceAgentsBackup = $workspaceAgentsFullPath + ".backup-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+            Copy-Item -LiteralPath $workspaceAgentsFullPath -Destination $workspaceAgentsBackup -Force
         }
     }
 
-    Copy-Item -LiteralPath $codexMachineAgentsTarget -Destination $WorkspaceAgentsTarget -Force
-    $workspaceAgentsInstalled = $WorkspaceAgentsTarget
+    Copy-Item -LiteralPath $codexMachineAgentsTarget -Destination $workspaceAgentsFullPath -Force
+    $workspaceAgentsInstalled = $workspaceAgentsFullPath
 }
 
 Write-Host "Self-contained Revit MCP bundle installed for Revit $RevitVersion" -ForegroundColor Green

@@ -309,9 +309,6 @@ if ([string]::IsNullOrWhiteSpace($PackageTarget)) {
 if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
     $ServerTarget = Join-Path $InstallRoot "runtime"
 }
-if ([string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
-    $WorkspaceAgentsTarget = Join-Path $InstallRoot "codex\AGENTS.md"
-}
 
 $InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
 $WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
