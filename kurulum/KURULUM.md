@@ -55,6 +55,50 @@ Iki MCP server da zorunludur:
 
 Skill, iki server'in da bagli oldugunu varsayar.
 
+## DPE-NAS uzerinden coklu bilgisayar dagitimi
+
+Ofiste birden cok bilgisayar kullanildiginda her makinede elle `git pull` ve
+kurulum yapmak yerine `kurulum\deploy` akisina gec.
+
+Temel ayrim:
+
+- GitHub kaynak kod ve commit gecmisi icindir.
+- DPE-NAS, bilgisayarlarin okuyacagi tek dagitim kaynagidir.
+- Her `commit/push` otomatik dagitima cikmaz.
+- Dagitim sadece `publish-nas-release.ps1` calistirildiginda olur.
+
+Ornek yayin:
+
+```powershell
+$ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+powershell -ExecutionPolicy Bypass -File ".\kurulum\deploy\publish-nas-release.ps1" `
+  -ReleaseRoot $ReleaseRoot `
+  -Channel beta
+```
+
+Beta testinden sonra ayni paketi stable kanalina almak icin:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\kurulum\deploy\promote-nas-release.ps1" `
+  -ReleaseRoot $ReleaseRoot `
+  -Version <VERSION> `
+  -Channel stable
+```
+
+Istemci bilgisayarda updater bir kez kurulur:
+
+```powershell
+$ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+powershell -ExecutionPolicy Bypass -File "$ReleaseRoot\tools\install-updater-task.ps1" `
+  -ChannelManifestPath "$ReleaseRoot\channels\stable.json"
+```
+
+Detayli kullanim ve guvenlik notlari icin:
+
+```text
+kurulum\deploy\README.md
+```
+
 ## Coklu Revit / coklu port hedefleme
 
 Bundled runtime MCP server artik tek `localhost:8080` varsayimina bagli degil.

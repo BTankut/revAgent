@@ -12,6 +12,7 @@ It is designed so the skill can be installed and used without forcing a separate
 - `kurulum/mcp-server/`: bundled local runtime MCP server build for live Revit execution
 - `kurulum/revit-api-docs-mcp/`: required companion local MCP server for Revit API DLL + XML documentation search
 - `kurulum/install-self-contained.ps1`: self-contained installer script
+- `kurulum/deploy/`: NAS release publishing, workstation updater, and scheduled update bootstrap scripts
 - `evals/evals.json`: eval set aligned to the current `send_code_to_revit` contract
 
 ## Technical direction
@@ -66,6 +67,21 @@ codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build
 ```
 
 Both MCP servers are required — the runtime server executes code, the docs server resolves the API surface against the locally installed Revit DLLs and XML. The skill assumes both are connected.
+
+## NAS-based office deployment
+
+For multiple office workstations, use `kurulum/deploy/` instead of manually
+pulling and reinstalling on every machine.
+
+- GitHub remains the source history.
+- The NAS share is the single deployment source workstations read from.
+- A normal `git commit` / `git push` does not update the office.
+- A release is published only when `publish-nas-release.ps1` is run.
+- Tested beta packages are promoted to stable with `promote-nas-release.ps1`.
+- Workstations run `update-from-nas.ps1`, usually through a scheduled task
+  installed by `install-updater-task.ps1`.
+
+See `kurulum/deploy/README.md` for the full first-time workflow.
 
 ## Multi-instance / multi-port runtime targeting
 
