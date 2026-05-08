@@ -36,6 +36,7 @@ Ornek:
   reports\
     PC-01_USER22.json
   tools\
+    Install-Revit-MCP-Updater.cmd
     install-updater-task.ps1
     update-from-nas.ps1
 ```
@@ -67,14 +68,22 @@ ile stable'a alinir.
 
 ## 2. Bir bilgisayara updater kurma
 
-Istemci bilgisayarda bir kez calistirilir. Publish scripti NAS uzerinde
-`tools` klasorunu guncelledigi icin yeni bilgisayarda dogrudan NAS'taki
-script calistirilabilir:
+Istemci bilgisayarda bir kez calistirilir. En kolay yol:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater.cmd
+```
+
+Bu dosyaya cift tikla. Updater'i kurar, zamanlanmis gorevi ekler ve ilk update
+kontrolunu hemen calistirir. Revit aciksa update ertelenir.
+
+Terminalden calistirmak istersen:
 
 ```powershell
 $ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
 powershell -ExecutionPolicy Bypass -File "$ReleaseRoot\tools\install-updater-task.ps1" `
-  -ChannelManifestPath "$ReleaseRoot\channels\stable.json"
+  -ChannelManifestPath "$ReleaseRoot\channels\stable.json" `
+  -RunNow
 ```
 
 Script updater'i `C:\Projects\revit-mcp-install` altina kopyalar ve zamanlanmis

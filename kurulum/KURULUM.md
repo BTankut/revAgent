@@ -85,12 +85,20 @@ powershell -ExecutionPolicy Bypass -File ".\kurulum\deploy\promote-nas-release.p
   -Channel stable
 ```
 
-Istemci bilgisayarda updater bir kez kurulur:
+Istemci bilgisayarda updater bir kez kurulur. En kolay yol, NAS uzerindeki su
+dosyaya cift tiklamaktir:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater.cmd
+```
+
+Terminalden calistirmak istersen:
 
 ```powershell
 $ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
 powershell -ExecutionPolicy Bypass -File "$ReleaseRoot\tools\install-updater-task.ps1" `
-  -ChannelManifestPath "$ReleaseRoot\channels\stable.json"
+  -ChannelManifestPath "$ReleaseRoot\channels\stable.json" `
+  -RunNow
 ```
 
 Detayli kullanim ve guvenlik notlari icin:

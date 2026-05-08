@@ -25,7 +25,8 @@ param(
     [string]$DailyAt = "09:00",
     [switch]$SkipNpmInstall,
     [switch]$SkipCodexMcpRegistration,
-    [switch]$NoScheduledTask
+    [switch]$NoScheduledTask,
+    [switch]$RunNow
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,6 +43,20 @@ function Write-JsonFile {
     }
 
     $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+function Invoke-InitialUpdateCheck {
+    param(
+        [string]$UpdaterPath,
+        [string]$UpdaterConfigPath
+    )
+
+    if ($env:REVIT_MCP_AUDIT_ONLY) {
+        & $UpdaterPath -ConfigPath $UpdaterConfigPath -AuditOnly
+        return
+    }
+
+    & $UpdaterPath -ConfigPath $UpdaterConfigPath
 }
 
 New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
@@ -76,6 +91,11 @@ Write-JsonFile -Path $configPath -Value $config
 if ($NoScheduledTask) {
     Write-Host "Updater installed without scheduled task."
     Write-Host "Run manually: powershell -ExecutionPolicy Bypass -File `"$localUpdater`" -ConfigPath `"$configPath`""
+    if ($RunNow) {
+        Write-Host ""
+        Write-Host "Running initial update check..."
+        Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath
+    }
     return
 }
 
@@ -96,3 +116,9 @@ Write-Host "Updater installed: $localUpdater" -ForegroundColor Green
 Write-Host "Config written  : $configPath" -ForegroundColor Green
 Write-Host "Task registered : $TaskName" -ForegroundColor Green
 Write-Host "Run now         : powershell -ExecutionPolicy Bypass -File `"$localUpdater`" -ConfigPath `"$configPath`""
+
+if ($RunNow) {
+    Write-Host ""
+    Write-Host "Running initial update check..."
+    Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath
+}
