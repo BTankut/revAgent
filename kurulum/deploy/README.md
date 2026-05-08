@@ -37,6 +37,8 @@ Ornek:
     PC-01_USER22.json
   tools\
     Install-Revit-MCP-Updater.cmd
+    Install-Revit-MCP-Updater-GUI.cmd
+    Install-Revit-MCP-Updater-GUI.ps1
     install-updater-task.ps1
     update-from-nas.ps1
     show-installed-version.ps1
@@ -69,7 +71,17 @@ ile stable'a alinir.
 
 ## 2. Bir bilgisayara updater kurma
 
-Istemci bilgisayarda bir kez calistirilir. En kolay yol:
+Istemci bilgisayarda bir kez calistirilir. Normal kullanici icin en kolay yol
+GUI'dir:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater-GUI.cmd
+```
+
+GUI kurulum/update logunu canli gosterir. Hata olursa ekranda log dosyasi
+yolunu soyler ve `Log klasoru` dugmesiyle klasoru acabilir.
+
+Komut pencereli klasik yol:
 
 ```text
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater.cmd
@@ -99,6 +111,20 @@ C:\ProgramData\DPE\RevitMCP\
   state\
   revit-plugin\
   codex\
+```
+
+Kurulum ve update loglari:
+
+```text
+C:\ProgramData\DPE\RevitMCP\updater\logs\
+```
+
+Tipik log dosyalari:
+
+```text
+install-YYYYMMDD-HHMMSS.log
+update-YYYYMMDD-HHMMSS.log
+gui-install-YYYYMMDD-HHMMSS.log
 ```
 
 ## 3. Surum kontrolu

@@ -28,12 +28,83 @@ param(
     [switch]$SkipNpmInstall,
     [switch]$SkipCodexMcpRegistration,
     [switch]$SkipCodexUserIntegration,
+    [string]$LogPath = "",
     [switch]$AllowReplaceGitPackageTarget
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $updaterVersion = "0.1.0"
+$script:RevitMcpTranscriptStarted = $false
+$script:RevitMcpLogPath = ""
+$script:PreviousTranscriptActive = $env:REVIT_MCP_TRANSCRIPT_ACTIVE
+$script:PreviousLogPath = $env:REVIT_MCP_LOG_PATH
+
+function Initialize-RevitMcpTranscript {
+    param(
+        [string]$PreferredWorkRoot,
+        [string]$RequestedLogPath,
+        [string]$Prefix
+    )
+
+    if ($env:REVIT_MCP_TRANSCRIPT_ACTIVE -eq "1") {
+        $script:RevitMcpLogPath = $env:REVIT_MCP_LOG_PATH
+        return
+    }
+
+    $path = $RequestedLogPath
+    if ([string]::IsNullOrWhiteSpace($path)) {
+        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $logRoot = Join-Path $PreferredWorkRoot "logs"
+        $path = Join-Path $logRoot ("{0}-{1}.log" -f $Prefix, $stamp)
+    }
+
+    try {
+        $logDir = Split-Path -Parent $path
+        if (-not [string]::IsNullOrWhiteSpace($logDir)) {
+            New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+        }
+    }
+    catch {
+        $path = Join-Path $env:TEMP ("revit-mcp-{0}-{1}.log" -f $Prefix, (Get-Date -Format "yyyyMMdd-HHmmss"))
+    }
+
+    try {
+        Start-Transcript -Path $path -Append | Out-Null
+        $script:RevitMcpTranscriptStarted = $true
+        $script:RevitMcpLogPath = $path
+        $env:REVIT_MCP_TRANSCRIPT_ACTIVE = "1"
+        $env:REVIT_MCP_LOG_PATH = $path
+        Write-Host "Update log      : $path" -ForegroundColor Green
+    }
+    catch {
+        $script:RevitMcpLogPath = $path
+        Write-Warning "Could not start update transcript: $($_.Exception.Message). Intended log path: $path"
+    }
+}
+
+function Complete-RevitMcpTranscript {
+    if ($script:RevitMcpTranscriptStarted) {
+        try {
+            Stop-Transcript | Out-Null
+        }
+        catch {}
+    }
+
+    if ($null -eq $script:PreviousTranscriptActive) {
+        Remove-Item Env:\REVIT_MCP_TRANSCRIPT_ACTIVE -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:REVIT_MCP_TRANSCRIPT_ACTIVE = $script:PreviousTranscriptActive
+    }
+
+    if ($null -eq $script:PreviousLogPath) {
+        Remove-Item Env:\REVIT_MCP_LOG_PATH -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:REVIT_MCP_LOG_PATH = $script:PreviousLogPath
+    }
+}
 
 function Import-UpdaterConfig {
     param([string]$Path)
@@ -296,6 +367,7 @@ function Write-UpdateReport {
             workRoot = $WorkRoot
             revitInstallRoot = $RevitInstallRoot
             channelManifestPath = $ChannelManifestPath
+            logPath = $script:RevitMcpLogPath
         }
     }
 
@@ -330,6 +402,7 @@ if ($config) {
     if ($config.skipNpmInstall) { $SkipNpmInstall = $true }
     if ($config.skipCodexMcpRegistration) { $SkipCodexMcpRegistration = $true }
     if ($config.skipCodexUserIntegration) { $SkipCodexUserIntegration = $true }
+    if ([string]::IsNullOrWhiteSpace($LogPath) -and $config.updateLogPath) { $LogPath = [string]$config.updateLogPath }
 }
 
 if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) {
@@ -349,6 +422,8 @@ if ([string]::IsNullOrWhiteSpace($PackageTarget)) {
 if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
     $ServerTarget = Join-Path $InstallRoot "runtime"
 }
+
+Initialize-RevitMcpTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $LogPath -Prefix "update"
 
 $InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
 $WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
@@ -551,5 +626,13 @@ catch {
     $message = $_.Exception.Message
     $failedVersion = if ($installedState) { [string]$installedState.version } else { "" }
     Write-UpdateReport -Status "failed" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $failedVersion -InstalledVersion $failedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+    Write-Host ""
+    Write-Host "Revit MCP update failed: $message" -ForegroundColor Red
+    if (-not [string]::IsNullOrWhiteSpace($script:RevitMcpLogPath)) {
+        Write-Host "Update log: $script:RevitMcpLogPath" -ForegroundColor Yellow
+    }
     throw
+}
+finally {
+    Complete-RevitMcpTranscript
 }

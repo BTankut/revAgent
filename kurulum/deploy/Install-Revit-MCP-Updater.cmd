@@ -20,6 +20,7 @@ if defined REVIT_MCP_SKIP_CODEX_USER set "EXTRA_ARGS=%EXTRA_ARGS% -SkipCodexUser
 echo Revit MCP updater kurulumu basliyor.
 echo Kanal: %CHANNEL%
 echo Kurulum: %REVIT_MCP_INSTALL_ROOT%
+echo Log klasoru: %REVIT_MCP_WORK_ROOT%\logs
 echo.
 
 if not exist "%INSTALLER%" (
@@ -46,8 +47,10 @@ if "%RESULT%"=="0" (
     echo Islem tamamlandi.
     echo Revit aciksa guncelleme ertelenmis olabilir.
     echo Rapor: %REVIT_MCP_WORK_ROOT%\last-update-report.json
+    echo Log klasoru: %REVIT_MCP_WORK_ROOT%\logs
 ) else (
     echo Islem hata ile bitti. Kod: %RESULT%
+    echo Log klasoru: %REVIT_MCP_WORK_ROOT%\logs
 )
 echo.
 pause
