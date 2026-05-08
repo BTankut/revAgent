@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## 2026-05-08
 
+- Changed the Revit MCP status window to show without stealing foreground focus from other applications.
 - Renamed the canonical install payload folder from `kurulum/` to `installer/`.
 - Renamed deployment helpers to `installer/nas/`, runtime payload to `installer/runtime-mcp-server/`, and command payload to `installer/command-payload/`.
 - Added release-package compatibility that still generates a legacy `kurulum/` alias for older workstation updaters.

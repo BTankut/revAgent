@@ -1,8 +1,10 @@
 using System;
 using System.ComponentModel;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
 using System.Windows;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using revit_mcp_plugin.Core;
@@ -28,6 +30,7 @@ namespace revit_mcp_plugin.UI
         public McpTaskStatusWindow()
         {
             InitializeComponent();
+            AttachRevitOwner();
             ApplyVersionInfo();
 
             _elapsedTimer = new DispatcherTimer(DispatcherPriority.Background);
@@ -123,7 +126,17 @@ namespace revit_mcp_plugin.UI
             }
 
             PositionWindow();
-            Activate();
+        }
+
+        private void AttachRevitOwner()
+        {
+            IntPtr owner = Process.GetCurrentProcess().MainWindowHandle;
+            if (owner == IntPtr.Zero)
+            {
+                return;
+            }
+
+            new WindowInteropHelper(this).Owner = owner;
         }
 
         private void PositionWindow()
@@ -227,7 +240,6 @@ namespace revit_mcp_plugin.UI
             e.Cancel = true;
             if (_isRunning)
             {
-                Activate();
                 return;
             }
 

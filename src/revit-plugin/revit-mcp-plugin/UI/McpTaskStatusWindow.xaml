@@ -8,8 +8,9 @@
         MinHeight="360"
         ResizeMode="CanResizeWithGrip"
         WindowStyle="ToolWindow"
+        ShowActivated="False"
         ShowInTaskbar="False"
-        Topmost="True"
+        Topmost="False"
         Background="#FFFFFFFF">
     <Border x:Name="RootBorder"
             BorderBrush="#D18A00"
