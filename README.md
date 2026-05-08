@@ -1,26 +1,49 @@
-# Revit MCP Skill Package - Self-Contained And Upstream Aligned
+# Revit MCP Skill Package - Production Monorepo
 
-This repo packages a Revit MCP skill, bundled plugin payload, bundled local runtime MCP server, and required companion Revit API docs MCP server in one place.
+This repo packages the Revit MCP skill, Revit add-in source and payload,
+bundled local runtime MCP server, required companion Revit API docs MCP server,
+installer, NAS updater, and deployment documentation in one place.
 
-It is designed so the skill can be installed and used without forcing a separate upstream clone flow.
+It is the single canonical source for production office deployment.
 
 ## What this repo provides
 
 - `SKILL.md`: Codex skill instructions for Revit MEP work
+- `AGENTS.md`: workstation-wide coordination rules copied during install
+- `src/revit-plugin/`: Revit add-in source code
+- `scripts/build-revit-plugin.ps1`: builds the add-in source and refreshes the installer payload binaries
 - `kurulum/revit-plugin/`: bundled Revit add-in payload
 - `kurulum/Custom_DLL/`: command set DLL and manifest backup
 - `kurulum/mcp-server/`: bundled local runtime MCP server build for live Revit execution
 - `kurulum/revit-api-docs-mcp/`: required companion local MCP server for Revit API DLL + XML documentation search
 - `kurulum/install-self-contained.ps1`: self-contained installer script
 - `kurulum/deploy/`: NAS release publishing, workstation updater, and scheduled update bootstrap scripts
+- `docs/`: repository structure and migration notes
 - `evals/evals.json`: eval set aligned to the current `send_code_to_revit` contract
+
+## Repository model
+
+Development and production releases both happen from `main` in this repository.
+Historical branches in the old repositories are not part of office deployment.
+
+`src/revit-plugin` is source code. `kurulum/revit-plugin` is install payload.
+When the Revit add-in changes, build the source and refresh the payload binaries
+with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -RevitVersion 2022
+```
+
+Commit the source change and refreshed payload binaries together. See
+`docs/REPOSITORY_STRUCTURE.md` and `docs/MONOREPO_MIGRATION.md`.
 
 ## Technical direction
 
-This repo stays self-contained, but keeps its execution contract aligned with current upstream Revit MCP behavior:
+This repo stays self-contained and keeps the live Revit execution contract
+explicit:
 
 - `send_code_to_revit` expects code for `Execute(Document document, object[] parameters)`
-- the bundled Revit payload is vendor-copied from a working upstream-compatible installation
+- the bundled Revit payload is built from the source under `src/revit-plugin`
 - the bundled Node wrapper forwards `transactionMode`, but the tested plugin
   build still manages write transactions itself; snippets should not open
   their own `Transaction.Start()` unless that exact installed build has been
@@ -73,7 +96,7 @@ powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot 
 codex mcp add revit-api-docs -- node "$RepoRoot\kurulum\revit-api-docs-mcp\build\index.js"
 ```
 
-Both MCP servers are required — the runtime server executes code, the docs server resolves the API surface against the locally installed Revit DLLs and XML. The skill assumes both are connected.
+Both MCP servers are required: the runtime server executes code, the docs server resolves the API surface against the locally installed Revit DLLs and XML. The skill assumes both are connected.
 
 ## NAS-based office deployment
 

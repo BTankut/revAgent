@@ -1,0 +1,21 @@
+# Local editor and build output
+.vs/
+.vscode/
+.idea/
+
+# .NET/Revit plugin build output
+**/[Bb]in/
+**/[Oo]bj/
+**/[Pp]ackages/
+
+# Node and Python local dependencies/caches
+**/node_modules/
+**/__pycache__/
+*.pyc
+
+# Local-only noise
+*.user
+*.suo
+*.log
+*.tmp
+*.zip

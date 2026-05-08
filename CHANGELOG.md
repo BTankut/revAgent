@@ -4,6 +4,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## 2026-05-08
 
+- Consolidated the Revit add-in source into this repository under `src/revit-plugin`.
+- Added `scripts/build-revit-plugin.ps1` to rebuild the add-in and refresh the installer payload.
+- Added monorepo structure and migration documentation under `docs/`.
+- Replaced public add-in vendor URLs in manifests with internal DPE metadata.
 - Marked the skill and bundled local MCP packages as unlicensed/private for internal deployment.
 - Added installer/update log files under `C:\ProgramData\DPE\RevitMCP\updater\logs`.
 - Added a simple GUI installer/updater that shows live log output and opens the log folder.

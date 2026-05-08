@@ -20,7 +20,7 @@ param(
 
     [string]$Version = "",
 
-    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path,
+    [string]$RepoRoot = "",
 
     [switch]$AllowDirty,
 
@@ -31,6 +31,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+
+$scriptRoot = $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($scriptRoot)) {
+    $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = (Resolve-Path (Join-Path $scriptRoot "..\..")).Path
+}
 
 function Write-Section {
     param([string]$Message)
@@ -78,7 +86,7 @@ function Copy-DirectoryFiltered {
     )
 
     $excludedDirectoryNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($name in @(".git", ".vs", ".idea", ".vscode", "node_modules", "__pycache__")) {
+    foreach ($name in @(".git", ".vs", ".idea", ".vscode", "node_modules", "__pycache__", "bin", "obj", "packages")) {
         [void]$excludedDirectoryNames.Add($name)
     }
 
@@ -223,6 +231,11 @@ try {
         skill = "SKILL.md"
         agents = "AGENTS.md"
         changelog = "CHANGELOG.md"
+        repositoryStructure = "docs\REPOSITORY_STRUCTURE.md"
+        monorepoMigration = "docs\MONOREPO_MIGRATION.md"
+        revitPluginSourceReadme = "src\revit-plugin\README.md"
+        revitPluginSourceProject = "src\revit-plugin\revit-mcp-plugin\revit-mcp-plugin.csproj"
+        revitPluginBuildScript = "scripts\build-revit-plugin.ps1"
         installer = "kurulum\install-self-contained.ps1"
         revitPlugin = "kurulum\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
         commandSet = "kurulum\Custom_DLL\RevitMCPCommandSet.dll"
@@ -285,7 +298,7 @@ try {
 
     Write-Section "Refresh NAS tools"
     foreach ($toolName in @("Install-Revit-MCP-Updater.cmd", "Install-Revit-MCP-Updater-GUI.cmd", "Install-Revit-MCP-Updater-GUI.ps1", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "promote-nas-release.ps1", "README.md")) {
-        Copy-Item -LiteralPath (Join-Path $PSScriptRoot $toolName) -Destination (Join-Path $toolsRoot $toolName) -Force
+        Copy-Item -LiteralPath (Join-Path $scriptRoot $toolName) -Destination (Join-Path $toolsRoot $toolName) -Force
     }
     Write-Host "Tools path: $toolsRoot" -ForegroundColor Green
 
