@@ -222,6 +222,7 @@ try {
     $componentPaths = [ordered]@{
         skill = "SKILL.md"
         agents = "AGENTS.md"
+        changelog = "CHANGELOG.md"
         installer = "kurulum\install-self-contained.ps1"
         revitPlugin = "kurulum\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
         commandSet = "kurulum\Custom_DLL\RevitMCPCommandSet.dll"
