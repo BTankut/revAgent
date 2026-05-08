@@ -227,15 +227,53 @@ function Write-JsonFile {
     $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
+function Get-VersionLabel {
+    param([string]$Version)
+
+    if ([string]::IsNullOrWhiteSpace($Version)) {
+        return "not installed"
+    }
+
+    return $Version
+}
+
 function Write-UpdateReport {
     param(
         [string]$Status,
         [string]$Message,
         [object]$Channel,
         [object]$InstalledState,
+        [string]$PreviousVersion = "",
+        [string]$InstalledVersion = "",
         [string]$LocalReportPath,
         [string]$RemoteReportsRoot
     )
+
+    $targetReportVersion = if ($Channel) { [string]$Channel.version } else { $null }
+    $previousReportVersion = if (-not [string]::IsNullOrWhiteSpace($PreviousVersion)) {
+        $PreviousVersion
+    }
+    elseif ($InstalledState) {
+        [string]$InstalledState.version
+    }
+    else {
+        $null
+    }
+    $installedReportVersion = if (-not [string]::IsNullOrWhiteSpace($InstalledVersion)) {
+        $InstalledVersion
+    }
+    elseif ($InstalledState) {
+        [string]$InstalledState.version
+    }
+    else {
+        $null
+    }
+    $transition = if ($targetReportVersion) {
+        "{0} -> {1}" -f (Get-VersionLabel $previousReportVersion), $targetReportVersion
+    }
+    else {
+        $null
+    }
 
     $report = [ordered]@{
         schemaVersion = 1
@@ -247,8 +285,10 @@ function Write-UpdateReport {
         userName = $env:USERNAME
         atUtc = (Get-Date).ToUniversalTime().ToString("o")
         channel = if ($Channel) { $Channel.channel } else { $null }
-        targetVersion = if ($Channel) { $Channel.version } else { $null }
-        installedVersion = if ($InstalledState) { $InstalledState.version } else { $null }
+        previousVersion = $previousReportVersion
+        targetVersion = $targetReportVersion
+        installedVersion = $installedReportVersion
+        versionTransition = $transition
         paths = [ordered]@{
             installRoot = $InstallRoot
             packageTarget = $PackageTarget
@@ -357,22 +397,24 @@ try {
 
     $installedVersion = if ($installedState) { [string]$installedState.version } else { "" }
     $installedSha = if ($installedState) { [string]$installedState.packageSha256 } else { "" }
+    $installedVersionLabel = Get-VersionLabel $installedVersion
 
     Write-Host "Channel version  : $targetVersion"
-    Write-Host "Installed version: $installedVersion"
+    Write-Host "Installed version: $installedVersionLabel"
+    Write-Host "Version change   : $installedVersionLabel -> $targetVersion"
     Write-Host "Package          : $packagePath"
 
     if (-not $Force -and $installedVersion -eq $targetVersion -and $installedSha -eq $targetSha) {
         $message = "Already up to date."
         Write-Host $message -ForegroundColor Green
-        Write-UpdateReport -Status "current" -Message $message -Channel $channel -InstalledState $installedState -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        Write-UpdateReport -Status "current" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
         return
     }
 
     if ($AuditOnly) {
-        $message = "Update available: $installedVersion -> $targetVersion"
+        $message = "Update available: $installedVersionLabel -> $targetVersion"
         Write-Host $message -ForegroundColor Yellow
-        Write-UpdateReport -Status "update-available" -Message $message -Channel $channel -InstalledState $installedState -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        Write-UpdateReport -Status "update-available" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
         return
     }
 
@@ -380,7 +422,7 @@ try {
     if ($runningRevit) {
         $message = "Revit is running; update deferred."
         Write-Warning $message
-        Write-UpdateReport -Status "deferred-revit-running" -Message $message -Channel $channel -InstalledState $installedState -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        Write-UpdateReport -Status "deferred-revit-running" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
         return
     }
 
@@ -500,12 +542,14 @@ try {
             channelManifestPath = $ChannelManifestPath
         }
     }
+    $updateMessage = "Updated: $installedVersionLabel -> $targetVersion."
     Write-JsonFile -Path $statePath -Value $newState
-    Write-UpdateReport -Status "updated" -Message "Updated to $targetVersion." -Channel $channel -InstalledState $newState -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
-    Write-Host "Updated to $targetVersion." -ForegroundColor Green
+    Write-UpdateReport -Status "updated" -Message $updateMessage -Channel $channel -InstalledState $newState -PreviousVersion $installedVersion -InstalledVersion $targetVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+    Write-Host $updateMessage -ForegroundColor Green
 }
 catch {
     $message = $_.Exception.Message
-    Write-UpdateReport -Status "failed" -Message $message -Channel $channel -InstalledState $installedState -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+    $failedVersion = if ($installedState) { [string]$installedState.version } else { "" }
+    Write-UpdateReport -Status "failed" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $failedVersion -InstalledVersion $failedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
     throw
 }

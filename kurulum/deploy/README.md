@@ -39,6 +39,7 @@ Ornek:
     Install-Revit-MCP-Updater.cmd
     install-updater-task.ps1
     update-from-nas.ps1
+    show-installed-version.ps1
 ```
 
 ## 1. Release yayinlama
@@ -100,7 +101,37 @@ C:\ProgramData\DPE\RevitMCP\
   codex\
 ```
 
-## 3. Manuel update kontrolu
+## 3. Surum kontrolu
+
+Bilgisayardaki yuklu surumun ana kaydi:
+
+```text
+C:\ProgramData\DPE\RevitMCP\updater\installed.json
+```
+
+Son update kontrol sonucu:
+
+```text
+C:\ProgramData\DPE\RevitMCP\updater\last-update-report.json
+```
+
+Kullanici icin en kolay kontrol dosyasi:
+
+```text
+C:\ProgramData\DPE\RevitMCP\updater\Show-Revit-MCP-Version.cmd
+```
+
+NAS tarafinda her bilgisayarin son raporu da burada gorulur:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports\
+```
+
+Raporlarda `previousVersion`, `targetVersion`, `installedVersion` ve
+`versionTransition` alanlari bulunur. Boylece update akisi `eski -> yeni`
+seklinde izlenebilir.
+
+## 4. Manuel update kontrolu
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "C:\ProgramData\DPE\RevitMCP\updater\update-from-nas.ps1" `
@@ -110,6 +141,9 @@ powershell -ExecutionPolicy Bypass -File "C:\ProgramData\DPE\RevitMCP\updater\up
 Revit aciksa update ertelenir ve rapora `deferred-revit-running` yazilir.
 Revit kapaliyken:
 
+- Eski yuklu surum `installed.json` icinden okunur.
+- Hedef surum NAS `channels\stable.json` icinden okunur.
+- Konsolda ve raporda `eski -> yeni` gecisi gosterilir.
 - Paket NAS'tan kopyalanir.
 - SHA256 dogrulanir.
 - `C:\ProgramData\DPE\RevitMCP\package` managed paket kopyasi yenilenir.
@@ -117,6 +151,12 @@ Revit kapaliyken:
 - Runtime ve docs MCP icin `npm install --omit=dev` calisir.
 - Codex MCP kayitlari yenilenir.
 - Sonuc hem lokal hem NAS `reports` klasorune yazilir.
+
+Bu bir dosya bazli delta update degildir. Update, surumlu zip paketini butun
+olarak indirir ve Revit MCP'nin yonettigi hedefleri guvenli sekilde yeniden
+kurar. Official Revit veya Windows klasorleri silinmez; temizlik sadece bilinen
+Revit MCP add-in, runtime, command set, Codex skill ve eski kurulum hedefleriyle
+sinirlidir.
 
 ## Guvenlik notlari
 

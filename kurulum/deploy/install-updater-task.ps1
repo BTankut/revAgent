@@ -67,6 +67,7 @@ function Write-UpdaterCommandFiles {
         [string]$UpdaterPath,
         [string]$UpdaterConfigPath,
         [string]$UpdaterWorkRoot,
+        [string]$VersionToolPath = "",
         [switch]$InstallStartupFallback
     )
 
@@ -77,6 +78,16 @@ function Write-UpdaterCommandFiles {
         "pause"
     )
     $manualCommandLines | Set-Content -LiteralPath $manualCommandPath -Encoding ASCII
+
+    if (-not [string]::IsNullOrWhiteSpace($VersionToolPath)) {
+        $versionCommandPath = Join-Path $UpdaterWorkRoot "Show-Revit-MCP-Version.cmd"
+        $versionCommandLines = @(
+            "@echo off",
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$VersionToolPath`" -ConfigPath `"$UpdaterConfigPath`"",
+            "pause"
+        )
+        $versionCommandLines | Set-Content -LiteralPath $versionCommandPath -Encoding ASCII
+    }
 
     if ($InstallStartupFallback) {
         $startupRoot = [Environment]::GetFolderPath("Startup")
@@ -165,8 +176,10 @@ $RevitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -V
 New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
 
 $localUpdater = Join-Path $WorkRoot "update-from-nas.ps1"
+$localVersionTool = Join-Path $WorkRoot "show-installed-version.ps1"
 $configPath = Join-Path $WorkRoot "updater-config.json"
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "update-from-nas.ps1") -Destination $localUpdater -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "show-installed-version.ps1") -Destination $localVersionTool -Force
 
 if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
     $channelDir = Split-Path -Parent $ChannelManifestPath
@@ -193,11 +206,13 @@ $config = [ordered]@{
     installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
 }
 Write-JsonFile -Path $configPath -Value $config
-$manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot
+$manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool
+$versionCommandPath = Join-Path $WorkRoot "Show-Revit-MCP-Version.cmd"
 
 if ($NoScheduledTask) {
     Write-Host "Updater installed without scheduled task."
     Write-Host "Run manually: $manualCommandPath"
+    Write-Host "Show version: $versionCommandPath"
     if ($RunNow) {
         Write-Host ""
         Write-Host "Running initial update check..."
@@ -223,12 +238,13 @@ try {
 }
 catch {
     Write-Warning "Scheduled task could not be registered: $($_.Exception.Message)"
-    Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -InstallStartupFallback | Out-Null
+    Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -InstallStartupFallback | Out-Null
 }
 
 Write-Host "Updater installed: $localUpdater" -ForegroundColor Green
 Write-Host "Config written  : $configPath" -ForegroundColor Green
 Write-Host "Run manually    : $manualCommandPath" -ForegroundColor Green
+Write-Host "Show version    : $versionCommandPath" -ForegroundColor Green
 
 if ($RunNow) {
     Write-Host ""
