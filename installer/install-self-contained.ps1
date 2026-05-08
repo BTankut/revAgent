@@ -10,6 +10,7 @@ param(
     [switch]$SkipCodexSkillInstall,
     [switch]$SkipCodexUserIntegration,
     [switch]$SkipLegacyCleanup,
+    [switch]$SkipRevitPayloadInstall,
     [switch]$Uninstall,
     [switch]$RemoveAgents
 )
@@ -54,8 +55,11 @@ $defaultLegacyServerTargets = @(
     "C:\Projects\mcp-servers-for-revit"
 )
 $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
-if ($runningRevit) {
+if ($runningRevit -and -not $SkipRevitPayloadInstall) {
     throw "Close Revit before running install-self-contained.ps1. The installer replaces files under $addinRoot and cannot do that safely while Revit is running."
+}
+elseif ($runningRevit) {
+    Write-Warning "Revit is running; Revit add-in and command payload files will be left untouched."
 }
 
 function Resolve-DependencyPath {
@@ -492,17 +496,22 @@ function Invoke-RevitMcpCleanup {
         [switch]$ForUninstall
     )
 
-    Remove-RevitMcpPath -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -Label "Revit MCP addin manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
-    Remove-RevitMcpPath -Path (Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy Revit MCP addin manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
-    if (-not $SkipLegacyCleanup) {
-        Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "mcp-servers-for-revit.addin") -Label "legacy user Revit MCP addin manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
-        Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy user Revit MCP addin manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
-        Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit_mcp_plugin") -Label "legacy user Revit MCP addin payload directory" -Recurse
+    if (-not $SkipRevitPayloadInstall) {
+        Remove-RevitMcpPath -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -Label "Revit MCP addin manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
+        Remove-RevitMcpPath -Path (Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy Revit MCP addin manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
+        if (-not $SkipLegacyCleanup) {
+            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "mcp-servers-for-revit.addin") -Label "legacy user Revit MCP addin manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
+            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy user Revit MCP addin manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
+            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit_mcp_plugin") -Label "legacy user Revit MCP addin payload directory" -Recurse
+        }
+        Remove-RevitMcpPath -Path $pluginTarget -Label "Revit MCP addin payload directory" -Recurse
+        Remove-RevitMcpPath -Path $commandSetRoot -Label "Revit MCP machine command directory" -Recurse -AllowedNamePattern "(?i)(^CommandSet$)"
+        if (-not $SkipLegacyCleanup) {
+            Remove-RevitMcpPath -Path (Join-Path $env:LOCALAPPDATA "revit-mcp-plugin") -Label "Revit MCP LocalAppData command directory" -Recurse
+        }
     }
-    Remove-RevitMcpPath -Path $pluginTarget -Label "Revit MCP addin payload directory" -Recurse
-    Remove-RevitMcpPath -Path $commandSetRoot -Label "Revit MCP machine command directory" -Recurse -AllowedNamePattern "(?i)(^CommandSet$)"
-    if (-not $SkipLegacyCleanup) {
-        Remove-RevitMcpPath -Path (Join-Path $env:LOCALAPPDATA "revit-mcp-plugin") -Label "Revit MCP LocalAppData command directory" -Recurse
+    else {
+        Write-Host "Revit add-in cleanup skipped; active Revit files were left untouched." -ForegroundColor Yellow
     }
 
     foreach ($target in Get-RuntimeCleanupTargets) {
@@ -527,7 +536,7 @@ function Invoke-RevitMcpCleanup {
             }
         }
     }
-    else {
+    elseif (-not $SkipRevitPayloadInstall) {
         Disable-LegacyAddinManifest -Root $addinRoot
         if (-not $SkipLegacyCleanup) {
             Disable-LegacyAddinManifest -Root $legacyUserAddinRoot
@@ -545,16 +554,22 @@ if ($Uninstall) {
 }
 
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
-New-Item -ItemType Directory -Path $addinRoot -Force | Out-Null
-New-Item -ItemType Directory -Path $pluginRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $ServerTarget -Force | Out-Null
 
-if (Test-Path $pluginTarget) {
-    Remove-Item -LiteralPath $pluginTarget -Recurse -Force
+if (-not $SkipRevitPayloadInstall) {
+    New-Item -ItemType Directory -Path $addinRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $pluginRoot -Force | Out-Null
+
+    if (Test-Path $pluginTarget) {
+        Remove-Item -LiteralPath $pluginTarget -Recurse -Force
+    }
+    Copy-Item -LiteralPath (Join-Path $pluginSource "revit_mcp_plugin") -Destination $pluginRoot -Recurse -Force
+    Write-AddinManifest -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -AssemblyPath (Join-Path $pluginTarget "RevitMCPPlugin.dll")
 }
-Copy-Item -LiteralPath (Join-Path $pluginSource "revit_mcp_plugin") -Destination $pluginRoot -Recurse -Force
-Write-AddinManifest -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -AssemblyPath (Join-Path $pluginTarget "RevitMCPPlugin.dll")
+else {
+    Write-Host "Revit add-in payload install skipped; existing Revit-loaded files were left untouched." -ForegroundColor Yellow
+}
 # Expand the bundled runtime server contents into the target directory.
 Copy-Item -Path (Join-Path $serverSource "*") -Destination $ServerTarget -Recurse -Force
 Set-Content -LiteralPath (Join-Path $ServerTarget ".revit-mcp-self-contained-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
@@ -568,7 +583,7 @@ if (-not (Test-Path $docsServerSource)) {
 
 # Copy command payload so dynamic command compilation works after install.
 $customDllDir = Join-Path $PSScriptRoot "command-payload"
-if (Test-Path $customDllDir) {
+if ((-not $SkipRevitPayloadInstall) -and (Test-Path $customDllDir)) {
     # 1. Machine-wide command cache locations
     $machineCmdSet2022 = Join-Path $commandSetRoot $RevitVersion
     $machineCmdSet = $commandSetRoot
@@ -654,6 +669,9 @@ if (Test-Path $customDllDir) {
             "{3}") -f $RevitVersion, ($missingRuntimeFiles -join ", "), $bundledRuntimeDir, $detail
     }
 }
+elseif ($SkipRevitPayloadInstall) {
+    Write-Host "Command payload install skipped; existing Revit command files were left untouched." -ForegroundColor Yellow
+}
 
 $workspaceAgentsInstalled = $null
 if (-not $SkipCodexSkillInstall) {
@@ -734,8 +752,13 @@ if ((-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) -and
 Write-Host "Self-contained Revit MCP bundle installed for Revit $RevitVersion" -ForegroundColor Green
 Write-Host "Install root: $InstallRoot"
 Write-Host "Revit install root: $revitInstallRoot"
-Write-Host "Revit addin manifest path: $addinRoot"
-Write-Host "Plugin payload path: $pluginTarget"
+if ($SkipRevitPayloadInstall) {
+    Write-Host "Revit addin payload: skipped; existing Revit-loaded files were left untouched."
+}
+else {
+    Write-Host "Revit addin manifest path: $addinRoot"
+    Write-Host "Plugin payload path: $pluginTarget"
+}
 Write-Host "Runtime server path: $ServerTarget"
 Write-Host "Required docs server path: $docsServerSource"
 if (-not $SkipCodexSkillInstall) {

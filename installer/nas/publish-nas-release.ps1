@@ -144,6 +144,16 @@ function Get-RelativeFileHash {
     }
 }
 
+function ConvertTo-ComponentKey {
+    param(
+        [string]$Prefix,
+        [string]$RelativePath
+    )
+
+    $normalized = ($RelativePath -replace '[\\/]+', '_' -replace '[^A-Za-z0-9_]+', '_').Trim("_")
+    return "{0}{1}" -f $Prefix, $normalized
+}
+
 function Add-LegacyPackageCompatibility {
     param([string]$PackageRoot)
 
@@ -261,6 +271,36 @@ try {
         legacyInstaller = "kurulum\install-self-contained.ps1"
     }
 
+    $revitClosedRequiredComponentKeys = [System.Collections.Generic.List[string]]::new()
+    $revitPayloadRelativePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($key in @("revitPlugin", "commandSet")) {
+        if ($componentPaths.Contains($key)) {
+            [void]$revitClosedRequiredComponentKeys.Add($key)
+            [void]$revitPayloadRelativePaths.Add([string]$componentPaths[$key])
+        }
+    }
+
+    foreach ($payloadRoot in @("installer\revit-plugin", "installer\command-payload")) {
+        $fullPayloadRoot = Join-Path $packageRoot $payloadRoot
+        if (-not (Test-Path -LiteralPath $fullPayloadRoot -PathType Container)) {
+            continue
+        }
+
+        Get-ChildItem -LiteralPath $fullPayloadRoot -Recurse -File |
+            Sort-Object FullName |
+            ForEach-Object {
+                $relativePath = $_.FullName.Substring($packageRoot.Length + 1)
+                if ($revitPayloadRelativePaths.Contains($relativePath)) {
+                    return
+                }
+
+                $key = ConvertTo-ComponentKey -Prefix "revitPayload_" -RelativePath $relativePath
+                $componentPaths[$key] = $relativePath
+                [void]$revitPayloadRelativePaths.Add($relativePath)
+                [void]$revitClosedRequiredComponentKeys.Add($key)
+            }
+    }
+
     $components = [ordered]@{}
     foreach ($entry in $componentPaths.GetEnumerator()) {
         $components[$entry.Key] = Get-RelativeFileHash -Root $packageRoot -RelativePath $entry.Value
@@ -290,6 +330,14 @@ try {
             docsServerPath = "installer\revit-api-docs-mcp"
             legacyEntryPoint = "kurulum\install-self-contained.ps1"
             updaterMinimumVersion = "0.1.0"
+        }
+        updatePolicy = [ordered]@{
+            revitClosedRequiredComponentKeys = @($revitClosedRequiredComponentKeys)
+            revitClosedRequiredPaths = @(
+                "installer\revit-plugin"
+                "installer\command-payload"
+            )
+            revitCloseBehavior = "defer-user-save-sync"
         }
         components = $components
     }

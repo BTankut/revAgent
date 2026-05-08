@@ -192,6 +192,67 @@ function Resolve-PackageLayout {
     throw "Extracted package does not look like revit-mcp-skill: $Root"
 }
 
+function Expand-ReleaseArchive {
+    param(
+        [string]$ZipPath,
+        [string]$DestinationPath
+    )
+
+    if (Test-Path -LiteralPath $DestinationPath) {
+        Remove-Item -LiteralPath $DestinationPath -Recurse -Force
+    }
+
+    New-Item -ItemType Directory -Path (Split-Path -Parent $DestinationPath) -Force | Out-Null
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
+
+    $destinationRoot = [System.IO.Path]::GetFullPath($DestinationPath).TrimEnd("\") + "\"
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+    try {
+        foreach ($entry in $archive.Entries) {
+            $entryName = $entry.FullName.Replace("/", "\")
+            while ($entryName.StartsWith("\")) {
+                $entryName = $entryName.Substring(1)
+            }
+            if ([string]::IsNullOrWhiteSpace($entryName)) {
+                continue
+            }
+
+            $targetPath = [System.IO.Path]::GetFullPath((Join-Path $DestinationPath $entryName))
+            if (-not $targetPath.StartsWith($destinationRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Archive entry points outside the extraction directory: $($entry.FullName)"
+            }
+
+            if ($entry.FullName.EndsWith("/") -or $entry.FullName.EndsWith("\")) {
+                New-Item -ItemType Directory -Path $targetPath -Force | Out-Null
+                continue
+            }
+
+            $targetDir = Split-Path -Parent $targetPath
+            if (-not [string]::IsNullOrWhiteSpace($targetDir)) {
+                New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+            }
+
+            $sourceStream = $entry.Open()
+            try {
+                $targetStream = [System.IO.File]::Open($targetPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                try {
+                    $sourceStream.CopyTo($targetStream)
+                }
+                finally {
+                    $targetStream.Dispose()
+                }
+            }
+            finally {
+                $sourceStream.Dispose()
+            }
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
 function Assert-ManagedDirectoryTarget {
     param(
         [string]$Path,
@@ -360,6 +421,259 @@ function Get-VersionLabel {
     }
 
     return $Version
+}
+
+function Get-JsonPropertyValue {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Name)) {
+        return $null
+    }
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) {
+        return $property.Value
+    }
+
+    return $null
+}
+
+function Get-ComponentByKey {
+    param(
+        [object]$Manifest,
+        [string]$Key
+    )
+
+    $components = Get-JsonPropertyValue -Object $Manifest -Name "components"
+    if ($null -eq $components) {
+        return $null
+    }
+
+    return Get-JsonPropertyValue -Object $components -Name $Key
+}
+
+function Get-ComponentSha256 {
+    param([object]$Component)
+
+    $sha = Get-JsonPropertyValue -Object $Component -Name "sha256"
+    if ($null -eq $sha) {
+        return ""
+    }
+
+    return [string]$sha
+}
+
+function Get-ComponentPath {
+    param([object]$Component)
+
+    $path = Get-JsonPropertyValue -Object $Component -Name "path"
+    if ($null -eq $path) {
+        return ""
+    }
+
+    return [string]$path
+}
+
+function Get-RelativeFileSha256OrNull {
+    param(
+        [string]$Root,
+        [string]$RelativePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Root) -or [string]::IsNullOrWhiteSpace($RelativePath)) {
+        return ""
+    }
+
+    $candidate = Join-Path $Root $RelativePath
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        return (Get-FileHash -Algorithm SHA256 -LiteralPath $candidate).Hash
+    }
+
+    return ""
+}
+
+function Get-InstalledReleaseManifest {
+    param(
+        [object]$InstalledState,
+        [string]$PackageTarget
+    )
+
+    if ($InstalledState) {
+        $stateComponents = Get-JsonPropertyValue -Object $InstalledState -Name "components"
+        if ($stateComponents) {
+            return [pscustomobject][ordered]@{
+                components = $stateComponents
+                updatePolicy = Get-JsonPropertyValue -Object $InstalledState -Name "updatePolicy"
+            }
+        }
+
+        $manifestPath = [string](Get-JsonPropertyValue -Object $InstalledState -Name "manifestPath")
+        if (-not [string]::IsNullOrWhiteSpace($manifestPath) -and (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            try {
+                return Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+            }
+            catch {
+                Write-Warning "Installed release manifest is not valid JSON and will be ignored: $manifestPath"
+            }
+        }
+    }
+
+    $localReleaseInfoPath = Join-Path $PackageTarget "release-info.json"
+    if (Test-Path -LiteralPath $localReleaseInfoPath -PathType Leaf) {
+        try {
+            $localReleaseInfo = Get-Content -Raw -LiteralPath $localReleaseInfoPath | ConvertFrom-Json
+            $localComponents = Get-JsonPropertyValue -Object $localReleaseInfo -Name "components"
+            if ($localComponents) {
+                return [pscustomobject][ordered]@{
+                    components = $localComponents
+                    updatePolicy = Get-JsonPropertyValue -Object $localReleaseInfo -Name "updatePolicy"
+                }
+            }
+        }
+        catch {}
+    }
+
+    return $null
+}
+
+function Get-InstalledComponentSha256 {
+    param(
+        [string]$Key,
+        [object]$TargetComponent,
+        [object]$InstalledManifest,
+        [string]$PackageTarget
+    )
+
+    $installedComponent = Get-ComponentByKey -Manifest $InstalledManifest -Key $Key
+    $installedSha = Get-ComponentSha256 -Component $installedComponent
+    if (-not [string]::IsNullOrWhiteSpace($installedSha)) {
+        return $installedSha
+    }
+
+    $relativePath = Get-ComponentPath -Component $TargetComponent
+    $installedSha = Get-RelativeFileSha256OrNull -Root $PackageTarget -RelativePath $relativePath
+    if (-not [string]::IsNullOrWhiteSpace($installedSha)) {
+        return $installedSha
+    }
+
+    if ($relativePath.StartsWith("installer\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $legacyRelativePath = "kurulum\" + $relativePath.Substring("installer\".Length)
+        return Get-RelativeFileSha256OrNull -Root $PackageTarget -RelativePath $legacyRelativePath
+    }
+
+    if ($relativePath.StartsWith("kurulum\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $canonicalRelativePath = "installer\" + $relativePath.Substring("kurulum\".Length)
+        return Get-RelativeFileSha256OrNull -Root $PackageTarget -RelativePath $canonicalRelativePath
+    }
+
+    return ""
+}
+
+function Test-RevitPayloadComponentPath {
+    param([string]$RelativePath)
+
+    if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+        return $false
+    }
+
+    foreach ($prefix in @(
+            "installer\revit-plugin\",
+            "installer\command-payload\",
+            "kurulum\revit-plugin\",
+            "kurulum\command-payload\"
+        )) {
+        if ($RelativePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-RevitClosedRequiredKeys {
+    param([object]$Manifest)
+
+    $keys = [System.Collections.Generic.List[string]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $policy = Get-JsonPropertyValue -Object $Manifest -Name "updatePolicy"
+    $configuredKeys = Get-JsonPropertyValue -Object $policy -Name "revitClosedRequiredComponentKeys"
+    foreach ($key in @($configuredKeys)) {
+        if ([string]::IsNullOrWhiteSpace([string]$key)) { continue }
+        if ($seen.Add([string]$key)) {
+            [void]$keys.Add([string]$key)
+        }
+    }
+
+    if ($keys.Count -eq 0) {
+        $components = Get-JsonPropertyValue -Object $Manifest -Name "components"
+        if ($components) {
+            foreach ($property in $components.PSObject.Properties) {
+                $componentPath = Get-ComponentPath -Component $property.Value
+                if ((Test-RevitPayloadComponentPath -RelativePath $componentPath) -and $seen.Add($property.Name)) {
+                    [void]$keys.Add($property.Name)
+                }
+            }
+        }
+    }
+
+    foreach ($fallbackKey in @(
+            "revitPlugin",
+            "commandSet",
+            "revitAddinManifest",
+            "revitPluginNewtonsoft",
+            "revitPluginSdk",
+            "revitCommandRegistry",
+            "revitCommandSet",
+            "revitCommandSetConfig"
+        )) {
+        if ($seen.Add($fallbackKey)) {
+            [void]$keys.Add($fallbackKey)
+        }
+    }
+
+    return $keys.ToArray()
+}
+
+function Get-RevitPayloadChanges {
+    param(
+        [object]$TargetManifest,
+        [object]$InstalledManifest,
+        [string]$PackageTarget
+    )
+
+    $changes = [System.Collections.Generic.List[object]]::new()
+    if ($null -eq $TargetManifest) {
+        return $changes.ToArray()
+    }
+
+    foreach ($key in Get-RevitClosedRequiredKeys -Manifest $TargetManifest) {
+        $targetComponent = Get-ComponentByKey -Manifest $TargetManifest -Key $key
+        if ($null -eq $targetComponent) {
+            continue
+        }
+
+        $targetSha = Get-ComponentSha256 -Component $targetComponent
+        if ([string]::IsNullOrWhiteSpace($targetSha)) {
+            continue
+        }
+
+        $installedSha = Get-InstalledComponentSha256 -Key $key -TargetComponent $targetComponent -InstalledManifest $InstalledManifest -PackageTarget $PackageTarget
+        if ([string]::Equals($installedSha, $targetSha, [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+
+        [void]$changes.Add([pscustomobject][ordered]@{
+                key = $key
+                path = Get-ComponentPath -Component $targetComponent
+                oldSha = $installedSha
+                newSha = $targetSha
+            })
+    }
+
+    return $changes.ToArray()
 }
 
 function Write-UpdateReport {
@@ -552,12 +866,49 @@ try {
         return
     }
 
+    $installedManifest = Get-InstalledReleaseManifest -InstalledState $installedState -PackageTarget $PackageTarget
+    $revitPayloadChanges = Get-RevitPayloadChanges -TargetManifest $releaseManifest -InstalledManifest $installedManifest -PackageTarget $PackageTarget
+    $releaseComponents = Get-JsonPropertyValue -Object $releaseManifest -Name "components"
+    $requiresRevitClosed = ($null -eq $installedState) -or ($null -eq $releaseManifest) -or ($null -eq $releaseComponents) -or ($revitPayloadChanges.Count -gt 0)
+    $skipRevitPayloadInstall = $false
+    $revitChangeLabels = @($revitPayloadChanges | ForEach-Object {
+            if (-not [string]::IsNullOrWhiteSpace([string]$_.path)) {
+                [string]$_.path
+            }
+            else {
+                [string]$_.key
+            }
+        })
+
+    if ($requiresRevitClosed) {
+        Write-Host "Revit payload    : changed or unknown; Revit must be closed before applying this update." -ForegroundColor Yellow
+        if ($revitChangeLabels.Count -gt 0) {
+            Write-Host ("Changed Revit files: {0}" -f (($revitChangeLabels | Select-Object -First 8) -join "; "))
+            if ($revitChangeLabels.Count -gt 8) {
+                Write-Host ("Changed Revit files: +{0} more" -f ($revitChangeLabels.Count - 8))
+            }
+        }
+    }
+    else {
+        Write-Host "Revit payload    : unchanged; Revit can stay open." -ForegroundColor Green
+    }
+
     $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
-    if ($runningRevit) {
-        $message = "Revit is running; update deferred."
+    if ($runningRevit -and $requiresRevitClosed) {
+        $message = "Update requires Revit to be closed because Revit add-in/command files changed. Save and synchronize your model, close Revit, then run the updater again."
+        if ($revitChangeLabels.Count -gt 0) {
+            $message += " Changed files: " + (($revitChangeLabels | Select-Object -First 6) -join "; ")
+            if ($revitChangeLabels.Count -gt 6) {
+                $message += ("; +{0} more" -f ($revitChangeLabels.Count - 6))
+            }
+        }
         Write-Warning $message
-        Write-UpdateReport -Status "deferred-revit-running" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        Write-UpdateReport -Status "deferred-revit-close-required" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
         return
+    }
+    elseif ($runningRevit) {
+        $skipRevitPayloadInstall = $true
+        Write-Warning "Revit is running, but this update does not change Revit add-in/command files. Non-Revit files will be updated without touching the active Revit payload."
     }
 
     if ((Test-Path -LiteralPath (Join-Path $PackageTarget ".git")) -and -not $AllowReplaceGitPackageTarget) {
@@ -574,11 +925,7 @@ try {
 
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $extractRoot = Join-Path $stagingRoot ("extract-" + $targetVersion + "-" + $stamp)
-    if (Test-Path -LiteralPath $extractRoot) {
-        Remove-Item -LiteralPath $extractRoot -Recurse -Force
-    }
-    New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
-    Expand-Archive -LiteralPath $cachedPackage -DestinationPath $extractRoot -Force
+    Expand-ReleaseArchive -ZipPath $cachedPackage -DestinationPath $extractRoot
 
     $packageLayout = Resolve-PackageLayout -Root $extractRoot -ReleaseManifest $releaseManifest
 
@@ -606,6 +953,9 @@ try {
     }
     if ($SkipCodexUserIntegration) {
         $installArgs["SkipCodexUserIntegration"] = $true
+    }
+    if ($skipRevitPayloadInstall) {
+        $installArgs["SkipRevitPayloadInstall"] = $true
     }
 
     & $installer @installArgs
@@ -662,6 +1012,11 @@ try {
         packageSha256 = $actualSha
         packagePath = $packagePath
         manifestPath = $channel.manifestPath
+        components = if ($releaseManifest) { $releaseManifest.components } else { $null }
+        updatePolicy = if ($releaseManifest) { $releaseManifest.updatePolicy } else { $null }
+        revitPayloadChanged = [bool]$requiresRevitClosed
+        revitPayloadSkipped = [bool]$skipRevitPayloadInstall
+        revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
         updaterVersion = $updaterVersion
         skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
         paths = [ordered]@{
