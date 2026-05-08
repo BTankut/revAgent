@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## 2026-05-08
 
+- Marked the skill and bundled local MCP packages as unlicensed/private for internal deployment.
 - Added installer/update log files under `C:\ProgramData\DPE\RevitMCP\updater\logs`.
 - Added a simple GUI installer/updater that shows live log output and opens the log folder.
 - Updated install/update failure output to include the relevant log path.

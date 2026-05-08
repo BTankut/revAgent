@@ -12,7 +12,7 @@ description: >
   critical path, or system flow. Turkish trigger phrases also apply:
   "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
   "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
-license: MIT
+license: UNLICENSED
 version: 0.4.3
 ---
 

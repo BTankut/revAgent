@@ -2,6 +2,7 @@
   "name": "revit-mcp",
   "version": "1.0.0",
   "description": "Bundled local MCP server for the self-contained Revit MCP skill package.",
+  "private": true,
   "main": "index.js",
   "type": "module",
   "bin": {
@@ -17,7 +18,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mcp-servers-for-revit/mcp-servers-for-revit.git"
+    "url": "git+https://github.com/BTankut/revit-mcp-skill.git"
   },
   "keywords": [
     "revit",
@@ -25,11 +26,11 @@
     "codex"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
   "bugs": {
-    "url": "https://github.com/mcp-servers-for-revit/mcp-servers-for-revit/issues"
+    "url": "https://github.com/BTankut/revit-mcp-skill/issues"
   },
-  "homepage": "https://github.com/mcp-servers-for-revit/mcp-servers-for-revit#readme",
+  "homepage": "https://github.com/BTankut/revit-mcp-skill#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "12.9.0",
