@@ -57,6 +57,17 @@ function New-RunLogPath {
     return (Join-Path $logsRoot ("gui-install-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss")))
 }
 
+function Test-IsAdministrator {
+    try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch {
+        return $false
+    }
+}
+
 if ($SmokeTest) {
     if (-not (Test-Path -LiteralPath $installerPath)) {
         throw "Installer script was not found: $installerPath"
@@ -161,6 +172,13 @@ $openLogsButton.Width = 110
 $openLogsButton.Height = 32
 $buttonPanel.Controls.Add($openLogsButton)
 
+$adminButton = New-Object System.Windows.Forms.Button
+$adminButton.Text = "Admin olarak ac"
+$adminButton.Width = 120
+$adminButton.Height = 32
+$adminButton.Visible = -not (Test-IsAdministrator)
+$buttonPanel.Controls.Add($adminButton)
+
 $closeButton = New-Object System.Windows.Forms.Button
 $closeButton.Text = "Kapat"
 $closeButton.Width = 90
@@ -174,6 +192,7 @@ function Set-ButtonsEnabled {
     param([bool]$Enabled)
     $runButton.Enabled = $Enabled
     $versionButton.Enabled = $Enabled
+    $adminButton.Enabled = $Enabled
     $closeButton.Enabled = $Enabled
 }
 
@@ -254,6 +273,45 @@ $timer.Add_Tick({
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         }
+    }
+})
+
+$adminButton.Add_Click({
+    $result = [System.Windows.Forms.MessageBox]::Show(
+        "Scheduled task kurulumunu denemek icin pencereyi admin yetkisiyle yeniden acabiliriz.`r`n`r`nFarkli bir admin hesabi ile acarsaniz Codex kullanici ayarlari o hesaba yazilabilir. Emin degilseniz bu adimi atlayin; sistem Startup fallback ile yine calisir.",
+        "Revit MCP Installer",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning)
+
+    if ($result -ne [System.Windows.Forms.DialogResult]::Yes) {
+        return
+    }
+
+    $arguments = @(
+        "-STA",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $PSCommandPath,
+        "-ChannelManifestPath", $ChannelManifestPath,
+        "-InstallRoot", $InstallRoot
+    )
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $powershellPath
+    $psi.Arguments = Join-CommandLine -Arguments $arguments
+    $psi.UseShellExecute = $true
+    $psi.Verb = "runas"
+
+    try {
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+        $form.Close()
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Admin olarak yeniden baslatilamadi.`r`n$($_.Exception.Message)",
+            "Revit MCP Installer",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
     }
 })
 

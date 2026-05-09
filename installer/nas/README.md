@@ -72,6 +72,13 @@ On each workstation, close Revit and run:
 The GUI shows the live install/update log and provides a button to open the log
 folder if something fails.
 
+The updater tries to register a per-user Scheduled Task. The task checks at
+logon and then every 30 minutes during the day. If Windows blocks Scheduled
+Task registration because of permissions, the installer creates a Startup
+fallback that keeps a hidden per-user update loop running with the same
+interval. The GUI also includes an admin relaunch button for workstations where
+the operator wants to retry Scheduled Task registration with elevated rights.
+
 If you want to copy a single launcher to a workstation desktop, copy one of the
 standalone launchers instead:
 
@@ -127,6 +134,8 @@ This is a full package update, not a file-level delta update.
 - Revit-loaded add-in and command files are not replaced while `Revit.exe` is
   running; those updates are deferred so the user can save/sync and close
   Revit. Non-Revit payload updates may still be applied while Revit is open.
+- Pending updates that require the user to close Revit show a throttled user
+  notification instead of failing silently in the background.
 - Official Autodesk Revit and Windows system folders are not deleted.
 - Cleanup is limited to known Revit MCP-owned install paths.
 - The managed package target is refused if it is a Git working tree unless

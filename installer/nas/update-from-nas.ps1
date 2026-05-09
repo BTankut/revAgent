@@ -29,6 +29,9 @@ param(
     [switch]$SkipCodexMcpRegistration,
     [switch]$SkipCodexUserIntegration,
     [string]$LogPath = "",
+    [switch]$NotifyUser,
+    [ValidateRange(15, 10080)]
+    [int]$NotificationThrottleMinutes = 240,
     [switch]$AllowReplaceGitPackageTarget
 )
 
@@ -859,6 +862,100 @@ function Write-UpdateReport {
     }
 }
 
+function Get-NotificationState {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-ShouldNotifyUser {
+    param(
+        [string]$StatePath,
+        [string]$Key,
+        [int]$ThrottleMinutes
+    )
+
+    if (-not $NotifyUser) {
+        return $false
+    }
+
+    $state = Get-NotificationState -Path $StatePath
+    if ($null -eq $state) {
+        return $true
+    }
+
+    $lastKey = [string](Get-JsonPropertyValue -Object $state -Name "key")
+    $lastAtUtc = [string](Get-JsonPropertyValue -Object $state -Name "lastAtUtc")
+    if (-not [string]::Equals($lastKey, $Key, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+
+    if ([string]::IsNullOrWhiteSpace($lastAtUtc)) {
+        return $true
+    }
+
+    try {
+        $lastAt = [datetime]::Parse($lastAtUtc).ToUniversalTime()
+        return (((Get-Date).ToUniversalTime() - $lastAt).TotalMinutes -ge $ThrottleMinutes)
+    }
+    catch {
+        return $true
+    }
+}
+
+function Show-UserNotification {
+    param(
+        [string]$Title,
+        [string]$Message,
+        [string]$Key,
+        [string]$Icon = "Information"
+    )
+
+    $statePath = Join-Path $WorkRoot "notification-state.json"
+    if (-not (Test-ShouldNotifyUser -StatePath $statePath -Key $Key -ThrottleMinutes $NotificationThrottleMinutes)) {
+        return
+    }
+
+    $state = [ordered]@{
+        schemaVersion = 1
+        app = "revit-mcp-skill"
+        key = $Key
+        title = $Title
+        message = $Message
+        lastAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    Write-JsonFile -Path $statePath -Value $state
+
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $messageBoxIcon = [System.Windows.Forms.MessageBoxIcon]::Information
+        if ([string]::Equals($Icon, "Warning", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $messageBoxIcon = [System.Windows.Forms.MessageBoxIcon]::Warning
+        }
+        elseif ([string]::Equals($Icon, "Error", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $messageBoxIcon = [System.Windows.Forms.MessageBoxIcon]::Error
+        }
+
+        [System.Windows.Forms.MessageBox]::Show(
+            $Message,
+            $Title,
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            $messageBoxIcon) | Out-Null
+    }
+    catch {
+        Write-Warning "Could not show user notification: $($_.Exception.Message)"
+    }
+}
+
 $config = Import-UpdaterConfig -Path $ConfigPath
 if ($config) {
     if ([string]::IsNullOrWhiteSpace($ChannelManifestPath) -and $config.channelManifestPath) { $ChannelManifestPath = [string]$config.channelManifestPath }
@@ -874,6 +971,8 @@ if ($config) {
     if ($config.skipNpmInstall) { $SkipNpmInstall = $true }
     if ($config.skipCodexMcpRegistration) { $SkipCodexMcpRegistration = $true }
     if ($config.skipCodexUserIntegration) { $SkipCodexUserIntegration = $true }
+    if ($config.notifyUser) { $NotifyUser = $true }
+    if ($config.notificationThrottleMinutes) { $NotificationThrottleMinutes = [int]$config.notificationThrottleMinutes }
     if ([string]::IsNullOrWhiteSpace($LogPath) -and $config.updateLogPath) { $LogPath = [string]$config.updateLogPath }
 }
 
@@ -990,6 +1089,7 @@ try {
         }
         Write-Host $message -ForegroundColor Yellow
         Write-UpdateReport -Status "update-available" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        Show-UserNotification -Title "Revit MCP update available" -Message $message -Key ("update-available|{0}" -f $targetVersion) -Icon "Information"
         return
     }
 
@@ -1017,6 +1117,7 @@ try {
         }
         Write-Warning $message
         Write-UpdateReport -Status "deferred-revit-close-required" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        Show-UserNotification -Title "Revit MCP update requires Revit to close" -Message ($message + "`r`n`r`nLog: " + $script:RevitMcpLogPath) -Key ("deferred-revit-close-required|{0}" -f $targetVersion) -Icon "Warning"
         return
     }
     elseif ($runningRevit) {
@@ -1145,6 +1246,7 @@ try {
     Write-JsonFile -Path $statePath -Value $newState
     Write-UpdateReport -Status "updated" -Message $updateMessage -Channel $channel -InstalledState $newState -PreviousVersion $installedVersion -InstalledVersion $targetVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
     Write-Host $updateMessage -ForegroundColor Green
+    Show-UserNotification -Title "Revit MCP updated" -Message ($updateMessage + "`r`n`r`nInstalled version: " + $targetVersion) -Key ("updated|{0}" -f $targetVersion) -Icon "Information"
 }
 catch {
     $message = $_.Exception.Message

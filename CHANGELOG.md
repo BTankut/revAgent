@@ -2,6 +2,12 @@
 
 All notable Revit MCP workstation deployment changes are tracked here.
 
+## 2026-05-09
+
+- Added periodic workstation update checks every 30 minutes, with a startup-loop fallback when Scheduled Task registration is blocked.
+- Added user notifications for pending Revit-close-required updates and successful background updates.
+- Added a GUI option to relaunch the installer with admin rights when the user wants to retry Scheduled Task registration.
+
 ## 2026-05-08
 
 - Changed the Revit MCP status window to show without stealing foreground focus from other applications.

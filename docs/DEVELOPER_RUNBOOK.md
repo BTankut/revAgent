@@ -360,7 +360,25 @@ bootstrap creates a Startup-folder fallback:
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Revit MCP Auto Update.cmd
 ```
 
-This is expected on non-admin workstations.
+The preferred updater registration is a per-user Scheduled Task. It runs at
+logon and repeats every 30 minutes. If Scheduled Task registration is blocked,
+the Startup fallback launches a hidden `auto-update-loop.ps1` process for the
+user session and checks on the same interval. This keeps long-running office
+workstations updated even when they are rarely restarted.
+
+The GUI has an `Admin olarak ac` button. Use it when the current Windows user
+has admin rights and the operator wants to retry Scheduled Task registration
+with elevation. Be careful with different admin credentials: if Windows opens
+the GUI as a different admin account, user-profile Codex integration may be
+written under that admin profile instead of the operator profile.
+
+Background updater notifications:
+
+- `deferred-revit-close-required`: user must save/sync, close Revit, and rerun
+  the updater because Revit-loaded payload files changed.
+- `updated`: background update completed.
+- Notifications are throttled per version/status; default throttle is 240
+  minutes.
 
 ## Revit-Close Update Policy
 

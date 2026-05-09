@@ -5,7 +5,8 @@
 .DESCRIPTION
     Copies update-from-nas.ps1 to a local managed folder, writes updater config,
     and registers a per-user scheduled task. The task reads the NAS channel
-    manifest and only updates when Revit is closed.
+    manifest at logon and on a repeated interval. Revit-loaded payload updates
+    are deferred while Revit is open; non-Revit payload updates may continue.
 #>
 
 [CmdletBinding()]
@@ -25,6 +26,10 @@ param(
     [string]$ReportsRoot = "",
     [string]$TaskName = "Revit MCP Auto Update",
     [string]$DailyAt = "09:00",
+    [ValidateRange(5, 1440)]
+    [int]$CheckIntervalMinutes = 30,
+    [ValidateRange(15, 10080)]
+    [int]$NotificationThrottleMinutes = 240,
     [string]$LogPath = "",
     [switch]$SkipNpmInstall,
     [switch]$SkipCodexMcpRegistration,
@@ -139,6 +144,7 @@ function Write-UpdaterCommandFiles {
         [string]$UpdaterConfigPath,
         [string]$UpdaterWorkRoot,
         [string]$VersionToolPath = "",
+        [int]$CheckIntervalMinutes = 30,
         [switch]$InstallStartupFallback
     )
 
@@ -167,13 +173,37 @@ function Write-UpdaterCommandFiles {
         }
 
         New-Item -ItemType Directory -Path $startupRoot -Force | Out-Null
+        $loopScriptPath = Join-Path $UpdaterWorkRoot "auto-update-loop.ps1"
+        $loopScriptLines = @(
+            "param(",
+            "    [Parameter(Mandatory = `$true)]",
+            "    [string]`$UpdaterPath,",
+            "    [Parameter(Mandatory = `$true)]",
+            "    [string]`$ConfigPath,",
+            "    [int]`$IntervalMinutes = $CheckIntervalMinutes",
+            ")",
+            "",
+            "`$ErrorActionPreference = `"Continue`"",
+            "`$intervalSeconds = [Math]::Max(300, `$IntervalMinutes * 60)",
+            "while (`$true) {",
+            "    try {",
+            "        & `$UpdaterPath -ConfigPath `$ConfigPath -NotifyUser",
+            "    }",
+            "    catch {",
+            "    }",
+            "    Start-Sleep -Seconds `$intervalSeconds",
+            "}"
+        )
+        $loopScriptLines | Set-Content -LiteralPath $loopScriptPath -Encoding ASCII
+
         $startupCommandPath = Join-Path $startupRoot "Revit MCP Auto Update.cmd"
         $startupCommandLines = @(
             "@echo off",
-            "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`""
+            "powershell.exe -STA -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$loopScriptPath`" -UpdaterPath `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -IntervalMinutes $CheckIntervalMinutes"
         )
         $startupCommandLines | Set-Content -LiteralPath $startupCommandPath -Encoding ASCII
         Write-Host "Startup fallback: $startupCommandPath" -ForegroundColor Yellow
+        Write-Host "Startup fallback interval: every $CheckIntervalMinutes minutes" -ForegroundColor Yellow
     }
 
     return $manualCommandPath
@@ -278,12 +308,15 @@ $config = [ordered]@{
     skipNpmInstall = [bool]$SkipNpmInstall
     skipCodexMcpRegistration = [bool]$SkipCodexMcpRegistration
     skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
+    checkIntervalMinutes = $CheckIntervalMinutes
+    notifyUser = $true
+    notificationThrottleMinutes = $NotificationThrottleMinutes
     logsRoot = (Join-Path $WorkRoot "logs")
     installLogPath = $script:RevitMcpLogPath
     installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
 }
 Write-JsonFile -Path $configPath -Value $config
-$manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool
+$manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -CheckIntervalMinutes $CheckIntervalMinutes
 $versionCommandPath = Join-Path $WorkRoot "Show-Revit-MCP-Version.cmd"
 
 if ($NoScheduledTask) {
@@ -299,23 +332,27 @@ if ($NoScheduledTask) {
 }
 
 $time = [datetime]::Parse($DailyAt)
-$actionArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$localUpdater`" -ConfigPath `"$configPath`""
+$actionArgs = "-STA -NoProfile -ExecutionPolicy Bypass -File `"$localUpdater`" -ConfigPath `"$configPath`" -NotifyUser"
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $actionArgs
+$dailyTrigger = New-ScheduledTaskTrigger -Daily -At $time
+$repetitionTemplate = New-ScheduledTaskTrigger -Once -At $time -RepetitionInterval (New-TimeSpan -Minutes $CheckIntervalMinutes) -RepetitionDuration (New-TimeSpan -Days 1)
+$dailyTrigger.Repetition = $repetitionTemplate.Repetition
 $triggers = @(
     (New-ScheduledTaskTrigger -AtLogOn),
-    (New-ScheduledTaskTrigger -Daily -At $time)
+    $dailyTrigger
 )
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
 
 try {
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Description "Checks the NAS Revit MCP channel and updates this workstation when Revit is closed." -Force | Out-Null
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Description "Checks the NAS Revit MCP channel at logon and every $CheckIntervalMinutes minutes. Revit-loaded payload updates are deferred while Revit is open." -Force | Out-Null
     Write-Host "Task registered : $TaskName" -ForegroundColor Green
+    Write-Host "Task interval   : every $CheckIntervalMinutes minutes" -ForegroundColor Green
 }
 catch {
     Write-Warning "Scheduled task could not be registered: $($_.Exception.Message)"
-    Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -InstallStartupFallback | Out-Null
+    Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -CheckIntervalMinutes $CheckIntervalMinutes -InstallStartupFallback | Out-Null
 }
 
 Write-Host "Updater installed: $localUpdater" -ForegroundColor Green
