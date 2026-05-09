@@ -13,7 +13,7 @@ Code change
 -> commit / push
 -> test
 -> publish-nas-release.ps1
--> channels\beta.json or channels\stable.json is updated
+-> channels\stable.json is updated
 -> workstations run update-from-nas.ps1
 ```
 
@@ -25,7 +25,7 @@ A normal `git commit` or `git push` does not update the office by itself.
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\
   channels\
     stable.json
-    beta.json
+    beta.json  (retired compatibility mirror of stable)
   releases\
     2026.05.08.1500-a1b2c3d4\
       revit-mcp-skill-2026.05.08.1500-a1b2c3d4.zip
@@ -49,17 +49,11 @@ Run from a clean repo root on the development machine:
 $ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
 powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps1" `
   -ReleaseRoot $ReleaseRoot `
-  -Channel beta
-```
-
-After beta testing, promote the same package to stable:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ".\installer\nas\promote-nas-release.ps1" `
-  -ReleaseRoot $ReleaseRoot `
-  -Version 2026.05.08.1500-a1b2c3d4 `
   -Channel stable
 ```
+
+The beta channel is retired. Publishing `stable` also refreshes `channels\beta.json`
+as a compatibility mirror so older workstation configs still update to stable.
 
 ## Install The Workstation Updater
 
@@ -84,8 +78,10 @@ standalone launchers instead:
 
 ```text
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater STABLE.cmd
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater BETA.cmd
 ```
+
+`Revit MCP Updater BETA.cmd` is retained only as a compatibility shim and opens
+the stable updater.
 
 Do not copy `Install-Revit-MCP-Updater-GUI.cmd` by itself. That file is meant
 to run from the NAS `tools\` folder and expects
@@ -117,7 +113,9 @@ C:\ProgramData\DPE\RevitMCP\updater\logs\
 
 ## Update Behavior
 
-- Reads the target version from `channels\stable.json` or `channels\beta.json`.
+- Reads the target version from `channels\stable.json`.
+- Older configs that still point at `channels\beta.json` receive the same stable
+  target because beta is now a compatibility mirror.
 - Shows the installed version and target version as `old -> new`.
 - Copies the versioned ZIP from NAS.
 - Verifies the package SHA256 hash before install.

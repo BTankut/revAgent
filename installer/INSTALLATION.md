@@ -88,7 +88,7 @@ Development machines publish release ZIPs through:
 $ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
 powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps1" `
   -ReleaseRoot $ReleaseRoot `
-  -Channel beta
+  -Channel stable
 ```
 
 See `installer\nas\README.md` for the full NAS deployment workflow.

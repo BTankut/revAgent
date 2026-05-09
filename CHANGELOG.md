@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## 2026-05-09
 
+- Retired the beta deployment channel. Stable is now the only office release channel; `beta.json` is kept only as a compatibility mirror for older workstation configs.
 - Added periodic workstation update checks every 30 minutes, with a startup-loop fallback when Scheduled Task registration is blocked.
 - Added user notifications for pending Revit-close-required updates and successful background updates.
 - Added a GUI option to relaunch the installer with admin rights when the user wants to retry Scheduled Task registration.

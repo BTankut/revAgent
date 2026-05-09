@@ -4,7 +4,11 @@
 
 .DESCRIPTION
     Creates a versioned ZIP package, writes a release manifest, and optionally
-    updates a channel manifest such as channels\stable.json or channels\beta.json.
+    updates the channels\stable.json channel manifest.
+
+    The former beta channel is retired. When stable is published, channels\beta.json
+    is kept as a compatibility mirror so older workstations that still point at
+    beta.json continue to receive the stable release.
 
     Commit/push does not deploy anything by itself. This script is the explicit
     "publish this version" step.
@@ -15,8 +19,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ReleaseRoot,
 
-    [ValidateSet("stable", "beta", "dev")]
-    [string]$Channel = "beta",
+    [ValidateSet("stable", "dev")]
+    [string]$Channel = "stable",
 
     [string]$Version = "",
 
@@ -168,6 +172,45 @@ function Add-LegacyPackageCompatibility {
 
     Copy-DirectoryFiltered -Source $canonicalInstallerRoot -Destination $legacyInstallerRoot
     Write-Host "Added legacy package alias: kurulum -> installer" -ForegroundColor Yellow
+}
+
+function Write-JsonFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Value,
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [int]$Depth = 8
+    )
+
+    $Value | ConvertTo-Json -Depth $Depth | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+function Copy-OrderedDictionary {
+    param([Parameter(Mandatory = $true)]$Source)
+
+    $copy = [ordered]@{}
+    foreach ($key in $Source.Keys) {
+        $copy[$key] = $Source[$key]
+    }
+    return $copy
+}
+
+function Sync-RetiredBetaChannel {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ChannelsRoot,
+        [Parameter(Mandatory = $true)]
+        $StableChannelManifest
+    )
+
+    $legacyBetaPath = Join-Path $ChannelsRoot "beta.json"
+    $legacyBetaManifest = Copy-OrderedDictionary -Source $StableChannelManifest
+    $legacyBetaManifest["legacyChannel"] = "beta"
+    $legacyBetaManifest["compatibility"] = "retired-beta-alias"
+
+    Write-JsonFile -Value $legacyBetaManifest -Path $legacyBetaPath -Depth 8
+    Write-Host "Synced retired beta channel to stable: $legacyBetaPath" -ForegroundColor Yellow
 }
 
 Write-Section "Validate repository"
@@ -360,8 +403,12 @@ try {
                 isDirty = $isDirty
             }
         }
-        $channelManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $channelPath -Encoding UTF8
+        Write-JsonFile -Value $channelManifest -Path $channelPath -Depth 8
         Write-Host "Updated channel: $channelPath" -ForegroundColor Green
+
+        if ($Channel -eq "stable") {
+            Sync-RetiredBetaChannel -ChannelsRoot $channelsRoot -StableChannelManifest $channelManifest
+        }
     }
 
     Write-Section "Refresh NAS tools"

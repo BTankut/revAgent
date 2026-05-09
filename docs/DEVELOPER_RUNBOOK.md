@@ -124,9 +124,8 @@ used. Production NAS releases should be published from a clean tree.
 5. Run targeted validation.
 6. Commit source and generated payload together when payload is affected.
 7. Push `main`.
-8. Publish to NAS `beta`.
-9. Test on a real Revit workstation.
-10. Promote the tested package to NAS `stable`.
+8. Publish the tested release to NAS `stable`.
+9. Verify one real Revit workstation after the stable publish.
 
 Useful baseline commands:
 
@@ -265,7 +264,7 @@ Layout:
 ```text
 channels\
   stable.json
-  beta.json
+  beta.json  (retired compatibility mirror of stable)
 releases\
   <version>\
     revit-mcp-skill-<version>.zip
@@ -274,27 +273,21 @@ reports\
 tools\
 ```
 
-Publish a beta release from a clean repo:
+Publish a stable release from a clean repo:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\installer\nas\publish-nas-release.ps1 `
   -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy" `
-  -Channel beta
-```
-
-After live testing, promote the exact tested version to stable:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\installer\nas\promote-nas-release.ps1 `
-  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy" `
-  -Version <version> `
   -Channel stable
 ```
+
+The beta channel is retired. Stable publishing automatically refreshes
+`channels\beta.json` as a compatibility mirror so older workstation configs that
+still point at beta continue to receive the stable package.
 
 Verify channels:
 
 ```powershell
-Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\channels\beta.json"
 Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\channels\stable.json"
 ```
 
@@ -319,8 +312,10 @@ Single-file desktop launchers:
 
 ```text
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater STABLE.cmd
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater BETA.cmd
 ```
+
+`Revit MCP Updater BETA.cmd` is retained only as a compatibility shim and opens
+the stable updater.
 
 Use the single-file launchers when copying a `.cmd` to a workstation desktop.
 The generic `Install-Revit-MCP-Updater-GUI.cmd` is meant to run from the NAS
@@ -488,11 +483,11 @@ Expected entries:
 If `list_revit_instances` shows an old Revit process, close all Revit windows
 and check `Get-Process -Name Revit` again before reinstalling or retesting.
 
-## Stable vs Beta
+## Stable Channel
 
-Use `beta` for a package that still needs live workstation validation. After
-testing the exact package, promote that version to `stable`. Office
-workstations should normally use `stable`.
+Use `stable` for office deployment after local/manual validation. The former
+`beta` channel is retired. `channels\beta.json` remains only as a compatibility
+mirror of stable for older workstation configs.
 
 Do not assume the latest commit is the deployed version. Read the channel JSON:
 

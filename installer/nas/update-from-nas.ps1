@@ -3,10 +3,12 @@
     Update a workstation from a NAS-hosted Revit MCP channel manifest.
 
 .DESCRIPTION
-    Reads channels\stable.json or channels\beta.json from the NAS, compares it
-    with the local installed state, verifies the package hash, replaces the
-    managed local package copy, runs the self-contained installer, refreshes npm
-    dependencies, and writes a machine report.
+    Reads channels\stable.json from the NAS, compares it with the local
+    installed state, verifies the package hash, replaces the managed local
+    package copy, runs the self-contained installer, refreshes npm dependencies,
+    and writes a machine report. Older configs that still point at beta.json are
+    supported because beta.json is maintained as a compatibility mirror of
+    stable.
 #>
 
 [CmdletBinding()]
