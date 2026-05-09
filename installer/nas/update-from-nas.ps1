@@ -517,6 +517,37 @@ function ConvertTo-RevitMcpWinHttpProxyServer {
     return ($normalized -replace '^[a-zA-Z][a-zA-Z0-9+.-]*://', '').TrimEnd("/")
 }
 
+function Send-RevitMcpEnvironmentChanged {
+    try {
+        if (-not ("RevitMcp.EnvironmentChange" -as [type])) {
+            Add-Type -Namespace "RevitMcp" -Name "EnvironmentChange" -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+public static extern System.IntPtr SendMessageTimeout(
+    System.IntPtr hWnd,
+    uint Msg,
+    System.UIntPtr wParam,
+    string lParam,
+    uint fuFlags,
+    uint uTimeout,
+    out System.UIntPtr lpdwResult);
+"@
+        }
+
+        $result = [System.UIntPtr]::Zero
+        [void][RevitMcp.EnvironmentChange]::SendMessageTimeout(
+            [System.IntPtr]0xffff,
+            0x001A,
+            [System.UIntPtr]::Zero,
+            "Environment",
+            0x0002,
+            5000,
+            [ref]$result)
+    }
+    catch {
+        Write-Warning "Could not broadcast environment variable changes: $($_.Exception.Message)"
+    }
+}
+
 function Set-RevitMcpProxyEnvironment {
     param(
         [string]$ProxyUrl,
@@ -555,6 +586,8 @@ function Set-RevitMcpProxyEnvironment {
             }
         }
     }
+
+    Send-RevitMcpEnvironmentChanged
 }
 
 function Set-RevitMcpWinInetProxy {
