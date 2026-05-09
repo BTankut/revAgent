@@ -86,7 +86,7 @@ function Copy-DirectoryFiltered {
     )
 
     $excludedDirectoryNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($name in @(".git", ".vs", ".idea", ".vscode", "node_modules", "__pycache__", "bin", "obj", "packages")) {
+    foreach ($name in @(".git", ".vs", ".idea", ".vscode", "node_modules", "__pycache__", "bin", "obj", "packages", "dependencies")) {
         [void]$excludedDirectoryNames.Add($name)
     }
 
@@ -379,6 +379,15 @@ try {
     Write-Section "Refresh NAS tools"
     foreach ($toolName in @("Install-Revit-MCP-Updater.cmd", "Install-Revit-MCP-Updater-GUI.cmd", "Install-Revit-MCP-Updater-GUI.ps1", "Revit MCP Updater STABLE.cmd", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "promote-nas-release.ps1", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $scriptRoot $toolName) -Destination (Join-Path $toolsRoot $toolName) -Force
+    }
+    $dependenciesSource = Join-Path $scriptRoot "dependencies"
+    if (Test-Path -LiteralPath $dependenciesSource -PathType Container) {
+        $dependenciesTarget = Join-Path $toolsRoot "dependencies"
+        if (Test-Path -LiteralPath $dependenciesTarget) {
+            Remove-Item -LiteralPath $dependenciesTarget -Recurse -Force
+        }
+        Copy-DirectoryFiltered -Source $dependenciesSource -Destination $dependenciesTarget
+        Write-Host "Dependencies path: $dependenciesTarget" -ForegroundColor Green
     }
     Write-Host "Tools path: $toolsRoot" -ForegroundColor Green
 

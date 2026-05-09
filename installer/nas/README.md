@@ -35,6 +35,9 @@ A normal `git commit` or `git push` does not update the office by itself.
     Install-Revit-MCP-Updater.cmd
     Install-Revit-MCP-Updater-GUI.cmd
     Install-Revit-MCP-Updater-GUI.ps1
+    dependencies\
+      node-v24.14.1-x64.msi
+      codex_app\
     install-updater-task.ps1
     update-from-nas.ps1
     show-installed-version.ps1
@@ -53,11 +56,19 @@ powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps
 
 ## Install The Workstation Updater
 
-Workstation prerequisites:
+Workstation prerequisites handled by the installer:
 
-- Autodesk Revit 2022.
-- Node.js 20 or newer, including `node.exe` and `npm.cmd`.
-- Codex CLI for the Windows user running the installer.
+- Autodesk Revit 2022 must already be installed.
+- Node.js/npm is installed automatically. The updater first tries the internet
+  command-line install path, then falls back to the bundled NAS MSI under
+  `tools\dependencies`.
+- Codex Desktop/CLI is prepared automatically. The updater first tries the
+  internet command-line install path, then falls back to the bundled NAS
+  `codex_app` folder under `tools\dependencies`.
+
+Large dependency payloads are intentionally kept out of Git under
+`installer\nas\dependencies\`. The publish step copies that local folder to
+NAS `tools\dependencies\`; the release ZIP does not include those binaries.
 
 On each workstation, close Revit and run:
 

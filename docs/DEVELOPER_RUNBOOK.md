@@ -289,6 +289,17 @@ Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\channels\sta
 Publishing refreshes `tools\` on the NAS. Workstations should launch the tools
 from the NAS share, not from copied old script bodies when possible.
 
+Large offline dependency payloads are local/NAS-side assets, not Git assets:
+
+```text
+installer\nas\dependencies\
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\dependencies\
+```
+
+The local dependency folder is ignored by Git. Keep it populated on the
+development workstation before publishing. `publish-nas-release.ps1` copies it
+to NAS `tools\dependencies\`, while excluding it from the versioned release ZIP.
+
 Release ZIP compatibility:
 
 - canonical package folder: `installer/`

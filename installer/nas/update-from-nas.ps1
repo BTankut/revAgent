@@ -323,28 +323,442 @@ function Resolve-RequiredCommand {
     throw $message
 }
 
-function Test-UpdatePrerequisites {
+function Resolve-OptionalCommand {
+    param(
+        [string[]]$Names,
+        [string[]]$Candidates = @()
+    )
+
+    foreach ($name in $Names) {
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($command) {
+            return $command.Source
+        }
+    }
+
+    foreach ($candidate in $Candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        $expanded = [Environment]::ExpandEnvironmentVariables($candidate)
+        if (Test-Path -LiteralPath $expanded -PathType Leaf) {
+            return $expanded
+        }
+    }
+
+    return ""
+}
+
+function Add-ProcessPathEntry {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return
+    }
+
+    $entries = @($env:Path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    foreach ($entry in $entries) {
+        if ([string]::Equals($entry.TrimEnd('\'), $Path.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)) {
+            return
+        }
+    }
+
+    $env:Path = $Path + ";" + $env:Path
+}
+
+function Refresh-DependencyPath {
+    foreach ($path in @(
+            (Join-Path ${env:ProgramFiles} "nodejs"),
+            (Join-Path ${env:ProgramFiles(x86)} "nodejs"),
+            (Join-Path $env:APPDATA "npm"),
+            (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin")
+        )) {
+        Add-ProcessPathEntry -Path $path
+    }
+}
+
+function Get-DependencySearchRoots {
+    $roots = [System.Collections.Generic.List[string]]::new()
+    foreach ($candidate in @(
+            $env:REVIT_MCP_DEPENDENCIES_ROOT,
+            (Join-Path $PSScriptRoot "dependencies"),
+            (Join-Path $WorkRoot "dependencies"),
+            (Join-Path $PackageTarget "installer\nas\dependencies")
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $roots.Add($candidate)
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ChannelManifestPath)) {
+        try {
+            $channelDir = Split-Path -Parent $ChannelManifestPath
+            $releaseRoot = Split-Path -Parent $channelDir
+            $roots.Add((Join-Path $releaseRoot "tools\dependencies"))
+        }
+        catch {}
+    }
+
+    return @($roots.ToArray() | Select-Object -Unique)
+}
+
+function Resolve-DependencyFile {
+    param([string]$FileName)
+
+    foreach ($root in Get-DependencySearchRoots) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $candidate = Join-Path $root $FileName
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
+    }
+
+    return ""
+}
+
+function Resolve-DependencyDirectory {
+    param([string]$DirectoryName)
+
+    foreach ($root in Get-DependencySearchRoots) {
+        if ([string]::IsNullOrWhiteSpace($root)) { continue }
+        $candidate = Join-Path $root $DirectoryName
+        if (Test-Path -LiteralPath $candidate -PathType Container) {
+            return $candidate
+        }
+    }
+
+    return ""
+}
+
+function Invoke-ProcessWithTimeout {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+        [string[]]$Arguments = @(),
+        [int]$TimeoutSeconds = 240
+    )
+
+    $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WindowStyle Hidden -PassThru
+    $completed = $process.WaitForExit([Math]::Max(30, $TimeoutSeconds) * 1000)
+    if (-not $completed) {
+        try {
+            $process.Kill()
+        }
+        catch {}
+        return 124
+    }
+
+    return $process.ExitCode
+}
+
+function Assert-PathUnderRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd("\")
+    $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd("\")
+    if (-not ($fullPath + "\").StartsWith($fullRoot + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to operate outside managed dependency root. Path=$fullPath Root=$fullRoot"
+    }
+
+    return $fullPath
+}
+
+function Copy-DirectoryFresh {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+        [Parameter(Mandatory = $true)]
+        [string]$AllowedRoot
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+        throw "Dependency source directory was not found: $Source"
+    }
+
+    $destinationPath = Assert-PathUnderRoot -Path $Destination -Root $AllowedRoot
+    New-Item -ItemType Directory -Path $AllowedRoot -Force | Out-Null
+    if (Test-Path -LiteralPath $destinationPath) {
+        Remove-Item -LiteralPath $destinationPath -Recurse -Force
+    }
+
+    Copy-Item -LiteralPath $Source -Destination $destinationPath -Recurse -Force
+    return $destinationPath
+}
+
+function Get-NodeMajorVersion {
+    param([string]$NodePath)
+
+    if ([string]::IsNullOrWhiteSpace($NodePath) -or -not (Test-Path -LiteralPath $NodePath -PathType Leaf)) {
+        return -1
+    }
+
+    try {
+        $versionText = (& $NodePath --version 2>$null | Out-String).Trim()
+        if ($versionText -match '^v?(\d+)') {
+            return [int]$Matches[1]
+        }
+    }
+    catch {}
+
+    return -1
+}
+
+function Get-NodeRuntimeStatus {
+    $nodeCandidates = @(
+        (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")
+    )
+    $npmCandidates = @(
+        (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
+        (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
+    )
+
+    $nodePath = Resolve-OptionalCommand -Names @("node.exe", "node") -Candidates $nodeCandidates
+    $npmPath = Resolve-OptionalCommand -Names @("npm.cmd", "npm") -Candidates $npmCandidates
+    $major = Get-NodeMajorVersion -NodePath $nodePath
+
+    return [pscustomobject][ordered]@{
+        nodePath = $nodePath
+        npmPath = $npmPath
+        major = $major
+        ready = (-not [string]::IsNullOrWhiteSpace($nodePath) -and -not [string]::IsNullOrWhiteSpace($npmPath) -and $major -ge 20)
+    }
+}
+
+function Install-NodeFromWinget {
+    $wingetPath = Resolve-OptionalCommand -Names @("winget.exe", "winget") -Candidates @(
+        (Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe")
+    )
+    if ([string]::IsNullOrWhiteSpace($wingetPath)) {
+        Write-Warning "winget was not found; bundled Node.js MSI will be used if needed."
+        return $false
+    }
+
+    Write-Host "Installing Node.js from internet with winget..."
+    $exitCode = Invoke-ProcessWithTimeout -FilePath $wingetPath -Arguments @("install", "--id", "OpenJS.NodeJS.LTS", "--exact", "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity") -TimeoutSeconds 300
+    if ($exitCode -eq 0) {
+        Refresh-DependencyPath
+        return $true
+    }
+
+    Write-Warning "winget Node.js install failed with exit code $exitCode; bundled MSI will be tried."
+    return $false
+}
+
+function Install-NodeFromBundledMsi {
+    $msiPath = Resolve-DependencyFile -FileName "node-v24.14.1-x64.msi"
+    if ([string]::IsNullOrWhiteSpace($msiPath)) {
+        throw "Bundled Node.js installer was not found under NAS tools dependencies or local package dependencies."
+    }
+
+    $msiexecPath = Join-Path $env:WINDIR "System32\msiexec.exe"
+    Write-Host "Installing Node.js from bundled MSI: $msiPath"
+    $process = Start-Process -FilePath $msiexecPath -ArgumentList @("/i", $msiPath, "/qn", "/norestart") -Wait -PassThru
+    if (@(0, 3010) -notcontains $process.ExitCode) {
+        throw "Bundled Node.js MSI install failed with exit code $($process.ExitCode): $msiPath"
+    }
+
+    Refresh-DependencyPath
+}
+
+function Ensure-NodeRuntime {
+    Refresh-DependencyPath
+    $status = Get-NodeRuntimeStatus
+    if ($status.ready) {
+        return $status
+    }
+
+    $currentLabel = if ($status.major -gt 0) { "major version $($status.major)" } else { "not found" }
+    Write-Host "Node.js/npm is not ready ($currentLabel). Trying automatic install."
+
+    $installedFromInternet = Install-NodeFromWinget
+    $status = Get-NodeRuntimeStatus
+    if (-not $status.ready) {
+        if (-not $installedFromInternet) {
+            Write-Host "Falling back to bundled Node.js installer."
+        }
+        else {
+            Write-Warning "Internet install completed but Node.js/npm is still not ready; falling back to bundled MSI."
+        }
+        Install-NodeFromBundledMsi
+        $status = Get-NodeRuntimeStatus
+    }
+
+    if (-not $status.ready) {
+        throw "Node.js/npm could not be prepared automatically. Expected Node.js 20 or newer and npm.cmd."
+    }
+
+    Write-Host "Node.js ready: $($status.nodePath)"
+    Write-Host "npm ready    : $($status.npmPath)"
+    return $status
+}
+
+function Resolve-CodexCommand {
+    Refresh-DependencyPath
+    return Resolve-OptionalCommand -Names @("codex.cmd", "codex.exe", "codex") -Candidates @(
+        (Join-Path $env:APPDATA "npm\codex.cmd"),
+        (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\codex.exe"),
+        (Join-Path $InstallRoot "dependencies\codex_app\resources\codex.exe")
+    )
+}
+
+function Test-CodexDesktopAvailable {
+    try {
+        $package = Get-AppxPackage -Name "OpenAI.Codex" -ErrorAction SilentlyContinue
+        if ($package) {
+            return $true
+        }
+    }
+    catch {}
+
+    foreach ($candidate in @(
+            (Join-Path $InstallRoot "dependencies\codex_app\Codex.exe"),
+            (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\Codex.exe")
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Install-CodexDesktopFromWinget {
+    $wingetPath = Resolve-OptionalCommand -Names @("winget.exe", "winget") -Candidates @(
+        (Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe")
+    )
+    if ([string]::IsNullOrWhiteSpace($wingetPath)) {
+        Write-Warning "winget was not found; bundled Codex Desktop app will be used if needed."
+        return $false
+    }
+
+    Write-Host "Installing Codex Desktop from internet with winget..."
+    $exitCode = Invoke-ProcessWithTimeout -FilePath $wingetPath -Arguments @("install", "--id", "9PLM9XGG6VKS", "--source", "msstore", "--exact", "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity") -TimeoutSeconds 300
+    if ($exitCode -eq 0) {
+        Refresh-DependencyPath
+        return $true
+    }
+
+    Write-Warning "winget Codex Desktop install failed with exit code $exitCode; bundled app will be tried."
+    return $false
+}
+
+function New-CodexDesktopShortcut {
+    param([string]$CodexExePath)
+
+    if ([string]::IsNullOrWhiteSpace($CodexExePath) -or -not (Test-Path -LiteralPath $CodexExePath -PathType Leaf)) {
+        return
+    }
+
+    try {
+        $programsRoot = [Environment]::GetFolderPath("Programs")
+        if ([string]::IsNullOrWhiteSpace($programsRoot)) {
+            return
+        }
+
+        $shortcutDir = Join-Path $programsRoot "DPE"
+        New-Item -ItemType Directory -Path $shortcutDir -Force | Out-Null
+        $shortcutPath = Join-Path $shortcutDir "Codex.lnk"
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = $CodexExePath
+        $shortcut.WorkingDirectory = Split-Path -Parent $CodexExePath
+        $shortcut.IconLocation = $CodexExePath
+        $shortcut.Save()
+        Write-Host "Codex Desktop shortcut: $shortcutPath"
+    }
+    catch {
+        Write-Warning "Could not create Codex Desktop shortcut: $($_.Exception.Message)"
+    }
+}
+
+function Install-CodexDesktopFromBundledApp {
+    $source = Resolve-DependencyDirectory -DirectoryName "codex_app"
+    if ([string]::IsNullOrWhiteSpace($source)) {
+        throw "Bundled Codex Desktop app folder was not found under NAS tools dependencies or local package dependencies."
+    }
+
+    $dependenciesRoot = Join-Path $InstallRoot "dependencies"
+    $target = Join-Path $dependenciesRoot "codex_app"
+    Write-Host "Installing Codex Desktop from bundled app: $source"
+    $installedPath = Copy-DirectoryFresh -Source $source -Destination $target -AllowedRoot $dependenciesRoot
+    $codexExePath = Join-Path $installedPath "Codex.exe"
+    New-CodexDesktopShortcut -CodexExePath $codexExePath
+    Refresh-DependencyPath
+}
+
+function Ensure-CodexDesktop {
+    if (Test-CodexDesktopAvailable) {
+        return
+    }
+
+    $installedFromInternet = Install-CodexDesktopFromWinget
+    if (-not (Test-CodexDesktopAvailable)) {
+        if (-not $installedFromInternet) {
+            Write-Host "Falling back to bundled Codex Desktop app."
+        }
+        else {
+            Write-Warning "Internet install completed but Codex Desktop was not detected; falling back to bundled app."
+        }
+        Install-CodexDesktopFromBundledApp
+    }
+}
+
+function Ensure-CodexCli {
+    param([string]$NpmPath)
+
+    $codexPath = Resolve-CodexCommand
+    if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
+        return $codexPath
+    }
+
+    if ([string]::IsNullOrWhiteSpace($NpmPath)) {
+        $nodeStatus = Ensure-NodeRuntime
+        $NpmPath = [string]$nodeStatus.npmPath
+    }
+
+    Write-Host "Codex CLI was not found. Installing @openai/codex with npm..."
+    try {
+        Invoke-External -FilePath $NpmPath -Arguments @("install", "-g", "@openai/codex") -WorkingDirectory $WorkRoot
+        Refresh-DependencyPath
+    }
+    catch {
+        Write-Warning "Internet Codex CLI install failed: $($_.Exception.Message). Bundled Codex Desktop CLI will be used if available."
+    }
+
+    $codexPath = Resolve-CodexCommand
+    if ([string]::IsNullOrWhiteSpace($codexPath)) {
+        Ensure-CodexDesktop
+        $codexPath = Resolve-CodexCommand
+    }
+    if ([string]::IsNullOrWhiteSpace($codexPath)) {
+        throw "Codex CLI could not be prepared automatically from internet or bundled Codex Desktop app."
+    }
+
+    return $codexPath
+}
+
+function Ensure-UpdateDependencies {
     param(
         [switch]$SkipNpmInstall,
         [switch]$SkipCodexMcpRegistration
     )
 
-    $npmCandidates = @(
-        (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
-        (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
-    )
-    $nodeCandidates = @(
-        (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
-        (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")
-    )
-
-    if (-not $SkipNpmInstall) {
-        [void](Resolve-RequiredCommand -Name "npm.cmd" -Candidates $npmCandidates -InstallHint "Install Node.js 20 or newer for this Windows user/machine.")
+    $needsNodeRuntime = (-not $SkipNpmInstall) -or (-not $SkipCodexMcpRegistration)
+    $nodeStatus = $null
+    if ($needsNodeRuntime) {
+        $nodeStatus = Ensure-NodeRuntime
     }
 
     if (-not $SkipCodexMcpRegistration) {
-        [void](Resolve-RequiredCommand -Name "node.exe" -Candidates $nodeCandidates -InstallHint "Install Node.js 20 or newer for this Windows user/machine.")
-        [void](Resolve-RequiredCommand -Name "codex.cmd" -Candidates @((Join-Path $env:APPDATA "npm\codex.cmd")) -InstallHint "Install or repair Codex CLI for the Windows user running this installer.")
+        Ensure-CodexDesktop
+        [void](Ensure-CodexCli -NpmPath ([string]$nodeStatus.npmPath))
     }
 }
 
@@ -1109,6 +1523,8 @@ try {
         })
     $isPackageCurrent = ($installedVersion -eq $targetVersion -and $installedSha -eq $targetSha)
 
+    Ensure-UpdateDependencies -SkipNpmInstall:$SkipNpmInstall -SkipCodexMcpRegistration:$SkipCodexMcpRegistration
+
     if (-not $Force -and $isPackageCurrent -and -not $requiresRevitClosed) {
         $message = "Already up to date."
         Write-Host $message -ForegroundColor Green
@@ -1163,8 +1579,6 @@ try {
         $skipRevitPayloadInstall = $true
         Write-Warning "Revit is running, but this update does not change Revit add-in/command files. Non-Revit files will be updated without touching the active Revit payload."
     }
-
-    Test-UpdatePrerequisites -SkipNpmInstall:$SkipNpmInstall -SkipCodexMcpRegistration:$SkipCodexMcpRegistration
 
     if ((Test-Path -LiteralPath (Join-Path $PackageTarget ".git")) -and -not $AllowReplaceGitPackageTarget) {
         throw "PackageTarget is a git working tree. Refusing to replace it without -AllowReplaceGitPackageTarget: $PackageTarget"
@@ -1238,9 +1652,7 @@ try {
     }
 
     if (-not $SkipCodexMcpRegistration) {
-        $codexPath = Resolve-RequiredCommand -Name "codex.cmd" -Candidates @(
-            (Join-Path $env:APPDATA "npm\codex.cmd")
-        )
+        $codexPath = Ensure-CodexCli -NpmPath $npmPath
         $nodePath = Resolve-RequiredCommand -Name "node.exe" -Candidates @(
             (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
             (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")
