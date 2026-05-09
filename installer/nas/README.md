@@ -59,6 +59,10 @@ powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps
 Workstation prerequisites handled by the installer:
 
 - Autodesk Revit 2022 must already be installed.
+- Office internet proxy is configured automatically as
+  `http://192.168.90.10:6588` for PowerShell/terminal child processes, user and
+  machine environment variables, current-user Windows internet settings,
+  WinHTTP, npm, and Git where those tools are available.
 - Node.js/npm is installed automatically. The updater first tries the internet
   command-line install path, then falls back to the bundled NAS MSI under
   `tools\dependencies`.

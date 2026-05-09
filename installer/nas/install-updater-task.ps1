@@ -22,6 +22,8 @@ param(
     [string]$RevitInstallRoot = "",
     [ValidateSet("2022")]
     [string]$RevitVersion = "2022",
+    [string]$ProxyUrl = "http://192.168.90.10:6588",
+    [string]$ProxyBypass = "<local>",
     [string[]]$LegacyServerTargets = @(),
     [string]$ReportsRoot = "",
     [string]$TaskName = "Revit MCP Auto Update",
@@ -34,6 +36,7 @@ param(
     [switch]$SkipNpmInstall,
     [switch]$SkipCodexMcpRegistration,
     [switch]$SkipCodexUserIntegration,
+    [switch]$SkipProxySetup,
     [switch]$NoScheduledTask,
     [switch]$RunNow
 )
@@ -136,6 +139,368 @@ function Invoke-InitialUpdateCheck {
     }
 
     & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser
+}
+
+function Test-CurrentProcessElevated {
+    try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+        return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch {
+        return $false
+    }
+}
+
+function ConvertTo-RevitMcpProxyUrl {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ""
+    }
+
+    $normalized = $Value.Trim()
+    if ($normalized -match '^(https?://\S+?)\s+(\d+)$') {
+        $normalized = "$($Matches[1]):$($Matches[2])"
+    }
+    elseif ($normalized -match '^(\S+)\s+(\d+)$') {
+        $normalized = "$($Matches[1]):$($Matches[2])"
+    }
+
+    if ($normalized -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
+        $normalized = "http://$normalized"
+    }
+
+    try {
+        $uri = [System.Uri]::new($normalized)
+        if ([string]::IsNullOrWhiteSpace($uri.Host)) {
+            return $normalized.TrimEnd("/")
+        }
+
+        return $uri.AbsoluteUri.TrimEnd("/")
+    }
+    catch {
+        return $normalized.TrimEnd("/")
+    }
+}
+
+function ConvertTo-RevitMcpWinHttpProxyServer {
+    param([string]$Value)
+
+    $normalized = ConvertTo-RevitMcpProxyUrl -Value $Value
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return ""
+    }
+
+    try {
+        $uri = [System.Uri]::new($normalized)
+        if (-not [string]::IsNullOrWhiteSpace($uri.Host)) {
+            return ("{0}:{1}" -f $uri.Host, $uri.Port)
+        }
+    }
+    catch {}
+
+    return ($normalized -replace '^[a-zA-Z][a-zA-Z0-9+.-]*://', '').TrimEnd("/")
+}
+
+function Invoke-RevitMcpSetupProcess {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments = @(),
+        [int]$TimeoutSeconds = 60
+    )
+
+    $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WindowStyle Hidden -PassThru
+    $completed = $process.WaitForExit([Math]::Max(30, $TimeoutSeconds) * 1000)
+    if (-not $completed) {
+        try {
+            $process.Kill()
+        }
+        catch {}
+        return 124
+    }
+
+    return $process.ExitCode
+}
+
+function Resolve-OptionalCommand {
+    param(
+        [string[]]$Names,
+        [string[]]$Candidates = @()
+    )
+
+    foreach ($name in $Names) {
+        if ([string]::IsNullOrWhiteSpace($name)) { continue }
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($command) {
+            return $command.Source
+        }
+    }
+
+    foreach ($candidate in $Candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        $expanded = [Environment]::ExpandEnvironmentVariables($candidate)
+        if (Test-Path -LiteralPath $expanded -PathType Leaf) {
+            return $expanded
+        }
+    }
+
+    return ""
+}
+
+function Add-ProcessPathEntry {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return
+    }
+
+    $entries = @($env:Path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    foreach ($entry in $entries) {
+        if ([string]::Equals($entry.TrimEnd('\'), $Path.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)) {
+            return
+        }
+    }
+
+    $env:Path = $Path + ";" + $env:Path
+}
+
+function Refresh-DependencyPath {
+    foreach ($path in @(
+            (Join-Path ${env:ProgramFiles} "nodejs"),
+            (Join-Path ${env:ProgramFiles(x86)} "nodejs"),
+            (Join-Path $env:APPDATA "npm"),
+            (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin")
+        )) {
+        Add-ProcessPathEntry -Path $path
+    }
+}
+
+function Set-RevitMcpProxyEnvironment {
+    param(
+        [string]$ProxyUrl,
+        [string]$NoProxy = "localhost,127.0.0.1,::1"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ProxyUrl)) {
+        return
+    }
+
+    $elevated = Test-CurrentProcessElevated
+    $targets = @("Process", "User")
+    if ($elevated) {
+        $targets += "Machine"
+    }
+
+    $proxyVariables = @("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+    $noProxyVariables = @("NO_PROXY", "no_proxy")
+
+    foreach ($target in $targets) {
+        $targetEnum = [System.Enum]::Parse([System.EnvironmentVariableTarget], $target)
+        foreach ($key in $proxyVariables) {
+            try {
+                [Environment]::SetEnvironmentVariable($key, $ProxyUrl, $targetEnum)
+            }
+            catch {
+                Write-Warning "Could not set $target environment variable ${key}: $($_.Exception.Message)"
+            }
+        }
+        foreach ($key in $noProxyVariables) {
+            try {
+                [Environment]::SetEnvironmentVariable($key, $NoProxy, $targetEnum)
+            }
+            catch {
+                Write-Warning "Could not set $target environment variable ${key}: $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
+function Set-RevitMcpWinInetProxy {
+    param(
+        [string]$ProxyUrl,
+        [string]$ProxyBypass
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ProxyUrl)) {
+        return
+    }
+
+    try {
+        $internetSettingsPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        New-Item -Path $internetSettingsPath -Force | Out-Null
+        $current = Get-ItemProperty -Path $internetSettingsPath -ErrorAction SilentlyContinue
+        $alreadyConfigured = $current -and
+            ([int]$current.ProxyEnable -eq 1) -and
+            [string]::Equals([string]$current.ProxyServer, $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals([string]$current.ProxyOverride, $ProxyBypass, [System.StringComparison]::OrdinalIgnoreCase)
+        if ($alreadyConfigured) {
+            return
+        }
+
+        New-ItemProperty -Path $internetSettingsPath -Name "ProxyEnable" -Value 1 -PropertyType DWord -Force | Out-Null
+        New-ItemProperty -Path $internetSettingsPath -Name "ProxyServer" -Value $ProxyUrl -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $internetSettingsPath -Name "ProxyOverride" -Value $ProxyBypass -PropertyType String -Force | Out-Null
+    }
+    catch {
+        Write-Warning "Could not set current-user Windows proxy settings: $($_.Exception.Message)"
+    }
+}
+
+function Test-RevitMcpWinHttpProxyMatches {
+    param([string]$ProxyUrl)
+
+    $server = ConvertTo-RevitMcpWinHttpProxyServer -Value $ProxyUrl
+    if ([string]::IsNullOrWhiteSpace($server)) {
+        return $true
+    }
+
+    try {
+        $output = (& netsh winhttp show proxy 2>$null | Out-String)
+        return ($output -match [regex]::Escape($server))
+    }
+    catch {
+        return $false
+    }
+}
+
+function Set-RevitMcpWinHttpProxy {
+    param(
+        [string]$ProxyUrl,
+        [string]$ProxyBypass
+    )
+
+    $server = ConvertTo-RevitMcpWinHttpProxyServer -Value $ProxyUrl
+    if ([string]::IsNullOrWhiteSpace($server)) {
+        return
+    }
+
+    if (-not (Test-CurrentProcessElevated)) {
+        if (-not (Test-RevitMcpWinHttpProxyMatches -ProxyUrl $ProxyUrl)) {
+            Write-Warning "WinHTTP proxy needs admin rights. Run the Revit MCP installer as administrator to set it for winget/Windows services."
+        }
+        return
+    }
+
+    $netshPath = Join-Path $env:WINDIR "System32\netsh.exe"
+    try {
+        $exitCode = Invoke-RevitMcpSetupProcess -FilePath $netshPath -Arguments @("winhttp", "set", "proxy", "proxy-server=$server", "bypass-list=$ProxyBypass") -TimeoutSeconds 60
+        if ($exitCode -ne 0) {
+            Write-Warning "WinHTTP proxy setup failed with exit code $exitCode."
+        }
+    }
+    catch {
+        Write-Warning "Could not set WinHTTP proxy: $($_.Exception.Message)"
+    }
+}
+
+function Invoke-RevitMcpProxyToolCommand {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$Label
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FilePath)) {
+        return
+    }
+
+    try {
+        $exitCode = Invoke-RevitMcpSetupProcess -FilePath $FilePath -Arguments $Arguments -TimeoutSeconds 60
+        if ($exitCode -ne 0) {
+            Write-Warning "$Label failed with exit code $exitCode."
+        }
+    }
+    catch {
+        Write-Warning "$Label failed: $($_.Exception.Message)"
+    }
+}
+
+function Set-RevitMcpNpmProxy {
+    param([string]$ProxyUrl)
+
+    if ([string]::IsNullOrWhiteSpace($ProxyUrl)) {
+        return
+    }
+
+    Refresh-DependencyPath
+    $npmPath = Resolve-OptionalCommand -Names @("npm.cmd", "npm") -Candidates @(
+        (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
+        (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
+    )
+    if ([string]::IsNullOrWhiteSpace($npmPath)) {
+        return
+    }
+
+    foreach ($arguments in @(
+            @("config", "set", "proxy", $ProxyUrl),
+            @("config", "set", "https-proxy", $ProxyUrl),
+            @("config", "set", "registry", "https://registry.npmjs.org/")
+        )) {
+        Invoke-RevitMcpProxyToolCommand -FilePath $npmPath -Arguments $arguments -Label "npm proxy config"
+    }
+
+    if (Test-CurrentProcessElevated) {
+        foreach ($arguments in @(
+                @("config", "set", "proxy", $ProxyUrl, "--global"),
+                @("config", "set", "https-proxy", $ProxyUrl, "--global"),
+                @("config", "set", "registry", "https://registry.npmjs.org/", "--global")
+            )) {
+            Invoke-RevitMcpProxyToolCommand -FilePath $npmPath -Arguments $arguments -Label "global npm proxy config"
+        }
+    }
+}
+
+function Set-RevitMcpGitProxy {
+    param([string]$ProxyUrl)
+
+    if ([string]::IsNullOrWhiteSpace($ProxyUrl)) {
+        return
+    }
+
+    $gitPath = Resolve-OptionalCommand -Names @("git.exe", "git") -Candidates @(
+        (Join-Path ${env:ProgramFiles} "Git\cmd\git.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Git\cmd\git.exe")
+    )
+    if ([string]::IsNullOrWhiteSpace($gitPath)) {
+        return
+    }
+
+    foreach ($arguments in @(
+            @("config", "--global", "http.proxy", $ProxyUrl),
+            @("config", "--global", "https.proxy", $ProxyUrl)
+        )) {
+        Invoke-RevitMcpProxyToolCommand -FilePath $gitPath -Arguments $arguments -Label "git proxy config"
+    }
+}
+
+function Initialize-RevitMcpWorkstationProxy {
+    param(
+        [string]$ProxyUrl,
+        [string]$ProxyBypass,
+        [switch]$Skip
+    )
+
+    if ($Skip) {
+        Write-Host "Office proxy setup: skipped."
+        return
+    }
+
+    $normalizedProxyUrl = ConvertTo-RevitMcpProxyUrl -Value $ProxyUrl
+    if ([string]::IsNullOrWhiteSpace($normalizedProxyUrl)) {
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ProxyBypass)) {
+        $ProxyBypass = "<local>"
+    }
+
+    Write-Host "Office proxy    : $normalizedProxyUrl"
+    Set-RevitMcpProxyEnvironment -ProxyUrl $normalizedProxyUrl
+    Set-RevitMcpWinInetProxy -ProxyUrl $normalizedProxyUrl -ProxyBypass $ProxyBypass
+    Set-RevitMcpWinHttpProxy -ProxyUrl $normalizedProxyUrl -ProxyBypass $ProxyBypass
+    Set-RevitMcpNpmProxy -ProxyUrl $normalizedProxyUrl
+    Set-RevitMcpGitProxy -ProxyUrl $normalizedProxyUrl
 }
 
 function Write-UpdaterCommandFiles {
@@ -276,6 +641,9 @@ if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
 Initialize-RevitMcpTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $LogPath -Prefix "install"
 
 try {
+$ProxyUrl = ConvertTo-RevitMcpProxyUrl -Value $ProxyUrl
+Initialize-RevitMcpWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
+
 $RevitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
 
 New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
@@ -303,11 +671,14 @@ $config = [ordered]@{
     workspaceAgentsTarget = $WorkspaceAgentsTarget
     revitInstallRoot = $RevitInstallRoot
     revitVersion = $RevitVersion
+    proxyUrl = $ProxyUrl
+    proxyBypass = $ProxyBypass
     legacyServerTargets = $LegacyServerTargets
     reportsRoot = $ReportsRoot
     skipNpmInstall = [bool]$SkipNpmInstall
     skipCodexMcpRegistration = [bool]$SkipCodexMcpRegistration
     skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
+    skipProxySetup = [bool]$SkipProxySetup
     checkIntervalMinutes = $CheckIntervalMinutes
     notifyUser = $true
     notificationThrottleMinutes = $NotificationThrottleMinutes

@@ -47,6 +47,7 @@ $config = Read-JsonFile -Path $ConfigPath
 $installRoot = if ($config -and $config.installRoot) { [string]$config.installRoot } else { $defaultInstallRoot }
 $workRoot = if ($config -and $config.workRoot) { [string]$config.workRoot } else { Join-Path $installRoot "updater" }
 $channelManifestPath = if ($config -and $config.channelManifestPath) { [string]$config.channelManifestPath } else { "" }
+$proxyUrl = if ($config -and $config.proxyUrl) { [string]$config.proxyUrl } else { "" }
 
 $installedPath = Join-Path $workRoot "installed.json"
 $reportPath = Join-Path $workRoot "last-update-report.json"
@@ -81,6 +82,9 @@ Write-Host "Installed       : $(Get-VersionLabel $installedVersion)"
 Write-Host "Channel         : $(if ($channelName) { $channelName } else { 'unknown' })"
 Write-Host "Channel version : $(Get-VersionLabel $channelVersion)"
 Write-Host "Status          : $status"
+if (-not [string]::IsNullOrWhiteSpace($proxyUrl)) {
+    Write-Host "Proxy           : $proxyUrl"
+}
 
 if ($report) {
     Write-Host "Last check      : $($report.status) at $($report.atUtc)"

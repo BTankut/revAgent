@@ -61,8 +61,10 @@ explicit:
 - Node.js 20+; Node 24 is supported by the bundled runtime dependency lock
 - Codex CLI or another MCP/skill-capable LLM host
 
-On proxy-limited networks, make sure terminal tools can reach the internet
-before running `npm install`:
+Office workstation installs automatically configure the DPE proxy
+`http://192.168.90.10:6588` for terminal tools, npm/Git, current-user Windows
+internet settings, and WinHTTP where admin rights are available. For a manual
+repo-root development setup outside the NAS installer, use the same proxy:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("HTTP_PROXY", "http://192.168.90.10:6588", "User")

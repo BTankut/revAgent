@@ -105,6 +105,11 @@ Required local tools for full development:
 - Access to `\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy` for office
   publishing and workstation updater tests
 
+Office workstations reach the internet through `http://192.168.90.10:6588`.
+The NAS installer/updater configures this proxy automatically for terminal
+environment variables, WinHTTP, current-user Windows internet settings, npm,
+and Git. Keep this behavior in sync if the office proxy changes.
+
 Before changing anything on a new machine:
 
 ```powershell

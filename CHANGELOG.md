@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## 2026-05-09
 
+- Added automatic DPE office proxy configuration during installer/updater runs so terminal tools, WinHTTP, npm, Git, and Codex child processes can reach the internet behind the office proxy, with the configured proxy shown in the version command.
 - Changed the GUI installer to request admin rights immediately, start from launchers without a persistent terminal window, and use a thinner progress bar.
 - Suppressed duplicate user notifications during manual and GUI-started updates while keeping notifications enabled for background update checks.
 - Added automatic workstation dependency preparation: Node.js/npm and Codex Desktop/CLI use internet install first and fall back to bundled NAS dependencies before local Revit MCP files are replaced.
