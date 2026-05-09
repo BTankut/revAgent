@@ -1848,6 +1848,7 @@ try {
     $installedVersion = if ($installedState) { [string]$installedState.version } else { "" }
     $installedSha = if ($installedState) { [string]$installedState.packageSha256 } else { "" }
     $installedVersionLabel = Get-VersionLabel $installedVersion
+    $isFirstInstall = [string]::IsNullOrWhiteSpace($installedVersion)
 
     Write-Host "Channel version  : $targetVersion"
     Write-Host "Installed version: $installedVersionLabel"
@@ -1857,7 +1858,7 @@ try {
     $installedManifest = Get-InstalledReleaseManifest -InstalledState $installedState -PackageTarget $PackageTarget
     $revitPayloadChanges = @(Get-RevitPayloadChanges -TargetManifest $releaseManifest -InstalledManifest $installedManifest -PackageTarget $PackageTarget -InstallRoot $InstallRoot -RevitVersion $RevitVersion)
     $releaseComponents = Get-JsonPropertyValue -Object $releaseManifest -Name "components"
-    $requiresRevitClosed = ($null -eq $releaseManifest) -or ($null -eq $releaseComponents) -or ($revitPayloadChanges.Count -gt 0)
+    $requiresRevitClosed = $isFirstInstall -or ($null -eq $releaseManifest) -or ($null -eq $releaseComponents) -or ($revitPayloadChanges.Count -gt 0)
     $skipRevitPayloadInstall = $false
     $revitChangeLabels = @($revitPayloadChanges | ForEach-Object {
             if (-not [string]::IsNullOrWhiteSpace([string]$_.path)) {
@@ -1895,7 +1896,8 @@ try {
     }
 
     if ($requiresRevitClosed) {
-        Write-Host "Revit payload    : changed or unknown; Revit must be closed before applying this update." -ForegroundColor Yellow
+        $revitPayloadReason = if ($isFirstInstall) { "first install" } else { "changed or unknown" }
+        Write-Host "Revit payload    : $revitPayloadReason; Revit must be closed before applying this update." -ForegroundColor Yellow
         if ($revitChangeLabels.Count -gt 0) {
             Write-Host ("Changed Revit files: {0}" -f (($revitChangeLabels | Select-Object -First 8) -join "; "))
             if ($revitChangeLabels.Count -gt 8) {
