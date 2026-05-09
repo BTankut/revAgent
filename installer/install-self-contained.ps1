@@ -11,6 +11,7 @@ param(
     [switch]$SkipCodexUserIntegration,
     [switch]$SkipLegacyCleanup,
     [switch]$SkipRevitPayloadInstall,
+    [switch]$SuppressNextSteps,
     [switch]$Uninstall,
     [switch]$RemoveAgents
 )
@@ -774,16 +775,18 @@ if (-not $SkipCodexUserIntegration) {
 if ($workspaceAgentsInstalled) {
     Write-Host "Workspace AGENTS.md: $workspaceAgentsInstalled"
 }
-Write-Host ""
-Write-Host "Next steps:" -ForegroundColor Yellow
-Write-Host "1. cd $ServerTarget"
-Write-Host "2. npm install --omit=dev"
-Write-Host "3. codex mcp add revit-mcp -- node `"$ServerTarget\build\index.js`""
-Write-Host "4. cd $docsServerSource"
-Write-Host "5. npm install --omit=dev"
-Write-Host "6. powershell -ExecutionPolicy Bypass -File `"$docsServerSource\scripts\build-index.ps1`" -RevitRoot `"$revitInstallRoot`" -OutputPath `"$stateRoot\revit-api-docs\cache\revit-api-docs-$RevitVersion.json`""
-Write-Host "7. codex mcp add revit-api-docs -- node `"$docsServerSource\build\index.js`""
-Write-Host "8. Confirm both servers with: codex mcp list"
-Write-Host "9. Run /skills reload in Codex, or restart Codex"
-Write-Host "10. Open Revit; if prompted for the unsigned add-in, choose Always Load"
-Write-Host "11. Revit MCP starts automatically. Use the ribbon Settings button only to review command availability"
+if (-not $SuppressNextSteps) {
+    Write-Host ""
+    Write-Host "Next steps:" -ForegroundColor Yellow
+    Write-Host "1. cd $ServerTarget"
+    Write-Host "2. npm install --omit=dev --no-audit --no-fund"
+    Write-Host "3. codex mcp add revit-mcp -- node `"$ServerTarget\build\index.js`""
+    Write-Host "4. cd $docsServerSource"
+    Write-Host "5. npm install --omit=dev --no-audit --no-fund"
+    Write-Host "6. powershell -ExecutionPolicy Bypass -File `"$docsServerSource\scripts\build-index.ps1`" -RevitRoot `"$revitInstallRoot`" -OutputPath `"$stateRoot\revit-api-docs\cache\revit-api-docs-$RevitVersion.json`""
+    Write-Host "7. codex mcp add revit-api-docs -- node `"$docsServerSource\build\index.js`""
+    Write-Host "8. Confirm both servers with: codex mcp list"
+    Write-Host "9. Run /skills reload in Codex, or restart Codex"
+    Write-Host "10. Open Revit; if prompted for the unsigned add-in, choose Always Load"
+    Write-Host "11. Revit MCP starts automatically. Use the ribbon Settings button only to review command availability"
+}

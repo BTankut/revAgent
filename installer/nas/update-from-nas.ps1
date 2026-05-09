@@ -1971,6 +1971,7 @@ try {
     if ($SkipCodexUserIntegration) {
         $installArgs["SkipCodexUserIntegration"] = $true
     }
+    $installArgs["SuppressNextSteps"] = $true
     if ($skipRevitPayloadInstall) {
         $installArgs["SkipRevitPayloadInstall"] = $true
     }
@@ -1986,9 +1987,9 @@ try {
             (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
         )
 
-        Invoke-External -FilePath $npmPath -Arguments @("install", "--omit=dev") -WorkingDirectory $ServerTarget
+        Invoke-External -FilePath $npmPath -Arguments @("install", "--omit=dev", "--no-audit", "--no-fund") -WorkingDirectory $ServerTarget
 
-        Invoke-External -FilePath $npmPath -Arguments @("install", "--omit=dev") -WorkingDirectory $docsServerPath
+        Invoke-External -FilePath $npmPath -Arguments @("install", "--omit=dev", "--no-audit", "--no-fund") -WorkingDirectory $docsServerPath
 
         $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
         Invoke-External -FilePath $powershellPath -Arguments @(

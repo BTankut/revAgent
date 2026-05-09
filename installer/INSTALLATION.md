@@ -49,11 +49,11 @@ $RepoRoot = (Resolve-Path .).Path
 powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022
 
 cd C:\ProgramData\DPE\RevitMCP\runtime
-npm install --omit=dev
+npm install --omit=dev --no-audit --no-fund
 codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
 
 cd "$RepoRoot\installer\revit-api-docs-mcp"
-npm install --omit=dev
+npm install --omit=dev --no-audit --no-fund
 powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
 codex mcp add revit-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```

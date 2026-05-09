@@ -134,7 +134,7 @@ C:\ProgramData\DPE\RevitMCP\updater\logs\
 - Verifies the package SHA256 hash before install.
 - Replaces the managed local package copy under `C:\ProgramData\DPE\RevitMCP\package`.
 - Runs `install-self-contained.ps1`.
-- Runs `npm install --omit=dev` for the runtime and docs MCP servers.
+- Runs `npm install --omit=dev --no-audit --no-fund` for the runtime and docs MCP servers.
 - Re-registers Codex MCP entries for the current office flow.
 - Writes local and NAS report JSON files.
 
