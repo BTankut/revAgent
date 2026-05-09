@@ -138,7 +138,7 @@ C:\ProgramData\DPE\RevitMCP\updater\logs\
 - Replaces the managed local package copy under `C:\ProgramData\DPE\RevitMCP\package`.
 - Runs `install-self-contained.ps1`.
 - Runs `npm install --omit=dev --no-audit --no-fund` for the runtime and docs MCP servers.
-- Re-registers Codex MCP entries through the current user's Codex Desktop command.
+- Re-registers Codex MCP entries through the current user's Codex Desktop command when available, otherwise by updating `%USERPROFILE%\.codex\config.toml` directly.
 - Writes local and NAS report JSON files.
 
 This is a full package update, not a file-level delta update.
@@ -148,9 +148,11 @@ This is a full package update, not a file-level delta update.
 - Revit-loaded add-in and command files are not replaced while `Revit.exe` is
   running; those updates are deferred so the user can save/sync and close
   Revit. Non-Revit payload updates may still be applied while Revit is open.
-- Missing Node.js/npm or the Codex Desktop command is detected before local
+- Missing Node.js/npm or missing Codex Desktop install is detected before local
   Revit MCP files are replaced. Manual GUI installs can pause for Codex setup;
-  background update checks do not block waiting for user setup.
+  background update checks do not block waiting for user setup. If Codex
+  Desktop is installed but its command helper is missing, MCP entries are
+  written directly to `%USERPROFILE%\.codex\config.toml`.
 - Pending updates that require the user to close Revit show a throttled user
   notification instead of failing silently in the background.
 - Official Autodesk Revit and Windows system folders are not deleted.

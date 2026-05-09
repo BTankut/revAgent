@@ -2,6 +2,10 @@
 
 All notable Revit MCP workstation deployment changes are tracked here.
 
+## 2026-05-10
+
+- Added a direct Codex `config.toml` MCP registration fallback when Codex Desktop is installed but its local command helper has not been created yet.
+
 ## 2026-05-09
 
 - Added automatic DPE office proxy configuration during installer/updater runs so terminal tools, WinHTTP, npm, Git, and Codex child processes can reach the internet behind the office proxy, with the configured proxy shown in the version command.

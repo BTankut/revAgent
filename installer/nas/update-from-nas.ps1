@@ -1051,29 +1051,6 @@ function Ensure-CodexDesktop {
     throw "Codex Desktop bu Windows kullanicisi icin kurulu degil. Proxy ayarlari ve Codex calisma klasoru hazir. Codex Desktop'u manuel kurup oturum acin, sonra installer/updater'i tekrar calistirin."
 }
 
-function Ensure-CodexDesktopCommand {
-    Remove-ObsoleteCodexManagedPayloads
-    Ensure-CodexWorkspaceRoot
-
-    $codexPath = Resolve-CodexDesktopCommand
-    if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
-        return $codexPath
-    }
-
-    if ($AllowManualCodexSetup) {
-        $reason = "Codex Desktop kurulmus veya kuruluyor olabilir, ancak MCP kayit komutu henuz bulunamadi."
-        if (Show-ManualCodexSetupPrompt -Reason $reason) {
-            Refresh-DependencyPath
-            $codexPath = Resolve-CodexDesktopCommand
-            if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
-                return $codexPath
-            }
-        }
-    }
-
-    throw "Codex Desktop MCP kayit komutu bulunamadi. Codex Desktop'u bir kez acip oturum/kurulum islemini tamamlayin, sonra installer/updater'i tekrar calistirin. Beklenen komut yolu: $env:LOCALAPPDATA\OpenAI\Codex\bin\codex.exe"
-}
-
 function Ensure-UpdateDependencies {
     param(
         [switch]$SkipNpmInstall,
@@ -1088,8 +1065,85 @@ function Ensure-UpdateDependencies {
 
     if (-not $SkipCodexMcpRegistration) {
         Ensure-CodexDesktop
-        [void](Ensure-CodexDesktopCommand)
     }
+}
+
+function ConvertTo-TomlString {
+    param([string]$Value)
+
+    if ($null -eq $Value) {
+        return "''"
+    }
+
+    if ($Value -notmatch "'") {
+        return "'" + $Value + "'"
+    }
+
+    $escaped = $Value.Replace("\", "\\").Replace('"', '\"')
+    $escaped = $escaped -replace "`r", "\r" -replace "`n", "\n"
+    return '"' + $escaped + '"'
+}
+
+function New-CodexMcpServerTomlBlock {
+    param(
+        [string]$Name,
+        [string]$Command,
+        [string[]]$McpArgs
+    )
+
+    $argText = (@($McpArgs) | ForEach-Object { ConvertTo-TomlString -Value $_ }) -join ", "
+    return @(
+        "[mcp_servers.$Name]",
+        ("command = {0}" -f (ConvertTo-TomlString -Value $Command)),
+        ("args = [{0}]" -f $argText),
+        ""
+    ) -join "`r`n"
+}
+
+function Set-CodexMcpServerConfig {
+    param(
+        [string]$Name,
+        [string]$Command,
+        [string[]]$McpArgs
+    )
+
+    $configRoot = Join-Path $env:USERPROFILE ".codex"
+    New-Item -ItemType Directory -Path $configRoot -Force | Out-Null
+    $configPath = Join-Path $configRoot "config.toml"
+    $content = ""
+    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+        $content = Get-Content -Raw -LiteralPath $configPath
+    }
+
+    $block = New-CodexMcpServerTomlBlock -Name $Name -Command $Command -McpArgs $McpArgs
+    $pattern = "(?ms)^\[mcp_servers\.$([regex]::Escape($Name))\]\r?\n.*?(?=^\[|\z)"
+    if ($content -match $pattern) {
+        $content = [regex]::Replace($content, $pattern, $block)
+    }
+    else {
+        if (-not [string]::IsNullOrWhiteSpace($content) -and -not $content.EndsWith("`n")) {
+            $content += "`r`n"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($content)) {
+            $content += "`r`n"
+        }
+        $content += $block
+    }
+
+    Set-Content -LiteralPath $configPath -Value $content -Encoding UTF8
+    return $configPath
+}
+
+function Register-CodexMcpServersInConfig {
+    param(
+        [string]$NodePath,
+        [string]$RuntimeServerPath,
+        [string]$DocsServerPath
+    )
+
+    $configPath = Set-CodexMcpServerConfig -Name "revit-mcp" -Command $NodePath -McpArgs @($RuntimeServerPath)
+    [void](Set-CodexMcpServerConfig -Name "revit-api-docs" -Command $NodePath -McpArgs @($DocsServerPath))
+    Write-Host "Codex MCP config : $configPath"
 }
 
 function Resolve-RevitInstallRoot {
@@ -1991,22 +2045,39 @@ try {
     }
 
     if (-not $SkipCodexMcpRegistration) {
-        $codexPath = Ensure-CodexDesktopCommand
+        Ensure-CodexDesktop
         $nodePath = Resolve-RequiredCommand -Name "node.exe" -Candidates @(
             (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
             (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")
         )
-        try {
-            & $codexPath mcp remove revit-mcp 2>$null | Out-Null
-        }
-        catch {}
-        try {
-            & $codexPath mcp remove revit-api-docs 2>$null | Out-Null
-        }
-        catch {}
+        $runtimeServerPath = Join-Path $ServerTarget "build\index.js"
+        $docsServerEntryPath = Join-Path $docsServerPath "build\index.js"
+        $registeredWithCommand = $false
+        $codexPath = Resolve-CodexDesktopCommand
+        if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
+            try {
+                try {
+                    & $codexPath mcp remove revit-mcp 2>$null | Out-Null
+                }
+                catch {}
+                try {
+                    & $codexPath mcp remove revit-api-docs 2>$null | Out-Null
+                }
+                catch {}
 
-        Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-mcp", "--", $nodePath, (Join-Path $ServerTarget "build\index.js")) -WorkingDirectory $WorkRoot
-        Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-api-docs", "--", $nodePath, (Join-Path $docsServerPath "build\index.js")) -WorkingDirectory $WorkRoot
+                Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-mcp", "--", $nodePath, $runtimeServerPath) -WorkingDirectory $WorkRoot
+                Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-api-docs", "--", $nodePath, $docsServerEntryPath) -WorkingDirectory $WorkRoot
+                $registeredWithCommand = $true
+            }
+            catch {
+                Write-Warning "Codex MCP command registration failed; updating config.toml directly. $($_.Exception.Message)"
+            }
+        }
+
+        if (-not $registeredWithCommand) {
+            Write-Host "Codex MCP command was not found; updating config.toml directly."
+            Register-CodexMcpServersInConfig -NodePath $nodePath -RuntimeServerPath $runtimeServerPath -DocsServerPath $docsServerEntryPath
+        }
     }
 
     $newState = [ordered]@{
