@@ -131,11 +131,11 @@ function Invoke-InitialUpdateCheck {
     )
 
     if ($env:REVIT_MCP_AUDIT_ONLY) {
-        & $UpdaterPath -ConfigPath $UpdaterConfigPath -AuditOnly
+        & $UpdaterPath -ConfigPath $UpdaterConfigPath -AuditOnly -NoNotifyUser
         return
     }
 
-    & $UpdaterPath -ConfigPath $UpdaterConfigPath
+    & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser
 }
 
 function Write-UpdaterCommandFiles {
@@ -151,7 +151,7 @@ function Write-UpdaterCommandFiles {
     $manualCommandPath = Join-Path $UpdaterWorkRoot "Update-Revit-MCP-Now.cmd"
     $manualCommandLines = @(
         "@echo off",
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`"",
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -NoNotifyUser",
         "pause"
     )
     $manualCommandLines | Set-Content -LiteralPath $manualCommandPath -Encoding ASCII

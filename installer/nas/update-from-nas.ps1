@@ -30,6 +30,7 @@ param(
     [switch]$SkipCodexUserIntegration,
     [string]$LogPath = "",
     [switch]$NotifyUser,
+    [switch]$NoNotifyUser,
     [ValidateRange(15, 10080)]
     [int]$NotificationThrottleMinutes = 240,
     [switch]$AllowReplaceGitPackageTarget
@@ -971,9 +972,13 @@ if ($config) {
     if ($config.skipNpmInstall) { $SkipNpmInstall = $true }
     if ($config.skipCodexMcpRegistration) { $SkipCodexMcpRegistration = $true }
     if ($config.skipCodexUserIntegration) { $SkipCodexUserIntegration = $true }
-    if ($config.notifyUser) { $NotifyUser = $true }
+    if ($config.notifyUser -and -not $NoNotifyUser) { $NotifyUser = $true }
     if ($config.notificationThrottleMinutes) { $NotificationThrottleMinutes = [int]$config.notificationThrottleMinutes }
     if ([string]::IsNullOrWhiteSpace($LogPath) -and $config.updateLogPath) { $LogPath = [string]$config.updateLogPath }
+}
+
+if ($NoNotifyUser) {
+    $NotifyUser = $false
 }
 
 if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) {
