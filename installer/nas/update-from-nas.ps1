@@ -420,6 +420,25 @@ function Resolve-DependencyFile {
     return ""
 }
 
+function Resolve-DependencyFilePattern {
+    param([string]$Pattern)
+
+    foreach ($root in Get-DependencySearchRoots) {
+        if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path -LiteralPath $root -PathType Container)) {
+            continue
+        }
+
+        $match = Get-ChildItem -LiteralPath $root -Filter $Pattern -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+        if ($match) {
+            return $match.FullName
+        }
+    }
+
+    return ""
+}
+
 function Resolve-DependencyDirectory {
     param([string]$DirectoryName)
 
@@ -933,12 +952,23 @@ function Ensure-NodeRuntime {
     return $status
 }
 
+function Get-CodexDesktopAppxPackage {
+    try {
+        return Get-AppxPackage -Name "OpenAI.Codex" -ErrorAction SilentlyContinue |
+            Sort-Object Version -Descending |
+            Select-Object -First 1
+    }
+    catch {
+        return $null
+    }
+}
+
 function Resolve-CodexDesktopCommand {
     Refresh-DependencyPath
     foreach ($candidate in @(
-        (Join-Path $InstallRoot "dependencies\codex_app\resources\codex.exe"),
-        (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\codex.exe")
-    )) {
+            (Join-Path $InstallRoot "dependencies\codex_app\resources\codex.exe"),
+            (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\codex.exe")
+        )) {
         if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
         $expanded = [Environment]::ExpandEnvironmentVariables($candidate)
         if (Test-Path -LiteralPath $expanded -PathType Leaf) {
@@ -949,33 +979,8 @@ function Resolve-CodexDesktopCommand {
     return Resolve-OptionalCommand -Names @("codex.cmd", "codex.exe", "codex")
 }
 
-function Test-ManagedCodexDesktopAvailable {
-    return (Test-Path -LiteralPath (Join-Path $InstallRoot "dependencies\codex_app\Codex.exe") -PathType Leaf)
-}
-
 function Test-CodexDesktopAvailable {
-    if (Test-ManagedCodexDesktopAvailable) {
-        return $true
-    }
-
-    try {
-        $package = Get-AppxPackage -Name "OpenAI.Codex" -ErrorAction SilentlyContinue
-        if ($package) {
-            return $true
-        }
-    }
-    catch {}
-
-    foreach ($candidate in @(
-            (Join-Path $InstallRoot "dependencies\codex_app\Codex.exe"),
-            (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\Codex.exe")
-        )) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            return $true
-        }
-    }
-
-    return $false
+    return $null -ne (Get-CodexDesktopAppxPackage)
 }
 
 function Install-CodexDesktopFromWinget {
@@ -999,9 +1004,8 @@ function Install-CodexDesktopFromWinget {
 }
 
 function New-CodexDesktopShortcut {
-    param([string]$CodexExePath)
-
-    if ([string]::IsNullOrWhiteSpace($CodexExePath) -or -not (Test-Path -LiteralPath $CodexExePath -PathType Leaf)) {
+    $package = Get-CodexDesktopAppxPackage
+    if (-not $package) {
         return
     }
 
@@ -1014,11 +1018,16 @@ function New-CodexDesktopShortcut {
         $shortcutDir = Join-Path $programsRoot "DPE"
         New-Item -ItemType Directory -Path $shortcutDir -Force | Out-Null
         $shortcutPath = Join-Path $shortcutDir "Codex.lnk"
+        $appId = "$($package.PackageFamilyName)!App"
+        $iconPath = Join-Path $package.InstallLocation "app\Codex.exe"
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
-        $shortcut.TargetPath = $CodexExePath
-        $shortcut.WorkingDirectory = Split-Path -Parent $CodexExePath
-        $shortcut.IconLocation = $CodexExePath
+        $shortcut.TargetPath = Join-Path $env:WINDIR "explorer.exe"
+        $shortcut.Arguments = "shell:AppsFolder\$appId"
+        $shortcut.WorkingDirectory = $package.InstallLocation
+        if (Test-Path -LiteralPath $iconPath -PathType Leaf) {
+            $shortcut.IconLocation = "$iconPath,0"
+        }
         $shortcut.Save()
         Write-Host "Codex Desktop shortcut: $shortcutPath"
     }
@@ -1027,46 +1036,64 @@ function New-CodexDesktopShortcut {
     }
 }
 
+function Install-CodexDesktopFromBundledMsix {
+    $msixPath = Resolve-DependencyFilePattern -Pattern "OpenAI.Codex_*.msix"
+    if ([string]::IsNullOrWhiteSpace($msixPath)) {
+        return $false
+    }
+
+    Write-Host "Installing Codex Desktop from bundled MSIX: $msixPath"
+    try {
+        Add-AppxPackage -Path $msixPath -ForceUpdateFromAnyVersion -ForceApplicationShutdown -ErrorAction Stop
+        return (Test-CodexDesktopAvailable)
+    }
+    catch {
+        Write-Warning "Bundled Codex Desktop MSIX install failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Install-CodexDesktopFromBundledApp {
     $source = Resolve-DependencyDirectory -DirectoryName "codex_app"
     if ([string]::IsNullOrWhiteSpace($source)) {
-        throw "Bundled Codex Desktop app folder was not found under NAS tools dependencies or local package dependencies."
+        throw "Bundled Codex command payload folder was not found under NAS tools dependencies or local package dependencies."
     }
 
     $dependenciesRoot = Join-Path $InstallRoot "dependencies"
     $target = Join-Path $dependenciesRoot "codex_app"
-    Write-Host "Installing Codex Desktop from bundled app: $source"
-    $installedPath = Copy-DirectoryFresh -Source $source -Destination $target -AllowedRoot $dependenciesRoot
-    $codexExePath = Join-Path $installedPath "Codex.exe"
-    New-CodexDesktopShortcut -CodexExePath $codexExePath
+    Write-Host "Installing Codex Desktop command payload from bundled app: $source"
+    [void](Copy-DirectoryFresh -Source $source -Destination $target -AllowedRoot $dependenciesRoot)
     Refresh-DependencyPath
 }
 
 function Ensure-CodexDesktop {
-    if (Test-ManagedCodexDesktopAvailable) {
+    if (Test-CodexDesktopAvailable) {
+        New-CodexDesktopShortcut
         return
     }
 
-    $bundledSource = Resolve-DependencyDirectory -DirectoryName "codex_app"
-    if (-not [string]::IsNullOrWhiteSpace($bundledSource)) {
-        Install-CodexDesktopFromBundledApp
+    if (Install-CodexDesktopFromBundledMsix) {
+        New-CodexDesktopShortcut
         return
     }
 
     if (Test-CodexDesktopAvailable) {
+        New-CodexDesktopShortcut
         return
     }
 
     $installedFromInternet = Install-CodexDesktopFromWinget
-    if (-not (Test-CodexDesktopAvailable)) {
-        if (-not $installedFromInternet) {
-            Write-Host "Falling back to bundled Codex Desktop app."
-        }
-        else {
-            Write-Warning "Internet install completed but Codex Desktop was not detected; falling back to bundled app."
-        }
-        Install-CodexDesktopFromBundledApp
+    if (Test-CodexDesktopAvailable) {
+        New-CodexDesktopShortcut
+        return
     }
+
+    if ($installedFromInternet) {
+        Write-Warning "Internet install completed but Codex Desktop Appx package was not detected."
+    }
+
+    Install-CodexDesktopFromBundledApp
+    throw "Codex Desktop Appx package could not be prepared. Add OpenAI.Codex_*.msix to NAS tools dependencies or install Codex Desktop from Microsoft Store."
 }
 
 function Ensure-CodexDesktopCommand {
@@ -1075,11 +1102,11 @@ function Ensure-CodexDesktopCommand {
         return $codexPath
     }
 
-    Write-Host "Codex Desktop command was not found. Preparing managed Codex Desktop app."
-    Ensure-CodexDesktop
+    Write-Host "Codex Desktop command was not found. Preparing managed Codex command payload."
+    Install-CodexDesktopFromBundledApp
     $codexPath = Resolve-CodexDesktopCommand
     if ([string]::IsNullOrWhiteSpace($codexPath)) {
-        throw "Codex Desktop command could not be prepared automatically from the bundled Codex Desktop app."
+        throw "Codex Desktop command could not be prepared automatically from the bundled Codex command payload."
     }
 
     return $codexPath

@@ -37,6 +37,7 @@ A normal `git commit` or `git push` does not update the office by itself.
     Install-Revit-MCP-Updater-GUI.ps1
     dependencies\
       node-v24.14.1-x64.msi
+      OpenAI.Codex_*.msix
       codex_app\
     install-updater-task.ps1
     update-from-nas.ps1
@@ -66,10 +67,11 @@ Workstation prerequisites handled by the installer:
 - Node.js/npm is installed automatically. The updater first tries the internet
   command-line install path, then falls back to the bundled NAS MSI under
   `tools\dependencies`.
-- Codex Desktop is prepared automatically from the managed NAS `codex_app`
-  folder under `tools\dependencies`. The updater uses the command embedded in
-  that Desktop bundle for MCP registration and does not install a separate
-  npm Codex package.
+- Codex Desktop is prepared automatically from the managed NAS
+  `OpenAI.Codex_*.msix` package under `tools\dependencies`. The updater creates
+  the user shortcut against the real Windows Appx registration. The separate
+  `codex_app` folder is kept only as a command payload for MCP registration; it
+  is not used as the user-facing Desktop launcher.
 
 Large dependency payloads are intentionally kept out of Git under
 `installer\nas\dependencies\`. The publish step copies that local folder to
