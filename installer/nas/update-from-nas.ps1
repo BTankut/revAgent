@@ -966,7 +966,7 @@ function Get-CodexDesktopAppxPackage {
 function Resolve-CodexDesktopCommand {
     Refresh-DependencyPath
     foreach ($candidate in @(
-            (Join-Path $InstallRoot "dependencies\codex_app\resources\codex.exe"),
+            (Join-Path $InstallRoot "dependencies\codex_command_payload\resources\codex.exe"),
             (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\codex.exe")
         )) {
         if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
@@ -976,7 +976,7 @@ function Resolve-CodexDesktopCommand {
         }
     }
 
-    return Resolve-OptionalCommand -Names @("codex.cmd", "codex.exe", "codex")
+    return ""
 }
 
 function Test-CodexDesktopAvailable {
@@ -1053,16 +1053,37 @@ function Install-CodexDesktopFromBundledMsix {
     }
 }
 
-function Install-CodexDesktopFromBundledApp {
-    $source = Resolve-DependencyDirectory -DirectoryName "codex_app"
+function Remove-LegacyCodexCommandPayload {
+    $dependenciesRoot = Join-Path $InstallRoot "dependencies"
+    $legacyTarget = Join-Path $dependenciesRoot "codex_app"
+    if (-not (Test-Path -LiteralPath $legacyTarget)) {
+        return
+    }
+
+    try {
+        $safeLegacyTarget = Assert-PathUnderRoot -Path $legacyTarget -Root $dependenciesRoot
+        Remove-Item -LiteralPath $safeLegacyTarget -Recurse -Force
+        Write-Host "Removed legacy Codex command payload: $safeLegacyTarget"
+    }
+    catch {
+        Write-Warning "Could not remove legacy Codex command payload: $($_.Exception.Message)"
+    }
+}
+
+function Install-CodexCommandPayloadFromBundle {
+    $source = Resolve-DependencyDirectory -DirectoryName "codex_command_payload"
+    if ([string]::IsNullOrWhiteSpace($source)) {
+        $source = Resolve-DependencyDirectory -DirectoryName "codex_app"
+    }
     if ([string]::IsNullOrWhiteSpace($source)) {
         throw "Bundled Codex command payload folder was not found under NAS tools dependencies or local package dependencies."
     }
 
     $dependenciesRoot = Join-Path $InstallRoot "dependencies"
-    $target = Join-Path $dependenciesRoot "codex_app"
-    Write-Host "Installing Codex Desktop command payload from bundled app: $source"
+    $target = Join-Path $dependenciesRoot "codex_command_payload"
+    Write-Host "Installing Codex command payload from bundle: $source"
     [void](Copy-DirectoryFresh -Source $source -Destination $target -AllowedRoot $dependenciesRoot)
+    Remove-LegacyCodexCommandPayload
     Refresh-DependencyPath
 }
 
@@ -1092,18 +1113,37 @@ function Ensure-CodexDesktop {
         Write-Warning "Internet install completed but Codex Desktop Appx package was not detected."
     }
 
-    Install-CodexDesktopFromBundledApp
+    Install-CodexCommandPayloadFromBundle
     throw "Codex Desktop Appx package could not be prepared. Add OpenAI.Codex_*.msix to NAS tools dependencies or install Codex Desktop from Microsoft Store."
 }
 
 function Ensure-CodexDesktopCommand {
+    Remove-LegacyCodexCommandPayload
+
+    $managedCodexPath = Join-Path $InstallRoot "dependencies\codex_command_payload\resources\codex.exe"
+    if (-not (Test-Path -LiteralPath $managedCodexPath -PathType Leaf)) {
+        try {
+            Write-Host "Preparing managed Codex command payload."
+            Install-CodexCommandPayloadFromBundle
+        }
+        catch {
+            $codexPath = Resolve-CodexDesktopCommand
+            if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
+                Write-Warning "Could not prepare managed Codex command payload; using installed Codex Desktop command: $codexPath"
+                return $codexPath
+            }
+
+            throw
+        }
+    }
+
     $codexPath = Resolve-CodexDesktopCommand
     if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
         return $codexPath
     }
 
     Write-Host "Codex Desktop command was not found. Preparing managed Codex command payload."
-    Install-CodexDesktopFromBundledApp
+    Install-CodexCommandPayloadFromBundle
     $codexPath = Resolve-CodexDesktopCommand
     if ([string]::IsNullOrWhiteSpace($codexPath)) {
         throw "Codex Desktop command could not be prepared automatically from the bundled Codex command payload."

@@ -38,7 +38,7 @@ A normal `git commit` or `git push` does not update the office by itself.
     dependencies\
       node-v24.14.1-x64.msi
       OpenAI.Codex_*.msix
-      codex_app\
+      codex_command_payload\
     install-updater-task.ps1
     update-from-nas.ps1
     show-installed-version.ps1
@@ -70,8 +70,9 @@ Workstation prerequisites handled by the installer:
 - Codex Desktop is prepared automatically from the managed NAS
   `OpenAI.Codex_*.msix` package under `tools\dependencies`. The updater creates
   the user shortcut against the real Windows Appx registration. The separate
-  `codex_app` folder is kept only as a command payload for MCP registration; it
-  is not used as the user-facing Desktop launcher.
+  `codex_command_payload` folder is kept only for MCP registration commands; it
+  is not used as the user-facing Desktop launcher. Older `codex_app` payload
+  folders are removed from managed workstation installs during update.
 
 Large dependency payloads are intentionally kept out of Git under
 `installer\nas\dependencies\`. The publish step copies that local folder to

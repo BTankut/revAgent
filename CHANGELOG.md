@@ -6,6 +6,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 - Added automatic DPE office proxy configuration during installer/updater runs so terminal tools, WinHTTP, npm, Git, and Codex child processes can reach the internet behind the office proxy, with the configured proxy shown in the version command.
 - Changed Codex Desktop deployment to install/use the real Windows Appx registration from the bundled MSIX and to point DPE shortcuts at `shell:AppsFolder`, avoiding launches from a copied Electron folder.
+- Renamed the managed Codex command dependency from `codex_app` to `codex_command_payload`; updates now remove the old payload folder from managed installs.
 - Fixed first-install Revit payload detection so new workstation installs no longer say Revit can stay open while add-in files are being written.
 - Suppressed manual next-step instructions and npm audit/funding noise from NAS installer logs.
 - Changed the GUI installer to request admin rights immediately, start from launchers without a persistent terminal window, and use a thinner progress bar.
