@@ -4,10 +4,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## 2026-05-09
 
+- Changed the GUI installer to request admin rights immediately, start from launchers without a persistent terminal window, and use a thinner progress bar.
 - Simplified NAS deployment to a single stable release channel and removed alternate-channel tooling.
 - Added periodic workstation update checks every 30 minutes, with a startup-loop fallback when Scheduled Task registration is blocked.
 - Added user notifications for pending Revit-close-required updates and successful background updates.
-- Added a GUI option to relaunch the installer with admin rights when the user wants to retry Scheduled Task registration.
 
 ## 2026-05-08
 

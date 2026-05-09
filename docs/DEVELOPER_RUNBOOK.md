@@ -353,11 +353,10 @@ the Startup fallback launches a hidden `auto-update-loop.ps1` process for the
 user session and checks on the same interval. This keeps long-running office
 workstations updated even when they are rarely restarted.
 
-The GUI has an `Admin olarak ac` button. Use it when the current Windows user
-has admin rights and the operator wants to retry Scheduled Task registration
-with elevation. Be careful with different admin credentials: if Windows opens
-the GUI as a different admin account, user-profile Codex integration may be
-written under that admin profile instead of the operator profile.
+The GUI requests admin rights immediately at startup. If Windows opens the GUI
+with different admin credentials, user-profile Codex integration may be written
+under that admin profile instead of the operator profile. Prefer approving UAC
+with the same Windows user when possible.
 
 Background updater notifications:
 

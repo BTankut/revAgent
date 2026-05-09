@@ -68,6 +68,38 @@ function Test-IsAdministrator {
     }
 }
 
+function Restart-ElevatedAndExit {
+    $arguments = @(
+        "-STA",
+        "-NoProfile",
+        "-WindowStyle", "Hidden",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $PSCommandPath,
+        "-ChannelManifestPath", $ChannelManifestPath,
+        "-InstallRoot", $InstallRoot
+    )
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $powershellPath
+    $psi.Arguments = Join-CommandLine -Arguments $arguments
+    $psi.UseShellExecute = $true
+    $psi.Verb = "runas"
+
+    try {
+        [System.Diagnostics.Process]::Start($psi) | Out-Null
+    }
+    catch {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show(
+            "Kurulum icin admin yetkisi gerekli.`r`n`r`n$($_.Exception.Message)",
+            "Revit MCP Installer",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    }
+
+    exit
+}
+
 if ($SmokeTest) {
     if (-not (Test-Path -LiteralPath $installerPath)) {
         throw "Installer script was not found: $installerPath"
@@ -81,6 +113,10 @@ if ($SmokeTest) {
     Write-Host "Channel  : $ChannelManifestPath"
     Write-Host "Install  : $InstallRoot"
     return
+}
+
+if (-not (Test-IsAdministrator)) {
+    Restart-ElevatedAndExit
 }
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -120,11 +156,14 @@ $details.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 8)
 $root.Controls.Add($details, 0, 1)
 
 $statusPanel = New-Object System.Windows.Forms.TableLayoutPanel
-$statusPanel.Dock = "Fill"
+$statusPanel.Dock = "Top"
+$statusPanel.AutoSize = $true
+$statusPanel.AutoSizeMode = "GrowAndShrink"
 $statusPanel.ColumnCount = 2
 $statusPanel.RowCount = 1
 $statusPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
-$statusPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 180))) | Out-Null
+$statusPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 170))) | Out-Null
+$statusPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
 $root.Controls.Add($statusPanel, 0, 2)
 
 $statusLabel = New-Object System.Windows.Forms.Label
@@ -134,8 +173,12 @@ $statusLabel.AutoSize = $true
 $statusPanel.Controls.Add($statusLabel, 0, 0)
 
 $progress = New-Object System.Windows.Forms.ProgressBar
-$progress.Dock = "Fill"
+$progress.Dock = "None"
 $progress.Style = "Blocks"
+$progress.Width = 160
+$progress.Height = 10
+$progress.Margin = New-Object System.Windows.Forms.Padding(0, 5, 0, 0)
+$progress.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
 $statusPanel.Controls.Add($progress, 1, 0)
 
 $logBox = New-Object System.Windows.Forms.TextBox
@@ -172,13 +215,6 @@ $openLogsButton.Width = 110
 $openLogsButton.Height = 32
 $buttonPanel.Controls.Add($openLogsButton)
 
-$adminButton = New-Object System.Windows.Forms.Button
-$adminButton.Text = "Admin olarak ac"
-$adminButton.Width = 120
-$adminButton.Height = 32
-$adminButton.Visible = -not (Test-IsAdministrator)
-$buttonPanel.Controls.Add($adminButton)
-
 $closeButton = New-Object System.Windows.Forms.Button
 $closeButton.Text = "Kapat"
 $closeButton.Width = 90
@@ -192,7 +228,6 @@ function Set-ButtonsEnabled {
     param([bool]$Enabled)
     $runButton.Enabled = $Enabled
     $versionButton.Enabled = $Enabled
-    $adminButton.Enabled = $Enabled
     $closeButton.Enabled = $Enabled
 }
 
@@ -273,45 +308,6 @@ $timer.Add_Tick({
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         }
-    }
-})
-
-$adminButton.Add_Click({
-    $result = [System.Windows.Forms.MessageBox]::Show(
-        "Scheduled task kurulumunu denemek icin pencereyi admin yetkisiyle yeniden acabiliriz.`r`n`r`nFarkli bir admin hesabi ile acarsaniz Codex kullanici ayarlari o hesaba yazilabilir. Emin degilseniz bu adimi atlayin; sistem Startup fallback ile yine calisir.",
-        "Revit MCP Installer",
-        [System.Windows.Forms.MessageBoxButtons]::YesNo,
-        [System.Windows.Forms.MessageBoxIcon]::Warning)
-
-    if ($result -ne [System.Windows.Forms.DialogResult]::Yes) {
-        return
-    }
-
-    $arguments = @(
-        "-STA",
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $PSCommandPath,
-        "-ChannelManifestPath", $ChannelManifestPath,
-        "-InstallRoot", $InstallRoot
-    )
-
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $powershellPath
-    $psi.Arguments = Join-CommandLine -Arguments $arguments
-    $psi.UseShellExecute = $true
-    $psi.Verb = "runas"
-
-    try {
-        [System.Diagnostics.Process]::Start($psi) | Out-Null
-        $form.Close()
-    }
-    catch {
-        [System.Windows.Forms.MessageBox]::Show(
-            "Admin olarak yeniden baslatilamadi.`r`n$($_.Exception.Message)",
-            "Revit MCP Installer",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
     }
 })
 

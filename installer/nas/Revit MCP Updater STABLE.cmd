@@ -19,5 +19,5 @@ if not exist "%CHANNEL%" (
   exit /b 1
 )
 
-"%POWERSHELL%" -STA -NoProfile -ExecutionPolicy Bypass -File "%GUI%" -ChannelManifestPath "%CHANNEL%"
-exit /b %ERRORLEVEL%
+start "Revit MCP Installer" "%POWERSHELL%" -STA -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%GUI%" -ChannelManifestPath "%CHANNEL%"
+exit /b 0

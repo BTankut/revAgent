@@ -60,14 +60,14 @@ On each workstation, close Revit and run:
 ```
 
 The GUI shows the live install/update log and provides a button to open the log
-folder if something fails.
+folder if something fails. The GUI launchers start PowerShell hidden, so a
+separate terminal window should not remain beside the installer.
 
-The updater tries to register a per-user Scheduled Task. The task checks at
-logon and then every 30 minutes during the day. If Windows blocks Scheduled
-Task registration because of permissions, the installer creates a Startup
-fallback that keeps a hidden per-user update loop running with the same
-interval. The GUI also includes an admin relaunch button for workstations where
-the operator wants to retry Scheduled Task registration with elevated rights.
+The GUI requests admin rights as soon as it opens. The updater then registers a
+per-user Scheduled Task that checks at logon and every 30 minutes during the
+day. If Windows still blocks Scheduled Task registration, the installer creates
+a Startup fallback that keeps a hidden per-user update loop running with the
+same interval.
 
 If you want to copy a single launcher to a workstation desktop, copy the
 standalone launcher instead:

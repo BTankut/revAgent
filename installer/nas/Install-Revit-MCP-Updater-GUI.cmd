@@ -13,5 +13,5 @@ if not exist "%GUI%" (
     exit /b 1
 )
 
-"%POWERSHELL%" -STA -NoProfile -ExecutionPolicy Bypass -File "%GUI%"
-exit /b %ERRORLEVEL%
+start "Revit MCP Installer" "%POWERSHELL%" -STA -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%GUI%"
+exit /b 0
