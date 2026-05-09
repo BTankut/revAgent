@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Detects existing revit-mcp skill installations under known host
-    locations (Codex CLI, Claude Code), determines whether each one is a
+    locations (Codex Desktop, Claude Code), determines whether each one is a
     git clone, a symlink, or a plain copy, and updates it in place using
     the matching strategy:
 
@@ -163,7 +163,7 @@ Write-Ok "Source repo looks valid."
 
 # 2. Candidate install locations (user-level, Windows)
 $candidates = @(
-    @{ Host = "Codex CLI";   Path = Join-Path $env:USERPROFILE ".codex\skills\revit-mcp" },
+    @{ Host = "Codex Desktop";   Path = Join-Path $env:USERPROFILE ".codex\skills\revit-mcp" },
     @{ Host = "Claude Code"; Path = Join-Path $env:USERPROFILE ".claude\skills\revit-mcp" }
 )
 foreach ($extra in $ExtraPaths) {
@@ -181,6 +181,6 @@ Write-Section "Summary"
 $results | Format-Table -AutoSize
 
 Write-Host "`nNext steps:" -ForegroundColor Cyan
-Write-Host "  - Codex CLI   : /skills reload"
+Write-Host "  - Codex Desktop: /skills reload"
 Write-Host "  - Claude Code : start a new session"
 Write-Host "  - Cursor      : restart Cursor"

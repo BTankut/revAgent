@@ -602,7 +602,9 @@ function Set-RevitMcpWinInetProxy {
 
     try {
         $internetSettingsPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-        New-Item -Path $internetSettingsPath -Force | Out-Null
+        if (-not (Test-Path -Path $internetSettingsPath)) {
+            New-Item -Path $internetSettingsPath -Force | Out-Null
+        }
         $current = Get-ItemProperty -Path $internetSettingsPath -ErrorAction SilentlyContinue
         $alreadyConfigured = $current -and
             ([int]$current.ProxyEnable -eq 1) -and
@@ -931,16 +933,31 @@ function Ensure-NodeRuntime {
     return $status
 }
 
-function Resolve-CodexCommand {
+function Resolve-CodexDesktopCommand {
     Refresh-DependencyPath
-    return Resolve-OptionalCommand -Names @("codex.cmd", "codex.exe", "codex") -Candidates @(
-        (Join-Path $env:APPDATA "npm\codex.cmd"),
-        (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\codex.exe"),
-        (Join-Path $InstallRoot "dependencies\codex_app\resources\codex.exe")
-    )
+    foreach ($candidate in @(
+        (Join-Path $InstallRoot "dependencies\codex_app\resources\codex.exe"),
+        (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\codex.exe")
+    )) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        $expanded = [Environment]::ExpandEnvironmentVariables($candidate)
+        if (Test-Path -LiteralPath $expanded -PathType Leaf) {
+            return $expanded
+        }
+    }
+
+    return Resolve-OptionalCommand -Names @("codex.cmd", "codex.exe", "codex")
+}
+
+function Test-ManagedCodexDesktopAvailable {
+    return (Test-Path -LiteralPath (Join-Path $InstallRoot "dependencies\codex_app\Codex.exe") -PathType Leaf)
 }
 
 function Test-CodexDesktopAvailable {
+    if (Test-ManagedCodexDesktopAvailable) {
+        return $true
+    }
+
     try {
         $package = Get-AppxPackage -Name "OpenAI.Codex" -ErrorAction SilentlyContinue
         if ($package) {
@@ -1026,6 +1043,16 @@ function Install-CodexDesktopFromBundledApp {
 }
 
 function Ensure-CodexDesktop {
+    if (Test-ManagedCodexDesktopAvailable) {
+        return
+    }
+
+    $bundledSource = Resolve-DependencyDirectory -DirectoryName "codex_app"
+    if (-not [string]::IsNullOrWhiteSpace($bundledSource)) {
+        Install-CodexDesktopFromBundledApp
+        return
+    }
+
     if (Test-CodexDesktopAvailable) {
         return
     }
@@ -1042,36 +1069,17 @@ function Ensure-CodexDesktop {
     }
 }
 
-function Ensure-CodexCli {
-    param([string]$NpmPath)
-
-    $codexPath = Resolve-CodexCommand
+function Ensure-CodexDesktopCommand {
+    $codexPath = Resolve-CodexDesktopCommand
     if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
         return $codexPath
     }
 
-    if ([string]::IsNullOrWhiteSpace($NpmPath)) {
-        $nodeStatus = Ensure-NodeRuntime
-        $NpmPath = [string]$nodeStatus.npmPath
-    }
-
-    Write-Host "Codex CLI was not found. Installing @openai/codex with npm..."
-    Set-RevitMcpNpmProxy -ProxyUrl $script:RevitMcpProxyUrl
-    try {
-        Invoke-External -FilePath $NpmPath -Arguments @("install", "-g", "@openai/codex") -WorkingDirectory $WorkRoot
-        Refresh-DependencyPath
-    }
-    catch {
-        Write-Warning "Internet Codex CLI install failed: $($_.Exception.Message). Bundled Codex Desktop CLI will be used if available."
-    }
-
-    $codexPath = Resolve-CodexCommand
+    Write-Host "Codex Desktop command was not found. Preparing managed Codex Desktop app."
+    Ensure-CodexDesktop
+    $codexPath = Resolve-CodexDesktopCommand
     if ([string]::IsNullOrWhiteSpace($codexPath)) {
-        Ensure-CodexDesktop
-        $codexPath = Resolve-CodexCommand
-    }
-    if ([string]::IsNullOrWhiteSpace($codexPath)) {
-        throw "Codex CLI could not be prepared automatically from internet or bundled Codex Desktop app."
+        throw "Codex Desktop command could not be prepared automatically from the bundled Codex Desktop app."
     }
 
     return $codexPath
@@ -1091,7 +1099,7 @@ function Ensure-UpdateDependencies {
 
     if (-not $SkipCodexMcpRegistration) {
         Ensure-CodexDesktop
-        [void](Ensure-CodexCli -NpmPath ([string]$nodeStatus.npmPath))
+        [void](Ensure-CodexDesktopCommand)
     }
 }
 
@@ -1990,7 +1998,7 @@ try {
     }
 
     if (-not $SkipCodexMcpRegistration) {
-        $codexPath = Ensure-CodexCli -NpmPath $npmPath
+        $codexPath = Ensure-CodexDesktopCommand
         $nodePath = Resolve-RequiredCommand -Name "node.exe" -Candidates @(
             (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
             (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")

@@ -59,7 +59,7 @@ explicit:
 - Autodesk Revit 2022
 - Git for Windows, if you want to pull future updates from this repo
 - Node.js 20+; Node 24 is supported by the bundled runtime dependency lock
-- Codex CLI or another MCP/skill-capable LLM host
+- Codex Desktop app or another MCP/skill-capable LLM host
 
 Office workstation installs automatically configure the DPE proxy
 `http://192.168.90.10:6588` for terminal tools, npm/Git, current-user Windows
@@ -263,7 +263,7 @@ Manual repo-root install:
    - Autodesk Revit 2022
    - Git for Windows
    - Node.js 20+; Node 24 is supported by the bundled dependency lock
-   - Codex CLI or another MCP/skill-capable LLM host
+   - Codex Desktop app or another MCP/skill-capable LLM host
 2. Clone or download this repo.
 3. Close Revit.
 4. Capture the repo root and run the installer:
@@ -412,13 +412,13 @@ Useful flags:
 
 After the script finishes:
 
-- Codex CLI: run `/skills reload`.
+- Codex Desktop: run `/skills reload`.
 - Claude Code: start a new session.
 - Cursor: restart Cursor.
 
 ## Host compatibility
 
-The office installation flow currently registers MCP servers through Codex CLI on Windows. The skill itself is host-agnostic: any MCP/skill-capable LLM host can use it if both MCP servers are registered:
+The office installation flow currently registers MCP servers through the command embedded in the bundled Codex Desktop app on Windows. The skill itself is host-agnostic: any MCP/skill-capable LLM host can use it if both MCP servers are registered:
 
 - `revit-mcp` for live Revit execution and inspection
 - `revit-api-docs` for required API class/member lookup
@@ -427,7 +427,7 @@ Host-specific notes:
 
 - **Claude Code**: copy the repo root into `~/.claude/skills/revit-mcp/` and register both MCP servers with `claude mcp add`. The `send_code_to_revit` tool will surface as `mcp__revit-mcp__send_code_to_revit`.
 - **Cursor**: place the repo under your skills/rules location and register both MCP servers in Cursor's MCP settings.
-- **Codex CLI**: see the Quick start section above.
+- **Codex Desktop**: see the Quick start section above.
 
 `SKILL.md` does not hardcode any host-specific tool name.
 

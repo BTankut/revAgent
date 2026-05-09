@@ -27,7 +27,7 @@ architectural or structural elements.
 
 This skill assumes two MCP servers are installed and connected. Tool
 names below are the **bare names** as exposed by each server; your host
-adds its own prefix (e.g. Codex CLI prepends `mcp_revit-mcp_`,
+adds its own prefix (e.g. Codex Desktop prepends `mcp_revit-mcp_`,
 Claude Code prepends `mcp__revit-mcp__`). Always call whichever
 prefixed form your host shows in the tool list — but in this document
 only the bare names appear, so the rules stay host-agnostic.

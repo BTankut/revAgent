@@ -361,7 +361,9 @@ function Set-RevitMcpWinInetProxy {
 
     try {
         $internetSettingsPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-        New-Item -Path $internetSettingsPath -Force | Out-Null
+        if (-not (Test-Path -Path $internetSettingsPath)) {
+            New-Item -Path $internetSettingsPath -Force | Out-Null
+        }
         $current = Get-ItemProperty -Path $internetSettingsPath -ErrorAction SilentlyContinue
         $alreadyConfigured = $current -and
             ([int]$current.ProxyEnable -eq 1) -and

@@ -99,7 +99,7 @@ Required local tools for full development:
 - Git for Windows
 - Autodesk Revit 2022
 - Node.js 20 or newer
-- Codex CLI or another MCP/skill-capable host
+- Codex Desktop app or another MCP/skill-capable host
 - PowerShell 5.1 or newer
 - Visual Studio/MSBuild tooling if rebuilding the Revit add-in source
 - Access to `\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy` for office

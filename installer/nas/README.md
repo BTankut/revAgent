@@ -66,9 +66,10 @@ Workstation prerequisites handled by the installer:
 - Node.js/npm is installed automatically. The updater first tries the internet
   command-line install path, then falls back to the bundled NAS MSI under
   `tools\dependencies`.
-- Codex Desktop/CLI is prepared automatically. The updater first tries the
-  internet command-line install path, then falls back to the bundled NAS
-  `codex_app` folder under `tools\dependencies`.
+- Codex Desktop is prepared automatically from the managed NAS `codex_app`
+  folder under `tools\dependencies`. The updater uses the command embedded in
+  that Desktop bundle for MCP registration and does not install a separate
+  npm Codex package.
 
 Large dependency payloads are intentionally kept out of Git under
 `installer\nas\dependencies\`. The publish step copies that local folder to
@@ -144,8 +145,8 @@ This is a full package update, not a file-level delta update.
 - Revit-loaded add-in and command files are not replaced while `Revit.exe` is
   running; those updates are deferred so the user can save/sync and close
   Revit. Non-Revit payload updates may still be applied while Revit is open.
-- Missing Node.js/npm or Codex CLI is detected before local Revit MCP files are
-  replaced.
+- Missing Node.js/npm or the Codex Desktop command is detected before local
+  Revit MCP files are replaced.
 - Pending updates that require the user to close Revit show a throttled user
   notification instead of failing silently in the background.
 - Official Autodesk Revit and Windows system folders are not deleted.
