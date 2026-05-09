@@ -12,7 +12,9 @@ package.
 |-- CHANGELOG.md
 |-- README.md
 |-- docs/
-|   `-- REPOSITORY_STRUCTURE.md
+|   |-- DEVELOPER_RUNBOOK.md
+|   |-- REPOSITORY_STRUCTURE.md
+|   `-- MONOREPO_MIGRATION.md
 |-- references/
 |-- scripts/
 |   `-- build-revit-plugin.ps1
@@ -53,6 +55,10 @@ Development and production release both happen from `main` only.
 Feature/experiment branches that exist on GitHub are historical and should not
 be used for office deployment. NAS deployment reads only packages published from
 this repository's `main` branch.
+
+For the full developer and code-assistant workflow, including clone recovery,
+local testing, commit/push, NAS beta publishing, stable promotion, updater
+diagnostics, and Revit-close policy, read `docs/DEVELOPER_RUNBOOK.md`.
 
 ## Deployment
 

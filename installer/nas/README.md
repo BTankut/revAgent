@@ -112,7 +112,9 @@ This is a full package update, not a file-level delta update.
 
 ## Safety
 
-- Revit is not updated while `Revit.exe` is running; the update is deferred.
+- Revit-loaded add-in and command files are not replaced while `Revit.exe` is
+  running; those updates are deferred so the user can save/sync and close
+  Revit. Non-Revit payload updates may still be applied while Revit is open.
 - Official Autodesk Revit and Windows system folders are not deleted.
 - Cleanup is limited to known Revit MCP-owned install paths.
 - The managed package target is refused if it is a Git working tree unless

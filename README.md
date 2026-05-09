@@ -35,7 +35,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -Revit
 ```
 
 Commit the source change and refreshed payload binaries together. See
-`docs/REPOSITORY_STRUCTURE.md` and `docs/MONOREPO_MIGRATION.md`.
+`docs/REPOSITORY_STRUCTURE.md`, `docs/MONOREPO_MIGRATION.md`, and
+`docs/DEVELOPER_RUNBOOK.md`.
 
 ## Technical direction
 
@@ -113,7 +114,9 @@ pulling and reinstalling on every machine.
 - Workstations install under `C:\ProgramData\DPE\RevitMCP`, not under
   `C:\Projects` or user AppData folders.
 
-See `installer/nas/README.md` for the full first-time workflow.
+See `installer/nas/README.md` for the full first-time workflow. For the
+developer and code-assistant context needed to continue development from a
+fresh clone, see `docs/DEVELOPER_RUNBOOK.md`.
 
 ## Multi-instance / multi-port runtime targeting
 
