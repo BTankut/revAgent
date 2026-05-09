@@ -72,6 +72,18 @@ On each workstation, close Revit and run:
 The GUI shows the live install/update log and provides a button to open the log
 folder if something fails.
 
+If you want to copy a single launcher to a workstation desktop, copy one of the
+standalone launchers instead:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater STABLE.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater BETA.cmd
+```
+
+Do not copy `Install-Revit-MCP-Updater-GUI.cmd` by itself. That file is meant
+to run from the NAS `tools\` folder and expects
+`Install-Revit-MCP-Updater-GUI.ps1` beside it.
+
 The non-GUI bootstrap is also available:
 
 ```text

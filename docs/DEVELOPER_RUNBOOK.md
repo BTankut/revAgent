@@ -315,6 +315,18 @@ Stable workstation GUI:
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater-GUI.cmd
 ```
 
+Single-file desktop launchers:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater STABLE.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater BETA.cmd
+```
+
+Use the single-file launchers when copying a `.cmd` to a workstation desktop.
+The generic `Install-Revit-MCP-Updater-GUI.cmd` is meant to run from the NAS
+`tools\` folder because it expects `Install-Revit-MCP-Updater-GUI.ps1` beside
+it.
+
 The GUI installs or refreshes the local updater and then runs an initial update.
 The updater writes:
 
