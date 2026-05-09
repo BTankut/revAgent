@@ -24,6 +24,7 @@ param(
     [string]$RevitVersion = "2022",
     [string]$ProxyUrl = "http://192.168.90.10:6588",
     [string]$ProxyBypass = "<local>",
+    [string]$CodexWorkspaceRoot = "C:\Projects",
     [string[]]$LegacyServerTargets = @(),
     [string]$ReportsRoot = "",
     [string]$TaskName = "Revit MCP Auto Update",
@@ -138,7 +139,7 @@ function Invoke-InitialUpdateCheck {
         return
     }
 
-    & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser
+    & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup
 }
 
 function Test-CurrentProcessElevated {
@@ -538,6 +539,23 @@ function Initialize-RevitMcpWorkstationProxy {
     Set-RevitMcpGitProxy -ProxyUrl $normalizedProxyUrl
 }
 
+function Ensure-CodexWorkspaceRoot {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+
+    $fullPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path)).TrimEnd("\")
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Container)) {
+        New-Item -ItemType Directory -Path $fullPath -Force | Out-Null
+        Write-Host "Codex workspace : created $fullPath"
+        return
+    }
+
+    Write-Host "Codex workspace : $fullPath"
+}
+
 function Write-UpdaterCommandFiles {
     param(
         [string]$UpdaterPath,
@@ -551,7 +569,7 @@ function Write-UpdaterCommandFiles {
     $manualCommandPath = Join-Path $UpdaterWorkRoot "Update-Revit-MCP-Now.cmd"
     $manualCommandLines = @(
         "@echo off",
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -NoNotifyUser",
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -NoNotifyUser -AllowManualCodexSetup",
         "pause"
     )
     $manualCommandLines | Set-Content -LiteralPath $manualCommandPath -Encoding ASCII
@@ -678,6 +696,7 @@ Initialize-RevitMcpTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $Lo
 try {
 $ProxyUrl = ConvertTo-RevitMcpProxyUrl -Value $ProxyUrl
 Initialize-RevitMcpWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
+Ensure-CodexWorkspaceRoot -Path $CodexWorkspaceRoot
 
 $RevitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
 
@@ -708,6 +727,7 @@ $config = [ordered]@{
     revitVersion = $RevitVersion
     proxyUrl = $ProxyUrl
     proxyBypass = $ProxyBypass
+    codexWorkspaceRoot = $CodexWorkspaceRoot
     legacyServerTargets = $LegacyServerTargets
     reportsRoot = $ReportsRoot
     skipNpmInstall = [bool]$SkipNpmInstall

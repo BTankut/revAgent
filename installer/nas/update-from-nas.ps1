@@ -31,6 +31,8 @@ param(
     [switch]$SkipCodexMcpRegistration,
     [switch]$SkipCodexUserIntegration,
     [switch]$SkipProxySetup,
+    [switch]$AllowManualCodexSetup,
+    [string]$CodexWorkspaceRoot = "C:\Projects",
     [string]$LogPath = "",
     [switch]$NotifyUser,
     [switch]$NoNotifyUser,
@@ -420,39 +422,6 @@ function Resolve-DependencyFile {
     return ""
 }
 
-function Resolve-DependencyFilePattern {
-    param([string]$Pattern)
-
-    foreach ($root in Get-DependencySearchRoots) {
-        if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path -LiteralPath $root -PathType Container)) {
-            continue
-        }
-
-        $match = Get-ChildItem -LiteralPath $root -Filter $Pattern -File -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTimeUtc -Descending |
-            Select-Object -First 1
-        if ($match) {
-            return $match.FullName
-        }
-    }
-
-    return ""
-}
-
-function Resolve-DependencyDirectory {
-    param([string]$DirectoryName)
-
-    foreach ($root in Get-DependencySearchRoots) {
-        if ([string]::IsNullOrWhiteSpace($root)) { continue }
-        $candidate = Join-Path $root $DirectoryName
-        if (Test-Path -LiteralPath $candidate -PathType Container) {
-            return $candidate
-        }
-    }
-
-    return ""
-}
-
 function Invoke-ProcessWithTimeout {
     param(
         [Parameter(Mandatory = $true)]
@@ -818,30 +787,6 @@ function Assert-PathUnderRoot {
     return $fullPath
 }
 
-function Copy-DirectoryFresh {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Source,
-        [Parameter(Mandatory = $true)]
-        [string]$Destination,
-        [Parameter(Mandatory = $true)]
-        [string]$AllowedRoot
-    )
-
-    if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
-        throw "Dependency source directory was not found: $Source"
-    }
-
-    $destinationPath = Assert-PathUnderRoot -Path $Destination -Root $AllowedRoot
-    New-Item -ItemType Directory -Path $AllowedRoot -Force | Out-Null
-    if (Test-Path -LiteralPath $destinationPath) {
-        Remove-Item -LiteralPath $destinationPath -Recurse -Force
-    }
-
-    Copy-Item -LiteralPath $Source -Destination $destinationPath -Recurse -Force
-    return $destinationPath
-}
-
 function Get-NodeMajorVersion {
     param([string]$NodePath)
 
@@ -966,7 +911,6 @@ function Get-CodexDesktopAppxPackage {
 function Resolve-CodexDesktopCommand {
     Refresh-DependencyPath
     foreach ($candidate in @(
-            (Join-Path $InstallRoot "dependencies\codex_command_payload\resources\codex.exe"),
             (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\codex.exe")
         )) {
         if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
@@ -981,26 +925,6 @@ function Resolve-CodexDesktopCommand {
 
 function Test-CodexDesktopAvailable {
     return $null -ne (Get-CodexDesktopAppxPackage)
-}
-
-function Install-CodexDesktopFromWinget {
-    $wingetPath = Resolve-OptionalCommand -Names @("winget.exe", "winget") -Candidates @(
-        (Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe")
-    )
-    if ([string]::IsNullOrWhiteSpace($wingetPath)) {
-        Write-Warning "winget was not found; bundled Codex Desktop app will be used if needed."
-        return $false
-    }
-
-    Write-Host "Installing Codex Desktop from internet with winget..."
-    $exitCode = Invoke-ProcessWithTimeout -FilePath $wingetPath -Arguments @("install", "--id", "9PLM9XGG6VKS", "--source", "msstore", "--exact", "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity") -TimeoutSeconds 300
-    if ($exitCode -eq 0) {
-        Refresh-DependencyPath
-        return $true
-    }
-
-    Write-Warning "winget Codex Desktop install failed with exit code $exitCode; bundled app will be tried."
-    return $false
 }
 
 function New-CodexDesktopShortcut {
@@ -1036,120 +960,118 @@ function New-CodexDesktopShortcut {
     }
 }
 
-function Install-CodexDesktopFromBundledMsix {
-    $msixPath = Resolve-DependencyFilePattern -Pattern "OpenAI.Codex_*.msix"
-    if ([string]::IsNullOrWhiteSpace($msixPath)) {
-        return $false
-    }
+function Remove-ObsoleteCodexManagedPayloads {
+    $dependenciesRoot = Join-Path $InstallRoot "dependencies"
+    foreach ($name in @("codex_app", "codex_command_payload")) {
+        $target = Join-Path $dependenciesRoot $name
+        if (-not (Test-Path -LiteralPath $target)) {
+            continue
+        }
 
-    Write-Host "Installing Codex Desktop from bundled MSIX: $msixPath"
-    try {
-        Add-AppxPackage -Path $msixPath -ForceUpdateFromAnyVersion -ForceApplicationShutdown -ErrorAction Stop
-        return (Test-CodexDesktopAvailable)
-    }
-    catch {
-        Write-Warning "Bundled Codex Desktop MSIX install failed: $($_.Exception.Message)"
-        return $false
+        try {
+            $safeTarget = Assert-PathUnderRoot -Path $target -Root $dependenciesRoot
+            Remove-Item -LiteralPath $safeTarget -Recurse -Force
+            Write-Host "Removed obsolete Codex managed payload: $safeTarget"
+        }
+        catch {
+            Write-Warning "Could not remove obsolete Codex managed payload '$target': $($_.Exception.Message)"
+        }
     }
 }
 
-function Remove-LegacyCodexCommandPayload {
-    $dependenciesRoot = Join-Path $InstallRoot "dependencies"
-    $legacyTarget = Join-Path $dependenciesRoot "codex_app"
-    if (-not (Test-Path -LiteralPath $legacyTarget)) {
+function Ensure-CodexWorkspaceRoot {
+    if ([string]::IsNullOrWhiteSpace($CodexWorkspaceRoot)) {
         return
     }
 
-    try {
-        $safeLegacyTarget = Assert-PathUnderRoot -Path $legacyTarget -Root $dependenciesRoot
-        Remove-Item -LiteralPath $safeLegacyTarget -Recurse -Force
-        Write-Host "Removed legacy Codex command payload: $safeLegacyTarget"
+    $path = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($CodexWorkspaceRoot)).TrimEnd("\")
+    if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+        New-Item -ItemType Directory -Path $path -Force | Out-Null
+        Write-Host "Codex workspace  : created $path"
+        return
     }
-    catch {
-        Write-Warning "Could not remove legacy Codex command payload: $($_.Exception.Message)"
-    }
+
+    Write-Host "Codex workspace  : $path"
 }
 
-function Install-CodexCommandPayloadFromBundle {
-    $source = Resolve-DependencyDirectory -DirectoryName "codex_command_payload"
-    if ([string]::IsNullOrWhiteSpace($source)) {
-        $source = Resolve-DependencyDirectory -DirectoryName "codex_app"
-    }
-    if ([string]::IsNullOrWhiteSpace($source)) {
-        throw "Bundled Codex command payload folder was not found under NAS tools dependencies or local package dependencies."
-    }
+function Show-ManualCodexSetupPrompt {
+    param([string]$Reason)
 
-    $dependenciesRoot = Join-Path $InstallRoot "dependencies"
-    $target = Join-Path $dependenciesRoot "codex_command_payload"
-    Write-Host "Installing Codex command payload from bundle: $source"
-    [void](Copy-DirectoryFresh -Source $source -Destination $target -AllowedRoot $dependenciesRoot)
-    Remove-LegacyCodexCommandPayload
-    Refresh-DependencyPath
+    Ensure-CodexWorkspaceRoot
+    $message = @"
+$Reason
+
+Proxy ve internet ayarlari hazir.
+Codex calisma klasoru hazir: $CodexWorkspaceRoot
+
+Lutfen simdi Codex Desktop'u manuel kurun/acin, oturum ve abonelik islemini tamamlayin, gerekirse calisma klasoru olarak $CodexWorkspaceRoot secin.
+
+Codex hazir olduktan sonra devam etmek icin OK tusuna basin.
+"@
+
+    Write-Host "Manual Codex setup required."
+    Write-Host $Reason
+    Write-Host "Codex workspace  : $CodexWorkspaceRoot"
+
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $result = [System.Windows.Forms.MessageBox]::Show(
+            $message,
+            "Revit MCP Installer - Codex Desktop",
+            [System.Windows.Forms.MessageBoxButtons]::OKCancel,
+            [System.Windows.Forms.MessageBoxIcon]::Information)
+        return ($result -eq [System.Windows.Forms.DialogResult]::OK)
+    }
+    catch {
+        Write-Warning "Could not show Codex setup prompt: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 function Ensure-CodexDesktop {
-    if (Test-CodexDesktopAvailable) {
-        New-CodexDesktopShortcut
-        return
-    }
-
-    if (Install-CodexDesktopFromBundledMsix) {
-        New-CodexDesktopShortcut
-        return
-    }
+    Remove-ObsoleteCodexManagedPayloads
+    Ensure-CodexWorkspaceRoot
 
     if (Test-CodexDesktopAvailable) {
         New-CodexDesktopShortcut
         return
     }
 
-    $installedFromInternet = Install-CodexDesktopFromWinget
-    if (Test-CodexDesktopAvailable) {
-        New-CodexDesktopShortcut
-        return
+    if ($AllowManualCodexSetup) {
+        $reason = "Bu Windows kullanicisi icin Codex Desktop kurulu degil."
+        if (Show-ManualCodexSetupPrompt -Reason $reason) {
+            Refresh-DependencyPath
+            if (Test-CodexDesktopAvailable) {
+                New-CodexDesktopShortcut
+                return
+            }
+        }
     }
 
-    if ($installedFromInternet) {
-        Write-Warning "Internet install completed but Codex Desktop Appx package was not detected."
-    }
-
-    Install-CodexCommandPayloadFromBundle
-    throw "Codex Desktop Appx package could not be prepared. Add OpenAI.Codex_*.msix to NAS tools dependencies or install Codex Desktop from Microsoft Store."
+    throw "Codex Desktop bu Windows kullanicisi icin kurulu degil. Proxy ayarlari ve Codex calisma klasoru hazir. Codex Desktop'u manuel kurup oturum acin, sonra installer/updater'i tekrar calistirin."
 }
 
 function Ensure-CodexDesktopCommand {
-    Remove-LegacyCodexCommandPayload
-
-    $managedCodexPath = Join-Path $InstallRoot "dependencies\codex_command_payload\resources\codex.exe"
-    if (-not (Test-Path -LiteralPath $managedCodexPath -PathType Leaf)) {
-        try {
-            Write-Host "Preparing managed Codex command payload."
-            Install-CodexCommandPayloadFromBundle
-        }
-        catch {
-            $codexPath = Resolve-CodexDesktopCommand
-            if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
-                Write-Warning "Could not prepare managed Codex command payload; using installed Codex Desktop command: $codexPath"
-                return $codexPath
-            }
-
-            throw
-        }
-    }
+    Remove-ObsoleteCodexManagedPayloads
+    Ensure-CodexWorkspaceRoot
 
     $codexPath = Resolve-CodexDesktopCommand
     if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
         return $codexPath
     }
 
-    Write-Host "Codex Desktop command was not found. Preparing managed Codex command payload."
-    Install-CodexCommandPayloadFromBundle
-    $codexPath = Resolve-CodexDesktopCommand
-    if ([string]::IsNullOrWhiteSpace($codexPath)) {
-        throw "Codex Desktop command could not be prepared automatically from the bundled Codex command payload."
+    if ($AllowManualCodexSetup) {
+        $reason = "Codex Desktop kurulmus veya kuruluyor olabilir, ancak MCP kayit komutu henuz bulunamadi."
+        if (Show-ManualCodexSetupPrompt -Reason $reason) {
+            Refresh-DependencyPath
+            $codexPath = Resolve-CodexDesktopCommand
+            if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
+                return $codexPath
+            }
+        }
     }
 
-    return $codexPath
+    throw "Codex Desktop MCP kayit komutu bulunamadi. Codex Desktop'u bir kez acip oturum/kurulum islemini tamamlayin, sonra installer/updater'i tekrar calistirin. Beklenen komut yolu: $env:LOCALAPPDATA\OpenAI\Codex\bin\codex.exe"
 }
 
 function Ensure-UpdateDependencies {
@@ -1825,6 +1747,7 @@ if ($config) {
     if ($config.revitVersion) { $RevitVersion = [string]$config.revitVersion }
     if ($config.proxyUrl) { $ProxyUrl = [string]$config.proxyUrl }
     if ($config.proxyBypass) { $ProxyBypass = [string]$config.proxyBypass }
+    if ($config.codexWorkspaceRoot) { $CodexWorkspaceRoot = [string]$config.codexWorkspaceRoot }
     if ($config.legacyServerTargets) { $LegacyServerTargets = @($config.legacyServerTargets) }
     if ($config.reportsRoot) { $ReportsRoot = [string]$config.reportsRoot }
     if ($config.skipNpmInstall) { $SkipNpmInstall = $true }

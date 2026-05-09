@@ -37,8 +37,6 @@ A normal `git commit` or `git push` does not update the office by itself.
     Install-Revit-MCP-Updater-GUI.ps1
     dependencies\
       node-v24.14.1-x64.msi
-      OpenAI.Codex_*.msix
-      codex_command_payload\
     install-updater-task.ps1
     update-from-nas.ps1
     show-installed-version.ps1
@@ -67,12 +65,14 @@ Workstation prerequisites handled by the installer:
 - Node.js/npm is installed automatically. The updater first tries the internet
   command-line install path, then falls back to the bundled NAS MSI under
   `tools\dependencies`.
-- Codex Desktop is prepared automatically from the managed NAS
-  `OpenAI.Codex_*.msix` package under `tools\dependencies`. The updater creates
-  the user shortcut against the real Windows Appx registration. The separate
-  `codex_command_payload` folder is kept only for MCP registration commands; it
-  is not used as the user-facing Desktop launcher. Older `codex_app` payload
-  folders are removed from managed workstation installs during update.
+- `C:\Projects` is created before the Codex setup step so it can be selected as
+  the Codex working folder.
+- Codex Desktop is installed and signed in manually by the user. During the
+  first install, after proxy and `C:\Projects` are ready, the installer pauses
+  and asks the user to install/open Codex Desktop and continue. The updater then
+  registers MCP servers using Codex Desktop's own command under the current
+  user profile. Older managed `codex_app` and `codex_command_payload` folders
+  are removed from workstation installs.
 
 Large dependency payloads are intentionally kept out of Git under
 `installer\nas\dependencies\`. The publish step copies that local folder to
@@ -138,7 +138,7 @@ C:\ProgramData\DPE\RevitMCP\updater\logs\
 - Replaces the managed local package copy under `C:\ProgramData\DPE\RevitMCP\package`.
 - Runs `install-self-contained.ps1`.
 - Runs `npm install --omit=dev --no-audit --no-fund` for the runtime and docs MCP servers.
-- Re-registers Codex MCP entries for the current office flow.
+- Re-registers Codex MCP entries through the current user's Codex Desktop command.
 - Writes local and NAS report JSON files.
 
 This is a full package update, not a file-level delta update.
@@ -149,7 +149,8 @@ This is a full package update, not a file-level delta update.
   running; those updates are deferred so the user can save/sync and close
   Revit. Non-Revit payload updates may still be applied while Revit is open.
 - Missing Node.js/npm or the Codex Desktop command is detected before local
-  Revit MCP files are replaced.
+  Revit MCP files are replaced. Manual GUI installs can pause for Codex setup;
+  background update checks do not block waiting for user setup.
 - Pending updates that require the user to close Revit show a throttled user
   notification instead of failing silently in the background.
 - Official Autodesk Revit and Windows system folders are not deleted.

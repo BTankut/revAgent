@@ -18,7 +18,7 @@ running these scripts manually.
 - Autodesk Revit 2022.
 - Node.js 20 or newer.
 - Git for Windows for development machines.
-- Codex Desktop app for the current office installer flow, or another MCP-capable host if registered manually.
+- Codex Desktop app for the current office installer flow, or another MCP-capable host if registered manually. The NAS GUI pauses for manual Codex Desktop install/sign-in when it is not ready yet.
 
 ## Recommended Office Install
 

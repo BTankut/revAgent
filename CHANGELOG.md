@@ -5,13 +5,13 @@ All notable Revit MCP workstation deployment changes are tracked here.
 ## 2026-05-09
 
 - Added automatic DPE office proxy configuration during installer/updater runs so terminal tools, WinHTTP, npm, Git, and Codex child processes can reach the internet behind the office proxy, with the configured proxy shown in the version command.
-- Changed Codex Desktop deployment to install/use the real Windows Appx registration from the bundled MSIX and to point DPE shortcuts at `shell:AppsFolder`, avoiding launches from a copied Electron folder.
-- Renamed the managed Codex command dependency from `codex_app` to `codex_command_payload`; updates now remove the old payload folder from managed installs.
+- Changed Codex Desktop setup to a manual user step: the installer prepares proxy settings and `C:\Projects`, waits for the user to install/sign in to Codex Desktop, then registers MCP servers through Codex Desktop's own command.
+- Removed managed Codex payload dependencies; updates now clean old `codex_app` and `codex_command_payload` folders from workstation installs.
 - Fixed first-install Revit payload detection so new workstation installs no longer say Revit can stay open while add-in files are being written.
 - Suppressed manual next-step instructions and npm audit/funding noise from NAS installer logs.
 - Changed the GUI installer to request admin rights immediately, start from launchers without a persistent terminal window, and use a thinner progress bar.
 - Suppressed duplicate user notifications during manual and GUI-started updates while keeping notifications enabled for background update checks.
-- Added automatic workstation dependency preparation: Node.js/npm is installed automatically, and Codex Desktop is prepared from the bundled NAS Desktop app without installing a separate npm Codex package.
+- Added automatic workstation dependency preparation for Node.js/npm without installing a separate npm Codex package.
 - Simplified NAS deployment to a single stable release channel and removed alternate-channel tooling.
 - Added periodic workstation update checks every 30 minutes, with a startup-loop fallback when Scheduled Task registration is blocked.
 - Added user notifications for pending Revit-close-required updates and successful background updates.
