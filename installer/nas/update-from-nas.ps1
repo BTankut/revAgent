@@ -295,7 +295,8 @@ function Assert-ManagedDirectoryTarget {
 function Resolve-RequiredCommand {
     param(
         [string]$Name,
-        [string[]]$Candidates = @()
+        [string[]]$Candidates = @(),
+        [string]$InstallHint = ""
     )
 
     $command = Get-Command $Name -ErrorAction SilentlyContinue
@@ -311,7 +312,40 @@ function Resolve-RequiredCommand {
         }
     }
 
-    throw "Required command '$Name' was not found. Install it or add it to PATH, then run the updater again."
+    $message = "Required command '$Name' was not found."
+    if ($Candidates.Count -gt 0) {
+        $message += " Checked: " + (($Candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join "; ")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($InstallHint)) {
+        $message += " $InstallHint"
+    }
+    $message += " Then run the Revit MCP updater again."
+    throw $message
+}
+
+function Test-UpdatePrerequisites {
+    param(
+        [switch]$SkipNpmInstall,
+        [switch]$SkipCodexMcpRegistration
+    )
+
+    $npmCandidates = @(
+        (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
+        (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
+    )
+    $nodeCandidates = @(
+        (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")
+    )
+
+    if (-not $SkipNpmInstall) {
+        [void](Resolve-RequiredCommand -Name "npm.cmd" -Candidates $npmCandidates -InstallHint "Install Node.js 20 or newer for this Windows user/machine.")
+    }
+
+    if (-not $SkipCodexMcpRegistration) {
+        [void](Resolve-RequiredCommand -Name "node.exe" -Candidates $nodeCandidates -InstallHint "Install Node.js 20 or newer for this Windows user/machine.")
+        [void](Resolve-RequiredCommand -Name "codex.cmd" -Candidates @((Join-Path $env:APPDATA "npm\codex.cmd")) -InstallHint "Install or repair Codex CLI for the Windows user running this installer.")
+    }
 }
 
 function Resolve-RevitInstallRoot {
@@ -1129,6 +1163,8 @@ try {
         $skipRevitPayloadInstall = $true
         Write-Warning "Revit is running, but this update does not change Revit add-in/command files. Non-Revit files will be updated without touching the active Revit payload."
     }
+
+    Test-UpdatePrerequisites -SkipNpmInstall:$SkipNpmInstall -SkipCodexMcpRegistration:$SkipCodexMcpRegistration
 
     if ((Test-Path -LiteralPath (Join-Path $PackageTarget ".git")) -and -not $AllowReplaceGitPackageTarget) {
         throw "PackageTarget is a git working tree. Refusing to replace it without -AllowReplaceGitPackageTarget: $PackageTarget"

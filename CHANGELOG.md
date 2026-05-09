@@ -6,6 +6,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 - Changed the GUI installer to request admin rights immediately, start from launchers without a persistent terminal window, and use a thinner progress bar.
 - Suppressed duplicate user notifications during manual and GUI-started updates while keeping notifications enabled for background update checks.
+- Added an upfront workstation prerequisite check so missing Node.js/npm or Codex CLI is reported before the updater replaces local Revit MCP files.
 - Simplified NAS deployment to a single stable release channel and removed alternate-channel tooling.
 - Added periodic workstation update checks every 30 minutes, with a startup-loop fallback when Scheduled Task registration is blocked.
 - Added user notifications for pending Revit-close-required updates and successful background updates.

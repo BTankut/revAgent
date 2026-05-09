@@ -53,6 +53,12 @@ powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps
 
 ## Install The Workstation Updater
 
+Workstation prerequisites:
+
+- Autodesk Revit 2022.
+- Node.js 20 or newer, including `node.exe` and `npm.cmd`.
+- Codex CLI for the Windows user running the installer.
+
 On each workstation, close Revit and run:
 
 ```text
@@ -123,6 +129,8 @@ This is a full package update, not a file-level delta update.
 - Revit-loaded add-in and command files are not replaced while `Revit.exe` is
   running; those updates are deferred so the user can save/sync and close
   Revit. Non-Revit payload updates may still be applied while Revit is open.
+- Missing Node.js/npm or Codex CLI is detected before local Revit MCP files are
+  replaced.
 - Pending updates that require the user to close Revit show a throttled user
   notification instead of failing silently in the background.
 - Official Autodesk Revit and Windows system folders are not deleted.
