@@ -57,8 +57,8 @@ be used for office deployment. NAS deployment reads only packages published from
 this repository's `main` branch.
 
 For the full developer and code-assistant workflow, including clone recovery,
-local testing, commit/push, NAS beta publishing, stable promotion, updater
-diagnostics, and Revit-close policy, read `docs/DEVELOPER_RUNBOOK.md`.
+local testing, commit/push, NAS stable publishing, updater diagnostics, and
+Revit-close policy, read `docs/DEVELOPER_RUNBOOK.md`.
 
 ## Deployment
 

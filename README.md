@@ -109,8 +109,6 @@ pulling and reinstalling on every machine.
 - A normal `git commit` / `git push` does not update the office.
 - A release is published only when `publish-nas-release.ps1` is run.
 - Office releases are published to the stable channel after local/manual testing.
-- The former beta channel is retired and kept only as a compatibility mirror
-  for older workstation configs.
 - Workstations run `update-from-nas.ps1`, usually through a scheduled task
   installed by `install-updater-task.ps1`.
 - Workstations install under `C:\ProgramData\DPE\RevitMCP`, not under

@@ -264,7 +264,6 @@ Layout:
 ```text
 channels\
   stable.json
-  beta.json  (retired compatibility mirror of stable)
 releases\
   <version>\
     revit-mcp-skill-<version>.zip
@@ -280,10 +279,6 @@ powershell -ExecutionPolicy Bypass -File .\installer\nas\publish-nas-release.ps1
   -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy" `
   -Channel stable
 ```
-
-The beta channel is retired. Stable publishing automatically refreshes
-`channels\beta.json` as a compatibility mirror so older workstation configs that
-still point at beta continue to receive the stable package.
 
 Verify channels:
 
@@ -313,9 +308,6 @@ Single-file desktop launchers:
 ```text
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater STABLE.cmd
 ```
-
-`Revit MCP Updater BETA.cmd` is retained only as a compatibility shim and opens
-the stable updater.
 
 Use the single-file launchers when copying a `.cmd` to a workstation desktop.
 The generic `Install-Revit-MCP-Updater-GUI.cmd` is meant to run from the NAS
@@ -485,9 +477,8 @@ and check `Get-Process -Name Revit` again before reinstalling or retesting.
 
 ## Stable Channel
 
-Use `stable` for office deployment after local/manual validation. The former
-`beta` channel is retired. `channels\beta.json` remains only as a compatibility
-mirror of stable for older workstation configs.
+Use `stable` for all office deployment after local/manual validation. There is
+only one deployment channel.
 
 Do not assume the latest commit is the deployed version. Read the channel JSON:
 

@@ -6,10 +6,6 @@
     Creates a versioned ZIP package, writes a release manifest, and optionally
     updates the channels\stable.json channel manifest.
 
-    The former beta channel is retired. When stable is published, channels\beta.json
-    is kept as a compatibility mirror so older workstations that still point at
-    beta.json continue to receive the stable release.
-
     Commit/push does not deploy anything by itself. This script is the explicit
     "publish this version" step.
 #>
@@ -19,7 +15,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ReleaseRoot,
 
-    [ValidateSet("stable", "dev")]
+    [ValidateSet("stable")]
     [string]$Channel = "stable",
 
     [string]$Version = "",
@@ -184,33 +180,6 @@ function Write-JsonFile {
     )
 
     $Value | ConvertTo-Json -Depth $Depth | Set-Content -LiteralPath $Path -Encoding UTF8
-}
-
-function Copy-OrderedDictionary {
-    param([Parameter(Mandatory = $true)]$Source)
-
-    $copy = [ordered]@{}
-    foreach ($key in $Source.Keys) {
-        $copy[$key] = $Source[$key]
-    }
-    return $copy
-}
-
-function Sync-RetiredBetaChannel {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ChannelsRoot,
-        [Parameter(Mandatory = $true)]
-        $StableChannelManifest
-    )
-
-    $legacyBetaPath = Join-Path $ChannelsRoot "beta.json"
-    $legacyBetaManifest = Copy-OrderedDictionary -Source $StableChannelManifest
-    $legacyBetaManifest["legacyChannel"] = "beta"
-    $legacyBetaManifest["compatibility"] = "retired-beta-alias"
-
-    Write-JsonFile -Value $legacyBetaManifest -Path $legacyBetaPath -Depth 8
-    Write-Host "Synced retired beta channel to stable: $legacyBetaPath" -ForegroundColor Yellow
 }
 
 Write-Section "Validate repository"
@@ -405,14 +374,10 @@ try {
         }
         Write-JsonFile -Value $channelManifest -Path $channelPath -Depth 8
         Write-Host "Updated channel: $channelPath" -ForegroundColor Green
-
-        if ($Channel -eq "stable") {
-            Sync-RetiredBetaChannel -ChannelsRoot $channelsRoot -StableChannelManifest $channelManifest
-        }
     }
 
     Write-Section "Refresh NAS tools"
-    foreach ($toolName in @("Install-Revit-MCP-Updater.cmd", "Install-Revit-MCP-Updater-GUI.cmd", "Install-Revit-MCP-Updater-GUI.ps1", "Revit MCP Updater STABLE.cmd", "Revit MCP Updater BETA.cmd", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "promote-nas-release.ps1", "README.md")) {
+    foreach ($toolName in @("Install-Revit-MCP-Updater.cmd", "Install-Revit-MCP-Updater-GUI.cmd", "Install-Revit-MCP-Updater-GUI.ps1", "Revit MCP Updater STABLE.cmd", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "promote-nas-release.ps1", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $scriptRoot $toolName) -Destination (Join-Path $toolsRoot $toolName) -Force
     }
     Write-Host "Tools path: $toolsRoot" -ForegroundColor Green

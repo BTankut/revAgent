@@ -25,7 +25,6 @@ A normal `git commit` or `git push` does not update the office by itself.
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\
   channels\
     stable.json
-    beta.json  (retired compatibility mirror of stable)
   releases\
     2026.05.08.1500-a1b2c3d4\
       revit-mcp-skill-2026.05.08.1500-a1b2c3d4.zip
@@ -52,9 +51,6 @@ powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps
   -Channel stable
 ```
 
-The beta channel is retired. Publishing `stable` also refreshes `channels\beta.json`
-as a compatibility mirror so older workstation configs still update to stable.
-
 ## Install The Workstation Updater
 
 On each workstation, close Revit and run:
@@ -73,15 +69,12 @@ fallback that keeps a hidden per-user update loop running with the same
 interval. The GUI also includes an admin relaunch button for workstations where
 the operator wants to retry Scheduled Task registration with elevated rights.
 
-If you want to copy a single launcher to a workstation desktop, copy one of the
-standalone launchers instead:
+If you want to copy a single launcher to a workstation desktop, copy the
+standalone launcher instead:
 
 ```text
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater STABLE.cmd
 ```
-
-`Revit MCP Updater BETA.cmd` is retained only as a compatibility shim and opens
-the stable updater.
 
 Do not copy `Install-Revit-MCP-Updater-GUI.cmd` by itself. That file is meant
 to run from the NAS `tools\` folder and expects
@@ -114,8 +107,6 @@ C:\ProgramData\DPE\RevitMCP\updater\logs\
 ## Update Behavior
 
 - Reads the target version from `channels\stable.json`.
-- Older configs that still point at `channels\beta.json` receive the same stable
-  target because beta is now a compatibility mirror.
 - Shows the installed version and target version as `old -> new`.
 - Copies the versioned ZIP from NAS.
 - Verifies the package SHA256 hash before install.
