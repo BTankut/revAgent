@@ -735,6 +735,7 @@ $config = [ordered]@{
     skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
     skipProxySetup = [bool]$SkipProxySetup
     checkIntervalMinutes = $CheckIntervalMinutes
+    taskName = $TaskName
     notifyUser = $true
     notificationThrottleMinutes = $NotificationThrottleMinutes
     logsRoot = (Join-Path $WorkRoot "logs")
@@ -758,7 +759,7 @@ if ($NoScheduledTask) {
 }
 
 $time = [datetime]::Parse($DailyAt)
-$actionArgs = "-STA -NoProfile -ExecutionPolicy Bypass -File `"$localUpdater`" -ConfigPath `"$configPath`" -NotifyUser"
+$actionArgs = "-STA -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$localUpdater`" -ConfigPath `"$configPath`" -NotifyUser"
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $actionArgs
 $dailyTrigger = New-ScheduledTaskTrigger -Daily -At $time
 $repetitionTemplate = New-ScheduledTaskTrigger -Once -At $time -RepetitionInterval (New-TimeSpan -Minutes $CheckIntervalMinutes) -RepetitionDuration (New-TimeSpan -Days 1)

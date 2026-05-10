@@ -33,6 +33,7 @@ param(
     [switch]$SkipProxySetup,
     [switch]$AllowManualCodexSetup,
     [string]$CodexWorkspaceRoot = "C:\Projects",
+    [string]$TaskName = "Revit MCP Auto Update",
     [string]$LogPath = "",
     [switch]$NotifyUser,
     [switch]$NoNotifyUser,
@@ -1789,6 +1790,43 @@ function Show-UserNotification {
     }
 }
 
+function Repair-RevitMcpScheduledTaskAction {
+    param(
+        [string]$Name,
+        [string]$UpdaterPath,
+        [string]$UpdaterConfigPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name) -or
+        [string]::IsNullOrWhiteSpace($UpdaterPath) -or
+        [string]::IsNullOrWhiteSpace($UpdaterConfigPath)) {
+        return
+    }
+
+    try {
+        $task = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
+        if (-not $task) {
+            return
+        }
+
+        $desiredArgs = "-STA -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -NotifyUser"
+        $currentAction = @($task.Actions | Select-Object -First 1)
+        $currentArgs = if ($currentAction.Count -gt 0) { [string]$currentAction[0].Arguments } else { "" }
+        $currentExecute = if ($currentAction.Count -gt 0) { [string]$currentAction[0].Execute } else { "" }
+        if ([string]::Equals($currentArgs, $desiredArgs, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals($currentExecute, "powershell.exe", [System.StringComparison]::OrdinalIgnoreCase)) {
+            return
+        }
+
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $desiredArgs
+        Set-ScheduledTask -TaskName $Name -Action $action | Out-Null
+        Write-Host "Scheduled task action repaired for hidden background checks: $Name"
+    }
+    catch {
+        Write-Warning "Could not repair scheduled task action for hidden background checks: $($_.Exception.Message)"
+    }
+}
+
 $config = Import-UpdaterConfig -Path $ConfigPath
 if ($config) {
     if ([string]::IsNullOrWhiteSpace($ChannelManifestPath) -and $config.channelManifestPath) { $ChannelManifestPath = [string]$config.channelManifestPath }
@@ -1802,6 +1840,7 @@ if ($config) {
     if ($config.proxyUrl) { $ProxyUrl = [string]$config.proxyUrl }
     if ($config.proxyBypass) { $ProxyBypass = [string]$config.proxyBypass }
     if ($config.codexWorkspaceRoot) { $CodexWorkspaceRoot = [string]$config.codexWorkspaceRoot }
+    if ($config.taskName) { $TaskName = [string]$config.taskName }
     if ($config.legacyServerTargets) { $LegacyServerTargets = @($config.legacyServerTargets) }
     if ($config.reportsRoot) { $ReportsRoot = [string]$config.reportsRoot }
     if ($config.skipNpmInstall) { $SkipNpmInstall = $true }
@@ -1850,6 +1889,12 @@ $backupRoot = Join-Path $WorkRoot "backups"
 New-Item -ItemType Directory -Path $cacheRoot, $stagingRoot, $backupRoot -Force | Out-Null
 
 Initialize-RevitMcpWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
+
+$taskUpdaterPath = Join-Path $WorkRoot "update-from-nas.ps1"
+if (-not (Test-Path -LiteralPath $taskUpdaterPath -PathType Leaf)) {
+    $taskUpdaterPath = $PSCommandPath
+}
+Repair-RevitMcpScheduledTaskAction -Name $TaskName -UpdaterPath $taskUpdaterPath -UpdaterConfigPath $ConfigPath
 
 $channelDir = Split-Path -Parent $ChannelManifestPath
 if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {

@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## 2026-05-10
 
+- Changed scheduled auto update checks to run PowerShell hidden and added self-repair for older visible scheduled task actions.
 - Added a direct Codex `config.toml` MCP registration fallback when Codex Desktop is installed but its local command helper has not been created yet.
 
 ## 2026-05-09

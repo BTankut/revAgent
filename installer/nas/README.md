@@ -89,10 +89,10 @@ folder if something fails. The GUI launchers start PowerShell hidden, so a
 separate terminal window should not remain beside the installer.
 
 The GUI requests admin rights as soon as it opens. The updater then registers a
-per-user Scheduled Task that checks at logon and every 30 minutes during the
-day. If Windows still blocks Scheduled Task registration, the installer creates
-a Startup fallback that keeps a hidden per-user update loop running with the
-same interval.
+per-user Scheduled Task that checks silently at logon and every 30 minutes
+during the day. If Windows still blocks Scheduled Task registration, the
+installer creates a Startup fallback that keeps a hidden per-user update loop
+running with the same interval.
 
 If you want to copy a single launcher to a workstation desktop, copy the
 standalone launcher instead:
