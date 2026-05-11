@@ -14,6 +14,11 @@ namespace revit_mcp_plugin.UI
     public partial class McpTaskStatusWindow : Window
     {
         private const int MaxHistoryItems = 50;
+        private static readonly object PlacementSync = new object();
+        private static bool _hasSessionPlacement;
+        private static double _sessionLeft;
+        private static double _sessionTop;
+
         private readonly DispatcherTimer _elapsedTimer;
         private readonly List<string> _history = new List<string>();
         private DateTime _startedAtUtc;
@@ -21,6 +26,8 @@ namespace revit_mcp_plugin.UI
         private bool _isRunning;
         private bool _allowClose;
         private bool _isClosed;
+        private bool _placementInitialized;
+        private bool _suppressPlacementSave;
 
         public bool IsClosed
         {
@@ -46,7 +53,8 @@ namespace revit_mcp_plugin.UI
             };
             Closing += OnClosing;
             Closed += delegate { _isClosed = true; };
-            Loaded += delegate { PositionWindow(); };
+            LocationChanged += OnLocationChanged;
+            Loaded += delegate { EnsureWindowPlacement(); };
         }
 
         public void ForceClose()
@@ -125,7 +133,7 @@ namespace revit_mcp_plugin.UI
                 Show();
             }
 
-            PositionWindow();
+            EnsureWindowPlacement();
         }
 
         private void AttachRevitOwner()
@@ -139,11 +147,109 @@ namespace revit_mcp_plugin.UI
             new WindowInteropHelper(this).Owner = owner;
         }
 
-        private void PositionWindow()
+        private void EnsureWindowPlacement()
+        {
+            if (_placementInitialized)
+            {
+                return;
+            }
+
+            if (!ApplySessionPlacement())
+            {
+                PositionDefaultWindow();
+            }
+
+            _placementInitialized = true;
+        }
+
+        private bool ApplySessionPlacement()
+        {
+            double left;
+            double top;
+            lock (PlacementSync)
+            {
+                if (!_hasSessionPlacement)
+                {
+                    return false;
+                }
+
+                left = _sessionLeft;
+                top = _sessionTop;
+            }
+
+            Rect area = SystemParameters.WorkArea;
+            double width = GetPlacementWidth();
+            double height = GetPlacementHeight();
+            left = Clamp(left, area.Left, Math.Max(area.Left, area.Right - width));
+            top = Clamp(top, area.Top, Math.Max(area.Top, area.Bottom - height));
+            SetWindowPosition(left, top);
+            return true;
+        }
+
+        private void PositionDefaultWindow()
         {
             Rect area = SystemParameters.WorkArea;
-            Left = area.Right - Width - 24;
-            Top = area.Top + 24;
+            SetWindowPosition(area.Right - GetPlacementWidth() - 24, area.Top + 24);
+        }
+
+        private void SetWindowPosition(double left, double top)
+        {
+            _suppressPlacementSave = true;
+            try
+            {
+                Left = left;
+                Top = top;
+            }
+            finally
+            {
+                _suppressPlacementSave = false;
+            }
+        }
+
+        private void OnLocationChanged(object sender, EventArgs e)
+        {
+            if (_suppressPlacementSave || !_placementInitialized || _isClosed || !IsVisible)
+            {
+                return;
+            }
+
+            if (double.IsNaN(Left) || double.IsNaN(Top) ||
+                double.IsInfinity(Left) || double.IsInfinity(Top))
+            {
+                return;
+            }
+
+            lock (PlacementSync)
+            {
+                _sessionLeft = Left;
+                _sessionTop = Top;
+                _hasSessionPlacement = true;
+            }
+        }
+
+        private double GetPlacementWidth()
+        {
+            return ActualWidth > 0 ? ActualWidth : Width;
+        }
+
+        private double GetPlacementHeight()
+        {
+            return ActualHeight > 0 ? ActualHeight : Height;
+        }
+
+        private static double Clamp(double value, double min, double max)
+        {
+            if (value < min)
+            {
+                return min;
+            }
+
+            if (value > max)
+            {
+                return max;
+            }
+
+            return value;
         }
 
         private void ApplyPalette(string background, string border)

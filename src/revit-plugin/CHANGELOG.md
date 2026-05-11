@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-05-11
+
+- Kept the Revit MCP status window at the user's moved position for the current Revit session instead of snapping back to the default corner on later task updates.
+
 ## 2026-05-08
 
 - Removed the prior public license file before internal monorepo import.

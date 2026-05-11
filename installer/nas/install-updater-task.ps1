@@ -668,6 +668,131 @@ function Ensure-CodexWorkspaceRoot {
     Write-Host "Codex workspace : $fullPath"
 }
 
+function ConvertTo-VbsStringLiteral {
+    param([string]$Value)
+
+    return [string]::Concat('"', $Value.Replace('"', '""'), '"')
+}
+
+function Join-WindowsCommandArguments {
+    param([string[]]$Arguments)
+
+    $parts = [System.Collections.Generic.List[string]]::new()
+    foreach ($argument in $Arguments) {
+        $value = [string]$argument
+        if ($value -match '[\s"]') {
+            $parts.Add('"' + ($value -replace '"', '\"') + '"')
+        }
+        else {
+            $parts.Add($value)
+        }
+    }
+
+    return ($parts.ToArray() -join " ")
+}
+
+function Resolve-WindowsPowerShellPath {
+    return (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
+}
+
+function Resolve-WScriptPath {
+    return (Join-Path $env:WINDIR "System32\wscript.exe")
+}
+
+function Grant-RevitMcpManagedPathAccess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [string]$Label = "managed path",
+        [switch]$CreateDirectory,
+        [switch]$Recurse
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+
+    try {
+        if ($CreateDirectory) {
+            New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        }
+        elseif (-not (Test-Path -LiteralPath $Path)) {
+            return
+        }
+
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        if ([string]::IsNullOrWhiteSpace($identity)) {
+            return
+        }
+
+        $grant = if ($Recurse) { "${identity}:(OI)(CI)M" } else { "${identity}:M" }
+        $arguments = @($Path, "/grant", $grant, "/C")
+        if ($Recurse) {
+            $arguments += "/T"
+        }
+
+        & icacls @arguments | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Could not grant write access to $identity for $Label ($Path). icacls exit code: $LASTEXITCODE"
+        }
+    }
+    catch {
+        Write-Warning "Could not grant write access for $Label (${Path}): $($_.Exception.Message)"
+    }
+}
+
+function Write-HiddenPowerShellLauncher {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LauncherPath,
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptPath,
+        [string[]]$ScriptArguments = @(),
+        [switch]$WaitForExit
+    )
+
+    $launcherDir = Split-Path -Parent $LauncherPath
+    if (-not [string]::IsNullOrWhiteSpace($launcherDir)) {
+        New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null
+    }
+
+    $command = Join-WindowsCommandArguments -Arguments (@(
+            (Resolve-WindowsPowerShellPath),
+            "-STA",
+            "-NoProfile",
+            "-WindowStyle",
+            "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $ScriptPath
+        ) + $ScriptArguments)
+    $waitText = if ($WaitForExit) { "True" } else { "False" }
+
+    $runLine = [string]::Concat("exitCode = shell.Run(", (ConvertTo-VbsStringLiteral -Value $command), ", 0, ", $waitText, ")")
+
+    @(
+        "Option Explicit",
+        "Dim shell",
+        "Dim exitCode",
+        "Set shell = CreateObject(""WScript.Shell"")",
+        $runLine,
+        "WScript.Quit exitCode"
+    ) | Set-Content -LiteralPath $LauncherPath -Encoding ASCII
+}
+
+function Get-HiddenUpdaterLauncherPath {
+    param([string]$UpdaterConfigPath)
+
+    return Join-Path (Split-Path -Parent $UpdaterConfigPath) "Run-Revit-MCP-Update-Hidden.vbs"
+}
+
+function New-HiddenUpdaterScheduledTaskAction {
+    param([string]$LauncherPath)
+
+    return New-ScheduledTaskAction -Execute (Resolve-WScriptPath) -Argument ("//B //Nologo `"$LauncherPath`"")
+}
+
 function Write-UpdaterCommandFiles {
     param(
         [string]$UpdaterPath,
@@ -726,12 +851,16 @@ function Write-UpdaterCommandFiles {
         )
         $loopScriptLines | Set-Content -LiteralPath $loopScriptPath -Encoding ASCII
 
-        $startupCommandPath = Join-Path $startupRoot "Revit MCP Auto Update.cmd"
-        $startupCommandLines = @(
-            "@echo off",
-            "powershell.exe -STA -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$loopScriptPath`" -UpdaterPath `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -IntervalMinutes $CheckIntervalMinutes"
-        )
-        $startupCommandLines | Set-Content -LiteralPath $startupCommandPath -Encoding ASCII
+        $oldStartupCommandPath = Join-Path $startupRoot "Revit MCP Auto Update.cmd"
+        if (Test-Path -LiteralPath $oldStartupCommandPath -PathType Leaf) {
+            Remove-Item -LiteralPath $oldStartupCommandPath -Force
+        }
+
+        $startupCommandPath = Join-Path $startupRoot "Revit MCP Auto Update.vbs"
+        Write-HiddenPowerShellLauncher `
+            -LauncherPath $startupCommandPath `
+            -ScriptPath $loopScriptPath `
+            -ScriptArguments @("-UpdaterPath", $UpdaterPath, "-ConfigPath", $UpdaterConfigPath, "-IntervalMinutes", [string]$CheckIntervalMinutes)
         Write-Host "Startup fallback: $startupCommandPath" -ForegroundColor Yellow
         Write-Host "Startup fallback interval: every $CheckIntervalMinutes minutes" -ForegroundColor Yellow
     }
@@ -813,6 +942,8 @@ Ensure-CodexWorkspaceRoot -Path $CodexWorkspaceRoot
 $RevitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
 
 New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
+Grant-RevitMcpManagedPathAccess -Path $InstallRoot -Label "Revit MCP install root" -CreateDirectory -Recurse
+Grant-RevitMcpManagedPathAccess -Path $WorkRoot -Label "updater work root" -CreateDirectory -Recurse
 
 $localUpdater = Join-Path $WorkRoot "update-from-nas.ps1"
 $localVersionTool = Join-Path $WorkRoot "show-installed-version.ps1"
@@ -857,6 +988,8 @@ $config = [ordered]@{
 Write-JsonFile -Path $configPath -Value $config
 $manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -CheckIntervalMinutes $CheckIntervalMinutes
 $versionCommandPath = Join-Path $WorkRoot "Show-Revit-MCP-Version.cmd"
+Grant-RevitMcpManagedPathAccess -Path $InstallRoot -Label "Revit MCP install root" -CreateDirectory -Recurse
+Grant-RevitMcpManagedPathAccess -Path $WorkRoot -Label "updater work root" -CreateDirectory -Recurse
 
 if ($NoScheduledTask) {
     Write-Host "Updater installed without scheduled task."
@@ -871,8 +1004,9 @@ if ($NoScheduledTask) {
 }
 
 $time = [datetime]::Parse($DailyAt)
-$actionArgs = "-STA -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$localUpdater`" -ConfigPath `"$configPath`" -NotifyUser"
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $actionArgs
+$hiddenLauncherPath = Get-HiddenUpdaterLauncherPath -UpdaterConfigPath $configPath
+Write-HiddenPowerShellLauncher -LauncherPath $hiddenLauncherPath -ScriptPath $localUpdater -ScriptArguments @("-ConfigPath", $configPath, "-NotifyUser") -WaitForExit
+$action = New-HiddenUpdaterScheduledTaskAction -LauncherPath $hiddenLauncherPath
 $dailyTrigger = New-ScheduledTaskTrigger -Daily -At $time
 $repetitionTemplate = New-ScheduledTaskTrigger -Once -At $time -RepetitionInterval (New-TimeSpan -Minutes $CheckIntervalMinutes) -RepetitionDuration (New-TimeSpan -Days 1)
 $dailyTrigger.Repetition = $repetitionTemplate.Repetition

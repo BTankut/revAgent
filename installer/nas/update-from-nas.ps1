@@ -1902,6 +1902,89 @@ function Show-UserNotification {
     }
 }
 
+function ConvertTo-VbsStringLiteral {
+    param([string]$Value)
+
+    return [string]::Concat('"', $Value.Replace('"', '""'), '"')
+}
+
+function Join-WindowsCommandArguments {
+    param([string[]]$Arguments)
+
+    $parts = [System.Collections.Generic.List[string]]::new()
+    foreach ($argument in $Arguments) {
+        $value = [string]$argument
+        if ($value -match '[\s"]') {
+            $parts.Add('"' + ($value -replace '"', '\"') + '"')
+        }
+        else {
+            $parts.Add($value)
+        }
+    }
+
+    return ($parts.ToArray() -join " ")
+}
+
+function Resolve-WindowsPowerShellPath {
+    return (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
+}
+
+function Resolve-WScriptPath {
+    return (Join-Path $env:WINDIR "System32\wscript.exe")
+}
+
+function Write-HiddenPowerShellLauncher {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LauncherPath,
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptPath,
+        [string[]]$ScriptArguments = @(),
+        [switch]$WaitForExit
+    )
+
+    $launcherDir = Split-Path -Parent $LauncherPath
+    if (-not [string]::IsNullOrWhiteSpace($launcherDir)) {
+        New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null
+    }
+
+    $command = Join-WindowsCommandArguments -Arguments (@(
+            (Resolve-WindowsPowerShellPath),
+            "-STA",
+            "-NoProfile",
+            "-WindowStyle",
+            "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $ScriptPath
+        ) + $ScriptArguments)
+    $waitText = if ($WaitForExit) { "True" } else { "False" }
+
+    $runLine = [string]::Concat("exitCode = shell.Run(", (ConvertTo-VbsStringLiteral -Value $command), ", 0, ", $waitText, ")")
+
+    @(
+        "Option Explicit",
+        "Dim shell",
+        "Dim exitCode",
+        "Set shell = CreateObject(""WScript.Shell"")",
+        $runLine,
+        "WScript.Quit exitCode"
+    ) | Set-Content -LiteralPath $LauncherPath -Encoding ASCII
+}
+
+function Get-HiddenUpdaterLauncherPath {
+    param([string]$UpdaterConfigPath)
+
+    return Join-Path (Split-Path -Parent $UpdaterConfigPath) "Run-Revit-MCP-Update-Hidden.vbs"
+}
+
+function New-HiddenUpdaterScheduledTaskAction {
+    param([string]$LauncherPath)
+
+    return New-ScheduledTaskAction -Execute (Resolve-WScriptPath) -Argument ("//B //Nologo `"$LauncherPath`"")
+}
+
 function Repair-RevitMcpScheduledTaskAction {
     param(
         [string]$Name,
@@ -1921,16 +2004,21 @@ function Repair-RevitMcpScheduledTaskAction {
             return
         }
 
-        $desiredArgs = "-STA -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -NotifyUser"
+        $launcherPath = Get-HiddenUpdaterLauncherPath -UpdaterConfigPath $UpdaterConfigPath
+        Write-HiddenPowerShellLauncher -LauncherPath $launcherPath -ScriptPath $UpdaterPath -ScriptArguments @("-ConfigPath", $UpdaterConfigPath, "-NotifyUser") -WaitForExit
+        $desiredExecute = Resolve-WScriptPath
+        $desiredArgs = "//B //Nologo `"$launcherPath`""
         $currentAction = @($task.Actions | Select-Object -First 1)
         $currentArgs = if ($currentAction.Count -gt 0) { [string]$currentAction[0].Arguments } else { "" }
         $currentExecute = if ($currentAction.Count -gt 0) { [string]$currentAction[0].Execute } else { "" }
+        $currentExecuteMatches = [string]::Equals($currentExecute, $desiredExecute, [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($currentExecute, "wscript.exe", [System.StringComparison]::OrdinalIgnoreCase)
         if ([string]::Equals($currentArgs, $desiredArgs, [System.StringComparison]::OrdinalIgnoreCase) -and
-            [string]::Equals($currentExecute, "powershell.exe", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $currentExecuteMatches) {
             return
         }
 
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $desiredArgs
+        $action = New-HiddenUpdaterScheduledTaskAction -LauncherPath $launcherPath
         Set-ScheduledTask -TaskName $Name -Action $action | Out-Null
         Write-Host "Scheduled task action repaired for hidden background checks: $Name"
     }

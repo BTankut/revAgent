@@ -92,9 +92,14 @@ separate terminal window should not remain beside the installer.
 
 The GUI requests admin rights as soon as it opens. The updater then registers a
 per-user Scheduled Task that checks silently at logon and every 30 minutes
-during the day. If Windows still blocks Scheduled Task registration, the
-installer creates a Startup fallback that keeps a hidden per-user update loop
-running with the same interval.
+during the day. Scheduled background checks are launched through a hidden
+WScript wrapper so PowerShell does not flash a terminal window or steal focus.
+The elevated install also repairs permissions on the managed Revit MCP install
+root and the Revit MCP add-in manifest so that the per-user task can update the
+local package, runtime, add-in payload, cache, reports, logs, and hidden
+launcher files without another UAC prompt. If Windows still blocks Scheduled
+Task registration, the installer creates a Startup fallback that keeps a hidden
+per-user update loop running with the same interval.
 
 If you want to copy a single launcher to a workstation desktop, copy the
 standalone launcher instead:
