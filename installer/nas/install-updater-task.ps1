@@ -699,6 +699,17 @@ function Resolve-WScriptPath {
     return (Join-Path $env:WINDIR "System32\wscript.exe")
 }
 
+function Test-RevitMcpAdministrator {
+    try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Grant-RevitMcpManagedPathAccess {
     param(
         [Parameter(Mandatory = $true)]
@@ -709,6 +720,10 @@ function Grant-RevitMcpManagedPathAccess {
     )
 
     if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+
+    if (-not (Test-RevitMcpAdministrator)) {
         return
     }
 
@@ -731,13 +746,40 @@ function Grant-RevitMcpManagedPathAccess {
             $arguments += "/T"
         }
 
-        & icacls @arguments | Out-Null
+        Write-Host "Permission repair: $Label"
+        & icacls @arguments 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "Could not grant write access to $identity for $Label ($Path). icacls exit code: $LASTEXITCODE"
         }
     }
     catch {
         Write-Warning "Could not grant write access for $Label (${Path}): $($_.Exception.Message)"
+    }
+}
+
+function Repair-RevitMcpUpdaterPermissions {
+    Grant-RevitMcpManagedPathAccess -Path $InstallRoot -Label "Revit MCP install root" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path $WorkRoot -Label "updater work root" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path $PackageTarget -Label "package target" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path $ServerTarget -Label "runtime target" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path (Join-Path $InstallRoot "revit-plugin") -Label "Revit addin payload root" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path (Join-Path $InstallRoot "commands") -Label "Revit command payload root" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path (Join-Path $InstallRoot "codex") -Label "Codex payload root" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path (Join-Path $InstallRoot "state") -Label "state root" -CreateDirectory
+
+    foreach ($fileName in @(
+            "Run-Revit-MCP-Update-Hidden.vbs",
+            "last-update-report.json",
+            "installed.json",
+            "updater-config.json",
+            "update-from-nas.ps1",
+            "show-installed-version.ps1",
+            "install-updater-task.ps1",
+            "Update-Revit-MCP-Now.cmd",
+            "Show-Revit-MCP-Version.cmd",
+            "auto-update-loop.ps1"
+        )) {
+        Grant-RevitMcpManagedPathAccess -Path (Join-Path $WorkRoot $fileName) -Label "updater file $fileName"
     }
 }
 
@@ -942,8 +984,7 @@ Ensure-CodexWorkspaceRoot -Path $CodexWorkspaceRoot
 $RevitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
 
 New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
-Grant-RevitMcpManagedPathAccess -Path $InstallRoot -Label "Revit MCP install root" -CreateDirectory -Recurse
-Grant-RevitMcpManagedPathAccess -Path $WorkRoot -Label "updater work root" -CreateDirectory -Recurse
+Repair-RevitMcpUpdaterPermissions
 
 $localUpdater = Join-Path $WorkRoot "update-from-nas.ps1"
 $localVersionTool = Join-Path $WorkRoot "show-installed-version.ps1"
@@ -988,8 +1029,7 @@ $config = [ordered]@{
 Write-JsonFile -Path $configPath -Value $config
 $manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -CheckIntervalMinutes $CheckIntervalMinutes
 $versionCommandPath = Join-Path $WorkRoot "Show-Revit-MCP-Version.cmd"
-Grant-RevitMcpManagedPathAccess -Path $InstallRoot -Label "Revit MCP install root" -CreateDirectory -Recurse
-Grant-RevitMcpManagedPathAccess -Path $WorkRoot -Label "updater work root" -CreateDirectory -Recurse
+Repair-RevitMcpUpdaterPermissions
 
 if ($NoScheduledTask) {
     Write-Host "Updater installed without scheduled task."

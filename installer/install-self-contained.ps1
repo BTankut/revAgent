@@ -585,6 +585,106 @@ function Remove-StaleSkillBackups {
         }
 }
 
+function Test-RevitMcpAdministrator {
+    try {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+        return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Grant-RevitMcpManagedPathAccess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [string]$Label = "managed path",
+        [switch]$CreateDirectory,
+        [switch]$Recurse
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+
+    if (-not (Test-RevitMcpAdministrator)) {
+        return
+    }
+
+    try {
+        if ($CreateDirectory) {
+            New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        }
+        elseif (-not (Test-Path -LiteralPath $Path)) {
+            return
+        }
+
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        if ([string]::IsNullOrWhiteSpace($identity)) {
+            return
+        }
+
+        $grant = if ($Recurse) { "${identity}:(OI)(CI)M" } else { "${identity}:M" }
+        $arguments = @($Path, "/grant", $grant, "/C")
+        if ($Recurse) {
+            $arguments += "/T"
+        }
+
+        Write-Host "Permission repair: $Label"
+        & icacls @arguments 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Could not grant write access to $identity for $Label ($Path). icacls exit code: $LASTEXITCODE"
+        }
+    }
+    catch {
+        Write-Warning "Could not grant write access for $Label (${Path}): $($_.Exception.Message)"
+    }
+}
+
+function Repair-RevitMcpManagedInstallPermissions {
+    param([switch]$IncludeExistingPayloadTrees)
+
+    Grant-RevitMcpManagedPathAccess -Path $InstallRoot -Label "Revit MCP install root" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path $stateRoot -Label "state root" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path $ServerTarget -Label "runtime target" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path $updaterRoot -Label "updater work root" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path $pluginRoot -Label "Revit addin payload root" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path (Split-Path -Parent $commandSetRoot) -Label "Revit command payload parent" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path $codexMachineRoot -Label "Codex payload root" -CreateDirectory
+    Grant-RevitMcpManagedPathAccess -Path $codexMachineSkillsRoot -Label "Codex skill payload root" -CreateDirectory
+
+    foreach ($filePath in @(
+            (Join-Path $addinRoot "mcp-servers-for-revit.addin"),
+            (Join-Path $InstallRoot ".revit-mcp-programdata-install"),
+            (Join-Path $updaterRoot "Run-Revit-MCP-Update-Hidden.vbs"),
+            (Join-Path $updaterRoot "last-update-report.json"),
+            (Join-Path $updaterRoot "installed.json"),
+            (Join-Path $updaterRoot "updater-config.json"),
+            (Join-Path $updaterRoot "update-from-nas.ps1"),
+            (Join-Path $updaterRoot "show-installed-version.ps1"),
+            (Join-Path $updaterRoot "install-updater-task.ps1"),
+            (Join-Path $updaterRoot "Update-Revit-MCP-Now.cmd"),
+            (Join-Path $updaterRoot "Show-Revit-MCP-Version.cmd"),
+            (Join-Path $updaterRoot "auto-update-loop.ps1"),
+            $codexMachineAgentsTarget
+        )) {
+        Grant-RevitMcpManagedPathAccess -Path $filePath -Label ("managed file " + (Split-Path -Leaf $filePath))
+    }
+
+    if ($IncludeExistingPayloadTrees) {
+        foreach ($tree in @(
+                @{ Path = $pluginTarget; Label = "existing Revit addin payload" },
+                @{ Path = $commandSetRoot; Label = "existing Revit command payload" },
+                @{ Path = $ServerTarget; Label = "existing runtime payload" },
+                @{ Path = $codexMachineSkillTarget; Label = "existing Codex skill payload" }
+            )) {
+            Grant-RevitMcpManagedPathAccess -Path $tree.Path -Label $tree.Label -Recurse
+        }
+    }
+}
+
 function Invoke-RevitMcpCleanup {
     param(
         [switch]$ForUninstall
@@ -638,6 +738,7 @@ function Invoke-RevitMcpCleanup {
     }
 }
 
+Repair-RevitMcpManagedInstallPermissions -IncludeExistingPayloadTrees
 Invoke-RevitMcpCleanup -ForUninstall:$Uninstall
 
 if ($Uninstall) {
@@ -874,48 +975,6 @@ function Resolve-WScriptPath {
     return (Join-Path $env:WINDIR "System32\wscript.exe")
 }
 
-function Grant-RevitMcpManagedPathAccess {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-        [string]$Label = "managed path",
-        [switch]$CreateDirectory,
-        [switch]$Recurse
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        return
-    }
-
-    try {
-        if ($CreateDirectory) {
-            New-Item -ItemType Directory -Path $Path -Force | Out-Null
-        }
-        elseif (-not (Test-Path -LiteralPath $Path)) {
-            return
-        }
-
-        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        if ([string]::IsNullOrWhiteSpace($identity)) {
-            return
-        }
-
-        $grant = if ($Recurse) { "${identity}:(OI)(CI)M" } else { "${identity}:M" }
-        $arguments = @($Path, "/grant", $grant, "/C")
-        if ($Recurse) {
-            $arguments += "/T"
-        }
-
-        & icacls @arguments | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Could not grant write access to $identity for $Label ($Path). icacls exit code: $LASTEXITCODE"
-        }
-    }
-    catch {
-        Write-Warning "Could not grant write access for $Label (${Path}): $($_.Exception.Message)"
-    }
-}
-
 function Write-HiddenPowerShellLauncher {
     param(
         [Parameter(Mandatory = $true)]
@@ -969,13 +1028,9 @@ function New-HiddenUpdaterScheduledTaskAction {
 }
 
 $nasToolsSource = Join-Path $PSScriptRoot "nas"
-Grant-RevitMcpManagedPathAccess -Path $InstallRoot -Label "Revit MCP install root" -CreateDirectory -Recurse
-Grant-RevitMcpManagedPathAccess -Path $updaterRoot -Label "updater work root" -CreateDirectory -Recurse
-Grant-RevitMcpManagedPathAccess -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -Label "Revit addin manifest"
+Repair-RevitMcpManagedInstallPermissions
 Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $updaterRoot -ConfigPath $updaterConfigPath
-Grant-RevitMcpManagedPathAccess -Path $InstallRoot -Label "Revit MCP install root" -CreateDirectory -Recurse
-Grant-RevitMcpManagedPathAccess -Path $updaterRoot -Label "updater work root" -CreateDirectory -Recurse
-Grant-RevitMcpManagedPathAccess -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -Label "Revit addin manifest"
+Repair-RevitMcpManagedInstallPermissions
 Repair-RevitMcpScheduledTaskAction -ConfigPath $updaterConfigPath -UpdaterPath (Join-Path $updaterRoot "update-from-nas.ps1")
 
 Write-Host "Self-contained Revit MCP bundle installed for Revit $RevitVersion" -ForegroundColor Green

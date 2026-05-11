@@ -7,6 +7,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Kept the Revit MCP status window at the user's moved position for the current Revit session, with off-screen positions clamped back to the active work area.
 - Changed scheduled background update checks to start through a hidden WScript launcher instead of launching PowerShell directly, removing the console flash and focus steal during automatic checks.
 - Added managed install permission repair during elevated installs so per-user background checks can update the local package, runtime files, Revit MCP add-in payload, reports, cache files, and the hidden launcher.
+- Narrowed permission repair to targeted managed folders and files so GUI installs do not appear stuck while scanning old package backups or `node_modules` trees.
 
 ## 2026-05-10
 
