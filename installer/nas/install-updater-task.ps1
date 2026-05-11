@@ -326,12 +326,35 @@ function Set-RevitMcpProxyEnvironment {
 
     $proxyVariables = @("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
     $noProxyVariables = @("NO_PROXY", "no_proxy")
+    $changedPersistentEnvironment = $false
 
     foreach ($target in $targets) {
         $targetEnum = [System.Enum]::Parse([System.EnvironmentVariableTarget], $target)
+        $targetAlreadyConfigured = $true
+        foreach ($key in $proxyVariables) {
+            if (-not [string]::Equals([Environment]::GetEnvironmentVariable($key, $targetEnum), $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $targetAlreadyConfigured = $false
+                break
+            }
+        }
+        if ($targetAlreadyConfigured) {
+            foreach ($key in $noProxyVariables) {
+                if (-not [string]::Equals([Environment]::GetEnvironmentVariable($key, $targetEnum), $NoProxy, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $targetAlreadyConfigured = $false
+                    break
+                }
+            }
+        }
+        if ($targetAlreadyConfigured) {
+            continue
+        }
+
         foreach ($key in $proxyVariables) {
             try {
                 [Environment]::SetEnvironmentVariable($key, $ProxyUrl, $targetEnum)
+                if ($target -ne "Process") {
+                    $changedPersistentEnvironment = $true
+                }
             }
             catch {
                 Write-Warning "Could not set $target environment variable ${key}: $($_.Exception.Message)"
@@ -340,6 +363,9 @@ function Set-RevitMcpProxyEnvironment {
         foreach ($key in $noProxyVariables) {
             try {
                 [Environment]::SetEnvironmentVariable($key, $NoProxy, $targetEnum)
+                if ($target -ne "Process") {
+                    $changedPersistentEnvironment = $true
+                }
             }
             catch {
                 Write-Warning "Could not set $target environment variable ${key}: $($_.Exception.Message)"
@@ -347,7 +373,13 @@ function Set-RevitMcpProxyEnvironment {
         }
     }
 
-    Send-RevitMcpEnvironmentChanged
+    if ($changedPersistentEnvironment) {
+        Send-RevitMcpEnvironmentChanged
+        Write-Host "Proxy env       : updated"
+    }
+    else {
+        Write-Host "Proxy env       : ok"
+    }
 }
 
 function Set-RevitMcpWinInetProxy {
@@ -371,12 +403,14 @@ function Set-RevitMcpWinInetProxy {
             [string]::Equals([string]$current.ProxyServer, $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase) -and
             [string]::Equals([string]$current.ProxyOverride, $ProxyBypass, [System.StringComparison]::OrdinalIgnoreCase)
         if ($alreadyConfigured) {
+            Write-Host "WinINET proxy   : ok"
             return
         }
 
         New-ItemProperty -Path $internetSettingsPath -Name "ProxyEnable" -Value 1 -PropertyType DWord -Force | Out-Null
         New-ItemProperty -Path $internetSettingsPath -Name "ProxyServer" -Value $ProxyUrl -PropertyType String -Force | Out-Null
         New-ItemProperty -Path $internetSettingsPath -Name "ProxyOverride" -Value $ProxyBypass -PropertyType String -Force | Out-Null
+        Write-Host "WinINET proxy   : updated"
     }
     catch {
         Write-Warning "Could not set current-user Windows proxy settings: $($_.Exception.Message)"
@@ -411,10 +445,13 @@ function Set-RevitMcpWinHttpProxy {
         return
     }
 
+    if (Test-RevitMcpWinHttpProxyMatches -ProxyUrl $ProxyUrl) {
+        Write-Host "WinHTTP proxy   : ok"
+        return
+    }
+
     if (-not (Test-CurrentProcessElevated)) {
-        if (-not (Test-RevitMcpWinHttpProxyMatches -ProxyUrl $ProxyUrl)) {
-            Write-Warning "WinHTTP proxy needs admin rights. Run the Revit MCP installer as administrator to set it for winget/Windows services."
-        }
+        Write-Warning "WinHTTP proxy needs admin rights. Run the Revit MCP installer as administrator to set it for winget/Windows services."
         return
     }
 
@@ -423,7 +460,10 @@ function Set-RevitMcpWinHttpProxy {
         $exitCode = Invoke-RevitMcpSetupProcess -FilePath $netshPath -Arguments @("winhttp", "set", "proxy", "proxy-server=$server", "bypass-list=$ProxyBypass") -TimeoutSeconds 60
         if ($exitCode -ne 0) {
             Write-Warning "WinHTTP proxy setup failed with exit code $exitCode."
+            return
         }
+
+        Write-Host "WinHTTP proxy   : updated"
     }
     catch {
         Write-Warning "Could not set WinHTTP proxy: $($_.Exception.Message)"
@@ -452,10 +492,50 @@ function Invoke-RevitMcpProxyToolCommand {
     }
 }
 
+function Get-RevitMcpKeyValueFileValue {
+    param(
+        [string]$Path,
+        [string]$Key
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return ""
+    }
+
+    $escapedKey = [regex]::Escape($Key)
+    foreach ($line in (Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue)) {
+        $trimmed = $line.Trim()
+        if ($trimmed.Length -eq 0 -or $trimmed.StartsWith("#") -or $trimmed.StartsWith(";")) {
+            continue
+        }
+        if ($trimmed -match "^\s*$escapedKey\s*=\s*(.*?)\s*$") {
+            return $Matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+
+    return ""
+}
+
+function Test-RevitMcpNpmProxyConfigured {
+    param([string]$ProxyUrl)
+
+    $npmrcPath = Join-Path $env:USERPROFILE ".npmrc"
+    return (
+        [string]::Equals((Get-RevitMcpKeyValueFileValue -Path $npmrcPath -Key "proxy"), $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals((Get-RevitMcpKeyValueFileValue -Path $npmrcPath -Key "https-proxy"), $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals((Get-RevitMcpKeyValueFileValue -Path $npmrcPath -Key "registry"), "https://registry.npmjs.org/", [System.StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
 function Set-RevitMcpNpmProxy {
     param([string]$ProxyUrl)
 
     if ([string]::IsNullOrWhiteSpace($ProxyUrl)) {
+        return
+    }
+
+    if (Test-RevitMcpNpmProxyConfigured -ProxyUrl $ProxyUrl) {
+        Write-Host "npm proxy       : ok"
         return
     }
 
@@ -465,6 +545,7 @@ function Set-RevitMcpNpmProxy {
         (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
     )
     if ([string]::IsNullOrWhiteSpace($npmPath)) {
+        Write-Host "npm proxy       : skipped (npm not found)"
         return
     }
 
@@ -475,6 +556,7 @@ function Set-RevitMcpNpmProxy {
         )) {
         Invoke-RevitMcpProxyToolCommand -FilePath $npmPath -Arguments $arguments -Label "npm proxy config"
     }
+    Write-Host "npm proxy       : updated"
 
     if (Test-CurrentProcessElevated) {
         foreach ($arguments in @(
@@ -484,6 +566,29 @@ function Set-RevitMcpNpmProxy {
             )) {
             Invoke-RevitMcpProxyToolCommand -FilePath $npmPath -Arguments $arguments -Label "global npm proxy config"
         }
+    }
+}
+
+function Test-RevitMcpGitProxyConfigured {
+    param(
+        [string]$GitPath,
+        [string]$ProxyUrl
+    )
+
+    if ([string]::IsNullOrWhiteSpace($GitPath)) {
+        return $false
+    }
+
+    try {
+        $httpProxy = (& $GitPath config --global --get http.proxy 2>$null | Out-String).Trim()
+        $httpsProxy = (& $GitPath config --global --get https.proxy 2>$null | Out-String).Trim()
+        return (
+            [string]::Equals($httpProxy, $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals($httpsProxy, $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase)
+        )
+    }
+    catch {
+        return $false
     }
 }
 
@@ -499,6 +604,12 @@ function Set-RevitMcpGitProxy {
         (Join-Path ${env:ProgramFiles(x86)} "Git\cmd\git.exe")
     )
     if ([string]::IsNullOrWhiteSpace($gitPath)) {
+        Write-Host "Git proxy       : skipped (git not found)"
+        return
+    }
+
+    if (Test-RevitMcpGitProxyConfigured -GitPath $gitPath -ProxyUrl $ProxyUrl) {
+        Write-Host "Git proxy       : ok"
         return
     }
 
@@ -508,6 +619,7 @@ function Set-RevitMcpGitProxy {
         )) {
         Invoke-RevitMcpProxyToolCommand -FilePath $gitPath -Arguments $arguments -Label "git proxy config"
     }
+    Write-Host "Git proxy       : updated"
 }
 
 function Initialize-RevitMcpWorkstationProxy {

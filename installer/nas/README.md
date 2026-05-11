@@ -61,7 +61,9 @@ Workstation prerequisites handled by the installer:
 - Office internet proxy is configured automatically as
   `http://192.168.90.10:6588` for PowerShell/terminal child processes, user and
   machine environment variables, current-user Windows internet settings,
-  WinHTTP, npm, and Git where those tools are available.
+  WinHTTP, npm, and Git where those tools are available. Repeated updates skip
+  the slower proxy commands when the existing settings already match and log
+  each proxy step as `ok`, `updated`, or `skipped`.
 - Node.js/npm is installed automatically. The updater first tries the internet
   command-line install path, then falls back to the bundled NAS MSI under
   `tools\dependencies`.
