@@ -1,11 +1,5 @@
 import { z } from "zod";
-import {
-    getMemberDetails,
-    getTypeDetails,
-    listNamespace,
-    searchApi,
-} from "../utils/docIndex.js";
-
+import { getMemberDetails, getTypeDetails, listNamespace, searchApi, } from "../utils/docIndex.js";
 const symbolSchema = z.object({
     mode: z.enum(["search", "type", "member", "namespace"]),
     query: z.string().optional(),
@@ -17,7 +11,6 @@ const symbolSchema = z.object({
     include_child_namespaces: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).optional(),
 });
-
 async function resolveSymbol(revitVersion, symbol) {
     if (symbol.mode === "search") {
         if (!symbol.query) {
@@ -63,7 +56,6 @@ async function resolveSymbol(revitVersion, symbol) {
     }
     throw new Error(`Unsupported mode: ${symbol.mode}`);
 }
-
 export function registerResolveApiSymbolsBulkTool(server) {
     server.tool("resolve_api_symbols_bulk", "Resolve multiple Revit API searches/types/members/namespaces in one call, preserving input order.", {
         revit_version: z.string().min(1).describe("Revit version to resolve against, e.g. 2022."),

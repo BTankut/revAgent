@@ -2,6 +2,14 @@
 
 All notable Revit MCP workstation deployment changes are tracked here.
 
+## Unreleased
+
+- Added TypeScript-first canonical source trees, `tsconfig.json`, and build/smoke scripts for both bundled MCP servers while keeping `build/` as the installer/runtime contract.
+- Split reusable installer/updater helper behavior into `installer/lib` modules for hidden launchers, scheduled task repair, permissions, package layout/extraction, Revit version metadata, update policy, proxy normalization, Codex config registration, and reporting.
+- Added `config/revit-versions.json` as the central Revit version matrix. Revit 2022 remains the only bundled install payload; Revit 2023/2024/2025 are modeled but blocked from fake payload deployment until artifacts exist.
+- Added local non-admin smoke tests for launcher exit-code propagation, WScript scheduled task actions, targeted permission repair, Revit-open update defer behavior, stable package path/layout resolution, public installer parameters, and helper modules.
+- Added platform architecture documentation and an ADR deferring a .NET updater helper for now.
+
 ## 2026-05-11
 
 - Kept the Revit MCP status window at the user's moved position for the current Revit session, with off-screen positions clamped back to the active work area.

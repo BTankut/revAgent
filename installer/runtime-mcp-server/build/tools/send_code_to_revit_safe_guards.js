@@ -17,7 +17,6 @@ const WRITE_PATTERNS = [
     { name: "Revit property assignment", pattern: /\.(Pinned|Name|Scale|ViewTemplateId|CropBox|CropBoxActive|CropBoxVisible|SketchPlane|Curve|Point)\s*=/i },
     { name: "Manual Transaction", pattern: /new\s+(Transaction|SubTransaction|TransactionGroup)\s*\(|(Transaction|SubTransaction|TransactionGroup)\s*\(/i },
 ];
-
 export function findWritePatterns(code) {
     return WRITE_PATTERNS
         .filter((entry) => entry.pattern.test(code))

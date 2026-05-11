@@ -11,7 +11,6 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("2020", "2021", "2022", "2023", "2024", "2025")]
     [string]$RevitVersion = "2022",
 
     [string]$RepoRoot = "",
@@ -30,6 +29,10 @@ if ([string]::IsNullOrWhiteSpace($scriptRoot)) {
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $scriptRoot "..")).Path
 }
+$RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
+
+Import-Module (Join-Path $RepoRoot "installer\lib\RevitMcp.RevitVersions.psm1") -Force
+$revitVersionConfig = Get-RevitMcpVersionConfig -Version $RevitVersion -RepoRoot $RepoRoot
 
 function Resolve-DotnetSdk {
     param([string]$RequestedPath)
@@ -66,10 +69,9 @@ function Resolve-DotnetSdk {
 function Get-Configuration {
     param([string]$Version)
 
-    return "Release R$($Version.Substring(2, 2))"
+    return [string](Get-RevitMcpVersionConfig -Version $Version -RepoRoot $RepoRoot).buildConfiguration
 }
 
-$RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 $projectPath = Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\revit-mcp-plugin.csproj"
 if (-not (Test-Path -LiteralPath $projectPath)) {
     throw "Revit plugin project was not found: $projectPath"
@@ -94,7 +96,8 @@ if (-not (Test-Path -LiteralPath $builtDll -PathType Leaf)) {
 }
 
 if (-not $SkipPayloadCopy) {
-    $payloadDir = Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin"
+    Assert-RevitMcpInstallerPayloadAvailable -Version $RevitVersion -RepoRoot $RepoRoot
+    $payloadDir = Join-Path $RepoRoot ([string]$revitVersionConfig.payload.installerPluginPath)
     if (-not (Test-Path -LiteralPath $payloadDir -PathType Container)) {
         throw "Installer payload directory was not found: $payloadDir"
     }

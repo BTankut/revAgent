@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { findWritePatterns } from "./send_code_to_revit_safe_guards.js";
-
 const cases = [
     ["Parameter.Set", "p.Set(\"x\")"],
     ["Parameter.SetValueString", "p.SetValueString(\"10\")"],
@@ -22,17 +21,8 @@ const cases = [
     ["Manual Transaction", "TransactionGroup group = new TransactionGroup(document, \"x\")"],
     ["Manual Transaction", "SubTransaction st = new SubTransaction(document)"],
 ];
-
 for (const [expected, code] of cases) {
-    assert(
-        findWritePatterns(code).includes(expected),
-        `Expected ${expected} guard for: ${code}`,
-    );
+    assert(findWritePatterns(code).includes(expected), `Expected ${expected} guard for: ${code}`);
 }
-
-assert.deepEqual(
-    findWritePatterns("FilteredElementCollector col = new FilteredElementCollector(document); return col.ToElementIds().Count;"),
-    [],
-);
-
+assert.deepEqual(findWritePatterns("FilteredElementCollector col = new FilteredElementCollector(document); return col.ToElementIds().Count;"), []);
 console.log(`send_code_to_revit_safe guard tests passed (${cases.length} write cases)`);

@@ -4,15 +4,10 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-// Database path (stored in project root)
 const DB_PATH = join(__dirname, '..', '..', 'revit-data.db');
-// Initialize database connection
 export const db = new Database(DB_PATH);
-// Enable foreign keys
 db.pragma('foreign_keys = ON');
-// Initialize database schema
 export function initializeDatabase() {
-    // Create projects table
     db.exec(`
     CREATE TABLE IF NOT EXISTS projects (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,7 +23,6 @@ export function initializeDatabase() {
       metadata TEXT
     )
   `);
-    // Create rooms table
     db.exec(`
     CREATE TABLE IF NOT EXISTS rooms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +42,6 @@ export function initializeDatabase() {
       UNIQUE(project_id, room_id)
     )
   `);
-    // Create index for faster queries
     db.exec(`
     CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(project_name);
     CREATE INDEX IF NOT EXISTS idx_projects_timestamp ON projects(timestamp);
@@ -56,6 +49,5 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_rooms_room_number ON rooms(room_number);
   `);
 }
-// Initialize on module load
 initializeDatabase();
 export default db;

@@ -3,7 +3,6 @@ import { existsSync } from "fs";
 import { mkdir, readFile, readdir, stat } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.resolve(__dirname, "..", "..");
@@ -11,15 +10,12 @@ const INDEX_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "build-index.ps1");
 const DEFAULT_REVIT_VERSION = "2022";
 const INDEX_SCHEMA_VERSION = 2;
 const INDEX_CACHE = new Map();
-
 function parseJson(text) {
     return JSON.parse(String(text).replace(/^\uFEFF/, ""));
 }
-
 function normalize(text) {
     return String(text || "").trim().toLowerCase();
 }
-
 function uniqueBy(items, keySelector) {
     const seen = new Set();
     return items.filter((item) => {
@@ -31,18 +27,15 @@ function uniqueBy(items, keySelector) {
         return true;
     });
 }
-
 function defaultRevitRoot(version) {
     return path.join("C:\\Program Files\\Autodesk", `Revit ${version}`);
 }
-
 function defaultCacheDir() {
     if (process.env.ProgramData) {
         return path.join(process.env.ProgramData, "DPE", "RevitMCP", "state", "revit-api-docs", "cache");
     }
     return path.join("C:\\ProgramData", "DPE", "RevitMCP", "state", "revit-api-docs", "cache");
 }
-
 async function discoverAssemblyPairs(rootPath) {
     const entries = await readdir(rootPath, { withFileTypes: true });
     return entries
@@ -59,7 +52,6 @@ async function discoverAssemblyPairs(rootPath) {
         .filter((pair) => existsSync(pair.xmlPath))
         .sort((left, right) => left.assemblyName.localeCompare(right.assemblyName));
 }
-
 async function getConfig(options = {}) {
     const revitVersion = String(options.revitVersion || process.env.REVIT_API_DOCS_VERSION || DEFAULT_REVIT_VERSION);
     const rootPath = options.rootPath || process.env.REVIT_API_DOCS_ROOT || defaultRevitRoot(revitVersion);
@@ -80,7 +72,6 @@ async function getConfig(options = {}) {
         cacheFile,
     };
 }
-
 async function cacheIsStale(config) {
     if (!existsSync(config.cacheFile)) {
         return true;
@@ -95,7 +86,6 @@ async function cacheIsStale(config) {
     }
     return false;
 }
-
 async function runIndexBuilder(config) {
     await mkdir(config.cacheDir, { recursive: true });
     await new Promise((resolve, reject) => {
@@ -131,7 +121,6 @@ async function runIndexBuilder(config) {
         });
     });
 }
-
 function toSummaryRecord(symbol) {
     return {
         id: symbol.id,
@@ -145,7 +134,6 @@ function toSummaryRecord(symbol) {
         declaringType: symbol.declaringType,
     };
 }
-
 function hydrateIndex(raw) {
     const typeById = new Map();
     const typeByFullName = new Map();
@@ -156,7 +144,6 @@ function hydrateIndex(raw) {
     const membersByType = new Map();
     const namespaces = new Map();
     const searchItems = [];
-
     for (const type of raw.types) {
         const hydratedType = {
             ...type,
@@ -182,7 +169,6 @@ function hydrateIndex(raw) {
             searchText: [type.id, type.name, type.fullName, type.namespace, type.summary].join(" ").toLowerCase(),
         });
     }
-
     for (const member of raw.members) {
         const hydratedMember = {
             ...member,
@@ -214,7 +200,6 @@ function hydrateIndex(raw) {
             searchText: [member.id, member.name, hydratedMember.fullName, member.signature, member.summary, member.declaringType].join(" ").toLowerCase(),
         });
     }
-
     const namespaceItems = [...namespaces.values()].map((entry) => ({
         id: `N:${entry.name}`,
         kind: "namespace",
@@ -225,7 +210,6 @@ function hydrateIndex(raw) {
         summary: `Namespace with ${entry.types.length} public types.`,
         searchText: entry.name.toLowerCase(),
     }));
-
     return {
         ...raw,
         typeById,
@@ -239,7 +223,6 @@ function hydrateIndex(raw) {
         searchItems: [...searchItems, ...namespaceItems],
     };
 }
-
 async function loadIndex(options = {}) {
     const config = await getConfig(options);
     const cacheKey = `${config.revitVersion}|${config.rootPath}`;
@@ -264,7 +247,6 @@ async function loadIndex(options = {}) {
     INDEX_CACHE.set(cacheKey, hydrated);
     return hydrated;
 }
-
 function scoreMatch(item, query) {
     const lowered = normalize(query);
     const name = normalize(item.name);
@@ -310,7 +292,6 @@ function scoreMatch(item, query) {
     }
     return tokenScore;
 }
-
 function filterByAssembly(items, assembly) {
     if (!assembly) {
         return items;
@@ -318,14 +299,12 @@ function filterByAssembly(items, assembly) {
     const assemblyFilter = normalize(assembly);
     return items.filter((item) => normalize(item.assembly).includes(assemblyFilter));
 }
-
 function filterByKind(items, kind) {
     if (!kind) {
         return items;
     }
     return items.filter((item) => item.kind === kind);
 }
-
 function findTypeMatches(index, typeName) {
     const query = normalize(typeName);
     if (!query) {
@@ -346,7 +325,6 @@ function findTypeMatches(index, typeName) {
     const fuzzy = index.types.filter((type) => normalize(type.fullName).includes(query) || normalize(type.name).includes(query));
     return fuzzy.slice(0, 20);
 }
-
 function findMemberMatches(index, memberName, typeName, kind) {
     const query = normalize(memberName);
     let matches = [];
@@ -378,7 +356,6 @@ function findMemberMatches(index, memberName, typeName, kind) {
     }
     return uniqueBy(matches, (member) => member.id);
 }
-
 function groupMembers(members) {
     const groups = {
         constructors: [],
@@ -410,7 +387,6 @@ function groupMembers(members) {
     }
     return groups;
 }
-
 function resolveUniqueType(index, typeName) {
     const matches = findTypeMatches(index, typeName);
     if (matches.length === 0) {
@@ -427,7 +403,6 @@ function resolveUniqueType(index, typeName) {
         type: matches[0],
     };
 }
-
 export async function searchApi(options) {
     const limit = Math.max(1, Math.min(100, Number(options.limit || 20)));
     const index = await loadIndex({ revitVersion: options.revitVersion });
@@ -446,7 +421,6 @@ export async function searchApi(options) {
         results: ranked.map(toSummaryRecord),
     };
 }
-
 export async function getTypeDetails(options) {
     const index = await loadIndex({ revitVersion: options.revitVersion });
     const resolution = resolveUniqueType(index, options.typeName);
@@ -494,7 +468,6 @@ export async function getTypeDetails(options) {
         inheritedMembers,
     };
 }
-
 export async function getMemberDetails(options) {
     const index = await loadIndex({ revitVersion: options.revitVersion });
     const matches = findMemberMatches(index, options.memberName, options.typeName, options.kind);
@@ -531,7 +504,6 @@ export async function getMemberDetails(options) {
         },
     };
 }
-
 export async function listNamespace(options) {
     const index = await loadIndex({ revitVersion: options.revitVersion });
     const exact = index.namespaces.get(options.namespaceName) ||

@@ -1,16 +1,5 @@
 import { z } from "zod";
-import {
-    connectionOptionsFromArgs,
-    connectionTargetSchema,
-    csharpIntArray,
-    csharpStringArray,
-    executeRevitCode,
-    formatJsonContent,
-    getSelectionElementIds,
-    taskMetadataSchema,
-    taskOptionsFromArgs,
-} from "../utils/revitToolHelpers.js";
-
+import { connectionOptionsFromArgs, connectionTargetSchema, csharpIntArray, csharpStringArray, executeRevitCode, formatJsonContent, getSelectionElementIds, taskMetadataSchema, taskOptionsFromArgs, } from "../utils/revitToolHelpers.js";
 async function resolveElementIds(args, connectionOptions) {
     const explicit = Array.isArray(args.elementIds) ? args.elementIds : [];
     let ids = explicit
@@ -21,7 +10,6 @@ async function resolveElementIds(args, connectionOptions) {
     }
     return [...new Set(ids)].slice(0, args.limit || 20);
 }
-
 function buildInspectElementsCode(ids, args) {
     const idArray = csharpIntArray(ids);
     const includeParameters = args.includeParameters !== false ? "true" : "false";
@@ -208,7 +196,6 @@ catch (Exception ex)
     return new { success = false, error = ex.ToString() };
 }`;
 }
-
 export function registerInspectElementsTool(server) {
     server.tool("inspect_elements", "Read-only inspection for selected or targeted Revit elements: class/category/type/level/key parameters/connector summary.", {
         ...connectionTargetSchema(z),

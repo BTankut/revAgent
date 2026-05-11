@@ -1,10 +1,6 @@
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
-import {
-    connectionOptionsFromArgs,
-    connectionTargetSchema,
-} from "../utils/revitToolHelpers.js";
-
+import { connectionOptionsFromArgs, connectionTargetSchema, } from "../utils/revitToolHelpers.js";
 export function registerGetCurrentViewInfoTool(server) {
     server.tool("get_current_view_info", "Get detailed information about the active Revit view, including view type, name, and scale.", {
         ...connectionTargetSchema(z),

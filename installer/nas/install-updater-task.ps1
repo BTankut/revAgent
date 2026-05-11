@@ -20,7 +20,7 @@ param(
     [string]$ServerTarget = "",
     [string]$WorkspaceAgentsTarget = "",
     [string]$RevitInstallRoot = "",
-    [ValidateSet("2022")]
+    [ValidateSet("2022", "2023", "2024", "2025")]
     [string]$RevitVersion = "2022",
     [string]$ProxyUrl = "http://192.168.90.10:6588",
     [string]$ProxyBypass = "<local>",
@@ -43,6 +43,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$nasLibRoot = @(
+    (Join-Path $PSScriptRoot "lib"),
+    (Join-Path (Split-Path -Parent $PSScriptRoot) "lib")
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
+    throw "Revit MCP updater lib folder was not found beside or above: $PSScriptRoot"
+}
+Import-Module (Join-Path $nasLibRoot "RevitMcp.HiddenLauncher.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.ScheduledTask.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.RevitVersions.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.Permissions.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.Proxy.psm1") -Force
+
 $script:RevitMcpTranscriptStarted = $false
 $script:RevitMcpLogPath = ""
 $script:PreviousTranscriptActive = $env:REVIT_MCP_TRANSCRIPT_ACTIVE
@@ -156,52 +169,13 @@ function Test-CurrentProcessElevated {
 function ConvertTo-RevitMcpProxyUrl {
     param([string]$Value)
 
-    if ([string]::IsNullOrWhiteSpace($Value)) {
-        return ""
-    }
-
-    $normalized = $Value.Trim()
-    if ($normalized -match '^(https?://\S+?)\s+(\d+)$') {
-        $normalized = "$($Matches[1]):$($Matches[2])"
-    }
-    elseif ($normalized -match '^(\S+)\s+(\d+)$') {
-        $normalized = "$($Matches[1]):$($Matches[2])"
-    }
-
-    if ($normalized -notmatch '^[a-zA-Z][a-zA-Z0-9+.-]*://') {
-        $normalized = "http://$normalized"
-    }
-
-    try {
-        $uri = [System.Uri]::new($normalized)
-        if ([string]::IsNullOrWhiteSpace($uri.Host)) {
-            return $normalized.TrimEnd("/")
-        }
-
-        return $uri.AbsoluteUri.TrimEnd("/")
-    }
-    catch {
-        return $normalized.TrimEnd("/")
-    }
+    return RevitMcp.Proxy\ConvertTo-RevitMcpProxyUrl -Value $Value
 }
 
 function ConvertTo-RevitMcpWinHttpProxyServer {
     param([string]$Value)
 
-    $normalized = ConvertTo-RevitMcpProxyUrl -Value $Value
-    if ([string]::IsNullOrWhiteSpace($normalized)) {
-        return ""
-    }
-
-    try {
-        $uri = [System.Uri]::new($normalized)
-        if (-not [string]::IsNullOrWhiteSpace($uri.Host)) {
-            return ("{0}:{1}" -f $uri.Host, $uri.Port)
-        }
-    }
-    catch {}
-
-    return ($normalized -replace '^[a-zA-Z][a-zA-Z0-9+.-]*://', '').TrimEnd("/")
+    return RevitMcp.Proxy\ConvertTo-RevitMcpWinHttpProxyServer -Value $Value
 }
 
 function Send-RevitMcpEnvironmentChanged {
@@ -692,11 +666,11 @@ function Join-WindowsCommandArguments {
 }
 
 function Resolve-WindowsPowerShellPath {
-    return (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
+    return Resolve-RevitMcpWindowsPowerShellPath
 }
 
 function Resolve-WScriptPath {
-    return (Join-Path $env:WINDIR "System32\wscript.exe")
+    return Resolve-RevitMcpWScriptPath
 }
 
 function Test-RevitMcpAdministrator {
@@ -758,29 +732,13 @@ function Grant-RevitMcpManagedPathAccess {
 }
 
 function Repair-RevitMcpUpdaterPermissions {
-    Grant-RevitMcpManagedPathAccess -Path $InstallRoot -Label "Revit MCP install root" -CreateDirectory
-    Grant-RevitMcpManagedPathAccess -Path $WorkRoot -Label "updater work root" -CreateDirectory
-    Grant-RevitMcpManagedPathAccess -Path $PackageTarget -Label "package target" -CreateDirectory
-    Grant-RevitMcpManagedPathAccess -Path $ServerTarget -Label "runtime target" -CreateDirectory
-    Grant-RevitMcpManagedPathAccess -Path (Join-Path $InstallRoot "revit-plugin") -Label "Revit addin payload root" -CreateDirectory
-    Grant-RevitMcpManagedPathAccess -Path (Join-Path $InstallRoot "commands") -Label "Revit command payload root" -CreateDirectory
-    Grant-RevitMcpManagedPathAccess -Path (Join-Path $InstallRoot "codex") -Label "Codex payload root" -CreateDirectory
-    Grant-RevitMcpManagedPathAccess -Path (Join-Path $InstallRoot "state") -Label "state root" -CreateDirectory
-
-    foreach ($fileName in @(
-            "Run-Revit-MCP-Update-Hidden.vbs",
-            "last-update-report.json",
-            "installed.json",
-            "updater-config.json",
-            "update-from-nas.ps1",
-            "show-installed-version.ps1",
-            "install-updater-task.ps1",
-            "Update-Revit-MCP-Now.cmd",
-            "Show-Revit-MCP-Version.cmd",
-            "auto-update-loop.ps1"
-        )) {
-        Grant-RevitMcpManagedPathAccess -Path (Join-Path $WorkRoot $fileName) -Label "updater file $fileName"
-    }
+    $targets = Get-RevitMcpManagedPermissionTargets `
+        -InstallRoot $InstallRoot `
+        -WorkRoot $WorkRoot `
+        -PackageTarget $PackageTarget `
+        -ServerTarget $ServerTarget `
+        -RevitVersion $RevitVersion
+    Invoke-RevitMcpManagedPermissionRepair -Targets $targets
 }
 
 function Write-HiddenPowerShellLauncher {
@@ -793,46 +751,23 @@ function Write-HiddenPowerShellLauncher {
         [switch]$WaitForExit
     )
 
-    $launcherDir = Split-Path -Parent $LauncherPath
-    if (-not [string]::IsNullOrWhiteSpace($launcherDir)) {
-        New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null
-    }
-
-    $command = Join-WindowsCommandArguments -Arguments (@(
-            (Resolve-WindowsPowerShellPath),
-            "-STA",
-            "-NoProfile",
-            "-WindowStyle",
-            "Hidden",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            $ScriptPath
-        ) + $ScriptArguments)
-    $waitText = if ($WaitForExit) { "True" } else { "False" }
-
-    $runLine = [string]::Concat("exitCode = shell.Run(", (ConvertTo-VbsStringLiteral -Value $command), ", 0, ", $waitText, ")")
-
-    @(
-        "Option Explicit",
-        "Dim shell",
-        "Dim exitCode",
-        "Set shell = CreateObject(""WScript.Shell"")",
-        $runLine,
-        "WScript.Quit exitCode"
-    ) | Set-Content -LiteralPath $LauncherPath -Encoding ASCII
+    Write-RevitMcpHiddenPowerShellLauncher `
+        -LauncherPath $LauncherPath `
+        -ScriptPath $ScriptPath `
+        -ScriptArguments $ScriptArguments `
+        -WaitForExit:$WaitForExit
 }
 
 function Get-HiddenUpdaterLauncherPath {
     param([string]$UpdaterConfigPath)
 
-    return Join-Path (Split-Path -Parent $UpdaterConfigPath) "Run-Revit-MCP-Update-Hidden.vbs"
+    return Get-RevitMcpHiddenUpdaterLauncherPath -ConfigPath $UpdaterConfigPath
 }
 
 function New-HiddenUpdaterScheduledTaskAction {
     param([string]$LauncherPath)
 
-    return New-ScheduledTaskAction -Execute (Resolve-WScriptPath) -Argument ("//B //Nologo `"$LauncherPath`"")
+    return New-RevitMcpHiddenUpdaterScheduledTaskAction -LauncherPath $LauncherPath
 }
 
 function Write-UpdaterCommandFiles {
@@ -916,48 +851,7 @@ function Resolve-RevitInstallRoot {
         [string]$Version
     )
 
-    $candidates = @(
-        $RequestedRoot,
-        $env:REVIT_INSTALL_ROOT,
-        (Join-Path ${env:ProgramFiles} "Autodesk\Revit $Version"),
-        (Join-Path ${env:ProgramFiles} "Autodesk\Revit$Version"),
-        (Join-Path ${env:ProgramFiles(x86)} "Autodesk\Revit $Version")
-    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-
-    $registryCandidates = [System.Collections.Generic.List[string]]::new()
-    foreach ($registryRoot in @(
-            "HKLM:\SOFTWARE\Autodesk\Revit\$Version",
-            "HKLM:\SOFTWARE\Autodesk\Revit\Autodesk Revit $Version",
-            "HKLM:\SOFTWARE\WOW6432Node\Autodesk\Revit\$Version",
-            "HKLM:\SOFTWARE\WOW6432Node\Autodesk\Revit\Autodesk Revit $Version"
-        )) {
-        if (-not (Test-Path -LiteralPath $registryRoot)) { continue }
-        try {
-            $item = Get-ItemProperty -LiteralPath $registryRoot -ErrorAction Stop
-            foreach ($name in @("InstallationLocation", "InstallLocation", "InstallDir", "ProductInstallPath")) {
-                if ($item.PSObject.Properties.Name -contains $name) {
-                    $value = [string]$item.$name
-                    if (-not [string]::IsNullOrWhiteSpace($value)) {
-                        $registryCandidates.Add($value)
-                    }
-                }
-            }
-        }
-        catch {}
-    }
-    $candidates += $registryCandidates.ToArray()
-
-    foreach ($candidate in $candidates) {
-        $full = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($candidate)).TrimEnd("\")
-        if ((Test-Path -LiteralPath $full -PathType Container) -and
-            (Test-Path -LiteralPath (Join-Path $full "Revit.exe")) -and
-            (Test-Path -LiteralPath (Join-Path $full "RevitAPI.dll"))) {
-            Write-Host "Revit $Version found: $full"
-            return $full
-        }
-    }
-
-    throw "Revit $Version install directory could not be found. Checked: $($candidates -join '; ')"
+    return Resolve-RevitMcpInstallRoot -RequestedRoot $RequestedRoot -Version $Version
 }
 
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
@@ -991,6 +885,22 @@ $localVersionTool = Join-Path $WorkRoot "show-installed-version.ps1"
 $configPath = Join-Path $WorkRoot "updater-config.json"
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "update-from-nas.ps1") -Destination $localUpdater -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "show-installed-version.ps1") -Destination $localVersionTool -Force
+$localLibRoot = Join-Path $WorkRoot "lib"
+if (Test-Path -LiteralPath $localLibRoot) {
+    Remove-Item -LiteralPath $localLibRoot -Recurse -Force
+}
+Copy-Item -LiteralPath $nasLibRoot -Destination $localLibRoot -Recurse -Force
+$nasConfigRoot = @(
+    (Join-Path $PSScriptRoot "config"),
+    (Join-Path (Split-Path -Parent (Split-Path -Parent $nasLibRoot)) "config")
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
+if (-not [string]::IsNullOrWhiteSpace($nasConfigRoot)) {
+    $localConfigRoot = Join-Path $WorkRoot "config"
+    if (Test-Path -LiteralPath $localConfigRoot) {
+        Remove-Item -LiteralPath $localConfigRoot -Recurse -Force
+    }
+    Copy-Item -LiteralPath $nasConfigRoot -Destination $localConfigRoot -Recurse -Force
+}
 
 if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
     $channelDir = Split-Path -Parent $ChannelManifestPath

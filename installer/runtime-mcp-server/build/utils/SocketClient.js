@@ -1,5 +1,4 @@
 import * as net from "net";
-
 export class RevitClientConnection {
     host;
     port;
@@ -8,7 +7,6 @@ export class RevitClientConnection {
     isConnected = false;
     responseCallbacks = new Map();
     buffer = "";
-
     constructor(host, port, options = {}) {
         this.host = host;
         this.port = port;
@@ -16,7 +14,6 @@ export class RevitClientConnection {
         this.socket = new net.Socket();
         this.setupSocketListeners();
     }
-
     setupSocketListeners() {
         this.socket.on("connect", () => {
             this.isConnected = true;
@@ -35,7 +32,6 @@ export class RevitClientConnection {
             this.isConnected = false;
         });
     }
-
     processBuffer() {
         try {
             JSON.parse(this.buffer);
@@ -43,10 +39,8 @@ export class RevitClientConnection {
             this.buffer = "";
         }
         catch {
-            // Wait for the rest of the JSON payload.
         }
     }
-
     connect() {
         if (this.isConnected) {
             return true;
@@ -60,16 +54,13 @@ export class RevitClientConnection {
             return false;
         }
     }
-
     disconnect() {
         this.socket.end();
         this.isConnected = false;
     }
-
     generateRequestId() {
         return Date.now().toString() + Math.random().toString().substring(2, 8);
     }
-
     handleResponse(responseData) {
         try {
             const response = JSON.parse(responseData);
@@ -84,35 +75,28 @@ export class RevitClientConnection {
             console.error("Error parsing response:", error);
         }
     }
-
     async sendCommand(command, params = {}, options = {}) {
         if (command !== "mcp_status" && options.statusPreflight !== false) {
             await this.ensureReadyForCommand(command, options);
         }
-
         return await this.sendCommandRequest(command, params, options);
     }
-
     async ensureReadyForCommand(command, options = {}) {
         const statusTimeoutMs = options.statusTimeoutMs || Math.min(options.timeoutMs || 3000, 3000);
         const status = await this.sendCommandRequest("mcp_status", {}, {
             timeoutMs: statusTimeoutMs,
             statusPreflight: false,
         });
-
         const activeTask = status && typeof status === "object" ? status.activeTask : null;
         if (!activeTask) {
             return;
         }
-
         const taskName = activeTask.taskName || activeTask.method || "Revit MCP task";
         const elapsedText = typeof activeTask.elapsedMs === "number"
             ? `, elapsed ${this.formatElapsed(activeTask.elapsedMs)}`
             : "";
-
         throw new Error(`Revit MCP is busy with "${taskName}"${elapsedText}. Wait for it to finish before sending "${command}".`);
     }
-
     formatElapsed(elapsedMs) {
         const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
         const hours = Math.floor(totalSeconds / 3600);
@@ -122,7 +106,6 @@ export class RevitClientConnection {
             .map((value) => String(value).padStart(2, "0"))
             .join(":");
     }
-
     sendCommandRequest(command, params = {}, options = {}) {
         return new Promise((resolve, reject) => {
             let timeoutHandle;

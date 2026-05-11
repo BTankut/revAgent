@@ -1,12 +1,9 @@
 import { db } from './db.js';
-// Store or update project data
 export function storeProject(data) {
     const timestamp = Date.now();
     const metadata = data.metadata ? JSON.stringify(data.metadata) : null;
-    // Check if project already exists
     const existingProject = db.prepare('SELECT id FROM projects WHERE project_name = ?').get(data.project_name);
     if (existingProject) {
-        // Update existing project
         db.prepare(`
       UPDATE projects SET
         project_path = ?,
@@ -22,7 +19,6 @@ export function storeProject(data) {
         return existingProject.id;
     }
     else {
-        // Insert new project
         const result = db.prepare(`
       INSERT INTO projects (
         project_name, project_path, project_number, project_address,
@@ -32,14 +28,11 @@ export function storeProject(data) {
         return result.lastInsertRowid;
     }
 }
-// Store or update room data
 export function storeRoom(projectId, data) {
     const timestamp = Date.now();
     const metadata = data.metadata ? JSON.stringify(data.metadata) : null;
-    // Check if room already exists
     const existingRoom = db.prepare('SELECT id FROM rooms WHERE project_id = ? AND room_id = ?').get(projectId, data.room_id);
     if (existingRoom) {
-        // Update existing room
         db.prepare(`
       UPDATE rooms SET
         room_name = ?,
@@ -57,7 +50,6 @@ export function storeRoom(projectId, data) {
         return existingRoom.id;
     }
     else {
-        // Insert new room
         const result = db.prepare(`
       INSERT INTO rooms (
         project_id, room_id, room_name, room_number, department,
@@ -67,7 +59,6 @@ export function storeRoom(projectId, data) {
         return result.lastInsertRowid;
     }
 }
-// Store multiple rooms at once
 export function storeRoomsBatch(projectId, rooms) {
     const insertMany = db.transaction((roomsData) => {
         let count = 0;
@@ -79,7 +70,6 @@ export function storeRoomsBatch(projectId, rooms) {
     });
     return insertMany(rooms);
 }
-// Get all projects
 export function getAllProjects() {
     const projects = db.prepare(`
     SELECT
@@ -95,7 +85,6 @@ export function getAllProjects() {
         last_updated: new Date(p.last_updated).toISOString()
     }));
 }
-// Get project by ID
 export function getProjectById(projectId) {
     const project = db.prepare(`
     SELECT
@@ -113,7 +102,6 @@ export function getProjectById(projectId) {
         last_updated: new Date(project.last_updated).toISOString()
     };
 }
-// Get project by name
 export function getProjectByName(projectName) {
     const project = db.prepare(`
     SELECT
@@ -131,7 +119,6 @@ export function getProjectByName(projectName) {
         last_updated: new Date(project.last_updated).toISOString()
     };
 }
-// Get rooms by project ID
 export function getRoomsByProjectId(projectId) {
     const rooms = db.prepare(`
     SELECT
@@ -147,7 +134,6 @@ export function getRoomsByProjectId(projectId) {
         timestamp: new Date(r.timestamp).toISOString()
     }));
 }
-// Get all rooms with project info
 export function getAllRoomsWithProject() {
     const rooms = db.prepare(`
     SELECT
@@ -165,12 +151,10 @@ export function getAllRoomsWithProject() {
         timestamp: new Date(r.timestamp).toISOString()
     }));
 }
-// Delete project (and all its rooms due to CASCADE)
 export function deleteProject(projectId) {
     const result = db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
     return result.changes > 0;
 }
-// Get database statistics
 export function getStats() {
     const projectCount = db.prepare('SELECT COUNT(*) as count FROM projects').get();
     const roomCount = db.prepare('SELECT COUNT(*) as count FROM rooms').get();

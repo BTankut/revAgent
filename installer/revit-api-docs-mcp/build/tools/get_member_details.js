@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { getMemberDetails } from "../utils/docIndex.js";
-
 export function registerGetMemberDetailsTool(server) {
     server.tool("get_member_details", "Get detailed information about a Revit API member, including signature, parameters, and XML documentation.", {
         member_name: z.string().min(1).describe("Member identifier. Supports XML doc IDs, full member names like Autodesk.Revit.DB.Wall.Create, or simple names like Create."),

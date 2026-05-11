@@ -1,21 +1,11 @@
 import { z } from "zod";
-import {
-    connectionOptionsFromArgs,
-    connectionTargetSchema,
-    executeRevitCode,
-    formatJsonContent,
-    getSelectionElementIds,
-    taskMetadataSchema,
-    taskOptionsFromArgs,
-} from "../utils/revitToolHelpers.js";
-
+import { connectionOptionsFromArgs, connectionTargetSchema, executeRevitCode, formatJsonContent, getSelectionElementIds, taskMetadataSchema, taskOptionsFromArgs, } from "../utils/revitToolHelpers.js";
 function payloadFromExecution(response) {
     if (response && typeof response === "object" && response.result && typeof response.result === "object") {
         return response.result;
     }
     return response;
 }
-
 function buildSessionContextCode(options) {
     const includeCounts = options.includeCategoryCounts !== false ? "true" : "false";
     const includeLinks = options.includeLinks !== false ? "true" : "false";
@@ -139,7 +129,6 @@ catch (Exception ex)
     return new { success = false, error = ex.ToString() };
 }`;
 }
-
 export function registerGetRevitSessionContextTool(server) {
     server.tool("get_revit_session_context", "Read-only Revit session summary: version/build/culture/document state/active view/MEP counts/link counts/selection IDs.", {
         ...connectionTargetSchema(z),

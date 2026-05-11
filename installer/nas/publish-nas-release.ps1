@@ -274,7 +274,17 @@ try {
         monorepoMigration = "docs\MONOREPO_MIGRATION.md"
         revitPluginSourceReadme = "src\revit-plugin\README.md"
         revitPluginSourceProject = "src\revit-plugin\revit-mcp-plugin\revit-mcp-plugin.csproj"
+        revitVersionMatrix = "config\revit-versions.json"
         revitPluginBuildScript = "scripts\build-revit-plugin.ps1"
+        installerLibHiddenLauncher = "installer\lib\RevitMcp.HiddenLauncher.psm1"
+        installerLibScheduledTask = "installer\lib\RevitMcp.ScheduledTask.psm1"
+        installerLibVersions = "installer\lib\RevitMcp.RevitVersions.psm1"
+        installerLibPackage = "installer\lib\RevitMcp.Package.psm1"
+        installerLibPermissions = "installer\lib\RevitMcp.Permissions.psm1"
+        installerLibUpdatePolicy = "installer\lib\RevitMcp.UpdatePolicy.psm1"
+        installerLibProxy = "installer\lib\RevitMcp.Proxy.psm1"
+        installerLibCodexRegistration = "installer\lib\RevitMcp.CodexRegistration.psm1"
+        installerLibReporting = "installer\lib\RevitMcp.Reporting.psm1"
         installer = "installer\install-self-contained.ps1"
         revitPlugin = "installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
         commandSet = "installer\command-payload\RevitMCPCommandSet.dll"
@@ -379,6 +389,24 @@ try {
     Write-Section "Refresh NAS tools"
     foreach ($toolName in @("Install-Revit-MCP-Updater.cmd", "Install-Revit-MCP-Updater-GUI.cmd", "Install-Revit-MCP-Updater-GUI.ps1", "Revit MCP Updater STABLE.cmd", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "promote-nas-release.ps1", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $scriptRoot $toolName) -Destination (Join-Path $toolsRoot $toolName) -Force
+    }
+    $libSource = Join-Path (Split-Path -Parent $scriptRoot) "lib"
+    if (Test-Path -LiteralPath $libSource -PathType Container) {
+        $libTarget = Join-Path $toolsRoot "lib"
+        if (Test-Path -LiteralPath $libTarget) {
+            Remove-Item -LiteralPath $libTarget -Recurse -Force
+        }
+        Copy-DirectoryFiltered -Source $libSource -Destination $libTarget
+        Write-Host "Tools lib path: $libTarget" -ForegroundColor Green
+    }
+    $configSource = Join-Path $RepoRoot "config"
+    if (Test-Path -LiteralPath $configSource -PathType Container) {
+        $configTarget = Join-Path $toolsRoot "config"
+        if (Test-Path -LiteralPath $configTarget) {
+            Remove-Item -LiteralPath $configTarget -Recurse -Force
+        }
+        Copy-DirectoryFiltered -Source $configSource -Destination $configTarget
+        Write-Host "Tools config path: $configTarget" -ForegroundColor Green
     }
     $dependenciesSource = Join-Path $scriptRoot "dependencies"
     if (Test-Path -LiteralPath $dependenciesSource -PathType Container) {

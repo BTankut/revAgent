@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { listNamespace } from "../utils/docIndex.js";
-
 export function registerListNamespaceTool(server) {
     server.tool("list_namespace", "List types and child namespaces under a Revit API namespace.", {
         namespace: z.string().min(1).describe("Namespace to inspect, such as Autodesk.Revit.DB or Autodesk.Revit.UI.Selection."),

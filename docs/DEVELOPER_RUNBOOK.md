@@ -32,10 +32,11 @@ before making changes:
 1. `README.md`
 2. `docs/DEVELOPER_RUNBOOK.md`
 3. `docs/REPOSITORY_STRUCTURE.md`
-4. `installer/nas/README.md`
-5. `CHANGELOG.md`
-6. `AGENTS.md`
-7. `SKILL.md`
+4. `docs/PLATFORM_ARCHITECTURE.md`
+5. `installer/nas/README.md`
+6. `CHANGELOG.md`
+7. `AGENTS.md`
+8. `SKILL.md`
 
 If Revit automation will be tested live, also read the installed or repo copy of
 `SKILL.md` and follow the Revit MCP status preflight rule before every
@@ -51,17 +52,24 @@ revit-mcp-skill/
 |-- SKILL.md
 |-- AGENTS.md
 |-- CHANGELOG.md
+|-- config/
+|   `-- revit-versions.json
 |-- docs/
 |   |-- DEVELOPER_RUNBOOK.md
+|   |-- PLATFORM_ARCHITECTURE.md
+|   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
 |   |-- REPOSITORY_STRUCTURE.md
 |   `-- MONOREPO_MIGRATION.md
 |-- references/
 |-- scripts/
-|   `-- build-revit-plugin.ps1
+|   |-- build-revit-plugin.ps1
+|   |-- test-all.ps1
+|   `-- test-installer-smoke.ps1
 |-- src/
 |   `-- revit-plugin/
 `-- installer/
     |-- install-self-contained.ps1
+    |-- lib/
     |-- nas/
     |-- runtime-mcp-server/
     |-- revit-api-docs-mcp/
@@ -74,8 +82,13 @@ Important source vs payload rule:
 - `src/revit-plugin/` is the Revit add-in source.
 - `installer/revit-plugin/` is the bundled install payload.
 - `installer/command-payload/` is the bundled dynamic command payload.
-- `installer/runtime-mcp-server/` is the bundled runtime MCP server payload.
-- `installer/revit-api-docs-mcp/` is the bundled Revit API docs MCP server.
+- `installer/runtime-mcp-server/src/` is the runtime MCP TypeScript source;
+  `installer/runtime-mcp-server/build/` is the built runtime payload.
+- `installer/revit-api-docs-mcp/src/` is the docs MCP TypeScript source;
+  `installer/revit-api-docs-mcp/build/` is the built docs server payload.
+- `installer/lib/` contains shared PowerShell helper modules used by installer
+  and updater entrypoints.
+- `config/revit-versions.json` is the central Revit version matrix.
 
 Do not edit deployed files under `C:\ProgramData\DPE\RevitMCP` as a source of
 truth. Fix the repo, rebuild or refresh payloads when needed, commit the repo,
@@ -182,8 +195,120 @@ C:\ProgramData\DPE\RevitMCP\package\installer\revit-api-docs-mcp\build\index.js
 Both servers are required. If only the runtime server is available, non-trivial
 Revit API work is not considered fully set up.
 
-After changes to bundled MCP server payloads, run the relevant local tests and
+Both MCP packages are TypeScript-first. Edit `src/`, then emit the existing
+`build/` contract:
+
+```powershell
+cd .\installer\runtime-mcp-server
+npm install --no-audit --no-fund
+npm run test
+
+cd ..\revit-api-docs-mcp
+npm install --no-audit --no-fund
+npm run test
+```
+
+`npm run test` runs `tsc` and a local smoke check. It does not need Revit. The
+docs MCP smoke intentionally verifies tool registration without requiring a
+local Revit API index.
+
+After changes to bundled MCP server payloads, run the relevant local tests,
+commit `src/`, `build/`, `package.json`, and `package-lock.json` together, and
 verify `codex mcp list` after install or update.
+
+## PowerShell Installer/Updater Modules
+
+Public entrypoint script names stay stable, but shared behavior lives under
+`installer/lib/`:
+
+- hidden VBS launcher generation
+- scheduled task action creation/repair
+- targeted permission repair
+- package path/layout and ZIP extraction
+- Revit version matrix and install-root discovery
+- Revit-open defer/update policy
+- proxy normalization
+- Codex MCP `config.toml` registration helper
+- JSON reporting helper
+
+When updater tools are installed or published to NAS, the `lib` folder must be
+copied beside them. The matching `config` folder must also be copied so the
+Revit version matrix is available before a package is extracted. The local
+updater expects:
+
+```text
+C:\ProgramData\DPE\RevitMCP\updater\lib
+C:\ProgramData\DPE\RevitMCP\updater\config
+```
+
+NAS tools expect:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\lib
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\config
+```
+
+Run the local PowerShell smoke suite after touching installer/updater behavior:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-installer-smoke.ps1
+```
+
+The smoke suite is non-admin and does not need Revit. It checks hidden launcher
+exit-code propagation, WScript scheduled task action shape, targeted permission
+plans, Revit-open update decisions, stable package path/layout resolution, and
+public `install-self-contained.ps1` parameters.
+
+## Revit Version Matrix
+
+Revit version metadata is centralized in:
+
+```text
+config\revit-versions.json
+```
+
+The matrix contains target framework, build configuration, install-root
+candidates, add-in path pattern, API package mappings, and payload path
+expectations. Revit 2022 remains the only bundled installer payload. Revit
+2023/2024/2025 are modeled, but `installerPayloadAvailable` stays `false` until
+real payload artifacts are built, tested, and committed. Installer paths must
+not pretend to deploy a version whose payload flag is false.
+
+Use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -RevitVersion 2022 -SkipPayloadCopy
+```
+
+for a source build check. Use the same command without `-SkipPayloadCopy` only
+when intentionally refreshing the 2022 bundled payload.
+
+## Local No-Deploy Test Flow
+
+For branch validation that must not publish to NAS:
+
+```powershell
+git branch --show-current
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-installer-smoke.ps1
+
+cd .\installer\runtime-mcp-server
+npm run test
+
+cd ..\revit-api-docs-mcp
+npm run test
+
+cd ..\..
+powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -RevitVersion 2022 -SkipPayloadCopy
+```
+
+Aggregate non-Revit tests can also be run with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
+```
+
+This local flow does not run `publish-nas-release.ps1` and does not touch
+`channels\stable.json`.
 
 ## Revit MCP Runtime Rule
 

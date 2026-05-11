@@ -1,14 +1,5 @@
 import { z } from "zod";
-import {
-    connectionOptionsFromArgs,
-    connectionTargetSchema,
-    csharpStringArray,
-    executeRevitCode,
-    executionOptionsFromArgs,
-    formatJsonContent,
-    taskMetadataSchema,
-} from "../utils/revitToolHelpers.js";
-
+import { connectionTargetSchema, csharpStringArray, executeRevitCode, executionOptionsFromArgs, formatJsonContent, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
 function buildActiveViewContextCode(args) {
     const includeSheetViewports = args.includeSheetViewports !== false ? "true" : "false";
     const includeModelElements = args.includeModelElements === true ? "true" : "false";
@@ -118,7 +109,6 @@ catch (Exception ex)
     return new { success = false, error = ex.ToString() };
 }`;
 }
-
 export function registerGetActiveViewContextTool(server) {
     server.tool("get_active_view_context", "Read-only active view context. Handles model views and DrawingSheet views; sheets return placed viewport/view data instead of pretending MEP model elements are directly visible.", {
         ...connectionTargetSchema(z),

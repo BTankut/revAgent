@@ -35,6 +35,10 @@ A normal `git commit` or `git push` does not update the office by itself.
     Install-Revit-MCP-Updater.cmd
     Install-Revit-MCP-Updater-GUI.cmd
     Install-Revit-MCP-Updater-GUI.ps1
+    lib\
+      RevitMcp.*.psm1
+    config\
+      revit-versions.json
     dependencies\
       node-v24.14.1-x64.msi
     install-updater-task.ps1
@@ -93,12 +97,15 @@ separate terminal window should not remain beside the installer.
 The GUI requests admin rights as soon as it opens. The updater then registers a
 per-user Scheduled Task that checks silently at logon and every 30 minutes
 during the day. Scheduled background checks are launched through a hidden
-WScript wrapper so PowerShell does not flash a terminal window or steal focus.
+single-line WScript wrapper so PowerShell does not flash a terminal window or
+steal focus, and the wrapper returns the child PowerShell exit code.
 The elevated install also repairs permissions on the managed Revit MCP install
 root and the Revit MCP add-in manifest so that the per-user task can update the
 local package, runtime, add-in payload, cache, reports, logs, and hidden
-launcher files without another UAC prompt. If Windows still blocks Scheduled
-Task registration, the installer creates a Startup fallback that keeps a hidden
+launcher files without another UAC prompt. Permission repair is targeted to the
+managed roots, known updater files, and active payload folders; it must not scan
+large `node_modules` or backup trees. If Windows still blocks Scheduled Task
+registration, the installer creates a Startup fallback that keeps a hidden
 per-user update loop running with the same interval.
 
 If you want to copy a single launcher to a workstation desktop, copy the
@@ -125,6 +132,7 @@ C:\ProgramData\DPE\RevitMCP\
   package\
   runtime\
   updater\
+    lib\
   state\
   revit-plugin\
   codex\
@@ -150,6 +158,46 @@ C:\ProgramData\DPE\RevitMCP\updater\logs\
 
 This is a full package update, not a file-level delta update.
 
+The updater and installer share helper modules under `installer\lib` in the
+release package. When tools are copied to NAS `tools\`, the matching
+`tools\lib` and `tools\config` folders must be copied with them. Local updater
+installs copy those folders to:
+
+```text
+C:\ProgramData\DPE\RevitMCP\updater\lib
+C:\ProgramData\DPE\RevitMCP\updater\config
+```
+
+## Local No-Deploy Validation
+
+Before publishing a stable release, run the local checks from the repo root:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-installer-smoke.ps1
+
+cd .\installer\runtime-mcp-server
+npm install --no-audit --no-fund
+npm run test
+
+cd ..\revit-api-docs-mcp
+npm install --no-audit --no-fund
+npm run test
+```
+
+Optional aggregate command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
+```
+
+For a C# source build check without refreshing bundled payload binaries:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -RevitVersion 2022 -SkipPayloadCopy
+```
+
+These commands do not publish to NAS and do not edit `channels\stable.json`.
+
 ## Safety
 
 - Revit-loaded add-in and command files are not replaced while `Revit.exe` is
@@ -168,3 +216,7 @@ This is a full package update, not a file-level delta update.
   `-AllowReplaceGitPackageTarget` is explicitly passed.
 - Release ZIPs include a generated legacy `kurulum/` alias so older installed
   updaters can install the renamed `installer/` layout safely.
+- Revit version metadata is centralized in `config\revit-versions.json`. Revit
+  2022 is the only bundled install payload in this branch. Revit 2023/2024/2025
+  are modeled but blocked from fake deployment until real payload artifacts are
+  built and `installerPayloadAvailable` is deliberately enabled.

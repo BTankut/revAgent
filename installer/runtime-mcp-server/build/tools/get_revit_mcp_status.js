@@ -1,12 +1,6 @@
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
-import {
-    connectionOptionsFromArgs,
-    connectionTargetSchema,
-    formatJsonContent,
-    normalizeRevitExecutionResponse,
-} from "../utils/revitToolHelpers.js";
-
+import { connectionOptionsFromArgs, connectionTargetSchema, formatJsonContent, normalizeRevitExecutionResponse, } from "../utils/revitToolHelpers.js";
 export function registerGetRevitMcpStatusTool(server) {
     server.tool("get_revit_mcp_status", "Read the Revit MCP task status without waiting behind the active Revit command lock.", {
         ...connectionTargetSchema(z),
@@ -21,7 +15,6 @@ export function registerGetRevitMcpStatusTool(server) {
                 skipLock: true,
                 connectTimeoutMs: timeoutMs,
             });
-
             return formatJsonContent(normalizeRevitExecutionResponse(response));
         }
         catch (error) {

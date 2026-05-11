@@ -11,13 +11,19 @@ package.
 |-- AGENTS.md
 |-- CHANGELOG.md
 |-- README.md
+|-- config/
+|   `-- revit-versions.json
 |-- docs/
 |   |-- DEVELOPER_RUNBOOK.md
+|   |-- PLATFORM_ARCHITECTURE.md
+|   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
 |   |-- REPOSITORY_STRUCTURE.md
 |   `-- MONOREPO_MIGRATION.md
 |-- references/
 |-- scripts/
-|   `-- build-revit-plugin.ps1
+|   |-- build-revit-plugin.ps1
+|   |-- test-all.ps1
+|   `-- test-installer-smoke.ps1
 |-- src/
 |   `-- revit-plugin/
 |       |-- README.md
@@ -27,6 +33,7 @@ package.
 `-- installer/
     |-- INSTALLATION.md
     |-- install-self-contained.ps1
+    |-- lib/
     |-- nas/
     |-- runtime-mcp-server/
     |-- revit-api-docs-mcp/
@@ -48,13 +55,22 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -Revit
 
 Then commit both the source change and the refreshed payload binaries.
 
+`installer/runtime-mcp-server/src` and `installer/revit-api-docs-mcp/src` are
+the TypeScript MCP source trees. Their `build/` folders remain the runtime
+payload contract consumed by installer and Codex MCP registrations.
+
+`installer/lib` contains shared PowerShell helper modules for updater/installer
+behavior. `config/revit-versions.json` is the central Revit version matrix.
+
 ## Release Rule
 
-Development and production release both happen from `main` only.
+Production releases happen from `main` only.
 
 Feature/experiment branches that exist on GitHub are historical and should not
 be used for office deployment. NAS deployment reads only packages published from
-this repository's `main` branch.
+this repository's `main` branch. Modernization or test branches may be used for
+local build/smoke work, but must not run `publish-nas-release.ps1` or update the
+stable NAS channel.
 
 For the full developer and code-assistant workflow, including clone recovery,
 local testing, commit/push, NAS stable publishing, updater diagnostics, and

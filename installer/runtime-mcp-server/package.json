@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Bundled local MCP server for the self-contained Revit MCP skill package.",
   "private": true,
-  "main": "index.js",
+  "main": "build/index.js",
   "type": "module",
   "bin": {
     "revit-mcp": "./build/index.js"
@@ -11,10 +11,16 @@
   "scripts": {
     "clean": "rimraf build",
     "prebuild": "npm run clean",
-    "build": "tsc"
+    "build": "tsc",
+    "guard-test": "node build/tools/send_code_to_revit_safe.guard-test.js",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "npm run build && npm run guard-test && npm run smoke"
   },
   "files": [
-    "build"
+    "build",
+    "src",
+    "scripts",
+    "tsconfig.json"
   ],
   "repository": {
     "type": "git",

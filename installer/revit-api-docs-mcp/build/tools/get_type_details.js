@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { getTypeDetails } from "../utils/docIndex.js";
-
 export function registerGetTypeDetailsTool(server) {
     server.tool("get_type_details", "Get detailed information about a Revit API type, including declared members and XML documentation.", {
         type_name: z.string().min(1).describe("Type name to resolve. Supports full names like Autodesk.Revit.DB.Wall or simple names like Wall."),

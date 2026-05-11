@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { searchApi } from "../utils/docIndex.js";
-
 export function registerSearchApiTool(server) {
     server.tool("search_api", "Search the local Revit API index built from Revit assemblies and XML documentation.", {
         query: z.string().min(1).describe("Free-form search query such as 'Wall.Create', 'FilteredElementCollector', or 'Autodesk.Revit.DB.Plumbing'."),

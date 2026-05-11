@@ -2,7 +2,6 @@ import { RevitClientConnection } from "./SocketClient.js";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-
 const DEFAULT_HOST = process.env.REVIT_MCP_HOST || process.env.REVIT_HOST || "localhost";
 const DEFAULT_PORT = parsePort(process.env.REVIT_MCP_PORT || process.env.REVIT_PORT, 8080);
 const DEFAULT_REGISTRY_PATH = process.env.REVIT_MCP_INSTANCE_REGISTRY ||
@@ -11,11 +10,9 @@ const LOCK_ROOT = path.join(os.tmpdir(), "revit-mcp-command-locks");
 const LOCK_WAIT_MS = 8000;
 const LOCK_STALE_MS = 10 * 60 * 1000;
 const LOCK_POLL_MS = 250;
-
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
 function parsePort(value, fallback) {
     if (value === undefined || value === null || value === "") {
         return fallback;
@@ -26,7 +23,6 @@ function parsePort(value, fallback) {
     }
     return port;
 }
-
 function parsePortList(value) {
     if (!value) {
         return [];
@@ -37,19 +33,15 @@ function parsePortList(value) {
         .filter(Boolean)
         .map((item) => parsePort(item));
 }
-
 function normalizeHost(value) {
     return value ? String(value).trim() : DEFAULT_HOST;
 }
-
 function sanitizeLockPart(value) {
     return String(value).replace(/[^a-zA-Z0-9_.-]/g, "_");
 }
-
 function lockDirForTarget(target) {
     return path.join(LOCK_ROOT, `${sanitizeLockPart(target.host)}-${target.port}.lock`);
 }
-
 function uniqueTargets(targets) {
     const seen = new Set();
     const output = [];
@@ -69,7 +61,6 @@ function uniqueTargets(targets) {
     }
     return output;
 }
-
 function readRegistry() {
     try {
         if (!fs.existsSync(DEFAULT_REGISTRY_PATH)) {
@@ -93,7 +84,6 @@ function readRegistry() {
     }
     return [];
 }
-
 function registryTargetMatches(entry, name) {
     const wanted = String(name).toLowerCase();
     const candidates = [
@@ -108,7 +98,6 @@ function registryTargetMatches(entry, name) {
     ].filter((value) => value !== undefined && value !== null);
     return candidates.some((value) => String(value).toLowerCase() === wanted);
 }
-
 function targetFromRegistry(name) {
     const entry = readRegistry().find((item) => registryTargetMatches(item, name));
     if (!entry) {
@@ -122,7 +111,6 @@ function targetFromRegistry(name) {
         metadata: entry,
     };
 }
-
 function targetFromString(value, fallbackHost) {
     const text = String(value || "").trim();
     if (!text) {
@@ -145,7 +133,6 @@ function targetFromString(value, fallbackHost) {
     }
     return null;
 }
-
 export function resolveRevitConnectionTarget(options = {}) {
     const fallbackHost = normalizeHost(options.host);
     const explicitPort = options.port !== undefined && options.port !== null
@@ -176,7 +163,6 @@ export function resolveRevitConnectionTarget(options = {}) {
         source: "default",
     };
 }
-
 export function getCandidateRevitTargets(options = {}) {
     const host = normalizeHost(options.host);
     const targets = [];
@@ -207,7 +193,6 @@ export function getCandidateRevitTargets(options = {}) {
     }
     return uniqueTargets(targets);
 }
-
 function removeStaleLock(lockDir) {
     try {
         const stat = fs.statSync(lockDir);
@@ -221,7 +206,6 @@ function removeStaleLock(lockDir) {
         }
     }
 }
-
 async function acquireRevitCommandLock(target, waitMs = LOCK_WAIT_MS) {
     const lockDir = lockDirForTarget(target);
     const started = Date.now();
@@ -254,7 +238,6 @@ async function acquireRevitCommandLock(target, waitMs = LOCK_WAIT_MS) {
         }
     }
 }
-
 export async function withRevitConnection(operation, options = {}) {
     const target = resolveRevitConnectionTarget(options);
     const releaseLock = options.skipLock === true

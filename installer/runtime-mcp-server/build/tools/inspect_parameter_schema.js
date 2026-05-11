@@ -1,16 +1,5 @@
 import { z } from "zod";
-import {
-    connectionOptionsFromArgs,
-    connectionTargetSchema,
-    csharpIntArray,
-    csharpString,
-    csharpStringArray,
-    executeRevitCode,
-    executionOptionsFromArgs,
-    formatJsonContent,
-    taskMetadataSchema,
-} from "../utils/revitToolHelpers.js";
-
+import { connectionTargetSchema, csharpIntArray, csharpString, csharpStringArray, executeRevitCode, executionOptionsFromArgs, formatJsonContent, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
 function buildInspectParameterSchemaCode(args) {
     const explicitIds = csharpIntArray(args.elementIds || []);
     const category = csharpString(args.category || "");
@@ -171,7 +160,6 @@ catch (Exception ex)
     return new { success = false, error = ex.ToString() };
 }`;
 }
-
 export function registerInspectParameterSchemaTool(server) {
     server.tool("inspect_parameter_schema", "Read-only parameter schema inspection for selected ids or a category sample: BIP, storage type, unit type, shared/read-only flags, raw and display values.", {
         ...connectionTargetSchema(z),

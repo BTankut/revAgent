@@ -1,5 +1,4 @@
 import { withRevitConnection } from "./ConnectionManager.js";
-
 export function connectionTargetSchema(z) {
     return {
         target: z.string().optional().describe("Optional Revit target: registered instance name, port number such as 8081, or host:port. Defaults to REVIT_MCP_TARGET/REVIT_MCP_PORT/8080."),
@@ -7,14 +6,12 @@ export function connectionTargetSchema(z) {
         port: z.number().int().positive().max(65535).optional().describe("Optional Revit socket port. Defaults to REVIT_MCP_PORT or 8080."),
     };
 }
-
 export function taskMetadataSchema(z) {
     return {
         taskName: z.string().optional().describe("Optional display name shown in Revit while this MCP task is running."),
         taskId: z.string().optional().describe("Optional client task identifier forwarded to Revit status history."),
     };
 }
-
 export function connectionOptionsFromArgs(args = {}) {
     return {
         target: args.target,
@@ -22,21 +19,18 @@ export function connectionOptionsFromArgs(args = {}) {
         port: args.port,
     };
 }
-
 export function taskOptionsFromArgs(args = {}, defaultTaskName) {
     return {
         taskName: args.taskName || defaultTaskName,
         taskId: args.taskId,
     };
 }
-
 export function executionOptionsFromArgs(args = {}, defaultTaskName) {
     return {
         ...connectionOptionsFromArgs(args),
         ...taskOptionsFromArgs(args, defaultTaskName),
     };
 }
-
 export function formatJsonContent(payload) {
     return {
         content: [
@@ -47,7 +41,6 @@ export function formatJsonContent(payload) {
         ],
     };
 }
-
 function parseJsonLike(value, depth = 0) {
     if (typeof value !== "string") {
         return value;
@@ -67,7 +60,6 @@ function parseJsonLike(value, depth = 0) {
         return value;
     }
 }
-
 export function normalizeRevitExecutionResponse(response) {
     const parsed = parseJsonLike(response);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -79,7 +71,6 @@ export function normalizeRevitExecutionResponse(response) {
     }
     return parsed;
 }
-
 export async function executeRevitCode(code, options = {}) {
     const params = {
         code,
@@ -95,7 +86,6 @@ export async function executeRevitCode(code, options = {}) {
     }, options);
     return normalizeRevitExecutionResponse(response);
 }
-
 export async function sendRevitCommand(command, params = {}, options = {}) {
     const commandParams = {
         ...params,
@@ -111,7 +101,6 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
     }, options);
     return normalizeRevitExecutionResponse(response);
 }
-
 export function csharpString(value) {
     if (value === null || value === undefined) {
         return "null";
@@ -122,19 +111,16 @@ export function csharpString(value) {
         .replace(/\r/g, "\\r")
         .replace(/\n/g, "\\n")}"`;
 }
-
 export function csharpStringArray(values) {
     const safeValues = Array.isArray(values) ? values : [];
     return `new string[] { ${safeValues.map(csharpString).join(", ")} }`;
 }
-
 export function csharpIntArray(values) {
     const safeValues = (Array.isArray(values) ? values : [])
         .map((value) => Number.parseInt(String(value), 10))
         .filter((value) => Number.isFinite(value));
     return `new int[] { ${safeValues.join(", ")} }`;
 }
-
 export function truncateText(text, maxChars) {
     const limit = Number(maxChars || 0);
     if (!limit || typeof text !== "string" || text.length <= limit) {
@@ -145,7 +131,6 @@ export function truncateText(text, maxChars) {
         truncated: true,
     };
 }
-
 export function extractElementIdsFromSelectionResponse(response) {
     const ids = new Set();
     const visit = (value, parentKey = "") => {
@@ -175,7 +160,6 @@ export function extractElementIdsFromSelectionResponse(response) {
     visit(response);
     return [...ids].filter((id) => Number.isFinite(id) && id > 0);
 }
-
 export async function getSelectionElementIds(limit = 100, options = {}) {
     const response = await sendRevitCommand("get_selected_elements", { limit }, options);
     return extractElementIdsFromSelectionResponse(response).slice(0, limit);

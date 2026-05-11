@@ -11,11 +11,13 @@ It is the single canonical source for production office deployment.
 - `SKILL.md`: host-agnostic skill instructions for Revit MEP work
 - `AGENTS.md`: workstation-wide coordination rules copied during install
 - `src/revit-plugin/`: Revit add-in source code
+- `config/revit-versions.json`: central Revit version matrix and payload gate
 - `scripts/build-revit-plugin.ps1`: builds the add-in source and refreshes the installer payload binaries
 - `installer/revit-plugin/`: bundled Revit add-in payload
 - `installer/command-payload/`: command set DLL and manifest backup
-- `installer/runtime-mcp-server/`: bundled local runtime MCP server build for live Revit execution
-- `installer/revit-api-docs-mcp/`: required companion local MCP server for Revit API DLL + XML documentation search
+- `installer/runtime-mcp-server/`: TypeScript source and bundled local runtime MCP server build for live Revit execution
+- `installer/revit-api-docs-mcp/`: TypeScript source and required companion local MCP server for Revit API DLL + XML documentation search
+- `installer/lib/`: shared PowerShell helper modules for installer/updater behavior
 - `installer/install-self-contained.ps1`: self-contained installer script
 - `installer/nas/`: NAS release publishing, workstation updater, and scheduled update bootstrap scripts
 - `docs/`: repository structure and migration notes
@@ -25,6 +27,8 @@ It is the single canonical source for production office deployment.
 
 Development and production releases both happen from `main` in this repository.
 Historical branches in the old repositories are not part of office deployment.
+Modernization feature branches are for local build/test work only and must not
+publish to the NAS stable channel.
 
 `src/revit-plugin` is source code. `installer/revit-plugin` is install payload.
 When the Revit add-in changes, build the source and refresh the payload binaries
@@ -304,6 +308,24 @@ codex mcp add revit-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\bui
 The installer already installs the machine-level Codex payload under
 `C:\ProgramData\DPE\RevitMCP\codex` and creates user-profile integration unless
 `-SkipCodexUserIntegration` is passed.
+
+## Local build and smoke tests
+
+Run the local no-deploy checks before publishing a release:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-installer-smoke.ps1
+
+cd .\installer\runtime-mcp-server
+npm install --no-audit --no-fund
+npm run test
+
+cd ..\revit-api-docs-mcp
+npm install --no-audit --no-fund
+npm run test
+```
+
+Use `scripts\test-all.ps1` to run the non-Revit checks in one command.
 
 9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
 10. Verify that both MCP servers are registered:

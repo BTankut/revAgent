@@ -1,13 +1,6 @@
 import { z } from "zod";
-import {
-    getCandidateRevitTargets,
-    withRevitConnection,
-} from "../utils/ConnectionManager.js";
-import {
-    formatJsonContent,
-    normalizeRevitExecutionResponse,
-} from "../utils/revitToolHelpers.js";
-
+import { getCandidateRevitTargets, withRevitConnection, } from "../utils/ConnectionManager.js";
+import { formatJsonContent, normalizeRevitExecutionResponse, } from "../utils/revitToolHelpers.js";
 const INSTANCE_INFO_CODE = `
 try
 {
@@ -42,7 +35,6 @@ catch (Exception ex)
 {
     return new { success = false, error = ex.ToString() };
 }`;
-
 function payloadFromResponse(response) {
     const normalized = normalizeRevitExecutionResponse(response);
     if (normalized && typeof normalized === "object" && normalized.result) {
@@ -50,7 +42,6 @@ function payloadFromResponse(response) {
     }
     return normalized;
 }
-
 async function probeTarget(target, timeoutMs) {
     let status = null;
     try {
@@ -80,7 +71,6 @@ async function probeTarget(target, timeoutMs) {
             error: error instanceof Error ? error.message : String(error),
         };
     }
-
     const infoTimeoutMs = Math.max(timeoutMs, 10000);
     try {
         const response = await withRevitConnection(async (revitClient, resolvedTarget) => {
@@ -124,7 +114,6 @@ async function probeTarget(target, timeoutMs) {
         };
     }
 }
-
 export function registerListRevitInstancesTool(server) {
     server.tool("list_revit_instances", "Discover reachable Revit MCP socket instances by probing configured ports. Use this before targeting a specific Revit instance.", {
         host: z.string().optional().describe("Host to scan. Defaults to REVIT_MCP_HOST or localhost."),

@@ -9,11 +9,18 @@
     "revit-api-docs-mcp": "./build/index.js"
   },
   "scripts": {
-    "build-index": "powershell -ExecutionPolicy Bypass -File ./scripts/build-index.ps1 -OutputPath \"%ProgramData%\\DPE\\RevitMCP\\state\\revit-api-docs\\cache\\revit-api-docs-2022.json\""
+    "clean": "rimraf build",
+    "prebuild": "npm run clean",
+    "build": "tsc",
+    "build-index": "powershell -ExecutionPolicy Bypass -File ./scripts/build-index.ps1 -OutputPath \"%ProgramData%\\DPE\\RevitMCP\\state\\revit-api-docs\\cache\\revit-api-docs-2022.json\"",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "npm run build && npm run smoke"
   },
   "files": [
     "build",
-    "scripts"
+    "src",
+    "scripts",
+    "tsconfig.json"
   ],
   "keywords": [
     "revit",
@@ -25,5 +32,10 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "rimraf": "^5.0.10",
+    "typescript": "^5.8.2"
   }
 }
