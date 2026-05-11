@@ -62,9 +62,7 @@ The Revit version matrix is copied beside those tools as `config\`.
 - installer payload path expectations
 - `installerPayloadAvailable` gate
 
-Revit 2022 remains the only bundled install payload in this branch. Revit
-2023/2024/2025 are modeled for build and future packaging, but install/payload
-copy paths are blocked until real artifacts are built and validated.
+Bu branch ve stable deploy hattı şu anda yalnızca Revit 2022 payload’ını destekler. 2023/2024/2025 gelecekteki genişleme için modellenmiştir; gerçek artifact üretilip doğrulanmadan installer/deploy tarafından açılmamalıdır.
 
 ## Compatibility Entrypoints
 

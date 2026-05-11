@@ -269,10 +269,7 @@ config\revit-versions.json
 
 The matrix contains target framework, build configuration, install-root
 candidates, add-in path pattern, API package mappings, and payload path
-expectations. Revit 2022 remains the only bundled installer payload. Revit
-2023/2024/2025 are modeled, but `installerPayloadAvailable` stays `false` until
-real payload artifacts are built, tested, and committed. Installer paths must
-not pretend to deploy a version whose payload flag is false.
+expectations. Bu branch ve stable deploy hattı şu anda yalnızca Revit 2022 payload’ını destekler. 2023/2024/2025 gelecekteki genişleme için modellenmiştir; gerçek artifact üretilip doğrulanmadan installer/deploy tarafından açılmamalıdır. Installer paths must not pretend to deploy a version whose payload flag is false.
 
 Use:
 

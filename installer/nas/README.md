@@ -216,7 +216,4 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   `-AllowReplaceGitPackageTarget` is explicitly passed.
 - Release ZIPs include a generated legacy `kurulum/` alias so older installed
   updaters can install the renamed `installer/` layout safely.
-- Revit version metadata is centralized in `config\revit-versions.json`. Revit
-  2022 is the only bundled install payload in this branch. Revit 2023/2024/2025
-  are modeled but blocked from fake deployment until real payload artifacts are
-  built and `installerPayloadAvailable` is deliberately enabled.
+- Revit version metadata is centralized in `config\revit-versions.json`. Bu branch ve stable deploy hattı şu anda yalnızca Revit 2022 payload’ını destekler. 2023/2024/2025 gelecekteki genişleme için modellenmiştir; gerçek artifact üretilip doğrulanmadan installer/deploy tarafından açılmamalıdır.

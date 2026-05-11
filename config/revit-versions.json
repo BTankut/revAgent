@@ -2,66 +2,6 @@
   "schemaVersion": 1,
   "defaultVersion": "2022",
   "versions": {
-    "2020": {
-      "label": "Autodesk Revit 2020",
-      "targetFramework": "net48",
-      "buildConfiguration": "Release R20",
-      "addinPathPattern": "%ProgramData%\\Autodesk\\Revit\\Addins\\{version}",
-      "installRootCandidatePatterns": [
-        "%REVIT_INSTALL_ROOT%",
-        "%ProgramFiles%\\Autodesk\\Revit {version}",
-        "%ProgramFiles%\\Autodesk\\Revit{version}",
-        "%ProgramFiles(x86)%\\Autodesk\\Revit {version}"
-      ],
-      "registryRoots": [
-        "HKLM:\\SOFTWARE\\Autodesk\\Revit\\{version}",
-        "HKLM:\\SOFTWARE\\Autodesk\\Revit\\Autodesk Revit {version}",
-        "HKLM:\\SOFTWARE\\WOW6432Node\\Autodesk\\Revit\\{version}",
-        "HKLM:\\SOFTWARE\\WOW6432Node\\Autodesk\\Revit\\Autodesk Revit {version}"
-      ],
-      "apiPackages": {
-        "RevitAPI": "Nice3point.Revit.Api.RevitAPI:2020.*",
-        "RevitAPIUI": "Nice3point.Revit.Api.RevitAPIUI:2020.*",
-        "RevitMCPSDK": "RevitMCPSDK:2020.*"
-      },
-      "payload": {
-        "installerPluginPath": "installer\\revit-plugin\\revit_mcp_plugin",
-        "commandPayloadPath": "installer\\command-payload",
-        "commandRuntimePath": "installer\\command-payload\\runtime\\2020",
-        "runtimeMcpPath": "installer\\runtime-mcp-server"
-      },
-      "installerPayloadAvailable": false
-    },
-    "2021": {
-      "label": "Autodesk Revit 2021",
-      "targetFramework": "net48",
-      "buildConfiguration": "Release R21",
-      "addinPathPattern": "%ProgramData%\\Autodesk\\Revit\\Addins\\{version}",
-      "installRootCandidatePatterns": [
-        "%REVIT_INSTALL_ROOT%",
-        "%ProgramFiles%\\Autodesk\\Revit {version}",
-        "%ProgramFiles%\\Autodesk\\Revit{version}",
-        "%ProgramFiles(x86)%\\Autodesk\\Revit {version}"
-      ],
-      "registryRoots": [
-        "HKLM:\\SOFTWARE\\Autodesk\\Revit\\{version}",
-        "HKLM:\\SOFTWARE\\Autodesk\\Revit\\Autodesk Revit {version}",
-        "HKLM:\\SOFTWARE\\WOW6432Node\\Autodesk\\Revit\\{version}",
-        "HKLM:\\SOFTWARE\\WOW6432Node\\Autodesk\\Revit\\Autodesk Revit {version}"
-      ],
-      "apiPackages": {
-        "RevitAPI": "Nice3point.Revit.Api.RevitAPI:2021.*",
-        "RevitAPIUI": "Nice3point.Revit.Api.RevitAPIUI:2021.*",
-        "RevitMCPSDK": "RevitMCPSDK:2021.*"
-      },
-      "payload": {
-        "installerPluginPath": "installer\\revit-plugin\\revit_mcp_plugin",
-        "commandPayloadPath": "installer\\command-payload",
-        "commandRuntimePath": "installer\\command-payload\\runtime\\2021",
-        "runtimeMcpPath": "installer\\runtime-mcp-server"
-      },
-      "installerPayloadAvailable": false
-    },
     "2022": {
       "label": "Autodesk Revit 2022",
       "targetFramework": "net48",

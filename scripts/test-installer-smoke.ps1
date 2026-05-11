@@ -126,6 +126,9 @@ try {
     $v2022 = Get-RevitMcpVersionConfig -Version 2022 -RepoRoot $RepoRoot
     Assert-Equal $v2022.targetFramework "net48" "Revit 2022 target framework changed."
     Assert-RevitMcpInstallerPayloadAvailable -Version 2022 -RepoRoot $RepoRoot
+    $matrix = Get-RevitMcpVersionMatrix -RepoRoot $RepoRoot
+    $configuredVersions = @($matrix.versions.PSObject.Properties.Name | Sort-Object)
+    Assert-Equal ($configuredVersions -join ",") "2022,2023,2024,2025" "Only Revit 2022-2025 should be modeled in the branch matrix."
     $blocked = $false
     try {
         Assert-RevitMcpInstallerPayloadAvailable -Version 2023 -RepoRoot $RepoRoot
