@@ -31,42 +31,6 @@
     <LangVersion>7.3</LangVersion>
     <ErrorReport>prompt</ErrorReport>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug 2020|x64'">
-    <DebugSymbols>true</DebugSymbols>
-    <OutputPath>..\revit-mcp-plugin\bin\x64\Debug\commands\SampleCommandset\2020\</OutputPath>
-    <DefineConstants>DEBUG;TRACE</DefineConstants>
-    <DebugType>full</DebugType>
-    <PlatformTarget>x64</PlatformTarget>
-    <LangVersion>7.3</LangVersion>
-    <ErrorReport>prompt</ErrorReport>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release 2020|x64'">
-    <OutputPath>..\revit-mcp-plugin\bin\x64\Release\commands\SampleCommandset\2020\</OutputPath>
-    <DefineConstants>TRACE</DefineConstants>
-    <Optimize>true</Optimize>
-    <DebugType>pdbonly</DebugType>
-    <PlatformTarget>x64</PlatformTarget>
-    <LangVersion>7.3</LangVersion>
-    <ErrorReport>prompt</ErrorReport>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug 2021|x64'">
-    <DebugSymbols>true</DebugSymbols>
-    <OutputPath>..\revit-mcp-plugin\bin\x64\Debug\commands\SampleCommandset\2021\</OutputPath>
-    <DefineConstants>DEBUG;TRACE</DefineConstants>
-    <DebugType>full</DebugType>
-    <PlatformTarget>x64</PlatformTarget>
-    <LangVersion>7.3</LangVersion>
-    <ErrorReport>prompt</ErrorReport>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release 2021|x64'">
-    <OutputPath>..\revit-mcp-plugin\bin\x64\Release\commands\SampleCommandset\2021\</OutputPath>
-    <DefineConstants>TRACE</DefineConstants>
-    <Optimize>true</Optimize>
-    <DebugType>pdbonly</DebugType>
-    <PlatformTarget>x64</PlatformTarget>
-    <LangVersion>7.3</LangVersion>
-    <ErrorReport>prompt</ErrorReport>
-  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug 2022|x64'">
     <DebugSymbols>true</DebugSymbols>
     <OutputPath>..\revit-mcp-plugin\bin\x64\Debug\commands\SampleCommandset\2022\</OutputPath>

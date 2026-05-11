@@ -146,6 +146,17 @@ try {
     Assert-Equal $portable2022.buildConfiguration "Release R22" "Portable updater lib/config version matrix lookup failed."
     Import-Module (Join-Path $libRoot "RevitMcp.RevitVersions.psm1") -Force
 
+    Write-Host "Test C# Revit project configurations"
+    $legacyRevitConfigPattern = '(?<!\d)(2020|2021)(?!\d)|\bR20\b|\bR21\b'
+    foreach ($relativePath in @(
+            "src\revit-plugin\revit-mcp-plugin.sln",
+            "src\revit-plugin\revit-mcp-plugin\revit-mcp-plugin.csproj",
+            "src\revit-plugin\SampleCommandSet\SampleCommandSet.csproj"
+        )) {
+        $projectText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot $relativePath)
+        Assert-True ($projectText -notmatch $legacyRevitConfigPattern) "$relativePath still contains legacy Revit 2020/2021 build configuration."
+    }
+
     Write-Host "Test installer public parameters"
     $installerParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\install-self-contained.ps1")
     foreach ($name in @(
