@@ -52,31 +52,21 @@ function payloadFromResponse(response) {
 }
 
 async function probeTarget(target, timeoutMs) {
+    let status = null;
     try {
-        const response = await withRevitConnection(async (revitClient, resolvedTarget) => {
-            return await revitClient.sendCommand("send_code_to_revit", {
-                code: INSTANCE_INFO_CODE,
-                parameters: [`${resolvedTarget.host}:${resolvedTarget.port}`],
-                transactionMode: "none",
-                taskName: "Probe Revit instance",
-            }, { timeoutMs });
+        status = await withRevitConnection(async (revitClient) => {
+            return await revitClient.sendCommand("mcp_status", {}, {
+                timeoutMs,
+                statusPreflight: false,
+            });
         }, {
             host: target.host,
             port: target.port,
             connectTimeoutMs: timeoutMs,
             lockWaitMs: Math.max(timeoutMs, 500),
             logSocketErrors: false,
+            skipLock: true,
         });
-        return {
-            reachable: true,
-            target: {
-                name: target.name,
-                host: target.host,
-                port: target.port,
-                source: target.source,
-            },
-            info: payloadFromResponse(response),
-        };
     }
     catch (error) {
         return {
@@ -88,6 +78,49 @@ async function probeTarget(target, timeoutMs) {
                 source: target.source,
             },
             error: error instanceof Error ? error.message : String(error),
+        };
+    }
+
+    const infoTimeoutMs = Math.max(timeoutMs, 10000);
+    try {
+        const response = await withRevitConnection(async (revitClient, resolvedTarget) => {
+            return await revitClient.sendCommand("send_code_to_revit", {
+                code: INSTANCE_INFO_CODE,
+                parameters: [`${resolvedTarget.host}:${resolvedTarget.port}`],
+                transactionMode: "none",
+                taskName: "Probe Revit instance",
+            }, { timeoutMs: infoTimeoutMs });
+        }, {
+            host: target.host,
+            port: target.port,
+            connectTimeoutMs: timeoutMs,
+            lockWaitMs: Math.max(infoTimeoutMs, 500),
+            logSocketErrors: false,
+        });
+        return {
+            reachable: true,
+            target: {
+                name: target.name,
+                host: target.host,
+                port: target.port,
+                source: target.source,
+            },
+            status,
+            info: payloadFromResponse(response),
+        };
+    }
+    catch (error) {
+        return {
+            reachable: true,
+            target: {
+                name: target.name,
+                host: target.host,
+                port: target.port,
+                source: target.source,
+            },
+            status,
+            info: null,
+            infoError: error instanceof Error ? error.message : String(error),
         };
     }
 }

@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## 2026-05-10
 
+- Made `list_revit_instances` classify a target as reachable with lightweight `mcp_status` before attempting the heavier document-info probe, avoiding false empty discovery results when the first dynamic probe is slow.
 - Optimized repeated update checks by skipping proxy setup commands when Windows, npm, and Git proxy settings already match the office proxy, with per-step proxy status logging.
 - Changed scheduled auto update checks to run PowerShell hidden, added self-repair for older visible scheduled task actions, and refreshes the local updater tool copy during package install.
 - Added a direct Codex `config.toml` MCP registration fallback when Codex Desktop is installed but its local command helper has not been created yet.
