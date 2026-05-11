@@ -40,6 +40,8 @@ $pluginRoot = Join-Path $InstallRoot "revit-plugin"
 $pluginTarget = Join-Path $pluginRoot "revit_mcp_plugin"
 $commandSetRoot = Join-Path $InstallRoot "commands\CommandSet"
 $stateRoot = Join-Path $InstallRoot "state"
+$updaterRoot = Join-Path $InstallRoot "updater"
+$updaterConfigPath = Join-Path $updaterRoot "updater-config.json"
 $codexMachineRoot = Join-Path $InstallRoot "codex"
 $codexMachineSkillsRoot = Join-Path $codexMachineRoot "skills"
 $codexMachineSkillTarget = Join-Path $codexMachineSkillsRoot "revit-mcp"
@@ -323,6 +325,90 @@ function New-HardLinkOrCopyFile {
     catch {
         Write-Warning "Could not create AGENTS.md hard link; copying instead. $($_.Exception.Message)"
         Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    }
+}
+
+function Install-UpdaterToolsFromPackage {
+    param(
+        [string]$SourceRoot,
+        [string]$DestinationRoot,
+        [string]$ConfigPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SourceRoot) -or
+        -not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
+        return
+    }
+
+    New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+    foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1")) {
+        $source = Join-Path $SourceRoot $toolName
+        if (Test-Path -LiteralPath $source -PathType Leaf) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationRoot $toolName) -Force
+        }
+    }
+
+    $updaterPath = Join-Path $DestinationRoot "update-from-nas.ps1"
+    $versionToolPath = Join-Path $DestinationRoot "show-installed-version.ps1"
+    if (Test-Path -LiteralPath $updaterPath -PathType Leaf) {
+        @(
+            "@echo off",
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -NoNotifyUser -AllowManualCodexSetup",
+            "pause"
+        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Update-Revit-MCP-Now.cmd") -Encoding ASCII
+    }
+    if (Test-Path -LiteralPath $versionToolPath -PathType Leaf) {
+        @(
+            "@echo off",
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$versionToolPath`" -ConfigPath `"$ConfigPath`"",
+            "pause"
+        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Show-Revit-MCP-Version.cmd") -Encoding ASCII
+    }
+
+    Write-Host "Updater tools refreshed: $DestinationRoot"
+}
+
+function Repair-RevitMcpScheduledTaskAction {
+    param(
+        [string]$ConfigPath,
+        [string]$UpdaterPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ConfigPath) -or
+        [string]::IsNullOrWhiteSpace($UpdaterPath) -or
+        -not (Test-Path -LiteralPath $ConfigPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
+        return
+    }
+
+    $taskName = "Revit MCP Auto Update"
+    try {
+        $config = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json
+        if ($config.taskName) {
+            $taskName = [string]$config.taskName
+        }
+    }
+    catch {}
+
+    try {
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if (-not $task) {
+            return
+        }
+
+        $desiredArgs = "-STA -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$ConfigPath`" -NotifyUser"
+        $currentAction = @($task.Actions | Select-Object -First 1)
+        $currentArgs = if ($currentAction.Count -gt 0) { [string]$currentAction[0].Arguments } else { "" }
+        if ([string]::Equals($currentArgs, $desiredArgs, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return
+        }
+
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $desiredArgs
+        Set-ScheduledTask -TaskName $taskName -Action $action | Out-Null
+        Write-Host "Scheduled task action repaired for hidden background checks: $taskName"
+    }
+    catch {
+        Write-Warning "Could not repair scheduled task action for hidden background checks: $($_.Exception.Message)"
     }
 }
 
@@ -749,6 +835,10 @@ if ((-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) -and
     Copy-Item -LiteralPath $codexMachineAgentsTarget -Destination $workspaceAgentsFullPath -Force
     $workspaceAgentsInstalled = $workspaceAgentsFullPath
 }
+
+$nasToolsSource = Join-Path $PSScriptRoot "nas"
+Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $updaterRoot -ConfigPath $updaterConfigPath
+Repair-RevitMcpScheduledTaskAction -ConfigPath $updaterConfigPath -UpdaterPath (Join-Path $updaterRoot "update-from-nas.ps1")
 
 Write-Host "Self-contained Revit MCP bundle installed for Revit $RevitVersion" -ForegroundColor Green
 Write-Host "Install root: $InstallRoot"
