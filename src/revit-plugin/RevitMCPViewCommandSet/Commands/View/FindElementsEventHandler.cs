@@ -1,6 +1,7 @@
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using RevitMCPSDK.API.Interfaces;
+using RevitMCPViewCommandSet.Extensions;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -18,6 +19,11 @@ namespace RevitMCPViewCommandSet.Commands.View
         public List<string> CategoryNames { get; set; }
         public int Count { get; set; }
         public bool Truncated { get; set; }
+        public bool Ambiguous { get; set; }
+        public int TopScore { get; set; }
+        public string TopConfidence { get; set; }
+        public int TopScoreTiedCount { get; set; }
+        public string SelectionHint { get; set; }
         public List<ElementSearchItem> Elements { get; set; }
     }
 
@@ -73,8 +79,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                     return;
                 }
 
-                List<ElementSearchItem> items = new List<ElementSearchItem>();
-                int matchedCount = 0;
+                List<Tuple<Element, SearchMatchSummary>> matches = new List<Tuple<Element, SearchMatchSummary>>();
                 IEnumerable<Element> elements =
                     new FilteredElementCollector(document)
                         .WhereElementIsNotElementType()
@@ -82,22 +87,38 @@ namespace RevitMCPViewCommandSet.Commands.View
 
                 foreach (Element element in elements)
                 {
-                    if (!ElementDiscoveryHelpers.MatchesSearch(document, element, _query, _categoryNames))
+                    SearchMatchSummary match = ElementDiscoveryHelpers.BuildSearchMatch(document, element, _query, _categoryNames);
+                    if (!match.Matches)
                     {
                         continue;
                     }
 
-                    matchedCount++;
-                    if (items.Count < _limit)
-                    {
-                        items.Add(ElementDiscoveryHelpers.BuildElementSearchItem(
-                            document,
-                            uiDocument,
-                            element,
-                            _includePlanCandidates,
-                            _planNameContains));
-                    }
+                    matches.Add(Tuple.Create(element, match));
                 }
+
+                List<Tuple<Element, SearchMatchSummary>> orderedMatches = matches
+                    .OrderByDescending(m => m.Item2.Score)
+                    .ThenBy(m => m.Item1.Id.GetIdValue())
+                    .ToList();
+
+                List<ElementSearchItem> items = orderedMatches
+                    .Take(_limit)
+                    .Select(m => ElementDiscoveryHelpers.BuildElementSearchItem(
+                        document,
+                        uiDocument,
+                        m.Item1,
+                        _includePlanCandidates,
+                        _planNameContains,
+                        m.Item2))
+                    .ToList();
+
+                int topScore = orderedMatches.Count > 0 ? orderedMatches[0].Item2.Score : 0;
+                int tiedCount = topScore > 0 ? orderedMatches.Count(m => m.Item2.Score == topScore) : 0;
+                string topConfidence = orderedMatches.Count > 0 ? orderedMatches[0].Item2.Confidence : "none";
+                bool ambiguous = orderedMatches.Count > 1 && (tiedCount > 1 || !string.Equals(topConfidence, "high", StringComparison.OrdinalIgnoreCase));
+                string selectionHint = ambiguous
+                    ? "Multiple plausible matches were found. Use elementId, mark, level, or a more specific query before making changes."
+                    : "Top match is the best current candidate; still verify level, mark, and plan before making changes.";
 
                 Complete(new FindElementsResult
                 {
@@ -106,8 +127,13 @@ namespace RevitMCPViewCommandSet.Commands.View
                     Message = "Matching Revit elements were found.",
                     Query = _query,
                     CategoryNames = _categoryNames,
-                    Count = matchedCount,
-                    Truncated = matchedCount > items.Count,
+                    Count = matches.Count,
+                    Truncated = matches.Count > items.Count,
+                    Ambiguous = ambiguous,
+                    TopScore = topScore,
+                    TopConfidence = topConfidence,
+                    TopScoreTiedCount = tiedCount,
+                    SelectionHint = selectionHint,
                     Elements = items
                 });
             }

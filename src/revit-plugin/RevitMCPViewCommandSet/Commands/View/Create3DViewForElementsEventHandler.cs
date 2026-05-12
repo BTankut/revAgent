@@ -24,6 +24,8 @@ namespace RevitMCPViewCommandSet.Commands.View
         private bool _fitToScreen;
         private bool _allowPartial;
         private double _paddingMm;
+        private double _framingPaddingMm;
+        private string _cameraOrientation;
         private UIApplication _pendingApp;
         private ElementId _pendingViewId = ElementId.InvalidElementId;
         private bool _createdView;
@@ -39,6 +41,8 @@ namespace RevitMCPViewCommandSet.Commands.View
         private string _actualViewName;
         private bool _viewNameChanged;
         private string _viewNameResolution;
+        private bool _pendingCameraApplied;
+        private string _pendingCameraWarning;
 
         public ElementFocusResult ResultInfo { get; private set; }
         public bool TaskCompleted { get; private set; }
@@ -54,7 +58,9 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool zoom,
             bool fitToScreen,
             bool allowPartial,
-            double paddingMm)
+            double paddingMm,
+            double framingPaddingMm,
+            string cameraOrientation)
         {
             _requestedElementIds = elementIds ?? new List<int>();
             _viewName = viewName;
@@ -67,6 +73,8 @@ namespace RevitMCPViewCommandSet.Commands.View
             _fitToScreen = fitToScreen;
             _allowPartial = allowPartial;
             _paddingMm = Math.Max(0, paddingMm);
+            _framingPaddingMm = Math.Max(0, framingPaddingMm);
+            _cameraOrientation = NormalizeCameraOrientation(cameraOrientation);
             _pendingApp = null;
             _pendingViewId = ElementId.InvalidElementId;
             _createdView = false;
@@ -82,6 +90,8 @@ namespace RevitMCPViewCommandSet.Commands.View
             _actualViewName = "";
             _viewNameChanged = false;
             _viewNameResolution = "";
+            _pendingCameraApplied = false;
+            _pendingCameraWarning = "";
             TaskCompleted = false;
             ResultInfo = null;
             _resetEvent.Reset();
@@ -179,12 +189,23 @@ namespace RevitMCPViewCommandSet.Commands.View
             boxSummary = null;
             boxedElements = elements;
             noBoundingBoxElementIds = ElementFocusHelpers.GetNoBoundingBoxElementIds(elements);
-            if (_sectionBox)
+            bool needsAggregateBox = _sectionBox || ShouldApplyCameraOrientation();
+            if (needsAggregateBox)
             {
-                if (!ElementFocusHelpers.TryBuildSectionBox(document, elementIds, _paddingMm, out sectionBox, out boxSummary, out boxedElements, out noBoundingBoxElementIds, out boxError))
+                double boxPaddingMm = _sectionBox ? _paddingMm : _framingPaddingMm;
+                if (!ElementFocusHelpers.TryBuildSectionBox(document, elementIds, boxPaddingMm, out sectionBox, out boxSummary, out boxedElements, out noBoundingBoxElementIds, out boxError))
                 {
-                    Complete(BuildFailure(document, uiDocument, boxError, boxedElements, missingElementIds));
-                    return;
+                    if (_sectionBox)
+                    {
+                        Complete(BuildFailure(document, uiDocument, boxError, boxedElements, missingElementIds));
+                        return;
+                    }
+
+                    sectionBox = null;
+                    boxSummary = null;
+                    boxedElements = elements;
+                    noBoundingBoxElementIds = ElementFocusHelpers.GetNoBoundingBoxElementIds(elements);
+                    _pendingCameraWarning = boxError;
                 }
             }
 
@@ -205,6 +226,8 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool changed = false;
             string boundaryWarning = "";
             bool boundaryShown = false;
+            string cameraWarning = _pendingCameraWarning;
+            bool cameraApplied = false;
 
             bool createdNow = false;
             if (targetView == null)
@@ -215,15 +238,15 @@ namespace RevitMCPViewCommandSet.Commands.View
                     return;
                 }
 
-                targetView = Create3DView(document, elementIds, sectionBox, out boundaryShown, out boundaryWarning);
+                targetView = Create3DView(document, elementIds, sectionBox, out boundaryShown, out boundaryWarning, out cameraApplied, out cameraWarning);
                 _createdView = true;
                 createdNow = true;
                 changed = true;
             }
 
-            if (!createdNow && (_sectionBox || targetView.IsSectionBoxActive))
+            if (!createdNow && (_sectionBox || targetView.IsSectionBoxActive || ShouldApplyCameraOrientation()))
             {
-                Apply3DViewSettings(document, targetView, sectionBox, out boundaryShown, out boundaryWarning);
+                Apply3DViewSettings(document, targetView, sectionBox, out boundaryShown, out boundaryWarning, out cameraApplied, out cameraWarning);
                 changed = true;
             }
 
@@ -234,17 +257,19 @@ namespace RevitMCPViewCommandSet.Commands.View
             _pendingBoundaryShown = boundaryShown;
             _pendingBoundaryWarning = boundaryWarning;
             _pendingChanged = changed;
+            _pendingCameraApplied = cameraApplied;
+            _pendingCameraWarning = cameraWarning;
             _idlingAttempts = 0;
 
             if (!_activate)
             {
-                Complete(BuildSuccess(uiDocument, targetView, boxedElements, missingElementIds, noBoundingBoxElementIds, boxSummary, deferred, false, changed, boundaryShown, boundaryWarning, "", "", false, "", ""));
+                Complete(BuildSuccess(uiDocument, targetView, boxedElements, missingElementIds, noBoundingBoxElementIds, boxSummary, deferred, false, changed, boundaryShown, boundaryWarning, cameraApplied, cameraWarning, "", "", false, "", ""));
                 return;
             }
 
             if (document.ActiveView != null && document.ActiveView.Id.GetIdValue() == targetView.Id.GetIdValue())
             {
-                Complete(FocusAndBuildSuccess(uiDocument, targetView, boxedElements, elementIds, missingElementIds, noBoundingBoxElementIds, boxSummary, deferred, false, changed, boundaryShown, boundaryWarning));
+                Complete(FocusAndBuildSuccess(uiDocument, targetView, boxedElements, elementIds, missingElementIds, noBoundingBoxElementIds, boxSummary, deferred, false, changed, boundaryShown, boundaryWarning, cameraApplied, cameraWarning));
                 return;
             }
 
@@ -275,10 +300,14 @@ namespace RevitMCPViewCommandSet.Commands.View
             IList<ElementId> elementIds,
             BoundingBoxXYZ sectionBox,
             out bool boundaryShown,
-            out string boundaryWarning)
+            out string boundaryWarning,
+            out bool cameraApplied,
+            out string cameraWarning)
         {
             boundaryShown = false;
             boundaryWarning = "";
+            cameraApplied = false;
+            cameraWarning = "";
             Transaction transaction = new Transaction(document, "Revit MCP create 3D view for elements");
             try
             {
@@ -323,6 +352,8 @@ namespace RevitMCPViewCommandSet.Commands.View
                     view.IsSectionBoxActive = false;
                 }
 
+                ApplyCameraOrientation(view, sectionBox, out cameraApplied, out cameraWarning);
+
                 transaction.Commit();
                 return view;
             }
@@ -338,10 +369,14 @@ namespace RevitMCPViewCommandSet.Commands.View
             View3D targetView,
             BoundingBoxXYZ sectionBox,
             out bool boundaryShown,
-            out string boundaryWarning)
+            out string boundaryWarning,
+            out bool cameraApplied,
+            out string cameraWarning)
         {
             boundaryShown = false;
             boundaryWarning = "";
+            cameraApplied = false;
+            cameraWarning = "";
             Transaction transaction = new Transaction(document, "Revit MCP update 3D focus view");
             try
             {
@@ -357,6 +392,8 @@ namespace RevitMCPViewCommandSet.Commands.View
                     targetView.IsSectionBoxActive = false;
                     _sectionBoxCleared = true;
                 }
+
+                ApplyCameraOrientation(targetView, sectionBox, out cameraApplied, out cameraWarning);
 
                 transaction.Commit();
             }
@@ -391,6 +428,163 @@ namespace RevitMCPViewCommandSet.Commands.View
                 warning = ex.Message;
                 return false;
             }
+        }
+
+        private void ApplyCameraOrientation(View3D targetView, BoundingBoxXYZ box, out bool applied, out string warning)
+        {
+            applied = false;
+            warning = "";
+            if (!ShouldApplyCameraOrientation())
+            {
+                return;
+            }
+
+            if (targetView == null)
+            {
+                warning = "Target 3D view was not available for camera orientation.";
+                return;
+            }
+
+            if (box == null)
+            {
+                warning = string.IsNullOrWhiteSpace(_pendingCameraWarning)
+                    ? "No aggregate element bounding box was available for camera orientation."
+                    : _pendingCameraWarning;
+                return;
+            }
+
+            try
+            {
+                XYZ center = new XYZ(
+                    (box.Min.X + box.Max.X) / 2.0,
+                    (box.Min.Y + box.Max.Y) / 2.0,
+                    (box.Min.Z + box.Max.Z) / 2.0);
+
+                double dx = box.Max.X - box.Min.X;
+                double dy = box.Max.Y - box.Min.Y;
+                double dz = box.Max.Z - box.Min.Z;
+                double diagonal = Math.Sqrt((dx * dx) + (dy * dy) + (dz * dz));
+                double distance = Math.Max(diagonal * 2.5, 10.0);
+
+                XYZ forward;
+                XYZ upHint;
+                GetCameraVectors(_cameraOrientation, out forward, out upHint);
+                forward = NormalizeVector(forward);
+                XYZ up = OrthonormalizeUp(forward, upHint);
+                XYZ eye = new XYZ(
+                    center.X - forward.X * distance,
+                    center.Y - forward.Y * distance,
+                    center.Z - forward.Z * distance);
+
+                targetView.SetOrientation(new ViewOrientation3D(eye, up, forward));
+                applied = true;
+            }
+            catch (Exception ex)
+            {
+                warning = ex.Message;
+            }
+        }
+
+        private bool ShouldApplyCameraOrientation()
+        {
+            return !string.IsNullOrWhiteSpace(_cameraOrientation) &&
+                !string.Equals(_cameraOrientation, "unchanged", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizeCameraOrientation(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return "unchanged";
+            }
+
+            string normalized = value.Trim();
+            if (string.Equals(normalized, "iso", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "isometric", StringComparison.OrdinalIgnoreCase))
+            {
+                return "isometric";
+            }
+            if (string.Equals(normalized, "top", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "front", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "back", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "left", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "right", StringComparison.OrdinalIgnoreCase))
+            {
+                return normalized.ToLowerInvariant();
+            }
+
+            return "unchanged";
+        }
+
+        private static void GetCameraVectors(string orientation, out XYZ forward, out XYZ upHint)
+        {
+            if (string.Equals(orientation, "top", StringComparison.OrdinalIgnoreCase))
+            {
+                forward = new XYZ(0, 0, -1);
+                upHint = new XYZ(0, 1, 0);
+                return;
+            }
+            if (string.Equals(orientation, "front", StringComparison.OrdinalIgnoreCase))
+            {
+                forward = new XYZ(0, 1, 0);
+                upHint = new XYZ(0, 0, 1);
+                return;
+            }
+            if (string.Equals(orientation, "back", StringComparison.OrdinalIgnoreCase))
+            {
+                forward = new XYZ(0, -1, 0);
+                upHint = new XYZ(0, 0, 1);
+                return;
+            }
+            if (string.Equals(orientation, "left", StringComparison.OrdinalIgnoreCase))
+            {
+                forward = new XYZ(1, 0, 0);
+                upHint = new XYZ(0, 0, 1);
+                return;
+            }
+            if (string.Equals(orientation, "right", StringComparison.OrdinalIgnoreCase))
+            {
+                forward = new XYZ(-1, 0, 0);
+                upHint = new XYZ(0, 0, 1);
+                return;
+            }
+
+            forward = new XYZ(1, 1, -0.7);
+            upHint = new XYZ(0, 0, 1);
+        }
+
+        private static XYZ NormalizeVector(XYZ vector)
+        {
+            double length = Math.Sqrt((vector.X * vector.X) + (vector.Y * vector.Y) + (vector.Z * vector.Z));
+            if (length < 0.000001)
+            {
+                return new XYZ(1, 1, -0.7);
+            }
+
+            return new XYZ(vector.X / length, vector.Y / length, vector.Z / length);
+        }
+
+        private static XYZ OrthonormalizeUp(XYZ forward, XYZ upHint)
+        {
+            XYZ normalizedHint = NormalizeVector(upHint);
+            double dot = DotProduct(normalizedHint, forward);
+            XYZ projected = new XYZ(
+                normalizedHint.X - forward.X * dot,
+                normalizedHint.Y - forward.Y * dot,
+                normalizedHint.Z - forward.Z * dot);
+
+            double length = Math.Sqrt((projected.X * projected.X) + (projected.Y * projected.Y) + (projected.Z * projected.Z));
+            if (length < 0.000001)
+            {
+                projected = new XYZ(0, 1, 0);
+            }
+
+            return NormalizeVector(projected);
+        }
+
+        private static double DotProduct(XYZ a, XYZ b)
+        {
+            return (a.X * b.X) + (a.Y * b.Y) + (a.Z * b.Z);
         }
 
         private void OnActivationIdling(object sender, IdlingEventArgs e)
@@ -429,7 +623,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                     List<int> noBoundingBoxElementIds = _pendingNoBoundingBoxElementIds != null && _pendingNoBoundingBoxElementIds.Count > 0
                         ? _pendingNoBoundingBoxElementIds
                         : ElementFocusHelpers.GetNoBoundingBoxElementIds(elements);
-                    CompleteFromIdling(FocusAndBuildSuccess(uiDocument, targetView, elements, elementIds, missingElementIds, noBoundingBoxElementIds, _pendingBoxSummary, _idlingAttempts > 1, true, _pendingChanged, _pendingBoundaryShown, _pendingBoundaryWarning), OnActivationIdling);
+                    CompleteFromIdling(FocusAndBuildSuccess(uiDocument, targetView, elements, elementIds, missingElementIds, noBoundingBoxElementIds, _pendingBoxSummary, _idlingAttempts > 1, true, _pendingChanged, _pendingBoundaryShown, _pendingBoundaryWarning, _pendingCameraApplied, _pendingCameraWarning), OnActivationIdling);
                     return;
                 }
 
@@ -482,14 +676,16 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool requested,
             bool changed,
             bool boundaryShown,
-            string boundaryWarning)
+            string boundaryWarning,
+            bool cameraApplied,
+            string cameraWarning)
         {
             bool fitToScreenApplied;
             string fitToScreenMethod;
             string fitToScreenWarning;
             string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom, _fitToScreen, out fitToScreenApplied, out fitToScreenMethod, out fitToScreenWarning);
             string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
-            return BuildSuccess(uiDocument, targetView, elements, missingElementIds, noBoundingBoxElementIds, boxSummary, deferred, requested, changed, boundaryShown, boundaryWarning, zoomMethod, focusNote, fitToScreenApplied, fitToScreenMethod, fitToScreenWarning);
+            return BuildSuccess(uiDocument, targetView, elements, missingElementIds, noBoundingBoxElementIds, boxSummary, deferred, requested, changed, boundaryShown, boundaryWarning, cameraApplied, cameraWarning, zoomMethod, focusNote, fitToScreenApplied, fitToScreenMethod, fitToScreenWarning);
         }
 
         private ElementFocusResult BuildSuccess(
@@ -504,6 +700,8 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool changed,
             bool boundaryShown,
             string boundaryWarning,
+            bool cameraApplied,
+            string cameraWarning,
             string zoomMethod,
             string focusNote,
             bool fitToScreenApplied,
@@ -529,7 +727,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                 message += " " + focusNote;
             }
 
-            string boundingBoxSource = _sectionBox ? "sectionBox" : "none";
+            string boundingBoxSource = _sectionBox ? "sectionBox" : cameraApplied ? "cameraFrame" : "none";
             string sectionBoxNote = ElementFocusHelpers.BuildSectionBoxNote(_sectionBox, sectionBoxActive, _sectionBoxCleared);
 
             return new ElementFocusResult
@@ -557,6 +755,10 @@ namespace RevitMCPViewCommandSet.Commands.View
                 SectionBoxState = sectionBoxActive ? "active" : "inactive",
                 SectionBoxNote = sectionBoxNote,
                 PaddingMm = _sectionBox ? (double?)_paddingMm : null,
+                CameraOrientation = _cameraOrientation,
+                CameraApplied = cameraApplied,
+                CameraWarning = cameraWarning,
+                FramingPaddingMm = ShouldApplyCameraOrientation() ? (double?)_framingPaddingMm : null,
                 BoundingBoxSource = boundingBoxSource,
                 BoundingBoxNote = ElementFocusHelpers.BuildBoundingBoxNote(boundingBoxSource),
                 RequestedViewName = _requestedViewName,
@@ -569,7 +771,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                 Elements = elements,
                 MissingElementIds = missingElementIds,
                 NoBoundingBoxElementIds = noBoundingBoxElementIds,
-                BoundingBox = _sectionBox ? boxSummary : null
+                BoundingBox = (_sectionBox || cameraApplied) ? boxSummary : null
             };
         }
 
@@ -584,13 +786,17 @@ namespace RevitMCPViewCommandSet.Commands.View
                 CreatedView = _createdView,
                 ReusedView = _reusedView,
                 SectionBoxCleared = _sectionBoxCleared,
+                CameraOrientation = _cameraOrientation,
+                CameraApplied = _pendingCameraApplied,
+                CameraWarning = _pendingCameraWarning,
+                FramingPaddingMm = ShouldApplyCameraOrientation() ? (double?)_framingPaddingMm : null,
                 RequestedViewName = _requestedViewName,
                 ActualViewName = _actualViewName,
                 ViewNameChanged = _viewNameChanged,
                 ViewNameResolution = _viewNameResolution,
                 PaddingMm = _sectionBox ? (double?)_paddingMm : null,
-                BoundingBoxSource = _sectionBox ? "sectionBox" : "none",
-                BoundingBoxNote = ElementFocusHelpers.BuildBoundingBoxNote(_sectionBox ? "sectionBox" : "none"),
+                BoundingBoxSource = _sectionBox ? "sectionBox" : _pendingCameraApplied ? "cameraFrame" : "none",
+                BoundingBoxNote = ElementFocusHelpers.BuildBoundingBoxNote(_sectionBox ? "sectionBox" : _pendingCameraApplied ? "cameraFrame" : "none"),
                 ActiveView = document != null ? ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true) : null,
                 OpenViews = uiDocument != null ? ViewCommandHelpers.GetOpenViewSummaries(uiDocument) : null,
                 Elements = elements,

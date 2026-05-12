@@ -62,8 +62,17 @@ namespace RevitMCPViewCommandSet.Commands.View
         public string ViewNameResolution { get; set; }
         public ViewSummary ActiveViewBefore { get; set; }
         public bool ActiveViewChanged { get; set; }
+        public string PlanMode { get; set; }
         public string PlanOpenMode { get; set; }
         public string PlanOpenNote { get; set; }
+        public bool ActivePlanMatchesElementLevel { get; set; }
+        public int? ActivePlanLevelId { get; set; }
+        public string ActivePlanLevelName { get; set; }
+        public string PlanVisibilityWarning { get; set; }
+        public string CameraOrientation { get; set; }
+        public bool CameraApplied { get; set; }
+        public string CameraWarning { get; set; }
+        public double? FramingPaddingMm { get; set; }
         public ViewSummary TargetView { get; set; }
         public ViewSummary ActiveView { get; set; }
         public ViewSummary SelectedPlan { get; set; }
@@ -205,6 +214,10 @@ namespace RevitMCPViewCommandSet.Commands.View
             if (string.Equals(source, "sectionBox", StringComparison.OrdinalIgnoreCase))
             {
                 return "BoundingBox is the aggregate model-space box used for the 3D section box.";
+            }
+            if (string.Equals(source, "cameraFrame", StringComparison.OrdinalIgnoreCase))
+            {
+                return "BoundingBox is the aggregate model-space box used to set the 3D camera orientation/framing; no section box was applied from it.";
             }
 
             return "Element HasBoundingBox describes per-element model boxes; this operation did not compute an aggregate BoundingBox and used Revit UI focus instead.";

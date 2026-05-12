@@ -9,6 +9,7 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         elementId: elementIdSchema.describe("ElementId to locate in an existing plan view."),
+        planMode: z.enum(["elementLevel", "activePlan"]).optional().describe("elementLevel opens the best existing plan on the element level. activePlan keeps the current active plan and does not switch to the element level. Defaults elementLevel."),
         planNameContains: z.string().optional().describe("Optional plan name preference such as HVAC, Mechanical, or Roof Level."),
         preferMechanical: z.boolean().optional().describe("Prefer HVAC/mechanical/MEP named plans on the same level. Defaults true."),
         select: z.boolean().optional().describe("Select the element after activating the plan. Defaults true."),
@@ -19,6 +20,7 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
         try {
             const response = await sendRevitCommand("open_existing_plan_for_element_level", {
                 elementId: args.elementId,
+                planMode: args.planMode,
                 planNameContains: args.planNameContains,
                 preferMechanical: args.preferMechanical,
                 select: args.select,

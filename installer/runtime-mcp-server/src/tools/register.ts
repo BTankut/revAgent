@@ -12,6 +12,7 @@ import { registerOpenExistingPlanForElementLevelTool } from "./open_existing_pla
 import { registerFocusElementsTool } from "./focus_elements.js";
 import { registerSectionBoxElementsTool } from "./section_box_elements.js";
 import { registerCreate3DViewForElementsTool } from "./create_3d_view_for_elements.js";
+import { registerShowElementInPlanAnd3DTool } from "./show_element_in_plan_and_3d.js";
 import { registerInspectElementsTool } from "./inspect_elements.js";
 import { registerInspectParameterSchemaTool } from "./inspect_parameter_schema.js";
 import { registerListRevitInstancesTool } from "./list_revit_instances.js";
@@ -33,7 +34,8 @@ export async function registerTools(server) {
     registerFocusElementsTool(server);
     registerSectionBoxElementsTool(server);
     registerCreate3DViewForElementsTool(server);
+    registerShowElementInPlanAnd3DTool(server);
     registerInspectElementsTool(server);
     registerInspectParameterSchemaTool(server);
-    console.error("Registered 17 Revit MCP tools");
+    console.error("Registered 18 Revit MCP tools");
 }

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
 export function registerFindElementsTool(server) {
-    server.tool("find_elements", "Find Revit elements by category and text across element name, family, type, mark, comments, and id. Optionally includes suitable existing plan views for each element level.", {
+    server.tool("find_elements", "Find Revit elements by category and text across element name, family, type, mark, comments, and id. Returns match score/confidence/reason fields so ambiguous large-project results can be disambiguated before writes.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Text to search in id, unique id, name, category, family, type, mark, and comments."),
@@ -18,6 +18,7 @@ export function registerFindElementsTool(server) {
                 includePlanCandidates: args.includePlanCandidates,
                 planNameContains: args.planNameContains,
                 limit: args.limit,
+                timeoutMs: args.timeoutMs,
             }, {
                 ...executionOptionsFromArgs(args, "Find Revit elements"),
             });

@@ -26,6 +26,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         {
             int elementId = parameters != null && parameters["elementId"] != null ? parameters["elementId"].Value<int>() : 0;
             string planNameContains = parameters != null && parameters["planNameContains"] != null ? parameters["planNameContains"].Value<string>() : "";
+            string planMode = parameters != null && parameters["planMode"] != null ? parameters["planMode"].Value<string>() : "elementLevel";
             bool preferMechanical = parameters == null || parameters["preferMechanical"] == null || parameters["preferMechanical"].Value<bool>();
             bool select = parameters == null || parameters["select"] == null || parameters["select"].Value<bool>();
             bool zoom = parameters == null || parameters["zoom"] == null || parameters["zoom"].Value<bool>();
@@ -34,7 +35,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             if (timeoutMs < 1000) timeoutMs = 1000;
             if (timeoutMs > 120000) timeoutMs = 120000;
 
-            _handler.SetRequest(elementId, planNameContains, preferMechanical, select, zoom, fitToScreen);
+            _handler.SetRequest(elementId, planNameContains, planMode, preferMechanical, select, zoom, fitToScreen);
             if (RaiseAndWaitForCompletion(timeoutMs))
             {
                 return _handler.ResultInfo;

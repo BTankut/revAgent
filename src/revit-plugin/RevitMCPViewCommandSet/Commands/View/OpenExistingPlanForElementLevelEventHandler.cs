@@ -15,6 +15,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         private readonly ManualResetEvent _resetEvent = new ManualResetEvent(false);
         private int _elementId;
         private string _planNameContains;
+        private string _planMode;
         private bool _preferMechanical;
         private bool _select;
         private bool _zoom;
@@ -32,6 +33,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         public void SetRequest(
             int elementId,
             string planNameContains,
+            string planMode,
             bool preferMechanical,
             bool select,
             bool zoom,
@@ -39,6 +41,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         {
             _elementId = elementId;
             _planNameContains = planNameContains ?? "";
+            _planMode = NormalizePlanMode(planMode);
             _preferMechanical = preferMechanical;
             _select = select;
             _zoom = zoom;
@@ -86,6 +89,31 @@ namespace RevitMCPViewCommandSet.Commands.View
 
                 _elementInfo = ElementDiscoveryHelpers.BuildElementSearchItem(document, uiDocument, element, false, _planNameContains);
                 _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical);
+
+                if (UseActivePlanOnly())
+                {
+                    ViewPlan activePlan = document.ActiveView as ViewPlan;
+                    if (activePlan == null || activePlan.IsTemplate)
+                    {
+                        Complete(BuildFailure(document, uiDocument, "planMode=activePlan requires the current active view to be a non-template plan view."));
+                        return;
+                    }
+
+                    PlanCandidateSummary activePlanCandidate = ElementDiscoveryHelpers.BuildActivePlanCandidate(activePlan);
+                    _pendingApp = app;
+                    _pendingViewId = activePlan.Id;
+                    _idlingAttempts = 0;
+
+                    if (document.IsModifiable)
+                    {
+                        app.Idling += OnIdling;
+                        return;
+                    }
+
+                    Complete(FocusAndBuildSuccess(uiDocument, activePlan, activePlanCandidate, false, false));
+                    return;
+                }
+
                 if (_planCandidates.Count == 0)
                 {
                     Complete(BuildFailure(document, uiDocument, "No existing non-template plan was found for the element level."));
@@ -151,6 +179,10 @@ namespace RevitMCPViewCommandSet.Commands.View
                 if (document.ActiveView != null && document.ActiveView.Id.GetIdValue() == _pendingViewId.GetIdValue())
                 {
                     PlanCandidateSummary selected = _planCandidates != null ? _planCandidates.FirstOrDefault(p => p.Id == _pendingViewId.GetIdValue()) : null;
+                    if (selected == null && UseActivePlanOnly())
+                    {
+                        selected = ElementDiscoveryHelpers.BuildActivePlanCandidate(targetView as ViewPlan);
+                    }
                     CompleteFromIdling(FocusAndBuildSuccess(uiDocument, targetView, selected, true, _idlingAttempts > 1));
                     return;
                 }
@@ -199,12 +231,38 @@ namespace RevitMCPViewCommandSet.Commands.View
             string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom, _fitToScreen, out fitToScreenApplied, out fitToScreenMethod, out fitToScreenWarning);
             string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
             bool activeViewChanged = _activeViewBefore != null && _activeViewBefore.Id != targetView.Id.GetIdValue();
-            string planOpenMode = activeViewChanged
-                ? "elementLevelExistingPlanActivated"
-                : "activeViewAlreadyMatchedElementLevel";
-            string planOpenNote = activeViewChanged
-                ? "The active view was changed to an existing plan on the element level; no new plan was created."
-                : "The active view was already the selected existing plan for the element level; no new plan was created.";
+            ViewPlan targetPlan = targetView as ViewPlan;
+            int? activePlanLevelId = null;
+            string activePlanLevelName = "";
+            bool activePlanMatchesElementLevel = false;
+            if (targetPlan != null && targetPlan.GenLevel != null)
+            {
+                activePlanLevelId = targetPlan.GenLevel.Id.GetIdValue();
+                activePlanLevelName = targetPlan.GenLevel.Name;
+                activePlanMatchesElementLevel = _elementInfo != null && _elementInfo.LevelId.HasValue && activePlanLevelId.Value == _elementInfo.LevelId.Value;
+            }
+
+            string planOpenMode;
+            string planOpenNote;
+            string planVisibilityWarning = "";
+            if (UseActivePlanOnly())
+            {
+                planOpenMode = "activePlanOnly";
+                planOpenNote = "The active plan was used exactly as requested; no level-based plan switch was attempted and no new plan was created.";
+                if (!activePlanMatchesElementLevel)
+                {
+                    planVisibilityWarning = "The active plan level does not match the element level; the element may be selected but not visibly framed in this view.";
+                }
+            }
+            else
+            {
+                planOpenMode = activeViewChanged
+                    ? "elementLevelExistingPlanActivated"
+                    : "activeViewAlreadyMatchedElementLevel";
+                planOpenNote = activeViewChanged
+                    ? "The active view was changed to an existing plan on the element level; no new plan was created."
+                    : "The active view was already the selected existing plan for the element level; no new plan was created.";
+            }
 
             return new ElementFocusResult
             {
@@ -225,8 +283,13 @@ namespace RevitMCPViewCommandSet.Commands.View
                 FitToScreenWarning = fitToScreenWarning,
                 ActiveViewBefore = _activeViewBefore,
                 ActiveViewChanged = activeViewChanged,
+                PlanMode = _planMode,
                 PlanOpenMode = planOpenMode,
                 PlanOpenNote = planOpenNote,
+                ActivePlanMatchesElementLevel = activePlanMatchesElementLevel,
+                ActivePlanLevelId = activePlanLevelId,
+                ActivePlanLevelName = activePlanLevelName,
+                PlanVisibilityWarning = planVisibilityWarning,
                 TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
                 SelectedPlan = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
                 ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
@@ -267,6 +330,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                 Action = "open_existing_plan_for_element_level",
                 Error = error,
                 ActiveViewBefore = _activeViewBefore,
+                PlanMode = _planMode,
                 ActiveView = document != null ? ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true) : null,
                 OpenViews = uiDocument != null ? ViewCommandHelpers.GetOpenViewSummaries(uiDocument) : null,
                 Elements = elements,
@@ -297,6 +361,22 @@ namespace RevitMCPViewCommandSet.Commands.View
         public string GetName()
         {
             return "Open existing plan for element level";
+        }
+
+        private static string NormalizePlanMode(string value)
+        {
+            if (string.Equals(value, "activeView", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "activePlan", StringComparison.OrdinalIgnoreCase))
+            {
+                return "activePlan";
+            }
+
+            return "elementLevel";
+        }
+
+        private bool UseActivePlanOnly()
+        {
+            return string.Equals(_planMode, "activePlan", StringComparison.OrdinalIgnoreCase);
         }
     }
 }

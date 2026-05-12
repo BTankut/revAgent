@@ -53,9 +53,11 @@ only the bare names appear, so the rules stay host-agnostic.
 - `get_ui_state` - read active view, open UI views, selected element ids and
   summaries, section box flags, and document writable state
 - `find_elements` - find elements by category plus text across id, name,
-  family, type, mark, comments, and return existing plan candidates by level
+  family, type, mark, comments, and return match confidence plus existing plan
+  candidates by level
 - `open_existing_plan_for_element_level` - choose an existing non-template plan
-  for an element's level, activate it, then select and zoom to the element
+  for an element's level, or keep the active plan when `planMode=activePlan`,
+  then select and zoom to the element
 - `focus_elements` - select and zoom to elements in the active or requested
   view without opening a transaction; when model bounding boxes are unavailable
   it reports the Revit UI focus fallback it used
@@ -65,6 +67,8 @@ only the bare names appear, so the rules stay host-agnostic.
 - `create_3d_view_for_elements` - create or reuse a named 3D view for elements,
   enforce section box on/off, activate it, and focus/select the elements with
   rollback inside its own view update transactions
+- `show_element_in_plan_and_3d` - wrapper workflow that safely finds or uses one
+  element, shows it in an existing plan, then optionally opens a focused 3D view
 - `inspect_elements` — targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
 - `inspect_parameter_schema` — parameter schema for element ids or category
@@ -137,24 +141,33 @@ view, selection, ids, and writable state before acting.
 Use this playbook for common view and focus requests:
 
 - When the user asks to show an element in an existing plan, inspect or confirm
-  the element level first. Prefer `open_existing_plan_for_element_level`; it
-  activates an existing same-level plan and focuses the element without creating
-  a new plan. Read `PlanOpenMode`, `PlanOpenNote`, and `ActiveViewChanged` to
-  distinguish "the active plan was already correct" from "an existing same-level
-  plan was opened." Do not create a new plan unless the user asks for a new view
-  or no suitable existing view exists.
+  the element level first. Prefer `open_existing_plan_for_element_level`; use
+  `planMode: "elementLevel"` when the intent is "show it on its own level's
+  existing plan", and `planMode: "activePlan"` when the intent is "try to show
+  it in the currently active plan without switching views." Read `PlanOpenMode`,
+  `PlanOpenNote`, `ActiveViewChanged`, `ActivePlanMatchesElementLevel`, and
+  `PlanVisibilityWarning` to explain what happened. Do not create a new plan
+  unless the user asks for a new view or no suitable existing view exists.
 - When the user describes an element by name/type/system instead of id, use
   `find_elements` before writing custom C# search snippets. Start with category
   filters such as `Mechanical Equipment`, `Ducts`, `Air Terminals`, `Pipes`, or
-  `Pipe Fittings` when the discipline is clear.
+  `Pipe Fittings` when the discipline is clear. In large models, treat
+  `Ambiguous`, `TopScoreTiedCount`, `MatchConfidence`, and `MatchReason` as
+  safety signals; ask for or derive a more specific id/mark/level before writes
+  when the top result is not clearly unique.
 - When the user asks for a new 3D view focused on elements, treat it as a model
   write because it creates/edits a view. Prefer `create_3d_view_for_elements`
   with an explicit `sectionBox` setting, then verify with `get_ui_state`.
   Read `SectionBoxConfirmedOff`, `SectionBoxState`, and `SectionBoxNote` when
   sectionBox is false. Read `RequestedViewName`, `ActualViewName`,
   `ViewNameChanged`, and `ViewNameResolution` when name collisions matter.
-  Apply clipping only when the user asks for clipping/isolation or the workflow
-  explicitly needs it.
+  Use `cameraOrientation` and `framingPaddingMm` when the user asks for a more
+  deliberate 3D angle or surrounding context without clipping. Apply clipping
+  only when the user asks for clipping/isolation or the workflow explicitly
+  needs it.
+- When the user asks for the whole common flow, such as "find this equipment,
+  show it in plan, and open a 3D view", prefer `show_element_in_plan_and_3d`.
+  Leave `allowAmbiguous` false unless the user explicitly accepts the top match.
 - When the user asks to remove a section box, run a small transaction on the
   active or named 3D view to set `View3D.IsSectionBoxActive = false`, then
   verify the flag. Do not assume this closes or deletes the view.

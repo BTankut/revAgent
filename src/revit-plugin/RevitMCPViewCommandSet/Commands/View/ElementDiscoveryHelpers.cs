@@ -34,7 +34,20 @@ namespace RevitMCPViewCommandSet.Commands.View
         public string Mark { get; set; }
         public string Comments { get; set; }
         public bool HasBoundingBox { get; set; }
+        public int MatchScore { get; set; }
+        public string MatchConfidence { get; set; }
+        public string MatchReason { get; set; }
+        public List<string> MatchFields { get; set; }
         public List<PlanCandidateSummary> PlanCandidates { get; set; }
+    }
+
+    public class SearchMatchSummary
+    {
+        public bool Matches { get; set; }
+        public int Score { get; set; }
+        public string Confidence { get; set; }
+        public string Reason { get; set; }
+        public List<string> Fields { get; set; }
     }
 
     internal static class ElementDiscoveryHelpers
@@ -54,7 +67,8 @@ namespace RevitMCPViewCommandSet.Commands.View
             UIDocument uiDocument,
             Element element,
             bool includePlanCandidates,
-            string planNameContains)
+            string planNameContains,
+            SearchMatchSummary matchSummary = null)
         {
             if (element == null)
             {
@@ -85,6 +99,10 @@ namespace RevitMCPViewCommandSet.Commands.View
                 Mark = GetParameterString(element, "Mark"),
                 Comments = GetParameterString(element, "Comments"),
                 HasBoundingBox = ElementFocusHelpers.HasModelBoundingBox(element),
+                MatchScore = matchSummary != null ? matchSummary.Score : 0,
+                MatchConfidence = matchSummary != null ? matchSummary.Confidence : "",
+                MatchReason = matchSummary != null ? matchSummary.Reason : "",
+                MatchFields = matchSummary != null ? matchSummary.Fields : new List<string>(),
                 PlanCandidates = planCandidates
             };
         }
@@ -98,6 +116,30 @@ namespace RevitMCPViewCommandSet.Commands.View
             if (element == null)
             {
                 return false;
+            }
+
+            return BuildSearchMatch(document, element, query, categoryNames).Matches;
+        }
+
+        public static SearchMatchSummary BuildSearchMatch(
+            Document document,
+            Element element,
+            string query,
+            IList<string> categoryNames)
+        {
+            SearchMatchSummary result = new SearchMatchSummary
+            {
+                Matches = false,
+                Score = 0,
+                Confidence = "none",
+                Reason = "",
+                Fields = new List<string>()
+            };
+
+            if (element == null)
+            {
+                result.Reason = "element was null";
+                return result;
             }
 
             if (categoryNames != null && categoryNames.Count > 0)
@@ -116,28 +158,38 @@ namespace RevitMCPViewCommandSet.Commands.View
 
                 if (!categoryMatched)
                 {
-                    return false;
+                    result.Reason = "category did not match";
+                    return result;
                 }
+
+                result.Score += 100;
+                result.Fields.Add("categoryFilter");
             }
 
             if (string.IsNullOrWhiteSpace(query))
             {
-                return true;
+                result.Matches = true;
+                result.Confidence = BuildMatchConfidence(result.Score);
+                result.Reason = result.Fields.Count > 0 ? "category filter matched" : "no text query supplied";
+                return result;
             }
 
-            string text = string.Join(" ", new[]
-            {
-                element.Id.GetIdValue().ToString(),
-                element.UniqueId,
-                element.Name,
-                element.Category != null ? element.Category.Name : "",
-                GetFamilyName(document, element),
-                GetTypeName(document, element),
-                GetParameterString(element, "Mark"),
-                GetParameterString(element, "Comments")
-            });
+            string trimmedQuery = query.Trim();
+            AddFieldMatch(result, "id", element.Id.GetIdValue().ToString(), trimmedQuery, 1000, 500);
+            AddFieldMatch(result, "uniqueId", element.UniqueId, trimmedQuery, 900, 450);
+            AddFieldMatch(result, "category", element.Category != null ? element.Category.Name : "", trimmedQuery, 500, 180);
+            AddFieldMatch(result, "mark", GetParameterString(element, "Mark"), trimmedQuery, 800, 360);
+            AddFieldMatch(result, "name", element.Name, trimmedQuery, 650, 280);
+            AddFieldMatch(result, "family", GetFamilyName(document, element), trimmedQuery, 620, 260);
+            AddFieldMatch(result, "type", GetTypeName(document, element), trimmedQuery, 600, 240);
+            AddFieldMatch(result, "comments", GetParameterString(element, "Comments"), trimmedQuery, 250, 120);
 
-            return text.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
+            result.Matches = result.Fields.Count > 0 && result.Fields.Any(f => !string.Equals(f, "categoryFilter", StringComparison.OrdinalIgnoreCase));
+            result.Confidence = BuildMatchConfidence(result.Score);
+            result.Reason = result.Matches
+                ? "matched " + string.Join(", ", result.Fields)
+                : "text query did not match";
+            return result;
         }
 
         public static void ResolveElementLevel(
@@ -322,7 +374,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             return openViewIds;
         }
 
-        private static PlanCandidateSummary BuildPlanCandidate(
+        public static PlanCandidateSummary BuildPlanCandidate(
             ViewPlan plan,
             HashSet<int> openViewIds,
             int activeViewId,
@@ -382,6 +434,72 @@ namespace RevitMCPViewCommandSet.Commands.View
                 Score = score,
                 Reason = reasons.Count > 0 ? string.Join(", ", reasons) : "same level plan"
             };
+        }
+
+        public static PlanCandidateSummary BuildActivePlanCandidate(ViewPlan plan)
+        {
+            if (plan == null)
+            {
+                return null;
+            }
+
+            return new PlanCandidateSummary
+            {
+                Id = plan.Id.GetIdValue(),
+                UniqueId = plan.UniqueId,
+                Name = plan.Name,
+                ViewType = plan.ViewType.ToString(),
+                Scale = plan.Scale,
+                IsOpen = true,
+                IsActive = true,
+                Score = 1000,
+                Reason = "active plan requested"
+            };
+        }
+
+        private static void AddFieldMatch(
+            SearchMatchSummary result,
+            string fieldName,
+            string value,
+            string query,
+            int exactScore,
+            int containsScore)
+        {
+            if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(query))
+            {
+                return;
+            }
+
+            if (string.Equals(value.Trim(), query, StringComparison.OrdinalIgnoreCase))
+            {
+                result.Score += exactScore;
+                result.Fields.Add(fieldName + ":exact");
+                return;
+            }
+
+            if (value.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                result.Score += containsScore;
+                result.Fields.Add(fieldName + ":contains");
+            }
+        }
+
+        private static string BuildMatchConfidence(int score)
+        {
+            if (score >= 800)
+            {
+                return "high";
+            }
+            if (score >= 350)
+            {
+                return "medium";
+            }
+            if (score > 0)
+            {
+                return "low";
+            }
+
+            return "none";
         }
     }
 }
