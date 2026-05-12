@@ -49,6 +49,11 @@ only the bare names appear, so the rules stay host-agnostic.
 - `activate_view` — activate an existing plan, 3D, sheet, schedule, section,
   elevation, drafting, or legend view without opening a transaction
 - `close_view` — close an open Revit UI view tab without opening a transaction
+- `focus_elements` - select and zoom to elements in the active or requested
+  view without opening a transaction
+- `section_box_elements` - activate a 3D view if needed, apply a section box
+  around elements, make the section box boundary visible when possible, then
+  optionally select and zoom to them
 - `inspect_elements` — targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
 - `inspect_parameter_schema` — parameter schema for element ids or category

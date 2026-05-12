@@ -22,6 +22,16 @@
       "commandName": "close_view",
       "description": "Close an open Revit UI view without opening a transaction",
       "assemblyPath": "RevitMCPViewCommandSet.dll"
+    },
+    {
+      "commandName": "focus_elements",
+      "description": "Select and zoom to Revit elements in the active or requested view without opening a transaction",
+      "assemblyPath": "RevitMCPViewCommandSet.dll"
+    },
+    {
+      "commandName": "section_box_elements",
+      "description": "Apply a 3D section box around Revit elements and optionally select and zoom to them",
+      "assemblyPath": "RevitMCPViewCommandSet.dll"
     }
   ]
 }

@@ -91,6 +91,36 @@
       "description": "Close an open Revit UI view without opening a transaction"
     },
     {
+      "commandName": "focus_elements",
+      "assemblyPath": "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "mcp-servers-for-revit",
+        "email": "",
+        "website": "",
+        "organization": "mcp-servers-for-revit"
+      },
+      "description": "Select and zoom to Revit elements in the active or requested view without opening a transaction"
+    },
+    {
+      "commandName": "section_box_elements",
+      "assemblyPath": "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "mcp-servers-for-revit",
+        "email": "",
+        "website": "",
+        "organization": "mcp-servers-for-revit"
+      },
+      "description": "Apply a 3D section box around Revit elements and optionally select and zoom to them"
+    },
+    {
       "commandName": "send_code_to_revit",
       "assemblyPath": "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
       "enabled": true,

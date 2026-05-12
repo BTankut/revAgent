@@ -352,6 +352,8 @@ Expected bundled runtime commands:
 - `list_open_views`
 - `activate_view`
 - `close_view`
+- `focus_elements`
+- `section_box_elements`
 - `inspect_elements`
 - `inspect_parameter_schema`
 
@@ -469,10 +471,12 @@ The runtime MCP server intentionally exposes raw dynamic execution plus a small 
 - `list_open_views`
 - `activate_view`
 - `close_view`
+- `focus_elements`
+- `section_box_elements`
 - `inspect_elements`
 - `inspect_parameter_schema`
 
-The Revit add-in command payload still provides the low-level `send_code_to_revit` and selection commands internally. UI view operations are exposed separately through `list_open_views`, `activate_view`, and `close_view` so they do not run through the dynamic code transaction wrapper.
+The Revit add-in command payload still provides the low-level `send_code_to_revit` and selection commands internally. UI view operations are exposed separately through `list_open_views`, `activate_view`, `close_view`, and `focus_elements` so they do not run through the dynamic code transaction wrapper. `section_box_elements` is also exposed as a dedicated UI/view command because applying a 3D section box requires a normal Revit transaction on the target 3D view; it also makes the target view's `Section Boxes` category visible when possible so the user can see the resulting boundary.
 
 This runtime set is reflected in the Node MCP wrapper. The installer still copies the bundled Revit command payload required by the wrapper.
 
@@ -484,7 +488,7 @@ The required docs server is separate and exposes its own API lookup tools:
 - `list_namespace`
 - `resolve_api_symbols_bulk`
 
-There are no task-specific static runtime tools in the bundled distribution.
+There are no narrow task-specific static runtime tools in the bundled distribution beyond these reusable UI/context primitives.
 
 ## Why `send_code_to_revit` stays primary
 
