@@ -45,6 +45,10 @@ only the bare names appear, so the rules stay host-agnostic.
   document state, active view, selection, MEP counts, and link counts
 - `get_active_view_context` — model-view vs sheet-view context; sheets return
   placed viewports instead of direct model-category assumptions
+- `list_open_views` — list currently open Revit UI view tabs
+- `activate_view` — activate an existing plan, 3D, sheet, schedule, section,
+  elevation, drafting, or legend view without opening a transaction
+- `close_view` — close an open Revit UI view tab without opening a transaction
 - `inspect_elements` — targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
 - `inspect_parameter_schema` — parameter schema for element ids or category

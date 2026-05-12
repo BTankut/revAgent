@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added transactionless UI view runtime tools: `list_open_views`, `activate_view`, and `close_view`, backed by a separate Revit view command set so `send_code_to_revit` remains unchanged.
 - Added TypeScript-first canonical source trees, `tsconfig.json`, and build/smoke scripts for both bundled MCP servers while keeping `build/` as the installer/runtime contract.
 - Split reusable installer/updater helper behavior into `installer/lib` modules for hidden launchers, scheduled task repair, permissions, package layout/extraction, Revit version metadata, update policy, proxy normalization, Codex config registration, and reporting.
 - Added `config/revit-versions.json` as the central Revit version matrix. Revit 2022 remains the only bundled install payload; Revit 2023/2024/2025 are modeled but blocked from fake payload deployment until artifacts exist.

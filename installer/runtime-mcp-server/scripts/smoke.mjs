@@ -28,6 +28,9 @@ const expectedTools = [
   "send_code_to_revit_safe",
   "get_revit_session_context",
   "get_active_view_context",
+  "list_open_views",
+  "activate_view",
+  "close_view",
   "inspect_elements",
   "inspect_parameter_schema",
 ];

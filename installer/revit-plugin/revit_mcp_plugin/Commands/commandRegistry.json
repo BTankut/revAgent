@@ -46,6 +46,51 @@
       "description": "Get selected elements"
     },
     {
+      "commandName": "list_open_views",
+      "assemblyPath": "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "mcp-servers-for-revit",
+        "email": "",
+        "website": "",
+        "organization": "mcp-servers-for-revit"
+      },
+      "description": "List open Revit UI views"
+    },
+    {
+      "commandName": "activate_view",
+      "assemblyPath": "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "mcp-servers-for-revit",
+        "email": "",
+        "website": "",
+        "organization": "mcp-servers-for-revit"
+      },
+      "description": "Activate a Revit UI view without opening a transaction"
+    },
+    {
+      "commandName": "close_view",
+      "assemblyPath": "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "mcp-servers-for-revit",
+        "email": "",
+        "website": "",
+        "organization": "mcp-servers-for-revit"
+      },
+      "description": "Close an open Revit UI view without opening a transaction"
+    },
+    {
       "commandName": "send_code_to_revit",
       "assemblyPath": "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
       "enabled": true,

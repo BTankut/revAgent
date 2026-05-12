@@ -349,6 +349,9 @@ Expected bundled runtime commands:
 - `send_code_to_revit_safe`
 - `get_revit_session_context`
 - `get_active_view_context`
+- `list_open_views`
+- `activate_view`
+- `close_view`
 - `inspect_elements`
 - `inspect_parameter_schema`
 
@@ -463,10 +466,13 @@ The runtime MCP server intentionally exposes raw dynamic execution plus a small 
 - `send_code_to_revit_safe`
 - `get_revit_session_context`
 - `get_active_view_context`
+- `list_open_views`
+- `activate_view`
+- `close_view`
 - `inspect_elements`
 - `inspect_parameter_schema`
 
-The Revit add-in command payload still provides the low-level `send_code_to_revit`, selection, and active-view commands internally. The public MCP surface favors the higher-value Node context tools above.
+The Revit add-in command payload still provides the low-level `send_code_to_revit` and selection commands internally. UI view operations are exposed separately through `list_open_views`, `activate_view`, and `close_view` so they do not run through the dynamic code transaction wrapper.
 
 This runtime set is reflected in the Node MCP wrapper. The installer still copies the bundled Revit command payload required by the wrapper.
 

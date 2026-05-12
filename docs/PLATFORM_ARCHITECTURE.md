@@ -12,6 +12,9 @@ MCP servers, and PowerShell installer/updater orchestration.
   `C:\ProgramData\DPE\RevitMCP\revit-plugin`.
 - `installer/command-payload/`: bundled dynamic command set and Roslyn runtime
   assemblies used by `send_code_to_revit`.
+- `installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPViewCommandSet/`:
+  bundled transactionless UI view commands for listing, activating, and closing
+  Revit view tabs.
 - `installer/runtime-mcp-server/src/`: TypeScript source for the live Revit MCP
   runtime server. `npm run build` emits `build/`, which remains the installer
   and Codex registration contract.
@@ -62,7 +65,10 @@ The Revit version matrix is copied beside those tools as `config\`.
 - installer payload path expectations
 - `installerPayloadAvailable` gate
 
-Bu branch ve stable deploy hattı şu anda yalnızca Revit 2022 payload’ını destekler. 2023/2024/2025 gelecekteki genişleme için modellenmiştir; gerçek artifact üretilip doğrulanmadan installer/deploy tarafından açılmamalıdır.
+This branch and the stable deploy line currently support only the Revit 2022
+payload. Revit 2023/2024/2025 are modeled for future expansion; installer and
+deploy gates must stay closed for those versions until real artifacts are
+produced and validated.
 
 ## Compatibility Entrypoints
 

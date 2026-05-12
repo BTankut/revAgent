@@ -2,6 +2,9 @@ import { registerSendCodeToRevitTool } from "./send_code_to_revit.js";
 import { registerSendCodeToRevitSafeTool } from "./send_code_to_revit_safe.js";
 import { registerGetRevitSessionContextTool } from "./get_revit_session_context.js";
 import { registerGetActiveViewContextTool } from "./get_active_view_context.js";
+import { registerListOpenViewsTool } from "./list_open_views.js";
+import { registerActivateViewTool } from "./activate_view.js";
+import { registerCloseViewTool } from "./close_view.js";
 import { registerInspectElementsTool } from "./inspect_elements.js";
 import { registerInspectParameterSchemaTool } from "./inspect_parameter_schema.js";
 import { registerListRevitInstancesTool } from "./list_revit_instances.js";
@@ -13,7 +16,10 @@ export async function registerTools(server) {
     registerSendCodeToRevitSafeTool(server);
     registerGetRevitSessionContextTool(server);
     registerGetActiveViewContextTool(server);
+    registerListOpenViewsTool(server);
+    registerActivateViewTool(server);
+    registerCloseViewTool(server);
     registerInspectElementsTool(server);
     registerInspectParameterSchemaTool(server);
-    console.error("Registered 8 Revit MCP tools");
+    console.error("Registered 11 Revit MCP tools");
 }

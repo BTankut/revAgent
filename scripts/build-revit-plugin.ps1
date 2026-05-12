@@ -76,9 +76,14 @@ $projectPath = Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\revit-mcp-
 if (-not (Test-Path -LiteralPath $projectPath)) {
     throw "Revit plugin project was not found: $projectPath"
 }
+$viewCommandSetProjectPath = Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\RevitMCPViewCommandSet.csproj"
+if (-not (Test-Path -LiteralPath $viewCommandSetProjectPath)) {
+    throw "Revit view command set project was not found: $viewCommandSetProjectPath"
+}
 
 $dotnet = Resolve-DotnetSdk -RequestedPath $DotnetPath
 $configuration = Get-Configuration -Version $RevitVersion
+$viewCommandSetConfiguration = "Release $RevitVersion"
 
 Write-Host "Building Revit plugin"
 Write-Host "Project      : $projectPath"
@@ -90,9 +95,22 @@ if ($LASTEXITCODE -ne 0) {
     throw "Revit plugin build failed with exit code $LASTEXITCODE"
 }
 
+Write-Host "Building Revit view command set"
+Write-Host "Project      : $viewCommandSetProjectPath"
+Write-Host "Configuration: $viewCommandSetConfiguration"
+
+& $dotnet build $viewCommandSetProjectPath -c $viewCommandSetConfiguration -p:Platform=x64
+if ($LASTEXITCODE -ne 0) {
+    throw "Revit view command set build failed with exit code $LASTEXITCODE"
+}
+
 $builtDll = Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\bin\Release\$RevitVersion\revit-mcp-plugin.dll"
 if (-not (Test-Path -LiteralPath $builtDll -PathType Leaf)) {
     throw "Build completed but output DLL was not found: $builtDll"
+}
+$builtViewCommandSetDll = Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\bin\Release\$RevitVersion\RevitMCPViewCommandSet.dll"
+if (-not (Test-Path -LiteralPath $builtViewCommandSetDll -PathType Leaf)) {
+    throw "Build completed but output DLL was not found: $builtViewCommandSetDll"
 }
 
 if (-not $SkipPayloadCopy) {
@@ -117,7 +135,15 @@ if (-not $SkipPayloadCopy) {
         Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $payloadDir $entry.Value) -Force
     }
 
+    $viewCommandSetRoot = Join-Path $payloadDir "Commands\RevitMCPViewCommandSet"
+    $viewCommandSetVersionRoot = Join-Path $viewCommandSetRoot $RevitVersion
+    New-Item -ItemType Directory -Path $viewCommandSetVersionRoot -Force | Out-Null
+    Copy-Item -LiteralPath $builtViewCommandSetDll -Destination (Join-Path $viewCommandSetRoot "RevitMCPViewCommandSet.dll") -Force
+    Copy-Item -LiteralPath $builtViewCommandSetDll -Destination (Join-Path $viewCommandSetVersionRoot "RevitMCPViewCommandSet.dll") -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\command.json") -Destination (Join-Path $viewCommandSetRoot "command.json") -Force
+
     Write-Host "Installer payload refreshed: $payloadDir" -ForegroundColor Green
 }
 
 Write-Host "Built DLL: $builtDll" -ForegroundColor Green
+Write-Host "Built view command set DLL: $builtViewCommandSetDll" -ForegroundColor Green

@@ -1,0 +1,27 @@
+{
+  "name": "RevitMCPViewCommandSet",
+  "description": "UI view command collection for Revit AI assistance",
+  "developer": {
+    "name": "revit-mcp",
+    "email": "",
+    "website": "",
+    "organization": "revit-mcp"
+  },
+  "commands": [
+    {
+      "commandName": "list_open_views",
+      "description": "List open Revit UI views",
+      "assemblyPath": "RevitMCPViewCommandSet.dll"
+    },
+    {
+      "commandName": "activate_view",
+      "description": "Activate a Revit UI view without opening a transaction",
+      "assemblyPath": "RevitMCPViewCommandSet.dll"
+    },
+    {
+      "commandName": "close_view",
+      "description": "Close an open Revit UI view without opening a transaction",
+      "assemblyPath": "RevitMCPViewCommandSet.dll"
+    }
+  ]
+}
