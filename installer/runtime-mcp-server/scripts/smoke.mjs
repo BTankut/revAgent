@@ -38,6 +38,7 @@ const expectedTools = [
   "section_box_elements",
   "create_3d_view_for_elements",
   "show_element_in_plan_and_3d",
+  "smart_focus_elements",
   "inspect_elements",
   "inspect_parameter_schema",
 ];

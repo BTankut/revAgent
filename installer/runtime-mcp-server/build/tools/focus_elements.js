@@ -16,6 +16,7 @@ export function registerFocusElementsTool(server) {
         select: z.boolean().optional().describe("Select the supplied elements. Defaults true."),
         zoom: z.boolean().optional().describe("Zoom/show the supplied elements in the active UI view. Defaults true."),
         fitToScreen: z.boolean().optional().describe("After activation/focus, run Revit UI ZoomToFit on the active view. Defaults false."),
+        allowClosedViewSearch: z.boolean().optional().describe("Allow Revit ShowElements to open its modal closed-view search when elements are not visible in the target view. Defaults false to avoid blocking automation."),
         allowPartial: z.boolean().optional().describe("Continue when some supplied element ids are not found. Defaults false."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Timeout for asynchronous UI activation/focus verification. Defaults 15000."),
     }, async (args) => {
@@ -29,6 +30,7 @@ export function registerFocusElementsTool(server) {
                 select: args.select,
                 zoom: args.zoom,
                 fitToScreen: args.fitToScreen,
+                allowClosedViewSearch: args.allowClosedViewSearch,
                 allowPartial: args.allowPartial,
                 timeoutMs: args.timeoutMs,
             }, {

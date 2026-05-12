@@ -60,7 +60,8 @@ only the bare names appear, so the rules stay host-agnostic.
   then select and zoom to the element
 - `focus_elements` - select and zoom to elements in the active or requested
   view without opening a transaction; when model bounding boxes are unavailable
-  it reports the Revit UI focus fallback it used
+  it reports the Revit UI focus fallback it used; by default it does not allow
+  Revit's modal closed-view search dialog
 - `section_box_elements` - activate a 3D view if needed, apply a section box
   around elements, make the section box boundary visible when possible, then
   optionally select and zoom to them
@@ -69,6 +70,9 @@ only the bare names appear, so the rules stay host-agnostic.
   rollback inside its own view update transactions
 - `show_element_in_plan_and_3d` - wrapper workflow that safely finds or uses one
   element, shows it in an existing plan, then optionally opens a focused 3D view
+- `smart_focus_elements` - wrapper workflow that tries active/requested view
+  focus without modal search, then optionally falls back to an existing
+  same-level plan and 3D view
 - `inspect_elements` — targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
 - `inspect_parameter_schema` — parameter schema for element ids or category
@@ -168,13 +172,20 @@ Use this playbook for common view and focus requests:
 - When the user asks for the whole common flow, such as "find this equipment,
   show it in plan, and open a 3D view", prefer `show_element_in_plan_and_3d`.
   Leave `allowAmbiguous` false unless the user explicitly accepts the top match.
+- When the user asks "show/focus this element" but the active view may be wrong,
+  prefer `smart_focus_elements` over raw `focus_elements`; it avoids the Revit
+  modal closed-view prompt and can fall back to a same-level existing plan.
 - When the user asks to remove a section box, run a small transaction on the
   active or named 3D view to set `View3D.IsSectionBoxActive = false`, then
   verify the flag. Do not assume this closes or deletes the view.
 - For element-centric zoom, `focus_elements` is the primary tool. It uses Revit
   UI focus (`ShowElements`) and reports `ZoomMethod`; `BoundingBox` is only an
   aggregate section-box/focus box when `BoundingBoxSource` says so. Per-element
-  `HasBoundingBox` is not the same as the operation-level `BoundingBox`.
+  `HasBoundingBox` is not the same as the operation-level `BoundingBox`. If
+  `FocusBlocked` is true, do not retry the same `focus_elements` call; use the
+  returned `SuggestedView`, call `open_existing_plan_for_element_level`, or use
+  `smart_focus_elements`. Set `allowClosedViewSearch=true` only when the user
+  explicitly accepts Revit's modal closed-view search dialog.
 - For full-view fit/zoom extents, prefer a short UI-view snippet using
   the `fitToScreen` option on `focus_elements`,
   `open_existing_plan_for_element_level`, or `create_3d_view_for_elements`.

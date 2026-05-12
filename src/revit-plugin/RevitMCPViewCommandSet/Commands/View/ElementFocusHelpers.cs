@@ -41,6 +41,10 @@ namespace RevitMCPViewCommandSet.Commands.View
         public bool Zoomed { get; set; }
         public string ZoomMethod { get; set; }
         public string FocusNote { get; set; }
+        public bool FocusBlocked { get; set; }
+        public string FocusBlockReason { get; set; }
+        public string FocusSuggestion { get; set; }
+        public ViewSummary SuggestedView { get; set; }
         public bool FitToScreen { get; set; }
         public string FitToScreenMethod { get; set; }
         public string FitToScreenWarning { get; set; }
