@@ -45,11 +45,12 @@ package.
 ## Source vs Install Payload
 
 `src/revit-plugin` is source code. It is where Revit add-in development happens.
-The main add-in host is `src/revit-plugin/revit-mcp-plugin`. Transactionless
-UI view tools are implemented as the separate
+The main add-in host is `src/revit-plugin/revit-mcp-plugin`. UI view tools are
+implemented as the separate
 `src/revit-plugin/RevitMCPViewCommandSet` project so the dynamic
-`send_code_to_revit` command payload stays isolated. `SampleCommandSet` is
-legacy sample source and is not part of the deployed production command set.
+`send_code_to_revit` command payload stays isolated. This command set owns view
+activation/close, element focus, and 3D section box behavior. `SampleCommandSet`
+is legacy sample source and is not part of the deployed production command set.
 
 `installer/revit-plugin` is install payload. Production installers copy from this
 folder into `C:\ProgramData\DPE\RevitMCP`. Do not edit the binary payload by

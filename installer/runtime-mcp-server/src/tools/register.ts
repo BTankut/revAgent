@@ -6,6 +6,8 @@ import { registerGetActiveViewContextTool } from "./get_active_view_context.js";
 import { registerListOpenViewsTool } from "./list_open_views.js";
 import { registerActivateViewTool } from "./activate_view.js";
 import { registerCloseViewTool } from "./close_view.js";
+import { registerFocusElementsTool } from "./focus_elements.js";
+import { registerSectionBoxElementsTool } from "./section_box_elements.js";
 import { registerInspectElementsTool } from "./inspect_elements.js";
 import { registerInspectParameterSchemaTool } from "./inspect_parameter_schema.js";
 import { registerListRevitInstancesTool } from "./list_revit_instances.js";
@@ -21,7 +23,9 @@ export async function registerTools(server) {
     registerListOpenViewsTool(server);
     registerActivateViewTool(server);
     registerCloseViewTool(server);
+    registerFocusElementsTool(server);
+    registerSectionBoxElementsTool(server);
     registerInspectElementsTool(server);
     registerInspectParameterSchemaTool(server);
-    console.error("Registered 11 Revit MCP tools");
+    console.error("Registered 13 Revit MCP tools");
 }

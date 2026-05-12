@@ -13,8 +13,11 @@ MCP servers, and PowerShell installer/updater orchestration.
 - `installer/command-payload/`: bundled dynamic command set and Roslyn runtime
   assemblies used by `send_code_to_revit`.
 - `installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPViewCommandSet/`:
-  bundled transactionless UI view commands for listing, activating, and closing
-  Revit view tabs.
+  bundled UI view commands for listing, activating, and closing Revit view
+  tabs, focusing elements in a view, and applying 3D section boxes around
+  elements. Focus/view activation commands avoid the dynamic code transaction
+  wrapper; section box changes use a normal Revit transaction against the
+  target 3D view.
 - `installer/runtime-mcp-server/src/`: TypeScript source for the live Revit MCP
   runtime server. `npm run build` emits `build/`, which remains the installer
   and Codex registration contract.
