@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Clarified `show-installed-version.ps1` output when the NAS channel has advanced after the last updater run, so stale "Already up to date" report messages are marked as previous-run context and the manual update path is shown as the next step.
 - Applied the same modal-search guard to `open_existing_plan_for_element_level(planMode=activePlan)`, so cross-level active-plan focus returns `FocusBlocked` with a same-level plan suggestion instead of calling Revit `ShowElements`.
 - Tightened `focus_elements` modal prevention for plan views by blocking `ShowElements` when the element level does not match the active/requested plan level, returning plan-level diagnostics and same-level plan suggestions instead.
 - Changed `focus_elements` to preflight element visibility in the active/requested view before calling Revit `ShowElements`, preventing Revit's modal closed-view search dialog by default, and added `smart_focus_elements` as an explicit active-view-then-same-level-plan fallback workflow.

@@ -60,6 +60,8 @@ $channel = Read-JsonFile -Path $channelManifestPath
 $installedVersion = if ($installed -and $installed.version) { [string]$installed.version } else { "" }
 $channelVersion = if ($channel -and $channel.version) { [string]$channel.version } else { "" }
 $channelName = if ($channel -and $channel.channel) { [string]$channel.channel } else { "" }
+$reportTargetVersion = if ($report -and $report.targetVersion) { [string]$report.targetVersion } else { "" }
+$reportMatchesCurrentChannel = [string]::IsNullOrWhiteSpace($reportTargetVersion) -or [string]::IsNullOrWhiteSpace($channelVersion) -or $reportTargetVersion -eq $channelVersion
 
 if ([string]::IsNullOrWhiteSpace($installedVersion)) {
     $status = "not installed"
@@ -87,12 +89,14 @@ if (-not [string]::IsNullOrWhiteSpace($proxyUrl)) {
 }
 
 if ($report) {
-    Write-Host "Last check      : $($report.status) at $($report.atUtc)"
+    $lastCheckSuffix = if ($reportMatchesCurrentChannel) { "" } else { " (previous channel target: $reportTargetVersion)" }
+    Write-Host "Last check      : $($report.status) at $($report.atUtc)$lastCheckSuffix"
     if ($report.versionTransition) {
         Write-Host "Last transition : $($report.versionTransition)"
     }
     if ($report.message) {
-        Write-Host "Last message    : $($report.message)"
+        $messageSuffix = if ($reportMatchesCurrentChannel) { "" } else { " (from previous updater run)" }
+        Write-Host "Last message    : $($report.message)$messageSuffix"
     }
 }
 else {
@@ -102,4 +106,7 @@ else {
 Write-Host "Install root    : $installRoot"
 Write-Host "Config          : $ConfigPath"
 Write-Host "Manual update   : $manualUpdatePath"
+if ($status -like "update available:*") {
+    Write-Host "Next step       : close Revit and run the manual update command above."
+}
 Write-Host ""
