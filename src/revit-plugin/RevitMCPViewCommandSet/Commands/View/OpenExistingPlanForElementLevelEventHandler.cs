@@ -225,11 +225,6 @@ namespace RevitMCPViewCommandSet.Commands.View
                 elements.Add(ElementFocusHelpers.BuildElementSummary(element, ElementFocusHelpers.HasModelBoundingBox(element)));
             }
 
-            bool fitToScreenApplied;
-            string fitToScreenMethod;
-            string fitToScreenWarning;
-            string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom, _fitToScreen, out fitToScreenApplied, out fitToScreenMethod, out fitToScreenWarning);
-            string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
             bool activeViewChanged = _activeViewBefore != null && _activeViewBefore.Id != targetView.Id.GetIdValue();
             ViewPlan targetPlan = targetView as ViewPlan;
             int? activePlanLevelId = null;
@@ -241,6 +236,26 @@ namespace RevitMCPViewCommandSet.Commands.View
                 activePlanLevelName = targetPlan.GenLevel.Name;
                 activePlanMatchesElementLevel = _elementInfo != null && _elementInfo.LevelId.HasValue && activePlanLevelId.Value == _elementInfo.LevelId.Value;
             }
+
+            if (UseActivePlanOnly() && _zoom && !activePlanMatchesElementLevel)
+            {
+                return BuildActivePlanVisibilityFailure(
+                    document,
+                    uiDocument,
+                    targetView,
+                    selected,
+                    elements,
+                    activeViewChanged,
+                    activePlanLevelId,
+                    activePlanLevelName,
+                    activePlanMatchesElementLevel);
+            }
+
+            bool fitToScreenApplied;
+            string fitToScreenMethod;
+            string fitToScreenWarning;
+            string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom, _fitToScreen, out fitToScreenApplied, out fitToScreenMethod, out fitToScreenWarning);
+            string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
 
             string planOpenMode;
             string planOpenNote;
@@ -290,6 +305,72 @@ namespace RevitMCPViewCommandSet.Commands.View
                 ActivePlanLevelId = activePlanLevelId,
                 ActivePlanLevelName = activePlanLevelName,
                 PlanVisibilityWarning = planVisibilityWarning,
+                TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
+                SelectedPlan = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
+                ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
+                OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument),
+                Elements = elements,
+                LevelId = _elementInfo != null ? _elementInfo.LevelId : null,
+                LevelName = _elementInfo != null ? _elementInfo.LevelName : "",
+                PlanCandidates = _planCandidates,
+                PlanSelectionReason = selected != null ? selected.Reason : "",
+                BoundingBoxSource = "none",
+                BoundingBoxNote = ElementFocusHelpers.BuildBoundingBoxNote("none"),
+                BoundingBox = null
+            };
+        }
+
+        private ElementFocusResult BuildActivePlanVisibilityFailure(
+            Document document,
+            UIDocument uiDocument,
+            Autodesk.Revit.DB.View targetView,
+            PlanCandidateSummary selected,
+            List<ElementSummary> elements,
+            bool activeViewChanged,
+            int? activePlanLevelId,
+            string activePlanLevelName,
+            bool activePlanMatchesElementLevel)
+        {
+            string message = "Active plan does not match element level; Revit ShowElements was not called to avoid the closed-view search dialog.";
+            PlanCandidateSummary suggestedPlan = _planCandidates != null ? _planCandidates.FirstOrDefault() : null;
+            ViewSummary suggestedView = null;
+            if (suggestedPlan != null)
+            {
+                Autodesk.Revit.DB.View suggested = document.GetElement(new ElementId(suggestedPlan.Id)) as Autodesk.Revit.DB.View;
+                suggestedView = ViewCommandHelpers.BuildViewSummary(
+                    document,
+                    suggested,
+                    false,
+                    suggested != null && ViewCommandHelpers.FindOpenUIView(uiDocument, suggested.Id) != null);
+                message += " Suggested existing plan: " + suggestedPlan.Name + ".";
+            }
+
+            return new ElementFocusResult
+            {
+                Success = false,
+                Action = "open_existing_plan_for_element_level",
+                Message = message,
+                Error = message,
+                Requested = false,
+                Deferred = false,
+                Changed = activeViewChanged,
+                Selected = false,
+                Zoomed = false,
+                FocusBlocked = true,
+                FocusBlockReason = "elementLevelDoesNotMatchPlanView",
+                FocusSuggestion = suggestedPlan != null
+                    ? "Use planMode=elementLevel to open " + suggestedPlan.Name + " without triggering Revit's modal closed-view search."
+                    : "Use planMode=elementLevel or pass a plan view on the element level.",
+                SuggestedView = suggestedView,
+                ActiveViewBefore = _activeViewBefore,
+                ActiveViewChanged = activeViewChanged,
+                PlanMode = _planMode,
+                PlanOpenMode = "activePlanOnlyBlocked",
+                PlanOpenNote = "The active plan was kept as requested, but focus was blocked because its level does not match the element level.",
+                ActivePlanMatchesElementLevel = activePlanMatchesElementLevel,
+                ActivePlanLevelId = activePlanLevelId,
+                ActivePlanLevelName = activePlanLevelName,
+                PlanVisibilityWarning = "The active plan level does not match the element level; focusing here would trigger Revit's closed-view search prompt.",
                 TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
                 SelectedPlan = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
                 ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
