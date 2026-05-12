@@ -25,6 +25,31 @@ MCP servers, and PowerShell installer/updater orchestration.
   MCP server. It indexes local Revit API DLL/XML files and serves API lookup
   tools from `build/index.js`.
 
+## Runtime Transport And Status
+
+The Node runtime and Revit add-in communicate over the local Revit MCP socket.
+New clients send length-prefixed JSON-RPC frames: a 4-byte big-endian payload
+length followed by the UTF-8 JSON payload. The add-in keeps legacy raw JSON
+support so older clients can still reach the socket during rolling updates.
+
+The default request frame limit is 16 MB. It can be raised per workstation with
+`REVIT_MCP_MAX_MESSAGE_BYTES`, capped at 128 MB. Oversized or invalid frames
+return a clear JSON-RPC error and close the client connection instead of
+leaving the caller waiting for the generic command timeout.
+
+Every completed task records transport metrics in the status model:
+
+- `framing`
+- `requestBytes`
+- `receiveMs`
+- `parseMs`
+- `executeMs`
+- `responseBytes`
+
+The Revit status window intentionally shows only the state symbol, task name,
+total Revit-side duration, and request size. Detailed metrics are written to
+the add-in log under the installed payload `Logs\` folder.
+
 ## Deployment Components
 
 - `installer/install-self-contained.ps1`: repo/package installer. Public

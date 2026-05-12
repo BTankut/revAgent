@@ -17,6 +17,7 @@ export function connectionOptionsFromArgs(args = {}) {
         target: args.target,
         host: args.host,
         port: args.port,
+        timeoutMs: args.timeoutMs,
     };
 }
 export function taskOptionsFromArgs(args = {}, defaultTaskName) {
@@ -82,7 +83,7 @@ export async function executeRevitCode(code, options = {}) {
         params.taskId = options.taskId;
     }
     const response = await withRevitConnection(async (revitClient) => {
-        return await revitClient.sendCommand("send_code_to_revit", params);
+        return await revitClient.sendCommand("send_code_to_revit", params, options);
     }, options);
     return normalizeRevitExecutionResponse(response);
 }
@@ -97,7 +98,7 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
         commandParams.taskId = options.taskId;
     }
     const response = await withRevitConnection(async (revitClient) => {
-        return await revitClient.sendCommand(command, commandParams);
+        return await revitClient.sendCommand(command, commandParams, options);
     }, options);
     return normalizeRevitExecutionResponse(response);
 }

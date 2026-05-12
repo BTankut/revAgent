@@ -86,7 +86,7 @@ namespace revit_mcp_plugin.UI
         public void ShowCompleted(McpTaskInfo task)
         {
             _isRunning = false;
-            _fixedElapsedMs = task.ElapsedMs;
+            _fixedElapsedMs = GetDisplayElapsedMs(task);
             _elapsedTimer.Stop();
 
             ApplyPalette("#FFE8F5E9", "#FF2E7D32");
@@ -98,14 +98,14 @@ namespace revit_mcp_plugin.UI
             AckButton.Visibility = Visibility.Visible;
 
             UpdateElapsedText("Duration");
-            AddHistory(task, "Completed");
+            AddHistory(task, "completed");
             ShowAndPosition();
         }
 
         public void ShowFailed(McpTaskInfo task)
         {
             _isRunning = false;
-            _fixedElapsedMs = task.ElapsedMs;
+            _fixedElapsedMs = GetDisplayElapsedMs(task);
             _elapsedTimer.Stop();
 
             ApplyPalette("#FFFFEBEE", "#FFC62828");
@@ -117,7 +117,7 @@ namespace revit_mcp_plugin.UI
             AckButton.Visibility = Visibility.Visible;
 
             UpdateElapsedText("Duration");
-            AddHistory(task, "Failed");
+            AddHistory(task, "failed");
             ShowAndPosition();
         }
 
@@ -285,11 +285,12 @@ namespace revit_mcp_plugin.UI
             }
 
             string line = string.Format(
-                "{0}  {1}  {2}  ({3})",
+                "{0}  {1}  {2}  ({3}){4}",
                 finished,
-                state,
+                StateSymbol(state),
                 SafeTaskName(task),
-                FormatDuration(TimeSpan.FromMilliseconds(task != null ? task.ElapsedMs : 0)));
+                FormatDuration(TimeSpan.FromMilliseconds(GetDisplayElapsedMs(task))),
+                FormatMetrics(task));
 
             _history.Insert(0, line);
             while (_history.Count > MaxHistoryItems)
@@ -330,10 +331,86 @@ namespace revit_mcp_plugin.UI
             return task.TaskName;
         }
 
+        private static string StateSymbol(string state)
+        {
+            if (string.Equals(state, "completed", StringComparison.OrdinalIgnoreCase))
+            {
+                return "\u2713";
+            }
+
+            if (string.Equals(state, "failed", StringComparison.OrdinalIgnoreCase))
+            {
+                return "\u2715";
+            }
+
+            return "?";
+        }
+
+        private static string FormatMetrics(McpTaskInfo task)
+        {
+            if (task == null || !task.RequestBytes.HasValue)
+            {
+                return string.Empty;
+            }
+
+            return "  [" + FormatBytes(task.RequestBytes.Value) + "]";
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            if (bytes < 1024)
+            {
+                return bytes.ToString() + " B";
+            }
+
+            double kib = bytes / 1024.0;
+            if (kib < 1024)
+            {
+                return kib.ToString("0.#") + " KB";
+            }
+
+            double mib = kib / 1024.0;
+            return mib.ToString("0.##") + " MB";
+        }
+
+        private static long GetDisplayElapsedMs(McpTaskInfo task)
+        {
+            if (task == null)
+            {
+                return 0;
+            }
+
+            long elapsedMs = task.ElapsedMs;
+            if (task.ReceiveMs.HasValue)
+            {
+                elapsedMs += task.ReceiveMs.Value;
+            }
+            if (task.ParseMs.HasValue)
+            {
+                elapsedMs += task.ParseMs.Value;
+            }
+
+            return elapsedMs;
+        }
+
         private static string FormatDuration(TimeSpan duration)
         {
-            int hours = (int)Math.Floor(duration.TotalHours);
-            return string.Format("{0:00}:{1:00}:{2:00}", hours, duration.Minutes, duration.Seconds);
+            if (duration.TotalMilliseconds < 1000)
+            {
+                return string.Format("{0:0.00}s", duration.TotalMilliseconds / 1000.0);
+            }
+
+            if (duration.TotalSeconds < 60)
+            {
+                return string.Format("{0:0.#}s", duration.TotalSeconds);
+            }
+
+            if (duration.TotalHours < 1)
+            {
+                return string.Format("{0}:{1:00}", (int)duration.TotalMinutes, duration.Seconds);
+            }
+
+            return string.Format("{0}h {1:00}m", (int)duration.TotalHours, duration.Minutes);
         }
 
         private void OnClosing(object sender, CancelEventArgs e)

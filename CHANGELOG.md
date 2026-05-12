@@ -4,6 +4,8 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added length-prefixed Revit MCP socket framing with legacy JSON fallback, raising large request handling beyond the old single-read buffer failure mode while keeping a configurable 16 MB default request limit.
+- Added Revit task transport metrics for request size, framing, receive, parse, execute, response size, and total duration; detailed metrics are logged while the Revit status window stays concise with state, task name, total duration, and request size.
 - Added reusable Revit UI focus tools: `focus_elements` selects/zooms elements in the active or requested view, and `section_box_elements` applies a 3D section box around elements before optional select/zoom while making the section box boundary category visible in the target view when possible.
 - Added transactionless UI view runtime tools: `list_open_views`, `activate_view`, and `close_view`, backed by a separate Revit view command set so `send_code_to_revit` remains unchanged.
 - Added TypeScript-first canonical source trees, `tsconfig.json`, and build/smoke scripts for both bundled MCP servers while keeping `build/` as the installer/runtime contract.

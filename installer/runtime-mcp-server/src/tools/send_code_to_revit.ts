@@ -21,6 +21,12 @@ export function registerSendCodeToRevitTool(server) {
             .enum(["auto", "none"])
             .optional()
             .describe("Transaction handling mode forwarded to the Revit wrapper. In the bundled plugin build, snippets should not open their own Transaction unless that exact build has been verified."),
+        timeoutMs: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe("Socket timeout in milliseconds for this Revit command. Defaults to 120000."),
     }, async (args, extra) => {
         const params = {
             code: args.code,
@@ -32,9 +38,10 @@ export function registerSendCodeToRevitTool(server) {
             params.taskId = args.taskId;
         }
         try {
+            const options = connectionOptionsFromArgs(args);
             const response = await withRevitConnection(async (revitClient) => {
-                return await revitClient.sendCommand("send_code_to_revit", params);
-            }, connectionOptionsFromArgs(args));
+                return await revitClient.sendCommand("send_code_to_revit", params, options);
+            }, options);
             return {
                 content: [
                     {

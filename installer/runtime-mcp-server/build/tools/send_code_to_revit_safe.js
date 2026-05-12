@@ -9,7 +9,7 @@ export function registerSendCodeToRevitSafeTool(server) {
         parameters: z.array(z.union([z.string(), z.number(), z.boolean()])).optional().describe("Simple execution parameters. Prefer strings for host portability."),
         transactionMode: z.enum(["auto", "none"]).optional().describe("Safe wrapper execution mode. Only none is executed; auto is rejected for read/preview safety."),
         intent: z.enum(["read", "writePreview", "writeCommit"]).optional().describe("Safety intent. writeCommit is not supported by this MVP wrapper."),
-        timeoutMs: z.number().int().positive().optional().describe("Reserved for future plugin support; current socket timeout is controlled by the Revit client."),
+        timeoutMs: z.number().int().positive().optional().describe("Socket timeout in milliseconds for this Revit command. Defaults to 120000."),
         maxReturnedChars: z.number().int().positive().optional().describe("Maximum JSON characters returned to the model."),
         parseJsonResult: z.boolean().optional().describe("When true, parse JSON-looking result strings. Defaults true."),
     }, async (args) => {

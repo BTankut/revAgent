@@ -65,7 +65,7 @@
                        Margin="0,4,0,0"
                        FontFamily="Segoe UI"
                        FontSize="13"
-                       Text="Elapsed: 00:00:00"/>
+                       Text="Elapsed: 0.00s"/>
 
             <TextBlock x:Name="MessageText"
                        Grid.Row="3"

@@ -154,6 +154,20 @@ elapsed time, recent completed/failed tasks, and service port. Status calls
 bypass the per-port command lock so Codex can query progress during a long
 Revit operation.
 
+The Revit socket protocol uses length-prefixed JSON-RPC frames by default, so
+large snippets and parameter payloads are not limited by the old single-read
+socket buffer behavior. The add-in still accepts legacy raw JSON requests for
+compatibility. The default request frame limit is 16 MB and can be raised, up
+to 128 MB, with `REVIT_MCP_MAX_MESSAGE_BYTES` when a workstation explicitly
+needs larger payloads.
+
+Recent task records include transport diagnostics: framing mode, request size,
+receive time, parse time, execution time, response size, and elapsed time. The
+Revit status window stays concise for users and shows only task state, task
+name, total Revit-side duration, and request size; detailed transport metrics
+are written to the add-in log under
+`C:\ProgramData\DPE\RevitMCP\revit-plugin\revit_mcp_plugin\Logs\`.
+
 The runtime performs a status preflight before every non-status Revit command.
 If `activeTask` is present, the new command is rejected with a busy message
 instead of being sent into Revit. `get_revit_mcp_status` remains the only tool
@@ -171,7 +185,9 @@ Revit until the task finishes. Completed and failed states are shown briefly
 with recent task history and stay visible until the user clicks `OK`. The
 window close button is treated as acknowledge/hide after completion; during a
 running task it is ignored so closing the status window cannot close or crash
-Revit.
+Revit. Recent history uses compact state symbols (`✓` for completed, `✕` for
+failed) and shows only the total Revit-side duration plus request size, for
+example `17:19:07  ✓  Final metric UI log probe  (2.9s)  [1 MB]`.
 
 Then:
 

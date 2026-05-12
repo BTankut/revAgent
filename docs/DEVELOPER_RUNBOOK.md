@@ -349,6 +349,9 @@ Live smoke test after install:
 7. Confirm `get_revit_mcp_status` shows the task as `completed`.
 8. Confirm `revit-api-docs` responds to a small search such as
    `FilteredElementCollector`.
+9. For transport-sensitive changes, run a large read-only marker/checksum probe
+   and confirm the returned marker matches the end of the payload. Do not rely
+   only on the status window duration for transport validation.
 
 The current production status window behavior:
 
@@ -357,6 +360,17 @@ The current production status window behavior:
 - close button after completion acts as acknowledge/hide
 - status window should not steal foreground focus from other apps
 - recent task history is selectable and resizable
+- recent history uses compact state symbols and shows total Revit-side
+  duration plus request size, for example:
+  `17:19:07  ✓  Final metric UI log probe  (2.9s)  [1 MB]`
+- detailed transport metrics remain available in `get_revit_mcp_status` and in
+  the add-in log:
+  `C:\ProgramData\DPE\RevitMCP\revit-plugin\revit_mcp_plugin\Logs\mcp_YYYYMMDD.log`
+
+Transport metrics in logs include `framing`, `requestBytes`, `receiveMs`,
+`parseMs`, `executeMs`, `responseBytes`, and `totalMs`. The status window is
+deliberately simpler so users see only the information needed during normal
+work.
 
 ## Git Commit And Push
 

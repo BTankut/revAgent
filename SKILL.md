@@ -36,7 +36,8 @@ only the bare names appear, so the rules stay host-agnostic.
 
 - `list_revit_instances` — discover reachable Revit MCP instances and ports
 - `get_revit_mcp_status` — read active/recent task status without waiting
-  behind the active command lock
+  behind the active command lock; recent task records include request size and
+  transport timing diagnostics for troubleshooting
 - `send_code_to_revit` — raw dynamic execution for explicit, broad control
 - `send_code_to_revit_safe` — read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced

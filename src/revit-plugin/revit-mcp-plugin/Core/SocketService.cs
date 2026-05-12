@@ -16,6 +16,27 @@ namespace revit_mcp_plugin.Core
 {
     public class SocketService
     {
+        private const int SocketReadBufferBytes = 8192;
+        private const int DefaultMaxMessageBytes = 16 * 1024 * 1024;
+        private const int AbsoluteMaxMessageBytes = 128 * 1024 * 1024;
+
+        private enum SocketMessageFraming
+        {
+            Unknown,
+            LegacyJson,
+            LengthPrefixed
+        }
+
+        private class SocketRequestMetrics
+        {
+            public string Framing { get; set; }
+            public long RequestBytes { get; set; }
+            public long ReceiveMs { get; set; }
+            public long ParseMs { get; set; }
+            public long ExecuteMs { get; set; }
+            public long ResponseBytes { get; set; }
+        }
+
         private static SocketService _instance;
         private TcpListener _listener;
         private Thread _listenerThread;
@@ -25,6 +46,7 @@ namespace revit_mcp_plugin.Core
         private ICommandRegistry _commandRegistry;
         private ILogger _logger;
         private CommandExecutor _commandExecutor;
+        private readonly int _maxMessageBytes = ResolveMaxMessageBytes();
 
         public static SocketService Instance
         {
@@ -40,6 +62,17 @@ namespace revit_mcp_plugin.Core
         {
             _commandRegistry = new RevitCommandRegistry();
             _logger = new Logger();
+        }
+
+        private static int ResolveMaxMessageBytes()
+        {
+            string configured = Environment.GetEnvironmentVariable("REVIT_MCP_MAX_MESSAGE_BYTES");
+            if (int.TryParse(configured, out int parsed) && parsed > 0)
+            {
+                return Math.Min(parsed, AbsoluteMaxMessageBytes);
+            }
+
+            return DefaultMaxMessageBytes;
         }
 
         public bool IsRunning => _isRunning;
@@ -219,7 +252,10 @@ namespace revit_mcp_plugin.Core
 
             try
             {
-                byte[] buffer = new byte[8192];
+                byte[] buffer = new byte[SocketReadBufferBytes];
+                MemoryStream pending = new MemoryStream();
+                SocketMessageFraming framing = SocketMessageFraming.Unknown;
+                DateTime? receiveStartedAtUtc = null;
 
                 while (_isRunning && tcpClient.Connected)
                 {
@@ -245,15 +281,33 @@ namespace revit_mcp_plugin.Core
                         break;
                     }
 
-                    string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    System.Diagnostics.Trace.WriteLine($"收到消息: {message}\nReceived message: {message}");
+                    if (!receiveStartedAtUtc.HasValue)
+                    {
+                        receiveStartedAtUtc = DateTime.UtcNow;
+                    }
 
-                    string response = ProcessJsonRPCRequest(message);
+                    pending.Write(buffer, 0, bytesRead);
+                    if (pending.Length > _maxMessageBytes + 4)
+                    {
+                        string oversizedResponse = CreateErrorResponse(
+                            null,
+                            JsonRPCErrorCodes.InvalidRequest,
+                            $"JSON-RPC message exceeds maximum size of {_maxMessageBytes} bytes");
+                        WriteResponse(stream, oversizedResponse, framing == SocketMessageFraming.LengthPrefixed);
+                        throw new InvalidDataException("JSON-RPC message exceeded maximum size.");
+                    }
 
-                    // 发送响应
-                    // Send response.
-                    byte[] responseData = Encoding.UTF8.GetBytes(response);
-                    stream.Write(responseData, 0, responseData.Length);
+                    bool processedMessage;
+                    do
+                    {
+                        processedMessage = TryProcessPendingMessages(stream, pending, ref framing, receiveStartedAtUtc);
+                    }
+                    while (processedMessage && pending.Length > 0);
+
+                    if (pending.Length == 0)
+                    {
+                        receiveStartedAtUtc = null;
+                    }
                 }
             }
             catch(Exception ex)
@@ -266,7 +320,189 @@ namespace revit_mcp_plugin.Core
             }
         }
 
-        private string ProcessJsonRPCRequest(string requestJson)
+        private bool TryProcessPendingMessages(
+            NetworkStream stream,
+            MemoryStream pending,
+            ref SocketMessageFraming framing,
+            DateTime? receiveStartedAtUtc)
+        {
+            byte[] data = pending.ToArray();
+            if (data.Length == 0)
+            {
+                return false;
+            }
+
+            if (framing == SocketMessageFraming.Unknown)
+            {
+                framing = DetectMessageFraming(data);
+                if (framing == SocketMessageFraming.Unknown)
+                {
+                    return false;
+                }
+            }
+
+            if (framing == SocketMessageFraming.LengthPrefixed)
+            {
+                if (data.Length < 4)
+                {
+                    return false;
+                }
+
+                int messageLength = ReadNetworkInt32(data, 0);
+                if (messageLength <= 0 || messageLength > _maxMessageBytes)
+                {
+                    string response = CreateErrorResponse(
+                        null,
+                        JsonRPCErrorCodes.InvalidRequest,
+                        $"Invalid JSON-RPC frame length: {messageLength}");
+                    WriteResponse(stream, response, true);
+                    throw new InvalidDataException($"Invalid JSON-RPC frame length: {messageLength}");
+                }
+
+                if (data.Length < 4 + messageLength)
+                {
+                    return false;
+                }
+
+                string message = Encoding.UTF8.GetString(data, 4, messageLength);
+                ProcessAndWriteResponse(
+                    stream,
+                    message,
+                    true,
+                    messageLength + 4,
+                    GetReceiveElapsedMs(receiveStartedAtUtc));
+                ReplacePendingBytes(pending, data, 4 + messageLength);
+                return true;
+            }
+
+            string legacyMessage = Encoding.UTF8.GetString(data, 0, data.Length);
+            if (!IsCompleteJson(legacyMessage))
+            {
+                return false;
+            }
+
+            ProcessAndWriteResponse(
+                stream,
+                legacyMessage,
+                false,
+                data.Length,
+                GetReceiveElapsedMs(receiveStartedAtUtc));
+            pending.SetLength(0);
+            return true;
+        }
+
+        private void ProcessAndWriteResponse(
+            NetworkStream stream,
+            string message,
+            bool lengthPrefixed,
+            long requestBytes,
+            long receiveMs)
+        {
+            System.Diagnostics.Trace.WriteLine($"Received message bytes: {Encoding.UTF8.GetByteCount(message)}");
+
+            SocketRequestMetrics metrics = new SocketRequestMetrics
+            {
+                Framing = lengthPrefixed ? "length-prefixed" : "legacy-json",
+                RequestBytes = requestBytes,
+                ReceiveMs = receiveMs
+            };
+            string response = ProcessJsonRPCRequest(message, metrics);
+            WriteResponse(stream, response, lengthPrefixed);
+        }
+
+        private long GetReceiveElapsedMs(DateTime? receiveStartedAtUtc)
+        {
+            if (!receiveStartedAtUtc.HasValue)
+            {
+                return 0;
+            }
+
+            double elapsed = (DateTime.UtcNow - receiveStartedAtUtc.Value).TotalMilliseconds;
+            return elapsed < 0 ? 0 : (long)elapsed;
+        }
+
+        private SocketMessageFraming DetectMessageFraming(byte[] data)
+        {
+            int first = 0;
+            while (first < data.Length && IsAsciiWhitespace(data[first]))
+            {
+                first++;
+            }
+
+            if (first < data.Length && data[first] == (byte)'{')
+            {
+                return SocketMessageFraming.LegacyJson;
+            }
+
+            if (data.Length >= 4)
+            {
+                int messageLength = ReadNetworkInt32(data, 0);
+                if (messageLength > 0 && messageLength <= _maxMessageBytes)
+                {
+                    return SocketMessageFraming.LengthPrefixed;
+                }
+            }
+
+            return SocketMessageFraming.Unknown;
+        }
+
+        private bool IsAsciiWhitespace(byte value)
+        {
+            return value == 0x20 || value == 0x09 || value == 0x0A || value == 0x0D;
+        }
+
+        private int ReadNetworkInt32(byte[] data, int offset)
+        {
+            return (data[offset] << 24) |
+                   (data[offset + 1] << 16) |
+                   (data[offset + 2] << 8) |
+                   data[offset + 3];
+        }
+
+        private void WriteResponse(NetworkStream stream, string response, bool lengthPrefixed)
+        {
+            byte[] responseData = Encoding.UTF8.GetBytes(response);
+            if (lengthPrefixed)
+            {
+                byte[] header = new byte[4];
+                header[0] = (byte)((responseData.Length >> 24) & 0xFF);
+                header[1] = (byte)((responseData.Length >> 16) & 0xFF);
+                header[2] = (byte)((responseData.Length >> 8) & 0xFF);
+                header[3] = (byte)(responseData.Length & 0xFF);
+                stream.Write(header, 0, header.Length);
+            }
+
+            stream.Write(responseData, 0, responseData.Length);
+        }
+
+        private void ReplacePendingBytes(MemoryStream pending, byte[] data, int consumedBytes)
+        {
+            pending.SetLength(0);
+            if (consumedBytes < data.Length)
+            {
+                pending.Write(data, consumedBytes, data.Length - consumedBytes);
+                pending.Position = pending.Length;
+            }
+        }
+
+        private bool IsCompleteJson(string json)
+        {
+            try
+            {
+                JsonConvert.DeserializeObject<JsonRPCRequest>(json);
+                return true;
+            }
+            catch (JsonReaderException)
+            {
+                return false;
+            }
+            catch (JsonException)
+            {
+                return true;
+            }
+        }
+
+        private string ProcessJsonRPCRequest(string requestJson, SocketRequestMetrics metrics)
         {
             JsonRPCRequest request;
 
@@ -274,7 +510,13 @@ namespace revit_mcp_plugin.Core
             {
                 // 解析JSON-RPC请求
                 // Parse JSON-RPC requests.
+                System.Diagnostics.Stopwatch parseTimer = System.Diagnostics.Stopwatch.StartNew();
                 request = JsonConvert.DeserializeObject<JsonRPCRequest>(requestJson);
+                parseTimer.Stop();
+                if (metrics != null)
+                {
+                    metrics.ParseMs = parseTimer.ElapsedMilliseconds;
+                }
 
                 // 验证请求格式是否有效
                 // Verify that the request format is valid.
@@ -311,28 +553,65 @@ namespace revit_mcp_plugin.Core
                         request.Id,
                         request.Method,
                         taskName,
-                        _port);
+                        _port,
+                        metrics != null ? metrics.Framing : null,
+                        metrics != null ? (long?)metrics.RequestBytes : null,
+                        metrics != null ? (long?)metrics.ReceiveMs : null,
+                        metrics != null ? (long?)metrics.ParseMs : null);
                     McpTaskStatusWindowController.Instance.ShowRunning(activeTask);
 
+                    System.Diagnostics.Stopwatch executeTimer = System.Diagnostics.Stopwatch.StartNew();
                     object result = command.Execute(request.GetParamsObject(), request.Id);
+                    executeTimer.Stop();
+                    if (metrics != null)
+                    {
+                        metrics.ExecuteMs = executeTimer.ElapsedMilliseconds;
+                    }
+
+                    string response = CreateSuccessResponse(request.Id, result);
+                    if (metrics != null)
+                    {
+                        metrics.ResponseBytes = GetResponseWireBytes(response, metrics.Framing);
+                    }
+
                     if (IsCommandResultFailure(result, out string commandError))
                     {
-                        McpTaskInfo failedTask = McpTaskStatusService.Instance.FailTask(activeTask, commandError);
+                        McpTaskInfo failedTask = McpTaskStatusService.Instance.FailTask(
+                            activeTask,
+                            commandError,
+                            metrics != null ? (long?)metrics.ExecuteMs : null,
+                            metrics != null ? (long?)metrics.ResponseBytes : null);
+                        LogTaskMetrics(failedTask, metrics);
                         McpTaskStatusWindowController.Instance.ShowFailed(failedTask);
                     }
                     else
                     {
-                        McpTaskInfo completedTask = McpTaskStatusService.Instance.CompleteTask(activeTask);
+                        McpTaskInfo completedTask = McpTaskStatusService.Instance.CompleteTask(
+                            activeTask,
+                            metrics != null ? (long?)metrics.ExecuteMs : null,
+                            metrics != null ? (long?)metrics.ResponseBytes : null);
+                        LogTaskMetrics(completedTask, metrics);
                         McpTaskStatusWindowController.Instance.ShowCompleted(completedTask);
                     }
 
-                    return CreateSuccessResponse(request.Id, result);
+                    return response;
                 }
                 catch (Exception ex)
                 {
-                    McpTaskInfo failedTask = McpTaskStatusService.Instance.FailTask(activeTask, ex.Message);
+                    string response = CreateErrorResponse(request.Id, JsonRPCErrorCodes.InternalError, ex.Message);
+                    if (metrics != null)
+                    {
+                        metrics.ResponseBytes = GetResponseWireBytes(response, metrics.Framing);
+                    }
+
+                    McpTaskInfo failedTask = McpTaskStatusService.Instance.FailTask(
+                        activeTask,
+                        ex.Message,
+                        metrics != null && metrics.ExecuteMs > 0 ? (long?)metrics.ExecuteMs : null,
+                        metrics != null ? (long?)metrics.ResponseBytes : null);
+                    LogTaskMetrics(failedTask, metrics);
                     McpTaskStatusWindowController.Instance.ShowFailed(failedTask);
-                    return CreateErrorResponse(request.Id, JsonRPCErrorCodes.InternalError, ex.Message);
+                    return response;
                 }
             }
             catch (JsonException)
@@ -355,6 +634,40 @@ namespace revit_mcp_plugin.Core
                     $"Internal error: {ex.Message}"
                 );
             }
+        }
+
+        private long GetResponseWireBytes(string response, string framing)
+        {
+            long bytes = Encoding.UTF8.GetByteCount(response ?? string.Empty);
+            if (string.Equals(framing, "length-prefixed", StringComparison.OrdinalIgnoreCase))
+            {
+                bytes += 4;
+            }
+
+            return bytes;
+        }
+
+        private void LogTaskMetrics(McpTaskInfo task, SocketRequestMetrics metrics)
+        {
+            if (task == null || metrics == null)
+            {
+                return;
+            }
+
+            long totalMs = task.ElapsedMs + metrics.ReceiveMs + metrics.ParseMs;
+            _logger?.Info(
+                "MCP task metrics: requestId={0}; method={1}; taskName=\"{2}\"; state={3}; framing={4}; requestBytes={5}; receiveMs={6}; parseMs={7}; executeMs={8}; responseBytes={9}; totalMs={10}",
+                task.RequestId,
+                task.Method,
+                task.TaskName,
+                task.State,
+                metrics.Framing,
+                metrics.RequestBytes,
+                metrics.ReceiveMs,
+                metrics.ParseMs,
+                metrics.ExecuteMs,
+                metrics.ResponseBytes,
+                totalMs);
         }
 
         private string ExtractTaskDisplayName(JsonRPCRequest request)

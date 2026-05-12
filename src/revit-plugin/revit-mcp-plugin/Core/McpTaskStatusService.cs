@@ -40,6 +40,24 @@ namespace revit_mcp_plugin.Core
         [JsonProperty("error")]
         public string Error { get; set; }
 
+        [JsonProperty("framing")]
+        public string Framing { get; set; }
+
+        [JsonProperty("requestBytes")]
+        public long? RequestBytes { get; set; }
+
+        [JsonProperty("receiveMs")]
+        public long? ReceiveMs { get; set; }
+
+        [JsonProperty("parseMs")]
+        public long? ParseMs { get; set; }
+
+        [JsonProperty("executeMs")]
+        public long? ExecuteMs { get; set; }
+
+        [JsonProperty("responseBytes")]
+        public long? ResponseBytes { get; set; }
+
         public long GetElapsedMs(DateTime nowUtc)
         {
             DateTime end = FinishedAtUtc ?? nowUtc;
@@ -59,7 +77,13 @@ namespace revit_mcp_plugin.Core
                 StartedAtUtc = StartedAtUtc,
                 FinishedAtUtc = FinishedAtUtc,
                 Port = Port,
-                Error = Error
+                Error = Error,
+                Framing = Framing,
+                RequestBytes = RequestBytes,
+                ReceiveMs = ReceiveMs,
+                ParseMs = ParseMs,
+                ExecuteMs = ExecuteMs,
+                ResponseBytes = ResponseBytes
             };
         }
     }
@@ -86,7 +110,15 @@ namespace revit_mcp_plugin.Core
         {
         }
 
-        public McpTaskInfo BeginTask(string requestId, string method, string taskName, int port)
+        public McpTaskInfo BeginTask(
+            string requestId,
+            string method,
+            string taskName,
+            int port,
+            string framing = null,
+            long? requestBytes = null,
+            long? receiveMs = null,
+            long? parseMs = null)
         {
             DateTime now = DateTime.UtcNow;
             McpTaskInfo task = new McpTaskInfo
@@ -97,7 +129,11 @@ namespace revit_mcp_plugin.Core
                 TaskName = string.IsNullOrWhiteSpace(taskName) ? method : taskName,
                 State = "running",
                 StartedAtUtc = now,
-                Port = port
+                Port = port,
+                Framing = framing,
+                RequestBytes = requestBytes,
+                ReceiveMs = receiveMs,
+                ParseMs = parseMs
             };
 
             lock (_sync)
@@ -107,14 +143,14 @@ namespace revit_mcp_plugin.Core
             }
         }
 
-        public McpTaskInfo CompleteTask(McpTaskInfo startedTask)
+        public McpTaskInfo CompleteTask(McpTaskInfo startedTask, long? executeMs = null, long? responseBytes = null)
         {
-            return FinishTask(startedTask, "completed", null);
+            return FinishTask(startedTask, "completed", null, executeMs, responseBytes);
         }
 
-        public McpTaskInfo FailTask(McpTaskInfo startedTask, string error)
+        public McpTaskInfo FailTask(McpTaskInfo startedTask, string error, long? executeMs = null, long? responseBytes = null)
         {
-            return FinishTask(startedTask, "failed", Trim(NormalizeErrorMessage(error), 600));
+            return FinishTask(startedTask, "failed", Trim(NormalizeErrorMessage(error), 600), executeMs, responseBytes);
         }
 
         public object GetSnapshot(bool isRunning, int port)
@@ -146,7 +182,12 @@ namespace revit_mcp_plugin.Core
             }
         }
 
-        private McpTaskInfo FinishTask(McpTaskInfo startedTask, string state, string error)
+        private McpTaskInfo FinishTask(
+            McpTaskInfo startedTask,
+            string state,
+            string error,
+            long? executeMs,
+            long? responseBytes)
         {
             if (startedTask == null)
             {
@@ -162,6 +203,14 @@ namespace revit_mcp_plugin.Core
                 task.State = state;
                 task.FinishedAtUtc = DateTime.UtcNow;
                 task.Error = error;
+                if (executeMs.HasValue)
+                {
+                    task.ExecuteMs = executeMs;
+                }
+                if (responseBytes.HasValue)
+                {
+                    task.ResponseBytes = responseBytes;
+                }
 
                 if (_activeTask != null && _activeTask.Id == task.Id)
                 {
