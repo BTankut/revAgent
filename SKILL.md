@@ -153,7 +153,12 @@ Use this playbook for common view and focus requests:
   `PlanVisibilityWarning` to explain what happened. Do not create a new plan
   unless the user asks for a new view or no suitable existing view exists. If
   `planMode: "activePlan"` returns `FocusBlocked: true`, switch to the
-  suggested same-level plan instead of retrying active-plan focus.
+  suggested same-level plan instead of retrying active-plan focus. A blocked
+  active-plan result with
+  `FocusBlockReason: "elementLevelDoesNotMatchPlanView"` means Revit
+  `ShowElements` was deliberately not called, so the closed-view search prompt
+  should not appear; use `SuggestedView` or rerun with
+  `planMode: "elementLevel"`.
 - When the user describes an element by name/type/system instead of id, use
   `find_elements` before writing custom C# search snippets. Start with category
   filters such as `Mechanical Equipment`, `Ducts`, `Air Terminals`, `Pipes`, or
