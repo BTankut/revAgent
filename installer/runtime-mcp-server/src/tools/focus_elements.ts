@@ -25,7 +25,7 @@ export function registerFocusElementsTool(server) {
         select: z.boolean().optional().describe("Select the supplied elements. Defaults true."),
         zoom: z.boolean().optional().describe("Zoom/show the supplied elements in the active UI view. Defaults true."),
         allowPartial: z.boolean().optional().describe("Continue when some supplied element ids are not found. Defaults false."),
-        timeoutMs: z.number().int().positive().max(60000).optional().describe("Timeout for asynchronous UI activation/focus verification. Defaults 15000."),
+        timeoutMs: z.number().int().positive().max(120000).optional().describe("Timeout for asynchronous UI activation/focus verification. Defaults 15000."),
     }, async (args) => {
         try {
             const response = await sendRevitCommand("focus_elements", {

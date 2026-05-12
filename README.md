@@ -368,8 +368,12 @@ Expected bundled runtime commands:
 - `list_open_views`
 - `activate_view`
 - `close_view`
+- `get_ui_state`
+- `find_elements`
+- `open_existing_plan_for_element_level`
 - `focus_elements`
 - `section_box_elements`
+- `create_3d_view_for_elements`
 - `inspect_elements`
 - `inspect_parameter_schema`
 
@@ -487,12 +491,16 @@ The runtime MCP server intentionally exposes raw dynamic execution plus a small 
 - `list_open_views`
 - `activate_view`
 - `close_view`
+- `get_ui_state`
+- `find_elements`
+- `open_existing_plan_for_element_level`
 - `focus_elements`
 - `section_box_elements`
+- `create_3d_view_for_elements`
 - `inspect_elements`
 - `inspect_parameter_schema`
 
-The Revit add-in command payload still provides the low-level `send_code_to_revit` and selection commands internally. UI view operations are exposed separately through `list_open_views`, `activate_view`, `close_view`, and `focus_elements` so they do not run through the dynamic code transaction wrapper. `section_box_elements` is also exposed as a dedicated UI/view command because applying a 3D section box requires a normal Revit transaction on the target 3D view; it also makes the target view's `Section Boxes` category visible when possible so the user can see the resulting boundary.
+The Revit add-in command payload still provides the low-level `send_code_to_revit` and selection commands internally. UI view operations are exposed separately through `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, and `focus_elements` so common discovery and view-focus workflows do not need dynamic C# snippets. `section_box_elements` and `create_3d_view_for_elements` are also exposed as dedicated UI/view commands because applying or clearing a 3D section box and creating a view are project-data writes that need explicit Revit transactions and verification. `focus_elements` reports its UI zoom method and separates per-element `HasBoundingBox` from operation-level `BoundingBox` so automation can tell whether a section-box/focus box was computed or Revit UI focus was used.
 
 This runtime set is reflected in the Node MCP wrapper. The installer still copies the bundled Revit command payload required by the wrapper.
 

@@ -24,7 +24,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool exactName = parameters?["exactName"]?.Value<bool?>() ?? true;
             int timeoutMs = parameters?["timeoutMs"]?.Value<int?>() ?? 15000;
             if (timeoutMs < 1000) timeoutMs = 1000;
-            if (timeoutMs > 60000) timeoutMs = 60000;
+            if (timeoutMs > 120000) timeoutMs = 120000;
 
             _handler.SetTarget(viewId, viewName, viewType, exactName);
             if (RaiseAndWaitForCompletion(timeoutMs))

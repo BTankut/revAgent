@@ -24,6 +24,21 @@
       "assemblyPath": "RevitMCPViewCommandSet.dll"
     },
     {
+      "commandName": "get_ui_state",
+      "description": "Read active view, open views, selection, and document UI state",
+      "assemblyPath": "RevitMCPViewCommandSet.dll"
+    },
+    {
+      "commandName": "find_elements",
+      "description": "Find Revit elements by category and text across name, family, type, mark, and comments",
+      "assemblyPath": "RevitMCPViewCommandSet.dll"
+    },
+    {
+      "commandName": "open_existing_plan_for_element_level",
+      "description": "Open an existing plan view for an element's level and focus the element without creating a new view",
+      "assemblyPath": "RevitMCPViewCommandSet.dll"
+    },
+    {
       "commandName": "focus_elements",
       "description": "Select and zoom to Revit elements in the active or requested view without opening a transaction",
       "assemblyPath": "RevitMCPViewCommandSet.dll"
@@ -31,6 +46,11 @@
     {
       "commandName": "section_box_elements",
       "description": "Apply a 3D section box around Revit elements and optionally select and zoom to them",
+      "assemblyPath": "RevitMCPViewCommandSet.dll"
+    },
+    {
+      "commandName": "create_3d_view_for_elements",
+      "description": "Create or reuse a 3D view for Revit elements, optionally apply/clear section box, activate it, and focus the elements",
       "assemblyPath": "RevitMCPViewCommandSet.dll"
     }
   ]

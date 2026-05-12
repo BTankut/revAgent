@@ -31,8 +31,12 @@ const expectedTools = [
   "list_open_views",
   "activate_view",
   "close_view",
+  "get_ui_state",
+  "find_elements",
+  "open_existing_plan_for_element_level",
   "focus_elements",
   "section_box_elements",
+  "create_3d_view_for_elements",
   "inspect_elements",
   "inspect_parameter_schema",
 ];

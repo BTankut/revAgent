@@ -1,139 +1,199 @@
-{
-  "Commands": [
-    {
-      "commandName": "get_current_view_elements",
-      "assemblyPath": "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
-      "enabled": true,
-      "supportedRevitVersions": [
-        "2022"
-      ],
-      "developer": {
-        "name": "mcp-servers-for-revit",
-        "email": "",
-        "website": "",
-        "organization": "mcp-servers-for-revit"
-      },
-      "description": "Get current view elements"
-    },
-    {
-      "commandName": "get_current_view_info",
-      "assemblyPath": "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
-      "enabled": true,
-      "supportedRevitVersions": [
-        "2022"
-      ],
-      "developer": {
-        "name": "mcp-servers-for-revit",
-        "email": "",
-        "website": "",
-        "organization": "mcp-servers-for-revit"
-      },
-      "description": "Get current view info"
-    },
-    {
-      "commandName": "get_selected_elements",
-      "assemblyPath": "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
-      "enabled": true,
-      "supportedRevitVersions": [
-        "2022"
-      ],
-      "developer": {
-        "name": "mcp-servers-for-revit",
-        "email": "",
-        "website": "",
-        "organization": "mcp-servers-for-revit"
-      },
-      "description": "Get selected elements"
-    },
-    {
-      "commandName": "list_open_views",
-      "assemblyPath": "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
-      "enabled": true,
-      "supportedRevitVersions": [
-        "2022"
-      ],
-      "developer": {
-        "name": "mcp-servers-for-revit",
-        "email": "",
-        "website": "",
-        "organization": "mcp-servers-for-revit"
-      },
-      "description": "List open Revit UI views"
-    },
-    {
-      "commandName": "activate_view",
-      "assemblyPath": "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
-      "enabled": true,
-      "supportedRevitVersions": [
-        "2022"
-      ],
-      "developer": {
-        "name": "mcp-servers-for-revit",
-        "email": "",
-        "website": "",
-        "organization": "mcp-servers-for-revit"
-      },
-      "description": "Activate a Revit UI view without opening a transaction"
-    },
-    {
-      "commandName": "close_view",
-      "assemblyPath": "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
-      "enabled": true,
-      "supportedRevitVersions": [
-        "2022"
-      ],
-      "developer": {
-        "name": "mcp-servers-for-revit",
-        "email": "",
-        "website": "",
-        "organization": "mcp-servers-for-revit"
-      },
-      "description": "Close an open Revit UI view without opening a transaction"
-    },
-    {
-      "commandName": "focus_elements",
-      "assemblyPath": "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
-      "enabled": true,
-      "supportedRevitVersions": [
-        "2022"
-      ],
-      "developer": {
-        "name": "mcp-servers-for-revit",
-        "email": "",
-        "website": "",
-        "organization": "mcp-servers-for-revit"
-      },
-      "description": "Select and zoom to Revit elements in the active or requested view without opening a transaction"
-    },
-    {
-      "commandName": "section_box_elements",
-      "assemblyPath": "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
-      "enabled": true,
-      "supportedRevitVersions": [
-        "2022"
-      ],
-      "developer": {
-        "name": "mcp-servers-for-revit",
-        "email": "",
-        "website": "",
-        "organization": "mcp-servers-for-revit"
-      },
-      "description": "Apply a 3D section box around Revit elements and optionally select and zoom to them"
-    },
-    {
-      "commandName": "send_code_to_revit",
-      "assemblyPath": "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
-      "enabled": true,
-      "supportedRevitVersions": [
-        "2022"
-      ],
-      "developer": {
-        "name": "mcp-servers-for-revit",
-        "email": "",
-        "website": "",
-        "organization": "mcp-servers-for-revit"
-      },
-      "description": "Execute dynamic C# code in Revit with access to the Document and Revit API"
-    }
-  ]
+﻿{
+    "Commands":  [
+                     {
+                         "commandName":  "get_current_view_elements",
+                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Get current view elements"
+                     },
+                     {
+                         "commandName":  "get_current_view_info",
+                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Get current view info"
+                     },
+                     {
+                         "commandName":  "get_selected_elements",
+                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Get selected elements"
+                     },
+                     {
+                         "commandName":  "send_code_to_revit",
+                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Execute dynamic C# code in Revit with access to the Document and Revit API"
+                     },
+                     {
+                         "commandName":  "list_open_views",
+                         "assemblyPath":  "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "List open Revit UI views"
+                     },
+                     {
+                         "commandName":  "activate_view",
+                         "assemblyPath":  "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Activate a Revit UI view without opening a transaction"
+                     },
+                     {
+                         "commandName":  "close_view",
+                         "assemblyPath":  "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Close an open Revit UI view without opening a transaction"
+                     },
+                     {
+                         "commandName":  "get_ui_state",
+                         "assemblyPath":  "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Read active view, open views, selection, and document UI state"
+                     },
+                     {
+                         "commandName":  "find_elements",
+                         "assemblyPath":  "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Find Revit elements by category and text across name, family, type, mark, and comments"
+                     },
+                     {
+                         "commandName":  "open_existing_plan_for_element_level",
+                         "assemblyPath":  "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Open an existing plan view for an element\u0027s level and focus the element without creating a new view"
+                     },
+                     {
+                         "commandName":  "focus_elements",
+                         "assemblyPath":  "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Select and zoom to Revit elements in the active or requested view without opening a transaction"
+                     },
+                     {
+                         "commandName":  "section_box_elements",
+                         "assemblyPath":  "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Apply a 3D section box around Revit elements and optionally select and zoom to them"
+                     },
+                     {
+                         "commandName":  "create_3d_view_for_elements",
+                         "assemblyPath":  "RevitMCPViewCommandSet\\\\2022\\\\RevitMCPViewCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Create or reuse a 3D view for Revit elements, optionally apply/clear section box, activate it, and focus the elements"
+                     }
+                 ]
 }

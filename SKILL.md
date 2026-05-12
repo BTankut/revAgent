@@ -50,11 +50,21 @@ only the bare names appear, so the rules stay host-agnostic.
 - `activate_view` — activate an existing plan, 3D, sheet, schedule, section,
   elevation, drafting, or legend view without opening a transaction
 - `close_view` — close an open Revit UI view tab without opening a transaction
+- `get_ui_state` - read active view, open UI views, selected element ids and
+  summaries, section box flags, and document writable state
+- `find_elements` - find elements by category plus text across id, name,
+  family, type, mark, comments, and return existing plan candidates by level
+- `open_existing_plan_for_element_level` - choose an existing non-template plan
+  for an element's level, activate it, then select and zoom to the element
 - `focus_elements` - select and zoom to elements in the active or requested
-  view without opening a transaction
+  view without opening a transaction; when model bounding boxes are unavailable
+  it reports the Revit UI focus fallback it used
 - `section_box_elements` - activate a 3D view if needed, apply a section box
   around elements, make the section box boundary visible when possible, then
   optionally select and zoom to them
+- `create_3d_view_for_elements` - create or reuse a named 3D view for elements,
+  enforce section box on/off, activate it, and focus/select the elements with
+  rollback inside its own view update transactions
 - `inspect_elements` — targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
 - `inspect_parameter_schema` — parameter schema for element ids or category
@@ -112,6 +122,54 @@ Default workflow for every Revit runtime task:
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known — e.g. the bundled patterns under
 `references/patterns/`.
+
+---
+
+## Operational Playbook
+
+Fresh sessions should prefer a small set of strong primitives plus model
+verification over waiting for a one-click tool. At the start of a Revit task,
+read the optional local working context at
+`C:/ProgramData/DPE/RevitMCP/codex/working-context.md` when it exists. Treat
+that file as recent memory, not truth: verify status, active document, active
+view, selection, ids, and writable state before acting.
+
+Use this playbook for common view and focus requests:
+
+- When the user asks to show an element in an existing plan, inspect or confirm
+  the element level first. Prefer `open_existing_plan_for_element_level`; it
+  activates an existing same-level plan and focuses the element without creating
+  a new plan. Do not create a new plan unless the user asks for a new view or no
+  suitable existing view exists.
+- When the user describes an element by name/type/system instead of id, use
+  `find_elements` before writing custom C# search snippets. Start with category
+  filters such as `Mechanical Equipment`, `Ducts`, `Air Terminals`, `Pipes`, or
+  `Pipe Fittings` when the discipline is clear.
+- When the user asks for a new 3D view focused on elements, treat it as a model
+  write because it creates/edits a view. Prefer `create_3d_view_for_elements`
+  with an explicit `sectionBox` setting, then verify with `get_ui_state`.
+  Apply clipping only when the user asks for clipping/isolation or the workflow
+  explicitly needs it.
+- When the user asks to remove a section box, run a small transaction on the
+  active or named 3D view to set `View3D.IsSectionBoxActive = false`, then
+  verify the flag. Do not assume this closes or deletes the view.
+- For element-centric zoom, `focus_elements` is the primary tool. It uses Revit
+  UI focus (`ShowElements`) and reports `ZoomMethod`; `BoundingBox` is only an
+  aggregate section-box/focus box when `BoundingBoxSource` says so. Per-element
+  `HasBoundingBox` is not the same as the operation-level `BoundingBox`.
+- For full-view fit/zoom extents, prefer a short UI-view snippet using
+  `UIView.ZoomToFit()` after resolving/checking the API. If that is not
+  available, use a controlled fallback and state what was done.
+- View creation, section boxes, graphic overrides, templates, phases, view
+  range, scope boxes, and discipline settings are project data. Keep names
+  clear, make changes in small steps, and verify after each write.
+
+Use `get_ui_state` for quick active view, open view, selection, and section box
+verification after UI operations.
+
+If an exact tool is missing, do not stop there. Use the API docs server plus a
+small `send_code_to_revit` snippet for the missing bridge, then return to the
+existing primitives for activation, focusing, and verification.
 
 ---
 

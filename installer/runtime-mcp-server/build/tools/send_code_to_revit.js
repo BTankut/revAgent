@@ -1,6 +1,19 @@
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
-import { connectionOptionsFromArgs, connectionTargetSchema, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
+import { connectionOptionsFromArgs, connectionTargetSchema, normalizeRevitExecutionResponse, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
+function findErrorLikeResult(value) {
+    const normalized = normalizeRevitExecutionResponse(value);
+    const candidate = normalized && typeof normalized === "object" && "result" in normalized
+        ? normalized.result
+        : normalized;
+    if (typeof candidate === "string" && /^\s*ERROR\s*:/i.test(candidate)) {
+        return candidate.trim();
+    }
+    if (candidate && typeof candidate === "object" && candidate.success === false) {
+        return candidate.error || candidate.message || "Revit code returned success=false.";
+    }
+    return null;
+}
 export function registerSendCodeToRevitTool(server) {
     server.tool("send_code_to_revit", "Send C# code to Revit for execution. The code will be inserted into a template with access to the Revit Document and parameters. Your code should be written to work within the Execute method of the template.", {
         ...connectionTargetSchema(z),
@@ -22,6 +35,10 @@ export function registerSendCodeToRevitTool(server) {
             .positive()
             .optional()
             .describe("Socket timeout in milliseconds for this Revit command. Defaults to 120000."),
+        reportErrorResultAsFailure: z
+            .boolean()
+            .optional()
+            .describe("When true, ERROR: string results or { success:false } objects are reported as failed tool calls. Defaults true. This cannot roll back a write if the snippet swallowed its own exception."),
     }, async (args, extra) => {
         const params = {
             code: args.code,
@@ -37,6 +54,19 @@ export function registerSendCodeToRevitTool(server) {
             const response = await withRevitConnection(async (revitClient) => {
                 return await revitClient.sendCommand("send_code_to_revit", params, options);
             }, options);
+            const errorLikeResult = args.reportErrorResultAsFailure === false
+                ? null
+                : findErrorLikeResult(response);
+            if (errorLikeResult) {
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: `Code execution failed: ${errorLikeResult}`,
+                        },
+                    ],
+                };
+            }
             return {
                 content: [
                     {

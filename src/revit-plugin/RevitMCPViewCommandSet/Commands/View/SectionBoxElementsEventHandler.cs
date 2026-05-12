@@ -273,22 +273,29 @@ namespace RevitMCPViewCommandSet.Commands.View
                 targetView.SetSectionBox(sectionBox);
                 transaction.Commit();
 
-                ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom);
+                string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom);
+                string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
 
                 return new ElementFocusResult
                 {
                     Success = true,
                     Action = "section_box_elements",
-                    Message = "Section box applied around the supplied elements.",
+                    Message = string.IsNullOrWhiteSpace(focusNote)
+                        ? "Section box applied around the supplied elements."
+                        : "Section box applied around the supplied elements. " + focusNote,
                     Requested = requested,
                     Deferred = deferred,
                     Changed = true,
                     Selected = _select,
                     Zoomed = _zoom,
+                    ZoomMethod = zoomMethod,
+                    FocusNote = focusNote,
                     SectionBoxApplied = true,
                     SectionBoxBoundaryShown = boundaryShown,
                     SectionBoxBoundaryWarning = boundaryWarning,
                     PaddingMm = _paddingMm,
+                    BoundingBoxSource = "sectionBox",
+                    BoundingBoxNote = ElementFocusHelpers.BuildBoundingBoxNote("sectionBox"),
                     TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
                     ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
                     OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument),

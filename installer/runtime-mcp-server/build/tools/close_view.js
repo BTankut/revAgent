@@ -8,7 +8,7 @@ export function registerCloseViewTool(server) {
         viewName: z.string().optional().describe("Name of the Revit view to close. Must match one view unless viewType is also supplied."),
         viewType: z.string().optional().describe("Optional Revit ViewType filter, such as ThreeD, FloorPlan, DrawingSheet, Schedule, Section, or Elevation."),
         exactName: z.boolean().optional().describe("When viewName is used, require exact case-insensitive name match. Defaults true."),
-        timeoutMs: z.number().int().positive().max(60000).optional().describe("Timeout for asynchronous UI close verification. Defaults 15000."),
+        timeoutMs: z.number().int().positive().max(120000).optional().describe("Timeout for asynchronous UI close verification. Defaults 15000."),
     }, async (args) => {
         try {
             const response = await sendRevitCommand("close_view", {

@@ -157,6 +157,14 @@ try {
         Assert-True ($projectText -notmatch $legacyRevitConfigPattern) "$relativePath still contains legacy Revit 2020/2021 build configuration."
     }
 
+    Write-Host "Test Revit command registry includes view command set tools"
+    $viewCommandJson = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPViewCommandSet\command.json") | ConvertFrom-Json
+    $commandRegistry = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\commandRegistry.json") | ConvertFrom-Json
+    $registeredCommandNames = @($commandRegistry.Commands | ForEach-Object { [string]$_.commandName })
+    foreach ($name in @($viewCommandJson.commands | ForEach-Object { [string]$_.commandName })) {
+        Assert-True ($registeredCommandNames -contains $name) "commandRegistry.json is missing Revit view command '$name'."
+    }
+
     Write-Host "Test installer public parameters"
     $installerParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\install-self-contained.ps1")
     foreach ($name in @(

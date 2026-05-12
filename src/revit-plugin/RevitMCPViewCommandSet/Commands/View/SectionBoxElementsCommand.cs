@@ -36,7 +36,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             double paddingMm = parameters != null && parameters["paddingMm"] != null ? parameters["paddingMm"].Value<double>() : 500.0;
             int timeoutMs = parameters != null && parameters["timeoutMs"] != null ? parameters["timeoutMs"].Value<int>() : 15000;
             if (timeoutMs < 1000) timeoutMs = 1000;
-            if (timeoutMs > 60000) timeoutMs = 60000;
+            if (timeoutMs > 120000) timeoutMs = 120000;
 
             _handler.SetRequest(elementIds, viewId, viewName, viewType, exactName, select, zoom, allowPartial, paddingMm);
             if (RaiseAndWaitForCompletion(timeoutMs))

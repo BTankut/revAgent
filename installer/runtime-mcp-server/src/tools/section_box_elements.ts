@@ -26,7 +26,7 @@ export function registerSectionBoxElementsTool(server) {
         select: z.boolean().optional().describe("Select the supplied elements after applying the section box. Defaults true."),
         zoom: z.boolean().optional().describe("Zoom/show the supplied elements after applying the section box. Defaults true."),
         allowPartial: z.boolean().optional().describe("Continue when some supplied element ids are not found. Defaults false."),
-        timeoutMs: z.number().int().positive().max(60000).optional().describe("Timeout for asynchronous 3D view activation and section box application. Defaults 15000."),
+        timeoutMs: z.number().int().positive().max(120000).optional().describe("Timeout for asynchronous 3D view activation and section box application. Defaults 15000."),
     }, async (args) => {
         try {
             const response = await sendRevitCommand("section_box_elements", {

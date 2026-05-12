@@ -222,23 +222,33 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool deferred)
         {
             Document document = uiDocument.Document;
-            ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom);
+            string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom);
+            string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
+            List<int> noBoundingBoxElementIds = ElementFocusHelpers.GetNoBoundingBoxElementIds(elements);
 
             return new ElementFocusResult
             {
                 Success = true,
                 Action = "focus_elements",
-                Message = "Elements focused in the active Revit view.",
+                Message = string.IsNullOrWhiteSpace(focusNote)
+                    ? "Elements focused in the active Revit view."
+                    : "Elements focused in the active Revit view. " + focusNote,
                 Requested = requested,
                 Deferred = deferred,
                 Changed = requested,
                 Selected = _select,
                 Zoomed = _zoom,
+                ZoomMethod = zoomMethod,
+                FocusNote = focusNote,
                 TargetView = targetView != null ? ViewCommandHelpers.BuildViewSummary(document, targetView, true, true) : null,
                 ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
                 OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument),
                 Elements = elements,
-                MissingElementIds = missingElementIds
+                MissingElementIds = missingElementIds,
+                NoBoundingBoxElementIds = noBoundingBoxElementIds,
+                BoundingBoxSource = "none",
+                BoundingBoxNote = ElementFocusHelpers.BuildBoundingBoxNote("none"),
+                BoundingBox = null
             };
         }
 

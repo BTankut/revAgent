@@ -72,6 +72,49 @@ function Get-Configuration {
     return [string](Get-RevitMcpVersionConfig -Version $Version -RepoRoot $RepoRoot).buildConfiguration
 }
 
+function Update-ViewCommandRegistry {
+    param(
+        [string]$RegistryPath,
+        [string]$ViewCommandJsonPath,
+        [string]$Version
+    )
+
+    if (-not (Test-Path -LiteralPath $RegistryPath -PathType Leaf)) {
+        throw "Command registry was not found: $RegistryPath"
+    }
+    if (-not (Test-Path -LiteralPath $ViewCommandJsonPath -PathType Leaf)) {
+        throw "View command json was not found: $ViewCommandJsonPath"
+    }
+
+    $registry = Get-Content -LiteralPath $RegistryPath -Raw | ConvertFrom-Json
+    $viewCommandSet = Get-Content -LiteralPath $ViewCommandJsonPath -Raw | ConvertFrom-Json
+    $viewCommandNames = @($viewCommandSet.commands | ForEach-Object { [string]$_.commandName })
+    $viewDeveloper = [pscustomobject]@{
+        name = "mcp-servers-for-revit"
+        email = ""
+        website = ""
+        organization = "mcp-servers-for-revit"
+    }
+
+    $commands = @($registry.Commands | Where-Object {
+            $viewCommandNames -notcontains [string]$_.commandName
+        })
+
+    foreach ($command in $viewCommandSet.commands) {
+        $commands += [pscustomobject]@{
+            commandName = [string]$command.commandName
+            assemblyPath = "RevitMCPViewCommandSet\\$Version\\RevitMCPViewCommandSet.dll"
+            enabled = $true
+            supportedRevitVersions = @($Version)
+            developer = $viewDeveloper
+            description = [string]$command.description
+        }
+    }
+
+    $registry.Commands = $commands
+    $registry | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $RegistryPath -Encoding UTF8
+}
+
 $projectPath = Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\revit-mcp-plugin.csproj"
 if (-not (Test-Path -LiteralPath $projectPath)) {
     throw "Revit plugin project was not found: $projectPath"
@@ -141,6 +184,10 @@ if (-not $SkipPayloadCopy) {
     Copy-Item -LiteralPath $builtViewCommandSetDll -Destination (Join-Path $viewCommandSetRoot "RevitMCPViewCommandSet.dll") -Force
     Copy-Item -LiteralPath $builtViewCommandSetDll -Destination (Join-Path $viewCommandSetVersionRoot "RevitMCPViewCommandSet.dll") -Force
     Copy-Item -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\command.json") -Destination (Join-Path $viewCommandSetRoot "command.json") -Force
+    Update-ViewCommandRegistry `
+        -RegistryPath (Join-Path $payloadDir "Commands\commandRegistry.json") `
+        -ViewCommandJsonPath (Join-Path $viewCommandSetRoot "command.json") `
+        -Version $RevitVersion
 
     Write-Host "Installer payload refreshed: $payloadDir" -ForegroundColor Green
 }

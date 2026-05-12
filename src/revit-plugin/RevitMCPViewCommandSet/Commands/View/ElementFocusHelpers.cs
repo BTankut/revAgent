@@ -39,14 +39,26 @@ namespace RevitMCPViewCommandSet.Commands.View
         public bool Changed { get; set; }
         public bool Selected { get; set; }
         public bool Zoomed { get; set; }
+        public string ZoomMethod { get; set; }
+        public string FocusNote { get; set; }
         public bool SectionBoxApplied { get; set; }
         public bool SectionBoxBoundaryShown { get; set; }
         public string SectionBoxBoundaryWarning { get; set; }
-        public double PaddingMm { get; set; }
+        public bool CreatedView { get; set; }
+        public bool ReusedView { get; set; }
+        public bool SectionBoxCleared { get; set; }
+        public double? PaddingMm { get; set; }
+        public string BoundingBoxSource { get; set; }
+        public string BoundingBoxNote { get; set; }
         public ViewSummary TargetView { get; set; }
         public ViewSummary ActiveView { get; set; }
+        public ViewSummary SelectedPlan { get; set; }
+        public int? LevelId { get; set; }
+        public string LevelName { get; set; }
+        public string PlanSelectionReason { get; set; }
         public List<ViewSummary> OpenViews { get; set; }
         public List<ViewSummary> Candidates { get; set; }
+        public List<PlanCandidateSummary> PlanCandidates { get; set; }
         public List<ElementSummary> Elements { get; set; }
         public List<int> MissingElementIds { get; set; }
         public List<int> NoBoundingBoxElementIds { get; set; }
@@ -92,7 +104,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                 }
 
                 elementIds.Add(element.Id);
-                elements.Add(BuildElementSummary(element, false));
+                elements.Add(BuildElementSummary(element, HasModelBoundingBox(element)));
             }
 
             if (elementIds.Count == 0)
@@ -128,7 +140,63 @@ namespace RevitMCPViewCommandSet.Commands.View
             };
         }
 
-        public static void SelectAndZoom(UIDocument uiDocument, IList<ElementId> elementIds, bool select, bool zoom)
+        public static bool HasModelBoundingBox(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                return element.get_BoundingBox(null) != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static List<int> GetNoBoundingBoxElementIds(IEnumerable<ElementSummary> elements)
+        {
+            if (elements == null)
+            {
+                return new List<int>();
+            }
+
+            return elements
+                .Where(e => e != null && !e.HasBoundingBox)
+                .Select(e => e.Id)
+                .ToList();
+        }
+
+        public static string BuildFocusNote(bool zoom, string zoomMethod, IEnumerable<ElementSummary> elements)
+        {
+            if (!zoom)
+            {
+                return "";
+            }
+
+            List<int> noBoundingBoxIds = GetNoBoundingBoxElementIds(elements);
+            if (string.Equals(zoomMethod, "ShowElements", StringComparison.OrdinalIgnoreCase) && noBoundingBoxIds.Count > 0)
+            {
+                return "One or more elements did not expose a model bounding box; Revit ShowElements fallback was used for UI focus.";
+            }
+
+            return "";
+        }
+
+        public static string BuildBoundingBoxNote(string source)
+        {
+            if (string.Equals(source, "sectionBox", StringComparison.OrdinalIgnoreCase))
+            {
+                return "BoundingBox is the aggregate model-space box used for the 3D section box.";
+            }
+
+            return "Element HasBoundingBox describes per-element model boxes; this operation did not compute an aggregate BoundingBox and used Revit UI focus instead.";
+        }
+
+        public static string SelectAndZoom(UIDocument uiDocument, IList<ElementId> elementIds, bool select, bool zoom)
         {
             if (select)
             {
@@ -138,7 +206,10 @@ namespace RevitMCPViewCommandSet.Commands.View
             if (zoom)
             {
                 uiDocument.ShowElements(elementIds);
+                return "ShowElements";
             }
+
+            return "";
         }
 
         public static bool TryBuildSectionBox(

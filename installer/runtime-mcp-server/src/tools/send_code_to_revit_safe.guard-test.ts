@@ -36,4 +36,19 @@ assert.deepEqual(
     [],
 );
 
+assert.deepEqual(
+    findWritePatterns("string viewName = view.Name; string levelName = level.Name; return viewName + levelName;"),
+    [],
+);
+
+assert.deepEqual(
+    findWritePatterns("result.Name = view.Name; summary.Scale = view.Scale; return result;"),
+    [],
+);
+
+assert(
+    findWritePatterns("view.Name = \"Renamed view\";").includes("Revit property assignment"),
+    "Expected Revit property assignment guard for view.Name setter",
+);
+
 console.log(`send_code_to_revit_safe guard tests passed (${cases.length} write cases)`);

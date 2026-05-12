@@ -35,7 +35,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool allowPartial = parameters != null && parameters["allowPartial"] != null && parameters["allowPartial"].Value<bool>();
             int timeoutMs = parameters != null && parameters["timeoutMs"] != null ? parameters["timeoutMs"].Value<int>() : 15000;
             if (timeoutMs < 1000) timeoutMs = 1000;
-            if (timeoutMs > 60000) timeoutMs = 60000;
+            if (timeoutMs > 120000) timeoutMs = 120000;
 
             _handler.SetRequest(elementIds, viewId, viewName, viewType, exactName, select, zoom, allowPartial);
             if (RaiseAndWaitForCompletion(timeoutMs))

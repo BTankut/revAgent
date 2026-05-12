@@ -1,5 +1,6 @@
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using Newtonsoft.Json.Linq;
 using RevitMCPViewCommandSet.Extensions;
 using System;
 using System.Collections.Generic;
@@ -17,6 +18,10 @@ namespace RevitMCPViewCommandSet.Commands.View
         public bool IsTemplate { get; set; }
         public bool IsActive { get; set; }
         public bool IsOpen { get; set; }
+        public int? ViewTemplateId { get; set; }
+        public bool? CropBoxActive { get; set; }
+        public bool? IsSectionBoxActive { get; set; }
+        public bool? SectionBoxBoundaryVisible { get; set; }
     }
 
     public class ViewOperationResult
@@ -53,6 +58,57 @@ namespace RevitMCPViewCommandSet.Commands.View
                 return null;
             }
 
+            int? viewTemplateId = null;
+            bool? cropBoxActive = null;
+            bool? isSectionBoxActive = null;
+            bool? sectionBoxBoundaryVisible = null;
+
+            try
+            {
+                if (view.ViewTemplateId != null && view.ViewTemplateId != ElementId.InvalidElementId)
+                {
+                    viewTemplateId = view.ViewTemplateId.GetIdValue();
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                cropBoxActive = view.CropBoxActive;
+            }
+            catch
+            {
+            }
+
+            View3D view3D = view as View3D;
+            if (view3D != null)
+            {
+                try
+                {
+                    isSectionBoxActive = view3D.IsSectionBoxActive;
+                }
+                catch
+                {
+                }
+
+                if (isSectionBoxActive == true)
+                {
+                    try
+                    {
+                        Category category = document.Settings.Categories.get_Item(BuiltInCategory.OST_SectionBox);
+                        if (category != null)
+                        {
+                            sectionBoxBoundaryVisible = !view3D.GetCategoryHidden(category.Id);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+
             return new ViewSummary
             {
                 Id = view.Id.GetIdValue(),
@@ -62,7 +118,11 @@ namespace RevitMCPViewCommandSet.Commands.View
                 Scale = view.Scale,
                 IsTemplate = view.IsTemplate,
                 IsActive = isActive,
-                IsOpen = isOpen
+                IsOpen = isOpen,
+                ViewTemplateId = viewTemplateId,
+                CropBoxActive = cropBoxActive,
+                IsSectionBoxActive = isSectionBoxActive,
+                SectionBoxBoundaryVisible = sectionBoxBoundaryVisible
             };
         }
 
@@ -202,6 +262,66 @@ namespace RevitMCPViewCommandSet.Commands.View
         public static List<UIView> GetOpenUIViewsForDocument(UIDocument uiDocument)
         {
             return uiDocument.GetOpenUIViews().ToList();
+        }
+
+        public static List<int> ParseElementIds(JObject parameters)
+        {
+            List<int> elementIds = new List<int>();
+            JArray rawIds = parameters != null ? parameters["elementIds"] as JArray : null;
+            if (rawIds == null)
+            {
+                return elementIds;
+            }
+
+            foreach (JToken token in rawIds)
+            {
+                int value;
+                if (token.Type == JTokenType.String)
+                {
+                    if (int.TryParse(token.Value<string>(), out value))
+                    {
+                        elementIds.Add(value);
+                    }
+                    continue;
+                }
+
+                value = token.Value<int>();
+                elementIds.Add(value);
+            }
+
+            return elementIds;
+        }
+
+        public static string MakeUniqueViewName(Document document, string requestedName)
+        {
+            string baseName = string.IsNullOrWhiteSpace(requestedName)
+                ? "Revit MCP 3D Focus"
+                : requestedName.Trim();
+
+            HashSet<string> names =
+                new HashSet<string>(
+                    new FilteredElementCollector(document)
+                        .WhereElementIsNotElementType()
+                        .ToElements()
+                        .OfType<Autodesk.Revit.DB.View>()
+                        .Select(v => v.Name),
+                    StringComparer.OrdinalIgnoreCase);
+
+            if (!names.Contains(baseName))
+            {
+                return baseName;
+            }
+
+            for (int index = 2; index < 1000; index++)
+            {
+                string candidate = baseName + " " + index;
+                if (!names.Contains(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return baseName + " " + Guid.NewGuid().ToString("N").Substring(0, 8);
         }
     }
 }
