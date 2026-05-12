@@ -3,10 +3,26 @@
 This folder contains the Revit add-in source that used to live in the separate
 `BTankut/revit-mcp-plugin` repository.
 
+Production source projects:
+
+- `revit-mcp-plugin/`: main Revit add-in host, socket service, command registry,
+  and status window.
+- `RevitMCPViewCommandSet/`: transactionless UI view commands exposed as
+  `list_open_views`, `activate_view`, and `close_view`.
+
+`SampleCommandSet/` is retained as legacy sample source. It is not the deployed
+production command payload.
+
 The canonical production payload is still kept under:
 
 ```text
 installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll
+```
+
+The UI view command payload is kept under:
+
+```text
+installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPViewCommandSet
 ```
 
 Do not edit those binaries by hand. Change the source here, then refresh the
