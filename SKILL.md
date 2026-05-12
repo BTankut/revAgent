@@ -185,7 +185,9 @@ Use this playbook for common view and focus requests:
   `FocusBlocked` is true, do not retry the same `focus_elements` call; use the
   returned `SuggestedView`, call `open_existing_plan_for_element_level`, or use
   `smart_focus_elements`. Set `allowClosedViewSearch=true` only when the user
-  explicitly accepts Revit's modal closed-view search dialog.
+  explicitly accepts Revit's modal closed-view search dialog. For plan views,
+  `FocusBlockReason: "elementLevelDoesNotMatchPlanView"` means the element is
+  on another level; switch to the suggested same-level plan instead of retrying.
 - For full-view fit/zoom extents, prefer a short UI-view snippet using
   the `fitToScreen` option on `focus_elements`,
   `open_existing_plan_for_element_level`, or `create_3d_view_for_elements`.

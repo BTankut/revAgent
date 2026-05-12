@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Tightened `focus_elements` modal prevention for plan views by blocking `ShowElements` when the element level does not match the active/requested plan level, returning plan-level diagnostics and same-level plan suggestions instead.
 - Changed `focus_elements` to preflight element visibility in the active/requested view before calling Revit `ShowElements`, preventing Revit's modal closed-view search dialog by default, and added `smart_focus_elements` as an explicit active-view-then-same-level-plan fallback workflow.
 - Added large-project safety improvements for Revit view workflows: `find_elements` now reports match score/confidence/reasons and ambiguity hints, `open_existing_plan_for_element_level` has explicit `elementLevel` vs `activePlan` modes, `create_3d_view_for_elements` supports simple camera orientation/framing padding, and `show_element_in_plan_and_3d` composes safe search + existing-plan focus + optional 3D focus while rejecting ambiguous searches by default.
 - Refined Revit view/focus tool outputs: plan opening now reports active-view change intent, 3D view creation reports section-box-off confirmation and view-name conflict resolution, and focus tools can optionally call Revit `UIView.ZoomToFit` through `fitToScreen`.
