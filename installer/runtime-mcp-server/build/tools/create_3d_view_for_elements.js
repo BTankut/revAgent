@@ -17,6 +17,7 @@ export function registerCreate3DViewForElementsTool(server) {
         activate: z.boolean().optional().describe("Activate the target 3D view. Defaults true."),
         select: z.boolean().optional().describe("Select the supplied elements after activation. Defaults true."),
         zoom: z.boolean().optional().describe("Zoom/show the supplied elements after activation. Defaults true."),
+        fitToScreen: z.boolean().optional().describe("After activation/focus, run Revit UI ZoomToFit on the active 3D view. Defaults false."),
         allowPartial: z.boolean().optional().describe("Continue when some supplied element ids are not found. Defaults false."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Timeout for asynchronous view creation/activation/focus. Defaults 20000."),
     }, async (args) => {
@@ -31,6 +32,7 @@ export function registerCreate3DViewForElementsTool(server) {
                 activate: args.activate,
                 select: args.select,
                 zoom: args.zoom,
+                fitToScreen: args.fitToScreen,
                 allowPartial: args.allowPartial,
                 timeoutMs: args.timeoutMs,
             }, {

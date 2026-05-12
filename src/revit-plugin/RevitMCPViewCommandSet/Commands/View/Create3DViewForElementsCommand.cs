@@ -35,6 +35,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool activate = parameters == null || parameters["activate"] == null || parameters["activate"].Value<bool>();
             bool select = parameters == null || parameters["select"] == null || parameters["select"].Value<bool>();
             bool zoom = parameters == null || parameters["zoom"] == null || parameters["zoom"].Value<bool>();
+            bool fitToScreen = parameters != null && parameters["fitToScreen"] != null && parameters["fitToScreen"].Value<bool>();
             bool allowPartial = parameters != null && parameters["allowPartial"] != null && parameters["allowPartial"].Value<bool>();
             double paddingMm = parameters != null && parameters["paddingMm"] != null ? parameters["paddingMm"].Value<double>() : 500.0;
             int timeoutMs = parameters != null && parameters["timeoutMs"] != null ? parameters["timeoutMs"].Value<int>() : 20000;
@@ -50,6 +51,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                 activate,
                 select,
                 zoom,
+                fitToScreen,
                 allowPartial,
                 paddingMm);
 

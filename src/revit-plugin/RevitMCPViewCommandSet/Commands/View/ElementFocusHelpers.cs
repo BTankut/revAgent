@@ -41,15 +41,29 @@ namespace RevitMCPViewCommandSet.Commands.View
         public bool Zoomed { get; set; }
         public string ZoomMethod { get; set; }
         public string FocusNote { get; set; }
+        public bool FitToScreen { get; set; }
+        public string FitToScreenMethod { get; set; }
+        public string FitToScreenWarning { get; set; }
         public bool SectionBoxApplied { get; set; }
         public bool SectionBoxBoundaryShown { get; set; }
         public string SectionBoxBoundaryWarning { get; set; }
         public bool CreatedView { get; set; }
         public bool ReusedView { get; set; }
         public bool SectionBoxCleared { get; set; }
+        public bool SectionBoxConfirmedOff { get; set; }
+        public string SectionBoxState { get; set; }
+        public string SectionBoxNote { get; set; }
         public double? PaddingMm { get; set; }
         public string BoundingBoxSource { get; set; }
         public string BoundingBoxNote { get; set; }
+        public string RequestedViewName { get; set; }
+        public string ActualViewName { get; set; }
+        public bool ViewNameChanged { get; set; }
+        public string ViewNameResolution { get; set; }
+        public ViewSummary ActiveViewBefore { get; set; }
+        public bool ActiveViewChanged { get; set; }
+        public string PlanOpenMode { get; set; }
+        public string PlanOpenNote { get; set; }
         public ViewSummary TargetView { get; set; }
         public ViewSummary ActiveView { get; set; }
         public ViewSummary SelectedPlan { get; set; }
@@ -198,6 +212,27 @@ namespace RevitMCPViewCommandSet.Commands.View
 
         public static string SelectAndZoom(UIDocument uiDocument, IList<ElementId> elementIds, bool select, bool zoom)
         {
+            bool fitToScreenApplied;
+            string fitToScreenMethod;
+            string fitToScreenWarning;
+            return SelectAndZoom(uiDocument, elementIds, select, zoom, false, out fitToScreenApplied, out fitToScreenMethod, out fitToScreenWarning);
+        }
+
+        public static string SelectAndZoom(
+            UIDocument uiDocument,
+            IList<ElementId> elementIds,
+            bool select,
+            bool zoom,
+            bool fitToScreen,
+            out bool fitToScreenApplied,
+            out string fitToScreenMethod,
+            out string fitToScreenWarning)
+        {
+            fitToScreenApplied = false;
+            fitToScreenMethod = "";
+            fitToScreenWarning = "";
+            string zoomMethod = "";
+
             if (select)
             {
                 uiDocument.Selection.SetElementIds(elementIds);
@@ -206,10 +241,71 @@ namespace RevitMCPViewCommandSet.Commands.View
             if (zoom)
             {
                 uiDocument.ShowElements(elementIds);
-                return "ShowElements";
+                zoomMethod = "ShowElements";
             }
 
-            return "";
+            if (fitToScreen)
+            {
+                fitToScreenApplied = TryZoomToFitActiveView(uiDocument, out fitToScreenMethod, out fitToScreenWarning);
+                if (fitToScreenApplied)
+                {
+                    zoomMethod = string.IsNullOrWhiteSpace(zoomMethod)
+                        ? "ZoomToFit"
+                        : zoomMethod + "+ZoomToFit";
+                }
+            }
+
+            return zoomMethod;
+        }
+
+        public static bool TryZoomToFitActiveView(UIDocument uiDocument, out string method, out string warning)
+        {
+            method = "";
+            warning = "";
+            try
+            {
+                Document document = uiDocument.Document;
+                if (document == null || document.ActiveView == null)
+                {
+                    warning = "No active Revit view was available for ZoomToFit.";
+                    return false;
+                }
+
+                UIView uiView = ViewCommandHelpers.FindOpenUIView(uiDocument, document.ActiveView.Id);
+                if (uiView == null)
+                {
+                    warning = "The active Revit view was not found among open UI views.";
+                    return false;
+                }
+
+                uiView.ZoomToFit();
+                method = "UIView.ZoomToFit";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                warning = ex.Message;
+                return false;
+            }
+        }
+
+        public static string BuildSectionBoxNote(bool sectionBoxRequested, bool sectionBoxActive, bool sectionBoxCleared)
+        {
+            if (sectionBoxRequested)
+            {
+                return sectionBoxActive
+                    ? "Section box is active and was applied around the supplied elements."
+                    : "Section box was requested but could not be confirmed active.";
+            }
+
+            if (sectionBoxCleared)
+            {
+                return "An existing section box was cleared and is now confirmed inactive.";
+            }
+
+            return sectionBoxActive
+                ? "Section box is still active."
+                : "Section box is confirmed inactive; no clearing was needed.";
         }
 
         public static bool TryBuildSectionBox(

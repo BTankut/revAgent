@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Refined Revit view/focus tool outputs: plan opening now reports active-view change intent, 3D view creation reports section-box-off confirmation and view-name conflict resolution, and focus tools can optionally call Revit `UIView.ZoomToFit` through `fitToScreen`.
 - Added length-prefixed Revit MCP socket framing with legacy JSON fallback, raising large request handling beyond the old single-read buffer failure mode while keeping a configurable 16 MB default request limit.
 - Added Revit task transport metrics for request size, framing, receive, parse, execute, response size, and total duration; detailed metrics are logged while the Revit status window stays concise with state, task name, total duration, and request size.
 - Added reusable Revit UI focus tools: `focus_elements` selects/zooms elements in the active or requested view, and `section_box_elements` applies a 3D section box around elements before optional select/zoom while making the section box boundary category visible in the target view when possible.

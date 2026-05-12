@@ -18,11 +18,13 @@ namespace RevitMCPViewCommandSet.Commands.View
         private bool _preferMechanical;
         private bool _select;
         private bool _zoom;
+        private bool _fitToScreen;
         private UIApplication _pendingApp;
         private ElementId _pendingViewId = ElementId.InvalidElementId;
         private int _idlingAttempts;
         private ElementSearchItem _elementInfo;
         private List<PlanCandidateSummary> _planCandidates;
+        private ViewSummary _activeViewBefore;
 
         public ElementFocusResult ResultInfo { get; private set; }
         public bool TaskCompleted { get; private set; }
@@ -32,18 +34,21 @@ namespace RevitMCPViewCommandSet.Commands.View
             string planNameContains,
             bool preferMechanical,
             bool select,
-            bool zoom)
+            bool zoom,
+            bool fitToScreen)
         {
             _elementId = elementId;
             _planNameContains = planNameContains ?? "";
             _preferMechanical = preferMechanical;
             _select = select;
             _zoom = zoom;
+            _fitToScreen = fitToScreen;
             _pendingApp = null;
             _pendingViewId = ElementId.InvalidElementId;
             _idlingAttempts = 0;
             _elementInfo = null;
             _planCandidates = null;
+            _activeViewBefore = null;
             TaskCompleted = false;
             ResultInfo = null;
             _resetEvent.Reset();
@@ -60,6 +65,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             {
                 UIDocument uiDocument = app.ActiveUIDocument;
                 Document document = uiDocument.Document;
+                _activeViewBefore = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true);
 
                 Element element = document.GetElement(new ElementId(_elementId));
                 if (element == null)
@@ -187,8 +193,18 @@ namespace RevitMCPViewCommandSet.Commands.View
                 elements.Add(ElementFocusHelpers.BuildElementSummary(element, ElementFocusHelpers.HasModelBoundingBox(element)));
             }
 
-            string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom);
+            bool fitToScreenApplied;
+            string fitToScreenMethod;
+            string fitToScreenWarning;
+            string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom, _fitToScreen, out fitToScreenApplied, out fitToScreenMethod, out fitToScreenWarning);
             string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
+            bool activeViewChanged = _activeViewBefore != null && _activeViewBefore.Id != targetView.Id.GetIdValue();
+            string planOpenMode = activeViewChanged
+                ? "elementLevelExistingPlanActivated"
+                : "activeViewAlreadyMatchedElementLevel";
+            string planOpenNote = activeViewChanged
+                ? "The active view was changed to an existing plan on the element level; no new plan was created."
+                : "The active view was already the selected existing plan for the element level; no new plan was created.";
 
             return new ElementFocusResult
             {
@@ -199,11 +215,18 @@ namespace RevitMCPViewCommandSet.Commands.View
                     : "Existing plan for the element level was opened and focused. " + focusNote,
                 Requested = requested,
                 Deferred = deferred,
-                Changed = requested,
+                Changed = activeViewChanged,
                 Selected = _select,
-                Zoomed = _zoom,
+                Zoomed = _zoom || fitToScreenApplied,
                 ZoomMethod = zoomMethod,
                 FocusNote = focusNote,
+                FitToScreen = fitToScreenApplied,
+                FitToScreenMethod = fitToScreenMethod,
+                FitToScreenWarning = fitToScreenWarning,
+                ActiveViewBefore = _activeViewBefore,
+                ActiveViewChanged = activeViewChanged,
+                PlanOpenMode = planOpenMode,
+                PlanOpenNote = planOpenNote,
                 TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
                 SelectedPlan = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
                 ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
@@ -243,6 +266,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                 Success = false,
                 Action = "open_existing_plan_for_element_level",
                 Error = error,
+                ActiveViewBefore = _activeViewBefore,
                 ActiveView = document != null ? ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true) : null,
                 OpenViews = uiDocument != null ? ViewCommandHelpers.GetOpenViewSummaries(uiDocument) : null,
                 Elements = elements,

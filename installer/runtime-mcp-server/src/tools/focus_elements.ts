@@ -24,6 +24,7 @@ export function registerFocusElementsTool(server) {
         exactName: z.boolean().optional().describe("When viewName is used, require exact case-insensitive name match. Defaults true."),
         select: z.boolean().optional().describe("Select the supplied elements. Defaults true."),
         zoom: z.boolean().optional().describe("Zoom/show the supplied elements in the active UI view. Defaults true."),
+        fitToScreen: z.boolean().optional().describe("After activation/focus, run Revit UI ZoomToFit on the active view. Defaults false."),
         allowPartial: z.boolean().optional().describe("Continue when some supplied element ids are not found. Defaults false."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Timeout for asynchronous UI activation/focus verification. Defaults 15000."),
     }, async (args) => {
@@ -36,6 +37,7 @@ export function registerFocusElementsTool(server) {
                 exactName: args.exactName,
                 select: args.select,
                 zoom: args.zoom,
+                fitToScreen: args.fitToScreen,
                 allowPartial: args.allowPartial,
                 timeoutMs: args.timeoutMs,
             }, {

@@ -21,6 +21,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         private bool _activate;
         private bool _select;
         private bool _zoom;
+        private bool _fitToScreen;
         private bool _allowPartial;
         private double _paddingMm;
         private UIApplication _pendingApp;
@@ -34,6 +35,10 @@ namespace RevitMCPViewCommandSet.Commands.View
         private bool _pendingBoundaryShown;
         private string _pendingBoundaryWarning;
         private bool _pendingChanged;
+        private string _requestedViewName;
+        private string _actualViewName;
+        private bool _viewNameChanged;
+        private string _viewNameResolution;
 
         public ElementFocusResult ResultInfo { get; private set; }
         public bool TaskCompleted { get; private set; }
@@ -47,6 +52,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool activate,
             bool select,
             bool zoom,
+            bool fitToScreen,
             bool allowPartial,
             double paddingMm)
         {
@@ -58,6 +64,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             _activate = activate;
             _select = select;
             _zoom = zoom;
+            _fitToScreen = fitToScreen;
             _allowPartial = allowPartial;
             _paddingMm = Math.Max(0, paddingMm);
             _pendingApp = null;
@@ -71,6 +78,10 @@ namespace RevitMCPViewCommandSet.Commands.View
             _pendingBoundaryShown = false;
             _pendingBoundaryWarning = "";
             _pendingChanged = false;
+            _requestedViewName = viewName ?? "";
+            _actualViewName = "";
+            _viewNameChanged = false;
+            _viewNameResolution = "";
             TaskCompleted = false;
             ResultInfo = null;
             _resetEvent.Reset();
@@ -182,6 +193,13 @@ namespace RevitMCPViewCommandSet.Commands.View
             {
                 targetView = FindExisting3DView(document, _viewName);
                 _reusedView = targetView != null;
+                if (targetView != null)
+                {
+                    _requestedViewName = _viewName;
+                    _actualViewName = targetView.Name;
+                    _viewNameChanged = false;
+                    _viewNameResolution = "reusedExisting";
+                }
             }
 
             bool changed = false;
@@ -220,7 +238,7 @@ namespace RevitMCPViewCommandSet.Commands.View
 
             if (!_activate)
             {
-                Complete(BuildSuccess(uiDocument, targetView, boxedElements, missingElementIds, noBoundingBoxElementIds, boxSummary, deferred, false, changed, boundaryShown, boundaryWarning, "", ""));
+                Complete(BuildSuccess(uiDocument, targetView, boxedElements, missingElementIds, noBoundingBoxElementIds, boxSummary, deferred, false, changed, boundaryShown, boundaryWarning, "", "", false, "", ""));
                 return;
             }
 
@@ -280,7 +298,19 @@ namespace RevitMCPViewCommandSet.Commands.View
                 string requestedName = string.IsNullOrWhiteSpace(_viewName)
                     ? "3D - Focus " + elementIds[0].GetIdValue()
                     : _viewName;
-                view.Name = ViewCommandHelpers.MakeUniqueViewName(document, requestedName);
+                string uniqueName = ViewCommandHelpers.MakeUniqueViewName(document, requestedName);
+                view.Name = uniqueName;
+                _requestedViewName = requestedName;
+                _actualViewName = view.Name;
+                _viewNameChanged = !string.Equals(requestedName, view.Name, StringComparison.OrdinalIgnoreCase);
+                if (string.IsNullOrWhiteSpace(_viewName))
+                {
+                    _viewNameResolution = _viewNameChanged ? "generatedDefaultNameWithUniqueSuffix" : "generatedDefaultName";
+                }
+                else
+                {
+                    _viewNameResolution = _viewNameChanged ? "createdWithUniqueName" : "createdAsRequested";
+                }
 
                 if (_sectionBox)
                 {
@@ -454,9 +484,12 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool boundaryShown,
             string boundaryWarning)
         {
-            string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom);
+            bool fitToScreenApplied;
+            string fitToScreenMethod;
+            string fitToScreenWarning;
+            string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom, _fitToScreen, out fitToScreenApplied, out fitToScreenMethod, out fitToScreenWarning);
             string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
-            return BuildSuccess(uiDocument, targetView, elements, missingElementIds, noBoundingBoxElementIds, boxSummary, deferred, requested, changed, boundaryShown, boundaryWarning, zoomMethod, focusNote);
+            return BuildSuccess(uiDocument, targetView, elements, missingElementIds, noBoundingBoxElementIds, boxSummary, deferred, requested, changed, boundaryShown, boundaryWarning, zoomMethod, focusNote, fitToScreenApplied, fitToScreenMethod, fitToScreenWarning);
         }
 
         private ElementFocusResult BuildSuccess(
@@ -472,18 +505,32 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool boundaryShown,
             string boundaryWarning,
             string zoomMethod,
-            string focusNote)
+            string focusNote,
+            bool fitToScreenApplied,
+            string fitToScreenMethod,
+            string fitToScreenWarning)
         {
             Document document = uiDocument.Document;
             string message = _createdView
                 ? "3D view created for the supplied elements."
                 : "3D view reused for the supplied elements.";
+            bool sectionBoxActive = false;
+            try
+            {
+                sectionBoxActive = targetView != null && targetView.IsSectionBoxActive;
+            }
+            catch
+            {
+                sectionBoxActive = false;
+            }
+
             if (!string.IsNullOrWhiteSpace(focusNote))
             {
                 message += " " + focusNote;
             }
 
             string boundingBoxSource = _sectionBox ? "sectionBox" : "none";
+            string sectionBoxNote = ElementFocusHelpers.BuildSectionBoxNote(_sectionBox, sectionBoxActive, _sectionBoxCleared);
 
             return new ElementFocusResult
             {
@@ -494,18 +541,28 @@ namespace RevitMCPViewCommandSet.Commands.View
                 Deferred = deferred,
                 Changed = changed,
                 Selected = _select && _activate,
-                Zoomed = _zoom && _activate,
+                Zoomed = (_zoom || fitToScreenApplied) && _activate,
                 ZoomMethod = zoomMethod,
                 FocusNote = focusNote,
+                FitToScreen = fitToScreenApplied,
+                FitToScreenMethod = fitToScreenMethod,
+                FitToScreenWarning = fitToScreenWarning,
                 SectionBoxApplied = _sectionBox,
                 SectionBoxBoundaryShown = _sectionBox && boundaryShown,
                 SectionBoxBoundaryWarning = _sectionBox ? boundaryWarning : null,
                 CreatedView = _createdView,
                 ReusedView = _reusedView,
                 SectionBoxCleared = _sectionBoxCleared,
+                SectionBoxConfirmedOff = !_sectionBox && !sectionBoxActive,
+                SectionBoxState = sectionBoxActive ? "active" : "inactive",
+                SectionBoxNote = sectionBoxNote,
                 PaddingMm = _sectionBox ? (double?)_paddingMm : null,
                 BoundingBoxSource = boundingBoxSource,
                 BoundingBoxNote = ElementFocusHelpers.BuildBoundingBoxNote(boundingBoxSource),
+                RequestedViewName = _requestedViewName,
+                ActualViewName = targetView != null ? targetView.Name : _actualViewName,
+                ViewNameChanged = _viewNameChanged,
+                ViewNameResolution = _viewNameResolution,
                 TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, document.ActiveView != null && document.ActiveView.Id.GetIdValue() == targetView.Id.GetIdValue(), true),
                 ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
                 OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument),
@@ -527,6 +584,10 @@ namespace RevitMCPViewCommandSet.Commands.View
                 CreatedView = _createdView,
                 ReusedView = _reusedView,
                 SectionBoxCleared = _sectionBoxCleared,
+                RequestedViewName = _requestedViewName,
+                ActualViewName = _actualViewName,
+                ViewNameChanged = _viewNameChanged,
+                ViewNameResolution = _viewNameResolution,
                 PaddingMm = _sectionBox ? (double?)_paddingMm : null,
                 BoundingBoxSource = _sectionBox ? "sectionBox" : "none",
                 BoundingBoxNote = ElementFocusHelpers.BuildBoundingBoxNote(_sectionBox ? "sectionBox" : "none"),

@@ -29,11 +29,12 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool preferMechanical = parameters == null || parameters["preferMechanical"] == null || parameters["preferMechanical"].Value<bool>();
             bool select = parameters == null || parameters["select"] == null || parameters["select"].Value<bool>();
             bool zoom = parameters == null || parameters["zoom"] == null || parameters["zoom"].Value<bool>();
+            bool fitToScreen = parameters != null && parameters["fitToScreen"] != null && parameters["fitToScreen"].Value<bool>();
             int timeoutMs = parameters != null && parameters["timeoutMs"] != null ? parameters["timeoutMs"].Value<int>() : 20000;
             if (timeoutMs < 1000) timeoutMs = 1000;
             if (timeoutMs > 120000) timeoutMs = 120000;
 
-            _handler.SetRequest(elementId, planNameContains, preferMechanical, select, zoom);
+            _handler.SetRequest(elementId, planNameContains, preferMechanical, select, zoom, fitToScreen);
             if (RaiseAndWaitForCompletion(timeoutMs))
             {
                 return _handler.ResultInfo;

@@ -19,6 +19,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         private bool _exactName;
         private bool _select;
         private bool _zoom;
+        private bool _fitToScreen;
         private bool _allowPartial;
         private UIApplication _pendingApp;
         private ElementId _pendingViewId;
@@ -36,6 +37,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool exactName,
             bool select,
             bool zoom,
+            bool fitToScreen,
             bool allowPartial)
         {
             _requestedElementIds = elementIds ?? new List<int>();
@@ -45,6 +47,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             _exactName = exactName;
             _select = select;
             _zoom = zoom;
+            _fitToScreen = fitToScreen;
             _allowPartial = allowPartial;
             _pendingApp = null;
             _pendingViewId = ElementId.InvalidElementId;
@@ -222,7 +225,10 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool deferred)
         {
             Document document = uiDocument.Document;
-            string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom);
+            bool fitToScreenApplied;
+            string fitToScreenMethod;
+            string fitToScreenWarning;
+            string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom, _fitToScreen, out fitToScreenApplied, out fitToScreenMethod, out fitToScreenWarning);
             string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
             List<int> noBoundingBoxElementIds = ElementFocusHelpers.GetNoBoundingBoxElementIds(elements);
 
@@ -237,9 +243,12 @@ namespace RevitMCPViewCommandSet.Commands.View
                 Deferred = deferred,
                 Changed = requested,
                 Selected = _select,
-                Zoomed = _zoom,
+                Zoomed = _zoom || fitToScreenApplied,
                 ZoomMethod = zoomMethod,
                 FocusNote = focusNote,
+                FitToScreen = fitToScreenApplied,
+                FitToScreenMethod = fitToScreenMethod,
+                FitToScreenWarning = fitToScreenWarning,
                 TargetView = targetView != null ? ViewCommandHelpers.BuildViewSummary(document, targetView, true, true) : null,
                 ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
                 OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument),

@@ -13,6 +13,7 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
         preferMechanical: z.boolean().optional().describe("Prefer HVAC/mechanical/MEP named plans on the same level. Defaults true."),
         select: z.boolean().optional().describe("Select the element after activating the plan. Defaults true."),
         zoom: z.boolean().optional().describe("Zoom/show the element after activating the plan. Defaults true."),
+        fitToScreen: z.boolean().optional().describe("After opening/focusing the plan, run Revit UI ZoomToFit on the active view. Defaults false."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Timeout for asynchronous plan activation/focus. Defaults 20000."),
     }, async (args) => {
         try {
@@ -22,6 +23,7 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
                 preferMechanical: args.preferMechanical,
                 select: args.select,
                 zoom: args.zoom,
+                fitToScreen: args.fitToScreen,
                 timeoutMs: args.timeoutMs,
             }, {
                 ...executionOptionsFromArgs(args, "Open existing plan for element level"),

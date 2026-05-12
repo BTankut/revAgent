@@ -139,8 +139,10 @@ Use this playbook for common view and focus requests:
 - When the user asks to show an element in an existing plan, inspect or confirm
   the element level first. Prefer `open_existing_plan_for_element_level`; it
   activates an existing same-level plan and focuses the element without creating
-  a new plan. Do not create a new plan unless the user asks for a new view or no
-  suitable existing view exists.
+  a new plan. Read `PlanOpenMode`, `PlanOpenNote`, and `ActiveViewChanged` to
+  distinguish "the active plan was already correct" from "an existing same-level
+  plan was opened." Do not create a new plan unless the user asks for a new view
+  or no suitable existing view exists.
 - When the user describes an element by name/type/system instead of id, use
   `find_elements` before writing custom C# search snippets. Start with category
   filters such as `Mechanical Equipment`, `Ducts`, `Air Terminals`, `Pipes`, or
@@ -148,6 +150,9 @@ Use this playbook for common view and focus requests:
 - When the user asks for a new 3D view focused on elements, treat it as a model
   write because it creates/edits a view. Prefer `create_3d_view_for_elements`
   with an explicit `sectionBox` setting, then verify with `get_ui_state`.
+  Read `SectionBoxConfirmedOff`, `SectionBoxState`, and `SectionBoxNote` when
+  sectionBox is false. Read `RequestedViewName`, `ActualViewName`,
+  `ViewNameChanged`, and `ViewNameResolution` when name collisions matter.
   Apply clipping only when the user asks for clipping/isolation or the workflow
   explicitly needs it.
 - When the user asks to remove a section box, run a small transaction on the
@@ -158,8 +163,10 @@ Use this playbook for common view and focus requests:
   aggregate section-box/focus box when `BoundingBoxSource` says so. Per-element
   `HasBoundingBox` is not the same as the operation-level `BoundingBox`.
 - For full-view fit/zoom extents, prefer a short UI-view snippet using
-  `UIView.ZoomToFit()` after resolving/checking the API. If that is not
-  available, use a controlled fallback and state what was done.
+  the `fitToScreen` option on `focus_elements`,
+  `open_existing_plan_for_element_level`, or `create_3d_view_for_elements`.
+  This runs Revit `UIView.ZoomToFit` after activation/focus and reports
+  `FitToScreenMethod` or `FitToScreenWarning`.
 - View creation, section boxes, graphic overrides, templates, phases, view
   range, scope boxes, and discipline settings are project data. Keep names
   clear, make changes in small steps, and verify after each write.

@@ -32,12 +32,13 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool exactName = parameters == null || parameters["exactName"] == null || parameters["exactName"].Value<bool>();
             bool select = parameters == null || parameters["select"] == null || parameters["select"].Value<bool>();
             bool zoom = parameters == null || parameters["zoom"] == null || parameters["zoom"].Value<bool>();
+            bool fitToScreen = parameters != null && parameters["fitToScreen"] != null && parameters["fitToScreen"].Value<bool>();
             bool allowPartial = parameters != null && parameters["allowPartial"] != null && parameters["allowPartial"].Value<bool>();
             int timeoutMs = parameters != null && parameters["timeoutMs"] != null ? parameters["timeoutMs"].Value<int>() : 15000;
             if (timeoutMs < 1000) timeoutMs = 1000;
             if (timeoutMs > 120000) timeoutMs = 120000;
 
-            _handler.SetRequest(elementIds, viewId, viewName, viewType, exactName, select, zoom, allowPartial);
+            _handler.SetRequest(elementIds, viewId, viewName, viewType, exactName, select, zoom, fitToScreen, allowPartial);
             if (RaiseAndWaitForCompletion(timeoutMs))
             {
                 return _handler.ResultInfo;
