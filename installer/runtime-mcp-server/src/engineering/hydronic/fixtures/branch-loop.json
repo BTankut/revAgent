@@ -1,0 +1,30 @@
+{
+  "schema_version": "connector-graph-foundation.fixture",
+  "nodes": [
+    { "id": "P1", "category": "Mechanical Equipment", "familyName": "Heating Water Pump" },
+    { "id": "S_MAIN", "category": "Pipe Curves", "length_m": 10, "diameter_mm": 65 },
+    { "id": "S_A", "category": "Pipe Curves", "length_m": 18, "diameter_mm": 40 },
+    { "id": "BV_A", "category": "Pipe Accessories", "familyName": "Balancing Valve", "diameter_mm": 40, "k_value": 3 },
+    { "id": "COIL_A", "category": "Mechanical Equipment", "familyName": "Fan Coil", "flow_lps": 0.8, "diameter_mm": 32, "k_value": 5 },
+    { "id": "R_A", "category": "Pipe Curves", "length_m": 18, "diameter_mm": 40 },
+    { "id": "S_B", "category": "Pipe Curves", "length_m": 26, "diameter_mm": 40 },
+    { "id": "BV_B", "category": "Pipe Accessories", "familyName": "Balancing Valve", "diameter_mm": 40, "k_value": 3 },
+    { "id": "COIL_B", "category": "Mechanical Equipment", "familyName": "Fan Coil", "flow_lps": 0.8, "diameter_mm": 32, "k_value": 5 },
+    { "id": "R_B", "category": "Pipe Curves", "length_m": 26, "diameter_mm": 40 },
+    { "id": "R_MAIN", "category": "Pipe Curves", "length_m": 10, "diameter_mm": 65 }
+  ],
+  "edges": [
+    { "id": "E1", "source": "P1", "target": "S_MAIN" },
+    { "id": "E2", "source": "S_MAIN", "target": "S_A" },
+    { "id": "E3", "source": "S_A", "target": "BV_A" },
+    { "id": "E4", "source": "BV_A", "target": "COIL_A" },
+    { "id": "E5", "source": "COIL_A", "target": "R_A" },
+    { "id": "E6", "source": "R_A", "target": "R_MAIN" },
+    { "id": "E7", "source": "S_MAIN", "target": "S_B" },
+    { "id": "E8", "source": "S_B", "target": "BV_B" },
+    { "id": "E9", "source": "BV_B", "target": "COIL_B" },
+    { "id": "E10", "source": "COIL_B", "target": "R_B" },
+    { "id": "E11", "source": "R_B", "target": "R_MAIN" },
+    { "id": "E12", "source": "R_MAIN", "target": "P1" }
+  ]
+}
