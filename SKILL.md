@@ -377,7 +377,7 @@ Load these as needed for the current task:
 - `references/patterns/spatial-zone-extract.cs` - read-only target-level
   spatial zone context for early MEP routing; extracts rooms/spaces, linked
   model transforms, first-class gross plenum volumes, ceiling/plenum zone,
-  shafts, and obstacle AABBs
+  plenum-obstacle AABB intersections, shafts, and obstacle AABBs
 - `references/patterns/spatial-zone-validate.cs` - read-only validation for
   spatial-zone readiness; checks target level resolution, room/space identity,
   ceiling zone availability, obstacle AABBs, existing MEP policy, and manual

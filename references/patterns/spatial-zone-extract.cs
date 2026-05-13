@@ -855,6 +855,7 @@ try
         failed["source"] = new System.Collections.Generic.Dictionary<string, object>();
         failed["ceiling_zones"] = new System.Collections.Generic.List<object>();
         failed["plenum_volumes"] = new System.Collections.Generic.List<object>();
+        failed["plenum_obstacle_intersections"] = new System.Collections.Generic.List<object>();
         failed["rooms"] = new System.Collections.Generic.List<object>();
         failed["shafts"] = new System.Collections.Generic.List<object>();
         failed["obstacles"] = new System.Collections.Generic.List<object>();
@@ -1278,6 +1279,7 @@ try
 
     System.Collections.Generic.List<object> rooms = new System.Collections.Generic.List<object>();
     System.Collections.Generic.List<object> plenumVolumes = new System.Collections.Generic.List<object>();
+    System.Collections.Generic.List<object> plenumObstacleIntersections = new System.Collections.Generic.List<object>();
     System.Collections.Generic.List<object> shafts = new System.Collections.Generic.List<object>();
     System.Collections.Generic.List<object> obstacles = new System.Collections.Generic.List<object>();
     System.Collections.Generic.List<object> preferredZones = new System.Collections.Generic.List<object>();
@@ -1869,6 +1871,208 @@ try
         breakdown[boundaryType]++;
     }
 
+    bool ListDoubleAt(object listObject, int index, out double value)
+    {
+        value = 0.0;
+        System.Collections.IList list = listObject as System.Collections.IList;
+        if (list == null || index < 0 || index >= list.Count || list[index] == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            value = System.Convert.ToDouble(list[index], System.Globalization.CultureInfo.InvariantCulture);
+            return true;
+        }
+        catch
+        {
+        }
+
+        return false;
+    }
+
+    bool TryAabbMmFromObject(object value, out double[] aabbMm)
+    {
+        aabbMm = null;
+        System.Collections.Generic.Dictionary<string, object> record = value as System.Collections.Generic.Dictionary<string, object>;
+        if (record == null)
+        {
+            return false;
+        }
+
+        object minObject = null;
+        object maxObject = null;
+        if (record.ContainsKey("min_mm"))
+        {
+            minObject = record["min_mm"];
+        }
+        else if (record.ContainsKey("min"))
+        {
+            minObject = record["min"];
+        }
+
+        if (record.ContainsKey("max_mm"))
+        {
+            maxObject = record["max_mm"];
+        }
+        else if (record.ContainsKey("max"))
+        {
+            maxObject = record["max"];
+        }
+
+        double minX;
+        double minY;
+        double minZ;
+        double maxX;
+        double maxY;
+        double maxZ;
+        if (!ListDoubleAt(minObject, 0, out minX) ||
+            !ListDoubleAt(minObject, 1, out minY) ||
+            !ListDoubleAt(minObject, 2, out minZ) ||
+            !ListDoubleAt(maxObject, 0, out maxX) ||
+            !ListDoubleAt(maxObject, 1, out maxY) ||
+            !ListDoubleAt(maxObject, 2, out maxZ))
+        {
+            return false;
+        }
+
+        if (maxX <= minX || maxY <= minY || maxZ <= minZ)
+        {
+            return false;
+        }
+
+        aabbMm = new double[] { minX, minY, minZ, maxX, maxY, maxZ };
+        return true;
+    }
+
+    bool TryAabbMmFromRecord(System.Collections.Generic.Dictionary<string, object> record, string key, out double[] aabbMm)
+    {
+        aabbMm = null;
+        if (record == null || !record.ContainsKey(key))
+        {
+            return false;
+        }
+
+        return TryAabbMmFromObject(record[key], out aabbMm);
+    }
+
+    bool TryPlenumAabbMm(System.Collections.Generic.Dictionary<string, object> plenum, out double[] aabbMm)
+    {
+        aabbMm = null;
+        if (plenum == null)
+        {
+            return false;
+        }
+
+        double zMinMm = RecordDouble(plenum, "z_min_mm");
+        double zMaxMm = RecordDouble(plenum, "z_max_mm");
+        if (double.IsNaN(zMinMm) || double.IsNaN(zMaxMm) || zMaxMm <= zMinMm)
+        {
+            return false;
+        }
+
+        double[] bboxMm;
+        if (TryAabbMmFromRecord(plenum, "aabb_mm", out bboxMm) || TryAabbMmFromRecord(plenum, "bbox_mm", out bboxMm))
+        {
+            aabbMm = new double[] { bboxMm[0], bboxMm[1], zMinMm, bboxMm[3], bboxMm[4], zMaxMm };
+            return aabbMm[3] > aabbMm[0] && aabbMm[4] > aabbMm[1];
+        }
+
+        if (!plenum.ContainsKey("boundary_points_mm"))
+        {
+            return false;
+        }
+
+        System.Collections.IEnumerable points = plenum["boundary_points_mm"] as System.Collections.IEnumerable;
+        if (points == null)
+        {
+            return false;
+        }
+
+        double minX = double.PositiveInfinity;
+        double minY = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity;
+        double maxY = double.NegativeInfinity;
+        int validCount = 0;
+        foreach (object point in points)
+        {
+            double x;
+            double y;
+            if (!TryPoint2dFromObject(point, out x, out y))
+            {
+                continue;
+            }
+
+            minX = System.Math.Min(minX, x);
+            minY = System.Math.Min(minY, y);
+            maxX = System.Math.Max(maxX, x);
+            maxY = System.Math.Max(maxY, y);
+            validCount++;
+        }
+
+        if (validCount < 3 || double.IsInfinity(minX) || double.IsInfinity(maxX) || maxX <= minX || maxY <= minY)
+        {
+            return false;
+        }
+
+        aabbMm = new double[] { minX, minY, zMinMm, maxX, maxY, zMaxMm };
+        return true;
+    }
+
+    System.Collections.Generic.Dictionary<string, object> AabbMmRecord(double[] aabbMm)
+    {
+        System.Collections.Generic.Dictionary<string, object> record = new System.Collections.Generic.Dictionary<string, object>();
+        System.Collections.Generic.List<object> min = new System.Collections.Generic.List<object>();
+        System.Collections.Generic.List<object> max = new System.Collections.Generic.List<object>();
+        System.Collections.Generic.List<object> size = new System.Collections.Generic.List<object>();
+        System.Collections.Generic.List<object> center = new System.Collections.Generic.List<object>();
+        min.Add(Round3(aabbMm[0]));
+        min.Add(Round3(aabbMm[1]));
+        min.Add(Round3(aabbMm[2]));
+        max.Add(Round3(aabbMm[3]));
+        max.Add(Round3(aabbMm[4]));
+        max.Add(Round3(aabbMm[5]));
+        size.Add(Round3(aabbMm[3] - aabbMm[0]));
+        size.Add(Round3(aabbMm[4] - aabbMm[1]));
+        size.Add(Round3(aabbMm[5] - aabbMm[2]));
+        center.Add(Round3((aabbMm[0] + aabbMm[3]) / 2.0));
+        center.Add(Round3((aabbMm[1] + aabbMm[4]) / 2.0));
+        center.Add(Round3((aabbMm[2] + aabbMm[5]) / 2.0));
+        record["min_mm"] = min;
+        record["max_mm"] = max;
+        record["min"] = min;
+        record["max"] = max;
+        record["size_mm"] = size;
+        record["center_mm"] = center;
+        record["xy_area_m2"] = Round3(((aabbMm[3] - aabbMm[0]) * (aabbMm[4] - aabbMm[1])) / 1000000.0);
+        record["volume_m3"] = Round3(((aabbMm[3] - aabbMm[0]) * (aabbMm[4] - aabbMm[1]) * (aabbMm[5] - aabbMm[2])) / 1000000000.0);
+        return record;
+    }
+
+    bool TryOverlapAabbMm(double[] first, double[] second, out double[] overlapMm)
+    {
+        overlapMm = null;
+        if (first == null || second == null)
+        {
+            return false;
+        }
+
+        double minX = System.Math.Max(first[0], second[0]);
+        double minY = System.Math.Max(first[1], second[1]);
+        double minZ = System.Math.Max(first[2], second[2]);
+        double maxX = System.Math.Min(first[3], second[3]);
+        double maxY = System.Math.Min(first[4], second[4]);
+        double maxZ = System.Math.Min(first[5], second[5]);
+        if (maxX <= minX || maxY <= minY || maxZ <= minZ)
+        {
+            return false;
+        }
+
+        overlapMm = new double[] { minX, minY, minZ, maxX, maxY, maxZ };
+        return true;
+    }
+
     System.Collections.Generic.Dictionary<string, int> plenumBoundaryBreakdown = new System.Collections.Generic.Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
     double plenumHeightMm = Round3(ToMm(ceilingZMax - ceilingZMin));
     double plenumHeightM = plenumHeightMm / 1000.0;
@@ -2109,6 +2313,97 @@ try
         warnings.Add("Existing MEP obstacle extraction was skipped because include_existing_mep=false.");
     }
 
+    System.Collections.Generic.Dictionary<string, double[]> obstacleAabbById = new System.Collections.Generic.Dictionary<string, double[]>(System.StringComparer.OrdinalIgnoreCase);
+    System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, object>> obstacleById = new System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, object>>(System.StringComparer.OrdinalIgnoreCase);
+    int invalidObstacleAabbCount = 0;
+    for (int i = 0; i < obstacles.Count; i++)
+    {
+        System.Collections.Generic.Dictionary<string, object> obstacleRecord = obstacles[i] as System.Collections.Generic.Dictionary<string, object>;
+        if (obstacleRecord == null)
+        {
+            invalidObstacleAabbCount++;
+            continue;
+        }
+
+        string obstacleId = RecordString(obstacleRecord, "id");
+        double[] obstacleAabbMm;
+        if (string.IsNullOrWhiteSpace(obstacleId) || !TryAabbMmFromRecord(obstacleRecord, "aabb_mm", out obstacleAabbMm))
+        {
+            invalidObstacleAabbCount++;
+            continue;
+        }
+
+        obstacleAabbById[obstacleId] = obstacleAabbMm;
+        obstacleById[obstacleId] = obstacleRecord;
+    }
+
+    System.Collections.Generic.Dictionary<string, int> plenumObstacleTypeBreakdown = new System.Collections.Generic.Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+    System.Collections.Generic.HashSet<string> plenumIdsWithObstacles = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+    int invalidPlenumAabbCount = 0;
+    for (int i = 0; i < plenumVolumes.Count; i++)
+    {
+        System.Collections.Generic.Dictionary<string, object> plenum = plenumVolumes[i] as System.Collections.Generic.Dictionary<string, object>;
+        if (plenum == null)
+        {
+            invalidPlenumAabbCount++;
+            continue;
+        }
+
+        string plenumId = RecordString(plenum, "id");
+        double[] plenumAabbMm;
+        if (string.IsNullOrWhiteSpace(plenumId) || !TryPlenumAabbMm(plenum, out plenumAabbMm))
+        {
+            invalidPlenumAabbCount++;
+            continue;
+        }
+
+        plenum["aabb_mm"] = AabbMmRecord(plenumAabbMm);
+
+        foreach (System.Collections.Generic.KeyValuePair<string, double[]> pair in obstacleAabbById)
+        {
+            double[] overlapMm;
+            if (!TryOverlapAabbMm(plenumAabbMm, pair.Value, out overlapMm))
+            {
+                continue;
+            }
+
+            System.Collections.Generic.Dictionary<string, object> obstacle = obstacleById[pair.Key];
+            string obstacleType = RecordString(obstacle, "obstacle_type");
+            System.Collections.Generic.Dictionary<string, object> intersection = new System.Collections.Generic.Dictionary<string, object>();
+            intersection["id"] = plenumId + "::" + pair.Key;
+            intersection["plenum_id"] = plenumId;
+            intersection["source_spatial_id"] = RecordString(plenum, "source_spatial_id");
+            intersection["source_room_id"] = RecordString(plenum, "source_room_id");
+            intersection["source_type"] = RecordString(plenum, "source_type");
+            intersection["level_name"] = RecordString(plenum, "level_name");
+            intersection["plenum_boundary_source"] = RecordString(plenum, "boundary_source");
+            intersection["obstacle_id"] = pair.Key;
+            intersection["obstacle_type"] = obstacleType;
+            intersection["obstacle_category"] = RecordString(obstacle, "category");
+            intersection["obstacle_source_link"] = RecordString(obstacle, "source_link");
+            intersection["obstacle_source_model_type"] = RecordString(obstacle, "source_type");
+            intersection["intersection_type"] = "overlap";
+            intersection["method"] = "aabb_overlap";
+            intersection["aabb_overlap_mm"] = AabbMmRecord(overlapMm);
+            intersection["z_overlap_mm"] = Round3(overlapMm[5] - overlapMm[2]);
+            intersection["xy_overlap_area_m2"] = Round3(((overlapMm[3] - overlapMm[0]) * (overlapMm[4] - overlapMm[1])) / 1000000.0);
+            intersection["overlap_volume_m3"] = Round3(((overlapMm[3] - overlapMm[0]) * (overlapMm[4] - overlapMm[1]) * (overlapMm[5] - overlapMm[2])) / 1000000000.0);
+
+            plenumObstacleIntersections.Add(intersection);
+            plenumIdsWithObstacles.Add(plenumId);
+            IncrementBreakdown(plenumObstacleTypeBreakdown, obstacleType);
+        }
+    }
+
+    if (invalidPlenumAabbCount > 0)
+    {
+        warnings.Add("Some plenum volumes could not be included in obstacle intersection mapping because their AABB could not be resolved: " + invalidPlenumAabbCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+    if (invalidObstacleAabbCount > 0)
+    {
+        warnings.Add("Some obstacles could not be included in plenum intersection mapping because their AABB could not be resolved: " + invalidObstacleAabbCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     System.Collections.Generic.Dictionary<string, object> source = new System.Collections.Generic.Dictionary<string, object>();
     source["host_document"] = document.Title;
     source["host_document_title"] = document.Title;
@@ -2134,6 +2429,15 @@ try
     summary["ceiling_zone_count"] = ceilingZones.Count;
     summary["shaft_count"] = shafts.Count;
     summary["obstacle_count"] = obstacles.Count;
+    summary["plenum_obstacle_intersection_count"] = plenumObstacleIntersections.Count;
+    summary["plenum_volume_with_obstacle_count"] = plenumIdsWithObstacles.Count;
+    summary["plenum_volume_without_obstacle_count"] = System.Math.Max(0, plenumVolumes.Count - plenumIdsWithObstacles.Count);
+    summary["plenum_obstacle_intersection_method"] = "aabb_overlap";
+    summary["invalid_plenum_aabb_count"] = invalidPlenumAabbCount;
+    summary["invalid_obstacle_aabb_count"] = invalidObstacleAabbCount;
+    summary["plenum_obstacle_intersection_type_breakdown"] = BreakdownRecord(
+        plenumObstacleTypeBreakdown,
+        new string[] { "beam", "column", "wall_or_partition", "slab_or_floor", "structural_slab", "ceiling", "existing_duct", "existing_pipe", "existing_mechanical_equipment", "existing_air_terminal" });
     summary["obstacle_type_breakdown"] = BreakdownRecord(
         obstacleTypeBreakdown,
         new string[] { "beam", "column", "wall_or_partition", "slab_or_floor", "structural_slab", "ceiling", "existing_duct", "existing_pipe", "existing_mechanical_equipment", "existing_air_terminal" });
@@ -2147,6 +2451,7 @@ try
     result["source"] = source;
     result["ceiling_zones"] = ceilingZones;
     result["plenum_volumes"] = plenumVolumes;
+    result["plenum_obstacle_intersections"] = plenumObstacleIntersections;
     result["rooms"] = rooms;
     result["shafts"] = shafts;
     result["obstacles"] = obstacles;
@@ -2164,6 +2469,7 @@ catch (System.Exception ex)
     failed["source"] = new System.Collections.Generic.Dictionary<string, object>();
     failed["ceiling_zones"] = new System.Collections.Generic.List<object>();
     failed["plenum_volumes"] = new System.Collections.Generic.List<object>();
+    failed["plenum_obstacle_intersections"] = new System.Collections.Generic.List<object>();
     failed["rooms"] = new System.Collections.Generic.List<object>();
     failed["shafts"] = new System.Collections.Generic.List<object>();
     failed["obstacles"] = new System.Collections.Generic.List<object>();
@@ -2178,5 +2484,5 @@ catch (System.Exception ex)
 
     string message = ex.GetType().FullName + ": " + ex.Message;
     message = message.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
-    return "{\"schema_version\":\"spatial-zone-extract.v1\",\"source\":{},\"ceiling_zones\":[],\"plenum_volumes\":[],\"rooms\":[],\"shafts\":[],\"obstacles\":[],\"preferred_zones\":[],\"forbidden_zones\":[],\"warnings\":[],\"errors\":[\"" + message + "\"]}";
+    return "{\"schema_version\":\"spatial-zone-extract.v1\",\"source\":{},\"ceiling_zones\":[],\"plenum_volumes\":[],\"plenum_obstacle_intersections\":[],\"rooms\":[],\"shafts\":[],\"obstacles\":[],\"preferred_zones\":[],\"forbidden_zones\":[],\"warnings\":[],\"errors\":[\"" + message + "\"]}";
 }
