@@ -383,6 +383,9 @@ Load these as needed for the current task:
 - `references/patterns/route-duct-dry-run.cs` - creates `SZ_PREVIEW_ROUTE`
   DirectShape route previews from diffuser candidate markers; reports estimated
   route length, branch tree, elbow count, and obstacle AABB intersections
+- `references/patterns/duct-sizing-from-flow.cs` - deterministic duct sizing
+  from airflow and velocity limits; reports selected dimensions, velocity, and
+  approximate friction loss without creating Revit elements
 - `references/patterns/spatial-zone-extract.cs` - read-only target-level
   spatial zone context for early MEP routing; extracts rooms/spaces, linked
   model transforms, first-class gross plenum volumes, ceiling/plenum zone,
