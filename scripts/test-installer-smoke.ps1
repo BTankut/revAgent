@@ -151,11 +151,14 @@ try {
     foreach ($relativePath in @(
             "src\revit-plugin\revit-mcp-plugin.sln",
             "src\revit-plugin\revit-mcp-plugin\revit-mcp-plugin.csproj",
-            "src\revit-plugin\SampleCommandSet\SampleCommandSet.csproj"
+            "src\revit-plugin\RevitMCPCommandSet\RevitMCPCommandSet.csproj",
+            "src\revit-plugin\RevitMCPViewCommandSet\RevitMCPViewCommandSet.csproj"
         )) {
         $projectText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot $relativePath)
         Assert-True ($projectText -notmatch $legacyRevitConfigPattern) "$relativePath still contains legacy Revit 2020/2021 build configuration."
     }
+    Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\RevitMCPCommandSet.csproj")) "Production RevitMCPCommandSet source project is missing."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\SampleCommandSet"))) "Legacy SampleCommandSet source should not be present in production source."
 
     Write-Host "Test Revit command registry includes view command set tools"
     $viewCommandJson = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPViewCommandSet\command.json") | ConvertFrom-Json
