@@ -227,7 +227,45 @@ try
         return true;
     }
 
+    double PointToSegmentDistance(Autodesk.Revit.DB.XYZ point, Autodesk.Revit.DB.XYZ start, Autodesk.Revit.DB.XYZ end)
+    {
+        Autodesk.Revit.DB.XYZ segment = end - start;
+        double denominator = segment.DotProduct(segment);
+        if (denominator <= 0.000000001) return point.DistanceTo(start);
+        double t = (point - start).DotProduct(segment) / denominator;
+        if (t < 0.0) t = 0.0;
+        if (t > 1.0) t = 1.0;
+        Autodesk.Revit.DB.XYZ projection = start + segment.Multiply(t);
+        return point.DistanceTo(projection);
+    }
+
+    Autodesk.Revit.DB.Connector ClosestOpenConnectorToCurve(Autodesk.Revit.DB.Mechanical.Duct duct, Autodesk.Revit.DB.XYZ curveStart, Autodesk.Revit.DB.XYZ curveEnd)
+    {
+        if (duct == null || duct.ConnectorManager == null) return null;
+        Autodesk.Revit.DB.Connector best = null;
+        double bestDistance = double.PositiveInfinity;
+        foreach (Autodesk.Revit.DB.Connector connector in duct.ConnectorManager.Connectors)
+        {
+            if (connector == null) continue;
+            try
+            {
+                if (connector.IsConnected) continue;
+            }
+            catch
+            {
+            }
+            double distance = PointToSegmentDistance(connector.Origin, curveStart, curveEnd);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = connector;
+            }
+        }
+        return best;
+    }
+
     bool commit = GetBoolOption("commit", false);
+    bool connectTakeoffs = GetBoolOption("connect_takeoffs", false);
     bool clearExistingPlaced = GetBoolOption("clear_existing_placed", false);
     string routePrefix = GetOption("route_prefix", "SZ_PREVIEW_ROUTE");
     int maxSegments = GetIntOption("max_segments", 0);
@@ -239,10 +277,15 @@ try
     double branchHeightMm = System.Math.Max(25.0, GetDoubleOption("branch_height_mm", defaultHeightMm));
     double minSegmentLengthMm = System.Math.Max(10.0, GetDoubleOption("min_segment_length_mm", 100.0));
     string commentsMarker = "DPE_DUCT_NETWORK_COMMIT";
+    string fittingMarker = "DPE_DUCT_NETWORK_COMMIT_FITTING";
 
-    if (commit)
+    if (commit && connectTakeoffs)
     {
-        warnings.Add("This first commit pattern creates independent duct segments from route preview boxes; fitting and connector solving are intentionally not performed here.");
+        warnings.Add("connect_takeoffs=true creates branch takeoff fittings against the committed trunk duct; full tee/elbow network solving is still outside this pattern.");
+    }
+    else if (commit)
+    {
+        warnings.Add("This first commit pattern creates independent duct segments from route preview geometry; fitting and connector solving are intentionally not performed unless connect_takeoffs=true.");
     }
 
     System.Collections.Generic.List<Autodesk.Revit.DB.Level> hostLevels = new System.Collections.Generic.List<Autodesk.Revit.DB.Level>();
@@ -431,7 +474,10 @@ try
     int plannedCount = 0;
     int placedCount = 0;
     int existingPlacedDeleted = 0;
+    int takeoffFittingsCreated = 0;
+    int takeoffFittingErrors = 0;
     System.Collections.Generic.List<object> committedSegments = new System.Collections.Generic.List<object>();
+    System.Collections.Generic.List<object> placedDuctRows = new System.Collections.Generic.List<object>();
 
     if (commit && errors.Count == 0)
     {
@@ -458,6 +504,21 @@ try
                 {
                 }
                 if (commentsValue.Contains(commentsMarker)) deleteIds.Add(element.Id);
+            }
+            foreach (Autodesk.Revit.DB.Element element in new Autodesk.Revit.DB.FilteredElementCollector(document)
+                .OfCategory(Autodesk.Revit.DB.BuiltInCategory.OST_DuctFitting)
+                .WhereElementIsNotElementType())
+            {
+                string commentsValue = string.Empty;
+                try
+                {
+                    Autodesk.Revit.DB.Parameter comments = element.get_Parameter(Autodesk.Revit.DB.BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS);
+                    if (comments != null) commentsValue = comments.AsString() ?? string.Empty;
+                }
+                catch
+                {
+                }
+                if (commentsValue.Contains(fittingMarker)) deleteIds.Add(element.Id);
             }
             if (deleteIds.Count > 0)
             {
@@ -513,6 +574,11 @@ try
                     placedElementId = duct.Id.IntegerValue;
                     placedCount++;
                     status = "placed";
+                    System.Collections.Generic.List<object> placedRow = new System.Collections.Generic.List<object>();
+                    placedRow.Add(segmentType);
+                    placedRow.Add(duct.Id.IntegerValue);
+                    placedRow.Add(sourceRouteId);
+                    placedDuctRows.Add(placedRow);
                 }
             }
             catch (System.Exception segmentEx)
@@ -540,6 +606,79 @@ try
         committedSegments.Add(record);
     }
 
+    if (commit && connectTakeoffs && errors.Count == 0 && placedDuctRows.Count > 0)
+    {
+        try
+        {
+            document.Regenerate();
+        }
+        catch
+        {
+        }
+
+        Autodesk.Revit.DB.Mechanical.Duct trunkDuct = null;
+        for (int i = 0; i < placedDuctRows.Count; i++)
+        {
+            System.Collections.Generic.List<object> row = placedDuctRows[i] as System.Collections.Generic.List<object>;
+            if (row == null || row.Count < 2) continue;
+            string placedType = row[0] as string;
+            if (placedType != "trunk") continue;
+            int placedId = (int)row[1];
+            trunkDuct = document.GetElement(new Autodesk.Revit.DB.ElementId(placedId)) as Autodesk.Revit.DB.Mechanical.Duct;
+            if (trunkDuct != null) break;
+        }
+
+        Autodesk.Revit.DB.LocationCurve trunkLocation = trunkDuct == null ? null : trunkDuct.Location as Autodesk.Revit.DB.LocationCurve;
+        Autodesk.Revit.DB.Curve trunkCurve = trunkLocation == null ? null : trunkLocation.Curve;
+        if (trunkDuct == null || trunkCurve == null)
+        {
+            warnings.Add("connect_takeoffs=true requested, but no committed trunk duct was available for takeoff fitting creation.");
+        }
+        else
+        {
+            Autodesk.Revit.DB.XYZ trunkStart = trunkCurve.GetEndPoint(0);
+            Autodesk.Revit.DB.XYZ trunkEnd = trunkCurve.GetEndPoint(1);
+            for (int i = 0; i < placedDuctRows.Count; i++)
+            {
+                System.Collections.Generic.List<object> row = placedDuctRows[i] as System.Collections.Generic.List<object>;
+                if (row == null || row.Count < 3) continue;
+                string placedType = row[0] as string;
+                if (placedType != "branch") continue;
+                int placedId = (int)row[1];
+                int sourceRouteId = (int)row[2];
+                Autodesk.Revit.DB.Mechanical.Duct branchDuct = document.GetElement(new Autodesk.Revit.DB.ElementId(placedId)) as Autodesk.Revit.DB.Mechanical.Duct;
+                Autodesk.Revit.DB.Connector branchConnector = ClosestOpenConnectorToCurve(branchDuct, trunkStart, trunkEnd);
+                if (branchDuct == null || branchConnector == null)
+                {
+                    takeoffFittingErrors++;
+                    warnings.Add("Could not find an open branch connector for takeoff fitting on duct " + placedId.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".");
+                    continue;
+                }
+                try
+                {
+                    Autodesk.Revit.DB.FamilyInstance fitting = document.Create.NewTakeoffFitting(branchConnector, trunkDuct);
+                    if (fitting == null)
+                    {
+                        takeoffFittingErrors++;
+                        warnings.Add("NewTakeoffFitting returned null for branch duct " + placedId.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".");
+                        continue;
+                    }
+                    Autodesk.Revit.DB.Parameter comments = fitting.get_Parameter(Autodesk.Revit.DB.BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS);
+                    if (comments != null && !comments.IsReadOnly)
+                    {
+                        comments.Set(fittingMarker + " | source_route=" + routePrefix + " | source_id=" + sourceRouteId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                    takeoffFittingsCreated++;
+                }
+                catch (System.Exception fittingEx)
+                {
+                    takeoffFittingErrors++;
+                    warnings.Add("Could not create takeoff fitting for branch duct " + placedId.ToString(System.Globalization.CultureInfo.InvariantCulture) + ": " + fittingEx.GetType().Name + ": " + fittingEx.Message);
+                }
+            }
+        }
+    }
+
     if (commit && startedOwnTransaction && transaction != null)
     {
         transaction.Commit();
@@ -549,11 +688,14 @@ try
 
     System.Collections.Generic.Dictionary<string, object> summary = new System.Collections.Generic.Dictionary<string, object>();
     summary["commit"] = commit;
+    summary["connect_takeoffs"] = connectTakeoffs;
     summary["route_prefix"] = routePrefix;
     summary["route_preview_count"] = segmentRows.Count;
     summary["planned_count"] = plannedCount;
     summary["placed_count"] = placedCount;
     summary["existing_placed_deleted"] = existingPlacedDeleted;
+    summary["takeoff_fittings_created"] = takeoffFittingsCreated;
+    summary["takeoff_fitting_errors"] = takeoffFittingErrors;
     summary["max_segments"] = maxSegments;
     summary["duct_type_id"] = ductTypeId == Autodesk.Revit.DB.ElementId.InvalidElementId ? null : (object)ductTypeId.IntegerValue;
     summary["duct_type_name"] = ductTypeName;
