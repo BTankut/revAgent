@@ -374,6 +374,9 @@ Load these as needed for the current task:
 - `references/patterns/segment-friction-loss-duct.cs` — approximate duct
   segment friction loss by system; excludes fittings/accessory local losses
 - `references/patterns/diffuser-count.cs` — diffuser count by system + level
+- `references/patterns/diffuser-candidate-preview.cs` - creates
+  `SZ_PREVIEW_DIFFUSER` DirectShape markers for candidate diffuser points in
+  host rooms/MEP spaces; does not place real diffuser families
 - `references/patterns/spatial-zone-extract.cs` - read-only target-level
   spatial zone context for early MEP routing; extracts rooms/spaces, linked
   model transforms, first-class gross plenum volumes, ceiling/plenum zone,
