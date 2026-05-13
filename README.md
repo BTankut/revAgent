@@ -434,6 +434,7 @@ revit-mcp-skill/
 |       |-- diffuser-count.cs
 |       |-- diffuser-candidate-preview.cs
 |       |-- place-diffusers-in-room.cs
+|       |-- route-duct-dry-run.cs
 |       |-- spatial-zone-extract.cs
 |       |-- spatial-zone-validate.cs
 |       `-- spatial-zone-preview.cs
