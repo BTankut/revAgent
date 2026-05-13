@@ -837,7 +837,8 @@ function Install-NodeFromBundledMsi {
 
     $msiexecPath = Join-Path $env:WINDIR "System32\msiexec.exe"
     Write-Host "Installing Node.js from bundled MSI: $msiPath"
-    $process = Start-Process -FilePath $msiexecPath -ArgumentList @("/i", $msiPath, "/qn", "/norestart") -Wait -PassThru
+    $msiArgument = '"' + $msiPath.Replace('"', '\"') + '"'
+    $process = Start-Process -FilePath $msiexecPath -ArgumentList "/i $msiArgument /qn /norestart" -Wait -PassThru
     if (@(0, 3010) -notcontains $process.ExitCode) {
         throw "Bundled Node.js MSI install failed with exit code $($process.ExitCode): $msiPath"
     }
