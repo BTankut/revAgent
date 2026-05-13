@@ -746,6 +746,10 @@ try
 
     string levelNameOption = GetOption("levelName", null);
     string levelElevationOption = GetOption("target_level_elevation_mm", GetOption("level_elevation_mm", null));
+    bool hasExplicitLevelId = !string.IsNullOrWhiteSpace(levelIdOption);
+    bool hasExplicitLevelName = !string.IsNullOrWhiteSpace(levelNameOption);
+    bool hasExplicitLevelElevation = !string.IsNullOrWhiteSpace(levelElevationOption);
+    bool hasAnyExplicitLevelSelector = hasExplicitLevelId || hasExplicitLevelName || hasExplicitLevelElevation;
     System.Collections.Generic.List<Autodesk.Revit.DB.Level> hostLevels = new System.Collections.Generic.List<Autodesk.Revit.DB.Level>();
     foreach (Autodesk.Revit.DB.Element element in new Autodesk.Revit.DB.FilteredElementCollector(document).OfClass(typeof(Autodesk.Revit.DB.Level)))
     {
@@ -788,21 +792,6 @@ try
         }
     }
 
-    if (targetLevel == null && useActiveViewLevel)
-    {
-        try
-        {
-            targetLevel = document.ActiveView.GenLevel;
-            if (targetLevel != null)
-            {
-                targetLevelSource = "activeView";
-            }
-        }
-        catch
-        {
-        }
-    }
-
     if (targetLevel == null && !string.IsNullOrWhiteSpace(levelElevationOption) && hostLevels.Count > 0)
     {
         double requestedElevationMm;
@@ -833,6 +822,21 @@ try
         else
         {
             warnings.Add("Could not parse target_level_elevation_mm value '" + levelElevationOption + "'.");
+        }
+    }
+
+    if (targetLevel == null && useActiveViewLevel && !hasAnyExplicitLevelSelector)
+    {
+        try
+        {
+            targetLevel = document.ActiveView.GenLevel;
+            if (targetLevel != null)
+            {
+                targetLevelSource = "activeView";
+            }
+        }
+        catch
+        {
         }
     }
 
