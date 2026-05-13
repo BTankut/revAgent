@@ -144,6 +144,16 @@ try
         return Autodesk.Revit.DB.UnitUtils.ConvertToInternalUnits(millimeters, Autodesk.Revit.DB.UnitTypeId.Millimeters);
     }
 
+    double ToMm(double feet)
+    {
+        return Autodesk.Revit.DB.UnitUtils.ConvertFromInternalUnits(feet, Autodesk.Revit.DB.UnitTypeId.Millimeters);
+    }
+
+    double Round3(double value)
+    {
+        return System.Math.Round(value, 3);
+    }
+
     Autodesk.Revit.DB.Level ElementLevel(Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Element element)
     {
         if (element == null) return null;
@@ -330,13 +340,20 @@ try
     bool clearExistingPreview = GetBoolOption("clear_existing_preview", true);
     bool showRooms = GetBoolOption("show_rooms", true);
     bool showRoomCenters = GetBoolOption("show_room_centers", true);
+    bool showPlenumVolume = GetBoolOption("show_plenum_volume", previewMode);
     bool showCeilingZone = GetBoolOption("show_ceiling_zone", true);
     bool showObstacles = GetBoolOption("show_obstacles", true);
     bool showShafts = GetBoolOption("show_shafts", true);
     bool includeExistingMep = GetBoolOption("include_existing_mep", false);
     int maxObstaclesToDraw = (int)GetDoubleOption("max_obstacles_to_draw", 300.0);
-    double ceilingZMin = targetLevel.Elevation + FromMm(GetDoubleOption("default_ceiling_height_mm", 2700.0));
-    double ceilingZMax = ceilingZMin + FromMm(GetDoubleOption("default_plenum_height_mm", 600.0));
+    double defaultCeilingHeightMm = GetDoubleOption("default_ceiling_height_mm", 2700.0);
+    double defaultPlenumHeightMm = GetDoubleOption("default_plenum_height_mm", 600.0);
+    double ceilingZMin = targetLevel.Elevation + FromMm(defaultCeilingHeightMm);
+    double ceilingZMax = ceilingZMin + FromMm(defaultPlenumHeightMm);
+    string ceilingZSource = "fallback_default_ceiling_height";
+    string slabZSource = "fallback_default_plenum_height";
+    string ceilingSourceElement = string.Empty;
+    string slabSourceElement = string.Empty;
     Autodesk.Revit.DB.ElementId previewCategoryId = new Autodesk.Revit.DB.ElementId(Autodesk.Revit.DB.BuiltInCategory.OST_GenericModel);
     if (!Autodesk.Revit.DB.DirectShape.IsValidCategoryId(previewCategoryId, document))
     {
@@ -357,7 +374,60 @@ try
         return System.Math.Abs(sourceLevel.Elevation - targetLevel.Elevation) <= FromMm(levelToleranceMm);
     }
 
-    Autodesk.Revit.DB.Solid MakeBox(double minX, double minY, double minZ, double maxX, double maxY, double maxZ)
+    Autodesk.Revit.DB.ElementId EnsurePreviewMaterial(string materialName, int red, int green, int blue, int transparency)
+    {
+        Autodesk.Revit.DB.Material material = null;
+        foreach (Autodesk.Revit.DB.Element element in new Autodesk.Revit.DB.FilteredElementCollector(document).OfClass(typeof(Autodesk.Revit.DB.Material)))
+        {
+            Autodesk.Revit.DB.Material candidate = element as Autodesk.Revit.DB.Material;
+            if (candidate != null && candidate.Name == materialName)
+            {
+                material = candidate;
+                break;
+            }
+        }
+        if (material == null)
+        {
+            Autodesk.Revit.DB.ElementId materialId = Autodesk.Revit.DB.Material.Create(document, materialName);
+            material = document.GetElement(materialId) as Autodesk.Revit.DB.Material;
+        }
+        if (material == null) return Autodesk.Revit.DB.ElementId.InvalidElementId;
+
+        int safeRed = System.Math.Max(0, System.Math.Min(255, red));
+        int safeGreen = System.Math.Max(0, System.Math.Min(255, green));
+        int safeBlue = System.Math.Max(0, System.Math.Min(255, blue));
+        int safeTransparency = System.Math.Max(0, System.Math.Min(100, transparency));
+        try
+        {
+            material.Color = new Autodesk.Revit.DB.Color((byte)safeRed, (byte)safeGreen, (byte)safeBlue);
+            material.Transparency = safeTransparency;
+            material.UseRenderAppearanceForShading = false;
+        }
+        catch (System.Exception ex)
+        {
+            warnings.Add("Could not update preview material '" + materialName + "': " + ex.Message);
+        }
+        return material.Id;
+    }
+
+    Autodesk.Revit.DB.Solid CreateExtrusion(System.Collections.Generic.List<Autodesk.Revit.DB.CurveLoop> loops, double height, Autodesk.Revit.DB.ElementId materialId)
+    {
+        if (materialId != null && materialId != Autodesk.Revit.DB.ElementId.InvalidElementId)
+        {
+            Autodesk.Revit.DB.SolidOptions solidOptions = new Autodesk.Revit.DB.SolidOptions(materialId, Autodesk.Revit.DB.ElementId.InvalidElementId);
+            try
+            {
+                return Autodesk.Revit.DB.GeometryCreationUtilities.CreateExtrusionGeometry(loops, Autodesk.Revit.DB.XYZ.BasisZ, height, solidOptions);
+            }
+            finally
+            {
+                solidOptions.Dispose();
+            }
+        }
+        return Autodesk.Revit.DB.GeometryCreationUtilities.CreateExtrusionGeometry(loops, Autodesk.Revit.DB.XYZ.BasisZ, height);
+    }
+
+    Autodesk.Revit.DB.Solid MakeBox(double minX, double minY, double minZ, double maxX, double maxY, double maxZ, Autodesk.Revit.DB.ElementId materialId)
     {
         double minSize = FromMm(20.0);
         if (maxX - minX < minSize)
@@ -388,10 +458,102 @@ try
         loop.Append(Autodesk.Revit.DB.Line.CreateBound(p4, p1));
         System.Collections.Generic.List<Autodesk.Revit.DB.CurveLoop> loops = new System.Collections.Generic.List<Autodesk.Revit.DB.CurveLoop>();
         loops.Add(loop);
-        return Autodesk.Revit.DB.GeometryCreationUtilities.CreateExtrusionGeometry(loops, Autodesk.Revit.DB.XYZ.BasisZ, maxZ - minZ);
+        return CreateExtrusion(loops, maxZ - minZ, materialId);
+    }
+
+    bool SamePoint2d(Autodesk.Revit.DB.XYZ left, Autodesk.Revit.DB.XYZ right)
+    {
+        if (left == null || right == null) return false;
+        double tolerance = FromMm(1.0);
+        return System.Math.Abs(left.X - right.X) <= tolerance && System.Math.Abs(left.Y - right.Y) <= tolerance;
+    }
+
+    double PolygonArea(System.Collections.Generic.List<Autodesk.Revit.DB.XYZ> points)
+    {
+        if (points == null || points.Count < 3) return 0.0;
+        double area = 0.0;
+        for (int i = 0; i < points.Count; i++)
+        {
+            Autodesk.Revit.DB.XYZ a = points[i];
+            Autodesk.Revit.DB.XYZ b = points[(i + 1) % points.Count];
+            area += a.X * b.Y - b.X * a.Y;
+        }
+        return System.Math.Abs(area) / 2.0;
+    }
+
+    System.Collections.Generic.List<Autodesk.Revit.DB.XYZ> SpatialBoundaryPoints(Autodesk.Revit.DB.SpatialElement spatial)
+    {
+        try
+        {
+            Autodesk.Revit.DB.SpatialElementBoundaryOptions boundaryOptions = new Autodesk.Revit.DB.SpatialElementBoundaryOptions();
+            System.Collections.Generic.IList<System.Collections.Generic.IList<Autodesk.Revit.DB.BoundarySegment>> loops = spatial.GetBoundarySegments(boundaryOptions);
+            if (loops == null || loops.Count == 0) return null;
+
+            System.Collections.Generic.List<Autodesk.Revit.DB.XYZ> bestPoints = null;
+            double bestArea = 0.0;
+            for (int loopIndex = 0; loopIndex < loops.Count; loopIndex++)
+            {
+                if (loops[loopIndex] == null || loops[loopIndex].Count == 0) continue;
+                System.Collections.Generic.List<Autodesk.Revit.DB.XYZ> points = new System.Collections.Generic.List<Autodesk.Revit.DB.XYZ>();
+                for (int segmentIndex = 0; segmentIndex < loops[loopIndex].Count; segmentIndex++)
+                {
+                    Autodesk.Revit.DB.Curve curve = loops[loopIndex][segmentIndex].GetCurve();
+                    if (curve == null) continue;
+                    System.Collections.Generic.IList<Autodesk.Revit.DB.XYZ> tessellated = curve.Tessellate();
+                    for (int pointIndex = 0; pointIndex < tessellated.Count; pointIndex++)
+                    {
+                        Autodesk.Revit.DB.XYZ point = new Autodesk.Revit.DB.XYZ(tessellated[pointIndex].X, tessellated[pointIndex].Y, 0.0);
+                        if (points.Count == 0 || !SamePoint2d(points[points.Count - 1], point))
+                        {
+                            points.Add(point);
+                        }
+                    }
+                }
+                if (points.Count > 1 && SamePoint2d(points[0], points[points.Count - 1]))
+                {
+                    points.RemoveAt(points.Count - 1);
+                }
+                double area = PolygonArea(points);
+                if (points.Count >= 3 && area > bestArea)
+                {
+                    bestArea = area;
+                    bestPoints = points;
+                }
+            }
+            return bestPoints;
+        }
+        catch (System.Exception ex)
+        {
+            warnings.Add("Plenum polygon boundary extraction failed for spatial element " + spatial.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture) + ": " + ex.Message);
+        }
+        return null;
+    }
+
+    Autodesk.Revit.DB.Solid MakePolygonPrism(System.Collections.Generic.List<Autodesk.Revit.DB.XYZ> points, double minZ, double maxZ, Autodesk.Revit.DB.ElementId materialId)
+    {
+        if (points == null || points.Count < 3) return null;
+        Autodesk.Revit.DB.CurveLoop loop = new Autodesk.Revit.DB.CurveLoop();
+        int segmentCount = 0;
+        for (int i = 0; i < points.Count; i++)
+        {
+            Autodesk.Revit.DB.XYZ sourceStart = points[i];
+            Autodesk.Revit.DB.XYZ sourceEnd = points[(i + 1) % points.Count];
+            if (SamePoint2d(sourceStart, sourceEnd)) continue;
+            Autodesk.Revit.DB.XYZ start = new Autodesk.Revit.DB.XYZ(sourceStart.X, sourceStart.Y, minZ);
+            Autodesk.Revit.DB.XYZ end = new Autodesk.Revit.DB.XYZ(sourceEnd.X, sourceEnd.Y, minZ);
+            loop.Append(Autodesk.Revit.DB.Line.CreateBound(start, end));
+            segmentCount++;
+        }
+        if (segmentCount < 3) return null;
+        System.Collections.Generic.List<Autodesk.Revit.DB.CurveLoop> loops = new System.Collections.Generic.List<Autodesk.Revit.DB.CurveLoop>();
+        loops.Add(loop);
+        return CreateExtrusion(loops, maxZ - minZ, materialId);
     }
 
     int previewElementsCreated = 0;
+    int plenumVolumesPreviewed = 0;
+    int plenumPolygonCount = 0;
+    int plenumBboxFallbackCount = 0;
     int roomsPreviewed = 0;
     int spacesPreviewed = 0;
     int obstaclesPreviewed = 0;
@@ -403,10 +565,13 @@ try
     double footprintMinY = double.PositiveInfinity;
     double footprintMaxX = double.NegativeInfinity;
     double footprintMaxY = double.NegativeInfinity;
+    System.Collections.Generic.List<object[]> spatialPreviewRecords = new System.Collections.Generic.List<object[]>();
+    Autodesk.Revit.DB.ElementId defaultMaterialId = Autodesk.Revit.DB.ElementId.InvalidElementId;
+    Autodesk.Revit.DB.ElementId plenumMaterialId = Autodesk.Revit.DB.ElementId.InvalidElementId;
 
-    void CreatePreviewBox(double[] aabb, string label)
+    void CreatePreviewSolid(Autodesk.Revit.DB.Solid solid, string label)
     {
-        Autodesk.Revit.DB.Solid solid = MakeBox(aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]);
+        if (solid == null) return;
         Autodesk.Revit.DB.DirectShape directShape = Autodesk.Revit.DB.DirectShape.CreateElement(document, previewCategoryId);
         directShape.ApplicationId = previewPrefix;
         directShape.ApplicationDataId = marker + " | " + label;
@@ -424,11 +589,57 @@ try
         previewElementsCreated++;
     }
 
+    void CreatePreviewBox(double[] aabb, string label, Autodesk.Revit.DB.ElementId materialId)
+    {
+        Autodesk.Revit.DB.Solid solid = MakeBox(aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5], materialId);
+        CreatePreviewSolid(solid, label);
+    }
+
+    bool AabbOverlapsFootprint(double[] aabb, double padding)
+    {
+        if (!hasFootprint || aabb == null) return true;
+        return !(aabb[3] < footprintMinX - padding || aabb[0] > footprintMaxX + padding ||
+            aabb[4] < footprintMinY - padding || aabb[1] > footprintMaxY + padding);
+    }
+
+    double FindLowestCategoryBottom(Autodesk.Revit.DB.BuiltInCategory category, double searchMinZ, double searchMaxZ, out string sourceDescription)
+    {
+        sourceDescription = string.Empty;
+        bool found = false;
+        double best = 0.0;
+        try
+        {
+            foreach (Autodesk.Revit.DB.Element element in new Autodesk.Revit.DB.FilteredElementCollector(document).OfCategory(category).WhereElementIsNotElementType())
+            {
+                double[] aabb = ComputeAabbFeet(element.get_BoundingBox(null), Autodesk.Revit.DB.Transform.Identity);
+                if (aabb == null) continue;
+                double bottom = aabb[2];
+                if (bottom < searchMinZ || bottom > searchMaxZ) continue;
+                if (!AabbOverlapsFootprint(aabb, FromMm(1000.0))) continue;
+                if (!found || bottom < best)
+                {
+                    found = true;
+                    best = bottom;
+                    sourceDescription = "Host:" + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            warnings.Add("Could not search " + category.ToString() + " for plenum z source: " + ex.Message);
+        }
+        return found ? best : double.NaN;
+    }
+
     if (!document.IsModifiable)
     {
         transaction = new Autodesk.Revit.DB.Transaction(document, "Spatial Zone Preview");
         transaction.Start();
         startedOwnTransaction = true;
+    }
+    if (showPlenumVolume)
+    {
+        plenumMaterialId = EnsurePreviewMaterial(previewPrefix + " Plenum Volume", 0, 190, 220, 78);
     }
 
     if (clearExistingPreview)
@@ -470,10 +681,11 @@ try
                 footprintMinY = System.Math.Min(footprintMinY, aabb[1]);
                 footprintMaxX = System.Math.Max(footprintMaxX, aabb[3]);
                 footprintMaxY = System.Math.Max(footprintMaxY, aabb[4]);
+                spatialPreviewRecords.Add(new object[] { aabb, SpatialBoundaryPoints(spatial), label, element.Id.IntegerValue });
                 if (showRooms)
                 {
                     double z = targetLevel.Elevation + FromMm(30.0);
-                    CreatePreviewBox(new double[] { aabb[0], aabb[1], z, aabb[3], aabb[4], z + FromMm(30.0) }, label + " " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    CreatePreviewBox(new double[] { aabb[0], aabb[1], z, aabb[3], aabb[4], z + FromMm(30.0) }, label + " " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture), defaultMaterialId);
                 }
                 if (showRoomCenters)
                 {
@@ -481,7 +693,7 @@ try
                     double cy = (aabb[1] + aabb[4]) / 2.0;
                     double cz = targetLevel.Elevation + FromMm(120.0);
                     double r = FromMm(120.0);
-                    CreatePreviewBox(new double[] { cx - r, cy - r, cz, cx + r, cy + r, cz + r }, label + "-center " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    CreatePreviewBox(new double[] { cx - r, cy - r, cz, cx + r, cy + r, cz + r }, label + "-center " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture), defaultMaterialId);
                 }
                 if (isSpace) spacesPreviewed++;
                 else roomsPreviewed++;
@@ -491,9 +703,71 @@ try
         PreviewSpatialCategory(Autodesk.Revit.DB.BuiltInCategory.OST_Rooms, "room", false);
         PreviewSpatialCategory(Autodesk.Revit.DB.BuiltInCategory.OST_MEPSpaces, "space", true);
 
+        double searchMinZ = targetLevel.Elevation + FromMm(1800.0);
+        double searchMaxZ = targetLevel.Elevation + FromMm(7000.0);
+        double modelCeilingBottom = FindLowestCategoryBottom(Autodesk.Revit.DB.BuiltInCategory.OST_Ceilings, searchMinZ, searchMaxZ, out ceilingSourceElement);
+        if (!double.IsNaN(modelCeilingBottom))
+        {
+            ceilingZMin = modelCeilingBottom;
+            ceilingZSource = "model_ceiling_bottom";
+        }
+        else
+        {
+            warnings.Add("No ceiling element was found above target level. Using default_ceiling_height_mm=" + defaultCeilingHeightMm.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".");
+        }
+
+        double slabSearchMinZ = ceilingZMin + FromMm(100.0);
+        double slabSearchMaxZ = targetLevel.Elevation + FromMm(9000.0);
+        double modelSlabBottom = FindLowestCategoryBottom(Autodesk.Revit.DB.BuiltInCategory.OST_Floors, slabSearchMinZ, slabSearchMaxZ, out slabSourceElement);
+        if (!double.IsNaN(modelSlabBottom))
+        {
+            ceilingZMax = modelSlabBottom;
+            slabZSource = "model_slab_bottom";
+        }
+        else
+        {
+            warnings.Add("No slab/floor bottom was found above target level. Using default_plenum_height_mm=" + defaultPlenumHeightMm.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".");
+        }
+
+        if (showPlenumVolume)
+        {
+            for (int i = 0; i < spatialPreviewRecords.Count; i++)
+            {
+                double[] aabb = spatialPreviewRecords[i][0] as double[];
+                System.Collections.Generic.List<Autodesk.Revit.DB.XYZ> polygonPoints = spatialPreviewRecords[i][1] as System.Collections.Generic.List<Autodesk.Revit.DB.XYZ>;
+                string label = spatialPreviewRecords[i][2] as string;
+                int elementId = (int)spatialPreviewRecords[i][3];
+                string source = "polygon";
+                Autodesk.Revit.DB.Solid solid = null;
+                if (polygonPoints != null && polygonPoints.Count >= 3)
+                {
+                    try
+                    {
+                        solid = MakePolygonPrism(polygonPoints, ceilingZMin, ceilingZMax, plenumMaterialId);
+                    }
+                    catch (System.Exception ex)
+                    {
+                        warnings.Add("Could not create polygon plenum volume for spatial element " + elementId.ToString(System.Globalization.CultureInfo.InvariantCulture) + ": " + ex.Message);
+                    }
+                }
+                if (solid == null)
+                {
+                    source = "bbox_fallback";
+                    solid = MakeBox(aabb[0], aabb[1], ceilingZMin, aabb[3], aabb[4], ceilingZMax, plenumMaterialId);
+                    plenumBboxFallbackCount++;
+                }
+                else
+                {
+                    plenumPolygonCount++;
+                }
+                CreatePreviewSolid(solid, label + "-plenum-volume " + elementId.ToString(System.Globalization.CultureInfo.InvariantCulture) + " " + source);
+                plenumVolumesPreviewed++;
+            }
+        }
+
         if (showCeilingZone && hasFootprint)
         {
-            CreatePreviewBox(new double[] { footprintMinX, footprintMinY, ceilingZMin, footprintMaxX, footprintMaxY, ceilingZMin + FromMm(50.0) }, "ceiling-zone " + targetLevel.Name);
+            CreatePreviewBox(new double[] { footprintMinX, footprintMinY, ceilingZMin, footprintMaxX, footprintMaxY, ceilingZMin + FromMm(50.0) }, "ceiling-zone " + targetLevel.Name, defaultMaterialId);
             ceilingZonesPreviewed = 1;
         }
 
@@ -509,8 +783,8 @@ try
                 double[] aabb = ComputeAabbFeet(element.get_BoundingBox(null), Autodesk.Revit.DB.Transform.Identity);
                 if (aabb == null) continue;
                 if (aabb[5] < ceilingZMin - FromMm(500.0) || aabb[2] > ceilingZMax + FromMm(500.0)) continue;
-                if (hasFootprint && (aabb[3] < footprintMinX - FromMm(1000.0) || aabb[0] > footprintMaxX + FromMm(1000.0) || aabb[4] < footprintMinY - FromMm(1000.0) || aabb[1] > footprintMaxY + FromMm(1000.0))) continue;
-                CreatePreviewBox(aabb, label + " " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                if (!AabbOverlapsFootprint(aabb, FromMm(1000.0))) continue;
+                CreatePreviewBox(aabb, label + " " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture), defaultMaterialId);
                 obstaclesPreviewed++;
             }
         }
@@ -538,7 +812,7 @@ try
                 double[] aabb = ComputeAabbFeet(element.get_BoundingBox(null), Autodesk.Revit.DB.Transform.Identity);
                 if (aabb == null) continue;
                 if (aabb[5] < targetLevel.Elevation - FromMm(500.0) || aabb[2] > ceilingZMax + FromMm(3000.0)) continue;
-                CreatePreviewBox(aabb, "shaft " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                CreatePreviewBox(aabb, "shaft " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture), defaultMaterialId);
                 shaftsPreviewed++;
             }
         }
@@ -558,6 +832,10 @@ try
 
     System.Collections.Generic.Dictionary<string, object> summary = new System.Collections.Generic.Dictionary<string, object>();
     summary["preview_elements_created"] = previewElementsCreated;
+    summary["plenum_volumes_previewed"] = plenumVolumesPreviewed;
+    summary["plenum_boundary_source"] = plenumVolumesPreviewed == 0 ? "none" : (plenumBboxFallbackCount > 0 ? "bbox_fallback" : "polygon");
+    summary["plenum_polygon_count"] = plenumPolygonCount;
+    summary["plenum_bbox_fallback_count"] = plenumBboxFallbackCount;
     summary["rooms_previewed"] = roomsPreviewed;
     summary["spaces_previewed"] = spacesPreviewed;
     summary["spatial_elements_previewed"] = roomsPreviewed + spacesPreviewed;
@@ -566,6 +844,11 @@ try
     summary["ceiling_zones_previewed"] = ceilingZonesPreviewed;
     summary["max_obstacles_to_draw"] = maxObstaclesToDraw;
     summary["truncated_obstacles"] = truncatedObstacles;
+    summary["plenum_volume_bottom_mm"] = Round3(ToMm(ceilingZMin));
+    summary["plenum_volume_top_mm"] = Round3(ToMm(ceilingZMax));
+    summary["plenum_z_source_detail"] = ceilingZSource + "/" + slabZSource;
+    summary["ceiling_source_element"] = string.IsNullOrWhiteSpace(ceilingSourceElement) ? null : ceilingSourceElement;
+    summary["slab_source_element"] = string.IsNullOrWhiteSpace(slabSourceElement) ? null : slabSourceElement;
     summary["target_level_name"] = targetLevel.Name;
     summary["target_level_resolution"] = targetLevelSource;
 
