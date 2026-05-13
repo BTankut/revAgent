@@ -160,6 +160,15 @@ try
         return record;
     }
 
+    string PointMetadata(object pointValue)
+    {
+        System.Collections.IList point = pointValue as System.Collections.IList;
+        if (point == null || point.Count < 3) return string.Empty;
+        return System.Convert.ToString(point[0], System.Globalization.CultureInfo.InvariantCulture) + "," +
+            System.Convert.ToString(point[1], System.Globalization.CultureInfo.InvariantCulture) + "," +
+            System.Convert.ToString(point[2], System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     System.Collections.Generic.Dictionary<string, object> AabbMmRecord(double[] aabb)
     {
         System.Collections.Generic.Dictionary<string, object> record = new System.Collections.Generic.Dictionary<string, object>();
@@ -609,7 +618,16 @@ try
             try
             {
                 Autodesk.Revit.DB.Parameter comments = directShape.get_Parameter(Autodesk.Revit.DB.BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS);
-                if (comments != null && !comments.IsReadOnly) comments.Set(previewPrefix + " | route-dry-run");
+                if (comments != null && !comments.IsReadOnly)
+                {
+                    comments.Set(previewPrefix +
+                        " | route-dry-run" +
+                        " | segment_id=" + System.Convert.ToString(segment["id"], System.Globalization.CultureInfo.InvariantCulture) +
+                        " | segment_type=" + System.Convert.ToString(segment["segment_type"], System.Globalization.CultureInfo.InvariantCulture) +
+                        " | source_marker_id=" + System.Convert.ToString(segment["source_marker_id"], System.Globalization.CultureInfo.InvariantCulture) +
+                        " | start_mm=" + PointMetadata(segment["start_mm"]) +
+                        " | end_mm=" + PointMetadata(segment["end_mm"]));
+                }
             }
             catch
             {

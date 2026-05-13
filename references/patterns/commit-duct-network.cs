@@ -193,6 +193,40 @@ try
         return 0;
     }
 
+    System.Collections.Generic.Dictionary<string, string> ParseMetadataTokens(string text)
+    {
+        System.Collections.Generic.Dictionary<string, string> tokens =
+            new System.Collections.Generic.Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(text)) return tokens;
+        string[] parts = text.Split('|');
+        for (int i = 0; i < parts.Length; i++)
+        {
+            string part = parts[i] == null ? string.Empty : parts[i].Trim();
+            int equalsIndex = part.IndexOf('=');
+            if (equalsIndex <= 0) continue;
+            string key = part.Substring(0, equalsIndex).Trim();
+            string value = part.Substring(equalsIndex + 1).Trim();
+            if (key.Length > 0) tokens[key] = value;
+        }
+        return tokens;
+    }
+
+    bool TryParsePointMm(string text, out Autodesk.Revit.DB.XYZ point)
+    {
+        point = null;
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        string[] parts = text.Split(',');
+        if (parts.Length < 3) return false;
+        double xMm;
+        double yMm;
+        double zMm;
+        if (!double.TryParse(parts[0].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out xMm)) return false;
+        if (!double.TryParse(parts[1].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out yMm)) return false;
+        if (!double.TryParse(parts[2].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out zMm)) return false;
+        point = new Autodesk.Revit.DB.XYZ(FromMm(xMm), FromMm(yMm), FromMm(zMm));
+        return true;
+    }
+
     bool commit = GetBoolOption("commit", false);
     bool clearExistingPlaced = GetBoolOption("clear_existing_placed", false);
     string routePrefix = GetOption("route_prefix", "SZ_PREVIEW_ROUTE");
@@ -332,33 +366,51 @@ try
         {
         }
         if (appId != routePrefix && !appDataId.Contains(routePrefix) && !commentsValue.Contains(routePrefix)) continue;
-        Autodesk.Revit.DB.BoundingBoxXYZ box = element.get_BoundingBox(null);
-        if (box == null) continue;
-        double spanX = System.Math.Abs(box.Max.X - box.Min.X);
-        double spanY = System.Math.Abs(box.Max.Y - box.Min.Y);
-        double spanZ = System.Math.Abs(box.Max.Z - box.Min.Z);
-        if (System.Math.Max(spanX, spanY) < FromMm(minSegmentLengthMm)) continue;
-        bool xAxis = spanX >= spanY;
-        double centerX = (box.Min.X + box.Max.X) / 2.0;
-        double centerY = (box.Min.Y + box.Max.Y) / 2.0;
-        double centerZ = (box.Min.Z + box.Max.Z) / 2.0;
-        Autodesk.Revit.DB.XYZ start = xAxis
-            ? new Autodesk.Revit.DB.XYZ(box.Min.X, centerY, centerZ)
-            : new Autodesk.Revit.DB.XYZ(centerX, box.Min.Y, centerZ);
-        Autodesk.Revit.DB.XYZ end = xAxis
-            ? new Autodesk.Revit.DB.XYZ(box.Max.X, centerY, centerZ)
-            : new Autodesk.Revit.DB.XYZ(centerX, box.Max.Y, centerZ);
-        int segmentIndex = ParseRouteSegmentIndex(appDataId);
-        string segmentType = segmentIndex == 1 ? "trunk" : "branch";
+        System.Collections.Generic.Dictionary<string, string> metadata = ParseMetadataTokens(appDataId + " | " + commentsValue);
+        Autodesk.Revit.DB.XYZ start = null;
+        Autodesk.Revit.DB.XYZ end = null;
+        bool hasCenterlineMetadata = metadata.ContainsKey("start_mm") &&
+            metadata.ContainsKey("end_mm") &&
+            TryParsePointMm(metadata["start_mm"], out start) &&
+            TryParsePointMm(metadata["end_mm"], out end);
+        string sourceGeometry = hasCenterlineMetadata ? "centerline_metadata" : "bbox_fallback";
+        double spanZ = 0.0;
+        if (!hasCenterlineMetadata)
+        {
+            Autodesk.Revit.DB.BoundingBoxXYZ box = element.get_BoundingBox(null);
+            if (box == null) continue;
+            double spanX = System.Math.Abs(box.Max.X - box.Min.X);
+            double spanY = System.Math.Abs(box.Max.Y - box.Min.Y);
+            spanZ = System.Math.Abs(box.Max.Z - box.Min.Z);
+            if (System.Math.Max(spanX, spanY) < FromMm(minSegmentLengthMm)) continue;
+            bool xAxis = spanX >= spanY;
+            double centerX = (box.Min.X + box.Max.X) / 2.0;
+            double centerY = (box.Min.Y + box.Max.Y) / 2.0;
+            double centerZ = (box.Min.Z + box.Max.Z) / 2.0;
+            start = xAxis
+                ? new Autodesk.Revit.DB.XYZ(box.Min.X, centerY, centerZ)
+                : new Autodesk.Revit.DB.XYZ(centerX, box.Min.Y, centerZ);
+            end = xAxis
+                ? new Autodesk.Revit.DB.XYZ(box.Max.X, centerY, centerZ)
+                : new Autodesk.Revit.DB.XYZ(centerX, box.Max.Y, centerZ);
+        }
+        if (start == null || end == null) continue;
+        double lengthFeet = start.DistanceTo(end);
+        if (lengthFeet < FromMm(minSegmentLengthMm)) continue;
+        int segmentIndex = metadata.ContainsKey("segment_id") ? ParseRouteSegmentIndex(metadata["segment_id"]) : ParseRouteSegmentIndex(appDataId);
+        string segmentType = metadata.ContainsKey("segment_type") && !string.IsNullOrWhiteSpace(metadata["segment_type"])
+            ? metadata["segment_type"]
+            : (segmentIndex == 1 ? "trunk" : "branch");
         System.Collections.Generic.List<object> row = new System.Collections.Generic.List<object>();
         row.Add(segmentIndex == 0 ? 1000000 + segmentRows.Count : segmentIndex);
         row.Add(element.Id.IntegerValue);
         row.Add(segmentType);
         row.Add(start);
         row.Add(end);
-        row.Add(start.DistanceTo(end));
+        row.Add(lengthFeet);
         row.Add(spanZ);
         row.Add(appDataId);
+        row.Add(sourceGeometry);
         segmentRows.Add(row);
     }
 
@@ -419,7 +471,7 @@ try
     for (int i = 0; i < limit && errors.Count == 0; i++)
     {
         System.Collections.Generic.List<object> row = segmentRows[i] as System.Collections.Generic.List<object>;
-        if (row == null || row.Count < 8) continue;
+        if (row == null || row.Count < 9) continue;
         int segmentIndex = (int)row[0];
         int sourceRouteId = (int)row[1];
         string segmentType = row[2] as string;
@@ -427,6 +479,7 @@ try
         Autodesk.Revit.DB.XYZ end = row[4] as Autodesk.Revit.DB.XYZ;
         double lengthFeet = (double)row[5];
         string appDataId = row[7] as string;
+        string sourceGeometry = row[8] as string;
         if (start == null || end == null) continue;
 
         plannedCount++;
@@ -473,6 +526,7 @@ try
         System.Collections.Generic.Dictionary<string, object> record = new System.Collections.Generic.Dictionary<string, object>();
         record["source_route_id"] = sourceRouteId;
         record["source_route_data"] = appDataId;
+        record["source_geometry"] = sourceGeometry;
         record["segment_index"] = segmentIndex >= 1000000 ? null : (object)segmentIndex;
         record["segment_type"] = segmentType;
         record["status"] = status;
