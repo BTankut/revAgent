@@ -432,6 +432,7 @@ revit-mcp-skill/
 |       |-- boq-pipe.cs
 |       |-- segment-friction-loss-duct.cs
 |       |-- diffuser-count.cs
+|       |-- diffuser-candidate-preview.cs
 |       |-- spatial-zone-extract.cs
 |       |-- spatial-zone-validate.cs
 |       `-- spatial-zone-preview.cs
