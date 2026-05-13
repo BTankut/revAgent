@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "fire-isolated-sprinkler"
+  },
+  "units": {
+    "length": "mm",
+    "area": "m2",
+    "volume": "m3",
+    "flow": "L/s",
+    "slope": "ratio",
+    "coordinateSystem": "revit-internal-origin"
+  },
+  "nodes": [
+    {
+      "id": "sprinkler-isolated",
+      "elementId": 4301,
+      "uniqueId": "isolated-sprinkler-1",
+      "category": "Sprinklers",
+      "familyName": "Pendant Sprinkler",
+      "typeName": "K80",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-ISO",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "connectors": [
+        { "id": "sprinkler-isolated.in", "ownerNodeId": "sprinkler-isolated", "domain": "piping", "origin": { "x": 1000, "y": 1000, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    }
+  ],
+  "edges": []
+}

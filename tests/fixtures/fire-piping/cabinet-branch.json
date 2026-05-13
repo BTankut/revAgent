@@ -1,0 +1,119 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "fire-cabinet-branch",
+    "properties": {
+      "designDensity": "5.0 mm/min",
+      "remoteAreaId": "RA-CAB-1",
+      "hoseAllowance": 2.5,
+      "cFactor": 120
+    }
+  },
+  "units": {
+    "length": "mm",
+    "area": "m2",
+    "volume": "m3",
+    "flow": "L/s",
+    "slope": "ratio",
+    "coordinateSystem": "revit-internal-origin"
+  },
+  "nodes": [
+    {
+      "id": "riser-1",
+      "elementId": 1101,
+      "uniqueId": "cab-riser-1",
+      "category": "Pipe Accessories",
+      "familyName": "Fire Riser",
+      "typeName": "Riser DN80",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "FHC-1",
+      "systemType": "Fire Hose Cabinet",
+      "levelName": "Level 01",
+      "elevationMm": 0,
+      "properties": { "fireRole": "riser" },
+      "connectors": [
+        { "id": "riser-1.out", "ownerNodeId": "riser-1", "domain": "piping", "origin": { "x": 0, "y": 0, "z": 0 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "valve-1",
+      "elementId": 1102,
+      "uniqueId": "cab-valve-1",
+      "category": "Pipe Accessories",
+      "familyName": "Zone Control Valve",
+      "typeName": "DN80",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "FHC-1",
+      "systemType": "Fire Hose Cabinet",
+      "levelName": "Level 01",
+      "elevationMm": 0,
+      "properties": { "equivalentLengthMm": 700 },
+      "connectors": [
+        { "id": "valve-1.in", "ownerNodeId": "valve-1", "domain": "piping", "origin": { "x": 1000, "y": 0, "z": 0 }, "isConnectionExpected": true },
+        { "id": "valve-1.out", "ownerNodeId": "valve-1", "domain": "piping", "origin": { "x": 1200, "y": 0, "z": 0 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "pipe-main",
+      "elementId": 2101,
+      "uniqueId": "cab-pipe-main",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN50",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "FHC-1",
+      "systemType": "Fire Hose Cabinet",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "engineering": { "lengthMm": 5000, "diameterMm": 50 },
+      "connectors": [
+        { "id": "pipe-main.in", "ownerNodeId": "pipe-main", "domain": "piping", "origin": { "x": 1200, "y": 0, "z": 3000 }, "isConnectionExpected": true },
+        { "id": "pipe-main.out", "ownerNodeId": "pipe-main", "domain": "piping", "origin": { "x": 6200, "y": 0, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "pipe-cabinet",
+      "elementId": 2102,
+      "uniqueId": "cab-pipe-cabinet",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN32",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "FHC-1",
+      "systemType": "Fire Hose Cabinet",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "engineering": { "lengthMm": 2500, "diameterMm": 32 },
+      "connectors": [
+        { "id": "pipe-cabinet.in", "ownerNodeId": "pipe-cabinet", "domain": "piping", "origin": { "x": 6200, "y": 0, "z": 3000 }, "isConnectionExpected": true },
+        { "id": "pipe-cabinet.out", "ownerNodeId": "pipe-cabinet", "domain": "piping", "origin": { "x": 8700, "y": 0, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "cabinet-1",
+      "elementId": 5101,
+      "uniqueId": "cab-terminal-1",
+      "category": "Plumbing Fixtures",
+      "familyName": "Fire Hose Cabinet",
+      "typeName": "Cabinet DN50",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "FHC-1",
+      "systemType": "Fire Hose Cabinet",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "properties": { "fireRole": "cabinet" },
+      "connectors": [
+        { "id": "cabinet-1.in", "ownerNodeId": "cabinet-1", "domain": "piping", "origin": { "x": 8700, "y": 0, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    }
+  ],
+  "edges": [
+    { "id": "e-riser-valve", "fromNodeId": "riser-1", "fromConnectorId": "riser-1.out", "toNodeId": "valve-1", "toConnectorId": "valve-1.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-valve-main", "fromNodeId": "valve-1", "fromConnectorId": "valve-1.out", "toNodeId": "pipe-main", "toConnectorId": "pipe-main.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-main-cabinet-pipe", "fromNodeId": "pipe-main", "fromConnectorId": "pipe-main.out", "toNodeId": "pipe-cabinet", "toConnectorId": "pipe-cabinet.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-cabinet-terminal", "fromNodeId": "pipe-cabinet", "fromConnectorId": "pipe-cabinet.out", "toNodeId": "cabinet-1", "toConnectorId": "cabinet-1.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" }
+  ]
+}

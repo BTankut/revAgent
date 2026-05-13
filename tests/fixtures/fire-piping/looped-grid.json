@@ -1,0 +1,159 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "fire-looped-grid",
+    "properties": {
+      "designDensity": "5.0 mm/min",
+      "remoteAreaId": "RA-LOOP",
+      "cFactor": 120
+    }
+  },
+  "units": {
+    "length": "mm",
+    "area": "m2",
+    "volume": "m3",
+    "flow": "L/s",
+    "slope": "ratio",
+    "coordinateSystem": "revit-internal-origin"
+  },
+  "nodes": [
+    {
+      "id": "riser-1",
+      "elementId": 1201,
+      "uniqueId": "loop-riser-1",
+      "category": "Pipe Accessories",
+      "familyName": "Fire Riser",
+      "typeName": "Riser DN80",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-LOOP",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 0,
+      "properties": { "fireRole": "riser" },
+      "connectors": [
+        { "id": "riser-1.out", "ownerNodeId": "riser-1", "domain": "piping", "origin": { "x": 0, "y": 0, "z": 0 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "valve-1",
+      "elementId": 1202,
+      "uniqueId": "loop-valve-1",
+      "category": "Pipe Accessories",
+      "familyName": "Alarm Check Valve",
+      "typeName": "DN80",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-LOOP",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 0,
+      "properties": { "equivalentLengthMm": 800 },
+      "connectors": [
+        { "id": "valve-1.in", "ownerNodeId": "valve-1", "domain": "piping", "origin": { "x": 1000, "y": 0, "z": 0 }, "isConnectionExpected": true },
+        { "id": "valve-1.out", "ownerNodeId": "valve-1", "domain": "piping", "origin": { "x": 1200, "y": 0, "z": 0 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "pipe-a",
+      "elementId": 2201,
+      "uniqueId": "loop-pipe-a",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN50",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-LOOP",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "engineering": { "lengthMm": 3000, "diameterMm": 50 },
+      "connectors": [
+        { "id": "pipe-a.in", "ownerNodeId": "pipe-a", "domain": "piping", "origin": { "x": 1200, "y": 0, "z": 3000 }, "isConnectionExpected": true },
+        { "id": "pipe-a.b", "ownerNodeId": "pipe-a", "domain": "piping", "origin": { "x": 4200, "y": 0, "z": 3000 }, "isConnectionExpected": true },
+        { "id": "pipe-a.d", "ownerNodeId": "pipe-a", "domain": "piping", "origin": { "x": 1200, "y": 3000, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "pipe-b",
+      "elementId": 2202,
+      "uniqueId": "loop-pipe-b",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN40",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-LOOP",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "engineering": { "lengthMm": 3000, "diameterMm": 40 },
+      "connectors": [
+        { "id": "pipe-b.a", "ownerNodeId": "pipe-b", "domain": "piping", "origin": { "x": 4200, "y": 0, "z": 3000 }, "isConnectionExpected": true },
+        { "id": "pipe-b.c", "ownerNodeId": "pipe-b", "domain": "piping", "origin": { "x": 4200, "y": 3000, "z": 3000 }, "isConnectionExpected": true },
+        { "id": "pipe-b.s1", "ownerNodeId": "pipe-b", "domain": "piping", "origin": { "x": 5200, "y": 1000, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "pipe-c",
+      "elementId": 2203,
+      "uniqueId": "loop-pipe-c",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN40",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-LOOP",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "engineering": { "lengthMm": 3000, "diameterMm": 40 },
+      "connectors": [
+        { "id": "pipe-c.b", "ownerNodeId": "pipe-c", "domain": "piping", "origin": { "x": 4200, "y": 3000, "z": 3000 }, "isConnectionExpected": true },
+        { "id": "pipe-c.d", "ownerNodeId": "pipe-c", "domain": "piping", "origin": { "x": 1200, "y": 3000, "z": 3000 }, "isConnectionExpected": true },
+        { "id": "pipe-c.s2", "ownerNodeId": "pipe-c", "domain": "piping", "origin": { "x": 3200, "y": 4000, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "sprinkler-1",
+      "elementId": 4201,
+      "uniqueId": "loop-sprinkler-1",
+      "category": "Sprinklers",
+      "familyName": "Pendant Sprinkler",
+      "typeName": "K80",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-LOOP",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "properties": { "kFactor": 80 },
+      "connectors": [
+        { "id": "sprinkler-1.in", "ownerNodeId": "sprinkler-1", "domain": "piping", "origin": { "x": 5200, "y": 1000, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "sprinkler-2",
+      "elementId": 4202,
+      "uniqueId": "loop-sprinkler-2",
+      "category": "Sprinklers",
+      "familyName": "Pendant Sprinkler",
+      "typeName": "K80",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-LOOP",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "properties": { "kFactor": 80 },
+      "connectors": [
+        { "id": "sprinkler-2.in", "ownerNodeId": "sprinkler-2", "domain": "piping", "origin": { "x": 3200, "y": 4000, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    }
+  ],
+  "edges": [
+    { "id": "e-riser-valve", "fromNodeId": "riser-1", "fromConnectorId": "riser-1.out", "toNodeId": "valve-1", "toConnectorId": "valve-1.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-valve-a", "fromNodeId": "valve-1", "fromConnectorId": "valve-1.out", "toNodeId": "pipe-a", "toConnectorId": "pipe-a.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-a-b", "fromNodeId": "pipe-a", "fromConnectorId": "pipe-a.b", "toNodeId": "pipe-b", "toConnectorId": "pipe-b.a", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-b-c", "fromNodeId": "pipe-b", "fromConnectorId": "pipe-b.c", "toNodeId": "pipe-c", "toConnectorId": "pipe-c.b", "direction": "bidirectional", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-c-a", "fromNodeId": "pipe-c", "fromConnectorId": "pipe-c.d", "toNodeId": "pipe-a", "toConnectorId": "pipe-a.d", "direction": "bidirectional", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-b-s1", "fromNodeId": "pipe-b", "fromConnectorId": "pipe-b.s1", "toNodeId": "sprinkler-1", "toConnectorId": "sprinkler-1.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-c-s2", "fromNodeId": "pipe-c", "fromConnectorId": "pipe-c.s2", "toNodeId": "sprinkler-2", "toConnectorId": "sprinkler-2.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" }
+  ]
+}
