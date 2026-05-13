@@ -374,6 +374,9 @@ Load these as needed for the current task:
 - `references/patterns/segment-friction-loss-duct.cs` — approximate duct
   segment friction loss by system; excludes fittings/accessory local losses
 - `references/patterns/diffuser-count.cs` — diffuser count by system + level
+- `references/patterns/spatial-zone-extract.cs` - read-only target-level
+  spatial zone context for early MEP routing; extracts rooms/spaces, linked
+  model transforms, ceiling/plenum zone, shafts, and obstacle AABBs
 
 ---
 
