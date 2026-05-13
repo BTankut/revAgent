@@ -386,6 +386,9 @@ Load these as needed for the current task:
 - `references/patterns/duct-sizing-from-flow.cs` - deterministic duct sizing
   from airflow and velocity limits; reports selected dimensions, velocity, and
   approximate friction loss without creating Revit elements
+- `references/patterns/commit-duct-network.cs` - commits reviewed
+  `SZ_PREVIEW_ROUTE` segments as real Revit Duct elements; dry-run by default
+  and commits only with `commit=true`
 - `references/patterns/spatial-zone-extract.cs` - read-only target-level
   spatial zone context for early MEP routing; extracts rooms/spaces, linked
   model transforms, first-class gross plenum volumes, ceiling/plenum zone,

@@ -436,6 +436,7 @@ revit-mcp-skill/
 |       |-- place-diffusers-in-room.cs
 |       |-- route-duct-dry-run.cs
 |       |-- duct-sizing-from-flow.cs
+|       |-- commit-duct-network.cs
 |       |-- spatial-zone-extract.cs
 |       |-- spatial-zone-validate.cs
 |       `-- spatial-zone-preview.cs
