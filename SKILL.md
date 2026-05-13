@@ -377,6 +377,14 @@ Load these as needed for the current task:
 - `references/patterns/spatial-zone-extract.cs` - read-only target-level
   spatial zone context for early MEP routing; extracts rooms/spaces, linked
   model transforms, ceiling/plenum zone, shafts, and obstacle AABBs
+- `references/patterns/spatial-zone-validate.cs` - read-only validation for
+  spatial-zone readiness; checks target level resolution, room/space identity,
+  ceiling zone availability, obstacle AABBs, existing MEP policy, and manual
+  determinism warnings
+- `references/patterns/spatial-zone-preview.cs` - writes temporary
+  `SZ_PREVIEW` DirectShape graphics for human review of rooms, MEP spaces,
+  gross plenum volumes, ceiling zone, obstacles, shafts, and room/space
+  centers; clear existing preview geometry before re-running when needed
 
 ---
 
