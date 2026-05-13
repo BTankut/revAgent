@@ -24,6 +24,7 @@ await registerTools(server);
 const expectedTools = [
   "list_revit_instances",
   "get_revit_mcp_status",
+  "audit_dcw_dhw_piping",
   "send_code_to_revit",
   "send_code_to_revit_safe",
   "get_revit_session_context",
@@ -41,6 +42,7 @@ const expectedTools = [
   "smart_focus_elements",
   "inspect_elements",
   "inspect_parameter_schema",
+  "apply_dcw_dhw_writeback",
 ];
 
 assert.deepEqual([...tools.keys()], expectedTools);

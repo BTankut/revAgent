@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added DCW/DHW/DHWR sizing audit runtime tools with fixture-unit interpolation, flush tank/flush valve classification, DHW recirculation heat-loss critical path, missing-data reporting, and approval-token controlled write-back.
 - Quoted the bundled Node.js MSI path in the updater's `msiexec` fallback so NAS deployment paths containing spaces, such as user/share folders, do not fail with MSI exit code 1639.
 - Clarified `show-installed-version.ps1` output when the NAS channel has advanced after the last updater run, so stale "Already up to date" report messages are marked as previous-run context and the manual update path is shown as the next step.
 - Applied the same modal-search guard to `open_existing_plan_for_element_level(planMode=activePlan)`, so cross-level active-plan focus returns `FocusBlocked` with a same-level plan suggestion instead of calling Revit `ShowElements`.
