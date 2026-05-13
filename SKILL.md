@@ -382,9 +382,9 @@ Load these as needed for the current task:
   ceiling zone availability, obstacle AABBs, existing MEP policy, and manual
   determinism warnings
 - `references/patterns/spatial-zone-preview.cs` - writes temporary
-  `SZ_PREVIEW` DirectShape graphics for human review of rooms, ceiling zone,
-  obstacles, shafts, and room centers; clear existing preview geometry before
-  re-running when needed
+  `SZ_PREVIEW` DirectShape graphics for human review of rooms, MEP spaces,
+  service volumes, ceiling zone, obstacles, shafts, and room/space centers;
+  clear existing preview geometry before re-running when needed
 
 ---
 

@@ -144,6 +144,16 @@ try
         return Autodesk.Revit.DB.UnitUtils.ConvertToInternalUnits(millimeters, Autodesk.Revit.DB.UnitTypeId.Millimeters);
     }
 
+    double ToMm(double feet)
+    {
+        return Autodesk.Revit.DB.UnitUtils.ConvertFromInternalUnits(feet, Autodesk.Revit.DB.UnitTypeId.Millimeters);
+    }
+
+    double Round3(double value)
+    {
+        return System.Math.Round(value, 3);
+    }
+
     Autodesk.Revit.DB.Level ElementLevel(Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Element element)
     {
         if (element == null) return null;
@@ -330,6 +340,7 @@ try
     bool clearExistingPreview = GetBoolOption("clear_existing_preview", true);
     bool showRooms = GetBoolOption("show_rooms", true);
     bool showRoomCenters = GetBoolOption("show_room_centers", true);
+    bool showServiceVolume = GetBoolOption("show_service_volume", true);
     bool showCeilingZone = GetBoolOption("show_ceiling_zone", true);
     bool showObstacles = GetBoolOption("show_obstacles", true);
     bool showShafts = GetBoolOption("show_shafts", true);
@@ -357,7 +368,43 @@ try
         return System.Math.Abs(sourceLevel.Elevation - targetLevel.Elevation) <= FromMm(levelToleranceMm);
     }
 
-    Autodesk.Revit.DB.Solid MakeBox(double minX, double minY, double minZ, double maxX, double maxY, double maxZ)
+    Autodesk.Revit.DB.ElementId EnsurePreviewMaterial(string materialName, int red, int green, int blue, int transparency)
+    {
+        Autodesk.Revit.DB.Material material = null;
+        foreach (Autodesk.Revit.DB.Element element in new Autodesk.Revit.DB.FilteredElementCollector(document).OfClass(typeof(Autodesk.Revit.DB.Material)))
+        {
+            Autodesk.Revit.DB.Material candidate = element as Autodesk.Revit.DB.Material;
+            if (candidate != null && candidate.Name == materialName)
+            {
+                material = candidate;
+                break;
+            }
+        }
+        if (material == null)
+        {
+            Autodesk.Revit.DB.ElementId materialId = Autodesk.Revit.DB.Material.Create(document, materialName);
+            material = document.GetElement(materialId) as Autodesk.Revit.DB.Material;
+        }
+        if (material == null) return Autodesk.Revit.DB.ElementId.InvalidElementId;
+
+        int safeRed = System.Math.Max(0, System.Math.Min(255, red));
+        int safeGreen = System.Math.Max(0, System.Math.Min(255, green));
+        int safeBlue = System.Math.Max(0, System.Math.Min(255, blue));
+        int safeTransparency = System.Math.Max(0, System.Math.Min(100, transparency));
+        try
+        {
+            material.Color = new Autodesk.Revit.DB.Color((byte)safeRed, (byte)safeGreen, (byte)safeBlue);
+            material.Transparency = safeTransparency;
+            material.UseRenderAppearanceForShading = false;
+        }
+        catch (System.Exception ex)
+        {
+            warnings.Add("Could not update preview material '" + materialName + "': " + ex.Message);
+        }
+        return material.Id;
+    }
+
+    Autodesk.Revit.DB.Solid MakeBox(double minX, double minY, double minZ, double maxX, double maxY, double maxZ, Autodesk.Revit.DB.ElementId materialId)
     {
         double minSize = FromMm(20.0);
         if (maxX - minX < minSize)
@@ -388,10 +435,23 @@ try
         loop.Append(Autodesk.Revit.DB.Line.CreateBound(p4, p1));
         System.Collections.Generic.List<Autodesk.Revit.DB.CurveLoop> loops = new System.Collections.Generic.List<Autodesk.Revit.DB.CurveLoop>();
         loops.Add(loop);
+        if (materialId != null && materialId != Autodesk.Revit.DB.ElementId.InvalidElementId)
+        {
+            Autodesk.Revit.DB.SolidOptions solidOptions = new Autodesk.Revit.DB.SolidOptions(materialId, Autodesk.Revit.DB.ElementId.InvalidElementId);
+            try
+            {
+                return Autodesk.Revit.DB.GeometryCreationUtilities.CreateExtrusionGeometry(loops, Autodesk.Revit.DB.XYZ.BasisZ, maxZ - minZ, solidOptions);
+            }
+            finally
+            {
+                solidOptions.Dispose();
+            }
+        }
         return Autodesk.Revit.DB.GeometryCreationUtilities.CreateExtrusionGeometry(loops, Autodesk.Revit.DB.XYZ.BasisZ, maxZ - minZ);
     }
 
     int previewElementsCreated = 0;
+    int serviceVolumesPreviewed = 0;
     int roomsPreviewed = 0;
     int spacesPreviewed = 0;
     int obstaclesPreviewed = 0;
@@ -403,10 +463,12 @@ try
     double footprintMinY = double.PositiveInfinity;
     double footprintMaxX = double.NegativeInfinity;
     double footprintMaxY = double.NegativeInfinity;
+    Autodesk.Revit.DB.ElementId defaultMaterialId = Autodesk.Revit.DB.ElementId.InvalidElementId;
+    Autodesk.Revit.DB.ElementId serviceVolumeMaterialId = Autodesk.Revit.DB.ElementId.InvalidElementId;
 
-    void CreatePreviewBox(double[] aabb, string label)
+    void CreatePreviewBox(double[] aabb, string label, Autodesk.Revit.DB.ElementId materialId)
     {
-        Autodesk.Revit.DB.Solid solid = MakeBox(aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]);
+        Autodesk.Revit.DB.Solid solid = MakeBox(aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5], materialId);
         Autodesk.Revit.DB.DirectShape directShape = Autodesk.Revit.DB.DirectShape.CreateElement(document, previewCategoryId);
         directShape.ApplicationId = previewPrefix;
         directShape.ApplicationDataId = marker + " | " + label;
@@ -429,6 +491,10 @@ try
         transaction = new Autodesk.Revit.DB.Transaction(document, "Spatial Zone Preview");
         transaction.Start();
         startedOwnTransaction = true;
+    }
+    if (showServiceVolume)
+    {
+        serviceVolumeMaterialId = EnsurePreviewMaterial(previewPrefix + " Service Volume", 0, 190, 220, 78);
     }
 
     if (clearExistingPreview)
@@ -470,10 +536,15 @@ try
                 footprintMinY = System.Math.Min(footprintMinY, aabb[1]);
                 footprintMaxX = System.Math.Max(footprintMaxX, aabb[3]);
                 footprintMaxY = System.Math.Max(footprintMaxY, aabb[4]);
+                if (showServiceVolume)
+                {
+                    CreatePreviewBox(new double[] { aabb[0], aabb[1], ceilingZMin, aabb[3], aabb[4], ceilingZMax }, label + "-service-volume " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture), serviceVolumeMaterialId);
+                    serviceVolumesPreviewed++;
+                }
                 if (showRooms)
                 {
                     double z = targetLevel.Elevation + FromMm(30.0);
-                    CreatePreviewBox(new double[] { aabb[0], aabb[1], z, aabb[3], aabb[4], z + FromMm(30.0) }, label + " " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    CreatePreviewBox(new double[] { aabb[0], aabb[1], z, aabb[3], aabb[4], z + FromMm(30.0) }, label + " " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture), defaultMaterialId);
                 }
                 if (showRoomCenters)
                 {
@@ -481,7 +552,7 @@ try
                     double cy = (aabb[1] + aabb[4]) / 2.0;
                     double cz = targetLevel.Elevation + FromMm(120.0);
                     double r = FromMm(120.0);
-                    CreatePreviewBox(new double[] { cx - r, cy - r, cz, cx + r, cy + r, cz + r }, label + "-center " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    CreatePreviewBox(new double[] { cx - r, cy - r, cz, cx + r, cy + r, cz + r }, label + "-center " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture), defaultMaterialId);
                 }
                 if (isSpace) spacesPreviewed++;
                 else roomsPreviewed++;
@@ -493,7 +564,7 @@ try
 
         if (showCeilingZone && hasFootprint)
         {
-            CreatePreviewBox(new double[] { footprintMinX, footprintMinY, ceilingZMin, footprintMaxX, footprintMaxY, ceilingZMin + FromMm(50.0) }, "ceiling-zone " + targetLevel.Name);
+            CreatePreviewBox(new double[] { footprintMinX, footprintMinY, ceilingZMin, footprintMaxX, footprintMaxY, ceilingZMin + FromMm(50.0) }, "ceiling-zone " + targetLevel.Name, defaultMaterialId);
             ceilingZonesPreviewed = 1;
         }
 
@@ -510,7 +581,7 @@ try
                 if (aabb == null) continue;
                 if (aabb[5] < ceilingZMin - FromMm(500.0) || aabb[2] > ceilingZMax + FromMm(500.0)) continue;
                 if (hasFootprint && (aabb[3] < footprintMinX - FromMm(1000.0) || aabb[0] > footprintMaxX + FromMm(1000.0) || aabb[4] < footprintMinY - FromMm(1000.0) || aabb[1] > footprintMaxY + FromMm(1000.0))) continue;
-                CreatePreviewBox(aabb, label + " " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                CreatePreviewBox(aabb, label + " " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture), defaultMaterialId);
                 obstaclesPreviewed++;
             }
         }
@@ -538,7 +609,7 @@ try
                 double[] aabb = ComputeAabbFeet(element.get_BoundingBox(null), Autodesk.Revit.DB.Transform.Identity);
                 if (aabb == null) continue;
                 if (aabb[5] < targetLevel.Elevation - FromMm(500.0) || aabb[2] > ceilingZMax + FromMm(3000.0)) continue;
-                CreatePreviewBox(aabb, "shaft " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                CreatePreviewBox(aabb, "shaft " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture), defaultMaterialId);
                 shaftsPreviewed++;
             }
         }
@@ -558,6 +629,7 @@ try
 
     System.Collections.Generic.Dictionary<string, object> summary = new System.Collections.Generic.Dictionary<string, object>();
     summary["preview_elements_created"] = previewElementsCreated;
+    summary["service_volumes_previewed"] = serviceVolumesPreviewed;
     summary["rooms_previewed"] = roomsPreviewed;
     summary["spaces_previewed"] = spacesPreviewed;
     summary["spatial_elements_previewed"] = roomsPreviewed + spacesPreviewed;
@@ -566,6 +638,8 @@ try
     summary["ceiling_zones_previewed"] = ceilingZonesPreviewed;
     summary["max_obstacles_to_draw"] = maxObstaclesToDraw;
     summary["truncated_obstacles"] = truncatedObstacles;
+    summary["service_volume_bottom_mm"] = Round3(ToMm(ceilingZMin));
+    summary["service_volume_top_mm"] = Round3(ToMm(ceilingZMax));
     summary["target_level_name"] = targetLevel.Name;
     summary["target_level_resolution"] = targetLevelSource;
 
