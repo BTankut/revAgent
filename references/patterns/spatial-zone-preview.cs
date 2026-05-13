@@ -337,6 +337,18 @@ try
     int maxObstaclesToDraw = (int)GetDoubleOption("max_obstacles_to_draw", 300.0);
     double ceilingZMin = targetLevel.Elevation + FromMm(GetDoubleOption("default_ceiling_height_mm", 2700.0));
     double ceilingZMax = ceilingZMin + FromMm(GetDoubleOption("default_plenum_height_mm", 600.0));
+    Autodesk.Revit.DB.ElementId previewCategoryId = new Autodesk.Revit.DB.ElementId(Autodesk.Revit.DB.BuiltInCategory.OST_GenericModel);
+    if (!Autodesk.Revit.DB.DirectShape.IsValidCategoryId(previewCategoryId, document))
+    {
+        errors.Add("DirectShape category OST_GenericModel is not valid for this document.");
+        System.Collections.Generic.Dictionary<string, object> failed = new System.Collections.Generic.Dictionary<string, object>();
+        failed["schema_version"] = "spatial-zone-preview.v1";
+        failed["status"] = "fail";
+        failed["summary"] = new System.Collections.Generic.Dictionary<string, object>();
+        failed["warnings"] = warnings;
+        failed["errors"] = errors;
+        return SerializeJson(failed);
+    }
 
     bool LevelMatches(Autodesk.Revit.DB.Level sourceLevel)
     {
@@ -381,6 +393,7 @@ try
 
     int previewElementsCreated = 0;
     int roomsPreviewed = 0;
+    int spacesPreviewed = 0;
     int obstaclesPreviewed = 0;
     int shaftsPreviewed = 0;
     int ceilingZonesPreviewed = 0;
@@ -394,7 +407,7 @@ try
     void CreatePreviewBox(double[] aabb, string label)
     {
         Autodesk.Revit.DB.Solid solid = MakeBox(aabb[0], aabb[1], aabb[2], aabb[3], aabb[4], aabb[5]);
-        Autodesk.Revit.DB.DirectShape directShape = Autodesk.Revit.DB.DirectShape.CreateElement(document, new Autodesk.Revit.DB.ElementId(Autodesk.Revit.DB.BuiltInCategory.OST_GenericModel));
+        Autodesk.Revit.DB.DirectShape directShape = Autodesk.Revit.DB.DirectShape.CreateElement(document, previewCategoryId);
         directShape.ApplicationId = previewPrefix;
         directShape.ApplicationDataId = marker + " | " + label;
         System.Collections.Generic.List<Autodesk.Revit.DB.GeometryObject> geometry = new System.Collections.Generic.List<Autodesk.Revit.DB.GeometryObject>();
@@ -443,33 +456,40 @@ try
 
     if (previewMode)
     {
-        foreach (Autodesk.Revit.DB.Element element in new Autodesk.Revit.DB.FilteredElementCollector(document).OfCategory(Autodesk.Revit.DB.BuiltInCategory.OST_Rooms).WhereElementIsNotElementType())
+        void PreviewSpatialCategory(Autodesk.Revit.DB.BuiltInCategory category, string label, bool isSpace)
         {
-            Autodesk.Revit.DB.SpatialElement spatial = element as Autodesk.Revit.DB.SpatialElement;
-            if (spatial == null) continue;
-            if (!LevelMatches(ElementLevel(document, spatial))) continue;
-            double[] aabb = ComputeAabbFeet(spatial.get_BoundingBox(null), Autodesk.Revit.DB.Transform.Identity);
-            if (aabb == null) continue;
-            hasFootprint = true;
-            footprintMinX = System.Math.Min(footprintMinX, aabb[0]);
-            footprintMinY = System.Math.Min(footprintMinY, aabb[1]);
-            footprintMaxX = System.Math.Max(footprintMaxX, aabb[3]);
-            footprintMaxY = System.Math.Max(footprintMaxY, aabb[4]);
-            if (showRooms)
+            foreach (Autodesk.Revit.DB.Element element in new Autodesk.Revit.DB.FilteredElementCollector(document).OfCategory(category).WhereElementIsNotElementType())
             {
-                double z = targetLevel.Elevation + FromMm(30.0);
-                CreatePreviewBox(new double[] { aabb[0], aabb[1], z, aabb[3], aabb[4], z + FromMm(30.0) }, "room " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                Autodesk.Revit.DB.SpatialElement spatial = element as Autodesk.Revit.DB.SpatialElement;
+                if (spatial == null) continue;
+                if (!LevelMatches(ElementLevel(document, spatial))) continue;
+                double[] aabb = ComputeAabbFeet(spatial.get_BoundingBox(null), Autodesk.Revit.DB.Transform.Identity);
+                if (aabb == null) continue;
+                hasFootprint = true;
+                footprintMinX = System.Math.Min(footprintMinX, aabb[0]);
+                footprintMinY = System.Math.Min(footprintMinY, aabb[1]);
+                footprintMaxX = System.Math.Max(footprintMaxX, aabb[3]);
+                footprintMaxY = System.Math.Max(footprintMaxY, aabb[4]);
+                if (showRooms)
+                {
+                    double z = targetLevel.Elevation + FromMm(30.0);
+                    CreatePreviewBox(new double[] { aabb[0], aabb[1], z, aabb[3], aabb[4], z + FromMm(30.0) }, label + " " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
+                if (showRoomCenters)
+                {
+                    double cx = (aabb[0] + aabb[3]) / 2.0;
+                    double cy = (aabb[1] + aabb[4]) / 2.0;
+                    double cz = targetLevel.Elevation + FromMm(120.0);
+                    double r = FromMm(120.0);
+                    CreatePreviewBox(new double[] { cx - r, cy - r, cz, cx + r, cy + r, cz + r }, label + "-center " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
+                if (isSpace) spacesPreviewed++;
+                else roomsPreviewed++;
             }
-            if (showRoomCenters)
-            {
-                double cx = (aabb[0] + aabb[3]) / 2.0;
-                double cy = (aabb[1] + aabb[4]) / 2.0;
-                double cz = targetLevel.Elevation + FromMm(120.0);
-                double r = FromMm(120.0);
-                CreatePreviewBox(new double[] { cx - r, cy - r, cz, cx + r, cy + r, cz + r }, "room-center " + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            }
-            roomsPreviewed++;
         }
+
+        PreviewSpatialCategory(Autodesk.Revit.DB.BuiltInCategory.OST_Rooms, "room", false);
+        PreviewSpatialCategory(Autodesk.Revit.DB.BuiltInCategory.OST_MEPSpaces, "space", true);
 
         if (showCeilingZone && hasFootprint)
         {
@@ -539,6 +559,8 @@ try
     System.Collections.Generic.Dictionary<string, object> summary = new System.Collections.Generic.Dictionary<string, object>();
     summary["preview_elements_created"] = previewElementsCreated;
     summary["rooms_previewed"] = roomsPreviewed;
+    summary["spaces_previewed"] = spacesPreviewed;
+    summary["spatial_elements_previewed"] = roomsPreviewed + spacesPreviewed;
     summary["obstacles_previewed"] = obstaclesPreviewed;
     summary["shafts_previewed"] = shaftsPreviewed;
     summary["ceiling_zones_previewed"] = ceilingZonesPreviewed;
