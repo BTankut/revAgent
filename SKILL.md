@@ -377,6 +377,9 @@ Load these as needed for the current task:
 - `references/patterns/diffuser-candidate-preview.cs` - creates
   `SZ_PREVIEW_DIFFUSER` DirectShape markers for candidate diffuser points in
   host rooms/MEP spaces; does not place real diffuser families
+- `references/patterns/place-diffusers-in-room.cs` - places real Air Terminal
+  diffuser family instances from reviewed `SZ_PREVIEW_DIFFUSER` markers; dry-run
+  by default and commits only with `commit=true`
 - `references/patterns/spatial-zone-extract.cs` - read-only target-level
   spatial zone context for early MEP routing; extracts rooms/spaces, linked
   model transforms, first-class gross plenum volumes, ceiling/plenum zone,
