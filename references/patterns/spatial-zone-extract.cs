@@ -271,6 +271,32 @@ try
         return prefix + ":" + element.Id.IntegerValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    string SafeUniqueId(Autodesk.Revit.DB.Element element)
+    {
+        if (element == null)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return element.UniqueId;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    void AddIdentityFields(System.Collections.Generic.Dictionary<string, object> record, Autodesk.Revit.DB.Element element, Autodesk.Revit.DB.Document sourceDocument, string sourceType, int linkInstanceId)
+    {
+        record["element_id"] = element == null ? 0 : element.Id.IntegerValue;
+        record["unique_id"] = SafeUniqueId(element);
+        record["source_document_title"] = sourceDocument == null ? string.Empty : sourceDocument.Title;
+        record["source_type"] = sourceType;
+        record["link_instance_id"] = linkInstanceId > 0 ? (object)linkInstanceId : null;
+    }
+
     string JsonEscape(string value)
     {
         if (value == null)
@@ -1185,7 +1211,7 @@ try
 
     System.Collections.Generic.List<System.Tuple<string, Autodesk.Revit.DB.Document, Autodesk.Revit.DB.Transform, string, int>> sources =
         new System.Collections.Generic.List<System.Tuple<string, Autodesk.Revit.DB.Document, Autodesk.Revit.DB.Transform, string, int>>();
-    sources.Add(new System.Tuple<string, Autodesk.Revit.DB.Document, Autodesk.Revit.DB.Transform, string, int>("Host", document, Autodesk.Revit.DB.Transform.Identity, "host", document.GetHashCode()));
+    sources.Add(new System.Tuple<string, Autodesk.Revit.DB.Document, Autodesk.Revit.DB.Transform, string, int>("Host", document, Autodesk.Revit.DB.Transform.Identity, "host", 0));
 
     System.Collections.Generic.List<object> sourceLinks = new System.Collections.Generic.List<object>();
     foreach (Autodesk.Revit.DB.Element element in new Autodesk.Revit.DB.FilteredElementCollector(document).OfClass(typeof(Autodesk.Revit.DB.RevitLinkInstance)))
@@ -1252,6 +1278,9 @@ try
     System.Collections.Generic.List<object> forbiddenZones = new System.Collections.Generic.List<object>();
     System.Collections.Generic.HashSet<string> roomKeys = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
     System.Collections.Generic.HashSet<string> shaftKeys = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+    System.Collections.Generic.HashSet<string> obstacleKeys = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+    System.Collections.Generic.Dictionary<string, int> obstacleTypeBreakdown = new System.Collections.Generic.Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+    System.Collections.Generic.Dictionary<string, int> obstacleCategoryBreakdown = new System.Collections.Generic.Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
 
     bool hasFootprint = false;
     double footprintMinX = double.PositiveInfinity;
@@ -1286,6 +1315,40 @@ try
                aabbFeet[1] <= footprintMaxY + paddingFeet;
     }
 
+    void IncrementBreakdown(System.Collections.Generic.Dictionary<string, int> breakdown, string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            key = "unknown";
+        }
+
+        if (!breakdown.ContainsKey(key))
+        {
+            breakdown[key] = 0;
+        }
+        breakdown[key]++;
+    }
+
+    System.Collections.Generic.Dictionary<string, object> BreakdownRecord(System.Collections.Generic.Dictionary<string, int> sourceBreakdown, string[] expectedKeys)
+    {
+        System.Collections.Generic.Dictionary<string, object> record = new System.Collections.Generic.Dictionary<string, object>();
+        for (int i = 0; i < expectedKeys.Length; i++)
+        {
+            string key = expectedKeys[i];
+            record[key] = sourceBreakdown.ContainsKey(key) ? sourceBreakdown[key] : 0;
+        }
+
+        foreach (System.Collections.Generic.KeyValuePair<string, int> pair in sourceBreakdown)
+        {
+            if (!record.ContainsKey(pair.Key))
+            {
+                record[pair.Key] = pair.Value;
+            }
+        }
+
+        return record;
+    }
+
     bool IsShaftLikeText(string value)
     {
         return ContainsAnyTokenFromArray(value, new string[] { "shaft", "riser", "mechanical shaft", "mep shaft", "tesisat", "saft", "sapt", "servis" });
@@ -1302,7 +1365,7 @@ try
         return explicitShaftIds.Contains(id);
     }
 
-    void AddShaftFromElement(Autodesk.Revit.DB.Element element, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, string detectionMethod, System.Collections.Generic.Dictionary<string, object> boundary)
+    void AddShaftFromElement(Autodesk.Revit.DB.Element element, Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, string sourceType, int linkInstanceId, string detectionMethod, System.Collections.Generic.Dictionary<string, object> boundary)
     {
         string key = ElementKey(sourceName, element);
         if (shaftKeys.Contains(key))
@@ -1322,6 +1385,7 @@ try
         shaftKeys.Add(key);
         System.Collections.Generic.Dictionary<string, object> record = new System.Collections.Generic.Dictionary<string, object>();
         record["id"] = key;
+        AddIdentityFields(record, element, sourceDocument, sourceType, linkInstanceId);
         record["name"] = SafeElementName(element);
         record["category"] = CategoryName(element);
         record["source_link"] = sourceName;
@@ -1344,7 +1408,7 @@ try
         shafts.Add(record);
     }
 
-    System.Collections.Generic.Dictionary<string, object> SpatialRecord(Autodesk.Revit.DB.SpatialElement spatial, Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, string spatialType)
+    System.Collections.Generic.Dictionary<string, object> SpatialRecord(Autodesk.Revit.DB.SpatialElement spatial, Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, string sourceType, int linkInstanceId, string spatialType)
     {
         string key = ElementKey(sourceName, spatial);
         System.Collections.Generic.Dictionary<string, object> room = new System.Collections.Generic.Dictionary<string, object>();
@@ -1379,6 +1443,7 @@ try
         }
 
         room["id"] = key;
+        AddIdentityFields(room, spatial, sourceDocument, sourceType, linkInstanceId);
         room["source_link"] = sourceName;
         room["type"] = spatialType;
         room["name"] = name;
@@ -1420,7 +1485,7 @@ try
 
         if (IsShaftLikeText(name) || IsShaftLikeText(number) || IsExplicitShaftElement(spatial))
         {
-            AddShaftFromElement(spatial, sourceToHost, sourceName, IsExplicitShaftElement(spatial) ? "explicit_id" : "room_or_space_name", boundary);
+            AddShaftFromElement(spatial, sourceDocument, sourceToHost, sourceName, sourceType, linkInstanceId, IsExplicitShaftElement(spatial) ? "explicit_id" : "room_or_space_name", boundary);
         }
 
         string searchText = name + " " + number + " " + department;
@@ -1453,7 +1518,7 @@ try
         return room;
     }
 
-    void ExtractSpatialCategory(Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, Autodesk.Revit.DB.BuiltInCategory category, string spatialType)
+    void ExtractSpatialCategory(Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, string sourceType, int linkInstanceId, Autodesk.Revit.DB.BuiltInCategory category, string spatialType)
     {
         try
         {
@@ -1478,7 +1543,7 @@ try
                 }
 
                 roomKeys.Add(key);
-                rooms.Add(SpatialRecord(spatial, sourceDocument, sourceToHost, sourceName, spatialType));
+                rooms.Add(SpatialRecord(spatial, sourceDocument, sourceToHost, sourceName, sourceType, linkInstanceId, spatialType));
             }
         }
         catch (System.Exception ex)
@@ -1493,11 +1558,12 @@ try
         Autodesk.Revit.DB.Document sourceDocument = sources[i].Item2;
         Autodesk.Revit.DB.Transform sourceToHost = sources[i].Item3;
         string classification = sources[i].Item4;
+        int linkInstanceId = sources[i].Item5;
 
         if (classification == "host" || classification == "architecture" || classification == "unknown")
         {
-            ExtractSpatialCategory(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_Rooms, "room");
-            ExtractSpatialCategory(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_MEPSpaces, "space");
+            ExtractSpatialCategory(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_Rooms, "room");
+            ExtractSpatialCategory(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_MEPSpaces, "space");
         }
     }
 
@@ -1517,10 +1583,6 @@ try
     if (!hasArchitectureLink)
     {
         warnings.Add("No loaded architectural link was classified. Host rooms/spaces and unknown links were still checked.");
-    }
-    if (!hasStructureLink)
-    {
-        warnings.Add("No loaded structural link was classified. Structural obstacles may be incomplete.");
     }
     if (rooms.Count == 0)
     {
@@ -1651,7 +1713,7 @@ try
     int structuralFramingObstacleCount = 0;
     int structuralColumnObstacleCount = 0;
 
-    void AddObstacle(Autodesk.Revit.DB.Element element, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, string obstacleType)
+    void AddObstacle(Autodesk.Revit.DB.Element element, Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, string sourceType, int linkInstanceId, string obstacleType)
     {
         if (element == null)
         {
@@ -1660,6 +1722,12 @@ try
 
         try
         {
+            string obstacleKey = ElementKey(sourceName, element);
+            if (obstacleKeys.Contains(obstacleKey))
+            {
+                return;
+            }
+
             double[] aabb = ComputeAabbFeet(element.get_BoundingBox(null), sourceToHost);
             if (aabb == null)
             {
@@ -1676,14 +1744,18 @@ try
                 return;
             }
 
+            obstacleKeys.Add(obstacleKey);
             System.Collections.Generic.Dictionary<string, object> obstacle = new System.Collections.Generic.Dictionary<string, object>();
-            obstacle["id"] = ElementKey(sourceName, element);
+            obstacle["id"] = obstacleKey;
+            AddIdentityFields(obstacle, element, sourceDocument, sourceType, linkInstanceId);
             obstacle["source_link"] = sourceName;
             obstacle["name"] = SafeElementName(element);
             obstacle["category"] = CategoryName(element);
             obstacle["obstacle_type"] = obstacleType;
             obstacle["aabb_mm"] = AabbRecord(aabb);
             obstacles.Add(obstacle);
+            IncrementBreakdown(obstacleTypeBreakdown, obstacleType);
+            IncrementBreakdown(obstacleCategoryBreakdown, CategoryName(element));
             if (obstacleType == "beam")
             {
                 structuralFramingObstacleCount++;
@@ -1695,7 +1767,7 @@ try
 
             if (IsExplicitShaftElement(element) || IsShaftLikeText(SafeElementName(element)) || IsShaftLikeText(CategoryName(element)))
             {
-                AddShaftFromElement(element, sourceToHost, sourceName, IsExplicitShaftElement(element) ? "explicit_id" : "element_name_or_category", BboxBoundaryRecord(aabb));
+                AddShaftFromElement(element, sourceDocument, sourceToHost, sourceName, sourceType, linkInstanceId, IsExplicitShaftElement(element) ? "explicit_id" : "element_name_or_category", BboxBoundaryRecord(aabb));
             }
         }
         catch (System.Exception ex)
@@ -1704,13 +1776,13 @@ try
         }
     }
 
-    void ExtractObstacles(Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, Autodesk.Revit.DB.BuiltInCategory category, string obstacleType)
+    void ExtractObstacles(Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, string sourceType, int linkInstanceId, Autodesk.Revit.DB.BuiltInCategory category, string obstacleType)
     {
         try
         {
             foreach (Autodesk.Revit.DB.Element element in new Autodesk.Revit.DB.FilteredElementCollector(sourceDocument).OfCategory(category).WhereElementIsNotElementType())
             {
-                AddObstacle(element, sourceToHost, sourceName, obstacleType);
+                AddObstacle(element, sourceDocument, sourceToHost, sourceName, sourceType, linkInstanceId, obstacleType);
             }
         }
         catch (System.Exception ex)
@@ -1719,7 +1791,7 @@ try
         }
     }
 
-    void ExtractShaftCategory(Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, Autodesk.Revit.DB.BuiltInCategory category, string detectionMethod)
+    void ExtractShaftCategory(Autodesk.Revit.DB.Document sourceDocument, Autodesk.Revit.DB.Transform sourceToHost, string sourceName, string sourceType, int linkInstanceId, Autodesk.Revit.DB.BuiltInCategory category, string detectionMethod)
     {
         try
         {
@@ -1728,7 +1800,7 @@ try
                 double[] aabb = ComputeAabbFeet(element.get_BoundingBox(null), sourceToHost);
                 if (aabb == null)
                 {
-                    AddShaftFromElement(element, sourceToHost, sourceName, detectionMethod, null);
+                    AddShaftFromElement(element, sourceDocument, sourceToHost, sourceName, sourceType, linkInstanceId, detectionMethod, null);
                     continue;
                 }
 
@@ -1741,7 +1813,7 @@ try
                     continue;
                 }
 
-                AddShaftFromElement(element, sourceToHost, sourceName, detectionMethod, BboxBoundaryRecord(aabb));
+                AddShaftFromElement(element, sourceDocument, sourceToHost, sourceName, sourceType, linkInstanceId, detectionMethod, BboxBoundaryRecord(aabb));
             }
         }
         catch (System.Exception ex)
@@ -1756,27 +1828,47 @@ try
         Autodesk.Revit.DB.Document sourceDocument = sources[i].Item2;
         Autodesk.Revit.DB.Transform sourceToHost = sources[i].Item3;
         string classification = sources[i].Item4;
+        int linkInstanceId = sources[i].Item5;
+        bool isStructuralSource = classification == "structure" || classification == "host" || classification == "unknown";
+        bool isArchitecturalSource = classification == "architecture" || classification == "host" || classification == "unknown";
+
+        if (isStructuralSource)
+        {
+            ExtractObstacles(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_StructuralFraming, "beam");
+            ExtractObstacles(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_StructuralColumns, "column");
+        }
 
         if (classification == "structure")
         {
-            ExtractObstacles(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_StructuralFraming, "beam");
-            ExtractObstacles(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_StructuralColumns, "column");
-            ExtractObstacles(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_Floors, "structural_slab");
+            ExtractObstacles(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_Floors, "structural_slab");
         }
-        else if (classification == "architecture" || classification == "host" || classification == "unknown")
+
+        if (isArchitecturalSource)
         {
-            ExtractShaftCategory(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_ShaftOpening, "shaft_opening_category");
-            ExtractObstacles(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_Walls, "wall_or_partition");
-            ExtractObstacles(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_Floors, "slab_or_floor");
-            ExtractObstacles(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_Ceilings, "ceiling");
+            ExtractShaftCategory(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_ShaftOpening, "shaft_opening_category");
+            ExtractObstacles(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_Walls, "wall_or_partition");
+            ExtractObstacles(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_Floors, "slab_or_floor");
+            ExtractObstacles(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_Ceilings, "ceiling");
         }
 
         if (classification == "host" && includeExistingMep)
         {
-            ExtractObstacles(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_DuctCurves, "existing_duct");
-            ExtractObstacles(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_PipeCurves, "existing_pipe");
-            ExtractObstacles(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_MechanicalEquipment, "existing_mechanical_equipment");
-            ExtractObstacles(sourceDocument, sourceToHost, sourceName, Autodesk.Revit.DB.BuiltInCategory.OST_DuctTerminal, "existing_air_terminal");
+            ExtractObstacles(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_DuctCurves, "existing_duct");
+            ExtractObstacles(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_PipeCurves, "existing_pipe");
+            ExtractObstacles(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_MechanicalEquipment, "existing_mechanical_equipment");
+            ExtractObstacles(sourceDocument, sourceToHost, sourceName, classification, linkInstanceId, Autodesk.Revit.DB.BuiltInCategory.OST_DuctTerminal, "existing_air_terminal");
+        }
+    }
+
+    if (!hasStructureLink)
+    {
+        if (structuralFramingObstacleCount > 0 || structuralColumnObstacleCount > 0)
+        {
+            warnings.Add("No loaded structural link was classified; structural framing/column obstacles were extracted from host or unknown sources.");
+        }
+        else
+        {
+            warnings.Add("No loaded structural link was classified and no host/unknown structural framing or column obstacles were found. Structural obstacles may be incomplete.");
         }
     }
 
@@ -1810,8 +1902,21 @@ try
     source["include_existing_mep"] = includeExistingMep;
     source["links"] = sourceLinks;
 
+    System.Collections.Generic.Dictionary<string, object> summary = new System.Collections.Generic.Dictionary<string, object>();
+    summary["room_count"] = rooms.Count;
+    summary["ceiling_zone_count"] = ceilingZones.Count;
+    summary["shaft_count"] = shafts.Count;
+    summary["obstacle_count"] = obstacles.Count;
+    summary["obstacle_type_breakdown"] = BreakdownRecord(
+        obstacleTypeBreakdown,
+        new string[] { "beam", "column", "wall_or_partition", "slab_or_floor", "structural_slab", "ceiling", "existing_duct", "existing_pipe", "existing_mechanical_equipment", "existing_air_terminal" });
+    summary["obstacle_category_breakdown"] = BreakdownRecord(
+        obstacleCategoryBreakdown,
+        new string[] { "Structural Framing", "Structural Columns", "Walls", "Floors", "Ceilings" });
+
     System.Collections.Generic.Dictionary<string, object> result = new System.Collections.Generic.Dictionary<string, object>();
     result["schema_version"] = "spatial-zone-extract.v1";
+    result["summary"] = summary;
     result["source"] = source;
     result["ceiling_zones"] = ceilingZones;
     result["rooms"] = rooms;
