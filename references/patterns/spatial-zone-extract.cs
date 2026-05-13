@@ -854,6 +854,7 @@ try
         failed["schema_version"] = "spatial-zone-extract.v1";
         failed["source"] = new System.Collections.Generic.Dictionary<string, object>();
         failed["ceiling_zones"] = new System.Collections.Generic.List<object>();
+        failed["plenum_volumes"] = new System.Collections.Generic.List<object>();
         failed["rooms"] = new System.Collections.Generic.List<object>();
         failed["shafts"] = new System.Collections.Generic.List<object>();
         failed["obstacles"] = new System.Collections.Generic.List<object>();
@@ -1276,6 +1277,7 @@ try
     }
 
     System.Collections.Generic.List<object> rooms = new System.Collections.Generic.List<object>();
+    System.Collections.Generic.List<object> plenumVolumes = new System.Collections.Generic.List<object>();
     System.Collections.Generic.List<object> shafts = new System.Collections.Generic.List<object>();
     System.Collections.Generic.List<object> obstacles = new System.Collections.Generic.List<object>();
     System.Collections.Generic.List<object> preferredZones = new System.Collections.Generic.List<object>();
@@ -1714,6 +1716,223 @@ try
     System.Collections.Generic.List<object> ceilingZones = new System.Collections.Generic.List<object>();
     ceilingZones.Add(ceilingZone);
 
+    string RecordString(System.Collections.Generic.Dictionary<string, object> record, string key)
+    {
+        if (record == null || !record.ContainsKey(key) || record[key] == null)
+        {
+            return string.Empty;
+        }
+        return System.Convert.ToString(record[key], System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    double RecordDouble(System.Collections.Generic.Dictionary<string, object> record, string key)
+    {
+        if (record == null || !record.ContainsKey(key) || record[key] == null)
+        {
+            return double.NaN;
+        }
+
+        try
+        {
+            return System.Convert.ToDouble(record[key], System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch
+        {
+            double parsed;
+            if (double.TryParse(record[key].ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return double.NaN;
+    }
+
+    System.Collections.Generic.Dictionary<string, object> RecordDictionary(System.Collections.Generic.Dictionary<string, object> record, string key)
+    {
+        if (record == null || !record.ContainsKey(key))
+        {
+            return null;
+        }
+        return record[key] as System.Collections.Generic.Dictionary<string, object>;
+    }
+
+    System.Collections.Generic.List<object> BoundaryPoints(System.Collections.Generic.Dictionary<string, object> boundary)
+    {
+        if (boundary == null || !boundary.ContainsKey("points_mm"))
+        {
+            return new System.Collections.Generic.List<object>();
+        }
+
+        System.Collections.Generic.List<object> typedPoints = boundary["points_mm"] as System.Collections.Generic.List<object>;
+        if (typedPoints != null)
+        {
+            return typedPoints;
+        }
+
+        System.Collections.IEnumerable enumerable = boundary["points_mm"] as System.Collections.IEnumerable;
+        System.Collections.Generic.List<object> points = new System.Collections.Generic.List<object>();
+        if (enumerable != null)
+        {
+            foreach (object item in enumerable)
+            {
+                points.Add(item);
+            }
+        }
+        return points;
+    }
+
+    bool TryPoint2dFromObject(object value, out double xMm, out double yMm)
+    {
+        xMm = 0.0;
+        yMm = 0.0;
+        System.Collections.IList list = value as System.Collections.IList;
+        if (list == null || list.Count < 2)
+        {
+            return false;
+        }
+
+        try
+        {
+            xMm = System.Convert.ToDouble(list[0], System.Globalization.CultureInfo.InvariantCulture);
+            yMm = System.Convert.ToDouble(list[1], System.Globalization.CultureInfo.InvariantCulture);
+            return true;
+        }
+        catch
+        {
+        }
+
+        return false;
+    }
+
+    double BoundaryAreaM2(System.Collections.Generic.Dictionary<string, object> boundary)
+    {
+        System.Collections.Generic.List<object> points = BoundaryPoints(boundary);
+        if (points.Count < 3)
+        {
+            return double.NaN;
+        }
+
+        double areaMm2 = 0.0;
+        int validCount = 0;
+        double firstX = 0.0;
+        double firstY = 0.0;
+        double previousX = 0.0;
+        double previousY = 0.0;
+        bool hasPrevious = false;
+
+        for (int i = 0; i < points.Count; i++)
+        {
+            double x;
+            double y;
+            if (!TryPoint2dFromObject(points[i], out x, out y))
+            {
+                continue;
+            }
+
+            if (!hasPrevious)
+            {
+                firstX = x;
+                firstY = y;
+                previousX = x;
+                previousY = y;
+                hasPrevious = true;
+                validCount++;
+                continue;
+            }
+
+            areaMm2 += previousX * y - x * previousY;
+            previousX = x;
+            previousY = y;
+            validCount++;
+        }
+
+        if (validCount < 3)
+        {
+            return double.NaN;
+        }
+
+        areaMm2 += previousX * firstY - firstX * previousY;
+        return System.Math.Abs(areaMm2) / 1000000.0 / 2.0;
+    }
+
+    void IncrementBoundaryBreakdown(System.Collections.Generic.Dictionary<string, int> breakdown, string boundaryType)
+    {
+        if (string.IsNullOrWhiteSpace(boundaryType))
+        {
+            boundaryType = "unknown";
+        }
+        if (!breakdown.ContainsKey(boundaryType))
+        {
+            breakdown[boundaryType] = 0;
+        }
+        breakdown[boundaryType]++;
+    }
+
+    System.Collections.Generic.Dictionary<string, int> plenumBoundaryBreakdown = new System.Collections.Generic.Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+    double plenumHeightMm = Round3(ToMm(ceilingZMax - ceilingZMin));
+    double plenumHeightM = plenumHeightMm / 1000.0;
+    for (int i = 0; i < rooms.Count; i++)
+    {
+        System.Collections.Generic.Dictionary<string, object> roomRecord = rooms[i] as System.Collections.Generic.Dictionary<string, object>;
+        if (roomRecord == null)
+        {
+            continue;
+        }
+
+        string roomId = RecordString(roomRecord, "id");
+        System.Collections.Generic.Dictionary<string, object> boundary = RecordDictionary(roomRecord, "boundary");
+        string boundaryType = boundary == null ? "unknown" : RecordString(boundary, "type");
+        if (string.IsNullOrWhiteSpace(boundaryType))
+        {
+            boundaryType = "unknown";
+        }
+        IncrementBoundaryBreakdown(plenumBoundaryBreakdown, boundaryType);
+
+        double areaM2 = BoundaryAreaM2(boundary);
+        string areaSource = "boundary";
+        if (double.IsNaN(areaM2) || areaM2 <= 0.0)
+        {
+            areaM2 = RecordDouble(roomRecord, "area_m2");
+            areaSource = "spatial_area";
+        }
+
+        System.Collections.Generic.Dictionary<string, object> plenum = new System.Collections.Generic.Dictionary<string, object>();
+        plenum["id"] = roomId + ":plenum";
+        plenum["source_room_id"] = roomId;
+        plenum["source_spatial_id"] = roomId;
+        plenum["source_type"] = RecordString(roomRecord, "type");
+        plenum["source_model_type"] = RecordString(roomRecord, "source_type");
+        plenum["source_link"] = RecordString(roomRecord, "source_link");
+        plenum["source_document_title"] = RecordString(roomRecord, "source_document_title");
+        plenum["source_element_id"] = roomRecord.ContainsKey("element_id") ? roomRecord["element_id"] : null;
+        plenum["source_unique_id"] = RecordString(roomRecord, "unique_id");
+        plenum["name"] = RecordString(roomRecord, "name");
+        plenum["number"] = RecordString(roomRecord, "number");
+        plenum["level_name"] = RecordString(roomRecord, "level_name");
+        plenum["ceiling_zone_id"] = ceilingZone["id"];
+        plenum["boundary_type"] = boundaryType;
+        plenum["boundary_source"] = boundaryType == "bbox" ? "bbox_fallback" : boundaryType;
+        plenum["boundary"] = boundary == null ? new System.Collections.Generic.Dictionary<string, object>() : boundary;
+        plenum["boundary_points_mm"] = BoundaryPoints(boundary);
+        plenum["z_min_mm"] = Round3(ToMm(ceilingZMin));
+        plenum["z_max_mm"] = Round3(ToMm(ceilingZMax));
+        plenum["height_mm"] = plenumHeightMm;
+        plenum["z_source_detail"] = ceilingZSource + "/" + slabZSource;
+        plenum["ceiling_source_element"] = hasModelCeiling ? ceilingSourceElement : null;
+        plenum["slab_source_element"] = hasModelSlab ? slabSourceElement : null;
+        plenum["gross_area_m2"] = (double.IsNaN(areaM2) || areaM2 <= 0.0) ? null : (object)Round3(areaM2);
+        plenum["gross_area_source"] = (double.IsNaN(areaM2) || areaM2 <= 0.0) ? "unavailable" : areaSource;
+        plenum["gross_volume_m3"] = (double.IsNaN(areaM2) || areaM2 <= 0.0) ? null : (object)Round3(areaM2 * plenumHeightM);
+        plenum["centroid_mm"] = roomRecord.ContainsKey("centroid_mm") ? roomRecord["centroid_mm"] : new System.Collections.Generic.List<object>();
+        if (roomRecord.ContainsKey("bbox_mm"))
+        {
+            plenum["bbox_mm"] = roomRecord["bbox_mm"];
+        }
+
+        plenumVolumes.Add(plenum);
+    }
+
     int structuralFramingObstacleCount = 0;
     int structuralColumnObstacleCount = 0;
 
@@ -1908,6 +2127,10 @@ try
 
     System.Collections.Generic.Dictionary<string, object> summary = new System.Collections.Generic.Dictionary<string, object>();
     summary["room_count"] = rooms.Count;
+    summary["plenum_volume_count"] = plenumVolumes.Count;
+    summary["plenum_boundary_breakdown"] = BreakdownRecord(
+        plenumBoundaryBreakdown,
+        new string[] { "polygon", "bbox", "unknown" });
     summary["ceiling_zone_count"] = ceilingZones.Count;
     summary["shaft_count"] = shafts.Count;
     summary["obstacle_count"] = obstacles.Count;
@@ -1923,6 +2146,7 @@ try
     result["summary"] = summary;
     result["source"] = source;
     result["ceiling_zones"] = ceilingZones;
+    result["plenum_volumes"] = plenumVolumes;
     result["rooms"] = rooms;
     result["shafts"] = shafts;
     result["obstacles"] = obstacles;
@@ -1939,6 +2163,7 @@ catch (System.Exception ex)
     failed["schema_version"] = "spatial-zone-extract.v1";
     failed["source"] = new System.Collections.Generic.Dictionary<string, object>();
     failed["ceiling_zones"] = new System.Collections.Generic.List<object>();
+    failed["plenum_volumes"] = new System.Collections.Generic.List<object>();
     failed["rooms"] = new System.Collections.Generic.List<object>();
     failed["shafts"] = new System.Collections.Generic.List<object>();
     failed["obstacles"] = new System.Collections.Generic.List<object>();
@@ -1953,5 +2178,5 @@ catch (System.Exception ex)
 
     string message = ex.GetType().FullName + ": " + ex.Message;
     message = message.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n");
-    return "{\"schema_version\":\"spatial-zone-extract.v1\",\"source\":{},\"ceiling_zones\":[],\"rooms\":[],\"shafts\":[],\"obstacles\":[],\"preferred_zones\":[],\"forbidden_zones\":[],\"warnings\":[],\"errors\":[\"" + message + "\"]}";
+    return "{\"schema_version\":\"spatial-zone-extract.v1\",\"source\":{},\"ceiling_zones\":[],\"plenum_volumes\":[],\"rooms\":[],\"shafts\":[],\"obstacles\":[],\"preferred_zones\":[],\"forbidden_zones\":[],\"warnings\":[],\"errors\":[\"" + message + "\"]}";
 }
