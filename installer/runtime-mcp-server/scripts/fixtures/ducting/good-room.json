@@ -1,0 +1,91 @@
+{
+  "workflowStage": "validate",
+  "projectRules": {
+    "maxDiffusersPerSpace": 6,
+    "minWallClearanceMm": 600,
+    "minDiffuserSpacingMm": 1200,
+    "minPlenumHeightMm": 300,
+    "blockOnPlenumObstacle": true,
+    "flowTolerancePercent": 5,
+    "sizeToleranceMm": 5,
+    "maxVelocityMps": 6
+  },
+  "spaces": [
+    {
+      "id": "space-101",
+      "number": "101",
+      "name": "Office",
+      "levelName": "L01",
+      "areaM2": 24,
+      "centroid_mm": [3000, 2000, 2700],
+      "aabb_mm": [0, 0, 0, 6000, 4000, 2700]
+    }
+  ],
+  "airBalanceRows": [
+    {
+      "id": "ab-101",
+      "spaceNumber": "101",
+      "levelName": "L01",
+      "supply_lps": 180
+    }
+  ],
+  "diffuserCatalog": [
+    {
+      "id": "S-600",
+      "model": "Supply Diffuser 600",
+      "system": "supply",
+      "min_flow_lps": 60,
+      "max_flow_lps": 110,
+      "preferred_flow_lps": 90,
+      "noise_criterion": 28,
+      "throw_m": 3.5,
+      "neck_size_mm": "200"
+    }
+  ],
+  "plenumVolumes": [
+    {
+      "id": "plenum-101",
+      "source_spatial_id": "space-101",
+      "height_mm": 650,
+      "aabb_mm": [0, 0, 2700, 6000, 4000, 3350]
+    }
+  ],
+  "plenumObstacleIntersections": [],
+  "routeCandidates": [
+    {
+      "id": "route-101-a",
+      "reviewed": true,
+      "points_mm": [[3000, 2000, 3200], [3000, 0, 3200], [1000, 0, 3200]]
+    }
+  ],
+  "connectorGraph": {
+    "summary": {
+      "openEndCount": 0,
+      "directionAmbiguityCount": 0
+    },
+    "nodes": [
+      { "id": "source-1", "category": "Mechanical Equipment" },
+      { "id": "duct-1", "category": "Ducts" },
+      { "id": "terminal-101", "category": "Air Terminals" }
+    ],
+    "edges": [
+      { "source": "source-1", "target": "duct-1" },
+      { "source": "duct-1", "target": "terminal-101" }
+    ]
+  },
+  "expectedNetworkNodeIds": ["source-1", "duct-1", "terminal-101"],
+  "nativeSizing": {
+    "segments": [
+      {
+        "id": "duct-1",
+        "designFlowLps": 180,
+        "nativeFlowLps": 180,
+        "designWidthMm": 450,
+        "nativeWidthMm": 450,
+        "designHeightMm": 150,
+        "nativeHeightMm": 150,
+        "nativeVelocityMps": 3.1
+      }
+    ]
+  }
+}

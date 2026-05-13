@@ -1,0 +1,33 @@
+{
+  "workflowStage": "validate",
+  "projectRules": {
+    "maxDiffusersPerSpace": 4
+  },
+  "spaces": [
+    {
+      "id": "space-201",
+      "number": "201",
+      "levelName": "L02",
+      "centroid_mm": [3000, 3000, 2700],
+      "aabb_mm": [0, 0, 0, 6000, 6000, 2700]
+    }
+  ],
+  "airBalanceRows": [
+    {
+      "id": "ab-201",
+      "spaceNumber": "201",
+      "levelName": "L02",
+      "supply_lps": 800
+    }
+  ],
+  "diffuserCatalog": [
+    {
+      "id": "S-100",
+      "model": "Small Supply Diffuser",
+      "system": "supply",
+      "min_flow_lps": 40,
+      "max_flow_lps": 100,
+      "preferred_flow_lps": 80
+    }
+  ]
+}
