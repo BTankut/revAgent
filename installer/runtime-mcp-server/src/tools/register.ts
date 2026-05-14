@@ -25,6 +25,7 @@ import { registerAuditDcwDhwPipingTool } from "./audit_dcw_dhw_piping.js";
 import { registerApplyDcwDhwWritebackTool } from "./apply_dcw_dhw_writeback.js";
 import { registerAnalyzeHydronicPipingGraphTool } from "./analyze_hydronic_piping_graph.js";
 import { registerEvaluateDuctingDesignTool } from "./evaluate_ducting_design.js";
+import { registerPlanDuctingAutoRouteTool } from "./plan_ducting_auto_route.js";
 
 export async function registerTools(server) {
     registerListRevitInstancesTool(server);
@@ -52,6 +53,7 @@ export async function registerTools(server) {
     registerAuditFirePipingTopologyTool(server);
     registerApplyDcwDhwWritebackTool(server);
     registerAnalyzeHydronicPipingGraphTool(server);
+    registerPlanDuctingAutoRouteTool(server);
     registerEvaluateDuctingDesignTool(server);
-    console.error("Registered 26 Revit MCP tools");
+    console.error("Registered 27 Revit MCP tools");
 }

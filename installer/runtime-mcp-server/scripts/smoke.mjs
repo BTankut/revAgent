@@ -47,6 +47,7 @@ const expectedTools = [
   "audit_fire_piping_topology",
   "apply_dcw_dhw_writeback",
   "analyze_hydronic_piping_graph",
+  "plan_ducting_auto_route",
   "evaluate_ducting_design",
 ];
 

@@ -17,10 +17,11 @@
     "dcw-dhw-test": "node scripts/dcw-dhw-sizing.test.mjs",
     "hydronic-test": "node build/engineering/hydronic/hydronicAnalysis.test.js",
     "ducting-test": "node scripts/ducting-engineering.test.mjs",
+    "ducting-auto-route-test": "node scripts/ducting-auto-routing.test.mjs",
     "socket-test": "node scripts/socket-client.test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "sanitary-rainwater-test": "node scripts/sanitary-rainwater.test.mjs",
-    "test": "npm run build && npm run guard-test && npm run ducting-test && npm run hydronic-test && npm run dcw-dhw-test && npm run sanitary-rainwater-test && npm run fire-audit-test && npm run socket-test && npm run smoke"
+    "test": "npm run build && npm run guard-test && npm run ducting-test && npm run ducting-auto-route-test && npm run hydronic-test && npm run dcw-dhw-test && npm run sanitary-rainwater-test && npm run fire-audit-test && npm run socket-test && npm run smoke"
   },
   "files": [
     "build",
