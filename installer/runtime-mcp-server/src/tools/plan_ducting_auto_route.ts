@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from "zod";
 import { planDuctingAutoRoute } from "../engineering/ducting/index.js";
 import { formatJsonContent } from "../utils/revitToolHelpers.js";
