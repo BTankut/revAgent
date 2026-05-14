@@ -124,6 +124,18 @@ interface NormalizedEdge {
     toConnectorId?: string;
 }
 
+interface OrientedFireEdge {
+    edgeId: string;
+    fromNodeId: string | null;
+    toNodeId: string | null;
+    sourceDistanceFrom: number | null;
+    sourceDistanceTo: number | null;
+    orientationStatus: string;
+    graphDirection: unknown;
+    kind: unknown;
+    systemClassification: string | null;
+}
+
 const DEFAULT_SIZING_SCHEDULE: FireSizingSchedule = {
     sprinkler: [
         { maxCount: 1, diameterMm: 25 },
@@ -599,8 +611,9 @@ function findComponents(
         const edgeSet = new Set<string>();
         const queue = [start];
         visited.add(start);
-        while (queue.length > 0) {
-            const nodeId = queue.shift() as string;
+        let head = 0;
+        while (head < queue.length) {
+            const nodeId = queue[head++] as string;
             nodeSet.add(nodeId);
             for (const next of adjacency.get(nodeId) || []) {
                 edgeSet.add(next.edgeId);
@@ -788,13 +801,14 @@ function orientFromSources(
         queue.push(sourceNodeId);
     }
 
-    while (queue.length > 0) {
-        const nodeId = queue.shift() as string;
-        const nodeDistance = distance.get(nodeId) || 0;
+    let head = 0;
+    while (head < queue.length) {
+        const nodeId = queue[head++] as string;
+        const nodeDistance = distance.get(nodeId) ?? 0;
         for (const next of adjacency.get(nodeId) || []) {
-            if ((distance.get(next.nodeId) || Number.POSITIVE_INFINITY) <= nodeDistance + 1) continue;
+            if ((distance.get(next.nodeId) ?? Number.POSITIVE_INFINITY) <= nodeDistance + 1) continue;
             distance.set(next.nodeId, nodeDistance + 1);
-            sourceForNode.set(next.nodeId, sourceForNode.get(nodeId) || nodeId);
+            sourceForNode.set(next.nodeId, sourceForNode.get(nodeId) ?? nodeId);
             queue.push(next.nodeId);
         }
     }
@@ -806,11 +820,11 @@ function orientFromSources(
     }
 
     const outgoing = new Map<string, string[]>();
-    const orientedEdges = [];
+    const orientedEdges: OrientedFireEdge[] = [];
 
     for (const edge of edges) {
-        const fromDistance = distance.get(edge.fromNodeId) || Number.POSITIVE_INFINITY;
-        const toDistance = distance.get(edge.toNodeId) || Number.POSITIVE_INFINITY;
+        const fromDistance = distance.get(edge.fromNodeId) ?? Number.POSITIVE_INFINITY;
+        const toDistance = distance.get(edge.toNodeId) ?? Number.POSITIVE_INFINITY;
         const graphDirection = normalizeDirection(edge.edge.direction);
 
         let orientedFromNodeId: string | null = null;
@@ -909,7 +923,7 @@ function applyDownstreamCounts(
     classified: Map<string, ClassifiedNode>,
     outgoing: Map<string, string[]>,
 ) {
-    const terminalSets = new Map<string, Set<string>>();
+    const countsByNodeId = new Map<string, { sprinkler: number; cabinet: number }>();
     const ordered = [...classified.values()].sort((a, b) => {
         const aDistance = a.distanceFromSource ?? Number.POSITIVE_INFINITY;
         const bDistance = b.distanceFromSource ?? Number.POSITIVE_INFINITY;
@@ -917,21 +931,24 @@ function applyDownstreamCounts(
     });
 
     for (const item of ordered) {
-        const downstream = new Set<string>();
-        if (isTerminal(item)) downstream.add(item.id);
+        const counts = {
+            sprinkler: hasRole(item, "sprinkler") ? 1 : 0,
+            cabinet: hasRole(item, "cabinet") ? 1 : 0,
+        };
         for (const childId of outgoing.get(item.id) || []) {
-            const childSet = terminalSets.get(childId);
-            if (childSet) {
-                for (const terminalId of childSet) downstream.add(terminalId);
+            const childCounts = countsByNodeId.get(childId);
+            if (childCounts) {
+                counts.sprinkler += childCounts.sprinkler;
+                counts.cabinet += childCounts.cabinet;
             }
         }
-        terminalSets.set(item.id, downstream);
+        countsByNodeId.set(item.id, counts);
     }
 
     for (const item of classified.values()) {
-        const terminalIds = terminalSets.get(item.id) || new Set<string>();
-        item.downstreamSprinklerCount = [...terminalIds].filter((nodeId) => hasRole(classified.get(nodeId), "sprinkler")).length;
-        item.downstreamCabinetCount = [...terminalIds].filter((nodeId) => hasRole(classified.get(nodeId), "cabinet")).length;
+        const counts = countsByNodeId.get(item.id) || { sprinkler: 0, cabinet: 0 };
+        item.downstreamSprinklerCount = counts.sprinkler;
+        item.downstreamCabinetCount = counts.cabinet;
     }
 }
 
@@ -1153,7 +1170,7 @@ function requiresEquivalentLength(item: ClassifiedNode): boolean {
 function buildSolverAdapter(
     graph: ConnectorGraphDocument,
     classified: Map<string, ClassifiedNode>,
-    orientedEdges: Record<string, unknown>[],
+    orientedEdges: OrientedFireEdge[],
     missingHydraulicInputs: FireAuditFinding[],
 ) {
     const nodePayload = [...classified.values()].sort(compareById).map((item) => ({
@@ -1173,18 +1190,25 @@ function buildSolverAdapter(
     }));
 
     const nodeById = new Map([...classified.values()].map((item) => [item.id, item]));
+    const attributedLengthNodeIds = new Set<string>();
     const links = orientedEdges
         .filter((edge) => edge.orientationStatus === "oriented" && edge.fromNodeId && edge.toNodeId)
         .map((edge) => {
             const from = nodeById.get(String(edge.fromNodeId));
             const to = nodeById.get(String(edge.toNodeId));
+            const physicalNode = [to, from].find((item) => item && hasRole(item, "pipe") && !attributedLengthNodeIds.has(item.id));
+            if (physicalNode) {
+                attributedLengthNodeIds.add(physicalNode.id);
+            }
             return {
                 id: edge.edgeId,
                 fromNodeId: edge.fromNodeId,
                 toNodeId: edge.toNodeId,
-                diameterMm: readDiameterMm(from?.node) ?? readDiameterMm(to?.node),
-                lengthMm: readEquivalentLengthMm(to?.node) ?? readEquivalentLengthMm(from?.node),
-                cFactor: readNumericProperty(from?.node, C_FACTOR_KEYS) ?? readGlobalNumericProperty(graph, C_FACTOR_KEYS),
+                diameterMm: physicalNode ? readDiameterMm(physicalNode.node) : readDiameterMm(from?.node) ?? readDiameterMm(to?.node),
+                lengthMm: physicalNode ? readEquivalentLengthMm(physicalNode.node) : null,
+                cFactor: physicalNode
+                    ? readNumericProperty(physicalNode.node, C_FACTOR_KEYS) ?? readGlobalNumericProperty(graph, C_FACTOR_KEYS)
+                    : readNumericProperty(from?.node, C_FACTOR_KEYS) ?? readGlobalNumericProperty(graph, C_FACTOR_KEYS),
                 status: "placeholder",
             };
         });
@@ -1264,7 +1288,24 @@ function readElevationMm(node: ConnectorGraphNode | undefined): number | null {
 function numeric(value: unknown): number | null {
     if (typeof value === "number" && Number.isFinite(value)) return value;
     if (typeof value === "string") {
-        const parsed = Number(value.replace(",", ".").replace(/[^0-9.+-]/g, ""));
+        const match = value.trim().replace(/\s+/g, "").match(/-?[\d.,]+/);
+        if (!match) return null;
+        let normalized = match[0];
+        const lastComma = normalized.lastIndexOf(",");
+        const lastDot = normalized.lastIndexOf(".");
+        if (lastComma >= 0 && lastDot >= 0) {
+            const decimalSeparator = lastComma > lastDot ? "," : ".";
+            const thousandsSeparator = decimalSeparator === "," ? "." : ",";
+            normalized = normalized.replace(new RegExp(`\\${thousandsSeparator}`, "g"), "");
+            normalized = normalized.replace(decimalSeparator, ".");
+        } else if (lastComma >= 0) {
+            const parts = normalized.split(",");
+            normalized = parts.length > 2 || parts[parts.length - 1].length === 3 ? parts.join("") : normalized.replace(",", ".");
+        } else if (lastDot >= 0) {
+            const parts = normalized.split(".");
+            normalized = parts.length > 2 || parts[parts.length - 1].length === 3 ? parts.join("") : normalized;
+        }
+        const parsed = Number(normalized);
         if (Number.isFinite(parsed)) return parsed;
     }
     return null;

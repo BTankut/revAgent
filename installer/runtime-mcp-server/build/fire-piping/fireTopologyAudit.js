@@ -431,8 +431,9 @@ function findComponents(nodeIds, adjacency) {
         const edgeSet = new Set();
         const queue = [start];
         visited.add(start);
-        while (queue.length > 0) {
-            const nodeId = queue.shift();
+        let head = 0;
+        while (head < queue.length) {
+            const nodeId = queue[head++];
             nodeSet.add(nodeId);
             for (const next of adjacency.get(nodeId) || []) {
                 edgeSet.add(next.edgeId);
@@ -587,14 +588,15 @@ function orientFromSources(sourceNodeIds, edges, adjacency, classified, findings
         sourceForNode.set(sourceNodeId, sourceNodeId);
         queue.push(sourceNodeId);
     }
-    while (queue.length > 0) {
-        const nodeId = queue.shift();
-        const nodeDistance = distance.get(nodeId) || 0;
+    let head = 0;
+    while (head < queue.length) {
+        const nodeId = queue[head++];
+        const nodeDistance = distance.get(nodeId) ?? 0;
         for (const next of adjacency.get(nodeId) || []) {
-            if ((distance.get(next.nodeId) || Number.POSITIVE_INFINITY) <= nodeDistance + 1)
+            if ((distance.get(next.nodeId) ?? Number.POSITIVE_INFINITY) <= nodeDistance + 1)
                 continue;
             distance.set(next.nodeId, nodeDistance + 1);
-            sourceForNode.set(next.nodeId, sourceForNode.get(nodeId) || nodeId);
+            sourceForNode.set(next.nodeId, sourceForNode.get(nodeId) ?? nodeId);
             queue.push(next.nodeId);
         }
     }
@@ -606,8 +608,8 @@ function orientFromSources(sourceNodeIds, edges, adjacency, classified, findings
     const outgoing = new Map();
     const orientedEdges = [];
     for (const edge of edges) {
-        const fromDistance = distance.get(edge.fromNodeId) || Number.POSITIVE_INFINITY;
-        const toDistance = distance.get(edge.toNodeId) || Number.POSITIVE_INFINITY;
+        const fromDistance = distance.get(edge.fromNodeId) ?? Number.POSITIVE_INFINITY;
+        const toDistance = distance.get(edge.toNodeId) ?? Number.POSITIVE_INFINITY;
         const graphDirection = normalizeDirection(edge.edge.direction);
         let orientedFromNodeId = null;
         let orientedToNodeId = null;
@@ -698,29 +700,30 @@ function directionConflicts(edge, orientedFromNodeId, orientedToNodeId, graphDir
     return false;
 }
 function applyDownstreamCounts(classified, outgoing) {
-    const terminalSets = new Map();
+    const countsByNodeId = new Map();
     const ordered = [...classified.values()].sort((a, b) => {
         const aDistance = a.distanceFromSource ?? Number.POSITIVE_INFINITY;
         const bDistance = b.distanceFromSource ?? Number.POSITIVE_INFINITY;
         return bDistance - aDistance || a.id.localeCompare(b.id);
     });
     for (const item of ordered) {
-        const downstream = new Set();
-        if (isTerminal(item))
-            downstream.add(item.id);
+        const counts = {
+            sprinkler: hasRole(item, "sprinkler") ? 1 : 0,
+            cabinet: hasRole(item, "cabinet") ? 1 : 0,
+        };
         for (const childId of outgoing.get(item.id) || []) {
-            const childSet = terminalSets.get(childId);
-            if (childSet) {
-                for (const terminalId of childSet)
-                    downstream.add(terminalId);
+            const childCounts = countsByNodeId.get(childId);
+            if (childCounts) {
+                counts.sprinkler += childCounts.sprinkler;
+                counts.cabinet += childCounts.cabinet;
             }
         }
-        terminalSets.set(item.id, downstream);
+        countsByNodeId.set(item.id, counts);
     }
     for (const item of classified.values()) {
-        const terminalIds = terminalSets.get(item.id) || new Set();
-        item.downstreamSprinklerCount = [...terminalIds].filter((nodeId) => hasRole(classified.get(nodeId), "sprinkler")).length;
-        item.downstreamCabinetCount = [...terminalIds].filter((nodeId) => hasRole(classified.get(nodeId), "cabinet")).length;
+        const counts = countsByNodeId.get(item.id) || { sprinkler: 0, cabinet: 0 };
+        item.downstreamSprinklerCount = counts.sprinkler;
+        item.downstreamCabinetCount = counts.cabinet;
     }
 }
 function markBranchMains(classified) {
@@ -933,18 +936,25 @@ function buildSolverAdapter(graph, classified, orientedEdges, missingHydraulicIn
             : null,
     }));
     const nodeById = new Map([...classified.values()].map((item) => [item.id, item]));
+    const attributedLengthNodeIds = new Set();
     const links = orientedEdges
         .filter((edge) => edge.orientationStatus === "oriented" && edge.fromNodeId && edge.toNodeId)
         .map((edge) => {
         const from = nodeById.get(String(edge.fromNodeId));
         const to = nodeById.get(String(edge.toNodeId));
+        const physicalNode = [to, from].find((item) => item && hasRole(item, "pipe") && !attributedLengthNodeIds.has(item.id));
+        if (physicalNode) {
+            attributedLengthNodeIds.add(physicalNode.id);
+        }
         return {
             id: edge.edgeId,
             fromNodeId: edge.fromNodeId,
             toNodeId: edge.toNodeId,
-            diameterMm: readDiameterMm(from?.node) ?? readDiameterMm(to?.node),
-            lengthMm: readEquivalentLengthMm(to?.node) ?? readEquivalentLengthMm(from?.node),
-            cFactor: readNumericProperty(from?.node, C_FACTOR_KEYS) ?? readGlobalNumericProperty(graph, C_FACTOR_KEYS),
+            diameterMm: physicalNode ? readDiameterMm(physicalNode.node) : readDiameterMm(from?.node) ?? readDiameterMm(to?.node),
+            lengthMm: physicalNode ? readEquivalentLengthMm(physicalNode.node) : null,
+            cFactor: physicalNode
+                ? readNumericProperty(physicalNode.node, C_FACTOR_KEYS) ?? readGlobalNumericProperty(graph, C_FACTOR_KEYS)
+                : readNumericProperty(from?.node, C_FACTOR_KEYS) ?? readGlobalNumericProperty(graph, C_FACTOR_KEYS),
             status: "placeholder",
         };
     });
@@ -1020,7 +1030,27 @@ function numeric(value) {
     if (typeof value === "number" && Number.isFinite(value))
         return value;
     if (typeof value === "string") {
-        const parsed = Number(value.replace(",", ".").replace(/[^0-9.+-]/g, ""));
+        const match = value.trim().replace(/\s+/g, "").match(/-?[\d.,]+/);
+        if (!match)
+            return null;
+        let normalized = match[0];
+        const lastComma = normalized.lastIndexOf(",");
+        const lastDot = normalized.lastIndexOf(".");
+        if (lastComma >= 0 && lastDot >= 0) {
+            const decimalSeparator = lastComma > lastDot ? "," : ".";
+            const thousandsSeparator = decimalSeparator === "," ? "." : ",";
+            normalized = normalized.replace(new RegExp(`\\${thousandsSeparator}`, "g"), "");
+            normalized = normalized.replace(decimalSeparator, ".");
+        }
+        else if (lastComma >= 0) {
+            const parts = normalized.split(",");
+            normalized = parts.length > 2 || parts[parts.length - 1].length === 3 ? parts.join("") : normalized.replace(",", ".");
+        }
+        else if (lastDot >= 0) {
+            const parts = normalized.split(".");
+            normalized = parts.length > 2 || parts[parts.length - 1].length === 3 ? parts.join("") : normalized;
+        }
+        const parsed = Number(normalized);
         if (Number.isFinite(parsed))
             return parsed;
     }
