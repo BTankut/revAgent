@@ -1,0 +1,135 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "fire-disconnected-network",
+    "properties": {
+      "designDensity": "5.0 mm/min",
+      "remoteAreaId": "RA-DISC",
+      "cFactor": 120
+    }
+  },
+  "units": {
+    "length": "mm",
+    "area": "m2",
+    "volume": "m3",
+    "flow": "L/s",
+    "slope": "ratio",
+    "coordinateSystem": "revit-internal-origin"
+  },
+  "nodes": [
+    {
+      "id": "riser-1",
+      "elementId": 1401,
+      "uniqueId": "disc-riser-1",
+      "category": "Pipe Accessories",
+      "familyName": "Fire Riser",
+      "typeName": "Riser DN65",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-DISC",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 0,
+      "properties": { "fireRole": "riser" },
+      "connectors": [
+        { "id": "riser-1.out", "ownerNodeId": "riser-1", "domain": "piping", "origin": { "x": 0, "y": 0, "z": 0 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "valve-1",
+      "elementId": 1402,
+      "uniqueId": "disc-valve-1",
+      "category": "Pipe Accessories",
+      "familyName": "Zone Control Valve",
+      "typeName": "DN65",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-DISC",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 0,
+      "properties": { "equivalentLengthMm": 600 },
+      "connectors": [
+        { "id": "valve-1.in", "ownerNodeId": "valve-1", "domain": "piping", "origin": { "x": 500, "y": 0, "z": 0 }, "isConnectionExpected": true },
+        { "id": "valve-1.out", "ownerNodeId": "valve-1", "domain": "piping", "origin": { "x": 700, "y": 0, "z": 0 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "pipe-fed",
+      "elementId": 2401,
+      "uniqueId": "disc-pipe-fed",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN25",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-DISC",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "engineering": { "lengthMm": 2500, "diameterMm": 25 },
+      "connectors": [
+        { "id": "pipe-fed.in", "ownerNodeId": "pipe-fed", "domain": "piping", "origin": { "x": 700, "y": 0, "z": 3000 }, "isConnectionExpected": true },
+        { "id": "pipe-fed.out", "ownerNodeId": "pipe-fed", "domain": "piping", "origin": { "x": 3200, "y": 0, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "sprinkler-fed",
+      "elementId": 4401,
+      "uniqueId": "disc-sprinkler-fed",
+      "category": "Sprinklers",
+      "familyName": "Pendant Sprinkler",
+      "typeName": "K80",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-DISC",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "properties": { "kFactor": 80 },
+      "connectors": [
+        { "id": "sprinkler-fed.in", "ownerNodeId": "sprinkler-fed", "domain": "piping", "origin": { "x": 3200, "y": 0, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "pipe-island",
+      "elementId": 2402,
+      "uniqueId": "disc-pipe-island",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN25",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-DISC-ISLAND",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 02",
+      "elevationMm": 6000,
+      "engineering": { "lengthMm": 1800, "diameterMm": 25 },
+      "connectors": [
+        { "id": "pipe-island.in", "ownerNodeId": "pipe-island", "domain": "piping", "origin": { "x": 0, "y": 5000, "z": 6000 }, "isConnectionExpected": true },
+        { "id": "pipe-island.out", "ownerNodeId": "pipe-island", "domain": "piping", "origin": { "x": 1800, "y": 5000, "z": 6000 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "sprinkler-island",
+      "elementId": 4402,
+      "uniqueId": "disc-sprinkler-island",
+      "category": "Sprinklers",
+      "familyName": "Pendant Sprinkler",
+      "typeName": "K80",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-DISC-ISLAND",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 02",
+      "elevationMm": 6000,
+      "properties": { "kFactor": 80 },
+      "connectors": [
+        { "id": "sprinkler-island.in", "ownerNodeId": "sprinkler-island", "domain": "piping", "origin": { "x": 1800, "y": 5000, "z": 6000 }, "isConnectionExpected": true }
+      ]
+    }
+  ],
+  "edges": [
+    { "id": "e-riser-valve", "fromNodeId": "riser-1", "fromConnectorId": "riser-1.out", "toNodeId": "valve-1", "toConnectorId": "valve-1.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-valve-pipe", "fromNodeId": "valve-1", "fromConnectorId": "valve-1.out", "toNodeId": "pipe-fed", "toConnectorId": "pipe-fed.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-fed-sprinkler", "fromNodeId": "pipe-fed", "fromConnectorId": "pipe-fed.out", "toNodeId": "sprinkler-fed", "toConnectorId": "sprinkler-fed.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-island-sprinkler", "fromNodeId": "pipe-island", "fromConnectorId": "pipe-island.out", "toNodeId": "sprinkler-island", "toConnectorId": "sprinkler-island.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" }
+  ]
+}

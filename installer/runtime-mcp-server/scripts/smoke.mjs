@@ -44,6 +44,7 @@ const expectedTools = [
   "smart_focus_elements",
   "inspect_elements",
   "inspect_parameter_schema",
+  "audit_fire_piping_topology",
   "apply_dcw_dhw_writeback",
   "analyze_hydronic_piping_graph",
   "evaluate_ducting_design",
@@ -73,5 +74,11 @@ const rejection = await safeTool.handler({
 const rejectionPayload = JSON.parse(rejection.content[0].text);
 assert.equal(rejectionPayload.success, false);
 assert.match(rejectionPayload.error, /does not support writeCommit/);
+
+const fireAuditTool = tools.get("audit_fire_piping_topology");
+const fireAuditRejection = await fireAuditTool.handler({});
+const fireAuditPayload = JSON.parse(fireAuditRejection.content[0].text);
+assert.equal(fireAuditPayload.success, false);
+assert.match(fireAuditPayload.error, /connector graph/);
 
 console.error("runtime MCP smoke passed");

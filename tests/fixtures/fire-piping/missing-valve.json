@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "fire-missing-valve"
+  },
+  "units": {
+    "length": "mm",
+    "area": "m2",
+    "volume": "m3",
+    "flow": "L/s",
+    "slope": "ratio",
+    "coordinateSystem": "revit-internal-origin"
+  },
+  "nodes": [
+    {
+      "id": "riser-1",
+      "elementId": 1301,
+      "uniqueId": "missing-valve-riser",
+      "category": "Pipe Accessories",
+      "familyName": "Fire Riser",
+      "typeName": "Riser DN65",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-MISS",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 0,
+      "properties": { "fireRole": "riser" },
+      "connectors": [
+        { "id": "riser-1.out", "ownerNodeId": "riser-1", "domain": "piping", "origin": { "x": 0, "y": 0, "z": 0 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "pipe-1",
+      "elementId": 2301,
+      "uniqueId": "missing-valve-pipe-1",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN25",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-MISS",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "engineering": { "diameterMm": 25 },
+      "connectors": [
+        { "id": "pipe-1.in", "ownerNodeId": "pipe-1", "domain": "piping", "origin": { "x": 0, "y": 0, "z": 3000 }, "isConnectionExpected": true },
+        { "id": "pipe-1.out", "ownerNodeId": "pipe-1", "domain": "piping", "origin": { "x": 3000, "y": 0, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    },
+    {
+      "id": "sprinkler-1",
+      "elementId": 4302,
+      "uniqueId": "missing-valve-sprinkler-1",
+      "category": "Sprinklers",
+      "familyName": "Pendant Sprinkler",
+      "typeName": "K80",
+      "systemClassification": "FireProtectionWet",
+      "systemName": "SP-MISS",
+      "systemType": "Wet Sprinkler",
+      "levelName": "Level 01",
+      "elevationMm": 3000,
+      "connectors": [
+        { "id": "sprinkler-1.in", "ownerNodeId": "sprinkler-1", "domain": "piping", "origin": { "x": 3000, "y": 0, "z": 3000 }, "isConnectionExpected": true }
+      ]
+    }
+  ],
+  "edges": [
+    { "id": "e-riser-pipe", "fromNodeId": "riser-1", "fromConnectorId": "riser-1.out", "toNodeId": "pipe-1", "toConnectorId": "pipe-1.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" },
+    { "id": "e-pipe-sprinkler", "fromNodeId": "pipe-1", "fromConnectorId": "pipe-1.out", "toNodeId": "sprinkler-1", "toConnectorId": "sprinkler-1.in", "direction": "fromTo", "kind": "physical", "domain": "piping", "systemClassification": "FireProtectionWet" }
+  ]
+}
