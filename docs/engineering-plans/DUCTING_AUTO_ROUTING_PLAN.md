@@ -19,6 +19,36 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.6)
+
+Addresses the three gemini-code-assist review concerns on PR #23 without
+changing the user-visible parameter semantics.
+
+- **Per-run riser penalty (HIGH).** The A* state is now lifted to
+  `(gridKey, arrivalDirection)` so `riserPenalty` is charged exactly once
+  per vertical run (on the horizontal→vertical transition). This matches
+  the final score formula
+  `length/1000 + elbows·elbowPenalty + verticalRunCount·riserPenalty/1000`.
+  Refining the Z grid no longer inflates the riser charge and therefore
+  no longer biases multi-source selection.
+- **Slab segment-AABB test (MEDIUM).** `segmentHitsObstacle` (now in
+  `obstacleIndex.ts`) is a 3D slab-method intersection test. It is exact
+  for both axis-aligned and 45° diagonal segments and replaces the
+  conservative bounding-box overlap that produced false positives near
+  obstacle corners when `allowDiagonal` was enabled.
+- **Spatial obstacle index (MEDIUM).** New `obstacleIndex.ts` exports an
+  `ObstacleIndex` abstraction with two backends:
+  - `AabbTreeObstacleIndex` (default for production): bounding-volume
+    hierarchy built via median-split on the longest axis. Point and
+    segment queries traverse only nodes whose AABB intersects the query
+    region.
+  - `LinearObstacleIndex`: original O(N) scan, retained for tests,
+    debugging, and tiny scenes.
+  The planner exposes a new `obstacleIndexBackend` MCP input
+  (`"aabb-tree"` default, `"linear"` opt-in). The two backends return
+  identical block decisions; tests assert this for a representative
+  scene.
+
 ## Spatial Zone Integration (Sprint 1.5)
 
 The planner now consumes the JSON emitted by

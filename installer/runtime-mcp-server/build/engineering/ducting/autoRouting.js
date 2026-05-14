@@ -1,4 +1,5 @@
 import { aabbFromValue, asBoolean, asNumber, asRecord, makeIssue, pointDistanceMm, pointFromValue, round, stringByFields, validationStatus, valueByFields, } from "./helpers.js";
+import { buildObstacleIndex, pointInsideObstacle, readObstacles, segmentHitsObstacle, } from "./obstacleIndex.js";
 import { mapSpatialZoneToRoutingContext } from "./spatialZoneAdapter.js";
 function pointFromRecord(record) {
     return pointFromValue(valueByFields(record, ["pointMm", "point_mm", "point", "locationMm", "location_mm", "location"]))
@@ -14,64 +15,20 @@ function readEndpoint(raw, fallbackId) {
         raw,
     };
 }
-function expandAabb(aabb, clearanceMm, ductHalfHeightMm) {
-    return {
-        minX: aabb.minX - clearanceMm,
-        minY: aabb.minY - clearanceMm,
-        minZ: aabb.minZ - clearanceMm - ductHalfHeightMm,
-        maxX: aabb.maxX + clearanceMm,
-        maxY: aabb.maxY + clearanceMm,
-        maxZ: aabb.maxZ + clearanceMm + ductHalfHeightMm,
-    };
-}
-function readObstacles(rawObstacles, clearanceMm, ductHalfHeightMm) {
-    const obstacles = [];
-    rawObstacles.forEach((raw, index) => {
-        const aabb = aabbFromValue(valueByFields(raw, ["aabbMm", "aabb_mm", "aabb", "box"]) ?? raw);
-        if (!aabb)
-            return;
-        obstacles.push({
-            id: stringByFields(raw, ["id", "elementId", "element_id", "uniqueId", "unique_id"]) ?? `obstacle-${index + 1}`,
-            name: stringByFields(raw, ["name", "category", "obstacleType", "obstacle_type"]),
-            original: aabb,
-            expanded: expandAabb(aabb, clearanceMm, ductHalfHeightMm),
-        });
-    });
-    return obstacles;
-}
 function overlap1d(aMin, aMax, bMin, bMax) {
     return Math.max(aMin, bMin) <= Math.min(aMax, bMax);
 }
-function pointInsideObstacle(point, obstacle) {
-    return point.x >= obstacle.expanded.minX
-        && point.x <= obstacle.expanded.maxX
-        && point.y >= obstacle.expanded.minY
-        && point.y <= obstacle.expanded.maxY
-        && point.z >= obstacle.expanded.minZ
-        && point.z <= obstacle.expanded.maxZ;
-}
-function segmentHitsObstacle(start, end, obstacle) {
-    const segMinX = Math.min(start.x, end.x);
-    const segMaxX = Math.max(start.x, end.x);
-    const segMinY = Math.min(start.y, end.y);
-    const segMaxY = Math.max(start.y, end.y);
-    const segMinZ = Math.min(start.z, end.z);
-    const segMaxZ = Math.max(start.z, end.z);
-    return overlap1d(segMinX, segMaxX, obstacle.expanded.minX, obstacle.expanded.maxX)
-        && overlap1d(segMinY, segMaxY, obstacle.expanded.minY, obstacle.expanded.maxY)
-        && overlap1d(segMinZ, segMaxZ, obstacle.expanded.minZ, obstacle.expanded.maxZ);
-}
-function routeObstacleHits(points, obstacles) {
+function routeObstacleHits(points, index) {
     const hits = [];
-    for (let index = 1; index < points.length; index++) {
-        const start = points[index - 1];
-        const end = points[index];
-        for (const obstacle of obstacles) {
+    for (let i = 1; i < points.length; i++) {
+        const start = points[i - 1];
+        const end = points[i];
+        for (const obstacle of index.candidatesForSegment(start, end)) {
             if (segmentHitsObstacle(start, end, obstacle)) {
                 hits.push({
                     obstacleId: obstacle.id,
                     obstacleName: obstacle.name,
-                    segmentIndex: index - 1,
+                    segmentIndex: i - 1,
                 });
             }
         }
@@ -274,34 +231,39 @@ function pointInsideBounds(point, bounds) {
         && point.z >= bounds.minZ
         && point.z <= bounds.maxZ;
 }
-function findGridPathFromSources(sources, target, obstacles, options) {
+function findGridPathFromSources(sources, target, obstacleIndex, options) {
     const validSources = sources
         .map((source, index) => ({ source, index }))
         .filter((entry) => pointInsideBounds(entry.source, options.bounds));
     if (!pointInsideBounds(target, options.bounds) || validSources.length === 0) {
         return { points: [], expansions: 0, exhausted: false };
     }
-    const grid = createCoordinateGrid(validSources.map((entry) => entry.source), target, obstacles, options.bounds, options.gridStepMm, options.verticalStepMm, options.marginMm, options.allowedZs);
+    const grid = createCoordinateGrid(validSources.map((entry) => entry.source), target, obstacleIndex.obstacles(), options.bounds, options.gridStepMm, options.verticalStepMm, options.marginMm, options.allowedZs);
     const { xs, ys, zs } = grid;
     if (xs.length === 0 || ys.length === 0 || zs.length === 0) {
         return { points: [], expansions: 0, exhausted: false };
     }
     const width = xs.length;
     const height = ys.length;
-    const key = (ix, iy, iz) => (iz * height + iy) * width + ix;
-    const ixFromKey = (value) => value % width;
-    const iyFromKey = (value) => Math.floor(value / width) % height;
-    const izFromKey = (value) => Math.floor(value / (width * height));
+    const gridKey = (ix, iy, iz) => (iz * height + iy) * width + ix;
+    const ixFromGridKey = (value) => value % width;
+    const iyFromGridKey = (value) => Math.floor(value / width) % height;
+    const izFromGridKey = (value) => Math.floor(value / (width * height));
     const point = (ix, iy, iz) => ({ x: xs[ix], y: ys[iy], z: zs[iz] });
+    const ARRIVE_HORIZ = 0;
+    const ARRIVE_VERT = 1;
+    const compose = (gk, arrival) => gk * 2 + arrival;
+    const gridFromComposite = (comp) => Math.floor(comp / 2);
+    const arrivalFromComposite = (comp) => comp % 2;
     const findIndex = (values, target) => values.findIndex((value) => Math.abs(value - target) < 0.001);
     const targetIx = findIndex(xs, target.x);
     const targetIy = findIndex(ys, target.y);
     const targetIz = findIndex(zs, target.z);
     if (targetIx < 0 || targetIy < 0 || targetIz < 0)
         return { points: [], expansions: 0, exhausted: false };
-    const targetKey = key(targetIx, targetIy, targetIz);
-    const pointBlocked = (candidate) => obstacles.some((obstacle) => pointInsideObstacle(candidate, obstacle));
-    const segmentBlocked = (left, right) => obstacles.some((obstacle) => segmentHitsObstacle(left, right, obstacle));
+    const targetGridKey = gridKey(targetIx, targetIy, targetIz);
+    const pointBlocked = (candidate) => obstacleIndex.candidatesForPoint(candidate).some((obstacle) => pointInsideObstacle(candidate, obstacle));
+    const segmentBlocked = (left, right) => obstacleIndex.candidatesForSegment(left, right).some((obstacle) => segmentHitsObstacle(left, right, obstacle));
     if (pointBlocked(target))
         return { points: [], expansions: 0, exhausted: false };
     const open = new MinHeap();
@@ -316,13 +278,13 @@ function findGridPathFromSources(sources, target, obstacles, options) {
         const sourceIz = findIndex(zs, entry.source.z);
         if (sourceIx < 0 || sourceIy < 0 || sourceIz < 0 || pointBlocked(entry.source))
             continue;
-        const sourceKey = key(sourceIx, sourceIy, sourceIz);
-        const existingG = gScore.get(sourceKey);
+        const sourceComp = compose(gridKey(sourceIx, sourceIy, sourceIz), ARRIVE_HORIZ);
+        const existingG = gScore.get(sourceComp);
         if (existingG !== undefined && existingG <= 0)
             continue;
-        sourceForKey.set(sourceKey, entry.index);
-        gScore.set(sourceKey, 0);
-        open.push({ key: sourceKey, priority: heuristic(entry.source) });
+        sourceForKey.set(sourceComp, entry.index);
+        gScore.set(sourceComp, 0);
+        open.push({ key: sourceComp, priority: heuristic(entry.source) });
     }
     if (open.length === 0)
         return { points: [], expansions: 0, exhausted: false };
@@ -336,32 +298,38 @@ function findGridPathFromSources(sources, target, obstacles, options) {
         ];
     let expansions = 0;
     while (open.length > 0) {
-        const currentKey = open.pop().key;
-        if (closed.has(currentKey))
+        const currentComp = open.pop().key;
+        if (closed.has(currentComp))
             continue;
-        if (currentKey === targetKey) {
-            const pathKeys = [currentKey];
-            let cursor = currentKey;
+        const currentGridKey = gridFromComposite(currentComp);
+        const currentArrival = arrivalFromComposite(currentComp);
+        if (currentGridKey === targetGridKey) {
+            const pathComps = [currentComp];
+            let cursor = currentComp;
             while (cameFrom.has(cursor)) {
                 cursor = cameFrom.get(cursor);
-                pathKeys.push(cursor);
+                pathComps.push(cursor);
             }
-            pathKeys.reverse();
-            const selectedSourceIndex = sourceForKey.get(pathKeys[0]);
+            pathComps.reverse();
+            const selectedSourceIndex = sourceForKey.get(pathComps[0]);
+            const pathPoints = pathComps.map((entry) => {
+                const gk = gridFromComposite(entry);
+                return point(ixFromGridKey(gk), iyFromGridKey(gk), izFromGridKey(gk));
+            });
             return {
-                points: compressPath(pathKeys.map((entry) => point(ixFromKey(entry), iyFromKey(entry), izFromKey(entry)))),
+                points: compressPath(pathPoints),
                 sourceIndex: selectedSourceIndex,
                 expansions,
                 exhausted: false,
             };
         }
-        closed.add(currentKey);
+        closed.add(currentComp);
         expansions++;
         if (expansions > options.maxExpansions)
             return { points: [], expansions, exhausted: true };
-        const ix = ixFromKey(currentKey);
-        const iy = iyFromKey(currentKey);
-        const iz = izFromKey(currentKey);
+        const ix = ixFromGridKey(currentGridKey);
+        const iy = iyFromGridKey(currentGridKey);
+        const iz = izFromGridKey(currentGridKey);
         const currentPoint = point(ix, iy, iz);
         const neighborMoves = [];
         for (const [dx, dy] of horizontalNeighbors) {
@@ -374,20 +342,23 @@ function findGridPathFromSources(sources, target, obstacles, options) {
         for (const move of neighborMoves) {
             if (move.ix < 0 || move.iy < 0 || move.iz < 0 || move.ix >= xs.length || move.iy >= ys.length || move.iz >= zs.length)
                 continue;
-            const neighborKey = key(move.ix, move.iy, move.iz);
-            if (closed.has(neighborKey))
+            const neighborArrival = move.vertical ? ARRIVE_VERT : ARRIVE_HORIZ;
+            const neighborComp = compose(gridKey(move.ix, move.iy, move.iz), neighborArrival);
+            if (closed.has(neighborComp))
                 continue;
             const neighborPoint = point(move.ix, move.iy, move.iz);
             if (pointBlocked(neighborPoint) || segmentBlocked(currentPoint, neighborPoint))
                 continue;
-            const stepCost = pointDistanceMm(currentPoint, neighborPoint) + (move.vertical ? options.riserPenalty : 0);
-            const tentative = (gScore.get(currentKey) ?? Number.POSITIVE_INFINITY) + stepCost;
-            if (tentative >= (gScore.get(neighborKey) ?? Number.POSITIVE_INFINITY))
+            const startingRiser = move.vertical && currentArrival !== ARRIVE_VERT;
+            const transitionPenalty = startingRiser ? options.riserPenalty : 0;
+            const stepCost = pointDistanceMm(currentPoint, neighborPoint) + transitionPenalty;
+            const tentative = (gScore.get(currentComp) ?? Number.POSITIVE_INFINITY) + stepCost;
+            if (tentative >= (gScore.get(neighborComp) ?? Number.POSITIVE_INFINITY))
                 continue;
-            cameFrom.set(neighborKey, currentKey);
-            sourceForKey.set(neighborKey, sourceForKey.get(currentKey) ?? 0);
-            gScore.set(neighborKey, tentative);
-            open.push({ key: neighborKey, priority: tentative + heuristic(neighborPoint) });
+            cameFrom.set(neighborComp, currentComp);
+            sourceForKey.set(neighborComp, sourceForKey.get(currentComp) ?? 0);
+            gScore.set(neighborComp, tentative);
+            open.push({ key: neighborComp, priority: tentative + heuristic(neighborPoint) });
         }
     }
     return { points: [], expansions, exhausted: false };
@@ -410,13 +381,13 @@ function snapPointToGridZ(point, allowedZs) {
         return { point: { x: point.x, y: point.y, z: nearest }, projected: false };
     return { point: { x: point.x, y: point.y, z: nearest }, projected: true };
 }
-function buildRouteFromSources(sources, target, obstacles, options) {
+function buildRouteFromSources(sources, target, obstacleIndex, options) {
     const projectedSources = sources.map((source) => {
         const snapped = snapPointToGridZ(source.point, options.allowedZs);
         return { id: source.id, point: snapped.point, projected: snapped.projected, raw: source.raw };
     });
     const snappedTarget = snapPointToGridZ(target.point, options.allowedZs);
-    const path = findGridPathFromSources(projectedSources.map((entry) => entry.point), snappedTarget.point, obstacles, options);
+    const path = findGridPathFromSources(projectedSources.map((entry) => entry.point), snappedTarget.point, obstacleIndex, options);
     const sourceEntry = path.sourceIndex !== undefined ? projectedSources[path.sourceIndex] : projectedSources[0];
     const issues = [];
     const sourceProjected = sourceEntry?.projected ?? false;
@@ -442,7 +413,7 @@ function buildRouteFromSources(sources, target, obstacles, options) {
             targetId: target.id,
         }));
     }
-    const hits = path.points.length > 0 ? routeObstacleHits(path.points, obstacles) : [];
+    const hits = path.points.length > 0 ? routeObstacleHits(path.points, obstacleIndex) : [];
     if (hits.length > 0) {
         issues.push(makeIssue("route_obstacle_intersection", "error", "Generated route intersects expanded obstacle clearance volume.", {
             sourceId: sourceEntry?.id,
@@ -553,6 +524,8 @@ export function planDuctingAutoRoute(input = {}) {
     })) : [];
     const mergedObstacleRaw = mergeObstacleSources(spatialObstacleRaw, userObstacleRaw);
     const obstacles = readObstacles(mergedObstacleRaw, clearanceMm, ductHalfHeightMm);
+    const obstacleIndexBackend = input.obstacleIndexBackend === "linear" ? "linear" : "aabb-tree";
+    const obstacleIndex = buildObstacleIndex(obstacles, obstacleIndexBackend);
     const bounds = aabbFromValue(input.routingBounds);
     const routes = [];
     if (bounds) {
@@ -584,7 +557,7 @@ export function planDuctingAutoRoute(input = {}) {
     }
     if (issues.every((issue) => issue.severity !== "error")) {
         for (const target of targets) {
-            const selected = buildRouteFromSources(sources, target, obstacles, {
+            const selected = buildRouteFromSources(sources, target, obstacleIndex, {
                 bounds,
                 gridStepMm,
                 verticalStepMm,
@@ -632,6 +605,7 @@ export function planDuctingAutoRoute(input = {}) {
             sourceCount: sources.length,
             targetCount: targets.length,
             obstacleCount: obstacles.length,
+            obstacleIndexBackend,
             routeCount: routes.length,
             generatedRouteCandidateCount: routeCandidates.length,
             gridStepMm,

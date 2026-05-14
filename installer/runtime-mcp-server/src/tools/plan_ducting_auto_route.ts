@@ -20,8 +20,9 @@ export function registerPlanDuctingAutoRouteTool(server) {
         boundaryMarginMm: z.number().nonnegative().optional().describe("Inferred-boundary margin in mm. Defaults to four grid steps."),
         maxNodeExpansions: z.number().int().positive().optional().describe("Search cap for each source-target route. Defaults to 25000."),
         routeElbowPenalty: z.number().nonnegative().optional().describe("Score penalty per elbow. Defaults to 4."),
-        riserPenalty: z.number().nonnegative().optional().describe("Extra cost added to each vertical Z move during A* search and to the final score (per riser segment, mm). Defaults to 0 (preserves legacy 2D behavior)."),
-        allowDiagonal: z.boolean().optional().describe("When true, enables 8-way XY diagonals (45° elbows). Vertical moves remain pure-Z. Defaults to false."),
+        riserPenalty: z.number().nonnegative().optional().describe("Extra cost charged once per vertical run during A* search (state-expanded so a 3 m riser at 1 m grid is one charge, matching the per-run final score). Units are mm; the score line is `verticalRunCount * riserPenalty / 1000`. Defaults to 0 (preserves legacy 2D behavior)."),
+        allowDiagonal: z.boolean().optional().describe("When true, enables 8-way XY diagonals (45° elbows). Vertical moves remain pure-Z. Diagonal segments are checked against obstacles with an exact 3D slab test, not the conservative AABB-overlap fast path. Defaults to false."),
+        obstacleIndexBackend: z.enum(["aabb-tree", "linear"]).optional().describe("Spatial index backend used to prune obstacle checks during A* expansion. Defaults to `aabb-tree` (recommended for large Revit models). `linear` keeps the original O(N) scan and is intended for tests, debugging, or tiny scenes."),
     }, async (args) => {
         return formatJsonContent(planDuctingAutoRoute(args));
     });

@@ -11,6 +11,15 @@ import {
     validationStatus,
     valueByFields,
 } from "./helpers.js";
+import {
+    buildObstacleIndex,
+    pointInsideObstacle,
+    readObstacles,
+    segmentHitsObstacle,
+    type ObstacleAabb,
+    type ObstacleIndex,
+    type ObstacleIndexBackend,
+} from "./obstacleIndex.js";
 import { mapSpatialZoneToRoutingContext, type SpatialZoneRoutingContext } from "./spatialZoneAdapter.js";
 import type { AabbMm, EngineeringIssue, PointMm } from "./types.js";
 
@@ -31,19 +40,13 @@ export interface DuctAutoRoutingInput {
     routeElbowPenalty?: number;
     riserPenalty?: number;
     allowDiagonal?: boolean;
+    obstacleIndexBackend?: ObstacleIndexBackend;
 }
 
 interface RouteEndpoint {
     id: string;
     point: PointMm;
     raw: Record<string, unknown>;
-}
-
-interface RouteObstacle {
-    id: string;
-    name?: string;
-    original: AabbMm;
-    expanded: AabbMm;
 }
 
 interface PlannedRoute {
@@ -89,68 +92,21 @@ function readEndpoint(raw: Record<string, unknown>, fallbackId: string): RouteEn
     };
 }
 
-function expandAabb(aabb: AabbMm, clearanceMm: number, ductHalfHeightMm: number): AabbMm {
-    return {
-        minX: aabb.minX - clearanceMm,
-        minY: aabb.minY - clearanceMm,
-        minZ: aabb.minZ - clearanceMm - ductHalfHeightMm,
-        maxX: aabb.maxX + clearanceMm,
-        maxY: aabb.maxY + clearanceMm,
-        maxZ: aabb.maxZ + clearanceMm + ductHalfHeightMm,
-    };
-}
-
-function readObstacles(rawObstacles: Record<string, unknown>[], clearanceMm: number, ductHalfHeightMm: number): RouteObstacle[] {
-    const obstacles: RouteObstacle[] = [];
-    rawObstacles.forEach((raw, index) => {
-        const aabb = aabbFromValue(valueByFields(raw, ["aabbMm", "aabb_mm", "aabb", "box"]) ?? raw);
-        if (!aabb) return;
-        obstacles.push({
-            id: stringByFields(raw, ["id", "elementId", "element_id", "uniqueId", "unique_id"]) ?? `obstacle-${index + 1}`,
-            name: stringByFields(raw, ["name", "category", "obstacleType", "obstacle_type"]),
-            original: aabb,
-            expanded: expandAabb(aabb, clearanceMm, ductHalfHeightMm),
-        });
-    });
-    return obstacles;
-}
-
 function overlap1d(aMin: number, aMax: number, bMin: number, bMax: number): boolean {
     return Math.max(aMin, bMin) <= Math.min(aMax, bMax);
 }
 
-function pointInsideObstacle(point: PointMm, obstacle: RouteObstacle): boolean {
-    return point.x >= obstacle.expanded.minX
-        && point.x <= obstacle.expanded.maxX
-        && point.y >= obstacle.expanded.minY
-        && point.y <= obstacle.expanded.maxY
-        && point.z >= obstacle.expanded.minZ
-        && point.z <= obstacle.expanded.maxZ;
-}
-
-function segmentHitsObstacle(start: PointMm, end: PointMm, obstacle: RouteObstacle): boolean {
-    const segMinX = Math.min(start.x, end.x);
-    const segMaxX = Math.max(start.x, end.x);
-    const segMinY = Math.min(start.y, end.y);
-    const segMaxY = Math.max(start.y, end.y);
-    const segMinZ = Math.min(start.z, end.z);
-    const segMaxZ = Math.max(start.z, end.z);
-    return overlap1d(segMinX, segMaxX, obstacle.expanded.minX, obstacle.expanded.maxX)
-        && overlap1d(segMinY, segMaxY, obstacle.expanded.minY, obstacle.expanded.maxY)
-        && overlap1d(segMinZ, segMaxZ, obstacle.expanded.minZ, obstacle.expanded.maxZ);
-}
-
-function routeObstacleHits(points: PointMm[], obstacles: RouteObstacle[]): Array<Record<string, unknown>> {
+function routeObstacleHits(points: PointMm[], index: ObstacleIndex): Array<Record<string, unknown>> {
     const hits: Array<Record<string, unknown>> = [];
-    for (let index = 1; index < points.length; index++) {
-        const start = points[index - 1];
-        const end = points[index];
-        for (const obstacle of obstacles) {
+    for (let i = 1; i < points.length; i++) {
+        const start = points[i - 1];
+        const end = points[i];
+        for (const obstacle of index.candidatesForSegment(start, end)) {
             if (segmentHitsObstacle(start, end, obstacle)) {
                 hits.push({
                     obstacleId: obstacle.id,
                     obstacleName: obstacle.name,
-                    segmentIndex: index - 1,
+                    segmentIndex: i - 1,
                 });
             }
         }
@@ -247,7 +203,7 @@ interface CoordinateGrid {
 function createCoordinateGrid(
     sources: PointMm[],
     target: PointMm,
-    obstacles: RouteObstacle[],
+    obstacles: ObstacleAabb[],
     bounds: AabbMm | undefined,
     gridStepMm: number,
     verticalStepMm: number,
@@ -387,7 +343,7 @@ interface PathSearchOptions {
 function findGridPathFromSources(
     sources: PointMm[],
     target: PointMm,
-    obstacles: RouteObstacle[],
+    obstacleIndex: ObstacleIndex,
     options: PathSearchOptions,
 ): { points: PointMm[]; sourceIndex?: number; expansions: number; exhausted: boolean } {
     const validSources = sources
@@ -400,7 +356,7 @@ function findGridPathFromSources(
     const grid = createCoordinateGrid(
         validSources.map((entry) => entry.source),
         target,
-        obstacles,
+        obstacleIndex.obstacles(),
         options.bounds,
         options.gridStepMm,
         options.verticalStepMm,
@@ -414,21 +370,31 @@ function findGridPathFromSources(
 
     const width = xs.length;
     const height = ys.length;
-    const key = (ix: number, iy: number, iz: number) => (iz * height + iy) * width + ix;
-    const ixFromKey = (value: number) => value % width;
-    const iyFromKey = (value: number) => Math.floor(value / width) % height;
-    const izFromKey = (value: number) => Math.floor(value / (width * height));
+    const gridKey = (ix: number, iy: number, iz: number) => (iz * height + iy) * width + ix;
+    const ixFromGridKey = (value: number) => value % width;
+    const iyFromGridKey = (value: number) => Math.floor(value / width) % height;
+    const izFromGridKey = (value: number) => Math.floor(value / (width * height));
     const point = (ix: number, iy: number, iz: number): PointMm => ({ x: xs[ix], y: ys[iy], z: zs[iz] });
+
+    // State expansion: each grid cell carries two A* states based on how it was reached.
+    // 0 = arrived horizontally (or starting source), 1 = arrived via a vertical step.
+    // The riser penalty is charged exactly once per vertical run by adding it on the
+    // transition from arrival state 0 → arrival state 1.
+    const ARRIVE_HORIZ = 0;
+    const ARRIVE_VERT = 1;
+    const compose = (gk: number, arrival: number) => gk * 2 + arrival;
+    const gridFromComposite = (comp: number) => Math.floor(comp / 2);
+    const arrivalFromComposite = (comp: number) => comp % 2;
 
     const findIndex = (values: number[], target: number) => values.findIndex((value) => Math.abs(value - target) < 0.001);
     const targetIx = findIndex(xs, target.x);
     const targetIy = findIndex(ys, target.y);
     const targetIz = findIndex(zs, target.z);
     if (targetIx < 0 || targetIy < 0 || targetIz < 0) return { points: [], expansions: 0, exhausted: false };
-    const targetKey = key(targetIx, targetIy, targetIz);
+    const targetGridKey = gridKey(targetIx, targetIy, targetIz);
 
-    const pointBlocked = (candidate: PointMm) => obstacles.some((obstacle) => pointInsideObstacle(candidate, obstacle));
-    const segmentBlocked = (left: PointMm, right: PointMm) => obstacles.some((obstacle) => segmentHitsObstacle(left, right, obstacle));
+    const pointBlocked = (candidate: PointMm) => obstacleIndex.candidatesForPoint(candidate).some((obstacle) => pointInsideObstacle(candidate, obstacle));
+    const segmentBlocked = (left: PointMm, right: PointMm) => obstacleIndex.candidatesForSegment(left, right).some((obstacle) => segmentHitsObstacle(left, right, obstacle));
     if (pointBlocked(target)) return { points: [], expansions: 0, exhausted: false };
 
     const open = new MinHeap();
@@ -443,12 +409,12 @@ function findGridPathFromSources(
         const sourceIy = findIndex(ys, entry.source.y);
         const sourceIz = findIndex(zs, entry.source.z);
         if (sourceIx < 0 || sourceIy < 0 || sourceIz < 0 || pointBlocked(entry.source)) continue;
-        const sourceKey = key(sourceIx, sourceIy, sourceIz);
-        const existingG = gScore.get(sourceKey);
+        const sourceComp = compose(gridKey(sourceIx, sourceIy, sourceIz), ARRIVE_HORIZ);
+        const existingG = gScore.get(sourceComp);
         if (existingG !== undefined && existingG <= 0) continue;
-        sourceForKey.set(sourceKey, entry.index);
-        gScore.set(sourceKey, 0);
-        open.push({ key: sourceKey, priority: heuristic(entry.source) });
+        sourceForKey.set(sourceComp, entry.index);
+        gScore.set(sourceComp, 0);
+        open.push({ key: sourceComp, priority: heuristic(entry.source) });
     }
     if (open.length === 0) return { points: [], expansions: 0, exhausted: false };
 
@@ -463,31 +429,37 @@ function findGridPathFromSources(
 
     let expansions = 0;
     while (open.length > 0) {
-        const currentKey = open.pop()!.key;
-        if (closed.has(currentKey)) continue;
-        if (currentKey === targetKey) {
-            const pathKeys = [currentKey];
-            let cursor = currentKey;
+        const currentComp = open.pop()!.key;
+        if (closed.has(currentComp)) continue;
+        const currentGridKey = gridFromComposite(currentComp);
+        const currentArrival = arrivalFromComposite(currentComp);
+        if (currentGridKey === targetGridKey) {
+            const pathComps = [currentComp];
+            let cursor = currentComp;
             while (cameFrom.has(cursor)) {
                 cursor = cameFrom.get(cursor)!;
-                pathKeys.push(cursor);
+                pathComps.push(cursor);
             }
-            pathKeys.reverse();
-            const selectedSourceIndex = sourceForKey.get(pathKeys[0]);
+            pathComps.reverse();
+            const selectedSourceIndex = sourceForKey.get(pathComps[0]);
+            const pathPoints = pathComps.map((entry) => {
+                const gk = gridFromComposite(entry);
+                return point(ixFromGridKey(gk), iyFromGridKey(gk), izFromGridKey(gk));
+            });
             return {
-                points: compressPath(pathKeys.map((entry) => point(ixFromKey(entry), iyFromKey(entry), izFromKey(entry)))),
+                points: compressPath(pathPoints),
                 sourceIndex: selectedSourceIndex,
                 expansions,
                 exhausted: false,
             };
         }
-        closed.add(currentKey);
+        closed.add(currentComp);
         expansions++;
         if (expansions > options.maxExpansions) return { points: [], expansions, exhausted: true };
 
-        const ix = ixFromKey(currentKey);
-        const iy = iyFromKey(currentKey);
-        const iz = izFromKey(currentKey);
+        const ix = ixFromGridKey(currentGridKey);
+        const iy = iyFromGridKey(currentGridKey);
+        const iz = izFromGridKey(currentGridKey);
         const currentPoint = point(ix, iy, iz);
 
         const neighborMoves: Array<{ ix: number; iy: number; iz: number; vertical: boolean }> = [];
@@ -501,17 +473,21 @@ function findGridPathFromSources(
 
         for (const move of neighborMoves) {
             if (move.ix < 0 || move.iy < 0 || move.iz < 0 || move.ix >= xs.length || move.iy >= ys.length || move.iz >= zs.length) continue;
-            const neighborKey = key(move.ix, move.iy, move.iz);
-            if (closed.has(neighborKey)) continue;
+            const neighborArrival = move.vertical ? ARRIVE_VERT : ARRIVE_HORIZ;
+            const neighborComp = compose(gridKey(move.ix, move.iy, move.iz), neighborArrival);
+            if (closed.has(neighborComp)) continue;
             const neighborPoint = point(move.ix, move.iy, move.iz);
             if (pointBlocked(neighborPoint) || segmentBlocked(currentPoint, neighborPoint)) continue;
-            const stepCost = pointDistanceMm(currentPoint, neighborPoint) + (move.vertical ? options.riserPenalty : 0);
-            const tentative = (gScore.get(currentKey) ?? Number.POSITIVE_INFINITY) + stepCost;
-            if (tentative >= (gScore.get(neighborKey) ?? Number.POSITIVE_INFINITY)) continue;
-            cameFrom.set(neighborKey, currentKey);
-            sourceForKey.set(neighborKey, sourceForKey.get(currentKey) ?? 0);
-            gScore.set(neighborKey, tentative);
-            open.push({ key: neighborKey, priority: tentative + heuristic(neighborPoint) });
+            // Per-run riser penalty: charged once when transitioning into a vertical run.
+            const startingRiser = move.vertical && currentArrival !== ARRIVE_VERT;
+            const transitionPenalty = startingRiser ? options.riserPenalty : 0;
+            const stepCost = pointDistanceMm(currentPoint, neighborPoint) + transitionPenalty;
+            const tentative = (gScore.get(currentComp) ?? Number.POSITIVE_INFINITY) + stepCost;
+            if (tentative >= (gScore.get(neighborComp) ?? Number.POSITIVE_INFINITY)) continue;
+            cameFrom.set(neighborComp, currentComp);
+            sourceForKey.set(neighborComp, sourceForKey.get(currentComp) ?? 0);
+            gScore.set(neighborComp, tentative);
+            open.push({ key: neighborComp, priority: tentative + heuristic(neighborPoint) });
         }
     }
     return { points: [], expansions, exhausted: false };
@@ -539,7 +515,7 @@ function snapPointToGridZ(point: PointMm, allowedZs: number[]): { point: PointMm
 function buildRouteFromSources(
     sources: RouteEndpoint[],
     target: RouteEndpoint,
-    obstacles: RouteObstacle[],
+    obstacleIndex: ObstacleIndex,
     options: PathSearchOptions & { elbowPenalty: number; defaultRouteZ: number },
 ): PlannedRoute {
     const projectedSources = sources.map((source) => {
@@ -550,7 +526,7 @@ function buildRouteFromSources(
     const path = findGridPathFromSources(
         projectedSources.map((entry) => entry.point),
         snappedTarget.point,
-        obstacles,
+        obstacleIndex,
         options,
     );
     const sourceEntry = path.sourceIndex !== undefined ? projectedSources[path.sourceIndex] : projectedSources[0];
@@ -579,7 +555,7 @@ function buildRouteFromSources(
         }));
     }
 
-    const hits = path.points.length > 0 ? routeObstacleHits(path.points, obstacles) : [];
+    const hits = path.points.length > 0 ? routeObstacleHits(path.points, obstacleIndex) : [];
     if (hits.length > 0) {
         issues.push(makeIssue("route_obstacle_intersection", "error", "Generated route intersects expanded obstacle clearance volume.", {
             sourceId: sourceEntry?.id,
@@ -691,6 +667,8 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
     }) as Record<string, unknown>) : [];
     const mergedObstacleRaw = mergeObstacleSources(spatialObstacleRaw, userObstacleRaw);
     const obstacles = readObstacles(mergedObstacleRaw, clearanceMm, ductHalfHeightMm);
+    const obstacleIndexBackend: ObstacleIndexBackend = input.obstacleIndexBackend === "linear" ? "linear" : "aabb-tree";
+    const obstacleIndex = buildObstacleIndex(obstacles, obstacleIndexBackend);
     const bounds = aabbFromValue(input.routingBounds);
 
     const routes: PlannedRoute[] = [];
@@ -724,7 +702,7 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
 
     if (issues.every((issue) => issue.severity !== "error")) {
         for (const target of targets) {
-            const selected = buildRouteFromSources(sources, target, obstacles, {
+            const selected = buildRouteFromSources(sources, target, obstacleIndex, {
                 bounds,
                 gridStepMm,
                 verticalStepMm,
@@ -774,6 +752,7 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
             sourceCount: sources.length,
             targetCount: targets.length,
             obstacleCount: obstacles.length,
+            obstacleIndexBackend,
             routeCount: routes.length,
             generatedRouteCandidateCount: routeCandidates.length,
             gridStepMm,
