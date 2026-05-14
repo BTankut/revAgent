@@ -44,4 +44,3 @@ Build production-grade domestic cold water, domestic hot water and DHW recircula
 - Every changed diameter or parameter is traceable to graph edge, FU/flow and table rule.
 - DHW recirculation output lists critical path and return flow assumptions.
 - PR includes tests, dry-run evidence and manual review checklist.
-
