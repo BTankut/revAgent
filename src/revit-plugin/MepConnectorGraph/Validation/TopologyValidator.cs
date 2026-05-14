@@ -41,8 +41,10 @@ namespace RevitMcp.MepConnectorGraph.Validation
                 report.Summary.NodeCount > 0 &&
                 report.Summary.EdgeCount > 0 &&
                 report.Summary.NetworkCount == 1 &&
+                report.Summary.OpenEndCount == 0 &&
                 report.Summary.AmbiguousDirectionCount == 0 &&
-                report.Summary.MissingSystemDataCount == 0;
+                report.Summary.MissingSystemDataCount == 0 &&
+                report.Summary.CycleCount == 0;
 
             return ConnectorGraphJson.Normalize(new ConnectorGraphDocument { Topology = report }).Topology;
         }

@@ -62,6 +62,7 @@ namespace RevitMcp.MepConnectorGraph.Tests
             AssertEqual(1, report.Summary.NetworkCount, "network count");
             AssertEqual(1, report.Summary.CycleCount, "cycle count");
             AssertTrue(HasFinding(report, "cycle_detected"), "loop fixture should report a cycle");
+            AssertFalse(report.Summary.IsValidForDirectionalCalculation, "loop fixture should not be calculation ready");
         }
 
         private static void DisconnectedFixtureReportsMultipleNetworks(string fixtureRoot)
