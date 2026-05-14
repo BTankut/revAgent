@@ -8,10 +8,15 @@ MCP servers, and PowerShell installer/updater orchestration.
 
 - `src/revit-plugin/`: C# Revit add-in source. The add-in hosts the local Revit
   socket service, command registry, status window, and command execution bridge.
+  Production command sources live here as `RevitMCPCommandSet` for dynamic code
+  execution/context commands and `RevitMCPViewCommandSet` for reusable UI view
+  workflows.
 - `installer/revit-plugin/`: bundled Revit add-in payload copied to
   `C:\ProgramData\DPE\RevitMCP\revit-plugin`.
 - `installer/command-payload/`: bundled dynamic command set and Roslyn runtime
-  assemblies used by `send_code_to_revit`.
+  assemblies used by `send_code_to_revit`. This remains the runtime contract;
+  rebuilding source does not replace it unless the build is run with an explicit
+  command-payload refresh.
 - `installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPViewCommandSet/`:
   bundled UI view commands for listing, activating, and closing Revit view
   tabs, focusing elements in a view, and applying 3D section boxes around
