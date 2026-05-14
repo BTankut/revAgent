@@ -27,6 +27,8 @@ const expectedTools = [
   "audit_dcw_dhw_piping",
   "send_code_to_revit",
   "send_code_to_revit_safe",
+  "calculate_sanitary_rainwater_from_graph",
+  "apply_sanitary_rainwater_pipe_sizes",
   "get_revit_session_context",
   "get_active_view_context",
   "list_open_views",

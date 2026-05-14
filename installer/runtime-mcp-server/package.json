@@ -18,7 +18,8 @@
     "ducting-test": "node scripts/ducting-engineering.test.mjs",
     "socket-test": "node scripts/socket-client.test.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "npm run build && npm run guard-test && npm run ducting-test && npm run hydronic-test && npm run dcw-dhw-test && npm run socket-test && npm run smoke"
+    "sanitary-rainwater-test": "node scripts/sanitary-rainwater.test.mjs",
+    "test": "npm run build && npm run guard-test && npm run ducting-test && npm run hydronic-test && npm run dcw-dhw-test && npm run sanitary-rainwater-test && npm run socket-test && npm run smoke"
   },
   "files": [
     "build",
