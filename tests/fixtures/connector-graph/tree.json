@@ -1,0 +1,153 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "connector-graph-tree"
+  },
+  "units": {
+    "length": "mm",
+    "area": "m2",
+    "volume": "m3",
+    "flow": "L/s",
+    "slope": "ratio",
+    "coordinateSystem": "revit-internal-origin"
+  },
+  "nodes": [
+    {
+      "id": "coil-1",
+      "elementId": 3001,
+      "uniqueId": "fixture-tree-coil-1",
+      "category": "Mechanical Equipment",
+      "familyName": "Cooling Coil",
+      "typeName": "Coil DN50",
+      "systemClassification": "HydronicSupply",
+      "systemName": "CHWS-1",
+      "systemType": "Chilled Water Supply",
+      "levelName": "Level 01",
+      "elevationMm": 3000.0,
+      "engineering": {
+        "flowLps": 1.6
+      },
+      "connectors": [
+        {
+          "id": "coil-1.in",
+          "ownerNodeId": "coil-1",
+          "ownerElementId": 3001,
+          "ownerUniqueId": "fixture-tree-coil-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 6000.0, "y": 0.0, "z": 3000.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "HydronicSupply"
+        }
+      ]
+    },
+    {
+      "id": "pipe-1",
+      "elementId": 2001,
+      "uniqueId": "fixture-tree-pipe-1",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN50",
+      "systemClassification": "HydronicSupply",
+      "systemName": "CHWS-1",
+      "systemType": "Chilled Water Supply",
+      "levelName": "Level 01",
+      "elevationMm": 3000.0,
+      "engineering": {
+        "lengthMm": 6000.0,
+        "diameterMm": 50.0,
+        "slope": 0.0,
+        "flowLps": 1.6,
+        "material": "Carbon Steel"
+      },
+      "connectors": [
+        {
+          "id": "pipe-1.in",
+          "ownerNodeId": "pipe-1",
+          "ownerElementId": 2001,
+          "ownerUniqueId": "fixture-tree-pipe-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 0.0, "y": 0.0, "z": 3000.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "HydronicSupply"
+        },
+        {
+          "id": "pipe-1.out",
+          "ownerNodeId": "pipe-1",
+          "ownerElementId": 2001,
+          "ownerUniqueId": "fixture-tree-pipe-1",
+          "connectorIndex": 2,
+          "domain": "piping",
+          "origin": { "x": 6000.0, "y": 0.0, "z": 3000.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "HydronicSupply"
+        }
+      ]
+    },
+    {
+      "id": "pump-1",
+      "elementId": 1001,
+      "uniqueId": "fixture-tree-pump-1",
+      "category": "Mechanical Equipment",
+      "familyName": "Inline Pump",
+      "typeName": "Pump DN50",
+      "systemClassification": "HydronicSupply",
+      "systemName": "CHWS-1",
+      "systemType": "Chilled Water Supply",
+      "levelName": "Level 01",
+      "elevationMm": 3000.0,
+      "engineering": {
+        "flowLps": 1.6
+      },
+      "connectors": [
+        {
+          "id": "pump-1.out",
+          "ownerNodeId": "pump-1",
+          "ownerElementId": 1001,
+          "ownerUniqueId": "fixture-tree-pump-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 0.0, "y": 0.0, "z": 3000.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "HydronicSupply"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-pipe-coil",
+      "fromNodeId": "pipe-1",
+      "fromConnectorId": "pipe-1.out",
+      "toNodeId": "coil-1",
+      "toConnectorId": "coil-1.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "HydronicSupply"
+    },
+    {
+      "id": "edge-pump-pipe",
+      "fromNodeId": "pump-1",
+      "fromConnectorId": "pump-1.out",
+      "toNodeId": "pipe-1",
+      "toConnectorId": "pipe-1.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "HydronicSupply"
+    }
+  ]
+}

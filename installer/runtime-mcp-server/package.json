@@ -14,9 +14,11 @@
     "build": "tsc",
     "guard-test": "node build/tools/send_code_to_revit_safe.guard-test.js",
     "dcw-dhw-test": "node scripts/dcw-dhw-sizing.test.mjs",
+    "hydronic-test": "node build/engineering/hydronic/hydronicAnalysis.test.js",
+    "ducting-test": "node scripts/ducting-engineering.test.mjs",
     "socket-test": "node scripts/socket-client.test.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "npm run build && npm run guard-test && npm run dcw-dhw-test && npm run socket-test && npm run smoke"
+    "test": "npm run build && npm run guard-test && npm run ducting-test && npm run hydronic-test && npm run dcw-dhw-test && npm run socket-test && npm run smoke"
   },
   "files": [
     "build",

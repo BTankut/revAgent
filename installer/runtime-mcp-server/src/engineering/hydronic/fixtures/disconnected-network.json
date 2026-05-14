@@ -1,0 +1,13 @@
+{
+  "schema_version": "connector-graph-foundation.fixture",
+  "nodes": [
+    { "id": "P1", "category": "Mechanical Equipment", "familyName": "Pump" },
+    { "id": "PIPE1", "category": "Pipe Curves", "length_m": 8, "diameter_mm": 50 },
+    { "id": "COIL1", "category": "Mechanical Equipment", "familyName": "Fan Coil", "flow_lps": 1.1, "diameter_mm": 32, "k_value": 5 },
+    { "id": "PIPE_ISLAND", "category": "Pipe Curves", "length_m": 4, "diameter_mm": 25, "flow_lps": 0.2 }
+  ],
+  "edges": [
+    { "id": "E1", "source": "P1", "target": "PIPE1" },
+    { "id": "E2", "source": "PIPE1", "target": "COIL1" }
+  ]
+}

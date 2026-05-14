@@ -79,6 +79,14 @@ only the bare names appear, so the rules stay host-agnostic.
   samples: BIP, storage type, unit, shared/read-only, raw/display values.
   Use `parameterNameMatchMode: "contains"` for broad discovery and
   `parameterNameMatchMode: "exact"` for write-preflight.
+- `analyze_hydronic_piping_graph` - dry-run hydronic analysis from a shared
+  connector graph JSON object or file; reports segment flow, velocity,
+  pressure drop, critical path, pump head, and balancing-valve delta-P without
+  writing to Revit.
+- `evaluate_ducting_design` - Revit write yapmadan JSON girdilerden ducting
+  production readiness raporu uretir: air balance mapping, room airflow,
+  diffuser type/count, plenum validation, route scoring, connector graph
+  validation, native sizing validation and commit gate.
 
 Additional domestic water runtime tools:
 
@@ -397,7 +405,10 @@ Load these as needed for the current task:
   approximate friction loss without creating Revit elements
 - `references/patterns/commit-duct-network.cs` - commits reviewed
   `SZ_PREVIEW_ROUTE` segments as real Revit Duct elements; dry-run by default
-  and commits only with `commit=true`
+  and commits only with `commit=true`; production commits are gated by the
+  `evaluate_ducting_design` report via `production_validation_status=pass` and
+  `production_commit_ready=true` unless `allow_prototype_commit=true` is
+  explicitly passed for a reviewed prototype-only run
 - `references/patterns/spatial-zone-extract.cs` - read-only target-level
   spatial zone context for early MEP routing; extracts rooms/spaces, linked
   model transforms, first-class gross plenum volumes, ceiling/plenum zone,
