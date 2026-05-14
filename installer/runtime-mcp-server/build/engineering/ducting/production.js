@@ -62,8 +62,23 @@ export function evaluateDuctingProduction(input = {}) {
     if (stage === "commit" && !reviewedRoute(routePreview)) {
         allIssues.push(makeIssue("commit_route_review_missing", "error", "Commit stage requires a reviewed route candidate."));
     }
+    if (stage === "commit" && connectedNetwork.status !== "pass") {
+        allIssues.push(makeIssue("commit_connected_network_validation_not_pass", "error", "Commit stage requires connected duct network validation to pass.", {
+            connectedNetworkStatus: connectedNetwork.status,
+        }));
+    }
+    if (stage === "commit" && nativeSizingValidation.status !== "pass") {
+        allIssues.push(makeIssue("commit_native_sizing_validation_not_pass", "error", "Commit stage requires Revit native sizing validation to pass.", {
+            nativeSizingStatus: nativeSizingValidation.status,
+        }));
+    }
     const blockingIssues = allIssues.filter((issue) => issue.severity === "error");
-    const canCommit = stage === "commit" && commitApproved(input) && reviewedRoute(routePreview) && blockingIssues.length === 0;
+    const canCommit = stage === "commit" &&
+        commitApproved(input) &&
+        reviewedRoute(routePreview) &&
+        connectedNetwork.status === "pass" &&
+        nativeSizingValidation.status === "pass" &&
+        blockingIssues.length === 0;
     const commitReasons = [];
     if (stage !== "commit")
         commitReasons.push("workflow_stage_is_not_commit");

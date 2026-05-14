@@ -26,6 +26,16 @@ assert.equal(good.routePreview.status, "pass");
 assert.equal(good.connectedNetwork.status, "pass");
 assert.equal(good.nativeSizingValidation.status, "pass");
 
+const commitMissingPrereqs = loadFixture("good-room");
+commitMissingPrereqs.workflowStage = "commit";
+commitMissingPrereqs.commit = { approved: true };
+delete commitMissingPrereqs.connectorGraph;
+delete commitMissingPrereqs.nativeSizing;
+const commitBlocked = evaluateDuctingProduction(commitMissingPrereqs);
+assert.equal(commitBlocked.commitGate.canCommit, false);
+assert.equal(hasIssue(commitBlocked, "commit_connected_network_validation_not_pass", "error"), true);
+assert.equal(hasIssue(commitBlocked, "commit_native_sizing_validation_not_pass", "error"), true);
+
 const noAirflow = runFixture("room-no-airflow");
 assert.equal(hasIssue(noAirflow, "room_no_airflow", "warning"), true);
 assert.equal(noAirflow.diffuserPlans[0].candidates.length, 0);
