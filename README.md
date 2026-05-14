@@ -12,6 +12,8 @@ It is the single canonical source for production office deployment.
 - `AGENTS.md`: workstation-wide coordination rules copied during install
 - `src/revit-plugin/`: Revit add-in source code, including the main host,
   dynamic command set, and UI view command set
+- `src/revit-plugin/MepConnectorGraph/`: shared Revit 2022-safe MEP connector
+  graph schema, validator, JSON serialization, and unit conversion foundation
 - `config/revit-versions.json`: central Revit version matrix and payload gate
 - `scripts/build-revit-plugin.ps1`: builds the add-in source and refreshes the installer payload binaries
 - `installer/revit-plugin/`: bundled Revit add-in payload
@@ -349,6 +351,12 @@ npm run test
 ```
 
 Use `scripts\test-all.ps1` to run the non-Revit checks in one command.
+
+Connector graph schema and topology checks can be run directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-connector-graph.ps1
+```
 
 9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
 10. Verify that both MCP servers are registered:

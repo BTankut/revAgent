@@ -278,6 +278,26 @@ try
     double minSegmentLengthMm = System.Math.Max(10.0, GetDoubleOption("min_segment_length_mm", 100.0));
     string commentsMarker = "DPE_DUCT_NETWORK_COMMIT";
     string fittingMarker = "DPE_DUCT_NETWORK_COMMIT_FITTING";
+    bool requireProductionValidation = GetBoolOption("require_production_validation", true);
+    bool productionCommitReady = GetBoolOption("production_commit_ready", false);
+    bool allowPrototypeCommit = GetBoolOption("allow_prototype_commit", false);
+    string productionValidationStatus = NormalizeText(GetOption("production_validation_status", string.Empty));
+
+    if (commit && requireProductionValidation && !allowPrototypeCommit)
+    {
+        if (productionValidationStatus != "pass")
+        {
+            errors.Add("Production validation gate blocked commit. Run evaluate_ducting_design and pass production_validation_status=pass.");
+        }
+        if (!productionCommitReady)
+        {
+            errors.Add("Production validation gate blocked commit. Pass production_commit_ready=true from the reviewed ducting production report.");
+        }
+    }
+    if (commit && !connectTakeoffs && !allowPrototypeCommit)
+    {
+        errors.Add("Connected duct network commit requires connect_takeoffs=true, or allow_prototype_commit=true for an explicitly reviewed prototype-only run.");
+    }
 
     if (commit && connectTakeoffs)
     {
@@ -689,6 +709,10 @@ try
     System.Collections.Generic.Dictionary<string, object> summary = new System.Collections.Generic.Dictionary<string, object>();
     summary["commit"] = commit;
     summary["connect_takeoffs"] = connectTakeoffs;
+    summary["require_production_validation"] = requireProductionValidation;
+    summary["production_validation_status"] = productionValidationStatus;
+    summary["production_commit_ready"] = productionCommitReady;
+    summary["allow_prototype_commit"] = allowPrototypeCommit;
     summary["route_prefix"] = routePrefix;
     summary["route_preview_count"] = segmentRows.Count;
     summary["planned_count"] = plannedCount;

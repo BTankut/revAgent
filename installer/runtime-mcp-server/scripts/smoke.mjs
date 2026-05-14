@@ -42,6 +42,7 @@ const expectedTools = [
   "inspect_elements",
   "inspect_parameter_schema",
   "analyze_hydronic_piping_graph",
+  "evaluate_ducting_design",
 ];
 
 assert.deepEqual([...tools.keys()], expectedTools);

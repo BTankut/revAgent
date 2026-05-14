@@ -1,0 +1,51 @@
+{
+  "workflowStage": "validate",
+  "projectRules": {
+    "maxDiffusersPerSpace": 4,
+    "minPlenumHeightMm": 300,
+    "blockOnPlenumObstacle": true
+  },
+  "spaces": [
+    {
+      "id": "space-401",
+      "number": "401",
+      "levelName": "L04",
+      "centroid_mm": [2500, 2500, 2700],
+      "aabb_mm": [0, 0, 0, 5000, 5000, 2700]
+    }
+  ],
+  "airBalanceRows": [
+    {
+      "id": "ab-401",
+      "spaceNumber": "401",
+      "levelName": "L04",
+      "supply_lps": 90
+    }
+  ],
+  "diffuserCatalog": [
+    {
+      "id": "S-90",
+      "model": "Supply Diffuser 90",
+      "system": "supply",
+      "min_flow_lps": 50,
+      "max_flow_lps": 110
+    }
+  ],
+  "plenumVolumes": [
+    {
+      "id": "plenum-401",
+      "source_spatial_id": "space-401",
+      "height_mm": 500,
+      "aabb_mm": [0, 0, 2700, 5000, 5000, 3200]
+    }
+  ],
+  "plenumObstacleIntersections": [
+    {
+      "id": "plenum-401::beam-1",
+      "plenum_id": "plenum-401",
+      "obstacle_type": "beam",
+      "status": "blocked",
+      "overlap_area_m2": 0.8
+    }
+  ]
+}
