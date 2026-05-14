@@ -1,5 +1,7 @@
 import { registerSendCodeToRevitTool } from "./send_code_to_revit.js";
 import { registerSendCodeToRevitSafeTool } from "./send_code_to_revit_safe.js";
+import { registerCalculateSanitaryRainwaterFromGraphTool } from "./calculate_sanitary_rainwater_from_graph.js";
+import { registerApplySanitaryRainwaterPipeSizesTool } from "./apply_sanitary_rainwater_pipe_sizes.js";
 import { registerGetRevitSessionContextTool } from "./get_revit_session_context.js";
 import { registerGetActiveViewContextTool } from "./get_active_view_context.js";
 import { registerListOpenViewsTool } from "./list_open_views.js";
@@ -22,6 +24,8 @@ export async function registerTools(server) {
     registerGetRevitMcpStatusTool(server);
     registerSendCodeToRevitTool(server);
     registerSendCodeToRevitSafeTool(server);
+    registerCalculateSanitaryRainwaterFromGraphTool(server);
+    registerApplySanitaryRainwaterPipeSizesTool(server);
     registerGetRevitSessionContextTool(server);
     registerGetActiveViewContextTool(server);
     registerListOpenViewsTool(server);
@@ -37,5 +41,5 @@ export async function registerTools(server) {
     registerSmartFocusElementsTool(server);
     registerInspectElementsTool(server);
     registerInspectParameterSchemaTool(server);
-    console.error("Registered 19 Revit MCP tools");
+    console.error("Registered 21 Revit MCP tools");
 }

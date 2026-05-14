@@ -42,6 +42,10 @@ only the bare names appear, so the rules stay host-agnostic.
 - `send_code_to_revit_safe` — read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced
   `transactionMode: "none"`
+- `calculate_sanitary_rainwater_from_graph` — dry-run sanitary/rainwater
+  sizing from shared connector graph JSON without modifying Revit
+- `apply_sanitary_rainwater_pipe_sizes` — create a sanitary/rainwater
+  write-back plan and, with explicit commit token, update Revit pipe diameters
 - `get_revit_session_context` — first-call context for version/build/culture,
   document state, active view, selection, MEP counts, and link counts
 - `get_active_view_context` — model-view vs sheet-view context; sheets return

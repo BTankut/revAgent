@@ -15,7 +15,8 @@
     "guard-test": "node build/tools/send_code_to_revit_safe.guard-test.js",
     "socket-test": "node scripts/socket-client.test.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "npm run build && npm run guard-test && npm run socket-test && npm run smoke"
+    "sanitary-rainwater-test": "node scripts/sanitary-rainwater.test.mjs",
+    "test": "npm run build && npm run guard-test && npm run socket-test && npm run smoke && npm run sanitary-rainwater-test"
   },
   "files": [
     "build",

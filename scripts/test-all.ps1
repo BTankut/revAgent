@@ -20,6 +20,9 @@ $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 Push-Location (Join-Path $RepoRoot "installer\runtime-mcp-server")
 try {
     npm run test
+    if ($LASTEXITCODE -ne 0) {
+        throw "Runtime MCP tests failed with exit code $LASTEXITCODE"
+    }
 }
 finally {
     Pop-Location
@@ -28,6 +31,9 @@ finally {
 Push-Location (Join-Path $RepoRoot "installer\revit-api-docs-mcp")
 try {
     npm run test
+    if ($LASTEXITCODE -ne 0) {
+        throw "Revit API docs MCP tests failed with exit code $LASTEXITCODE"
+    }
 }
 finally {
     Pop-Location
