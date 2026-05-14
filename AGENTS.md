@@ -14,6 +14,22 @@ Bu ortamda kalite beklentisi yüksektir. "Aynısı olsun", "dosyadaki gibi", "re
 
 Codex, insan operatörün yerine geçmez; onun teknik yardımcısıdır. Kararları görünür kılar, riskleri açık söyler, model ve dosya güvenliğini korur, yapılan işi doğrulanabilir hale getirir.
 
+## MEP Production Packages
+
+Bu depodaki sistem paketleri Revit ribbon'ına ayrı buton ekleyen add-in komutları değildir. Bunlar `revit-mcp` runtime MCP server içinde çalışan mühendislik araçlarıdır. Çoğu `mep.connector-graph.v1` JSON verisini tüketir; sadece DCW/DHW ve sanitary/rainwater paketlerinde açık onay kapılarından geçen sınırlı Revit write-back akışları vardır.
+
+Paketlerin pratik anlamı:
+
+- `evaluate_ducting_design`: kanal tasarımını çizmez; air balance, menfez girdileri, plenum/rota/network/native sizing kanıtlarını kontrol eder ve commit'e hazır mı sorusunu cevaplar.
+- `analyze_hydronic_piping_graph`: soğutma/ısıtma suyu benzeri kapalı devre graph'larında dry-run debi, hız, basınç kaybı, kritik hat, pompa basma yüksekliği ve balans vana fark basıncı raporu üretir; modele yazmaz.
+- `audit_dcw_dhw_piping`: temiz su / sıcak su / resirkülasyon audit raporu ve izlenebilir write-back planı üretir; modele yazmaz.
+- `apply_dcw_dhw_writeback`: sadece exact `approvalToken`, `confirmWriteBack=APPLY_DCW_DHW_WRITEBACK`, `dryRun=false` ve boş Revit MCP status koşulları sağlanırsa onaylı çap/parametre değişikliklerini yazar.
+- `calculate_sanitary_rainwater_from_graph`: pis su / yağmur suyu graph hesabını dry-run yapar; modele yazmaz.
+- `apply_sanitary_rainwater_pipe_sizes`: sadece commit token, plan approval token, confirm text, warning onayı ve boş Revit MCP status koşulları sağlanırsa onaylı boru çaplarını yazar.
+- `audit_fire_piping_topology`: sprinkler / yangın dolabı topology ve şematik audit raporu üretir; hidrolik onay vermez ve modele yazmaz.
+
+Bu paketler mühendislik onayının yerine geçmez. Çıktılar QA, dry-run öneri, eksik veri yakalama, tablo/profil varsayımı görünürlüğü ve küçük kontrollü write-back için kullanılır. Modelde yazma yapılacaksa önce dry-run raporu, sonra küçük batch, sonra Revit'te tekrar inspection yapılır.
+
 ## Revit MCP Coordination - Hard Rule
 
 Revit'e gonderilen her status disi MCP gorevi oncesinde kisa durum kontrolu yapilir:

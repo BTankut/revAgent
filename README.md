@@ -541,6 +541,40 @@ The runtime MCP server intentionally exposes raw dynamic execution plus a small 
 - `analyze_hydronic_piping_graph`
 - `evaluate_ducting_design`
 
+## MEP production packages
+
+The system packages merged into `main` are runtime MCP packages, not new Revit
+ribbon commands. They sit above the shared connector graph contract
+(`mep.connector-graph.v1`) and use the existing Revit add-in execution channel
+only when an explicitly approved write-back is required.
+
+For more detail, see `docs/MEP_PRODUCTION_PACKAGES.md`.
+
+| Package | Main tools | Purpose | Revit write behavior |
+|---|---|---|---|
+| Ducting production evaluator | `evaluate_ducting_design` | Checks air balance mapping, diffuser planning inputs, plenum relation, route candidates, duct connector graph, native sizing evidence, and commit readiness. | Never writes. It is a readiness gate before preview/commit workflows. |
+| Hydronic piping analysis | `analyze_hydronic_piping_graph` | Dry-run heating/chilled-water style graph analysis: segment flow, velocity, pressure drop, critical path, pump head, and balancing-valve delta-P. | Never writes. Missing role, flow, diameter, direction, or local-loss data produces `needs_review`. |
+| DCW/DHW/DHWR sizing | `audit_dcw_dhw_piping`, `apply_dcw_dhw_writeback` | Fixture-unit to flow conversion, pipe diameter recommendation, DHW recirculation heat-loss path, and traceable write-back actions. | Audit is read-only. Apply writes only exact approved actions with `approvalToken`, `confirmWriteBack=APPLY_DCW_DHW_WRITEBACK`, `dryRun=false`, and MCP status preflight. |
+| Sanitary/rainwater sizing | `calculate_sanitary_rainwater_from_graph`, `apply_sanitary_rainwater_pipe_sizes` | Graph-aware downstream DFU/storm-flow accumulation, pipe sizing recommendations, findings, and a manual write-back plan. | Calculation is read-only. Apply writes only after commit token, plan-specific approval token, confirm text, warning acknowledgement when needed, and MCP status preflight. |
+| Fire piping topology audit | `audit_fire_piping_topology` | Sprinkler/fire hose cabinet topology review, source/riser orientation, downstream counts, schematic sizing findings, reducer checks, missing hydraulic inputs, and solver-adapter placeholder. | Never writes. It reports topology/schematic audit only and does not claim hydraulic approval. |
+
+Typical use is:
+
+```text
+1. Get or export a shared connector graph JSON from the model.
+2. Run the discipline audit/analyzer/evaluator tool.
+3. Review findings and table/profile assumptions.
+4. For write-enabled packages only, copy the exact write-back actions and token
+   from the dry-run report.
+5. Commit in small batches only after explicit human approval.
+6. Re-inspect the changed Revit elements.
+```
+
+The bundled Revit add-in still provides the low-level dynamic execution payload
+used by `send_code_to_revit`, view/UI helpers, and approved write-back tools.
+The production packages do not add new ribbon buttons or separate Revit
+external commands. The new user-facing surface is the MCP tool list above.
+
 The Revit add-in command payload still provides the low-level `send_code_to_revit` and selection commands internally. UI view operations are exposed separately through `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, and `focus_elements` so common discovery and view-focus workflows do not need dynamic C# snippets. `calculate_sanitary_rainwater_from_graph` consumes shared connector graph JSON for dry-run DFU/storm-flow accumulation and sizing; `apply_sanitary_rainwater_pipe_sizes` produces the matching write-back plan and only writes pipe diameters when explicitly committed. `audit_dcw_dhw_piping` consumes connector graph JSON and performs DCW/DHW/DHWR sizing audit without model writes; `apply_dcw_dhw_writeback` applies only explicitly approved diameter/parameter updates after status preflight. `audit_fire_piping_topology` is a pure JSON consumer for sprinkler and fire hose cabinet topology/audit reports and does not modify Revit. `analyze_hydronic_piping_graph` consumes a connector graph JSON object or file in dry-run mode and reports hydronic segment flow, velocity, pressure drop, critical path, pump head, and balancing-valve delta-P without writing to Revit. `evaluate_ducting_design` produces a dry-run ducting production readiness report from JSON inputs without writing to Revit. `find_elements` returns match score, confidence, fields, and ambiguity hints so large projects with many same-named elements can be narrowed before writes. `focus_elements` now checks visibility in the active/requested view before calling Revit `ShowElements`; by default it fails with a suggested existing plan instead of triggering Revit's modal closed-view search dialog. `open_existing_plan_for_element_level` supports explicit `planMode`: `elementLevel` opens an existing plan on the element's level, while `activePlan` keeps the current active plan and reports any level mismatch. If `activePlan` is used on a plan whose level does not match the element level, the command returns `Success: false`, `FocusBlocked: true`, `FocusBlockReason: "elementLevelDoesNotMatchPlanView"`, and a `SuggestedView` instead of calling `ShowElements` and opening Revit's closed-view search prompt. `section_box_elements` and `create_3d_view_for_elements` are also exposed as dedicated UI/view commands because applying or clearing a 3D section box and creating a view are project-data writes that need explicit Revit transactions and verification. `focus_elements`, `open_existing_plan_for_element_level`, and `create_3d_view_for_elements` report their UI zoom method, support optional `fitToScreen` through Revit `UIView.ZoomToFit`, and separate per-element `HasBoundingBox` from operation-level `BoundingBox` so automation can tell whether a section-box/focus box was computed or Revit UI focus was used. Plan opening responses identify whether the active view was changed to an existing same-level plan, and 3D view creation responses report section box confirmation and view-name conflict resolution. `create_3d_view_for_elements` can also set a simple 3D camera orientation with framing padding without turning on section box. The wrapper-only `show_element_in_plan_and_3d` tool composes safe search, existing-plan focus, and optional 3D focus into one workflow; by default it rejects ambiguous search results instead of guessing. The wrapper-only `smart_focus_elements` tool first tries the active/requested view without modal search, then can fall back to an existing same-level plan and optional 3D view.
 
 Runtime commands perform a lightweight internal `mcp_status` preflight before sending non-status work to Revit and fail fast when another task is active. Agent workflows should still call `get_revit_mcp_status` explicitly before each Revit operation so the user can see what is running and why a command is being delayed.
@@ -555,9 +589,10 @@ The required docs server is separate and exposes its own API lookup tools:
 - `list_namespace`
 - `resolve_api_symbols_bulk`
 
-Fire piping topology audit is the only current discipline-specific static runtime tool; it is read-only and consumes exported connector graph JSON.
-The sanitary/rainwater tools are intentionally graph-contract consumers. They do not change the shared graph schema and keep calculation tables isolated from traversal.
-Hydronic graph analysis is the first discipline-specific dry-run reporting tool in the runtime. It stays outside Revit write-back and consumes the shared connector graph contract instead of changing it.
+The discipline-specific packages are graph-contract consumers. They do not
+change the shared graph schema. Ducting, hydronic, and fire tools are read-only
+evaluators/audits. DCW/DHW and sanitary/rainwater add manually gated write-back
+tools for reviewed pipe diameter/parameter updates.
 
 ## Why `send_code_to_revit` stays primary
 
@@ -575,20 +610,12 @@ In practice, one strong custom-code tool performs better than a large set of nar
 
 That is why `send_code_to_revit` should remain the first-class runtime tool in both the MCP setup and the skill.
 
-## Skill update direction
+## Skill behavior
 
-`SKILL.md` should strongly document:
-
-- call `get_revit_session_context` first for non-trivial tasks
-- use `resolve_api_symbols_bulk` before non-trivial snippets to confirm exact API signatures
-- use `send_code_to_revit_safe` for read-only probes and previews
-- keep raw `send_code_to_revit` as the explicit broad-control escape hatch
-- linked model and room matching workflow
-- parameter lookup order
-- bulk-query performance patterns
-- export and Excel safety rules
-- `Mark` + `ElementId` + `Unique_Mark` identity strategy
-- single-element -> small sample -> full export debug flow
+`SKILL.md` documents the runtime tool surface, Revit MCP coordination rules,
+MEP production package workflow, linked model and room matching workflow,
+parameter lookup order, bulk-query performance patterns, export/Excel safety
+rules, and the single-element -> small sample -> full export debug flow.
 
 ## Installer note
 

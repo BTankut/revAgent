@@ -83,6 +83,11 @@ only the bare names appear, so the rules stay host-agnostic.
   samples: BIP, storage type, unit, shared/read-only, raw/display values.
   Use `parameterNameMatchMode: "contains"` for broad discovery and
   `parameterNameMatchMode: "exact"` for write-preflight.
+- `audit_fire_piping_topology` - read-only sprinkler/fire hose cabinet topology
+  audit from `mep.connector-graph.v1`; reports source/riser orientation,
+  downstream counts, schematic sizing findings, missing valves/open ends, and
+  missing hydraulic inputs. It does not write Revit and does not grant hydraulic
+  approval.
 - `analyze_hydronic_piping_graph` - dry-run hydronic analysis from a shared
   connector graph JSON object or file; reports segment flow, velocity,
   pressure drop, critical path, pump head, and balancing-valve delta-P without
@@ -151,6 +156,50 @@ Default workflow for every Revit runtime task:
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known — e.g. the bundled patterns under
 `references/patterns/`.
+
+---
+
+## MEP Production Package Playbook
+
+The merged MEP system packages are runtime MCP tools. They are not separate
+Revit ribbon buttons or external commands. Most consume `mep.connector-graph.v1`
+JSON exported from the model; write-enabled packages use the existing Revit MCP
+execution bridge only after explicit approval gates.
+
+Use this order for production-style system work:
+
+1. Read Revit status, session context, active view, and selected/model elements.
+2. Export or obtain the relevant connector graph/spatial JSON.
+3. Run the discipline tool in dry-run/audit/evaluate mode.
+4. Review blockers, warnings, table/profile assumptions, and missing model data.
+5. For write-enabled packages only, copy exact actions and tokens from the
+   report, commit a small batch, then re-inspect changed elements.
+
+Package responsibilities:
+
+- Ducting: `evaluate_ducting_design` is a read-only readiness gate for air
+  balance mapping, diffuser planning inputs, plenum/route/network/native sizing
+  evidence, and commit gating. It does not create ducts.
+- Hydronic: `analyze_hydronic_piping_graph` is read-only pressure/flow
+  analysis for closed-loop heating/chilled-water style graphs. Treat
+  `needs_review` as expected when role, flow, diameter, direction, or local-loss
+  data is missing.
+- DCW/DHW/DHWR: `audit_dcw_dhw_piping` is read-only. It emits traceable
+  diameter/parameter actions. `apply_dcw_dhw_writeback` writes only exact
+  approved actions with the matching `approvalToken`,
+  `confirmWriteBack=APPLY_DCW_DHW_WRITEBACK`, `dryRun=false`, and status
+  preflight.
+- Sanitary/rainwater: `calculate_sanitary_rainwater_from_graph` is read-only.
+  `apply_sanitary_rainwater_pipe_sizes` writes only when the dry-run plan is
+  not blocked and commit token, plan approval token, confirm text, warning
+  acknowledgement, and status preflight all pass.
+- Fire piping: `audit_fire_piping_topology` is read-only topology/schematic
+  audit. It intentionally reports hydraulic approval as false unless a future
+  reviewed hydraulic solver workflow provides the missing design basis.
+
+Do not present any of these reports as final engineering approval. They are
+deterministic assistants for QA, sizing evidence, dry-run recommendations, and
+controlled write-back.
 
 ---
 

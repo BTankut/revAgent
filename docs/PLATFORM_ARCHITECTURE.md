@@ -26,6 +26,11 @@ MCP servers, and PowerShell installer/updater orchestration.
 - `installer/runtime-mcp-server/src/`: TypeScript source for the live Revit MCP
   runtime server. `npm run build` emits `build/`, which remains the installer
   and Codex registration contract.
+- MEP production packages live inside the runtime MCP server. They expose
+  graph-driven engineering tools for ducting, hydronic piping, DCW/DHW/DHWR,
+  sanitary/rainwater, and fire piping. These are MCP tools, not Revit ribbon
+  commands; they consume connector graph JSON and use the Revit add-in bridge
+  only for explicitly approved write-back helpers.
 - `installer/revit-api-docs-mcp/src/`: TypeScript source for the Revit API docs
   MCP server. It indexes local Revit API DLL/XML files and serves API lookup
   tools from `build/index.js`.

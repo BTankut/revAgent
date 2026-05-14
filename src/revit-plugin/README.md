@@ -14,6 +14,12 @@ Production source projects:
   `list_open_views`, `activate_view`, `close_view`, and element-focused view
   workflows.
 
+MEP production packages such as ducting, hydronic, DCW/DHW, sanitary/rainwater,
+and fire piping are not implemented here as new ribbon commands. They live in
+the Node runtime MCP server under `installer/runtime-mcp-server/src` and consume
+connector graph JSON. Write-enabled package helpers use the existing add-in
+execution bridge only after their runtime approval gates pass.
+
 The canonical production payload is still kept under:
 
 ```text

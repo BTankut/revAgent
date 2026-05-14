@@ -15,7 +15,12 @@ package.
 |   `-- revit-versions.json
 |-- docs/
 |   |-- DEVELOPER_RUNBOOK.md
+|   |-- MEP_PRODUCTION_PACKAGES.md
 |   |-- connector-graph/
+|   |-- dcw-dhw/
+|   |-- fire-piping/
+|   |-- sanitary-rainwater/
+|   |-- engineering-plans/
 |   |-- PLATFORM_ARCHITECTURE.md
 |   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
 |   |-- REPOSITORY_STRUCTURE.md
@@ -82,6 +87,13 @@ the stable dynamic command payload unchanged unless
 `installer/runtime-mcp-server/src` and `installer/revit-api-docs-mcp/src` are
 the TypeScript MCP source trees. Their `build/` folders remain the runtime
 payload contract consumed by installer and Codex MCP registrations.
+
+The runtime MCP server also contains the MEP production packages documented in
+`docs/MEP_PRODUCTION_PACKAGES.md`. These packages are Node MCP tools, not Revit
+ribbon commands. They consume shared connector graph JSON for ducting,
+hydronic, DCW/DHW, sanitary/rainwater, and fire-piping engineering checks, and
+only the DCW/DHW plus sanitary/rainwater packages include manually gated Revit
+write-back helpers.
 
 `installer/lib` contains shared PowerShell helper modules for updater/installer
 behavior. `config/revit-versions.json` is the central Revit version matrix.
