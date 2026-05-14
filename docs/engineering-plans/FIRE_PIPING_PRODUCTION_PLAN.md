@@ -43,4 +43,3 @@ Build production-grade fire piping support for sprinkler and fire hose cabinet s
 - Branch can produce a fire topology/audit report without modifying the model.
 - Count-based recommendations are clearly labeled as audit/schematic, not final hydraulic approval.
 - PR includes tests, dry-run report and manual fire-engineering review checklist.
-
