@@ -1,0 +1,92 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "ambiguous-sanitary-direction"
+  },
+  "units": {
+    "length": "mm",
+    "area": "m2",
+    "volume": "m3",
+    "flow": "L/s",
+    "slope": "ratio",
+    "coordinateSystem": "revit-internal-origin"
+  },
+  "nodes": [
+    {
+      "id": "fixture-1",
+      "elementId": 1301,
+      "uniqueId": "fixture-ambiguous-1",
+      "category": "Plumbing Fixtures",
+      "familyName": "Floor Drain",
+      "typeName": "Floor Drain",
+      "systemClassification": "Sanitary",
+      "systemName": "SAN-AMB",
+      "systemType": "Sanitary",
+      "engineering": {
+        "fixtureUnits": 3
+      },
+      "connectors": [
+        {
+          "id": "fixture-1.out",
+          "ownerNodeId": "fixture-1",
+          "ownerElementId": 1301,
+          "ownerUniqueId": "fixture-ambiguous-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 0.0, "y": 0.0, "z": 3000.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "unknown",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        }
+      ]
+    },
+    {
+      "id": "pipe-ambiguous-1",
+      "elementId": 2301,
+      "uniqueId": "pipe-ambiguous-1",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "Sanitary Branch DN50",
+      "systemClassification": "Sanitary",
+      "systemName": "SAN-AMB",
+      "systemType": "Sanitary",
+      "engineering": {
+        "lengthMm": 2500.0,
+        "diameterMm": 50.0,
+        "slope": 0.02
+      },
+      "connectors": [
+        {
+          "id": "pipe-ambiguous-1.in",
+          "ownerNodeId": "pipe-ambiguous-1",
+          "ownerElementId": 2301,
+          "ownerUniqueId": "pipe-ambiguous-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 500.0, "y": 0.0, "z": 3000.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "unknown",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-ambiguous-fixture-pipe",
+      "fromNodeId": "fixture-1",
+      "fromConnectorId": "fixture-1.out",
+      "toNodeId": "pipe-ambiguous-1",
+      "toConnectorId": "pipe-ambiguous-1.in",
+      "direction": "ambiguous",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Sanitary"
+    }
+  ]
+}

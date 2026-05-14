@@ -1,0 +1,198 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "rainwater-leader"
+  },
+  "units": {
+    "length": "mm",
+    "area": "m2",
+    "volume": "m3",
+    "flow": "L/s",
+    "slope": "ratio",
+    "coordinateSystem": "revit-internal-origin"
+  },
+  "nodes": [
+    {
+      "id": "roof-drain-1",
+      "elementId": 1201,
+      "uniqueId": "fixture-rain-roof-drain-1",
+      "category": "Roof Drains",
+      "familyName": "Roof Drain",
+      "typeName": "Primary Roof Drain",
+      "systemClassification": "Storm",
+      "systemName": "RW-1",
+      "systemType": "Rainwater",
+      "engineering": {
+        "flowLps": 9.5
+      },
+      "connectors": [
+        {
+          "id": "roof-drain-1.out",
+          "ownerNodeId": "roof-drain-1",
+          "ownerElementId": 1201,
+          "ownerUniqueId": "fixture-rain-roof-drain-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 0.0, "y": 0.0, "z": 12000.0 },
+          "direction": { "x": 0.0, "y": 0.0, "z": -1.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Storm"
+        }
+      ]
+    },
+    {
+      "id": "leader-1",
+      "elementId": 2201,
+      "uniqueId": "pipe-rain-leader-1",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "Rainwater Leader DN75",
+      "systemClassification": "Storm",
+      "systemName": "RW-1",
+      "systemType": "Rainwater",
+      "engineering": {
+        "lengthMm": 9000.0,
+        "diameterMm": 75.0,
+        "slope": 0.0
+      },
+      "connectors": [
+        {
+          "id": "leader-1.in",
+          "ownerNodeId": "leader-1",
+          "ownerElementId": 2201,
+          "ownerUniqueId": "pipe-rain-leader-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 0.0, "y": 0.0, "z": 11800.0 },
+          "direction": { "x": 0.0, "y": 0.0, "z": 1.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Storm"
+        },
+        {
+          "id": "leader-1.out",
+          "ownerNodeId": "leader-1",
+          "ownerElementId": 2201,
+          "ownerUniqueId": "pipe-rain-leader-1",
+          "connectorIndex": 2,
+          "domain": "piping",
+          "origin": { "x": 0.0, "y": 0.0, "z": 2800.0 },
+          "direction": { "x": 0.0, "y": 0.0, "z": -1.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Storm"
+        }
+      ]
+    },
+    {
+      "id": "storm-main-1",
+      "elementId": 2202,
+      "uniqueId": "pipe-rain-storm-main-1",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "Storm Main DN75",
+      "systemClassification": "Storm",
+      "systemName": "RW-1",
+      "systemType": "Rainwater",
+      "engineering": {
+        "lengthMm": 7000.0,
+        "diameterMm": 75.0,
+        "slope": 0.01
+      },
+      "connectors": [
+        {
+          "id": "storm-main-1.in",
+          "ownerNodeId": "storm-main-1",
+          "ownerElementId": 2202,
+          "ownerUniqueId": "pipe-rain-storm-main-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 500.0, "y": 0.0, "z": 2800.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Storm"
+        },
+        {
+          "id": "storm-main-1.out",
+          "ownerNodeId": "storm-main-1",
+          "ownerElementId": 2202,
+          "ownerUniqueId": "pipe-rain-storm-main-1",
+          "connectorIndex": 2,
+          "domain": "piping",
+          "origin": { "x": 7500.0, "y": 0.0, "z": 2730.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Storm"
+        }
+      ]
+    },
+    {
+      "id": "rain-outfall-1",
+      "elementId": 3201,
+      "uniqueId": "fixture-rain-outfall-1",
+      "category": "Plumbing Equipment",
+      "familyName": "Rainwater Outfall",
+      "typeName": "Outfall",
+      "systemClassification": "Storm",
+      "systemName": "RW-1",
+      "systemType": "Rainwater",
+      "engineering": {},
+      "connectors": [
+        {
+          "id": "rain-outfall-1.in",
+          "ownerNodeId": "rain-outfall-1",
+          "ownerElementId": 3201,
+          "ownerUniqueId": "fixture-rain-outfall-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 8000.0, "y": 0.0, "z": 2730.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Storm"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-roof-drain-leader",
+      "fromNodeId": "roof-drain-1",
+      "fromConnectorId": "roof-drain-1.out",
+      "toNodeId": "leader-1",
+      "toConnectorId": "leader-1.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Storm"
+    },
+    {
+      "id": "edge-leader-main",
+      "fromNodeId": "leader-1",
+      "fromConnectorId": "leader-1.out",
+      "toNodeId": "storm-main-1",
+      "toConnectorId": "storm-main-1.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Storm"
+    },
+    {
+      "id": "edge-main-outfall",
+      "fromNodeId": "storm-main-1",
+      "fromConnectorId": "storm-main-1.out",
+      "toNodeId": "rain-outfall-1",
+      "toConnectorId": "rain-outfall-1.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Storm"
+    }
+  ]
+}

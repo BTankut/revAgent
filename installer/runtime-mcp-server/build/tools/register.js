@@ -1,5 +1,7 @@
 import { registerSendCodeToRevitTool } from "./send_code_to_revit.js";
 import { registerSendCodeToRevitSafeTool } from "./send_code_to_revit_safe.js";
+import { registerCalculateSanitaryRainwaterFromGraphTool } from "./calculate_sanitary_rainwater_from_graph.js";
+import { registerApplySanitaryRainwaterPipeSizesTool } from "./apply_sanitary_rainwater_pipe_sizes.js";
 import { registerGetRevitSessionContextTool } from "./get_revit_session_context.js";
 import { registerGetActiveViewContextTool } from "./get_active_view_context.js";
 import { registerListOpenViewsTool } from "./list_open_views.js";
@@ -18,11 +20,18 @@ import { registerInspectParameterSchemaTool } from "./inspect_parameter_schema.j
 import { registerListRevitInstancesTool } from "./list_revit_instances.js";
 import { registerGetRevitMcpStatusTool } from "./get_revit_mcp_status.js";
 import { registerAuditFirePipingTopologyTool } from "./audit_fire_piping_topology.js";
+import { registerAuditDcwDhwPipingTool } from "./audit_dcw_dhw_piping.js";
+import { registerApplyDcwDhwWritebackTool } from "./apply_dcw_dhw_writeback.js";
+import { registerAnalyzeHydronicPipingGraphTool } from "./analyze_hydronic_piping_graph.js";
+import { registerEvaluateDuctingDesignTool } from "./evaluate_ducting_design.js";
 export async function registerTools(server) {
     registerListRevitInstancesTool(server);
     registerGetRevitMcpStatusTool(server);
+    registerAuditDcwDhwPipingTool(server);
     registerSendCodeToRevitTool(server);
     registerSendCodeToRevitSafeTool(server);
+    registerCalculateSanitaryRainwaterFromGraphTool(server);
+    registerApplySanitaryRainwaterPipeSizesTool(server);
     registerGetRevitSessionContextTool(server);
     registerGetActiveViewContextTool(server);
     registerListOpenViewsTool(server);
@@ -39,5 +48,8 @@ export async function registerTools(server) {
     registerInspectElementsTool(server);
     registerInspectParameterSchemaTool(server);
     registerAuditFirePipingTopologyTool(server);
-    console.error("Registered 20 Revit MCP tools");
+    registerApplyDcwDhwWritebackTool(server);
+    registerAnalyzeHydronicPipingGraphTool(server);
+    registerEvaluateDuctingDesignTool(server);
+    console.error("Registered 26 Revit MCP tools");
 }

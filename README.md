@@ -12,6 +12,8 @@ It is the single canonical source for production office deployment.
 - `AGENTS.md`: workstation-wide coordination rules copied during install
 - `src/revit-plugin/`: Revit add-in source code, including the main host,
   dynamic command set, and UI view command set
+- `src/revit-plugin/MepConnectorGraph/`: shared Revit 2022-safe MEP connector
+  graph schema, validator, JSON serialization, and unit conversion foundation
 - `config/revit-versions.json`: central Revit version matrix and payload gate
 - `scripts/build-revit-plugin.ps1`: builds the add-in source and refreshes the installer payload binaries
 - `installer/revit-plugin/`: bundled Revit add-in payload
@@ -350,6 +352,12 @@ npm run test
 
 Use `scripts\test-all.ps1` to run the non-Revit checks in one command.
 
+Connector graph schema and topology checks can be run directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-connector-graph.ps1
+```
+
 9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
 10. Verify that both MCP servers are registered:
 
@@ -368,8 +376,11 @@ Expected bundled runtime commands:
 
 - `list_revit_instances`
 - `get_revit_mcp_status`
+- `audit_dcw_dhw_piping`
 - `send_code_to_revit`
 - `send_code_to_revit_safe`
+- `calculate_sanitary_rainwater_from_graph`
+- `apply_sanitary_rainwater_pipe_sizes`
 - `get_revit_session_context`
 - `get_active_view_context`
 - `list_open_views`
@@ -386,6 +397,9 @@ Expected bundled runtime commands:
 - `inspect_elements`
 - `inspect_parameter_schema`
 - `audit_fire_piping_topology`
+- `apply_dcw_dhw_writeback`
+- `analyze_hydronic_piping_graph`
+- `evaluate_ducting_design`
 
 Expected bundled docs commands:
 
@@ -502,8 +516,11 @@ The runtime MCP server intentionally exposes raw dynamic execution plus a small 
 
 - `list_revit_instances`
 - `get_revit_mcp_status`
+- `audit_dcw_dhw_piping`
 - `send_code_to_revit`
 - `send_code_to_revit_safe`
+- `calculate_sanitary_rainwater_from_graph`
+- `apply_sanitary_rainwater_pipe_sizes`
 - `get_revit_session_context`
 - `get_active_view_context`
 - `list_open_views`
@@ -520,8 +537,11 @@ The runtime MCP server intentionally exposes raw dynamic execution plus a small 
 - `inspect_elements`
 - `inspect_parameter_schema`
 - `audit_fire_piping_topology`
+- `apply_dcw_dhw_writeback`
+- `analyze_hydronic_piping_graph`
+- `evaluate_ducting_design`
 
-The Revit add-in command payload still provides the low-level `send_code_to_revit` and selection commands internally. UI view operations are exposed separately through `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, and `focus_elements` so common discovery and view-focus workflows do not need dynamic C# snippets. `find_elements` returns match score, confidence, fields, and ambiguity hints so large projects with many same-named elements can be narrowed before writes. `focus_elements` now checks visibility in the active/requested view before calling Revit `ShowElements`; by default it fails with a suggested existing plan instead of triggering Revit's modal closed-view search dialog. `open_existing_plan_for_element_level` supports explicit `planMode`: `elementLevel` opens an existing plan on the element's level, while `activePlan` keeps the current active plan and reports any level mismatch. If `activePlan` is used on a plan whose level does not match the element level, the command returns `Success: false`, `FocusBlocked: true`, `FocusBlockReason: "elementLevelDoesNotMatchPlanView"`, and a `SuggestedView` instead of calling `ShowElements` and opening Revit's closed-view search prompt. `section_box_elements` and `create_3d_view_for_elements` are also exposed as dedicated UI/view commands because applying or clearing a 3D section box and creating a view are project-data writes that need explicit Revit transactions and verification. `focus_elements`, `open_existing_plan_for_element_level`, and `create_3d_view_for_elements` report their UI zoom method, support optional `fitToScreen` through Revit `UIView.ZoomToFit`, and separate per-element `HasBoundingBox` from operation-level `BoundingBox` so automation can tell whether a section-box/focus box was computed or Revit UI focus was used. Plan opening responses identify whether the active view was changed to an existing same-level plan, and 3D view creation responses report section box confirmation and view-name conflict resolution. `create_3d_view_for_elements` can also set a simple 3D camera orientation with framing padding without turning on section box. The wrapper-only `show_element_in_plan_and_3d` tool composes safe search, existing-plan focus, and optional 3D focus into one workflow; by default it rejects ambiguous search results instead of guessing. The wrapper-only `smart_focus_elements` tool first tries the active/requested view without modal search, then can fall back to an existing same-level plan and optional 3D view. `audit_fire_piping_topology` is a pure JSON consumer for sprinkler and fire hose cabinet topology/audit reports and does not modify Revit.
+The Revit add-in command payload still provides the low-level `send_code_to_revit` and selection commands internally. UI view operations are exposed separately through `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, and `focus_elements` so common discovery and view-focus workflows do not need dynamic C# snippets. `calculate_sanitary_rainwater_from_graph` consumes shared connector graph JSON for dry-run DFU/storm-flow accumulation and sizing; `apply_sanitary_rainwater_pipe_sizes` produces the matching write-back plan and only writes pipe diameters when explicitly committed. `audit_dcw_dhw_piping` consumes connector graph JSON and performs DCW/DHW/DHWR sizing audit without model writes; `apply_dcw_dhw_writeback` applies only explicitly approved diameter/parameter updates after status preflight. `audit_fire_piping_topology` is a pure JSON consumer for sprinkler and fire hose cabinet topology/audit reports and does not modify Revit. `analyze_hydronic_piping_graph` consumes a connector graph JSON object or file in dry-run mode and reports hydronic segment flow, velocity, pressure drop, critical path, pump head, and balancing-valve delta-P without writing to Revit. `evaluate_ducting_design` produces a dry-run ducting production readiness report from JSON inputs without writing to Revit. `find_elements` returns match score, confidence, fields, and ambiguity hints so large projects with many same-named elements can be narrowed before writes. `focus_elements` now checks visibility in the active/requested view before calling Revit `ShowElements`; by default it fails with a suggested existing plan instead of triggering Revit's modal closed-view search dialog. `open_existing_plan_for_element_level` supports explicit `planMode`: `elementLevel` opens an existing plan on the element's level, while `activePlan` keeps the current active plan and reports any level mismatch. If `activePlan` is used on a plan whose level does not match the element level, the command returns `Success: false`, `FocusBlocked: true`, `FocusBlockReason: "elementLevelDoesNotMatchPlanView"`, and a `SuggestedView` instead of calling `ShowElements` and opening Revit's closed-view search prompt. `section_box_elements` and `create_3d_view_for_elements` are also exposed as dedicated UI/view commands because applying or clearing a 3D section box and creating a view are project-data writes that need explicit Revit transactions and verification. `focus_elements`, `open_existing_plan_for_element_level`, and `create_3d_view_for_elements` report their UI zoom method, support optional `fitToScreen` through Revit `UIView.ZoomToFit`, and separate per-element `HasBoundingBox` from operation-level `BoundingBox` so automation can tell whether a section-box/focus box was computed or Revit UI focus was used. Plan opening responses identify whether the active view was changed to an existing same-level plan, and 3D view creation responses report section box confirmation and view-name conflict resolution. `create_3d_view_for_elements` can also set a simple 3D camera orientation with framing padding without turning on section box. The wrapper-only `show_element_in_plan_and_3d` tool composes safe search, existing-plan focus, and optional 3D focus into one workflow; by default it rejects ambiguous search results instead of guessing. The wrapper-only `smart_focus_elements` tool first tries the active/requested view without modal search, then can fall back to an existing same-level plan and optional 3D view.
 
 Runtime commands perform a lightweight internal `mcp_status` preflight before sending non-status work to Revit and fail fast when another task is active. Agent workflows should still call `get_revit_mcp_status` explicitly before each Revit operation so the user can see what is running and why a command is being delayed.
 
@@ -536,6 +556,8 @@ The required docs server is separate and exposes its own API lookup tools:
 - `resolve_api_symbols_bulk`
 
 Fire piping topology audit is the only current discipline-specific static runtime tool; it is read-only and consumes exported connector graph JSON.
+The sanitary/rainwater tools are intentionally graph-contract consumers. They do not change the shared graph schema and keep calculation tables isolated from traversal.
+Hydronic graph analysis is the first discipline-specific dry-run reporting tool in the runtime. It stays outside Revit write-back and consumes the shared connector graph contract instead of changing it.
 
 ## Why `send_code_to_revit` stays primary
 

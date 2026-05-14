@@ -4,6 +4,7 @@ All notable Revit MCP workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added DCW/DHW/DHWR sizing audit runtime tools with fixture-unit interpolation, flush tank/flush valve classification, DHW recirculation heat-loss critical path, missing-data reporting, and approval-token controlled write-back.
 - Replaced the legacy `src/revit-plugin/SampleCommandSet` source with the
   production `src/revit-plugin/RevitMCPCommandSet` source, keeping the current
   stable command payload unchanged unless `-RefreshCommandSetPayload` is passed

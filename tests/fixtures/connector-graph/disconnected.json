@@ -1,0 +1,93 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "connector-graph-disconnected"
+  },
+  "nodes": [
+    {
+      "id": "branch-pipe-1",
+      "elementId": 5102,
+      "uniqueId": "fixture-disconnected-branch-pipe-1",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN25",
+      "systemClassification": "DomesticColdWater",
+      "systemName": "DCW-1",
+      "systemType": "Domestic Cold Water",
+      "connectors": [
+        {
+          "id": "branch-pipe-1.in",
+          "ownerNodeId": "branch-pipe-1",
+          "domain": "piping",
+          "origin": { "x": 1500.0, "y": 0.0, "z": 2500.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "DomesticColdWater"
+        }
+      ]
+    },
+    {
+      "id": "fixture-tee-1",
+      "elementId": 5101,
+      "uniqueId": "fixture-disconnected-tee-1",
+      "category": "Pipe Fittings",
+      "familyName": "Tee",
+      "typeName": "DN25",
+      "systemClassification": "DomesticColdWater",
+      "systemName": "DCW-1",
+      "systemType": "Domestic Cold Water",
+      "connectors": [
+        {
+          "id": "fixture-tee-1.out",
+          "ownerNodeId": "fixture-tee-1",
+          "domain": "piping",
+          "origin": { "x": 0.0, "y": 0.0, "z": 2500.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "DomesticColdWater"
+        }
+      ]
+    },
+    {
+      "id": "open-valve-1",
+      "elementId": 5103,
+      "uniqueId": "fixture-disconnected-open-valve-1",
+      "category": "Pipe Accessories",
+      "familyName": "Isolation Valve",
+      "typeName": "DN25",
+      "systemClassification": "DomesticColdWater",
+      "systemName": "DCW-1",
+      "systemType": "Domestic Cold Water",
+      "connectors": [
+        {
+          "id": "open-valve-1.port",
+          "ownerNodeId": "open-valve-1",
+          "domain": "piping",
+          "origin": { "x": 8000.0, "y": 0.0, "z": 2500.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "bidirectional",
+          "isConnectionExpected": true,
+          "systemClassification": "DomesticColdWater"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-tee-branch",
+      "fromNodeId": "fixture-tee-1",
+      "fromConnectorId": "fixture-tee-1.out",
+      "toNodeId": "branch-pipe-1",
+      "toConnectorId": "branch-pipe-1.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "DomesticColdWater"
+    }
+  ]
+}

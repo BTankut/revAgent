@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "connector-graph-ambiguous"
+  },
+  "nodes": [
+    {
+      "id": "diffuser-1",
+      "elementId": 6102,
+      "uniqueId": "fixture-ambiguous-diffuser-1",
+      "category": "Air Terminals",
+      "familyName": "Square Diffuser",
+      "typeName": "300x300",
+      "connectors": [
+        {
+          "id": "diffuser-1.port",
+          "ownerNodeId": "diffuser-1",
+          "domain": "hvac",
+          "origin": { "x": 2500.0, "y": 0.0, "z": 2700.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "unknown",
+          "isConnectionExpected": true
+        }
+      ]
+    },
+    {
+      "id": "duct-1",
+      "elementId": 6101,
+      "uniqueId": "fixture-ambiguous-duct-1",
+      "category": "Ducts",
+      "familyName": "Rectangular Duct",
+      "typeName": "500x300",
+      "systemClassification": "SupplyAir",
+      "systemName": "SA-1",
+      "systemType": "Supply Air",
+      "engineering": {
+        "lengthMm": 2500.0,
+        "widthMm": 500.0,
+        "heightMm": 300.0,
+        "flowLps": 350.0
+      },
+      "connectors": [
+        {
+          "id": "duct-1.port",
+          "ownerNodeId": "duct-1",
+          "domain": "hvac",
+          "origin": { "x": 0.0, "y": 0.0, "z": 2700.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "unknown",
+          "isConnectionExpected": true,
+          "systemClassification": "SupplyAir"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-duct-diffuser",
+      "fromNodeId": "duct-1",
+      "fromConnectorId": "duct-1.port",
+      "toNodeId": "diffuser-1",
+      "toConnectorId": "diffuser-1.port",
+      "direction": "ambiguous",
+      "kind": "physical",
+      "domain": "hvac",
+      "systemClassification": "SupplyAir"
+    }
+  ]
+}

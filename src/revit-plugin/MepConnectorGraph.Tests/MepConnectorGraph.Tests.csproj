@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>MepConnectorGraph.Tests</AssemblyName>
+    <RootNamespace>RevitMcp.MepConnectorGraph.Tests</RootNamespace>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <LangVersion>7.3</LangVersion>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MepConnectorGraph\MepConnectorGraph.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,403 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "sanitary-branch-to-stack"
+  },
+  "units": {
+    "length": "mm",
+    "area": "m2",
+    "volume": "m3",
+    "flow": "L/s",
+    "slope": "ratio",
+    "coordinateSystem": "revit-internal-origin"
+  },
+  "nodes": [
+    {
+      "id": "lav-1",
+      "elementId": 1101,
+      "uniqueId": "fixture-sanitary-lav-1",
+      "category": "Plumbing Fixtures",
+      "familyName": "Lavatory",
+      "typeName": "Lavatory",
+      "systemClassification": "Sanitary",
+      "systemName": "SAN-1",
+      "systemType": "Sanitary",
+      "engineering": {
+        "fixtureUnits": 2
+      },
+      "connectors": [
+        {
+          "id": "lav-1.out",
+          "ownerNodeId": "lav-1",
+          "ownerElementId": 1101,
+          "ownerUniqueId": "fixture-sanitary-lav-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 0.0, "y": 3000.0, "z": 3000.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        }
+      ]
+    },
+    {
+      "id": "wc-1",
+      "elementId": 1102,
+      "uniqueId": "fixture-sanitary-wc-1",
+      "category": "Plumbing Fixtures",
+      "familyName": "Water Closet",
+      "typeName": "WC",
+      "systemClassification": "Sanitary",
+      "systemName": "SAN-1",
+      "systemType": "Sanitary",
+      "engineering": {
+        "fixtureUnits": 4
+      },
+      "connectors": [
+        {
+          "id": "wc-1.out",
+          "ownerNodeId": "wc-1",
+          "ownerElementId": 1102,
+          "ownerUniqueId": "fixture-sanitary-wc-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 0.0, "y": 0.0, "z": 3000.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        }
+      ]
+    },
+    {
+      "id": "pipe-lav-branch",
+      "elementId": 2101,
+      "uniqueId": "pipe-sanitary-lav-branch",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "Sanitary Branch DN40",
+      "systemClassification": "Sanitary",
+      "systemName": "SAN-1",
+      "systemType": "Sanitary",
+      "engineering": {
+        "lengthMm": 2500.0,
+        "diameterMm": 40.0,
+        "slope": 0.02
+      },
+      "connectors": [
+        {
+          "id": "pipe-lav-branch.in",
+          "ownerNodeId": "pipe-lav-branch",
+          "ownerElementId": 2101,
+          "ownerUniqueId": "pipe-sanitary-lav-branch",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 500.0, "y": 3000.0, "z": 3000.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        },
+        {
+          "id": "pipe-lav-branch.out",
+          "ownerNodeId": "pipe-lav-branch",
+          "ownerElementId": 2101,
+          "ownerUniqueId": "pipe-sanitary-lav-branch",
+          "connectorIndex": 2,
+          "domain": "piping",
+          "origin": { "x": 3000.0, "y": 3000.0, "z": 2950.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        }
+      ]
+    },
+    {
+      "id": "pipe-wc-branch",
+      "elementId": 2102,
+      "uniqueId": "pipe-sanitary-wc-branch",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "Sanitary Branch DN75",
+      "systemClassification": "Sanitary",
+      "systemName": "SAN-1",
+      "systemType": "Sanitary",
+      "engineering": {
+        "lengthMm": 3000.0,
+        "diameterMm": 75.0,
+        "slope": 0.02
+      },
+      "connectors": [
+        {
+          "id": "pipe-wc-branch.in",
+          "ownerNodeId": "pipe-wc-branch",
+          "ownerElementId": 2102,
+          "ownerUniqueId": "pipe-sanitary-wc-branch",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 500.0, "y": 0.0, "z": 3000.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        },
+        {
+          "id": "pipe-wc-branch.out",
+          "ownerNodeId": "pipe-wc-branch",
+          "ownerElementId": 2102,
+          "ownerUniqueId": "pipe-sanitary-wc-branch",
+          "connectorIndex": 2,
+          "domain": "piping",
+          "origin": { "x": 3500.0, "y": 0.0, "z": 2940.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        }
+      ]
+    },
+    {
+      "id": "pipe-main-branch",
+      "elementId": 2103,
+      "uniqueId": "pipe-sanitary-main-branch",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "Sanitary Main Branch DN50",
+      "systemClassification": "Sanitary",
+      "systemName": "SAN-1",
+      "systemType": "Sanitary",
+      "engineering": {
+        "lengthMm": 4000.0,
+        "diameterMm": 50.0,
+        "slope": 0.01
+      },
+      "connectors": [
+        {
+          "id": "pipe-main-branch.in",
+          "ownerNodeId": "pipe-main-branch",
+          "ownerElementId": 2103,
+          "ownerUniqueId": "pipe-sanitary-main-branch",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 4000.0, "y": 1500.0, "z": 2940.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        },
+        {
+          "id": "pipe-main-branch.out",
+          "ownerNodeId": "pipe-main-branch",
+          "ownerElementId": 2103,
+          "ownerUniqueId": "pipe-sanitary-main-branch",
+          "connectorIndex": 2,
+          "domain": "piping",
+          "origin": { "x": 8000.0, "y": 1500.0, "z": 2900.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        }
+      ]
+    },
+    {
+      "id": "stack-1",
+      "elementId": 2104,
+      "uniqueId": "pipe-sanitary-stack-1",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "Sanitary Stack DN50",
+      "systemClassification": "Sanitary",
+      "systemName": "SAN-1",
+      "systemType": "Sanitary",
+      "engineering": {
+        "lengthMm": 3000.0,
+        "diameterMm": 50.0,
+        "slope": 0.0
+      },
+      "connectors": [
+        {
+          "id": "stack-1.in",
+          "ownerNodeId": "stack-1",
+          "ownerElementId": 2104,
+          "ownerUniqueId": "pipe-sanitary-stack-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 8500.0, "y": 1500.0, "z": 2900.0 },
+          "direction": { "x": 0.0, "y": 0.0, "z": 1.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        },
+        {
+          "id": "stack-1.out",
+          "ownerNodeId": "stack-1",
+          "ownerElementId": 2104,
+          "ownerUniqueId": "pipe-sanitary-stack-1",
+          "connectorIndex": 2,
+          "domain": "piping",
+          "origin": { "x": 8500.0, "y": 1500.0, "z": -100.0 },
+          "direction": { "x": 0.0, "y": 0.0, "z": -1.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        }
+      ]
+    },
+    {
+      "id": "building-drain-1",
+      "elementId": 2105,
+      "uniqueId": "pipe-sanitary-building-drain-1",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "Sanitary Building Drain DN50",
+      "systemClassification": "Sanitary",
+      "systemName": "SAN-1",
+      "systemType": "Sanitary",
+      "engineering": {
+        "lengthMm": 6000.0,
+        "diameterMm": 50.0,
+        "slope": 0.01
+      },
+      "connectors": [
+        {
+          "id": "building-drain-1.in",
+          "ownerNodeId": "building-drain-1",
+          "ownerElementId": 2105,
+          "ownerUniqueId": "pipe-sanitary-building-drain-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 8500.0, "y": 1500.0, "z": -100.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        },
+        {
+          "id": "building-drain-1.out",
+          "ownerNodeId": "building-drain-1",
+          "ownerElementId": 2105,
+          "ownerUniqueId": "pipe-sanitary-building-drain-1",
+          "connectorIndex": 2,
+          "domain": "piping",
+          "origin": { "x": 14500.0, "y": 1500.0, "z": -160.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        }
+      ]
+    },
+    {
+      "id": "outfall-1",
+      "elementId": 3101,
+      "uniqueId": "fixture-sanitary-outfall-1",
+      "category": "Plumbing Equipment",
+      "familyName": "Outfall",
+      "typeName": "Outfall",
+      "systemClassification": "Sanitary",
+      "systemName": "SAN-1",
+      "systemType": "Sanitary",
+      "engineering": {},
+      "connectors": [
+        {
+          "id": "outfall-1.in",
+          "ownerNodeId": "outfall-1",
+          "ownerElementId": 3101,
+          "ownerUniqueId": "fixture-sanitary-outfall-1",
+          "connectorIndex": 1,
+          "domain": "piping",
+          "origin": { "x": 15000.0, "y": 1500.0, "z": -160.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Sanitary"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-lav-pipe",
+      "fromNodeId": "lav-1",
+      "fromConnectorId": "lav-1.out",
+      "toNodeId": "pipe-lav-branch",
+      "toConnectorId": "pipe-lav-branch.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Sanitary"
+    },
+    {
+      "id": "edge-wc-pipe",
+      "fromNodeId": "wc-1",
+      "fromConnectorId": "wc-1.out",
+      "toNodeId": "pipe-wc-branch",
+      "toConnectorId": "pipe-wc-branch.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Sanitary"
+    },
+    {
+      "id": "edge-lav-main",
+      "fromNodeId": "pipe-lav-branch",
+      "fromConnectorId": "pipe-lav-branch.out",
+      "toNodeId": "pipe-main-branch",
+      "toConnectorId": "pipe-main-branch.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Sanitary"
+    },
+    {
+      "id": "edge-wc-main",
+      "fromNodeId": "pipe-wc-branch",
+      "fromConnectorId": "pipe-wc-branch.out",
+      "toNodeId": "pipe-main-branch",
+      "toConnectorId": "pipe-main-branch.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Sanitary"
+    },
+    {
+      "id": "edge-main-stack",
+      "fromNodeId": "pipe-main-branch",
+      "fromConnectorId": "pipe-main-branch.out",
+      "toNodeId": "stack-1",
+      "toConnectorId": "stack-1.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Sanitary"
+    },
+    {
+      "id": "edge-stack-building-drain",
+      "fromNodeId": "stack-1",
+      "fromConnectorId": "stack-1.out",
+      "toNodeId": "building-drain-1",
+      "toConnectorId": "building-drain-1.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Sanitary"
+    },
+    {
+      "id": "edge-building-drain-outfall",
+      "fromNodeId": "building-drain-1",
+      "fromConnectorId": "building-drain-1.out",
+      "toNodeId": "outfall-1",
+      "toConnectorId": "outfall-1.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Sanitary"
+    }
+  ]
+}

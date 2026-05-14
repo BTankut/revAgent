@@ -1,0 +1,285 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "dcw-dhw-tank-valve-mixed"
+  },
+  "units": {
+    "length": "mm",
+    "area": "m2",
+    "volume": "m3",
+    "flow": "L/s",
+    "slope": "ratio",
+    "coordinateSystem": "revit-internal-origin"
+  },
+  "nodes": [
+    {
+      "id": "dcw-source",
+      "elementId": 1001,
+      "category": "Mechanical Equipment",
+      "familyName": "Water Entry",
+      "typeName": "DCW",
+      "systemClassification": "Domestic Cold Water",
+      "systemName": "DCW-1",
+      "systemType": "Domestic Cold Water",
+      "connectors": [
+        {
+          "id": "dcw-source.out",
+          "ownerNodeId": "dcw-source",
+          "domain": "piping",
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Cold Water"
+        }
+      ]
+    },
+    {
+      "id": "pipe-cw-main",
+      "elementId": 2001,
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN15",
+      "systemClassification": "Domestic Cold Water",
+      "systemName": "DCW-1",
+      "systemType": "Domestic Cold Water",
+      "engineering": {
+        "lengthMm": 7000,
+        "diameterMm": 15
+      },
+      "connectors": [
+        {
+          "id": "pipe-cw-main.in",
+          "ownerNodeId": "pipe-cw-main",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Cold Water"
+        },
+        {
+          "id": "pipe-cw-main.out",
+          "ownerNodeId": "pipe-cw-main",
+          "domain": "piping",
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Cold Water"
+        }
+      ]
+    },
+    {
+      "id": "wc-tank",
+      "elementId": 3001,
+      "category": "Plumbing Fixtures",
+      "familyName": "Water Closet Tank",
+      "typeName": "WC tank",
+      "systemClassification": "Domestic Cold Water",
+      "systemName": "DCW-1",
+      "systemType": "Domestic Cold Water",
+      "properties": {
+        "dcwFixtureUnits": "2.5",
+        "flushType": "tank"
+      },
+      "connectors": [
+        {
+          "id": "wc-tank.in",
+          "ownerNodeId": "wc-tank",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Cold Water"
+        }
+      ]
+    },
+    {
+      "id": "wc-valve",
+      "elementId": 3002,
+      "category": "Plumbing Fixtures",
+      "familyName": "Water Closet Flushometer",
+      "typeName": "WC flush valve",
+      "systemClassification": "Domestic Cold Water",
+      "systemName": "DCW-1",
+      "systemType": "Domestic Cold Water",
+      "properties": {
+        "dcwFixtureUnits": "10",
+        "flushType": "flush valve"
+      },
+      "connectors": [
+        {
+          "id": "wc-valve.in",
+          "ownerNodeId": "wc-valve",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Cold Water"
+        }
+      ]
+    },
+    {
+      "id": "lav-cold",
+      "elementId": 3003,
+      "category": "Plumbing Fixtures",
+      "familyName": "Lavatory",
+      "typeName": "Lavatory cold",
+      "systemClassification": "Domestic Cold Water",
+      "systemName": "DCW-1",
+      "systemType": "Domestic Cold Water",
+      "properties": {
+        "dcwFixtureUnits": "1"
+      },
+      "connectors": [
+        {
+          "id": "lav-cold.in",
+          "ownerNodeId": "lav-cold",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Cold Water"
+        }
+      ]
+    },
+    {
+      "id": "dhw-source",
+      "elementId": 1002,
+      "category": "Mechanical Equipment",
+      "familyName": "Water Heater",
+      "typeName": "DHW",
+      "systemClassification": "Domestic Hot Water",
+      "systemName": "DHW-1",
+      "systemType": "Domestic Hot Water",
+      "connectors": [
+        {
+          "id": "dhw-source.out",
+          "ownerNodeId": "dhw-source",
+          "domain": "piping",
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water"
+        }
+      ]
+    },
+    {
+      "id": "pipe-hw-main",
+      "elementId": 2002,
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN15",
+      "systemClassification": "Domestic Hot Water",
+      "systemName": "DHW-1",
+      "systemType": "Domestic Hot Water",
+      "engineering": {
+        "lengthMm": 4000,
+        "diameterMm": 15
+      },
+      "connectors": [
+        {
+          "id": "pipe-hw-main.in",
+          "ownerNodeId": "pipe-hw-main",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water"
+        },
+        {
+          "id": "pipe-hw-main.out",
+          "ownerNodeId": "pipe-hw-main",
+          "domain": "piping",
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water"
+        }
+      ]
+    },
+    {
+      "id": "lav-hot",
+      "elementId": 3004,
+      "category": "Plumbing Fixtures",
+      "familyName": "Lavatory",
+      "typeName": "Lavatory hot",
+      "systemClassification": "Domestic Hot Water",
+      "systemName": "DHW-1",
+      "systemType": "Domestic Hot Water",
+      "properties": {
+        "dhwFixtureUnits": "1.5"
+      },
+      "connectors": [
+        {
+          "id": "lav-hot.in",
+          "ownerNodeId": "lav-hot",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-dcw-source-main",
+      "fromNodeId": "dcw-source",
+      "fromConnectorId": "dcw-source.out",
+      "toNodeId": "pipe-cw-main",
+      "toConnectorId": "pipe-cw-main.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Domestic Cold Water"
+    },
+    {
+      "id": "edge-cw-main-wc-tank",
+      "fromNodeId": "pipe-cw-main",
+      "fromConnectorId": "pipe-cw-main.out",
+      "toNodeId": "wc-tank",
+      "toConnectorId": "wc-tank.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Domestic Cold Water"
+    },
+    {
+      "id": "edge-cw-main-wc-valve",
+      "fromNodeId": "pipe-cw-main",
+      "fromConnectorId": "pipe-cw-main.out",
+      "toNodeId": "wc-valve",
+      "toConnectorId": "wc-valve.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Domestic Cold Water"
+    },
+    {
+      "id": "edge-cw-main-lav-cold",
+      "fromNodeId": "pipe-cw-main",
+      "fromConnectorId": "pipe-cw-main.out",
+      "toNodeId": "lav-cold",
+      "toConnectorId": "lav-cold.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Domestic Cold Water"
+    },
+    {
+      "id": "edge-dhw-source-main",
+      "fromNodeId": "dhw-source",
+      "fromConnectorId": "dhw-source.out",
+      "toNodeId": "pipe-hw-main",
+      "toConnectorId": "pipe-hw-main.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Domestic Hot Water"
+    },
+    {
+      "id": "edge-hw-main-lav-hot",
+      "fromNodeId": "pipe-hw-main",
+      "fromConnectorId": "pipe-hw-main.out",
+      "toNodeId": "lav-hot",
+      "toConnectorId": "lav-hot.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Domestic Hot Water"
+    }
+  ]
+}

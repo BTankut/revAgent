@@ -1,0 +1,18 @@
+{
+  "workflowStage": "validate",
+  "connectorGraph": {
+    "summary": {
+      "openEndCount": 0,
+      "directionAmbiguityCount": 0
+    },
+    "nodes": [
+      { "id": "source-1", "category": "Mechanical Equipment" },
+      { "id": "duct-1", "category": "Ducts" },
+      { "id": "terminal-1", "category": "Air Terminals" }
+    ],
+    "edges": [
+      { "source": "source-1", "target": "duct-1" }
+    ]
+  },
+  "expectedNetworkNodeIds": ["source-1", "duct-1", "terminal-1"]
+}
