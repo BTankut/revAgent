@@ -7,7 +7,7 @@ import {
     stringByFields,
     valueByFields,
 } from "./helpers.js";
-import type { AabbMm, PointMm } from "./types.js";
+import type { AabbMm, IssueSeverity, PointMm } from "./types.js";
 
 export interface SpatialZoneObstacleSummary {
     id: string;
@@ -44,7 +44,7 @@ export interface SpatialZoneRoutingContext {
     shafts: SpatialZoneShaftSummary[];
     allowedElevationsMm: number[];
     routingBounds?: AabbMm;
-    issues: Array<{ severity: "info" | "warning"; code: string; message: string; context?: Record<string, unknown> }>;
+    issues: Array<{ severity: IssueSeverity; code: string; message: string; context?: Record<string, unknown> }>;
     summary: {
         obstacleCount: number;
         plenumCount: number;
@@ -132,6 +132,32 @@ export function mapSpatialZoneToRoutingContext(input: unknown): SpatialZoneRouti
     );
 
     const issues: SpatialZoneRoutingContext["issues"] = [];
+
+    // spatial-zone-extract.cs always emits top-level `warnings` and `errors` arrays
+    // (see references/patterns/spatial-zone-extract.cs). The failure payload returns
+    // empty geometry plus populated `errors`; surface those so a failed extraction
+    // cannot silently produce "pass" routes downstream.
+    const payloadErrors = Array.isArray(record.errors)
+        ? record.errors.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+        : [];
+    const payloadWarnings = Array.isArray(record.warnings)
+        ? record.warnings.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+        : [];
+    for (const message of payloadErrors) {
+        issues.push({
+            severity: "error",
+            code: "spatial_zone_extract_error",
+            message,
+        });
+    }
+    for (const message of payloadWarnings) {
+        issues.push({
+            severity: "warning",
+            code: "spatial_zone_extract_warning",
+            message,
+        });
+    }
+
     if (schemaVersion !== "spatial-zone-extract.v1") {
         issues.push({
             severity: "warning",

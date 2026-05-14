@@ -333,7 +333,15 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
         const currentPoint = point(ix, iy, iz);
         const neighborMoves = [];
         for (const [dx, dy] of horizontalNeighbors) {
-            neighborMoves.push({ ix: ix + dx, iy: iy + dy, iz, vertical: false });
+            const newIx = ix + dx;
+            const newIy = iy + dy;
+            if (dx !== 0 && dy !== 0) {
+                if (newIx < 0 || newIx >= xs.length || newIy < 0 || newIy >= ys.length)
+                    continue;
+                if (Math.abs(Math.abs(xs[newIx] - xs[ix]) - Math.abs(ys[newIy] - ys[iy])) > 1)
+                    continue;
+            }
+            neighborMoves.push({ ix: newIx, iy: newIy, iz, vertical: false });
         }
         if (zs.length > 1) {
             neighborMoves.push({ ix, iy, iz: iz - 1, vertical: true });

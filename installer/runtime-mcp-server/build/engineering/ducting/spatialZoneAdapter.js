@@ -74,6 +74,26 @@ export function mapSpatialZoneToRoutingContext(input) {
     const shafts = shaftsRaw.map(readShaftSummary);
     const allowedElevationsMm = uniqueSortedRounded(plenumVolumes.flatMap((entry) => [entry.zMinMm, entry.zMaxMm]));
     const issues = [];
+    const payloadErrors = Array.isArray(record.errors)
+        ? record.errors.filter((entry) => typeof entry === "string" && entry.length > 0)
+        : [];
+    const payloadWarnings = Array.isArray(record.warnings)
+        ? record.warnings.filter((entry) => typeof entry === "string" && entry.length > 0)
+        : [];
+    for (const message of payloadErrors) {
+        issues.push({
+            severity: "error",
+            code: "spatial_zone_extract_error",
+            message,
+        });
+    }
+    for (const message of payloadWarnings) {
+        issues.push({
+            severity: "warning",
+            code: "spatial_zone_extract_warning",
+            message,
+        });
+    }
     if (schemaVersion !== "spatial-zone-extract.v1") {
         issues.push({
             severity: "warning",

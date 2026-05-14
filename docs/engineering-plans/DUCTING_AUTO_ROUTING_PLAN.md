@@ -19,6 +19,28 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.7)
+
+Addresses the two P2 chatgpt-codex-connector review concerns on PR #23.
+
+- **Diagonal 45° tolerance gate (P2).** When `allowDiagonal` is enabled
+  the search now skips a diagonal neighbour unless
+  `|Δx| ≈ |Δy|` in world space (1 mm tolerance). Previously the grid was
+  built from regular pitch plus off-pitch source/target snaps and
+  obstacle detour points (`expanded.minX ± 1`), so naive index pairing
+  could emit arbitrary-angle segments even though the tool contract
+  advertises 45° elbows. Axis-aligned neighbours always cover the same
+  cell, so feasibility is preserved.
+- **Spatial-zone error propagation (P2).** `mapSpatialZoneToRoutingContext`
+  now reads the payload-level `errors` and `warnings` arrays emitted by
+  `references/patterns/spatial-zone-extract.cs` (including the failure
+  payload of empty geometry + populated `errors`). Payload errors surface
+  as `severity: "error"` issues with code
+  `spatial_zone_extract_error`; warnings surface as `severity: "warning"`
+  issues with code `spatial_zone_extract_warning`. The planner's existing
+  error-gating naturally prevents a failed extraction from producing
+  reviewable "pass" route candidates.
+
 ## Review Fixes (Sprint 1.6)
 
 Addresses the three gemini-code-assist review concerns on PR #23 without

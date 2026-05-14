@@ -578,4 +578,91 @@ assert.equal(planLinear.routeCandidates[0].verticalRunCount, planTree.routeCandi
 assert.equal(planLinear.routeCandidates[0].score, planTree.routeCandidates[0].score);
 assert.deepEqual(planLinear.routeCandidates[0].pointsMm, planTree.routeCandidates[0].pointsMm);
 
+// Sprint 1.7: diagonal moves must be true 45° elbows even when the grid is non-uniform.
+// An off-grid source at x=50 forces xs to contain {50, 1000, ...} so naive index pairing
+// would create arbitrary-angle segments. The 45° tolerance gate must skip those moves,
+// leaving the route composed only of axis-aligned or |dx|≈|dy| diagonal segments.
+const asymmetricDiagonal = planDuctingAutoRoute({
+  sources: [{ id: "ahu-asym", pointMm: { x: 50, y: 0, z: 3000 } }],
+  targets: [{ id: "vav-asym", pointMm: { x: 5000, y: 5000, z: 3000 } }],
+  gridStepMm: 1000,
+  allowDiagonal: true,
+  clearanceMm: 0,
+});
+assert.equal(asymmetricDiagonal.summary.status, "pass");
+for (const segment of asymmetricDiagonal.routeCandidates[0].segmentsMm) {
+  const dx = Math.abs(segment.endMm.x - segment.startMm.x);
+  const dy = Math.abs(segment.endMm.y - segment.startMm.y);
+  const dz = Math.abs(segment.endMm.z - segment.startMm.z);
+  const xOnly = dy < 1 && dz < 1 && dx >= 1;
+  const yOnly = dx < 1 && dz < 1 && dy >= 1;
+  const zOnly = dx < 1 && dy < 1 && dz >= 1;
+  const trueDiagonal = dz < 1 && dx >= 1 && dy >= 1 && Math.abs(dx - dy) < 1;
+  assert.ok(
+    xOnly || yOnly || zOnly || trueDiagonal,
+    `segment must be axis-aligned or 45° diagonal; got dx=${dx} dy=${dy} dz=${dz}`,
+  );
+}
+
+// Sprint 1.7: spatial-zone payload errors/warnings must propagate.
+// references/patterns/spatial-zone-extract.cs returns the failure payload with empty
+// geometry plus an `errors` array; that must surface as error-severity issues so the
+// planner cannot quietly return "pass" routes built from no obstacles.
+const failedExtraction = planDuctingAutoRoute({
+  sources: [{ id: "ahu-failed", pointMm: { x: 0, y: 0, z: 3000 } }],
+  targets: [{ id: "vav-failed", pointMm: { x: 4000, y: 0, z: 3000 } }],
+  spatialZone: {
+    schema_version: "spatial-zone-extract.v1",
+    obstacles: [],
+    plenum_volumes: [],
+    shafts: [],
+    warnings: ["Boundary loops unavailable; bounding box fallback used."],
+    errors: ["No Revit level could be resolved in the host model."],
+  },
+  gridStepMm: 1000,
+  clearanceMm: 0,
+});
+assert.equal(
+  failedExtraction.summary.status,
+  "fail",
+  "spatial-zone payload errors must block route generation",
+);
+assert.equal(
+  failedExtraction.issues.some(
+    (issue) => issue.severity === "error" && issue.code === "spatial_zone_extract_error",
+  ),
+  true,
+  "spatial-zone payload errors must surface as error-severity issues",
+);
+assert.equal(
+  failedExtraction.issues.some(
+    (issue) => issue.severity === "warning" && issue.code === "spatial_zone_extract_warning",
+  ),
+  true,
+  "spatial-zone payload warnings must surface as warning-severity issues",
+);
+assert.equal(
+  failedExtraction.routeCandidates.length,
+  0,
+  "spatial-zone errors must prevent route candidates from being produced",
+);
+
+const adapterWithErrors = mapSpatialZoneToRoutingContext({
+  schema_version: "spatial-zone-extract.v1",
+  errors: ["extraction crashed"],
+  warnings: ["stale link skipped"],
+});
+assert.ok(
+  adapterWithErrors.issues.some(
+    (issue) => issue.severity === "error" && issue.code === "spatial_zone_extract_error",
+  ),
+  "adapter must emit error-severity issues for payload errors",
+);
+assert.ok(
+  adapterWithErrors.issues.some(
+    (issue) => issue.severity === "warning" && issue.code === "spatial_zone_extract_warning",
+  ),
+  "adapter must emit warning-severity issues for payload warnings",
+);
+
 console.error("ducting auto-routing tests passed");

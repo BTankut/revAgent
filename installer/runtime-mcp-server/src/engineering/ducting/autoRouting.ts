@@ -464,7 +464,17 @@ function findGridPathFromSources(
 
         const neighborMoves: Array<{ ix: number; iy: number; iz: number; vertical: boolean }> = [];
         for (const [dx, dy] of horizontalNeighbors) {
-            neighborMoves.push({ ix: ix + dx, iy: iy + dy, iz, vertical: false });
+            const newIx = ix + dx;
+            const newIy = iy + dy;
+            if (dx !== 0 && dy !== 0) {
+                // Diagonal moves are advertised as 45° elbows, but the grid is non-uniform
+                // (obstacle detour points and endpoint snapping insert off-pitch coordinates).
+                // Skip the diagonal unless |Δx| ≈ |Δy| in world space; the four axis-aligned
+                // moves still cover this neighbor.
+                if (newIx < 0 || newIx >= xs.length || newIy < 0 || newIy >= ys.length) continue;
+                if (Math.abs(Math.abs(xs[newIx] - xs[ix]) - Math.abs(ys[newIy] - ys[iy])) > 1) continue;
+            }
+            neighborMoves.push({ ix: newIx, iy: newIy, iz, vertical: false });
         }
         if (zs.length > 1) {
             neighborMoves.push({ ix, iy, iz: iz - 1, vertical: true });
