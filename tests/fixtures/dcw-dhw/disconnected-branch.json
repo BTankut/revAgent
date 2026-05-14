@@ -1,0 +1,90 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "dcw-dhw-disconnected-branch"
+  },
+  "nodes": [
+    {
+      "id": "pipe-open",
+      "elementId": 2101,
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN20",
+      "systemClassification": "Domestic Cold Water",
+      "systemName": "DCW-OPEN",
+      "systemType": "Domestic Cold Water",
+      "engineering": {
+        "lengthMm": 2500,
+        "diameterMm": 20
+      },
+      "connectors": [
+        {
+          "id": "pipe-open.in",
+          "ownerNodeId": "pipe-open",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Cold Water"
+        },
+        {
+          "id": "pipe-open.out",
+          "ownerNodeId": "pipe-open",
+          "domain": "piping",
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Cold Water"
+        }
+      ]
+    },
+    {
+      "id": "fixture-missing-fu",
+      "elementId": 3101,
+      "category": "Plumbing Fixtures",
+      "familyName": "Sink",
+      "typeName": "Sink without FU",
+      "systemClassification": "Domestic Cold Water",
+      "systemName": "DCW-OPEN",
+      "systemType": "Domestic Cold Water",
+      "connectors": [
+        {
+          "id": "fixture-missing-fu.in",
+          "ownerNodeId": "fixture-missing-fu",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Cold Water"
+        }
+      ]
+    }
+  ],
+  "edges": [],
+  "topology": {
+    "summary": {
+      "nodeCount": 2,
+      "connectorCount": 3,
+      "edgeCount": 0,
+      "networkCount": 2,
+      "openEndCount": 3,
+      "cycleCount": 0,
+      "ambiguousDirectionCount": 0,
+      "missingSystemDataCount": 0,
+      "warningCount": 2,
+      "errorCount": 0,
+      "isStructurallyValid": true,
+      "isValidForDirectionalCalculation": false
+    },
+    "findings": [
+      {
+        "severity": "warning",
+        "code": "disconnected_island",
+        "message": "The graph contains disconnected domestic water islands.",
+        "nodeIds": ["pipe-open", "fixture-missing-fu"],
+        "connectorIds": [],
+        "edgeIds": []
+      }
+    ]
+  }
+}

@@ -20,10 +20,15 @@ import { registerInspectElementsTool } from "./inspect_elements.js";
 import { registerInspectParameterSchemaTool } from "./inspect_parameter_schema.js";
 import { registerListRevitInstancesTool } from "./list_revit_instances.js";
 import { registerGetRevitMcpStatusTool } from "./get_revit_mcp_status.js";
+import { registerAuditDcwDhwPipingTool } from "./audit_dcw_dhw_piping.js";
+import { registerApplyDcwDhwWritebackTool } from "./apply_dcw_dhw_writeback.js";
+import { registerAnalyzeHydronicPipingGraphTool } from "./analyze_hydronic_piping_graph.js";
+import { registerEvaluateDuctingDesignTool } from "./evaluate_ducting_design.js";
 
 export async function registerTools(server) {
     registerListRevitInstancesTool(server);
     registerGetRevitMcpStatusTool(server);
+    registerAuditDcwDhwPipingTool(server);
     registerSendCodeToRevitTool(server);
     registerSendCodeToRevitSafeTool(server);
     registerCalculateSanitaryRainwaterFromGraphTool(server);
@@ -43,5 +48,8 @@ export async function registerTools(server) {
     registerSmartFocusElementsTool(server);
     registerInspectElementsTool(server);
     registerInspectParameterSchemaTool(server);
-    console.error("Registered 21 Revit MCP tools");
+    registerApplyDcwDhwWritebackTool(server);
+    registerAnalyzeHydronicPipingGraphTool(server);
+    registerEvaluateDuctingDesignTool(server);
+    console.error("Registered 25 Revit MCP tools");
 }

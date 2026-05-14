@@ -15,6 +15,7 @@ package.
 |   `-- revit-versions.json
 |-- docs/
 |   |-- DEVELOPER_RUNBOOK.md
+|   |-- connector-graph/
 |   |-- PLATFORM_ARCHITECTURE.md
 |   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
 |   |-- REPOSITORY_STRUCTURE.md
@@ -23,11 +24,17 @@ package.
 |-- scripts/
 |   |-- build-revit-plugin.ps1
 |   |-- test-all.ps1
+|   |-- test-connector-graph.ps1
 |   `-- test-installer-smoke.ps1
+|-- tests/
+|   `-- fixtures/
+|       `-- connector-graph/
 |-- src/
 |   `-- revit-plugin/
 |       |-- README.md
 |       |-- revit-mcp-plugin.sln
+|       |-- MepConnectorGraph/
+|       |-- MepConnectorGraph.Tests/
 |       |-- revit-mcp-plugin/
 |       |-- RevitMCPCommandSet/
 |       |-- RevitMCPViewCommandSet/
@@ -45,6 +52,11 @@ package.
 ## Source vs Install Payload
 
 `src/revit-plugin` is source code. It is where Revit add-in development happens.
+`src/revit-plugin/MepConnectorGraph` is the shared .NET Framework 4.8 connector
+graph foundation used by MEP system feature branches. It contains pure schema,
+deterministic JSON serialization, Revit internal unit conversion helpers, and
+topology validation that can be tested without Revit.
+
 The main add-in host is `src/revit-plugin/revit-mcp-plugin`. The production
 dynamic command source is `src/revit-plugin/RevitMCPCommandSet`; it backs
 `send_code_to_revit` and the low-level read-only context commands. UI view tools

@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "connector-graph-loop"
+  },
+  "nodes": [
+    {
+      "id": "ring-a",
+      "elementId": 4101,
+      "uniqueId": "fixture-loop-ring-a",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN40",
+      "systemClassification": "HydronicReturn",
+      "systemName": "CHWR-LOOP",
+      "systemType": "Chilled Water Return",
+      "connectors": [
+        {
+          "id": "ring-a.in",
+          "ownerNodeId": "ring-a",
+          "domain": "piping",
+          "origin": { "x": 0.0, "y": 0.0, "z": 2800.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "HydronicReturn"
+        },
+        {
+          "id": "ring-a.out",
+          "ownerNodeId": "ring-a",
+          "domain": "piping",
+          "origin": { "x": 3000.0, "y": 0.0, "z": 2800.0 },
+          "direction": { "x": 1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "HydronicReturn"
+        }
+      ]
+    },
+    {
+      "id": "ring-b",
+      "elementId": 4102,
+      "uniqueId": "fixture-loop-ring-b",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN40",
+      "systemClassification": "HydronicReturn",
+      "systemName": "CHWR-LOOP",
+      "systemType": "Chilled Water Return",
+      "connectors": [
+        {
+          "id": "ring-b.in",
+          "ownerNodeId": "ring-b",
+          "domain": "piping",
+          "origin": { "x": 3000.0, "y": 0.0, "z": 2800.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "HydronicReturn"
+        },
+        {
+          "id": "ring-b.out",
+          "ownerNodeId": "ring-b",
+          "domain": "piping",
+          "origin": { "x": 3000.0, "y": 3000.0, "z": 2800.0 },
+          "direction": { "x": 0.0, "y": 1.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "HydronicReturn"
+        }
+      ]
+    },
+    {
+      "id": "ring-c",
+      "elementId": 4103,
+      "uniqueId": "fixture-loop-ring-c",
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN40",
+      "systemClassification": "HydronicReturn",
+      "systemName": "CHWR-LOOP",
+      "systemType": "Chilled Water Return",
+      "connectors": [
+        {
+          "id": "ring-c.in",
+          "ownerNodeId": "ring-c",
+          "domain": "piping",
+          "origin": { "x": 3000.0, "y": 3000.0, "z": 2800.0 },
+          "direction": { "x": 0.0, "y": -1.0, "z": 0.0 },
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "HydronicReturn"
+        },
+        {
+          "id": "ring-c.out",
+          "ownerNodeId": "ring-c",
+          "domain": "piping",
+          "origin": { "x": 0.0, "y": 0.0, "z": 2800.0 },
+          "direction": { "x": -1.0, "y": 0.0, "z": 0.0 },
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "HydronicReturn"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-a-b",
+      "fromNodeId": "ring-a",
+      "fromConnectorId": "ring-a.out",
+      "toNodeId": "ring-b",
+      "toConnectorId": "ring-b.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "HydronicReturn"
+    },
+    {
+      "id": "edge-b-c",
+      "fromNodeId": "ring-b",
+      "fromConnectorId": "ring-b.out",
+      "toNodeId": "ring-c",
+      "toConnectorId": "ring-c.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "HydronicReturn"
+    },
+    {
+      "id": "edge-c-a",
+      "fromNodeId": "ring-c",
+      "fromConnectorId": "ring-c.out",
+      "toNodeId": "ring-a",
+      "toConnectorId": "ring-a.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "HydronicReturn"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "workflowStage": "validate",
+  "projectRules": {
+    "maxDiffusersPerSpace": 3
+  },
+  "spaces": [
+    {
+      "id": "space-301",
+      "number": "301",
+      "levelName": "L03",
+      "centroid_mm": [1500, 1500, 2700],
+      "aabb_mm": [0, 0, 0, 3000, 3000, 2700]
+    }
+  ],
+  "airBalanceRows": [
+    {
+      "id": "ab-301",
+      "spaceNumber": "301",
+      "levelName": "L03",
+      "supply_lps": 20
+    }
+  ],
+  "diffuserCatalog": [
+    {
+      "id": "S-120",
+      "model": "High Flow Diffuser",
+      "system": "supply",
+      "min_flow_lps": 80,
+      "max_flow_lps": 120
+    }
+  ]
+}
