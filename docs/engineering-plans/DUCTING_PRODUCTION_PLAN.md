@@ -51,4 +51,3 @@ The spatial/plenum foundation is valid. Existing diffuser/duct commands are proo
 - A reviewer can trace room airflow to diffuser count/type and final duct segment flow.
 - Duct network commit produces connected elements or blocks the commit with explicit reasons.
 - PR includes dry-run output, test output, limitations and manual Revit verification steps.
-
