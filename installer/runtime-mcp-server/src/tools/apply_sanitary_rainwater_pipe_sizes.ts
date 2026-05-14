@@ -3,17 +3,56 @@ import { z } from "zod";
 import {
     calculateSanitaryRainwater,
     createWriteBackPlan,
+    SANITARY_RAINWATER_WRITEBACK_CONFIRM_TEXT,
 } from "../calculations/sanitary-rainwater/calculator.js";
 import {
     connectionOptionsFromArgs,
     connectionTargetSchema,
     executeRevitCode,
     formatJsonContent,
+    normalizeRevitExecutionResponse,
     taskMetadataSchema,
     truncateText,
 } from "../utils/revitToolHelpers.js";
+import { withRevitConnection } from "../utils/ConnectionManager.js";
 
 const COMMIT_TOKEN = "APPLY_SANITARY_RAINWATER_DIAMETERS";
+
+async function readRevitStatus(args) {
+    const timeoutMs = args.statusTimeoutMs || 3000;
+    return await withRevitConnection(async (revitClient) => {
+        return await revitClient.sendCommand("mcp_status", {}, { timeoutMs });
+    }, {
+        ...connectionOptionsFromArgs(args),
+        skipLock: true,
+        connectTimeoutMs: timeoutMs,
+    });
+}
+
+function activeTaskFromStatus(status) {
+    const normalized = normalizeRevitExecutionResponse(status);
+    if (!normalized || typeof normalized !== "object") {
+        return null;
+    }
+    return normalized.activeTask || normalized.ActiveTask || null;
+}
+
+function validateManualApproval(args, plan) {
+    const errors = [];
+    if (args.approvalToken !== plan.approvalToken) {
+        errors.push("approvalToken does not match the current sanitary/rainwater write-back plan.");
+    }
+    if (args.confirmWriteBack !== SANITARY_RAINWATER_WRITEBACK_CONFIRM_TEXT) {
+        errors.push(`confirmWriteBack must equal '${SANITARY_RAINWATER_WRITEBACK_CONFIRM_TEXT}'.`);
+    }
+    if (plan?.manualApproval?.warningReviewRequired && args.allowWarnings !== true) {
+        errors.push("The sizing report contains warnings; set allowWarnings=true only after reviewing table/profile and data warnings.");
+    }
+    return {
+        ok: errors.length === 0,
+        errors,
+    };
+}
 
 function writeBackCode() {
     return `
@@ -197,17 +236,21 @@ catch (System.Exception ex)
 }
 
 export function registerApplySanitaryRainwaterPipeSizesTool(server) {
-    server.tool("apply_sanitary_rainwater_pipe_sizes", "Create a sanitary/rainwater pipe diameter dry-run plan from connector graph JSON, or write approved pipe diameter changes back to Revit.", {
+    server.tool("apply_sanitary_rainwater_pipe_sizes", "Create a sanitary/rainwater pipe diameter dry-run plan from connector graph JSON, or write approved pipe diameter changes back to Revit. Write-back requires a plan-specific approval token, explicit confirm text, warning acknowledgement, and a Revit MCP status preflight.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         graph: z.union([z.string(), z.record(z.any())]).describe("Connector graph JSON object or JSON string using schemaVersion mep.connector-graph.v1."),
-        mode: z.enum(["dryRun", "writeBack"]).optional().describe("dryRun returns the planned pipe diameter changes. writeBack applies them to Revit after commitToken is supplied."),
+        mode: z.enum(["dryRun", "writeBack"]).optional().describe("dryRun returns the planned pipe diameter changes. writeBack applies them to Revit only after all manual approval gates pass."),
         commitToken: z.string().optional().describe(`Required for writeBack mode: ${COMMIT_TOKEN}`),
+        approvalToken: z.string().optional().describe("Required for writeBack mode: exact token from dryRun writeBackPlan.approvalToken."),
+        confirmWriteBack: z.string().optional().describe(`Required for writeBack mode: ${SANITARY_RAINWATER_WRITEBACK_CONFIRM_TEXT}`),
+        allowWarnings: z.boolean().optional().describe("Required true for writeBack when writeBackPlan.manualApproval.warningReviewRequired is true."),
         systemMode: z.enum(["auto", "sanitary", "rainwater"]).optional().describe("Limit calculation to one drainage family, or infer from graph system data."),
         tableConfig: z.any().optional().describe("Optional project-approved table config. If omitted, the bundled generic metric profile is used and reported as review-required."),
         respectExistingUpstreamDiameters: z.boolean().optional().describe("When true, downstream recommendations are not allowed below upstream existing pipe diameters. Defaults true."),
         maxWrites: z.number().int().positive().optional().describe("Optional cap on write-back changes for staged commits."),
         timeoutMs: z.number().int().positive().optional().describe("Socket timeout in milliseconds for the Revit write-back command. Defaults to 120000."),
+        statusTimeoutMs: z.number().int().positive().max(10000).optional().describe("Status preflight timeout in milliseconds. Defaults to 3000."),
         maxReturnedChars: z.number().int().positive().optional().describe("Maximum JSON characters returned to the model."),
     }, async (args) => {
         try {
@@ -233,6 +276,18 @@ export function registerApplySanitaryRainwaterPipeSizesTool(server) {
                     writeBackPlan: plan,
                 });
             }
+            const approval = validateManualApproval(args, plan);
+            if (!approval.ok) {
+                return formatJsonContent({
+                    success: false,
+                    schemaVersion: "sanitary-rainwater-writeback-preflight.v1",
+                    errors: approval.errors,
+                    expectedApprovalToken: plan.approvalToken,
+                    expectedConfirmWriteBack: SANITARY_RAINWATER_WRITEBACK_CONFIRM_TEXT,
+                    report,
+                    writeBackPlan: plan,
+                });
+            }
             if (plan.status === "blocked") {
                 return formatJsonContent({
                     success: false,
@@ -245,6 +300,19 @@ export function registerApplySanitaryRainwaterPipeSizesTool(server) {
                 return formatJsonContent({
                     success: true,
                     message: "No pipe diameter changes are required.",
+                    report,
+                    writeBackPlan: plan,
+                });
+            }
+
+            const status = await readRevitStatus(args);
+            const activeTask = activeTaskFromStatus(status);
+            if (activeTask) {
+                return formatJsonContent({
+                    success: false,
+                    schemaVersion: "sanitary-rainwater-writeback-preflight.v1",
+                    error: "Revit MCP is busy; sanitary/rainwater write-back was not sent.",
+                    activeTask,
                     report,
                     writeBackPlan: plan,
                 });

@@ -24,6 +24,7 @@ Build production-grade sanitary, vent, storm and rain water sizing support. The 
 - Enforce no downstream pipe size reduction.
 - Report slope violations, missing fixture units, ambiguous direction, disconnected branches and bad system classification.
 - Support dry-run report before diameter write-back.
+- Require a plan-specific approval token, explicit confirm text, warning acknowledgement, and Revit MCP status preflight before any write-back.
 
 ## Implementation Rules
 
@@ -31,16 +32,19 @@ Build production-grade sanitary, vent, storm and rain water sizing support. The 
 - Keep code-standard tables isolated from graph traversal.
 - Allow TS/EN/IPC table replacement by data configuration.
 - Do not resize fittings blindly; report Revit reapply-type/fitting issues explicitly.
+- Bundled drainage tables are placeholders; production write-back should use reviewed project/code table configuration or explicitly acknowledge warning findings.
 
 ## Tests
 
 - Unit tests for DFU accumulation, storm flow accumulation, table lookup, slope selection and no-reduction.
 - Synthetic graph fixtures: branch-to-stack, horizontal branch, vertical stack, storm leader, secondary overflow, disconnected fixture, reversed edge.
 - Revit dry-run/audit report before any write-back.
+- Write-back guard tests for missing approval token, missing confirm text and unacknowledged warnings.
 - Existing test suite and Revit 2022 build check if add-in code changes.
 
 ## Acceptance Criteria
 
 - Every pipe diameter recommendation is traceable to upstream fixture/roof load, slope and table row.
 - Ambiguous drainage direction blocks write-back.
+- Warning reports require explicit warning acknowledgement before write-back.
 - PR includes calculation fixtures, dry-run evidence, limitations and manual review checklist.
