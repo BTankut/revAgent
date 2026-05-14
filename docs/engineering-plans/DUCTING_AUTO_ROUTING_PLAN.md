@@ -19,6 +19,29 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.9)
+
+Addresses two follow-up review findings on PR #23 commit `29db352`.
+A third finding (elbow penalty missing from A* `stepCost`) is deferred
+to a separate routing-cost sprint because it requires expanding the A*
+state space and will shift route-selection baselines.
+
+- **`verticalStats` defensive sign-aware counter (Gemini medium).**
+  `compressPath` already collapses same-direction Z steps, so the
+  per-run invariant test (`riserPerRunCoarse ≡ riserPerRunRefined`)
+  passes with the existing logic. `verticalStats` now also tracks the
+  previous vertical sign so the count remains correct when given
+  uncompressed input and correctly treats an up→down reversal within a
+  single shaft as two distinct runs.
+- **`plan_ducting_auto_route` obstacle docs (Codex P2).** The schema
+  description said "or flat `[minX,...,maxZ]`" which read as if the
+  obstacle entry itself could be a flat array; Zod's
+  `passthroughObject` and `asRecord` actually drop arrays silently.
+  The description now spells out the supported forms explicitly:
+  `{aabbMm: {minX,...,maxZ}}`, `{aabbMm: [minX,...,maxZ]}`,
+  `{aabb_mm: {min:[x,y,z], max:[x,y,z]}}` — all of which `aabbFromValue`
+  has always parsed.
+
 ## Review Fixes (Sprint 1.8)
 
 Addresses two follow-up review findings on PR #23 commit `001607a`.

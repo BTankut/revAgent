@@ -136,11 +136,20 @@ function routeElbows(points: PointMm[]): number {
 function verticalStats(points: PointMm[]): { runCount: number; runLengthMm: number } {
     let runCount = 0;
     let runLengthMm = 0;
+    // `compressPath` already collapses same-direction Z steps, but we still
+    // track the previous vertical sign so the count is robust to uncompressed
+    // input and correctly treats a direction reversal (up→down within the same
+    // shaft, no horizontal break) as two distinct runs.
+    let previousVerticalSign = 0;
     for (let index = 1; index < points.length; index++) {
         const dz = points[index].z - points[index - 1].z;
         if (Math.abs(dz) > 0.001) {
-            runCount++;
+            const sign = Math.sign(dz);
+            if (sign !== previousVerticalSign) runCount++;
+            previousVerticalSign = sign;
             runLengthMm += Math.abs(dz);
+        } else {
+            previousVerticalSign = 0;
         }
     }
     return { runCount, runLengthMm };

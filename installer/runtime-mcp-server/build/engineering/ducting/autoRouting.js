@@ -57,11 +57,18 @@ function routeElbows(points) {
 function verticalStats(points) {
     let runCount = 0;
     let runLengthMm = 0;
+    let previousVerticalSign = 0;
     for (let index = 1; index < points.length; index++) {
         const dz = points[index].z - points[index - 1].z;
         if (Math.abs(dz) > 0.001) {
-            runCount++;
+            const sign = Math.sign(dz);
+            if (sign !== previousVerticalSign)
+                runCount++;
+            previousVerticalSign = sign;
             runLengthMm += Math.abs(dz);
+        }
+        else {
+            previousVerticalSign = 0;
         }
     }
     return { runCount, runLengthMm };
