@@ -46,4 +46,3 @@ Build production-grade hydronic piping analysis for heating water, chilled water
 - Critical path result is reproducible from JSON fixtures.
 - No geometry modification is performed by default.
 - PR contains calculation tests, dry-run evidence and manual engineering review checklist.
-
