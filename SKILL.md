@@ -79,6 +79,10 @@ only the bare names appear, so the rules stay host-agnostic.
   samples: BIP, storage type, unit, shared/read-only, raw/display values.
   Use `parameterNameMatchMode: "contains"` for broad discovery and
   `parameterNameMatchMode: "exact"` for write-preflight.
+- `analyze_hydronic_piping_graph` - dry-run hydronic analysis from a shared
+  connector graph JSON object or file; reports segment flow, velocity,
+  pressure drop, critical path, pump head, and balancing-valve delta-P without
+  writing to Revit.
 - `evaluate_ducting_design` - Revit write yapmadan JSON girdilerden ducting
   production readiness raporu uretir: air balance mapping, room airflow,
   diffuser type/count, plenum validation, route scoring, connector graph

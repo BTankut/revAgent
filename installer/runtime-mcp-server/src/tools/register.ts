@@ -18,6 +18,7 @@ import { registerInspectElementsTool } from "./inspect_elements.js";
 import { registerInspectParameterSchemaTool } from "./inspect_parameter_schema.js";
 import { registerListRevitInstancesTool } from "./list_revit_instances.js";
 import { registerGetRevitMcpStatusTool } from "./get_revit_mcp_status.js";
+import { registerAnalyzeHydronicPipingGraphTool } from "./analyze_hydronic_piping_graph.js";
 import { registerEvaluateDuctingDesignTool } from "./evaluate_ducting_design.js";
 
 export async function registerTools(server) {
@@ -40,6 +41,7 @@ export async function registerTools(server) {
     registerSmartFocusElementsTool(server);
     registerInspectElementsTool(server);
     registerInspectParameterSchemaTool(server);
+    registerAnalyzeHydronicPipingGraphTool(server);
     registerEvaluateDuctingDesignTool(server);
-    console.error("Registered 20 Revit MCP tools");
+    console.error("Registered 21 Revit MCP tools");
 }

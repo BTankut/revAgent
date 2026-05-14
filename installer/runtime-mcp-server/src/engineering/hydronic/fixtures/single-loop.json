@@ -1,0 +1,15 @@
+{
+  "schema_version": "connector-graph-foundation.fixture",
+  "nodes": [
+    { "id": "P1", "category": "Mechanical Equipment", "familyName": "Inline Pump" },
+    { "id": "S1", "category": "Pipe Curves", "length_m": 12, "diameter_mm": 50 },
+    { "id": "C1", "category": "Mechanical Equipment", "familyName": "Fan Coil Unit", "flow_lps": 1.2, "diameter_mm": 40, "k_value": 4 },
+    { "id": "R1", "category": "Pipe Curves", "length_m": 12, "diameter_mm": 50 }
+  ],
+  "edges": [
+    { "id": "E1", "source": "P1", "target": "S1" },
+    { "id": "E2", "source": "S1", "target": "C1" },
+    { "id": "E3", "source": "C1", "target": "R1" },
+    { "id": "E4", "source": "R1", "target": "P1" }
+  ]
+}
