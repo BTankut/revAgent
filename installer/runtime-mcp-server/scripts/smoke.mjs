@@ -41,6 +41,7 @@ const expectedTools = [
   "smart_focus_elements",
   "inspect_elements",
   "inspect_parameter_schema",
+  "evaluate_ducting_design",
 ];
 
 assert.deepEqual([...tools.keys()], expectedTools);
