@@ -16,9 +16,46 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 
 - This is a planner, not a Revit writer.
 - The first solver routes each target independently from the best source.
-- The route is projected to a single plenum elevation.
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
-- Trunk sharing, fitting optimization, vertical riser/drop generation, native duct sizing, and actual `Duct.Create` commit remain later gates.
+- Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
+
+## Phase 2 in This Branch — 3D Pathfinding (Sprint 1)
+
+Extends Phase 1's planner to a true 3D A* search while keeping the legacy 2D
+behavior as the default when no new parameters are supplied.
+
+New tool inputs:
+
+- `allowedElevationsMm: number[]` — Explicit list of allowed routing elevations
+  (plenum top, ceiling void, raised-floor cavity, intermediate riser stops).
+  Two or more values activate vertical riser generation.
+- `verticalStepMm: number` — Optional Z-axis refinement step between
+  min/max allowed elevations (mm). `0` keeps only the supplied list.
+- `riserPenalty: number` — Extra cost (mm) added to each Z move during A*
+  search and as a tie-breaker in the final score. Default `0` preserves
+  legacy 2D scoring exactly.
+- `allowDiagonal: boolean` — Enables 8-way XY diagonal neighbors (45°
+  elbows). Vertical moves remain pure-Z. Default `false`.
+
+New report fields:
+
+- `routes[].verticalRunCount`, `routes[].verticalRunLengthMm`
+- `summary.allowedElevationsMm`, `summary.riserPenalty`,
+  `summary.allowDiagonal`, `summary.totalVerticalRunCount`,
+  `summary.totalVerticalRunLengthMm`
+
+Behavioral notes:
+
+- When `allowedElevationsMm` is omitted, the planner falls back to a
+  single-elevation grid (derived from `routingElevationMm` or the source
+  Z). The Z-axis has length 1 and no riser neighbors are generated, so the
+  scoring and route geometry are bit-for-bit equivalent to Phase 1.
+- Endpoints whose Z does not match an allowed elevation are snapped to the
+  nearest allowed Z and a `route_endpoint_z_projected` warning is emitted.
+  The Phase 1 warning code is preserved.
+- Obstacle expansion still uses clearance + duct half-height on Z. Vertical
+  segments are checked against the obstacle's expanded AABB the same way
+  horizontal segments are.
 
 ## Reference Basis
 
@@ -29,7 +66,12 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 
 ## Next Phase
 
-- Add route-tree optimization so shared trunks are preferred over independent branches.
-- Add preview visualization through safe Revit model lines or temporary detail elements.
-- Add a separate gated Revit write tool that creates placeholder ducts first.
-- Re-export connector graph after write and require connected-network plus native sizing validation before production commit.
+- Phase 3: Trunk/branch tree optimizer so shared trunks are preferred over
+  independent branches (Steiner-heuristic over clustered targets).
+- Phase 4: Multi-solution strategist (`shortest` / `least-elbow` /
+  `max-clearance` profiles) producing Pareto-ranked alternatives.
+- Preview visualization through safe Revit model lines or temporary detail
+  elements.
+- A separate gated Revit write tool that creates placeholder ducts first.
+- Re-export connector graph after write and require connected-network plus
+  native sizing validation before production commit.
