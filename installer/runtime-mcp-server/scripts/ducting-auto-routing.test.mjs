@@ -224,9 +224,14 @@ assert.equal(
   "diagonal routing should yield a shorter total length on a 5x5 L-shaped run",
 );
 
+// An endpoint that is *out of bounds* (below min or above max of the allowed
+// elevations) still snaps to the nearest boundary and emits the projected-
+// endpoint warning. Sprint 1.11 fixed the in-bounds case (z that lies on the
+// refined grid — including the endpoint Z addition — must snap to itself);
+// out-of-bounds endpoints continue to be projected.
 const projectedEndpoint = planDuctingAutoRoute({
-  sources: [{ id: "ahu-1", pointMm: { x: 0, y: 0, z: 5500 } }],
-  targets: [{ id: "vav-1", pointMm: { x: 6000, y: 0, z: 5500 } }],
+  sources: [{ id: "ahu-1", pointMm: { x: 0, y: 0, z: 2000 } }],
+  targets: [{ id: "vav-1", pointMm: { x: 6000, y: 0, z: 2000 } }],
   allowedElevationsMm: [3000, 6000],
   gridStepMm: 1000,
   clearanceMm: 0,
@@ -236,9 +241,27 @@ assert.equal(projectedEndpoint.summary.status, "warn");
 assert.equal(
   projectedEndpoint.issues.some((issue) => issue.code === "route_endpoint_z_projected"),
   true,
-  "snapping a 5500mm endpoint to 6000mm should emit the projected-endpoint warning",
+  "an out-of-bounds 2000mm endpoint must snap to the nearest allowed elevation (3000) with the projected-endpoint warning",
 );
-assert.equal(projectedEndpoint.routeCandidates[0].pointsMm[0].z, 6000);
+assert.equal(projectedEndpoint.routeCandidates[0].pointsMm[0].z, 3000);
+
+// Companion case: an *in-bounds* endpoint that is not on any user-supplied
+// elevation must snap to itself (it lives in the grid via the endpoint-Z
+// addition in createCoordinateGrid) and must not be flagged as projected.
+const inBoundsEndpoint = planDuctingAutoRoute({
+  sources: [{ id: "ahu-2", pointMm: { x: 0, y: 0, z: 5500 } }],
+  targets: [{ id: "vav-2", pointMm: { x: 6000, y: 0, z: 5500 } }],
+  allowedElevationsMm: [3000, 6000],
+  gridStepMm: 1000,
+  clearanceMm: 0,
+});
+assert.equal(inBoundsEndpoint.summary.status, "pass");
+assert.equal(
+  inBoundsEndpoint.issues.some((issue) => issue.code === "route_endpoint_z_projected"),
+  false,
+  "in-bounds endpoint z=5500 lives in the grid and must not be flagged as projected",
+);
+assert.equal(inBoundsEndpoint.routeCandidates[0].pointsMm[0].z, 5500);
 
 // --- Backward compatibility: single allowedElevationsMm must match legacy 2D output ---
 
@@ -635,6 +658,51 @@ for (const segment of compressionTolerance.routeCandidates[0].segmentsMm) {
     `compressed segment must remain axis-aligned or 45°; got dx=${dx} dy=${dy} dz=${dz}`,
   );
 }
+
+// Sprint 1.11 (Codex P2): endpoint Z snap must use the refined grid. With
+// allowedElevationsMm=[3000, 9000] and verticalStepMm=1000, createCoordinateGrid
+// builds zs={3000,4000,...,9000}. A source at z=6000 lives ON the refined grid,
+// so it must NOT be snapped down to 3000 with a projected-endpoint warning, and
+// the route must actually start at z=6000.
+const refinedSnap = planDuctingAutoRoute({
+  sources: [{ id: "ahu-refined", pointMm: { x: 0, y: 0, z: 6000 } }],
+  targets: [{ id: "vav-refined", pointMm: { x: 4000, y: 0, z: 9000 } }],
+  allowedElevationsMm: [3000, 9000],
+  verticalStepMm: 1000,
+  gridStepMm: 1000,
+  clearanceMm: 0,
+});
+assert.equal(refinedSnap.summary.status, "pass");
+assert.equal(
+  refinedSnap.issues.some((issue) => issue.code === "route_endpoint_z_projected"),
+  false,
+  "z=6000 endpoint lies on the refined verticalStepMm grid; it must not be flagged as projected",
+);
+assert.equal(
+  refinedSnap.routeCandidates[0].pointsMm[0].z,
+  6000,
+  "route must actually start at the refined-grid source z (6000), not the original allowed elevation (3000)",
+);
+
+// Also confirm the endpoint snap still uses verticalStepMm refinement when the
+// source z is BETWEEN two refined stops (not exactly on one) — it should snap
+// to the nearest refined stop (within 1 mm tolerance, projected=false). Source
+// at z=4500 with verticalStepMm=500 → grid contains 4500 exactly.
+const refinedSnapMid = planDuctingAutoRoute({
+  sources: [{ id: "ahu-mid", pointMm: { x: 0, y: 0, z: 4500 } }],
+  targets: [{ id: "vav-mid", pointMm: { x: 4000, y: 0, z: 6000 } }],
+  allowedElevationsMm: [3000, 6000],
+  verticalStepMm: 500,
+  gridStepMm: 1000,
+  clearanceMm: 0,
+});
+assert.equal(refinedSnapMid.summary.status, "pass");
+assert.equal(
+  refinedSnapMid.issues.some((issue) => issue.code === "route_endpoint_z_projected"),
+  false,
+  "z=4500 lies on the refined grid (verticalStepMm=500); no projected warning",
+);
+assert.equal(refinedSnapMid.routeCandidates[0].pointsMm[0].z, 4500);
 
 // Sprint 1.7: spatial-zone payload errors/warnings must propagate.
 // references/patterns/spatial-zone-extract.cs returns the failure payload with empty

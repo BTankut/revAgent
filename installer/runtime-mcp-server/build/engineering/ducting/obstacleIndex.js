@@ -198,13 +198,53 @@ function collectForSegment(node, segAabb, out) {
     if (node.right)
         collectForSegment(node.right, segAabb, out);
 }
+function someForPoint(node, point, predicate) {
+    if (!aabbContainsPoint(node.aabb, point))
+        return false;
+    if (node.obstacle)
+        return predicate(node.obstacle);
+    if (node.left && someForPoint(node.left, point, predicate))
+        return true;
+    if (node.right && someForPoint(node.right, point, predicate))
+        return true;
+    return false;
+}
+function someForSegment(node, segAabb, predicate) {
+    if (!aabbIntersectsAabb(node.aabb, segAabb))
+        return false;
+    if (node.obstacle)
+        return predicate(node.obstacle);
+    if (node.left && someForSegment(node.left, segAabb, predicate))
+        return true;
+    if (node.right && someForSegment(node.right, segAabb, predicate))
+        return true;
+    return false;
+}
 export function buildLinearObstacleIndex(obstacles) {
     const list = obstacles.slice();
     return {
         count: list.length,
         backend: "linear",
-        candidatesForPoint: () => list.slice(),
-        candidatesForSegment: () => list.slice(),
+        candidatesForPoint: (point) => list.filter((obstacle) => aabbContainsPoint(obstacle.expanded, point)),
+        candidatesForSegment: (start, end) => {
+            const segAabb = segmentAabb(start, end);
+            return list.filter((obstacle) => aabbIntersectsAabb(obstacle.expanded, segAabb));
+        },
+        someCandidateForPoint: (point, predicate) => {
+            for (const obstacle of list) {
+                if (aabbContainsPoint(obstacle.expanded, point) && predicate(obstacle))
+                    return true;
+            }
+            return false;
+        },
+        someCandidateForSegment: (start, end, predicate) => {
+            const segAabb = segmentAabb(start, end);
+            for (const obstacle of list) {
+                if (aabbIntersectsAabb(obstacle.expanded, segAabb) && predicate(obstacle))
+                    return true;
+            }
+            return false;
+        },
         obstacles: () => list.slice(),
     };
 }
@@ -215,6 +255,8 @@ export function buildAabbTreeObstacleIndex(obstacles) {
             backend: "aabb-tree",
             candidatesForPoint: () => [],
             candidatesForSegment: () => [],
+            someCandidateForPoint: () => false,
+            someCandidateForSegment: () => false,
             obstacles: () => [],
         };
     }
@@ -233,6 +275,8 @@ export function buildAabbTreeObstacleIndex(obstacles) {
             collectForSegment(root, segmentAabb(start, end), out);
             return out;
         },
+        someCandidateForPoint: (point, predicate) => someForPoint(root, point, predicate),
+        someCandidateForSegment: (start, end, predicate) => someForSegment(root, segmentAabb(start, end), predicate),
         obstacles: () => list.slice(),
     };
 }

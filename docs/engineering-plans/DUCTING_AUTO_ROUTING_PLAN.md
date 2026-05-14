@@ -19,6 +19,43 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.11)
+
+Round-4 review on PR #23 commit `fd9cee9`. Three of Gemini's perf
+findings applied along with a Codex P2 correctness fix. Gemini's HIGH
+finding on the A* state (vertical reversal not distinguished from a
+single run) is rolled into the same deferred routing-cost sprint as
+the elbow-penalty extension, since both require expanding the A*
+state space and shifting route-selection baselines.
+
+- **Allocation-free obstacle index hot path (Gemini medium).**
+  `ObstacleIndex` gains `someCandidateForPoint(point, predicate)` and
+  `someCandidateForSegment(start, end, predicate)`. The AABB-tree
+  backend walks the tree and short-circuits on the first match without
+  building an intermediate `candidates` array; `LinearObstacleIndex`
+  short-circuits over its list with the same AABB pre-filter as the
+  tree. `pointBlocked` / `segmentBlocked` inside the A* loop call the
+  new predicate methods.
+- **`LinearObstacleIndex` AABB pre-filter (Gemini medium).** The
+  linear backend's `candidatesForPoint` / `candidatesForSegment` now
+  apply the same AABB containment / intersection filter as the
+  aabb-tree backend, instead of returning the entire obstacle list.
+- **`neighborMoves` array eliminated (Gemini medium).** A* neighbour
+  evaluation no longer builds a per-expansion
+  `{ix,iy,iz,vertical}[]` array. Each neighbour is processed directly
+  via a local helper, removing four-to-six object allocations per
+  expansion on the hot loop.
+- **Endpoint Z snap against the refined grid (Codex P2).**
+  `createCoordinateGrid` builds zs from `allowedElevationsMm` plus the
+  `verticalStepMm` refinement plus any in-bounds endpoint Z, but
+  `snapPointToGridZ` was only snapping against the original
+  `allowedZs`. An endpoint that lived on a refined elevation (or any
+  in-bounds Z not on the user-supplied list) was therefore reported as
+  projected and lost its riser tail. A new `effectiveGridZs` helper
+  mirrors the grid logic exactly and is used for snapping; both the
+  existing "endpoint outside the allowed range" warning case and the
+  new in-bounds case are covered by tests.
+
 ## Review Fixes (Sprint 1.10)
 
 Performance follow-ups from the round-3 Gemini review on PR #23 commit

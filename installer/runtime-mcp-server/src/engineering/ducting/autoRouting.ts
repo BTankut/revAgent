@@ -410,8 +410,10 @@ function findGridPathFromSources(
     if (targetIx < 0 || targetIy < 0 || targetIz < 0) return { points: [], expansions: 0, exhausted: false };
     const targetGridKey = gridKey(targetIx, targetIy, targetIz);
 
-    const pointBlocked = (candidate: PointMm) => obstacleIndex.candidatesForPoint(candidate).some((obstacle) => pointInsideObstacle(candidate, obstacle));
-    const segmentBlocked = (left: PointMm, right: PointMm) => obstacleIndex.candidatesForSegment(left, right).some((obstacle) => segmentHitsObstacle(left, right, obstacle));
+    const pointBlocked = (candidate: PointMm) =>
+        obstacleIndex.someCandidateForPoint(candidate, (obstacle) => pointInsideObstacle(candidate, obstacle));
+    const segmentBlocked = (left: PointMm, right: PointMm) =>
+        obstacleIndex.someCandidateForSegment(left, right, (obstacle) => segmentHitsObstacle(left, right, obstacle));
     if (pointBlocked(target)) return { points: [], expansions: 0, exhausted: false };
 
     const open = new MinHeap();
@@ -484,7 +486,29 @@ function findGridPathFromSources(
         const iz = izFromGridKey(currentGridKey);
         const currentPoint = point(ix, iy, iz);
 
-        const neighborMoves: Array<{ ix: number; iy: number; iz: number; vertical: boolean }> = [];
+        // Inline neighbour evaluation — the previous implementation built a per-expansion
+        // {ix,iy,iz,vertical}[] array (≈4–6 object allocations per expansion, × 25 k
+        // expansions per A* run), which showed up as measurable GC pressure on large
+        // scenes. We now process each neighbour directly.
+        const evalNeighbor = (nIx: number, nIy: number, nIz: number, vertical: boolean): void => {
+            if (nIx < 0 || nIy < 0 || nIz < 0 || nIx >= xs.length || nIy >= ys.length || nIz >= zs.length) return;
+            const neighborArrival = vertical ? ARRIVE_VERT : ARRIVE_HORIZ;
+            const neighborComp = compose(gridKey(nIx, nIy, nIz), neighborArrival);
+            if (closed.has(neighborComp)) return;
+            const neighborPoint = point(nIx, nIy, nIz);
+            if (pointBlocked(neighborPoint) || segmentBlocked(currentPoint, neighborPoint)) return;
+            // Per-run riser penalty: charged once when transitioning into a vertical run.
+            const startingRiser = vertical && currentArrival !== ARRIVE_VERT;
+            const transitionPenalty = startingRiser ? options.riserPenalty : 0;
+            const stepCost = pointDistanceMm(currentPoint, neighborPoint) + transitionPenalty;
+            const tentative = (gScore.get(currentComp) ?? Number.POSITIVE_INFINITY) + stepCost;
+            if (tentative >= (gScore.get(neighborComp) ?? Number.POSITIVE_INFINITY)) return;
+            cameFrom.set(neighborComp, currentComp);
+            sourceForKey.set(neighborComp, sourceForKey.get(currentComp) ?? 0);
+            gScore.set(neighborComp, tentative);
+            open.push({ key: neighborComp, priority: tentative + heuristic(neighborPoint) });
+        };
+
         for (const [dx, dy] of horizontalNeighbors) {
             const newIx = ix + dx;
             const newIy = iy + dy;
@@ -496,30 +520,11 @@ function findGridPathFromSources(
                 if (newIx < 0 || newIx >= xs.length || newIy < 0 || newIy >= ys.length) continue;
                 if (Math.abs(Math.abs(xs[newIx] - xs[ix]) - Math.abs(ys[newIy] - ys[iy])) > 1) continue;
             }
-            neighborMoves.push({ ix: newIx, iy: newIy, iz, vertical: false });
+            evalNeighbor(newIx, newIy, iz, false);
         }
         if (zs.length > 1) {
-            neighborMoves.push({ ix, iy, iz: iz - 1, vertical: true });
-            neighborMoves.push({ ix, iy, iz: iz + 1, vertical: true });
-        }
-
-        for (const move of neighborMoves) {
-            if (move.ix < 0 || move.iy < 0 || move.iz < 0 || move.ix >= xs.length || move.iy >= ys.length || move.iz >= zs.length) continue;
-            const neighborArrival = move.vertical ? ARRIVE_VERT : ARRIVE_HORIZ;
-            const neighborComp = compose(gridKey(move.ix, move.iy, move.iz), neighborArrival);
-            if (closed.has(neighborComp)) continue;
-            const neighborPoint = point(move.ix, move.iy, move.iz);
-            if (pointBlocked(neighborPoint) || segmentBlocked(currentPoint, neighborPoint)) continue;
-            // Per-run riser penalty: charged once when transitioning into a vertical run.
-            const startingRiser = move.vertical && currentArrival !== ARRIVE_VERT;
-            const transitionPenalty = startingRiser ? options.riserPenalty : 0;
-            const stepCost = pointDistanceMm(currentPoint, neighborPoint) + transitionPenalty;
-            const tentative = (gScore.get(currentComp) ?? Number.POSITIVE_INFINITY) + stepCost;
-            if (tentative >= (gScore.get(neighborComp) ?? Number.POSITIVE_INFINITY)) continue;
-            cameFrom.set(neighborComp, currentComp);
-            sourceForKey.set(neighborComp, sourceForKey.get(currentComp) ?? 0);
-            gScore.set(neighborComp, tentative);
-            open.push({ key: neighborComp, priority: tentative + heuristic(neighborPoint) });
+            evalNeighbor(ix, iy, iz - 1, true);
+            evalNeighbor(ix, iy, iz + 1, true);
         }
     }
     return { points: [], expansions, exhausted: false };
@@ -544,17 +549,42 @@ function snapPointToGridZ(point: PointMm, allowedZs: number[]): { point: PointMm
     return { point: { x: point.x, y: point.y, z: nearest }, projected: true };
 }
 
+function effectiveGridZs(allowedZs: number[], verticalStepMm: number, endpointZs: number[]): number[] {
+    const zs = new Set<number>();
+    for (const z of allowedZs) zs.add(round(z));
+    if (allowedZs.length > 1 && verticalStepMm > 0) {
+        const zMin = Math.min(...allowedZs);
+        const zMax = Math.max(...allowedZs);
+        addRangeCoordinates(zs, zMin, zMax, verticalStepMm);
+    }
+    if (allowedZs.length > 0) {
+        const zMin = Math.min(...allowedZs);
+        const zMax = Math.max(...allowedZs);
+        for (const z of endpointZs) {
+            if (z >= zMin - 0.001 && z <= zMax + 0.001) zs.add(round(z));
+        }
+    }
+    return Array.from(zs).sort((a, b) => a - b);
+}
+
 function buildRouteFromSources(
     sources: RouteEndpoint[],
     target: RouteEndpoint,
     obstacleIndex: ObstacleIndex,
     options: PathSearchOptions & { elbowPenalty: number; defaultRouteZ: number },
 ): PlannedRoute {
+    // Snap against the *refined* Z grid (allowedZs + verticalStepMm stops +
+    // in-bounds endpoint Zs) — `createCoordinateGrid` builds the exact same
+    // set internally, so an endpoint that lives on a refined elevation must
+    // not be reported as projected and must not lose its riser tail.
+    const endpointZs = [target.point.z];
+    for (const source of sources) endpointZs.push(source.point.z);
+    const snapZs = effectiveGridZs(options.allowedZs, options.verticalStepMm, endpointZs);
     const projectedSources = sources.map((source) => {
-        const snapped = snapPointToGridZ(source.point, options.allowedZs);
+        const snapped = snapPointToGridZ(source.point, snapZs);
         return { id: source.id, point: snapped.point, projected: snapped.projected, raw: source.raw };
     });
-    const snappedTarget = snapPointToGridZ(target.point, options.allowedZs);
+    const snappedTarget = snapPointToGridZ(target.point, snapZs);
     const path = findGridPathFromSources(
         projectedSources.map((entry) => entry.point),
         snappedTarget.point,
