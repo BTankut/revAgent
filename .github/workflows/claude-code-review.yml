@@ -34,7 +34,5 @@ jobs:
             - Code style and maintainability
             - Test coverage gaps
 
-            Use `mcp__github_inline_comment__create_inline_comment` for line-specific
-            feedback and post a concise summary review at the end. Be constructive
-            and skip nitpicks on auto-generated or vendored files.
-          claude_args: '--allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*)"'
+            Be constructive and skip nitpicks on auto-generated or vendored files.
+          claude_args: --max-turns 10
