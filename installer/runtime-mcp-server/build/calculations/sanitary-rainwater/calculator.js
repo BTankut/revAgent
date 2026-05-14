@@ -280,7 +280,15 @@ function accumulateLoads(directed, order, systemKind, requestedMode, findings) {
     }
     for (const nodeId of order) {
         const currentLoad = accumulated.get(nodeId) || 0;
+        const ownLoad = ownLoads.get(nodeId) || 0;
         const outgoing = directed.adjacency.get(nodeId) || [];
+        const node = directed.nodeById.get(nodeId);
+        if (ownLoad > 0 && outgoing.length === 0 && !isPipeNode(node)) {
+            addFinding(findings, "error", "disconnected_source_load", "A sanitary fixture or rainwater source has load but no downstream directed edge.", {
+                nodeIds: [nodeId],
+                data: { systemKind, load: ownLoad },
+            });
+        }
         if (currentLoad > 0 && outgoing.length > 1) {
             addFinding(findings, "warning", "flow_split", "A drainage source load reaches more than one downstream edge; the full load was propagated to each path for review.", {
                 nodeIds: [nodeId],

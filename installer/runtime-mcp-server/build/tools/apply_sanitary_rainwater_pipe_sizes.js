@@ -128,6 +128,7 @@ try
         {
             record["status"] = "skipped";
             record["reason"] = "Element is not a Revit pipe.";
+            warnings.Add("Skipped element " + elementIdValue + ": Element is not a Revit pipe.");
             changes.Add(record);
             continue;
         }
@@ -137,6 +138,7 @@ try
         {
             record["status"] = "skipped";
             record["reason"] = "Pipe diameter parameter is missing or read-only.";
+            warnings.Add("Skipped element " + elementIdValue + ": Pipe diameter parameter is missing or read-only.");
             changes.Add(record);
             continue;
         }
@@ -242,8 +244,10 @@ export function registerApplySanitaryRainwaterPipeSizesTool(server) {
                 taskId: args.taskId,
                 timeoutMs: args.timeoutMs,
             });
+            const revitWriteStatus = response?.result?.status || response?.status || null;
+            const success = response?.success !== false && (revitWriteStatus === "pass" || revitWriteStatus === "warn");
             const payload = {
-                success: true,
+                success,
                 mode,
                 report,
                 writeBackPlan: plan,

@@ -42,6 +42,13 @@ assert.equal(sanitaryPlan.status, "ready");
 assert.ok(sanitaryPlan.changes.some((change) => change.nodeId === "pipe-main-branch" && change.targetDiameterMm === 75));
 assert.ok(sanitaryPlan.changes.some((change) => change.nodeId === "building-drain-1" && change.targetDiameterMm === 75));
 
+const disconnectedSource = await readFixture("sanitary-branch-to-stack.json");
+disconnectedSource.edges = disconnectedSource.edges.filter((edge) => edge.id !== "edge-lav-pipe");
+const disconnectedSourceReport = calculateSanitaryRainwater(disconnectedSource);
+assert.equal(disconnectedSourceReport.status, "fail");
+assert.ok(disconnectedSourceReport.findings.some((finding) => finding.code === "disconnected_source_load" && finding.nodeIds.includes("lav-1")));
+assert.equal(createWriteBackPlan(disconnectedSourceReport).status, "blocked");
+
 const rainwater = calculateSanitaryRainwater(await readFixture("rainwater-leader.json"));
 assert.equal(rainwater.status, "warn");
 assert.equal(rainwater.summary.blockerCount, 0);
