@@ -29,8 +29,8 @@ package.
 |       |-- README.md
 |       |-- revit-mcp-plugin.sln
 |       |-- revit-mcp-plugin/
+|       |-- RevitMCPCommandSet/
 |       |-- RevitMCPViewCommandSet/
-|       `-- SampleCommandSet/
 `-- installer/
     |-- INSTALLATION.md
     |-- install-self-contained.ps1
@@ -45,12 +45,13 @@ package.
 ## Source vs Install Payload
 
 `src/revit-plugin` is source code. It is where Revit add-in development happens.
-The main add-in host is `src/revit-plugin/revit-mcp-plugin`. UI view tools are
-implemented as the separate
-`src/revit-plugin/RevitMCPViewCommandSet` project so the dynamic
-`send_code_to_revit` command payload stays isolated. This command set owns view
-activation/close, element focus, and 3D section box behavior. `SampleCommandSet`
-is legacy sample source and is not part of the deployed production command set.
+The main add-in host is `src/revit-plugin/revit-mcp-plugin`. The production
+dynamic command source is `src/revit-plugin/RevitMCPCommandSet`; it backs
+`send_code_to_revit` and the low-level read-only context commands. UI view tools
+are implemented as the separate `src/revit-plugin/RevitMCPViewCommandSet`
+project so view activation/close, element focus, existing-plan focus, 3D view
+creation, and section box behavior stay outside the dynamic code transaction
+wrapper. There is no production `SampleCommandSet` source in this repo.
 
 `installer/revit-plugin` is install payload. Production installers copy from this
 folder into `C:\ProgramData\DPE\RevitMCP`. Do not edit the binary payload by
@@ -61,6 +62,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -Revit
 ```
 
 Then commit both the source change and the refreshed payload binaries.
+
+The build script validates `RevitMCPCommandSet` source by default, but it keeps
+the stable dynamic command payload unchanged unless
+`-RefreshCommandSetPayload` is passed intentionally.
 
 `installer/runtime-mcp-server/src` and `installer/revit-api-docs-mcp/src` are
 the TypeScript MCP source trees. Their `build/` folders remain the runtime

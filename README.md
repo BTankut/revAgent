@@ -10,7 +10,8 @@ It is the single canonical source for production office deployment.
 
 - `SKILL.md`: host-agnostic skill instructions for Revit MEP work
 - `AGENTS.md`: workstation-wide coordination rules copied during install
-- `src/revit-plugin/`: Revit add-in source code
+- `src/revit-plugin/`: Revit add-in source code, including the main host,
+  dynamic command set, and UI view command set
 - `config/revit-versions.json`: central Revit version matrix and payload gate
 - `scripts/build-revit-plugin.ps1`: builds the add-in source and refreshes the installer payload binaries
 - `installer/revit-plugin/`: bundled Revit add-in payload
@@ -41,6 +42,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -Revit
 Commit the source change and refreshed payload binaries together. See
 `docs/REPOSITORY_STRUCTURE.md`, `docs/MONOREPO_MIGRATION.md`, and
 `docs/DEVELOPER_RUNBOOK.md`.
+
+`RevitMCPCommandSet` is now kept as production source under `src/revit-plugin`,
+but the stable dynamic command payload is not replaced by a normal build. Use
+`-RefreshCommandSetPayload` only when intentionally updating
+`installer/command-payload/RevitMCPCommandSet.dll`.
 
 ## Technical direction
 
@@ -266,7 +272,8 @@ The installer now verifies that Revit 2022 provides these files and mirrors them
 
 If a target machine throws a missing `Microsoft.CodeAnalysis` or similar runtime error after the installer checks those Autodesk paths, treat that as a machine/install problem, not as a step where the end user should run NuGet.
 
-NuGet is only relevant if you are rebuilding `RevitMCPCommandSet.dll` from source in a separate development project.
+NuGet is only relevant to repo developers who rebuild
+`src/revit-plugin/RevitMCPCommandSet`; end-user installs do not require NuGet.
 
 ## Clean machine checklist
 
