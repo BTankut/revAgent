@@ -7,6 +7,9 @@ import {
   calculateSanitaryRainwater,
   createWriteBackPlan,
 } from "../build/calculations/sanitary-rainwater/calculator.js";
+import {
+  registerApplySanitaryRainwaterPipeSizesTool,
+} from "../build/tools/apply_sanitary_rainwater_pipe_sizes.js";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = path.resolve(scriptDir, "../../../tests/fixtures/sanitary-rainwater");
@@ -20,6 +23,22 @@ function recommendation(report, nodeId) {
   const item = report.recommendations.find((candidate) => candidate.nodeId === nodeId);
   assert.ok(item, `Missing recommendation for ${nodeId}`);
   return item;
+}
+
+function registerToolHandler() {
+  let handler = null;
+  registerApplySanitaryRainwaterPipeSizesTool({
+    tool(_name, _description, _schema, registeredHandler) {
+      handler = registeredHandler;
+    },
+  });
+  assert.equal(typeof handler, "function");
+  return handler;
+}
+
+function parseToolPayload(result) {
+  assert.ok(result?.content?.[0]?.text, "Tool result should contain text content.");
+  return JSON.parse(result.content[0].text);
 }
 
 const sanitary = calculateSanitaryRainwater(await readFixture("sanitary-branch-to-stack.json"));
@@ -39,8 +58,32 @@ assert.equal(buildingDrain.requiresDiameterChange, true);
 
 const sanitaryPlan = createWriteBackPlan(sanitary);
 assert.equal(sanitaryPlan.status, "ready");
+assert.match(sanitaryPlan.approvalToken, /^[a-f0-9]{64}$/);
+assert.equal(sanitaryPlan.confirmWriteBack, "APPLY_SANITARY_RAINWATER_WRITEBACK");
+assert.equal(sanitaryPlan.manualApproval.warningReviewRequired, true);
+assert.ok(sanitaryPlan.warnings.some((finding) => finding.code === "table_profile_review_required"));
 assert.ok(sanitaryPlan.changes.some((change) => change.nodeId === "pipe-main-branch" && change.targetDiameterMm === 75));
 assert.ok(sanitaryPlan.changes.some((change) => change.nodeId === "building-drain-1" && change.targetDiameterMm === 75));
+
+const applyHandler = registerToolHandler();
+const missingApproval = parseToolPayload(await applyHandler({
+  graph: await readFixture("sanitary-branch-to-stack.json"),
+  mode: "writeBack",
+  commitToken: "APPLY_SANITARY_RAINWATER_DIAMETERS",
+}));
+assert.equal(missingApproval.success, false);
+assert.ok(missingApproval.errors.some((error) => error.includes("approvalToken")));
+assert.ok(missingApproval.errors.some((error) => error.includes("confirmWriteBack")));
+
+const warningsNotAcknowledged = parseToolPayload(await applyHandler({
+  graph: await readFixture("sanitary-branch-to-stack.json"),
+  mode: "writeBack",
+  commitToken: "APPLY_SANITARY_RAINWATER_DIAMETERS",
+  approvalToken: sanitaryPlan.approvalToken,
+  confirmWriteBack: "APPLY_SANITARY_RAINWATER_WRITEBACK",
+}));
+assert.equal(warningsNotAcknowledged.success, false);
+assert.ok(warningsNotAcknowledged.errors.some((error) => error.includes("warnings")));
 
 const disconnectedSource = await readFixture("sanitary-branch-to-stack.json");
 disconnectedSource.edges = disconnectedSource.edges.filter((edge) => edge.id !== "edge-lav-pipe");

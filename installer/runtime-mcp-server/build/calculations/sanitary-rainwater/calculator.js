@@ -1,6 +1,8 @@
+import crypto from "node:crypto";
 export const CONNECTOR_GRAPH_SCHEMA_VERSION = "mep.connector-graph.v1";
 export const SANITARY_RAINWATER_REPORT_SCHEMA_VERSION = "sanitary-rainwater-sizing.v1";
 export const SANITARY_RAINWATER_WRITEBACK_SCHEMA_VERSION = "sanitary-rainwater-writeback-plan.v1";
+export const SANITARY_RAINWATER_WRITEBACK_CONFIRM_TEXT = "APPLY_SANITARY_RAINWATER_WRITEBACK";
 export const DEFAULT_DRAINAGE_TABLES = {
     profile: "generic-metric-drainage-v1",
     reviewRequired: true,
@@ -84,6 +86,56 @@ function addFinding(findings, severity, code, message, details = {}) {
         connectorIds: details.connectorIds || [],
         data: details.data || undefined,
     });
+}
+function stableStringify(value) {
+    if (value === null || value === undefined) {
+        return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+        return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+    }
+    if (typeof value === "object") {
+        return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+}
+function compactFindingForApproval(finding) {
+    return {
+        severity: finding?.severity || null,
+        code: finding?.code || null,
+        nodeIds: Array.isArray(finding?.nodeIds) ? [...finding.nodeIds].sort() : [],
+        edgeIds: Array.isArray(finding?.edgeIds) ? [...finding.edgeIds].sort() : [],
+        connectorIds: Array.isArray(finding?.connectorIds) ? [...finding.connectorIds].sort() : [],
+        data: finding?.data || null,
+    };
+}
+export function computeSanitaryRainwaterApprovalToken(changes, context = {}) {
+    const normalizedChanges = (Array.isArray(changes) ? changes : [])
+        .map((change) => ({
+        nodeId: change?.nodeId ? String(change.nodeId) : null,
+        elementId: Number.parseInt(String(change?.elementId), 10),
+        uniqueId: change?.uniqueId ? String(change.uniqueId) : null,
+        systemKind: change?.systemKind ? String(change.systemKind) : null,
+        pipeRole: change?.pipeRole ? String(change.pipeRole) : null,
+        currentDiameterMm: change?.currentDiameterMm ?? null,
+        targetDiameterMm: change?.targetDiameterMm ?? null,
+        accumulatedFixtureUnits: change?.accumulatedFixtureUnits ?? null,
+        accumulatedFlowLps: change?.accumulatedFlowLps ?? null,
+    }))
+        .filter((change) => Number.isFinite(change.elementId) && change.elementId > 0)
+        .sort((left, right) => Number(left.elementId) - Number(right.elementId) || String(left.nodeId).localeCompare(String(right.nodeId)));
+    const normalizedContext = {
+        sourceReportStatus: context.sourceReportStatus || null,
+        tableProfile: context.tableProfile || null,
+        systemMode: context.systemMode || null,
+        warningFindings: (Array.isArray(context.warningFindings) ? context.warningFindings : [])
+            .map(compactFindingForApproval)
+            .sort((left, right) => stableStringify(left).localeCompare(stableStringify(right))),
+    };
+    return crypto.createHash("sha256").update(stableStringify({
+        changes: normalizedChanges,
+        context: normalizedContext,
+    })).digest("hex");
 }
 function normalizeGraphInput(input) {
     if (typeof input === "string") {
@@ -586,6 +638,7 @@ export function calculateSanitaryRainwater(input, options = {}) {
 export function createWriteBackPlan(report, options = {}) {
     const findings = Array.isArray(report?.findings) ? report.findings : [];
     const blocked = report?.status === "fail" || findings.some((finding) => finding.severity === "error");
+    const warningFindings = findings.filter((finding) => finding.severity === "warning");
     let changes = (Array.isArray(report?.recommendations) ? report.recommendations : [])
         .filter((item) => item?.writeBack?.eligible && item.requiresDiameterChange && item.recommendedDiameterMm && item.elementId)
         .map((item) => ({
@@ -605,16 +658,35 @@ export function createWriteBackPlan(report, options = {}) {
     if (Number.isFinite(maxWrites) && maxWrites > 0) {
         changes = changes.slice(0, maxWrites);
     }
+    const approvalToken = computeSanitaryRainwaterApprovalToken(changes, {
+        sourceReportStatus: report?.status || null,
+        tableProfile: report?.summary?.tableProfile || null,
+        systemMode: report?.summary?.systemMode || null,
+        warningFindings,
+    });
     return {
         schemaVersion: SANITARY_RAINWATER_WRITEBACK_SCHEMA_VERSION,
         status: blocked ? "blocked" : (changes.length > 0 ? "ready" : "no_changes"),
+        approvalToken,
+        confirmWriteBack: SANITARY_RAINWATER_WRITEBACK_CONFIRM_TEXT,
+        manualApproval: {
+            required: changes.length > 0,
+            warningReviewRequired: warningFindings.length > 0,
+            warningCount: warningFindings.length,
+            instructions: changes.length > 0
+                ? `Write-back requires commitToken, approvalToken, confirmWriteBack='${SANITARY_RAINWATER_WRITEBACK_CONFIRM_TEXT}', and allowWarnings=true when warningReviewRequired is true.`
+                : "No write-back changes are planned.",
+        },
         summary: {
             blocked,
             changeCount: changes.length,
             maxWrites: Number.isFinite(maxWrites) && maxWrites > 0 ? maxWrites : null,
             sourceReportStatus: report?.status || null,
+            warningCount: warningFindings.length,
+            warningReviewRequired: warningFindings.length > 0,
         },
         changes,
         blockers: blocked ? findings.filter((finding) => finding.severity === "error") : [],
+        warnings: warningFindings,
     };
 }
