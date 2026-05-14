@@ -53,30 +53,123 @@ export function validateWriteBackApproval(actions, approvalToken, confirmWriteBa
     };
 }
 
+function csharpStringArray(values) {
+    return `new string[] { ${values.map((value) => csharpString(value === null || value === undefined ? "" : String(value))).join(", ")} }`;
+}
+
+function csharpIntArray(values) {
+    return `new int[] { ${values.map((value) => Number.parseInt(String(value), 10)).join(", ")} }`;
+}
+
+function csharpDoubleArray(values) {
+    return `new double[] { ${values
+        .map((value) => {
+            const numeric = Number(value);
+            return Number.isFinite(numeric) ? String(numeric) : "0";
+        })
+        .join(", ")} }`;
+}
+
+function parameterValueToString(value) {
+    if (value === undefined || value === null) {
+        return "";
+    }
+    if (typeof value === "object") {
+        return JSON.stringify(value);
+    }
+    return String(value);
+}
+
 export function createWriteBackCode(actions) {
-    const payload = JSON.stringify(normalizeWriteBackActions(actions));
+    const normalizedActions = normalizeWriteBackActions(actions);
+    const actionIds = csharpStringArray(normalizedActions.map((action) => action.actionId));
+    const writeKinds = csharpStringArray(normalizedActions.map((action) => action.writeKind));
+    const elementIds = csharpIntArray(normalizedActions.map((action) => action.elementId));
+    const parameterNames = csharpStringArray(normalizedActions.map((action) => action.parameterName || ""));
+    const targetDiameterMms = csharpDoubleArray(normalizedActions.map((action) => action.targetDiameterMm || 0));
+    const parameterValues = csharpStringArray(normalizedActions.map((action) => parameterValueToString(action.parameterValue)));
+    const parameterUnits = csharpStringArray(normalizedActions.map((action) => action.parameterUnit || ""));
     return `
+System.Func<string, string> __escapeJson = delegate(string value)
+{
+    if (value == null)
+    {
+        return "";
+    }
+    return value
+        .Replace("\\\\", "\\\\\\\\")
+        .Replace("\\\"", "\\\\\\\"")
+        .Replace("\\r", "\\\\r")
+        .Replace("\\n", "\\\\n")
+        .Replace("\\t", "\\\\t");
+};
+
 try
 {
-    string payload = ${csharpString(payload)};
-    Newtonsoft.Json.Linq.JArray actions = Newtonsoft.Json.Linq.JArray.Parse(payload);
-    Newtonsoft.Json.Linq.JArray results = new Newtonsoft.Json.Linq.JArray();
-    foreach (Newtonsoft.Json.Linq.JObject action in actions)
+    string[] actionIds = ${actionIds};
+    string[] writeKinds = ${writeKinds};
+    int[] elementIds = ${elementIds};
+    string[] parameterNames = ${parameterNames};
+    double[] targetDiameterMms = ${targetDiameterMms};
+    string[] parameterValues = ${parameterValues};
+    string[] parameterUnits = ${parameterUnits};
+
+    System.Text.StringBuilder results = new System.Text.StringBuilder();
+    results.Append("[");
+    bool firstResult = true;
+    int resultCount = 0;
+    System.Action<string, int, string, string, string, string, double, double, string, string> addResult =
+        delegate(string actionId, int elementIdValue, string writeKind, string status, string reason, string parameterName, double beforeDiameterMm, double afterDiameterMm, string before, string after)
     {
-        string actionId = (string)action["actionId"];
-        string writeKind = ((string)action["writeKind"] ?? "").ToLowerInvariant();
-        int elementIdValue = (int)action["elementId"];
-        Newtonsoft.Json.Linq.JObject record = new Newtonsoft.Json.Linq.JObject();
-        record["actionId"] = actionId;
-        record["elementId"] = elementIdValue;
-        record["writeKind"] = writeKind;
+        if (!firstResult)
+        {
+            results.Append(",");
+        }
+        firstResult = false;
+        resultCount++;
+
+        results.Append("{");
+        results.Append("\\\"actionId\\\":\\\"").Append(__escapeJson(actionId)).Append("\\\"");
+        results.Append(",\\\"elementId\\\":").Append(elementIdValue.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        results.Append(",\\\"writeKind\\\":\\\"").Append(__escapeJson(writeKind)).Append("\\\"");
+        results.Append(",\\\"status\\\":\\\"").Append(__escapeJson(status)).Append("\\\"");
+        if (!string.IsNullOrEmpty(reason))
+        {
+            results.Append(",\\\"reason\\\":\\\"").Append(__escapeJson(reason)).Append("\\\"");
+        }
+        if (!string.IsNullOrEmpty(parameterName))
+        {
+            results.Append(",\\\"parameterName\\\":\\\"").Append(__escapeJson(parameterName)).Append("\\\"");
+        }
+        if (!System.Double.IsNaN(beforeDiameterMm))
+        {
+            results.Append(",\\\"beforeDiameterMm\\\":").Append(System.Math.Round(beforeDiameterMm, 3).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (!System.Double.IsNaN(afterDiameterMm))
+        {
+            results.Append(",\\\"afterDiameterMm\\\":").Append(System.Math.Round(afterDiameterMm, 3).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (before != null)
+        {
+            results.Append(",\\\"before\\\":\\\"").Append(__escapeJson(before)).Append("\\\"");
+        }
+        if (after != null)
+        {
+            results.Append(",\\\"after\\\":\\\"").Append(__escapeJson(after)).Append("\\\"");
+        }
+        results.Append("}");
+    };
+
+    for (int i = 0; i < actionIds.Length; i++)
+    {
+        string actionId = actionIds[i];
+        string writeKind = (writeKinds[i] ?? "").ToLowerInvariant();
+        int elementIdValue = elementIds[i];
 
         Autodesk.Revit.DB.Element element = document.GetElement(new Autodesk.Revit.DB.ElementId(elementIdValue));
         if (element == null)
         {
-            record["status"] = "skipped";
-            record["reason"] = "element_not_found";
-            results.Add(record);
+            addResult(actionId, elementIdValue, writeKind, "skipped", "element_not_found", null, System.Double.NaN, System.Double.NaN, null, null);
             continue;
         }
 
@@ -85,19 +178,15 @@ try
             Autodesk.Revit.DB.Plumbing.Pipe pipe = element as Autodesk.Revit.DB.Plumbing.Pipe;
             if (pipe == null)
             {
-                record["status"] = "skipped";
-                record["reason"] = "element_is_not_pipe";
-                results.Add(record);
+                addResult(actionId, elementIdValue, writeKind, "skipped", "element_is_not_pipe", null, System.Double.NaN, System.Double.NaN, null, null);
                 continue;
             }
 
-            double targetDiameterMm = (double)action["targetDiameterMm"];
+            double targetDiameterMm = targetDiameterMms[i];
             Autodesk.Revit.DB.Parameter diameterParameter = pipe.get_Parameter(Autodesk.Revit.DB.BuiltInParameter.RBS_PIPE_DIAMETER_PARAM);
             if (diameterParameter == null || diameterParameter.IsReadOnly)
             {
-                record["status"] = "skipped";
-                record["reason"] = "diameter_parameter_missing_or_readonly";
-                results.Add(record);
+                addResult(actionId, elementIdValue, writeKind, "skipped", "diameter_parameter_missing_or_readonly", null, System.Double.NaN, System.Double.NaN, null, null);
                 continue;
             }
 
@@ -105,27 +194,21 @@ try
             double targetInternal = Autodesk.Revit.DB.UnitUtils.ConvertToInternalUnits(targetDiameterMm, Autodesk.Revit.DB.UnitTypeId.Millimeters);
             bool changed = diameterParameter.Set(targetInternal);
             double afterMm = Autodesk.Revit.DB.UnitUtils.ConvertFromInternalUnits(diameterParameter.AsDouble(), Autodesk.Revit.DB.UnitTypeId.Millimeters);
-            record["status"] = changed ? "changed" : "unchanged";
-            record["beforeDiameterMm"] = System.Math.Round(beforeMm, 3);
-            record["afterDiameterMm"] = System.Math.Round(afterMm, 3);
-            results.Add(record);
+            addResult(actionId, elementIdValue, writeKind, changed ? "changed" : "unchanged", null, null, beforeMm, afterMm, null, null);
             continue;
         }
 
         if (writeKind == "parameter")
         {
-            string parameterName = (string)action["parameterName"];
+            string parameterName = parameterNames[i];
             Autodesk.Revit.DB.Parameter parameter = element.LookupParameter(parameterName);
             if (parameter == null || parameter.IsReadOnly)
             {
-                record["status"] = "skipped";
-                record["reason"] = "parameter_missing_or_readonly";
-                record["parameterName"] = parameterName;
-                results.Add(record);
+                addResult(actionId, elementIdValue, writeKind, "skipped", "parameter_missing_or_readonly", parameterName, System.Double.NaN, System.Double.NaN, null, null);
                 continue;
             }
 
-            Newtonsoft.Json.Linq.JToken valueToken = action["parameterValue"];
+            string valueText = parameterValues[i];
             string before = parameter.AsValueString();
             if (before == null)
             {
@@ -135,8 +218,13 @@ try
             bool changed = false;
             if (parameter.StorageType == Autodesk.Revit.DB.StorageType.Double)
             {
-                double numericValue = (double)valueToken;
-                string unit = ((string)action["parameterUnit"] ?? "").ToLowerInvariant();
+                double numericValue = 0;
+                if (!System.Double.TryParse(valueText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out numericValue))
+                {
+                    addResult(actionId, elementIdValue, writeKind, "skipped", "parameter_value_not_numeric", parameterName, System.Double.NaN, System.Double.NaN, null, null);
+                    continue;
+                }
+                string unit = (parameterUnits[i] ?? "").ToLowerInvariant();
                 double internalValue = numericValue;
                 if (unit == "mm")
                 {
@@ -150,11 +238,17 @@ try
             }
             else if (parameter.StorageType == Autodesk.Revit.DB.StorageType.Integer)
             {
-                changed = parameter.Set((int)valueToken);
+                int integerValue = 0;
+                if (!System.Int32.TryParse(valueText, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out integerValue))
+                {
+                    addResult(actionId, elementIdValue, writeKind, "skipped", "parameter_value_not_integer", parameterName, System.Double.NaN, System.Double.NaN, null, null);
+                    continue;
+                }
+                changed = parameter.Set(integerValue);
             }
             else
             {
-                changed = parameter.Set(valueToken == null ? "" : valueToken.ToString());
+                changed = parameter.Set(valueText ?? "");
             }
 
             string after = parameter.AsValueString();
@@ -162,32 +256,19 @@ try
             {
                 after = parameter.AsString();
             }
-            record["status"] = changed ? "changed" : "unchanged";
-            record["parameterName"] = parameterName;
-            record["before"] = before;
-            record["after"] = after;
-            results.Add(record);
+            addResult(actionId, elementIdValue, writeKind, changed ? "changed" : "unchanged", null, parameterName, System.Double.NaN, System.Double.NaN, before, after);
             continue;
         }
 
-        record["status"] = "skipped";
-        record["reason"] = "unsupported_write_kind";
-        results.Add(record);
+        addResult(actionId, elementIdValue, writeKind, "skipped", "unsupported_write_kind", null, System.Double.NaN, System.Double.NaN, null, null);
     }
 
-    Newtonsoft.Json.Linq.JObject summary = new Newtonsoft.Json.Linq.JObject();
-    summary["success"] = true;
-    summary["schemaVersion"] = "dcw-dhw-writeback-result.v1";
-    summary["resultCount"] = results.Count;
-    summary["results"] = results;
-    return summary.ToString(Newtonsoft.Json.Formatting.None);
+    results.Append("]");
+    return "{\\\"success\\\":true,\\\"schemaVersion\\\":\\\"dcw-dhw-writeback-result.v1\\\",\\\"resultCount\\\":" + resultCount.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\\\"results\\\":" + results.ToString() + "}";
 }
 catch (System.Exception ex)
 {
-    Newtonsoft.Json.Linq.JObject error = new Newtonsoft.Json.Linq.JObject();
-    error["success"] = false;
-    error["error"] = ex.GetType().FullName + ": " + ex.Message;
-    return error.ToString(Newtonsoft.Json.Formatting.None);
+    return "{\\\"success\\\":false,\\\"error\\\":\\\"" + __escapeJson(ex.GetType().FullName + ": " + ex.Message) + "\\\"}";
 }
 `;
 }
