@@ -39,21 +39,57 @@ export function segmentHitsObstacle(start, end, obstacle) {
     const epsilon = 1e-9;
     let tEnter = 0;
     let tExit = 1;
-    const axes = [
-        { s: start.x, e: end.x, lo: aabb.minX, hi: aabb.maxX },
-        { s: start.y, e: end.y, lo: aabb.minY, hi: aabb.maxY },
-        { s: start.z, e: end.z, lo: aabb.minZ, hi: aabb.maxZ },
-    ];
-    for (const axis of axes) {
-        const dir = axis.e - axis.s;
-        if (Math.abs(dir) < epsilon) {
-            if (axis.s < axis.lo || axis.s > axis.hi)
-                return false;
-            continue;
+    const dx = end.x - start.x;
+    if (Math.abs(dx) < epsilon) {
+        if (start.x < aabb.minX || start.x > aabb.maxX)
+            return false;
+    }
+    else {
+        const invX = 1 / dx;
+        let t1 = (aabb.minX - start.x) * invX;
+        let t2 = (aabb.maxX - start.x) * invX;
+        if (t1 > t2) {
+            const tmp = t1;
+            t1 = t2;
+            t2 = tmp;
         }
-        const inv = 1 / dir;
-        let t1 = (axis.lo - axis.s) * inv;
-        let t2 = (axis.hi - axis.s) * inv;
+        if (t1 > tEnter)
+            tEnter = t1;
+        if (t2 < tExit)
+            tExit = t2;
+        if (tEnter > tExit)
+            return false;
+    }
+    const dy = end.y - start.y;
+    if (Math.abs(dy) < epsilon) {
+        if (start.y < aabb.minY || start.y > aabb.maxY)
+            return false;
+    }
+    else {
+        const invY = 1 / dy;
+        let t1 = (aabb.minY - start.y) * invY;
+        let t2 = (aabb.maxY - start.y) * invY;
+        if (t1 > t2) {
+            const tmp = t1;
+            t1 = t2;
+            t2 = tmp;
+        }
+        if (t1 > tEnter)
+            tEnter = t1;
+        if (t2 < tExit)
+            tExit = t2;
+        if (tEnter > tExit)
+            return false;
+    }
+    const dz = end.z - start.z;
+    if (Math.abs(dz) < epsilon) {
+        if (start.z < aabb.minZ || start.z > aabb.maxZ)
+            return false;
+    }
+    else {
+        const invZ = 1 / dz;
+        let t1 = (aabb.minZ - start.z) * invZ;
+        let t2 = (aabb.maxZ - start.z) * invZ;
         if (t1 > t2) {
             const tmp = t1;
             t1 = t2;

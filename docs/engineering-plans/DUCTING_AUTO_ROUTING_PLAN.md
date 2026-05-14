@@ -19,6 +19,23 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.10)
+
+Performance follow-ups from the round-3 Gemini review on PR #23 commit
+`ef8c259`. No behaviour change; logic and assertions are identical.
+
+- **Inlined slab-method axis loop (Gemini medium).**
+  `segmentHitsObstacle` is on the A* hot path (called for every
+  expanded edge through `candidatesForSegment`). The previous
+  implementation built a 3-element array of `{s,e,lo,hi}` objects per
+  call and iterated over it; this introduced measurable GC pressure
+  on large scenes. The three axis slabs are now unrolled with stack
+  locals, so the function is allocation-free.
+- **Deduplicated `valueByFields` lookup in spatial-zone adapter
+  (Gemini medium).** `mapSpatialZoneToRoutingContext` was calling
+  `valueByFields(record, ["plenumVolumes", "plenum_volumes"])` twice
+  for the same record. The result is now stored once.
+
 ## Review Fixes (Sprint 1.9)
 
 Addresses two follow-up review findings on PR #23 commit `29db352`.

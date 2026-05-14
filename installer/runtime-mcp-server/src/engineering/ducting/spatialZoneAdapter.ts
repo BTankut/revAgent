@@ -112,9 +112,8 @@ export function mapSpatialZoneToRoutingContext(input: unknown): SpatialZoneRouti
     const record = asRecord(input);
     const schemaVersion = stringByFields(record, ["schemaVersion", "schema_version"]) ?? "spatial-zone-extract.v1";
     const obstaclesRaw = Array.isArray(record.obstacles) ? record.obstacles.map(asRecord) : [];
-    const plenumsRaw = Array.isArray(valueByFields(record, ["plenumVolumes", "plenum_volumes"]))
-        ? (valueByFields(record, ["plenumVolumes", "plenum_volumes"]) as unknown[]).map(asRecord)
-        : [];
+    const rawPlenums = valueByFields(record, ["plenumVolumes", "plenum_volumes"]);
+    const plenumsRaw = Array.isArray(rawPlenums) ? (rawPlenums as unknown[]).map(asRecord) : [];
     const shaftsRaw = Array.isArray(record.shafts) ? record.shafts.map(asRecord) : [];
 
     const obstacles: SpatialZoneObstacleSummary[] = [];
