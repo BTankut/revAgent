@@ -1,4 +1,5 @@
 import { aabbFromValue, asBoolean, asNumber, asRecord, makeIssue, pointDistanceMm, pointFromValue, round, stringByFields, validationStatus, valueByFields, } from "./helpers.js";
+import { mapSpatialZoneToRoutingContext } from "./spatialZoneAdapter.js";
 function pointFromRecord(record) {
     return pointFromValue(valueByFields(record, ["pointMm", "point_mm", "point", "locationMm", "location_mm", "location"]))
         ?? pointFromValue(record);
@@ -474,6 +475,22 @@ function asPositiveNumber(value, fallback) {
     const parsed = asNumber(value);
     return parsed !== undefined && parsed > 0 ? parsed : fallback;
 }
+function mergeObstacleSources(spatial, user) {
+    const byId = new Map();
+    const userIds = new Set();
+    user.forEach((raw, index) => {
+        const id = stringByFields(raw, ["id", "elementId", "element_id", "uniqueId", "unique_id"]) ?? `user-obstacle-${index + 1}`;
+        userIds.add(id);
+        byId.set(id, { ...raw, id });
+    });
+    spatial.forEach((raw, index) => {
+        const id = stringByFields(raw, ["id", "elementId", "element_id", "uniqueId", "unique_id"]) ?? `spatial-obstacle-${index + 1}`;
+        if (userIds.has(id))
+            return;
+        byId.set(id, { ...raw, id });
+    });
+    return Array.from(byId.values());
+}
 function readAllowedElevations(raw) {
     if (!Array.isArray(raw))
         return [];
@@ -515,9 +532,27 @@ export function planDuctingAutoRoute(input = {}) {
     const allowDiagonal = asBoolean(input.allowDiagonal) ?? false;
     const verticalStepMm = Math.max(0, asNumber(input.verticalStepMm) ?? 0);
     const defaultRouteZ = asNumber(input.routingElevationMm) ?? sources[0]?.point.z ?? targets[0]?.point.z ?? 0;
+    let spatialContext;
+    if (input.spatialZone !== undefined && input.spatialZone !== null) {
+        spatialContext = mapSpatialZoneToRoutingContext(input.spatialZone);
+        for (const adapterIssue of spatialContext.issues) {
+            issues.push(makeIssue(adapterIssue.code, adapterIssue.severity, adapterIssue.message, adapterIssue.context));
+        }
+    }
     const providedElevations = readAllowedElevations(input.allowedElevationsMm);
-    const allowedZs = providedElevations.length > 0 ? providedElevations : [round(defaultRouteZ)];
-    const obstacles = readObstacles(Array.isArray(input.obstacles) ? input.obstacles.map(asRecord) : [], clearanceMm, ductHalfHeightMm);
+    const allowedZs = providedElevations.length > 0
+        ? providedElevations
+        : (spatialContext && spatialContext.allowedElevationsMm.length > 0 ? spatialContext.allowedElevationsMm.slice() : [round(defaultRouteZ)]);
+    const userObstacleRaw = Array.isArray(input.obstacles) ? input.obstacles.map(asRecord) : [];
+    const spatialObstacleRaw = spatialContext ? spatialContext.obstacles.map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        obstacleType: entry.obstacleType,
+        sourceLink: entry.sourceLink,
+        aabbMm: entry.aabbMm,
+    })) : [];
+    const mergedObstacleRaw = mergeObstacleSources(spatialObstacleRaw, userObstacleRaw);
+    const obstacles = readObstacles(mergedObstacleRaw, clearanceMm, ductHalfHeightMm);
     const bounds = aabbFromValue(input.routingBounds);
     const routes = [];
     if (bounds) {
@@ -607,6 +642,20 @@ export function planDuctingAutoRoute(input = {}) {
             routingElevationMm: round(defaultRouteZ),
             riserPenalty,
             allowDiagonal,
+            spatialZone: spatialContext ? {
+                schemaVersion: spatialContext.schemaVersion,
+                obstacleCount: spatialContext.summary.obstacleCount,
+                plenumCount: spatialContext.summary.plenumCount,
+                shaftCount: spatialContext.summary.shaftCount,
+                derivedElevationCount: spatialContext.summary.derivedElevationCount,
+                shafts: spatialContext.shafts.map((shaft) => ({
+                    id: shaft.id,
+                    name: shaft.name,
+                    zMinMm: shaft.zMinMm,
+                    zMaxMm: shaft.zMaxMm,
+                    centroidMm: shaft.centroidMm,
+                })),
+            } : undefined,
             totalLengthMm: round(successfulRoutes.reduce((sum, route) => sum + route.lengthMm, 0)),
             totalElbowCount: successfulRoutes.reduce((sum, route) => sum + route.elbowCount, 0),
             totalVerticalRunCount: successfulRoutes.reduce((sum, route) => sum + route.verticalRunCount, 0),

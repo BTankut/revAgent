@@ -19,6 +19,30 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Spatial Zone Integration (Sprint 1.5)
+
+The planner now consumes the JSON emitted by
+`references/patterns/spatial-zone-extract.cs` directly:
+
+- Pass the full payload as the new optional `spatialZone` input. The
+  planner runs `mapSpatialZoneToRoutingContext` (exported from
+  `installer/runtime-mcp-server/src/engineering/ducting/spatialZoneAdapter.ts`)
+  and wires:
+  - `spatialZone.obstacles[].aabb_mm` → planner obstacles. The
+    `aabbFromValue` helper accepts the spatial-zone shape
+    `{min:[x,y,z], max:[x,y,z], min_mm:[x,y,z], max_mm:[x,y,z]}` as well
+    as the legacy `{minX, minY, minZ, ...}` form.
+  - `spatialZone.plenum_volumes[].z_min_mm` / `z_max_mm` → automatic
+    `allowedElevationsMm` when the caller did not supply one. The
+    deduplicated set drives the 3D Z-grid.
+  - `spatialZone.shafts[]` → echoed back in
+    `summary.spatialZone.shafts` for orchestration layers. Shaft-aware
+    A* biasing remains a later phase.
+- User-supplied `obstacles` and `allowedElevationsMm` still win and are
+  merged by id with the spatial-zone payload. Schema mismatches and
+  unreadable AABBs are reported as `spatial_zone_*` engineering issues
+  so the orchestrator can surface them to the human reviewer.
+
 ## Phase 2 in This Branch — 3D Pathfinding (Sprint 1)
 
 Extends Phase 1's planner to a true 3D A* search while keeping the legacy 2D

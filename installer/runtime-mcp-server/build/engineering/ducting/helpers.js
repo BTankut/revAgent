@@ -80,6 +80,25 @@ export function pointFromValue(value) {
         return { x, y, z };
     return undefined;
 }
+function tripleFromValue(value) {
+    if (Array.isArray(value) && value.length >= 3) {
+        const x = asNumber(value[0]);
+        const y = asNumber(value[1]);
+        const z = asNumber(value[2]);
+        if (x !== undefined && y !== undefined && z !== undefined)
+            return { x, y, z };
+        return undefined;
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+        const record = value;
+        const x = numberByFields(record, ["x", "X", "x_mm", "X_mm"]);
+        const y = numberByFields(record, ["y", "Y", "y_mm", "Y_mm"]);
+        const z = numberByFields(record, ["z", "Z", "z_mm", "Z_mm"]);
+        if (x !== undefined && y !== undefined && z !== undefined)
+            return { x, y, z };
+    }
+    return undefined;
+}
 export function aabbFromValue(value) {
     if (Array.isArray(value) && value.length >= 6) {
         const numbers = value.slice(0, 6).map(asNumber);
@@ -95,14 +114,14 @@ export function aabbFromValue(value) {
         }
     }
     const record = asRecord(value);
-    const min = asRecord(valueByFields(record, ["min", "minimum"]));
-    const max = asRecord(valueByFields(record, ["max", "maximum"]));
-    const minX = numberByFields(record, ["minX", "min_x", "xmin"]) ?? numberByFields(min, ["x"]);
-    const minY = numberByFields(record, ["minY", "min_y", "ymin"]) ?? numberByFields(min, ["y"]);
-    const minZ = numberByFields(record, ["minZ", "min_z", "zmin"]) ?? numberByFields(min, ["z"]);
-    const maxX = numberByFields(record, ["maxX", "max_x", "xmax"]) ?? numberByFields(max, ["x"]);
-    const maxY = numberByFields(record, ["maxY", "max_y", "ymax"]) ?? numberByFields(max, ["y"]);
-    const maxZ = numberByFields(record, ["maxZ", "max_z", "zmax"]) ?? numberByFields(max, ["z"]);
+    const minTriple = tripleFromValue(valueByFields(record, ["min", "minimum", "min_mm", "minMm"]));
+    const maxTriple = tripleFromValue(valueByFields(record, ["max", "maximum", "max_mm", "maxMm"]));
+    const minX = numberByFields(record, ["minX", "min_x", "xmin"]) ?? minTriple?.x;
+    const minY = numberByFields(record, ["minY", "min_y", "ymin"]) ?? minTriple?.y;
+    const minZ = numberByFields(record, ["minZ", "min_z", "zmin"]) ?? minTriple?.z;
+    const maxX = numberByFields(record, ["maxX", "max_x", "xmax"]) ?? maxTriple?.x;
+    const maxY = numberByFields(record, ["maxY", "max_y", "ymax"]) ?? maxTriple?.y;
+    const maxZ = numberByFields(record, ["maxZ", "max_z", "zmax"]) ?? maxTriple?.z;
     if ([minX, minY, minZ, maxX, maxY, maxZ].every((entry) => entry !== undefined)) {
         return { minX: minX, minY: minY, minZ: minZ, maxX: maxX, maxY: maxY, maxZ: maxZ };
     }

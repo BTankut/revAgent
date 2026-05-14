@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { planDuctingAutoRoute, validateRoutePreview } from "../build/engineering/ducting/index.js";
+import { mapSpatialZoneToRoutingContext, planDuctingAutoRoute, validateRoutePreview } from "../build/engineering/ducting/index.js";
 
 const clear = planDuctingAutoRoute({
   sources: [{ id: "shaft-1", pointMm: { x: 0, y: 0, z: 3000 } }],
@@ -241,5 +241,110 @@ assert.equal(legacy.routeCandidates[0].lengthMm, legacyExplicit.routeCandidates[
 assert.equal(legacy.routeCandidates[0].elbowCount, legacyExplicit.routeCandidates[0].elbowCount);
 assert.equal(legacy.routeCandidates[0].verticalRunCount, 0);
 assert.equal(legacyExplicit.routeCandidates[0].verticalRunCount, 0);
+
+// --- spatial-zone-extract.v1 consumption ---
+
+const spatialZonePayload = {
+  schema_version: "spatial-zone-extract.v1",
+  summary: { obstacle_count: 1, shaft_count: 1, plenum_count: 2 },
+  rooms: [],
+  plenum_volumes: [
+    {
+      id: "room-101:plenum",
+      source_room_id: "room-101",
+      level_name: "L1",
+      z_min_mm: 3000,
+      z_max_mm: 3600,
+    },
+    {
+      id: "room-201:plenum",
+      source_room_id: "room-201",
+      level_name: "L2",
+      z_min_mm: 6000,
+      z_max_mm: 6600,
+    },
+  ],
+  shafts: [
+    {
+      id: "shaft-A",
+      name: "Mechanical Shaft A",
+      centroid_mm: { x: 4500, y: 1000, z: 4500 },
+      z_min_mm: 0,
+      z_max_mm: 9000,
+      boundary: { min_mm: [4000, 500, 0], max_mm: [5000, 1500, 9000] },
+    },
+  ],
+  obstacles: [
+    {
+      id: "beam-1",
+      obstacle_type: "beam",
+      source_link: "host",
+      aabb_mm: {
+        min_mm: [2000, -500, 5800],
+        max_mm: [3000, 500, 6000],
+        min: [2000, -500, 5800],
+        max: [3000, 500, 6000],
+      },
+    },
+  ],
+  preferred_zones: [],
+  forbidden_zones: [],
+  warnings: [],
+  errors: [],
+};
+
+const adapter = mapSpatialZoneToRoutingContext(spatialZonePayload);
+assert.equal(adapter.obstacles.length, 1, "adapter must parse the spatial-zone obstacle");
+assert.equal(adapter.obstacles[0].aabbMm.minZ, 5800);
+assert.equal(adapter.obstacles[0].aabbMm.maxX, 3000);
+assert.deepEqual(adapter.allowedElevationsMm, [3000, 3600, 6000, 6600]);
+assert.equal(adapter.shafts.length, 1);
+assert.equal(adapter.shafts[0].zMaxMm, 9000);
+
+const usingSpatialZone = planDuctingAutoRoute({
+  sources: [{ id: "ahu-roof", pointMm: { x: 0, y: 0, z: 6000 } }],
+  targets: [{ id: "vav-1", pointMm: { x: 6000, y: 0, z: 3000 } }],
+  spatialZone: spatialZonePayload,
+  gridStepMm: 1000,
+});
+
+assert.equal(usingSpatialZone.summary.spatialZone.schemaVersion, "spatial-zone-extract.v1");
+assert.equal(usingSpatialZone.summary.spatialZone.obstacleCount, 1);
+assert.equal(usingSpatialZone.summary.spatialZone.shaftCount, 1);
+assert.deepEqual(usingSpatialZone.summary.allowedElevationsMm, [3000, 3600, 6000, 6600]);
+assert.equal(usingSpatialZone.summary.obstacleCount, 1, "spatial-zone obstacles must be parsed and counted");
+assert.equal(usingSpatialZone.summary.status === "pass" || usingSpatialZone.summary.status === "warn", true);
+
+// User-supplied obstacles override spatial-zone obstacles by id.
+const overrideUser = planDuctingAutoRoute({
+  sources: [{ id: "ahu-roof", pointMm: { x: 0, y: 0, z: 6000 } }],
+  targets: [{ id: "vav-1", pointMm: { x: 6000, y: 0, z: 3000 } }],
+  spatialZone: spatialZonePayload,
+  obstacles: [
+    {
+      id: "beam-1",
+      aabbMm: { minX: -100000, minY: -100000, minZ: -100000, maxX: 100000, maxY: 100000, maxZ: 100000 },
+    },
+  ],
+  gridStepMm: 1000,
+});
+assert.equal(overrideUser.summary.status, "fail", "user override of beam-1 to a huge AABB must block every route");
+
+// Missing plenum z but obstacles present → adapter still parses obstacles, allowedElevations empty.
+const noPlenum = mapSpatialZoneToRoutingContext({
+  schema_version: "spatial-zone-extract.v1",
+  obstacles: [
+    {
+      id: "wall-1",
+      aabb_mm: { min: [0, 0, 0], max: [100, 100, 100] },
+    },
+  ],
+});
+assert.equal(noPlenum.obstacles.length, 1);
+assert.deepEqual(noPlenum.allowedElevationsMm, []);
+
+// Unknown schema version surfaces a warning.
+const unknownSchema = mapSpatialZoneToRoutingContext({ schema_version: "spatial-zone-extract.v2" });
+assert.equal(unknownSchema.issues.some((entry) => entry.code === "spatial_zone_schema_unknown"), true);
 
 console.error("ducting auto-routing tests passed");
