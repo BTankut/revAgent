@@ -123,41 +123,57 @@ export function analyzeHydronicPipingGraph(rawGraph, options = {}) {
     const downstreamDemandCache = new Map();
     const upstreamDemandCache = new Map();
     const flowInferenceWarnings = new Set();
-    const downstreamDemand = (nodeId, visiting = new Set()) => {
+    const downstreamDemandResult = (nodeId, visiting = new Set()) => {
         if (downstreamDemandCache.has(nodeId)) {
-            return downstreamDemandCache.get(nodeId);
+            return { demand: downstreamDemandCache.get(nodeId), complete: true };
         }
         if (visiting.has(nodeId)) {
             flowInferenceWarnings.add(nodeId);
-            return 0;
+            return { demand: 0, complete: false };
         }
         visiting.add(nodeId);
         const node = graph.nodeById.get(nodeId);
         let demand = isTerminalDemandNode(node, adjacency) && positive(node?.flowLps) ? node.flowLps : 0;
+        let complete = true;
         for (const edge of adjacency.get(nodeId) || []) {
-            demand += downstreamDemand(edge.target, visiting);
+            const downstream = downstreamDemandResult(edge.target, visiting);
+            demand += downstream.demand;
+            complete = complete && downstream.complete;
         }
         visiting.delete(nodeId);
-        downstreamDemandCache.set(nodeId, demand);
-        return demand;
+        if (complete) {
+            downstreamDemandCache.set(nodeId, demand);
+        }
+        return { demand, complete };
     };
-    const upstreamDemand = (nodeId, visiting = new Set()) => {
+    const downstreamDemand = (nodeId) => {
+        return downstreamDemandResult(nodeId).demand;
+    };
+    const upstreamDemandResult = (nodeId, visiting = new Set()) => {
         if (upstreamDemandCache.has(nodeId)) {
-            return upstreamDemandCache.get(nodeId);
+            return { demand: upstreamDemandCache.get(nodeId), complete: true };
         }
         if (visiting.has(nodeId)) {
             flowInferenceWarnings.add(nodeId);
-            return 0;
+            return { demand: 0, complete: false };
         }
         visiting.add(nodeId);
         const node = graph.nodeById.get(nodeId);
         let demand = isTerminalDemandNode(node, adjacency) && positive(node?.flowLps) ? node.flowLps : 0;
+        let complete = true;
         for (const edge of reverseAdjacency.get(nodeId) || []) {
-            demand += upstreamDemand(edge.source, visiting);
+            const upstream = upstreamDemandResult(edge.source, visiting);
+            demand += upstream.demand;
+            complete = complete && upstream.complete;
         }
         visiting.delete(nodeId);
-        upstreamDemandCache.set(nodeId, demand);
-        return demand;
+        if (complete) {
+            upstreamDemandCache.set(nodeId, demand);
+        }
+        return { demand, complete };
+    };
+    const upstreamDemand = (nodeId) => {
+        return upstreamDemandResult(nodeId).demand;
     };
     for (const node of graph.nodes) {
         downstreamDemand(node.id);

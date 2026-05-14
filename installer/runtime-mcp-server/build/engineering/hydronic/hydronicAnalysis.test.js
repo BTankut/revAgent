@@ -8,6 +8,11 @@ function fixture(name) {
 function missingFields(report) {
     return report.graph_audit.missing_data.map((item) => item.field);
 }
+function segment(report, id) {
+    const match = report.segments.find((item) => item.id === id);
+    assert(match, `Missing segment ${id}`);
+    return match;
+}
 const velocity = calculateVelocityMps(2, 0.05);
 assert(Math.abs(velocity - 1.0186) < 0.001, `Unexpected velocity: ${velocity}`);
 const darcy = calculateDarcyWeisbachPressureDropPa({
@@ -49,6 +54,15 @@ assert.equal(branchLoop.critical_path.terminal_node_id, "COIL_B");
 const coilAReport = branchLoop.balancing_valve_report.find((item) => item.terminal_node_id === "COIL_A");
 assert(coilAReport.required_balancing_delta_pa > 0, "Shorter branch should require balancing delta-P.");
 assert.deepEqual(coilAReport.balancing_valve_node_ids, ["BV_A"]);
+const reorderedBranchLoopFixture = fixture("branch-loop");
+reorderedBranchLoopFixture.nodes = [
+    reorderedBranchLoopFixture.nodes.find((node) => node.id === "COIL_A"),
+    ...reorderedBranchLoopFixture.nodes.filter((node) => node.id !== "COIL_A"),
+];
+const reorderedBranchLoop = analyzeHydronicPipingGraph(reorderedBranchLoopFixture);
+assert.equal(segment(reorderedBranchLoop, "S_MAIN").flow_lps, segment(branchLoop, "S_MAIN").flow_lps);
+assert.equal(segment(reorderedBranchLoop, "R_MAIN").flow_lps, segment(branchLoop, "R_MAIN").flow_lps);
+assert.equal(reorderedBranchLoop.summary.pump_head_pressure_pa, branchLoop.summary.pump_head_pressure_pa);
 const missingFlow = analyzeHydronicPipingGraph(fixture("missing-flow"));
 assert.equal(missingFlow.status, "needs_review");
 assert(missingFields(missingFlow).includes("flow_lps"));
