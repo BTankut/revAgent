@@ -88,6 +88,15 @@ only the bare names appear, so the rules stay host-agnostic.
   diffuser type/count, plenum validation, route scoring, connector graph
   validation, native sizing validation and commit gate.
 
+Additional domestic water runtime tools:
+
+- `audit_dcw_dhw_piping` - dry-run DCW/DHW/DHWR sizing audit from
+  `mep.connector-graph.v1` JSON: fixture-unit flow conversion, missing data,
+  DHWR heat-loss critical path, native sizing readiness, and write-back plan.
+- `apply_dcw_dhw_writeback` - applies approved DCW/DHW diameter/parameter
+  write-back actions only with matching approval token, explicit confirmation,
+  and Revit MCP status preflight.
+
 **API docs server (`revit-api-docs`)** — required companion:
 
 - `search_api`

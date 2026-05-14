@@ -1,0 +1,190 @@
+{
+  "schemaVersion": "mep.connector-graph.v1",
+  "metadata": {
+    "source": "synthetic-fixture",
+    "exportMode": "readOnly",
+    "revitVersion": "2022",
+    "documentTitle": "dcw-dhw-dhwr-loop"
+  },
+  "nodes": [
+    {
+      "id": "dhwr-pump",
+      "elementId": 4001,
+      "category": "Mechanical Equipment",
+      "familyName": "DHW Return Pump",
+      "typeName": "Pump",
+      "systemClassification": "Domestic Hot Water Recirculation",
+      "systemName": "DHWR-1",
+      "systemType": "Domestic Hot Water Recirculation",
+      "connectors": [
+        {
+          "id": "dhwr-pump.out",
+          "ownerNodeId": "dhwr-pump",
+          "domain": "piping",
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water Recirculation"
+        },
+        {
+          "id": "dhwr-pump.in",
+          "ownerNodeId": "dhwr-pump",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water Recirculation"
+        }
+      ]
+    },
+    {
+      "id": "dhwr-a",
+      "elementId": 4101,
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN25",
+      "systemClassification": "Domestic Hot Water Recirculation",
+      "systemName": "DHWR-1",
+      "systemType": "Domestic Hot Water Recirculation",
+      "engineering": {
+        "lengthMm": 10000,
+        "diameterMm": 25
+      },
+      "properties": {
+        "heatLossWPerM": "8"
+      },
+      "connectors": [
+        {
+          "id": "dhwr-a.in",
+          "ownerNodeId": "dhwr-a",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water Recirculation"
+        },
+        {
+          "id": "dhwr-a.out",
+          "ownerNodeId": "dhwr-a",
+          "domain": "piping",
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water Recirculation"
+        }
+      ]
+    },
+    {
+      "id": "dhwr-b",
+      "elementId": 4102,
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN20",
+      "systemClassification": "Domestic Hot Water Recirculation",
+      "systemName": "DHWR-1",
+      "systemType": "Domestic Hot Water Recirculation",
+      "engineering": {
+        "lengthMm": 5000,
+        "diameterMm": 20
+      },
+      "properties": {
+        "heatLossWPerM": "12"
+      },
+      "connectors": [
+        {
+          "id": "dhwr-b.in",
+          "ownerNodeId": "dhwr-b",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water Recirculation"
+        },
+        {
+          "id": "dhwr-b.out",
+          "ownerNodeId": "dhwr-b",
+          "domain": "piping",
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water Recirculation"
+        }
+      ]
+    },
+    {
+      "id": "dhwr-c",
+      "elementId": 4103,
+      "category": "Pipes",
+      "familyName": "Pipe",
+      "typeName": "DN20",
+      "systemClassification": "Domestic Hot Water Recirculation",
+      "systemName": "DHWR-1",
+      "systemType": "Domestic Hot Water Recirculation",
+      "engineering": {
+        "lengthMm": 4000,
+        "diameterMm": 20
+      },
+      "properties": {
+        "heatLossWPerM": "10"
+      },
+      "connectors": [
+        {
+          "id": "dhwr-c.in",
+          "ownerNodeId": "dhwr-c",
+          "domain": "piping",
+          "flowDirection": "in",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water Recirculation"
+        },
+        {
+          "id": "dhwr-c.out",
+          "ownerNodeId": "dhwr-c",
+          "domain": "piping",
+          "flowDirection": "out",
+          "isConnectionExpected": true,
+          "systemClassification": "Domestic Hot Water Recirculation"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-pump-a",
+      "fromNodeId": "dhwr-pump",
+      "fromConnectorId": "dhwr-pump.out",
+      "toNodeId": "dhwr-a",
+      "toConnectorId": "dhwr-a.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Domestic Hot Water Recirculation"
+    },
+    {
+      "id": "edge-a-b",
+      "fromNodeId": "dhwr-a",
+      "fromConnectorId": "dhwr-a.out",
+      "toNodeId": "dhwr-b",
+      "toConnectorId": "dhwr-b.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Domestic Hot Water Recirculation"
+    },
+    {
+      "id": "edge-b-c",
+      "fromNodeId": "dhwr-b",
+      "fromConnectorId": "dhwr-b.out",
+      "toNodeId": "dhwr-c",
+      "toConnectorId": "dhwr-c.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Domestic Hot Water Recirculation"
+    },
+    {
+      "id": "edge-c-pump",
+      "fromNodeId": "dhwr-c",
+      "fromConnectorId": "dhwr-c.out",
+      "toNodeId": "dhwr-pump",
+      "toConnectorId": "dhwr-pump.in",
+      "direction": "fromTo",
+      "kind": "physical",
+      "domain": "piping",
+      "systemClassification": "Domestic Hot Water Recirculation"
+    }
+  ]
+}
