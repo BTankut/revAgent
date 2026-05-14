@@ -218,12 +218,34 @@ function asNumber(value) {
     if (typeof value === "number") {
         return Number.isFinite(value) ? value : null;
     }
-    const normalized = String(value).trim().replace(",", ".");
-    const match = normalized.match(/-?\d+(?:\.\d+)?/);
-    if (!match) {
+    const text = String(value).trim().replace(/\s+/g, "");
+    if (text.length === 0) {
         return null;
     }
-    const parsed = Number.parseFloat(match[0]);
+    const numericMatch = text.match(/-?[\d.,]+/);
+    if (!numericMatch) {
+        return null;
+    }
+    let normalized = numericMatch[0];
+    const lastComma = normalized.lastIndexOf(",");
+    const lastDot = normalized.lastIndexOf(".");
+    if (lastComma >= 0 && lastDot >= 0) {
+        const decimalSeparator = lastComma > lastDot ? "," : ".";
+        const thousandsSeparator = decimalSeparator === "," ? "." : ",";
+        normalized = normalized.replace(new RegExp(`\\${thousandsSeparator}`, "g"), "");
+        normalized = normalized.replace(decimalSeparator, ".");
+    } else if (lastComma >= 0) {
+        const commaParts = normalized.split(",");
+        normalized = commaParts.length > 2 || commaParts[commaParts.length - 1].length === 3
+            ? commaParts.join("")
+            : normalized.replace(",", ".");
+    } else if (lastDot >= 0) {
+        const dotParts = normalized.split(".");
+        normalized = dotParts.length > 2 || dotParts[dotParts.length - 1].length === 3
+            ? dotParts.join("")
+            : normalized;
+    }
+    const parsed = Number.parseFloat(normalized);
     return Number.isFinite(parsed) ? parsed : null;
 }
 
@@ -296,7 +318,7 @@ function readFixtureDemand(node) {
         readProperties(node, PROPERTY_KEY_ALIASES.genericFixtureUnits),
     );
     const dcw = firstDefined(readProperties(node, PROPERTY_KEY_ALIASES.dcwFixtureUnits), generic);
-    const dhw = firstDefined(readProperties(node, PROPERTY_KEY_ALIASES.dhwFixtureUnits));
+    const dhw = firstDefined(readProperties(node, PROPERTY_KEY_ALIASES.dhwFixtureUnits), generic);
     return {
         nodeId: readField(node, "id", "Id"),
         elementId: readField(node, "elementId", "ElementId"),

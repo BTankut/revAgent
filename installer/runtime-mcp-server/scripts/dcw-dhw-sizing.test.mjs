@@ -48,6 +48,14 @@ assert.equal(coldMain.flowTableId, "project-default-flush-valve-fu-to-flow-v1");
 assert.equal(coldMain.proposedDiameterMm, 25);
 assert.deepEqual(coldMain.downstreamFixtureNodeIds, ["lav-cold", "wc-tank", "wc-valve"]);
 
+const genericDhwFixture = loadFixture("tank-valve-mixed.json");
+const lavHot = genericDhwFixture.nodes.find((node) => node.id === "lav-hot");
+delete lavHot.properties.dhwFixtureUnits;
+lavHot.properties.fixtureUnits = "1,234.56";
+const genericDhwReport = auditDcwDhwGraph(genericDhwFixture);
+const hotMainGeneric = genericDhwReport.sizing.find((result) => result.nodeId === "pipe-hw-main");
+assert.equal(hotMainGeneric.fixtureUnits, 1234.56);
+
 assert.ok(mixedReport.writeBackPlan.actionCount >= 3);
 assert.match(mixedReport.writeBackPlan.approvalToken, /^[a-f0-9]{64}$/);
 const approved = validateWriteBackApproval(
