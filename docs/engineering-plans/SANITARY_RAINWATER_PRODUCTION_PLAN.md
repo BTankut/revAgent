@@ -44,4 +44,3 @@ Build production-grade sanitary, vent, storm and rain water sizing support. The 
 - Every pipe diameter recommendation is traceable to upstream fixture/roof load, slope and table row.
 - Ambiguous drainage direction blocks write-back.
 - PR includes calculation fixtures, dry-run evidence, limitations and manual review checklist.
-
