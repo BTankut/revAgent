@@ -604,6 +604,38 @@ for (const segment of asymmetricDiagonal.routeCandidates[0].segmentsMm) {
   );
 }
 
+// Sprint 1.8: even after the per-step diagonal gate accepts each move, the
+// segment compression must NOT collapse adjacent diagonals whose cumulative
+// |Δx|/|Δy| drift past the 1 mm tolerance — otherwise downstream consumers
+// see arbitrary-angle duct segments. This setup forces an off-pitch detour
+// (obstacle at minX=2099 generates expanded-corner coords like 2098 / 2802)
+// that would have produced a non-45° merged segment under the old compression.
+const compressionTolerance = planDuctingAutoRoute({
+  sources: [{ id: "ahu-c", pointMm: { x: 0, y: 0, z: 3000 } }],
+  targets: [{ id: "vav-c", pointMm: { x: 5000, y: 5000, z: 3000 } }],
+  obstacles: [
+    { id: "off-pitch", aabbMm: { minX: 2099, minY: 2099, minZ: 2900, maxX: 2801, maxY: 2801, maxZ: 3100 } },
+  ],
+  routingBounds: { minX: -200, minY: -200, minZ: 2900, maxX: 5200, maxY: 5200, maxZ: 3100 },
+  gridStepMm: 1000,
+  clearanceMm: 0,
+  allowDiagonal: true,
+});
+assert.equal(compressionTolerance.summary.status, "pass");
+for (const segment of compressionTolerance.routeCandidates[0].segmentsMm) {
+  const dx = Math.abs(segment.endMm.x - segment.startMm.x);
+  const dy = Math.abs(segment.endMm.y - segment.startMm.y);
+  const dz = Math.abs(segment.endMm.z - segment.startMm.z);
+  const xOnly = dy < 1 && dz < 1 && dx >= 1;
+  const yOnly = dx < 1 && dz < 1 && dy >= 1;
+  const zOnly = dx < 1 && dy < 1 && dz >= 1;
+  const trueDiagonal = dz < 1 && dx >= 1 && dy >= 1 && Math.abs(dx - dy) <= 1;
+  assert.ok(
+    xOnly || yOnly || zOnly || trueDiagonal,
+    `compressed segment must remain axis-aligned or 45°; got dx=${dx} dy=${dy} dz=${dz}`,
+  );
+}
+
 // Sprint 1.7: spatial-zone payload errors/warnings must propagate.
 // references/patterns/spatial-zone-extract.cs returns the failure payload with empty
 // geometry plus an `errors` array; that must surface as error-severity issues so the

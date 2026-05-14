@@ -159,7 +159,15 @@ function compressPath(points: PointMm[]): PointMm[] {
         const dxRight = Math.sign(next.x - current.x);
         const dyRight = Math.sign(next.y - current.y);
         const dzRight = Math.sign(next.z - current.z);
-        if (dxLeft === dxRight && dyLeft === dyRight && dzLeft === dzRight) continue;
+        if (dxLeft === dxRight && dyLeft === dyRight && dzLeft === dzRight) {
+            // Pure axis-aligned moves can be merged unconditionally. XY diagonals
+            // also need the cumulative |Δx|≈|Δy| invariant: the per-step neighbor
+            // gate admits a 1 mm slack to absorb off-pitch detour coordinates,
+            // and that slack must not accumulate across a merged span into an
+            // arbitrary-angle segment.
+            const xyDiagonal = dxLeft !== 0 && dyLeft !== 0;
+            if (!xyDiagonal || Math.abs(Math.abs(next.x - previous.x) - Math.abs(next.y - previous.y)) <= 1) continue;
+        }
         result.push(current);
     }
     result.push(points[points.length - 1]);
@@ -402,7 +410,12 @@ function findGridPathFromSources(
     const sourceForKey = new Map<number, number>();
     const gScore = new Map<number, number>();
     const closed = new Set<number>();
-    const heuristic = (candidate: PointMm) => Math.abs(candidate.x - target.x) + Math.abs(candidate.y - target.y) + Math.abs(candidate.z - target.z);
+    // Manhattan is admissible for the orthogonal grid; when XY diagonals are
+    // enabled it over-estimates (a 45° step costs s·√2 but Manhattan charges 2s),
+    // so we switch to Euclidean to keep A* optimal.
+    const heuristic = (candidate: PointMm) => options.allowDiagonal
+        ? pointDistanceMm(candidate, target)
+        : Math.abs(candidate.x - target.x) + Math.abs(candidate.y - target.y) + Math.abs(candidate.z - target.z);
 
     for (const entry of validSources) {
         const sourceIx = findIndex(xs, entry.source.x);

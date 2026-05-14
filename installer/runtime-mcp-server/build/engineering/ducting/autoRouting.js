@@ -80,8 +80,11 @@ function compressPath(points) {
         const dxRight = Math.sign(next.x - current.x);
         const dyRight = Math.sign(next.y - current.y);
         const dzRight = Math.sign(next.z - current.z);
-        if (dxLeft === dxRight && dyLeft === dyRight && dzLeft === dzRight)
-            continue;
+        if (dxLeft === dxRight && dyLeft === dyRight && dzLeft === dzRight) {
+            const xyDiagonal = dxLeft !== 0 && dyLeft !== 0;
+            if (!xyDiagonal || Math.abs(Math.abs(next.x - previous.x) - Math.abs(next.y - previous.y)) <= 1)
+                continue;
+        }
         result.push(current);
     }
     result.push(points[points.length - 1]);
@@ -271,7 +274,9 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
     const sourceForKey = new Map();
     const gScore = new Map();
     const closed = new Set();
-    const heuristic = (candidate) => Math.abs(candidate.x - target.x) + Math.abs(candidate.y - target.y) + Math.abs(candidate.z - target.z);
+    const heuristic = (candidate) => options.allowDiagonal
+        ? pointDistanceMm(candidate, target)
+        : Math.abs(candidate.x - target.x) + Math.abs(candidate.y - target.y) + Math.abs(candidate.z - target.z);
     for (const entry of validSources) {
         const sourceIx = findIndex(xs, entry.source.x);
         const sourceIy = findIndex(ys, entry.source.y);

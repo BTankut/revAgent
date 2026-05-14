@@ -19,6 +19,24 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.8)
+
+Addresses two follow-up review findings on PR #23 commit `001607a`.
+
+- **Cumulative 45° tolerance in compression (Codex P2).** The per-step
+  diagonal gate (Sprint 1.7) admits a 1 mm slack to absorb off-pitch
+  detour coordinates from obstacle edges. `compressPath` now re-checks
+  the cumulative `||Δx| - |Δy|| ≤ 1 mm` invariant across the merged
+  span before dropping a diagonal junction, so several individually
+  accepted steps cannot collapse into an arbitrary-angle segment.
+  Pure axis-aligned merges remain unconditional.
+- **Euclidean heuristic when `allowDiagonal` (Gemini medium).** The A*
+  heuristic was Manhattan in 3D, which over-estimates the true cost of
+  45° XY diagonals (`s·√2 < 2s`) and can therefore explore suboptimal
+  paths. `findGridPathFromSources` now uses `pointDistanceMm` (Euclidean)
+  when diagonals are enabled and keeps Manhattan for the orthogonal-only
+  case where it is both admissible and more informed.
+
 ## Review Fixes (Sprint 1.7)
 
 Addresses the two P2 chatgpt-codex-connector review concerns on PR #23.
