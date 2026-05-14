@@ -16,6 +16,9 @@ export interface DuctAutoRoutingInput {
     sources?: Record<string, unknown>[];
     targets?: Record<string, unknown>[];
     obstacles?: Record<string, unknown>[];
+    routingMode?: "pointToPoint" | "trunkAndBranch" | string;
+    routingZones?: Record<string, unknown>[];
+    routingCorridors?: Record<string, unknown>[];
     routingBounds?: Record<string, unknown>;
     routingElevationMm?: number;
     gridStepMm?: number;
@@ -24,6 +27,8 @@ export interface DuctAutoRoutingInput {
     boundaryMarginMm?: number;
     maxNodeExpansions?: number;
     routeElbowPenalty?: number;
+    trunkAxis?: "x" | "y" | "auto" | string;
+    trunkPositionMm?: number;
 }
 
 interface RouteEndpoint {
@@ -60,6 +65,7 @@ export interface DuctAutoRoutingReport {
         nextAllowedAction: "review_route_candidates" | "fix_inputs";
     };
     summary: Record<string, unknown>;
+    routeTree?: Record<string, unknown>;
     routes: PlannedRoute[];
     routeCandidates: Record<string, unknown>[];
     issues: EngineeringIssue[];
@@ -509,6 +515,293 @@ function asPositiveNumber(value: unknown, fallback: number): number {
     return parsed !== undefined && parsed > 0 ? parsed : fallback;
 }
 
+type TrunkAxis = "x" | "y";
+
+interface TrunkBranchPlan {
+    axis: TrunkAxis;
+    trunkCoordinateMm: number;
+    trunkStartMm: PointMm;
+    trunkEndMm: PointMm;
+    sourceTapMm: PointMm;
+    trunkSegmentsMm: Array<{ startMm: PointMm; endMm: PointMm; lengthMm: number }>;
+    sourceFeedSegmentsMm: Array<{ startMm: PointMm; endMm: PointMm; lengthMm: number }>;
+    branchSegmentsMm: Array<{ targetId: string; startMm: PointMm; endMm: PointMm; lengthMm: number }>;
+    treeLengthMm: number;
+    routeCandidatesExtra: Record<string, unknown>;
+    issues: EngineeringIssue[];
+}
+
+function normalizeRoutingMode(value: unknown): "pointToPoint" | "trunkAndBranch" {
+    return String(value ?? "pointToPoint").toLowerCase() === "trunkandbranch" ? "trunkAndBranch" : "pointToPoint";
+}
+
+function normalizeAxis(value: unknown, bounds: AabbMm | undefined, points: PointMm[]): TrunkAxis {
+    const raw = String(value ?? "auto").toLowerCase();
+    if (raw === "x" || raw === "horizontal") return "x";
+    if (raw === "y" || raw === "vertical") return "y";
+    if (bounds) return (bounds.maxX - bounds.minX) >= (bounds.maxY - bounds.minY) ? "x" : "y";
+    const minX = Math.min(...points.map((point) => point.x));
+    const maxX = Math.max(...points.map((point) => point.x));
+    const minY = Math.min(...points.map((point) => point.y));
+    const maxY = Math.max(...points.map((point) => point.y));
+    return (maxX - minX) >= (maxY - minY) ? "x" : "y";
+}
+
+function median(values: number[]): number | undefined {
+    if (values.length === 0) return undefined;
+    const sorted = [...values].sort((left, right) => left - right);
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 1) return sorted[mid];
+    return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+}
+
+function pointOnAxis(axis: TrunkAxis, along: number, cross: number, z: number): PointMm {
+    return axis === "x" ? { x: along, y: cross, z } : { x: cross, y: along, z };
+}
+
+function alongValue(axis: TrunkAxis, point: PointMm): number {
+    return axis === "x" ? point.x : point.y;
+}
+
+function crossValue(axis: TrunkAxis, point: PointMm): number {
+    return axis === "x" ? point.y : point.x;
+}
+
+function spanBounds(axis: TrunkAxis, bounds: AabbMm | undefined): { min: number; max: number } | undefined {
+    if (!bounds) return undefined;
+    return axis === "x" ? { min: bounds.minX, max: bounds.maxX } : { min: bounds.minY, max: bounds.maxY };
+}
+
+function crossBounds(axis: TrunkAxis, bounds: AabbMm | undefined): { min: number; max: number } | undefined {
+    if (!bounds) return undefined;
+    return axis === "x" ? { min: bounds.minY, max: bounds.maxY } : { min: bounds.minX, max: bounds.maxX };
+}
+
+function segmentFromPoints(startMm: PointMm, endMm: PointMm): { startMm: PointMm; endMm: PointMm; lengthMm: number } {
+    return { startMm, endMm, lengthMm: round(pointDistanceMm(startMm, endMm)) };
+}
+
+function activeZoneAabbs(input: DuctAutoRoutingInput, routeZ: number): AabbMm[] {
+    const rawZones = [
+        ...(Array.isArray(input.routingZones) ? input.routingZones : []),
+        ...(Array.isArray(input.routingCorridors) ? input.routingCorridors : []),
+    ].map(asRecord);
+    return rawZones
+        .map((zone) => aabbFromValue(valueByFields(zone, ["aabbMm", "aabb_mm", "aabb", "bounds", "box"]) ?? zone))
+        .filter((zone): zone is AabbMm => !!zone && routeZ >= zone.minZ && routeZ <= zone.maxZ);
+}
+
+function chooseTrunkBounds(inputBounds: AabbMm | undefined, zones: AabbMm[], axis: TrunkAxis): AabbMm | undefined {
+    if (zones.length === 0) return inputBounds;
+    const ranked = [...zones].sort((left, right) => {
+        const leftAlong = axis === "x" ? left.maxX - left.minX : left.maxY - left.minY;
+        const rightAlong = axis === "x" ? right.maxX - right.minX : right.maxY - right.minY;
+        const leftArea = (left.maxX - left.minX) * (left.maxY - left.minY);
+        const rightArea = (right.maxX - right.minX) * (right.maxY - right.minY);
+        return rightAlong - leftAlong || rightArea - leftArea;
+    });
+    return ranked[0] ?? inputBounds;
+}
+
+function candidateTrunkCoordinates(
+    input: DuctAutoRoutingInput,
+    axis: TrunkAxis,
+    points: PointMm[],
+    bounds: AabbMm | undefined,
+    zoneBounds: AabbMm | undefined,
+    gridStepMm: number,
+): number[] {
+    const candidates = new Set<number>();
+    const explicit = asNumber(input.trunkPositionMm);
+    const limits = crossBounds(axis, zoneBounds ?? bounds);
+    if (explicit !== undefined) {
+        candidates.add(round(limits ? clamp(explicit, limits.min, limits.max) : explicit));
+        return sortedNumbers(candidates);
+    }
+
+    const pointCrosses = points.map((point) => crossValue(axis, point));
+    const pointMedian = median(pointCrosses);
+    if (pointMedian !== undefined) candidates.add(round(pointMedian));
+    for (const point of points) candidates.add(round(crossValue(axis, point)));
+    if (zoneBounds) {
+        const cross = crossBounds(axis, zoneBounds)!;
+        candidates.add(round((cross.min + cross.max) / 2));
+        addRangeCoordinates(candidates, cross.min, cross.max, gridStepMm);
+    } else if (bounds) {
+        const cross = crossBounds(axis, bounds)!;
+        candidates.add(round((cross.min + cross.max) / 2));
+        addRangeCoordinates(candidates, cross.min, cross.max, gridStepMm);
+    }
+    return sortedNumbers(new Set(sortedNumbers(candidates).filter((value) => !limits || (value >= limits.min && value <= limits.max))));
+}
+
+function routeFromTrunk(
+    axis: TrunkAxis,
+    sourcePoint: PointMm,
+    targetPoint: PointMm,
+    trunkCoordinateMm: number,
+): { points: PointMm[]; sourceTapMm: PointMm; targetTapMm: PointMm } {
+    const sourceTapMm = pointOnAxis(axis, alongValue(axis, sourcePoint), trunkCoordinateMm, sourcePoint.z);
+    const targetTapMm = pointOnAxis(axis, alongValue(axis, targetPoint), trunkCoordinateMm, targetPoint.z);
+    return {
+        points: compressPath([sourcePoint, sourceTapMm, targetTapMm, targetPoint]),
+        sourceTapMm,
+        targetTapMm,
+    };
+}
+
+function scoreTrunkCoordinate(
+    axis: TrunkAxis,
+    coordinate: number,
+    sourcePoint: PointMm,
+    targetPoints: PointMm[],
+    trunkStartMm: PointMm,
+    trunkEndMm: PointMm,
+    obstacles: RouteObstacle[],
+): { score: number; hitCount: number; branchLengthMm: number } {
+    const trunkHits = routeObstacleHits([trunkStartMm, trunkEndMm], obstacles).length;
+    let branchHits = routeObstacleHits([sourcePoint, pointOnAxis(axis, alongValue(axis, sourcePoint), coordinate, sourcePoint.z)], obstacles).length;
+    let branchLengthMm = Math.abs(crossValue(axis, sourcePoint) - coordinate);
+    for (const target of targetPoints) {
+        const tap = pointOnAxis(axis, alongValue(axis, target), coordinate, target.z);
+        branchHits += routeObstacleHits([tap, target], obstacles).length;
+        branchLengthMm += Math.abs(crossValue(axis, target) - coordinate);
+    }
+    return {
+        score: (trunkHits + branchHits) * 1_000_000 + branchLengthMm,
+        hitCount: trunkHits + branchHits,
+        branchLengthMm,
+    };
+}
+
+function buildTrunkAndBranchRoutes(
+    sources: RouteEndpoint[],
+    targets: RouteEndpoint[],
+    obstacles: RouteObstacle[],
+    input: DuctAutoRoutingInput,
+    options: {
+        bounds?: AabbMm;
+        gridStepMm: number;
+        routeZ: number;
+        elbowPenalty: number;
+    },
+): { routes: PlannedRoute[]; routeTree: TrunkBranchPlan } {
+    const issues: EngineeringIssue[] = [];
+    const source = sources[0];
+    const projectedSource = projectedPoint(source.point, options.routeZ);
+    const projectedTargets = targets.map((target) => ({ endpoint: target, point: projectedPoint(target.point, options.routeZ) }));
+    const allPoints = [projectedSource, ...projectedTargets.map((target) => target.point)];
+    const axis = normalizeAxis(input.trunkAxis, options.bounds, allPoints);
+    const zones = activeZoneAabbs(input, options.routeZ);
+    const trunkBounds = chooseTrunkBounds(options.bounds, zones, axis);
+    const axisSpan = spanBounds(axis, trunkBounds);
+    const alongValues = allPoints.map((point) => alongValue(axis, point));
+    const spanMin = axisSpan ? clamp(Math.min(...alongValues), axisSpan.min, axisSpan.max) : Math.min(...alongValues);
+    const spanMax = axisSpan ? clamp(Math.max(...alongValues), axisSpan.min, axisSpan.max) : Math.max(...alongValues);
+    const trunkCoordinates = candidateTrunkCoordinates(input, axis, allPoints, options.bounds, trunkBounds, options.gridStepMm);
+
+    if (trunkCoordinates.length === 0) {
+        issues.push(makeIssue("route_trunk_coordinate_missing", "error", "No trunk coordinate could be derived from targets, bounds, or routing zones."));
+    }
+
+    let selectedCoordinate = trunkCoordinates[0] ?? crossValue(axis, projectedSource);
+    let bestScore = Number.POSITIVE_INFINITY;
+    let bestHitCount = Number.POSITIVE_INFINITY;
+    for (const coordinate of trunkCoordinates) {
+        const trunkStartMm = pointOnAxis(axis, spanMin, coordinate, options.routeZ);
+        const trunkEndMm = pointOnAxis(axis, spanMax, coordinate, options.routeZ);
+        const scored = scoreTrunkCoordinate(axis, coordinate, projectedSource, projectedTargets.map((target) => target.point), trunkStartMm, trunkEndMm, obstacles);
+        if (scored.score < bestScore) {
+            bestScore = scored.score;
+            bestHitCount = scored.hitCount;
+            selectedCoordinate = coordinate;
+        }
+    }
+
+    if (bestHitCount > 0) {
+        issues.push(makeIssue("route_trunk_obstacle_conflict", "warning", "The selected trunk/branch line crosses expanded obstacle geometry; spatial-zone or trunk overrides should be reviewed.", {
+            conflictCount: bestHitCount,
+        }));
+    }
+
+    const trunkStartMm = pointOnAxis(axis, spanMin, selectedCoordinate, options.routeZ);
+    const trunkEndMm = pointOnAxis(axis, spanMax, selectedCoordinate, options.routeZ);
+    const sourceTapMm = pointOnAxis(axis, alongValue(axis, projectedSource), selectedCoordinate, options.routeZ);
+    const trunkSegmentsMm = [segmentFromPoints(trunkStartMm, trunkEndMm)].filter((segment) => segment.lengthMm > 0);
+    const sourceFeedSegmentsMm = [segmentFromPoints(projectedSource, sourceTapMm)].filter((segment) => segment.lengthMm > 0);
+    const branchSegmentsMm: Array<{ targetId: string; startMm: PointMm; endMm: PointMm; lengthMm: number }> = [];
+    const routes: PlannedRoute[] = [];
+
+    for (const target of projectedTargets) {
+        const route = routeFromTrunk(axis, projectedSource, target.point, selectedCoordinate);
+        const routeIssues: EngineeringIssue[] = [];
+        if (Math.abs(source.point.z - options.routeZ) > 1 || Math.abs(target.endpoint.point.z - options.routeZ) > 1) {
+            routeIssues.push(makeIssue("route_endpoint_z_projected", "warning", "Endpoint was projected to the routing elevation; vertical riser/drop is not generated in this dry-run planner.", {
+                sourceId: source.id,
+                targetId: target.endpoint.id,
+                routingElevationMm: options.routeZ,
+            }));
+        }
+        const hits = routeObstacleHits(route.points, obstacles);
+        if (hits.length > 0) {
+            routeIssues.push(makeIssue("route_obstacle_intersection", "error", "Generated trunk/branch route intersects expanded obstacle clearance volume.", {
+                sourceId: source.id,
+                targetId: target.endpoint.id,
+                hitCount: hits.length,
+            }));
+        }
+        const lengthMm = routeLength(route.points);
+        const elbowCount = routeElbows(route.points);
+        const score = lengthMm / 1000 + elbowCount * options.elbowPenalty;
+        const branchSegment = segmentFromPoints(route.targetTapMm, target.point);
+        if (branchSegment.lengthMm > 0) {
+            branchSegmentsMm.push({ targetId: target.endpoint.id, ...branchSegment });
+        }
+        routes.push({
+            id: `${source.id}__${target.endpoint.id}`,
+            status: routeIssues.some((issue) => issue.severity === "error") ? "fail" : "pass",
+            sourceId: source.id,
+            targetId: target.endpoint.id,
+            pointsMm: route.points,
+            segmentsMm: buildSegments(route.points),
+            lengthMm: round(lengthMm),
+            elbowCount,
+            score: round(score),
+            obstacleIntersections: hits,
+            issues: routeIssues,
+        });
+    }
+
+    const treeLengthMm = round(
+        trunkSegmentsMm.reduce((sum, segment) => sum + segment.lengthMm, 0)
+        + sourceFeedSegmentsMm.reduce((sum, segment) => sum + segment.lengthMm, 0)
+        + branchSegmentsMm.reduce((sum, segment) => sum + segment.lengthMm, 0),
+    );
+    const routeTree: TrunkBranchPlan = {
+        axis,
+        trunkCoordinateMm: round(selectedCoordinate),
+        trunkStartMm,
+        trunkEndMm,
+        sourceTapMm,
+        trunkSegmentsMm,
+        sourceFeedSegmentsMm,
+        branchSegmentsMm,
+        treeLengthMm,
+        routeCandidatesExtra: {
+            topology: "trunkAndBranch",
+            trunkAxis: axis,
+            trunkCoordinateMm: round(selectedCoordinate),
+        },
+        issues,
+    };
+
+    return { routes, routeTree };
+}
+
 export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAutoRoutingReport {
     const issues: EngineeringIssue[] = [];
     const sourceInputs = Array.isArray(input.sources) ? input.sources.map(asRecord) : [];
@@ -530,8 +823,10 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
     const routeZ = asNumber(input.routingElevationMm) ?? sources[0]?.point.z ?? targets[0]?.point.z ?? 0;
     const obstacles = readObstacles(Array.isArray(input.obstacles) ? input.obstacles.map(asRecord) : [], clearanceMm, ductHalfHeightMm);
     const bounds = aabbFromValue(input.routingBounds);
+    const routingMode = normalizeRoutingMode(input.routingMode);
 
-    const routes: PlannedRoute[] = [];
+    let routes: PlannedRoute[] = [];
+    let routeTree: TrunkBranchPlan | undefined;
     if (bounds && (routeZ < bounds.minZ || routeZ > bounds.maxZ)) {
         issues.push(makeIssue("route_elevation_outside_bounds", "error", "Routing elevation is outside the supplied routing bounds.", {
             routingElevationMm: routeZ,
@@ -555,22 +850,40 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
     }
 
     if (issues.every((issue) => issue.severity !== "error")) {
-        for (const target of targets) {
-            const selected = buildRouteFromSources(sources, target, obstacles, {
+        if (routingMode === "trunkAndBranch") {
+            const planned = buildTrunkAndBranchRoutes(sources, targets, obstacles, input, {
                 bounds,
                 gridStepMm,
-                marginMm,
                 routeZ,
-                maxExpansions,
                 elbowPenalty,
             });
-            routes.push(selected);
-            issues.push(...selected.issues);
+            routes = planned.routes;
+            routeTree = planned.routeTree;
+            issues.push(...planned.routeTree.issues);
+            for (const route of planned.routes) issues.push(...route.issues);
+        } else {
+            for (const target of targets) {
+                const selected = buildRouteFromSources(sources, target, obstacles, {
+                    bounds,
+                    gridStepMm,
+                    marginMm,
+                    routeZ,
+                    maxExpansions,
+                    elbowPenalty,
+                });
+                routes.push(selected);
+                issues.push(...selected.issues);
+            }
         }
     }
 
-    if (routes.length > 1) {
+    if (routes.length > 1 && routingMode === "pointToPoint") {
         issues.push(makeIssue("route_tree_not_optimized", "info", "This first auto-routing planner creates independent source-to-target branches; trunk sharing and fitting optimization are a later phase."));
+    } else if (routes.length > 1 && routingMode === "trunkAndBranch") {
+        issues.push(makeIssue("route_tree_generated", "info", "Routes were generated with a shared trunk and terminal branches. Review the trunk coordinate against spatial-zone/plenum evidence before commit.", {
+            trunkAxis: routeTree?.axis,
+            trunkCoordinateMm: routeTree?.trunkCoordinateMm,
+        }));
     }
     const successfulRoutes = routes.filter((route) => route.status === "pass");
     const routeCandidates = successfulRoutes.map((route) => ({
@@ -578,6 +891,7 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
         status: "generated",
         reviewed: false,
         generatedBy: "plan_ducting_auto_route",
+        topology: routingMode,
         sourceId: route.sourceId,
         targetId: route.targetId,
         pointsMm: route.pointsMm,
@@ -586,6 +900,7 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
         elbowCount: route.elbowCount,
         obstacleIntersections: route.obstacleIntersections,
         score: route.score,
+        ...(routeTree?.routeCandidatesExtra ?? {}),
     }));
     const status = routes.length === 0 && issues.every((issue) => issue.severity !== "error") ? "not_run" : validationStatus(issues);
 
@@ -597,6 +912,7 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
         },
         summary: {
             status,
+            routingMode,
             sourceCount: sources.length,
             targetCount: targets.length,
             obstacleCount: obstacles.length,
@@ -608,7 +924,23 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
             routingElevationMm: round(routeZ),
             totalLengthMm: round(successfulRoutes.reduce((sum, route) => sum + route.lengthMm, 0)),
             totalElbowCount: successfulRoutes.reduce((sum, route) => sum + route.elbowCount, 0),
+            treeLengthMm: routeTree?.treeLengthMm,
+            trunkAxis: routeTree?.axis,
+            trunkCoordinateMm: routeTree?.trunkCoordinateMm,
         },
+        routeTree: routeTree ? {
+            topology: "trunkAndBranch",
+            axis: routeTree.axis,
+            trunkCoordinateMm: routeTree.trunkCoordinateMm,
+            trunkStartMm: routeTree.trunkStartMm,
+            trunkEndMm: routeTree.trunkEndMm,
+            sourceTapMm: routeTree.sourceTapMm,
+            trunkSegmentsMm: routeTree.trunkSegmentsMm,
+            sourceFeedSegmentsMm: routeTree.sourceFeedSegmentsMm,
+            branchSegmentsMm: routeTree.branchSegmentsMm,
+            treeLengthMm: routeTree.treeLengthMm,
+            issues: routeTree.issues,
+        } : undefined,
         routes,
         routeCandidates,
         issues,

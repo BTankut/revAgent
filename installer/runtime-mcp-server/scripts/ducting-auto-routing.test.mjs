@@ -86,4 +86,46 @@ assert.equal(blockedStart.summary.status, "fail");
 assert.equal(blockedStart.routeCandidates.length, 0);
 assert.equal(blockedStart.issues.some((issue) => issue.code === "route_not_found"), true);
 
+const trunkAndBranch = planDuctingAutoRoute({
+  routingMode: "trunkAndBranch",
+  trunkAxis: "x",
+  sources: [{ id: "ahu-1", pointMm: { x: 0, y: 0, z: 3000 } }],
+  targets: [
+    { id: "diffuser-1", pointMm: { x: 4000, y: 2000, z: 3000 } },
+    { id: "diffuser-2", pointMm: { x: 8000, y: 2000, z: 3000 } },
+    { id: "diffuser-3", pointMm: { x: 12000, y: 2000, z: 3000 } },
+  ],
+  routingZones: [
+    { id: "corridor-plenum", aabbMm: { minX: -1000, minY: 1750, minZ: 2500, maxX: 13000, maxY: 2250, maxZ: 3500 } },
+  ],
+  routingBounds: { minX: -1000, minY: -1000, minZ: 2500, maxX: 13000, maxY: 3000, maxZ: 3500 },
+  gridStepMm: 1000,
+  clearanceMm: 0,
+});
+
+assert.equal(trunkAndBranch.summary.status, "pass");
+assert.equal(trunkAndBranch.summary.routingMode, "trunkAndBranch");
+assert.equal(trunkAndBranch.routeCandidates.length, 3);
+assert.equal(trunkAndBranch.routeTree.topology, "trunkAndBranch");
+assert.equal(trunkAndBranch.routeTree.axis, "x");
+assert.equal(trunkAndBranch.routeTree.trunkCoordinateMm, 2000);
+assert.equal(trunkAndBranch.routeTree.treeLengthMm, 14000);
+assert.equal(trunkAndBranch.summary.treeLengthMm < trunkAndBranch.summary.totalLengthMm, true);
+assert.equal(trunkAndBranch.routeCandidates.every((candidate) => candidate.topology === "trunkAndBranch"), true);
+
+const fixedTrunk = planDuctingAutoRoute({
+  routingMode: "trunkAndBranch",
+  trunkAxis: "x",
+  trunkPositionMm: 0,
+  sources: [{ id: "ahu-1", pointMm: { x: 0, y: 0, z: 3000 } }],
+  targets: [
+    { id: "diffuser-1", pointMm: { x: 4000, y: 2000, z: 3000 } },
+    { id: "diffuser-2", pointMm: { x: 8000, y: 2000, z: 3000 } },
+  ],
+  gridStepMm: 1000,
+});
+
+assert.equal(fixedTrunk.routeTree.trunkCoordinateMm, 0);
+assert.equal(fixedTrunk.routeCandidates.length, 2);
+
 console.error("ducting auto-routing tests passed");
