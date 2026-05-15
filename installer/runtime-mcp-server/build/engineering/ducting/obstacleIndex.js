@@ -157,22 +157,56 @@ function segmentAabb(start, end) {
         maxZ: Math.max(start.z, end.z),
     };
 }
-function buildAabbTreeNode(obstacles) {
-    if (obstacles.length === 1) {
-        return { aabb: obstacles[0].expanded, obstacle: obstacles[0] };
+function partitionByCenter(obstacles, axis, lo, hi, mid) {
+    while (lo < hi) {
+        const center = (lo + hi) >> 1;
+        const a = aabbCenter(obstacles[lo].expanded, axis);
+        const b = aabbCenter(obstacles[center].expanded, axis);
+        const c = aabbCenter(obstacles[hi].expanded, axis);
+        let pivotIndex;
+        if ((a <= b && b <= c) || (c <= b && b <= a))
+            pivotIndex = center;
+        else if ((b <= a && a <= c) || (c <= a && a <= b))
+            pivotIndex = lo;
+        else
+            pivotIndex = hi;
+        const pivotValue = aabbCenter(obstacles[pivotIndex].expanded, axis);
+        [obstacles[pivotIndex], obstacles[hi]] = [obstacles[hi], obstacles[pivotIndex]];
+        let store = lo;
+        for (let i = lo; i < hi; i++) {
+            if (aabbCenter(obstacles[i].expanded, axis) < pivotValue) {
+                [obstacles[store], obstacles[i]] = [obstacles[i], obstacles[store]];
+                store++;
+            }
+        }
+        [obstacles[store], obstacles[hi]] = [obstacles[hi], obstacles[store]];
+        if (store === mid)
+            return;
+        if (store < mid)
+            lo = store + 1;
+        else
+            hi = store - 1;
     }
-    let aabb = obstacles[0].expanded;
-    for (let index = 1; index < obstacles.length; index++) {
+}
+function buildAabbTreeNodeInRange(obstacles, lo, hi) {
+    if (lo === hi) {
+        return { aabb: obstacles[lo].expanded, obstacle: obstacles[lo] };
+    }
+    let aabb = obstacles[lo].expanded;
+    for (let index = lo + 1; index <= hi; index++) {
         aabb = unionAabb(aabb, obstacles[index].expanded);
     }
     const axis = longestAxis(aabb);
-    const sorted = obstacles.slice().sort((a, b) => aabbCenter(a.expanded, axis) - aabbCenter(b.expanded, axis));
-    const mid = Math.floor(sorted.length / 2);
+    const mid = (lo + hi) >> 1;
+    partitionByCenter(obstacles, axis, lo, hi, mid);
     return {
         aabb,
-        left: buildAabbTreeNode(sorted.slice(0, mid)),
-        right: buildAabbTreeNode(sorted.slice(mid)),
+        left: buildAabbTreeNodeInRange(obstacles, lo, mid),
+        right: buildAabbTreeNodeInRange(obstacles, mid + 1, hi),
     };
+}
+function buildAabbTreeNode(obstacles) {
+    return buildAabbTreeNodeInRange(obstacles, 0, obstacles.length - 1);
 }
 function collectForPoint(node, point, out) {
     if (!aabbContainsPoint(node.aabb, point))

@@ -19,6 +19,29 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.14)
+
+Round-7 review on PR #23 commit `9041b6f`. Two findings applied.
+
+- **Endpoint Z snap respects the allowed-elevation contract
+  (Codex P2).** Sprint 1.11 over-fixed Codex's round-4 finding by
+  adding *any* in-bounds endpoint Z to `effectiveGridZs`, which made a
+  source at e.g. `z=4750` (with `allowedElevationsMm: [3000, 6000]`,
+  `verticalStepMm: 500`) snap to itself with no warning even though
+  4750 is neither an allowed elevation nor a refined stop. The
+  snap-target set is now strictly `allowed + verticalStepMm refined
+  stops`; endpoints on those snap exactly (preserving the round-4 fix
+  for `z=6000` with `verticalStepMm: 1000`), endpoints off them are
+  projected to the nearest stop with `route_endpoint_z_projected`.
+- **AABB tree construction with quickselect (Gemini medium).**
+  `buildAabbTreeNode` used to call `slice().sort()` at every recursion
+  level (O(N log² N) overall). The tree now partitions the obstacle
+  array in place via a median-of-three quickselect on the splitting
+  axis (expected O(N) per level, O(N log N) overall), so very large
+  scenes pay a noticeably smaller setup cost. The block/no-block
+  parity invariant with `LinearObstacleIndex` (see test at the bottom
+  of `ducting-auto-routing.test.mjs`) continues to hold.
+
 ## Review Fixes (Sprint 1.13)
 
 Round-6 Gemini review on PR #23 commit `8b729e4`. Three maintainability

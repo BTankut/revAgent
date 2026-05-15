@@ -245,23 +245,25 @@ assert.equal(
 );
 assert.equal(projectedEndpoint.routeCandidates[0].pointsMm[0].z, 3000);
 
-// Companion case: an *in-bounds* endpoint that is not on any user-supplied
-// elevation must snap to itself (it lives in the grid via the endpoint-Z
-// addition in createCoordinateGrid) and must not be flagged as projected.
-const inBoundsEndpoint = planDuctingAutoRoute({
-  sources: [{ id: "ahu-2", pointMm: { x: 0, y: 0, z: 5500 } }],
-  targets: [{ id: "vav-2", pointMm: { x: 6000, y: 0, z: 5500 } }],
+// Sprint 1.14 (Codex P2): an in-bounds endpoint that is NOT on an allowed
+// elevation or a verticalStepMm refined stop must still be projected with
+// the warning. Otherwise the planner would route at an arbitrary elevation
+// the caller never approved. Here z=5500 sits between allowed=[3000, 6000]
+// with no verticalStepMm, so it snaps to 6000 (the nearest allowed).
+const inBoundsOffGrid = planDuctingAutoRoute({
+  sources: [{ id: "ahu-off", pointMm: { x: 0, y: 0, z: 5500 } }],
+  targets: [{ id: "vav-off", pointMm: { x: 6000, y: 0, z: 5500 } }],
   allowedElevationsMm: [3000, 6000],
   gridStepMm: 1000,
   clearanceMm: 0,
 });
-assert.equal(inBoundsEndpoint.summary.status, "pass");
+assert.equal(inBoundsOffGrid.summary.status, "warn");
 assert.equal(
-  inBoundsEndpoint.issues.some((issue) => issue.code === "route_endpoint_z_projected"),
-  false,
-  "in-bounds endpoint z=5500 lives in the grid and must not be flagged as projected",
+  inBoundsOffGrid.issues.some((issue) => issue.code === "route_endpoint_z_projected"),
+  true,
+  "in-bounds endpoint z=5500 is off the allowed-elevation grid and must be projected",
 );
-assert.equal(inBoundsEndpoint.routeCandidates[0].pointsMm[0].z, 5500);
+assert.equal(inBoundsOffGrid.routeCandidates[0].pointsMm[0].z, 6000);
 
 // --- Backward compatibility: single allowedElevationsMm must match legacy 2D output ---
 

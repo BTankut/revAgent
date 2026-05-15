@@ -413,7 +413,7 @@ function snapPointToGridZ(point, allowedZs) {
         return { point: { x: point.x, y: point.y, z: nearest }, projected: false };
     return { point: { x: point.x, y: point.y, z: nearest }, projected: true };
 }
-function effectiveGridZs(allowedZs, verticalStepMm, endpointZs) {
+function effectiveGridZs(allowedZs, verticalStepMm) {
     const zs = new Set();
     for (const z of allowedZs)
         zs.add(round(z));
@@ -422,21 +422,10 @@ function effectiveGridZs(allowedZs, verticalStepMm, endpointZs) {
         const zMax = Math.max(...allowedZs);
         addRangeCoordinates(zs, zMin, zMax, verticalStepMm);
     }
-    if (allowedZs.length > 0) {
-        const zMin = Math.min(...allowedZs);
-        const zMax = Math.max(...allowedZs);
-        for (const z of endpointZs) {
-            if (z >= zMin - GEOM_TOLERANCE_MM && z <= zMax + GEOM_TOLERANCE_MM)
-                zs.add(round(z));
-        }
-    }
     return Array.from(zs).sort((a, b) => a - b);
 }
 function buildRouteFromSources(sources, target, obstacleIndex, options) {
-    const endpointZs = [target.point.z];
-    for (const source of sources)
-        endpointZs.push(source.point.z);
-    const snapZs = effectiveGridZs(options.allowedZs, options.verticalStepMm, endpointZs);
+    const snapZs = effectiveGridZs(options.allowedZs, options.verticalStepMm);
     const projectedSources = sources.map((source) => {
         const snapped = snapPointToGridZ(source.point, snapZs);
         return { id: source.id, point: snapped.point, projected: snapped.projected, raw: source.raw };

@@ -580,20 +580,19 @@ function snapPointToGridZ(point: PointMm, allowedZs: number[]): { point: PointMm
     return { point: { x: point.x, y: point.y, z: nearest }, projected: true };
 }
 
-function effectiveGridZs(allowedZs: number[], verticalStepMm: number, endpointZs: number[]): number[] {
+function effectiveGridZs(allowedZs: number[], verticalStepMm: number): number[] {
+    // The snap target = allowed elevations + verticalStepMm refined stops only.
+    // Arbitrary in-bounds endpoint Zs are NOT added here: that would let a
+    // source at e.g. z=4750 (with allowed=[3000,6000], verticalStepMm=500)
+    // snap to itself with no projected-endpoint warning, producing a route
+    // at an elevation the caller never approved. Off-grid endpoints must
+    // continue to project to the nearest allowed / refined stop.
     const zs = new Set<number>();
     for (const z of allowedZs) zs.add(round(z));
     if (allowedZs.length > 1 && verticalStepMm > 0) {
         const zMin = Math.min(...allowedZs);
         const zMax = Math.max(...allowedZs);
         addRangeCoordinates(zs, zMin, zMax, verticalStepMm);
-    }
-    if (allowedZs.length > 0) {
-        const zMin = Math.min(...allowedZs);
-        const zMax = Math.max(...allowedZs);
-        for (const z of endpointZs) {
-            if (z >= zMin - GEOM_TOLERANCE_MM && z <= zMax + GEOM_TOLERANCE_MM) zs.add(round(z));
-        }
     }
     return Array.from(zs).sort((a, b) => a - b);
 }
@@ -604,13 +603,13 @@ function buildRouteFromSources(
     obstacleIndex: ObstacleIndex,
     options: PathSearchOptions & { elbowPenalty: number; defaultRouteZ: number },
 ): PlannedRoute {
-    // Snap against the *refined* Z grid (allowedZs + verticalStepMm stops +
-    // in-bounds endpoint Zs) — `createCoordinateGrid` builds the exact same
-    // set internally, so an endpoint that lives on a refined elevation must
-    // not be reported as projected and must not lose its riser tail.
-    const endpointZs = [target.point.z];
-    for (const source of sources) endpointZs.push(source.point.z);
-    const snapZs = effectiveGridZs(options.allowedZs, options.verticalStepMm, endpointZs);
+    // Snap against the refined Z grid (allowedZs + verticalStepMm stops).
+    // Endpoints that land exactly on an allowed elevation or a refined stop
+    // snap to themselves (no warning); endpoints between stops are projected
+    // to the nearest stop with `route_endpoint_z_projected` — including the
+    // legitimate "in-bounds but off-grid" case, since routing at an
+    // unapproved elevation would violate the allowed-elevation contract.
+    const snapZs = effectiveGridZs(options.allowedZs, options.verticalStepMm);
     const projectedSources = sources.map((source) => {
         const snapped = snapPointToGridZ(source.point, snapZs);
         return { id: source.id, point: snapped.point, projected: snapped.projected, raw: source.raw };
