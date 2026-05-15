@@ -153,9 +153,24 @@ function createCoordinateGrid(sources, target, obstacles, bounds, gridStepMm, ve
     }
     const zMin = allowedZs[0];
     const zMax = allowedZs[allowedZs.length - 1];
+    const actionMinX = minX;
+    const actionMaxX = maxX;
+    const actionMinY = minY;
+    const actionMaxY = maxY;
+    const inferredHalo = marginMm;
     for (const obstacle of obstacles) {
         if (!overlap1d(obstacle.expanded.minZ, obstacle.expanded.maxZ, zMin, zMax))
             continue;
+        if (!bounds) {
+            if (obstacle.expanded.maxX < actionMinX - inferredHalo)
+                continue;
+            if (obstacle.expanded.minX > actionMaxX + inferredHalo)
+                continue;
+            if (obstacle.expanded.maxY < actionMinY - inferredHalo)
+                continue;
+            if (obstacle.expanded.minY > actionMaxY + inferredHalo)
+                continue;
+        }
         minX = Math.min(minX, obstacle.expanded.minX);
         maxX = Math.max(maxX, obstacle.expanded.maxX);
         minY = Math.min(minY, obstacle.expanded.minY);
@@ -318,16 +333,13 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
     const sourceForKey = new Map();
     const gScore = new Map();
     const closed = new Set();
-    const octileSqrt2Minus1 = Math.SQRT2 - 1;
     const heuristic = (candidate) => {
         const dx = Math.abs(candidate.x - target.x);
         const dy = Math.abs(candidate.y - target.y);
         const dz = Math.abs(candidate.z - target.z);
         if (!options.allowDiagonal)
             return dx + dy + dz;
-        const maxXY = dx > dy ? dx : dy;
-        const minXY = dx > dy ? dy : dx;
-        return maxXY + octileSqrt2Minus1 * minXY + dz;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
     };
     for (const entry of validSources) {
         const sourceIx = findIndex(xs, entry.source.x);
@@ -581,7 +593,8 @@ export function planDuctingAutoRoute(input = {}) {
         issues.push(makeIssue("route_source_point_invalid", "error", "One or more source records have no valid pointMm/location."));
     if (targets.length !== targetInputs.length)
         issues.push(makeIssue("route_target_point_invalid", "error", "One or more target records have no valid pointMm/location."));
-    const gridStepMm = asPositiveNumber(input.gridStepMm, 600);
+    const MIN_GRID_STEP_MM = 10;
+    const gridStepMm = Math.max(MIN_GRID_STEP_MM, asPositiveNumber(input.gridStepMm, 600));
     const clearanceMm = Math.max(0, asNumber(input.clearanceMm) ?? 150);
     const ductHalfWidthMm = Math.max(0, asNumber(input.ductHalfWidthMm) ?? 0);
     const ductHalfHeightMm = Math.max(0, asNumber(input.ductHalfHeightMm) ?? 150);
@@ -590,7 +603,8 @@ export function planDuctingAutoRoute(input = {}) {
     const elbowPenalty = Math.max(0, asNumber(input.routeElbowPenalty) ?? 4);
     const riserPenalty = Math.max(0, asNumber(input.riserPenalty) ?? 0);
     const allowDiagonal = asBoolean(input.allowDiagonal) ?? false;
-    const verticalStepMm = Math.max(0, asNumber(input.verticalStepMm) ?? 0);
+    const rawVerticalStepMm = Math.max(0, asNumber(input.verticalStepMm) ?? 0);
+    const verticalStepMm = rawVerticalStepMm > 0 ? Math.max(MIN_GRID_STEP_MM, rawVerticalStepMm) : 0;
     const defaultRouteZ = asNumber(input.routingElevationMm) ?? sources[0]?.point.z ?? targets[0]?.point.z ?? 0;
     let spatialContext;
     if (input.spatialZone !== undefined && input.spatialZone !== null) {

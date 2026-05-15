@@ -272,8 +272,27 @@ function createCoordinateGrid(
     const zMin = allowedZs[0];
     const zMax = allowedZs[allowedZs.length - 1];
 
+    // Snapshot the source/target bbox before obstacles can pull it outward;
+    // we use it to ignore obstacles that sit far from the actual action zone
+    // when `bounds` is inferred. Otherwise a beam 100 m away from the route
+    // corridor would still grow the grid and waste search budget.
+    const actionMinX = minX;
+    const actionMaxX = maxX;
+    const actionMinY = minY;
+    const actionMaxY = maxY;
+    const inferredHalo = marginMm;
+
     for (const obstacle of obstacles) {
         if (!overlap1d(obstacle.expanded.minZ, obstacle.expanded.maxZ, zMin, zMax)) continue;
+        if (!bounds) {
+            // Ignore obstacles outside the action bbox + halo; they cannot
+            // constrain a route from sources to target and would otherwise
+            // inflate the grid on large Revit models.
+            if (obstacle.expanded.maxX < actionMinX - inferredHalo) continue;
+            if (obstacle.expanded.minX > actionMaxX + inferredHalo) continue;
+            if (obstacle.expanded.maxY < actionMinY - inferredHalo) continue;
+            if (obstacle.expanded.minY > actionMaxY + inferredHalo) continue;
+        }
         minX = Math.min(minX, obstacle.expanded.minX);
         maxX = Math.max(maxX, obstacle.expanded.maxX);
         minY = Math.min(minY, obstacle.expanded.minY);
@@ -475,21 +494,21 @@ function findGridPathFromSources(
     const closed = new Set<number>();
     // Heuristic admissibility:
     //   - Orthogonal-only grid: Manhattan is exact and tight.
-    //   - With 8-way XY diagonals + pure-Z verticals: the minimum cost on an
-    //     unobstructed grid is `octile(|Δx|, |Δy|) + |Δz|`, where
-    //     `octile(a, b) = max(a,b) + (√2 - 1) · min(a,b)`. This is achievable
-    //     on the grid (move diagonally until one axis runs out, then straight)
-    //     so it bounds any path from below and stays admissible while being
-    //     tighter than pure Euclidean — A* explores fewer nodes.
-    const octileSqrt2Minus1 = Math.SQRT2 - 1;
+    //   - With 8-way XY diagonals + pure-Z verticals: we must stay below the
+    //     true edge cost. Sprint 1.12 tried octile because it is tighter than
+    //     Euclidean on equal-pitch diagonals, but the neighbour gate accepts
+    //     `|Δx| ≈ |Δy|` within DIAGONAL_45_TOLERANCE_MM, so the actual edge
+    //     cost is `hypot(Δx, Δy)`. Octile's `max + (√2-1)·min` can exceed
+    //     hypot for those 1 mm-slack diagonals (e.g. Δx=1000, Δy=999 →
+    //     hypot=1413.51 < octile=1413.80), which makes it inadmissible and
+    //     lets A* return non-minimum paths. Reverting to Euclidean keeps the
+    //     search admissible at the cost of a few extra expansions.
     const heuristic = (candidate: PointMm) => {
         const dx = Math.abs(candidate.x - target.x);
         const dy = Math.abs(candidate.y - target.y);
         const dz = Math.abs(candidate.z - target.z);
         if (!options.allowDiagonal) return dx + dy + dz;
-        const maxXY = dx > dy ? dx : dy;
-        const minXY = dx > dy ? dy : dx;
-        return maxXY + octileSqrt2Minus1 * minXY + dz;
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
     };
 
     for (const entry of validSources) {
@@ -785,7 +804,12 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
     if (sources.length !== sourceInputs.length) issues.push(makeIssue("route_source_point_invalid", "error", "One or more source records have no valid pointMm/location."));
     if (targets.length !== targetInputs.length) issues.push(makeIssue("route_target_point_invalid", "error", "One or more target records have no valid pointMm/location."));
 
-    const gridStepMm = asPositiveNumber(input.gridStepMm, 600);
+    // Minimum grid step protects against accidentally tiny values that would
+    // turn `addRangeCoordinates` into a near-infinite loop (a 10 m span with a
+    // 0.1 mm step is 100 k iterations and ~1 MB of `Set<number>` entries —
+    // exactly the kind of accidental DoS we want to refuse server-side).
+    const MIN_GRID_STEP_MM = 10;
+    const gridStepMm = Math.max(MIN_GRID_STEP_MM, asPositiveNumber(input.gridStepMm, 600));
     const clearanceMm = Math.max(0, asNumber(input.clearanceMm) ?? 150);
     const ductHalfWidthMm = Math.max(0, asNumber(input.ductHalfWidthMm) ?? 0);
     const ductHalfHeightMm = Math.max(0, asNumber(input.ductHalfHeightMm) ?? 150);
@@ -794,7 +818,10 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
     const elbowPenalty = Math.max(0, asNumber(input.routeElbowPenalty) ?? 4);
     const riserPenalty = Math.max(0, asNumber(input.riserPenalty) ?? 0);
     const allowDiagonal = asBoolean(input.allowDiagonal) ?? false;
-    const verticalStepMm = Math.max(0, asNumber(input.verticalStepMm) ?? 0);
+    // verticalStepMm = 0 disables Z refinement entirely; non-zero values get
+    // the same MIN_GRID_STEP_MM floor as the horizontal step.
+    const rawVerticalStepMm = Math.max(0, asNumber(input.verticalStepMm) ?? 0);
+    const verticalStepMm = rawVerticalStepMm > 0 ? Math.max(MIN_GRID_STEP_MM, rawVerticalStepMm) : 0;
     const defaultRouteZ = asNumber(input.routingElevationMm) ?? sources[0]?.point.z ?? targets[0]?.point.z ?? 0;
 
     let spatialContext: SpatialZoneRoutingContext | undefined;

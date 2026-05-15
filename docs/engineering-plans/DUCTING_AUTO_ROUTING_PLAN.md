@@ -19,6 +19,39 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.20)
+
+Round-13 review on PR #23 commit `6e3abcf`. One Codex P2 admissibility
+fix that reverts a Sprint 1.12 over-optimisation plus two small Gemini
+medium robustness fixes.
+
+- **Heuristic reverted to Euclidean when `allowDiagonal=true`
+  (Codex P2).** Sprint 1.12 switched from Euclidean to the octile
+  `max + (√2-1)·min` heuristic on the assumption that diagonals are
+  exactly `Δx == Δy`. The Sprint 1.7 / 1.8 tolerance gate actually
+  admits `||Δx| - |Δy|| ≤ 1 mm`, so the true edge cost is
+  `hypot(Δx, Δy)` and can be smaller than octile (e.g. Δx=1000, Δy=999
+  → hypot=1413.51 < octile=1413.80). That makes octile inadmissible
+  and lets A* pop a slightly worse target path before finding the
+  cheaper one, producing non-minimum candidates. Reverting to
+  Euclidean keeps the search admissible at the cost of a few extra
+  expansions; the orthogonal-only case keeps Manhattan, which is
+  exact and tight there.
+- **Inferred-bounds halo for obstacle expansion (Gemini medium).**
+  Before, when `routingBounds` was inferred (caller did not supply
+  it), every obstacle whose Z range overlapped the route's plenum
+  range pulled the grid outward, even if it sat 100 m from the
+  source/target action zone. Now the expansion is gated by
+  `action bbox ± marginMm`: obstacles outside that halo are ignored
+  for bounds calculation, so big Revit models with distant obstacles
+  no longer blow up the grid and search budget.
+- **`MIN_GRID_STEP_MM` floor for `gridStepMm` / `verticalStepMm`
+  (Gemini medium).** An accidental 0.1 mm step would turn
+  `addRangeCoordinates` into a ~100 k-iteration loop with megabytes
+  of `Set<number>` entries — a server-side foot-gun. Both inputs are
+  now clamped to `MIN_GRID_STEP_MM = 10` (zero verticalStepMm is
+  still honoured because it disables refinement entirely).
+
 ## Review Fixes (Sprint 1.19)
 
 Round-12 review on PR #23 commit `c5f59df`. Three small Gemini medium
