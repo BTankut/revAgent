@@ -1,5 +1,5 @@
 import { aabbFromValue, asBoolean, asNumber, asRecord, makeIssue, pointDistanceMm, pointFromValue, round, stringByFields, validationStatus, valueByFields, } from "./helpers.js";
-import { buildObstacleIndex, pointInsideObstacle, readObstacles, segmentHitsObstacle, } from "./obstacleIndex.js";
+import { buildObstacleIndex, readObstacles, segmentHitsObstacle, } from "./obstacleIndex.js";
 import { mapSpatialZoneToRoutingContext } from "./spatialZoneAdapter.js";
 const GEOM_TOLERANCE_MM = 0.001;
 const DIAGONAL_45_TOLERANCE_MM = 1;
@@ -336,8 +336,8 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
     if (targetIx < 0 || targetIy < 0 || targetIz < 0)
         return { points: [], expansions: 0, exhausted: false };
     const targetGridKey = gridKey(targetIx, targetIy, targetIz);
-    const pointBlocked = (candidate) => obstacleIndex.someCandidateForPoint(candidate, (obstacle) => pointInsideObstacle(candidate, obstacle));
-    const segmentBlocked = (left, right) => obstacleIndex.someCandidateForSegment(left, right, (obstacle) => segmentHitsObstacle(left, right, obstacle));
+    const pointBlocked = (candidate) => obstacleIndex.blocksPoint(candidate);
+    const segmentBlocked = (left, right) => obstacleIndex.blocksSegment(left, right);
     if (pointBlocked(target))
         return { points: [], expansions: 0, exhausted: false };
     const open = new MinHeap();

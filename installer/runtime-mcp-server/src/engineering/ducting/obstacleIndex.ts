@@ -25,6 +25,15 @@ export interface ObstacleIndex {
      */
     someCandidateForPoint(point: PointMm, predicate: (obstacle: ObstacleAabb) => boolean): boolean;
     someCandidateForSegment(start: PointMm, end: PointMm, predicate: (obstacle: ObstacleAabb) => boolean): boolean;
+    /**
+     * Specialised closure-free hot-path predicates. The A* loop checks
+     * `pointInsideObstacle` and `segmentHitsObstacle` exclusively, so it can
+     * call these directly instead of allocating a fresh `(obstacle) => ...`
+     * closure on every neighbour. Roughly one closure allocation saved per
+     * A* expansion (≈25 k per run on default settings).
+     */
+    blocksPoint(point: PointMm): boolean;
+    blocksSegment(start: PointMm, end: PointMm): boolean;
 }
 
 export function expandAabb(aabb: AabbMm, clearanceMm: number, ductHalfWidthMm: number, ductHalfHeightMm: number): AabbMm {
@@ -312,6 +321,26 @@ function someForSegment(node: AabbTreeNode, segAabb: AabbMm, predicate: (obstacl
     return false;
 }
 
+// Closure-free variants of someForPoint / someForSegment for the A* hot loop:
+// the previous predicate-based API allocated a fresh `(obstacle) => ...`
+// closure on every call to `pointBlocked` / `segmentBlocked`. These call
+// `pointInsideObstacle` / `segmentHitsObstacle` directly.
+function blockingPoint(node: AabbTreeNode, point: PointMm): boolean {
+    if (!aabbContainsPoint(node.aabb, point)) return false;
+    if (node.obstacle) return pointInsideObstacle(point, node.obstacle);
+    if (node.left && blockingPoint(node.left, point)) return true;
+    if (node.right && blockingPoint(node.right, point)) return true;
+    return false;
+}
+
+function blockingSegment(node: AabbTreeNode, segAabb: AabbMm, start: PointMm, end: PointMm): boolean {
+    if (!aabbIntersectsAabb(node.aabb, segAabb)) return false;
+    if (node.obstacle) return segmentHitsObstacle(start, end, node.obstacle);
+    if (node.left && blockingSegment(node.left, segAabb, start, end)) return true;
+    if (node.right && blockingSegment(node.right, segAabb, start, end)) return true;
+    return false;
+}
+
 export function buildLinearObstacleIndex(obstacles: ObstacleAabb[]): ObstacleIndex {
     const list = obstacles.slice();
     return {
@@ -337,6 +366,19 @@ export function buildLinearObstacleIndex(obstacles: ObstacleAabb[]): ObstacleInd
             }
             return false;
         },
+        blocksPoint: (point) => {
+            for (const obstacle of list) {
+                if (aabbContainsPoint(obstacle.expanded, point) && pointInsideObstacle(point, obstacle)) return true;
+            }
+            return false;
+        },
+        blocksSegment: (start, end) => {
+            const segAabb = segmentAabb(start, end);
+            for (const obstacle of list) {
+                if (aabbIntersectsAabb(obstacle.expanded, segAabb) && segmentHitsObstacle(start, end, obstacle)) return true;
+            }
+            return false;
+        },
         obstacles: () => list.slice(),
     };
 }
@@ -350,6 +392,8 @@ export function buildAabbTreeObstacleIndex(obstacles: ObstacleAabb[]): ObstacleI
             candidatesForSegment: () => [],
             someCandidateForPoint: () => false,
             someCandidateForSegment: () => false,
+            blocksPoint: () => false,
+            blocksSegment: () => false,
             obstacles: () => [],
         };
     }
@@ -370,6 +414,8 @@ export function buildAabbTreeObstacleIndex(obstacles: ObstacleAabb[]): ObstacleI
         },
         someCandidateForPoint: (point, predicate) => someForPoint(root, point, predicate),
         someCandidateForSegment: (start, end, predicate) => someForSegment(root, segmentAabb(start, end), predicate),
+        blocksPoint: (point) => blockingPoint(root, point),
+        blocksSegment: (start, end) => blockingSegment(root, segmentAabb(start, end), start, end),
         obstacles: () => list.slice(),
     };
 }

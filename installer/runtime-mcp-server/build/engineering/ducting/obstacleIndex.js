@@ -280,6 +280,28 @@ function someForSegment(node, segAabb, predicate) {
         return true;
     return false;
 }
+function blockingPoint(node, point) {
+    if (!aabbContainsPoint(node.aabb, point))
+        return false;
+    if (node.obstacle)
+        return pointInsideObstacle(point, node.obstacle);
+    if (node.left && blockingPoint(node.left, point))
+        return true;
+    if (node.right && blockingPoint(node.right, point))
+        return true;
+    return false;
+}
+function blockingSegment(node, segAabb, start, end) {
+    if (!aabbIntersectsAabb(node.aabb, segAabb))
+        return false;
+    if (node.obstacle)
+        return segmentHitsObstacle(start, end, node.obstacle);
+    if (node.left && blockingSegment(node.left, segAabb, start, end))
+        return true;
+    if (node.right && blockingSegment(node.right, segAabb, start, end))
+        return true;
+    return false;
+}
 export function buildLinearObstacleIndex(obstacles) {
     const list = obstacles.slice();
     return {
@@ -305,6 +327,21 @@ export function buildLinearObstacleIndex(obstacles) {
             }
             return false;
         },
+        blocksPoint: (point) => {
+            for (const obstacle of list) {
+                if (aabbContainsPoint(obstacle.expanded, point) && pointInsideObstacle(point, obstacle))
+                    return true;
+            }
+            return false;
+        },
+        blocksSegment: (start, end) => {
+            const segAabb = segmentAabb(start, end);
+            for (const obstacle of list) {
+                if (aabbIntersectsAabb(obstacle.expanded, segAabb) && segmentHitsObstacle(start, end, obstacle))
+                    return true;
+            }
+            return false;
+        },
         obstacles: () => list.slice(),
     };
 }
@@ -317,6 +354,8 @@ export function buildAabbTreeObstacleIndex(obstacles) {
             candidatesForSegment: () => [],
             someCandidateForPoint: () => false,
             someCandidateForSegment: () => false,
+            blocksPoint: () => false,
+            blocksSegment: () => false,
             obstacles: () => [],
         };
     }
@@ -337,6 +376,8 @@ export function buildAabbTreeObstacleIndex(obstacles) {
         },
         someCandidateForPoint: (point, predicate) => someForPoint(root, point, predicate),
         someCandidateForSegment: (start, end, predicate) => someForSegment(root, segmentAabb(start, end), predicate),
+        blocksPoint: (point) => blockingPoint(root, point),
+        blocksSegment: (start, end) => blockingSegment(root, segmentAabb(start, end), start, end),
         obstacles: () => list.slice(),
     };
 }

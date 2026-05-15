@@ -511,10 +511,12 @@ function findGridPathFromSources(
     if (targetIx < 0 || targetIy < 0 || targetIz < 0) return { points: [], expansions: 0, exhausted: false };
     const targetGridKey = gridKey(targetIx, targetIy, targetIz);
 
-    const pointBlocked = (candidate: PointMm) =>
-        obstacleIndex.someCandidateForPoint(candidate, (obstacle) => pointInsideObstacle(candidate, obstacle));
-    const segmentBlocked = (left: PointMm, right: PointMm) =>
-        obstacleIndex.someCandidateForSegment(left, right, (obstacle) => segmentHitsObstacle(left, right, obstacle));
+    // Closure-free hot-path predicates — see ObstacleIndex.blocksPoint /
+    // blocksSegment comments. These call the same pointInsideObstacle /
+    // segmentHitsObstacle tests as the predicate API, but without allocating
+    // a fresh `(obstacle) => ...` closure per call.
+    const pointBlocked = (candidate: PointMm) => obstacleIndex.blocksPoint(candidate);
+    const segmentBlocked = (left: PointMm, right: PointMm) => obstacleIndex.blocksSegment(left, right);
     if (pointBlocked(target)) return { points: [], expansions: 0, exhausted: false };
 
     const open = new MinHeap();

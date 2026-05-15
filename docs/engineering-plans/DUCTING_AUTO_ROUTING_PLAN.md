@@ -19,6 +19,32 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.30)
+
+Round-24 review on PR #23 commit `78b3772`. One Gemini HIGH closure-allocation
+fix; the other three findings are re-flags already on the pending /
+deferred queues.
+
+- **`ObstacleIndex.blocksPoint` / `blocksSegment` — closure-free
+  predicates (Gemini HIGH).** `pointBlocked` / `segmentBlocked` used to
+  call `someCandidateForPoint(candidate, (obstacle) => pointInsideObstacle(...))`,
+  allocating a fresh `(obstacle) => ...` closure on every A* expansion
+  (≈25 k closures per default search). The `ObstacleIndex` interface
+  now exposes two specialised predicates that call
+  `pointInsideObstacle` / `segmentHitsObstacle` directly on each
+  surviving candidate. Predicate-based `someCandidateForX` methods stay
+  for callers that need a custom test. Both the linear and AABB-tree
+  backends implement the new methods; the test parity invariant
+  (`linearIndex.candidatesFor* ≡ treeIndex.candidatesFor*`) keeps
+  passing.
+- _Not applied_ (re-flag of existing queue items):
+  - `point()` PointMm allocation — Pending heavier rewrites (9. tekrar).
+  - `MinHeap` `{key, priority}` allocation — Pending heavier rewrites
+    (9. tekrar).
+  - `valueByFields` Map allocation in input parsing — small
+    per-source/target cost, not on the A* hot loop; queued for a
+    future input-parsing pass if it ever shows up in a profile.
+
 ## Review Fixes (Sprint 1.29)
 
 Round-22 review on PR #23 commit `ca9647f`. One Gemini medium clarity
