@@ -885,18 +885,39 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
 
     const routes: PlannedRoute[] = [];
     if (bounds) {
-        for (const z of allowedZs) {
-            if (z < bounds.minZ - GEOM_TOLERANCE_MM || z > bounds.maxZ + GEOM_TOLERANCE_MM) {
-                issues.push(makeIssue("route_elevation_outside_bounds", "error", "Allowed routing elevation is outside the supplied routing bounds.", {
-                    elevationMm: z,
-                    minZ: bounds.minZ,
-                    maxZ: bounds.maxZ,
-                }));
-            }
+        // The route can run on any refined stop inside the bounds even when
+        // the raw allowed endpoints sit outside. Fail only if NO effective Z
+        // (allowed + verticalStepMm refined stops) is inside bounds —
+        // otherwise the route can pick a viable elevation. Previously this
+        // rejected `allowed=[3000,9000]` + `verticalStepMm=1000` with
+        // `bounds.z=[5500,6500]` even though `z=6000` is a perfectly valid
+        // refined elevation.
+        const effectiveBoundsZs = effectiveGridZs(allowedZs, verticalStepMm);
+        const hasViable = effectiveBoundsZs.some((z) =>
+            z >= bounds.minZ - GEOM_TOLERANCE_MM && z <= bounds.maxZ + GEOM_TOLERANCE_MM,
+        );
+        if (!hasViable) {
+            const closest = effectiveBoundsZs.reduce((best, z) =>
+                Math.abs(z - (bounds.minZ + bounds.maxZ) / 2) < Math.abs(best - (bounds.minZ + bounds.maxZ) / 2) ? z : best,
+                effectiveBoundsZs[0],
+            );
+            issues.push(makeIssue("route_elevation_outside_bounds", "error", "No allowed routing elevation (including verticalStepMm refined stops) lies within the supplied routing bounds.", {
+                elevationMm: closest,
+                minZ: bounds.minZ,
+                maxZ: bounds.maxZ,
+            }));
         }
     }
+    // Use the same effective grid (allowed + verticalStepMm refined stops)
+    // for the bounds preflight that buildRouteFromSources uses for the actual
+    // routing snap. Otherwise an endpoint that lives on a refined stop (e.g.
+    // z=6000 with allowed=[3000,9000] and verticalStepMm=1000) snaps here to
+    // a raw allowed elevation, fails the bounds test, and the planner skips
+    // route generation entirely even though buildRouteFromSources would have
+    // routed it correctly on the refined grid.
+    const preflightSnapZs = effectiveGridZs(allowedZs, verticalStepMm);
     for (const source of sources) {
-        const snapped = snapPointToGridZ(source.point, allowedZs);
+        const snapped = snapPointToGridZ(source.point, preflightSnapZs);
         if (!pointInsideBounds(snapped.point, bounds)) {
             issues.push(makeIssue("route_source_outside_bounds", "error", "A source point is outside the supplied routing bounds after projection to the nearest allowed elevation.", {
                 sourceId: source.id,
@@ -904,7 +925,7 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
         }
     }
     for (const target of targets) {
-        const snapped = snapPointToGridZ(target.point, allowedZs);
+        const snapped = snapPointToGridZ(target.point, preflightSnapZs);
         if (!pointInsideBounds(snapped.point, bounds)) {
             issues.push(makeIssue("route_target_outside_bounds", "error", "A target point is outside the supplied routing bounds after projection to the nearest allowed elevation.", {
                 targetId: target.id,

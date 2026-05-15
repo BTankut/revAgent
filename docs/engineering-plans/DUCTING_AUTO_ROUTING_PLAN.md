@@ -19,6 +19,30 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.23)
+
+Round-16 review on PR #23 commit `e4cda98`. One Codex P2 correctness
+fix that closes two related preflight gaps the earlier snap fixes had
+not reached.
+
+- **Bounds preflight uses the refined Z grid (Codex P2).**
+  `buildRouteFromSources` was snapping endpoints against the refined
+  `effectiveGridZs` since Sprint 1.11, but two outer preflight checks
+  still ran against the raw `allowedZs`:
+  - the `route_elevation_outside_bounds` preflight rejected
+    configurations like `allowed=[3000, 9000]`, `verticalStepMm=1000`,
+    `bounds.z=[5500, 6500]` even though `z=6000` is a perfectly valid
+    refined stop. It now passes when at least one effective Z lies
+    inside bounds.
+  - the source/target `route_*_outside_bounds` preflight snapped
+    endpoints with the raw `allowedZs`, so a source at the refined
+    `z=6000` was snapped to `z=3000` (or `z=9000`) and flagged
+    outside the same `[5500, 6500]` bounds. The preflight now uses
+    `effectiveGridZs(allowedZs, verticalStepMm)` so it matches the
+    actual routing snap.
+  Regression test asserts the `z=6000` refined-stop endpoint with
+  tight `[5500, 6500]` bounds now produces a pass route.
+
 ## Review Fixes (Sprint 1.22)
 
 Round-15 review on PR #23 commit `330a5fb`. Two small Gemini medium

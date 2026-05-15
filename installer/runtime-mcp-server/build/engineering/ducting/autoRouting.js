@@ -651,18 +651,20 @@ export function planDuctingAutoRoute(input = {}) {
     const bounds = aabbFromValue(input.routingBounds);
     const routes = [];
     if (bounds) {
-        for (const z of allowedZs) {
-            if (z < bounds.minZ - GEOM_TOLERANCE_MM || z > bounds.maxZ + GEOM_TOLERANCE_MM) {
-                issues.push(makeIssue("route_elevation_outside_bounds", "error", "Allowed routing elevation is outside the supplied routing bounds.", {
-                    elevationMm: z,
-                    minZ: bounds.minZ,
-                    maxZ: bounds.maxZ,
-                }));
-            }
+        const effectiveBoundsZs = effectiveGridZs(allowedZs, verticalStepMm);
+        const hasViable = effectiveBoundsZs.some((z) => z >= bounds.minZ - GEOM_TOLERANCE_MM && z <= bounds.maxZ + GEOM_TOLERANCE_MM);
+        if (!hasViable) {
+            const closest = effectiveBoundsZs.reduce((best, z) => Math.abs(z - (bounds.minZ + bounds.maxZ) / 2) < Math.abs(best - (bounds.minZ + bounds.maxZ) / 2) ? z : best, effectiveBoundsZs[0]);
+            issues.push(makeIssue("route_elevation_outside_bounds", "error", "No allowed routing elevation (including verticalStepMm refined stops) lies within the supplied routing bounds.", {
+                elevationMm: closest,
+                minZ: bounds.minZ,
+                maxZ: bounds.maxZ,
+            }));
         }
     }
+    const preflightSnapZs = effectiveGridZs(allowedZs, verticalStepMm);
     for (const source of sources) {
-        const snapped = snapPointToGridZ(source.point, allowedZs);
+        const snapped = snapPointToGridZ(source.point, preflightSnapZs);
         if (!pointInsideBounds(snapped.point, bounds)) {
             issues.push(makeIssue("route_source_outside_bounds", "error", "A source point is outside the supplied routing bounds after projection to the nearest allowed elevation.", {
                 sourceId: source.id,
@@ -670,7 +672,7 @@ export function planDuctingAutoRoute(input = {}) {
         }
     }
     for (const target of targets) {
-        const snapped = snapPointToGridZ(target.point, allowedZs);
+        const snapped = snapPointToGridZ(target.point, preflightSnapZs);
         if (!pointInsideBounds(snapped.point, bounds)) {
             issues.push(makeIssue("route_target_outside_bounds", "error", "A target point is outside the supplied routing bounds after projection to the nearest allowed elevation.", {
                 targetId: target.id,

@@ -281,6 +281,30 @@ assert.equal(legacyExpansion.expanded.maxX, 150);
 assert.equal(legacyExpansion.expanded.minZ, -100, "Z expansion is clearance + halfHeight");
 assert.equal(legacyExpansion.expanded.maxZ, 200);
 
+// Sprint 1.23 (Codex P2): the bounds preflight check (separate from the route
+// generation snap fixed in Sprint 1.11/1.14) was still snapping against the
+// raw allowedZs. With allowed=[3000,9000], verticalStepMm=1000, a source at
+// z=6000 lives on the refined grid; tight routingBounds around z=6000 must
+// not cause the preflight to falsely report it outside bounds.
+const refinedBoundsPreflight = planDuctingAutoRoute({
+  sources: [{ id: "ahu-pf", pointMm: { x: 0, y: 0, z: 6000 } }],
+  targets: [{ id: "vav-pf", pointMm: { x: 4000, y: 0, z: 6000 } }],
+  allowedElevationsMm: [3000, 9000],
+  verticalStepMm: 1000,
+  routingBounds: { minX: -200, minY: -200, minZ: 5500, maxX: 4200, maxY: 200, maxZ: 6500 },
+  gridStepMm: 1000,
+  clearanceMm: 0,
+});
+assert.equal(refinedBoundsPreflight.summary.status, "pass",
+  "z=6000 sits on the verticalStepMm refined grid; bounds preflight must accept it");
+assert.equal(
+  refinedBoundsPreflight.issues.some((issue) =>
+    issue.code === "route_source_outside_bounds" || issue.code === "route_target_outside_bounds"),
+  false,
+  "refined-grid endpoints must not be flagged outside the supplied routing bounds",
+);
+assert.equal(refinedBoundsPreflight.routeCandidates[0].pointsMm[0].z, 6000);
+
 // Sprint 1.16 (Codex P2): explicit `routingElevationMm` must win over
 // spatial-zone-derived allowedElevationsMm when the caller did not supply
 // `allowedElevationsMm`. Prior behaviour silently picked the plenum_volumes
