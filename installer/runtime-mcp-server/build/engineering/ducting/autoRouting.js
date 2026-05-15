@@ -267,6 +267,7 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
     }
     const width = xs.length;
     const height = ys.length;
+    const depth = zs.length;
     const gridKey = (ix, iy, iz) => (iz * height + iy) * width + ix;
     const ixFromGridKey = (value) => value % width;
     const iyFromGridKey = (value) => Math.floor(value / width) % height;
@@ -277,7 +278,21 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
     const compose = (gk, arrival) => gk * 2 + arrival;
     const gridFromComposite = (comp) => Math.floor(comp / 2);
     const arrivalFromComposite = (comp) => comp % 2;
-    const findIndex = (values, target) => values.findIndex((value) => Math.abs(value - target) < GEOM_TOLERANCE_MM);
+    const findIndex = (values, target) => {
+        let lo = 0;
+        let hi = values.length - 1;
+        while (lo <= hi) {
+            const mid = Math.floor((lo + hi) / 2);
+            const value = values[mid];
+            if (Math.abs(value - target) < GEOM_TOLERANCE_MM)
+                return mid;
+            if (value < target)
+                lo = mid + 1;
+            else
+                hi = mid - 1;
+        }
+        return -1;
+    };
     const targetIx = findIndex(xs, target.x);
     const targetIy = findIndex(ys, target.y);
     const targetIz = findIndex(zs, target.z);
@@ -324,7 +339,7 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
         ? HORIZONTAL_NEIGHBORS_8WAY
         : HORIZONTAL_NEIGHBORS_4WAY;
     const evalNeighbor = (nIx, nIy, nIz, vertical, currentPoint, currentComp, currentArrival, currentG, currentSource) => {
-        if (nIx < 0 || nIy < 0 || nIz < 0 || nIx >= xs.length || nIy >= ys.length || nIz >= zs.length)
+        if (nIx < 0 || nIy < 0 || nIz < 0 || nIx >= width || nIy >= height || nIz >= depth)
             return;
         const neighborArrival = vertical ? ARRIVE_VERT : ARRIVE_HORIZ;
         const neighborComp = compose(gridKey(nIx, nIy, nIz), neighborArrival);
@@ -399,14 +414,14 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
             const newIx = ix + dx;
             const newIy = iy + dy;
             if (dx !== 0 && dy !== 0) {
-                if (newIx < 0 || newIx >= xs.length || newIy < 0 || newIy >= ys.length)
+                if (newIx < 0 || newIx >= width || newIy < 0 || newIy >= height)
                     continue;
                 if (!is45DegreeDiagonalXY(xs[newIx] - xs[ix], ys[newIy] - ys[iy]))
                     continue;
             }
             evalNeighbor(newIx, newIy, iz, false, currentPoint, currentComp, currentArrival, currentG, currentSource);
         }
-        if (zs.length > 1) {
+        if (depth > 1) {
             evalNeighbor(ix, iy, iz - 1, true, currentPoint, currentComp, currentArrival, currentG, currentSource);
             evalNeighbor(ix, iy, iz + 1, true, currentPoint, currentComp, currentArrival, currentG, currentSource);
         }

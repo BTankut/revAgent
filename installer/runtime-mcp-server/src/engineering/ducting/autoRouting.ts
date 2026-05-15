@@ -414,6 +414,7 @@ function findGridPathFromSources(
 
     const width = xs.length;
     const height = ys.length;
+    const depth = zs.length;
     const gridKey = (ix: number, iy: number, iz: number) => (iz * height + iy) * width + ix;
     const ixFromGridKey = (value: number) => value % width;
     const iyFromGridKey = (value: number) => Math.floor(value / width) % height;
@@ -430,7 +431,21 @@ function findGridPathFromSources(
     const gridFromComposite = (comp: number) => Math.floor(comp / 2);
     const arrivalFromComposite = (comp: number) => comp % 2;
 
-    const findIndex = (values: number[], target: number) => values.findIndex((value) => Math.abs(value - target) < GEOM_TOLERANCE_MM);
+    // Binary search the sorted coordinate array for `target` within
+    // GEOM_TOLERANCE_MM. xs/ys/zs are built monotonically by createCoordinateGrid
+    // (set → Array.from → sort ascending), so the O(log N) probe is correct.
+    const findIndex = (values: number[], target: number): number => {
+        let lo = 0;
+        let hi = values.length - 1;
+        while (lo <= hi) {
+            const mid = Math.floor((lo + hi) / 2);
+            const value = values[mid];
+            if (Math.abs(value - target) < GEOM_TOLERANCE_MM) return mid;
+            if (value < target) lo = mid + 1;
+            else hi = mid - 1;
+        }
+        return -1;
+    };
     const targetIx = findIndex(xs, target.x);
     const targetIy = findIndex(ys, target.y);
     const targetIz = findIndex(zs, target.z);
@@ -496,7 +511,7 @@ function findGridPathFromSources(
         currentPoint: PointMm, currentComp: number, currentArrival: number,
         currentG: number, currentSource: number,
     ): void => {
-        if (nIx < 0 || nIy < 0 || nIz < 0 || nIx >= xs.length || nIy >= ys.length || nIz >= zs.length) return;
+        if (nIx < 0 || nIy < 0 || nIz < 0 || nIx >= width || nIy >= height || nIz >= depth) return;
         const neighborArrival = vertical ? ARRIVE_VERT : ARRIVE_HORIZ;
         const neighborComp = compose(gridKey(nIx, nIy, nIz), neighborArrival);
         if (closed.has(neighborComp)) return;
@@ -574,12 +589,12 @@ function findGridPathFromSources(
                 // (obstacle detour points and endpoint snapping insert off-pitch coordinates).
                 // Skip the diagonal unless |Δx| ≈ |Δy| in world space; the four axis-aligned
                 // moves still cover this neighbor.
-                if (newIx < 0 || newIx >= xs.length || newIy < 0 || newIy >= ys.length) continue;
+                if (newIx < 0 || newIx >= width || newIy < 0 || newIy >= height) continue;
                 if (!is45DegreeDiagonalXY(xs[newIx] - xs[ix], ys[newIy] - ys[iy])) continue;
             }
             evalNeighbor(newIx, newIy, iz, false, currentPoint, currentComp, currentArrival, currentG, currentSource);
         }
-        if (zs.length > 1) {
+        if (depth > 1) {
             evalNeighbor(ix, iy, iz - 1, true, currentPoint, currentComp, currentArrival, currentG, currentSource);
             evalNeighbor(ix, iy, iz + 1, true, currentPoint, currentComp, currentArrival, currentG, currentSource);
         }

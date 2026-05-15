@@ -19,6 +19,25 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.18)
+
+Round-11 review on PR #23 commit `fcacc59`. Two small Gemini medium
+perf optimisations; no behaviour change.
+
+- **Binary search in `findIndex` (Gemini medium).** The helper used
+  `Array.prototype.findIndex`, an O(N) linear scan, even though
+  `xs`/`ys`/`zs` are constructed by `createCoordinateGrid` via
+  `Array.from(set).sort(...)` and are therefore monotonically
+  increasing. The lookup is now a standard `Math.floor((lo+hi)/2)`
+  binary search bounded by `GEOM_TOLERANCE_MM`, dropping the cost from
+  O(N) to O(log N) per source/target index resolution.
+- **Cached `xs.length` / `ys.length` / `zs.length` (Gemini medium).**
+  The hot path was reading these properties on every neighbour bounds
+  check and on every "is there a Z axis?" gate. The new `depth` local
+  joins the existing `width` / `height` locals; the inner neighbour
+  loop, the `evalNeighbor` bounds test, and the vertical-axis check
+  all use the cached values.
+
 ## Review Fixes (Sprint 1.17)
 
 Round-10 review on PR #23 commit `7358d77`. One Gemini HIGH
