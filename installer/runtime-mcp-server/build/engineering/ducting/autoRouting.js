@@ -281,9 +281,17 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
     const sourceForKey = new Map();
     const gScore = new Map();
     const closed = new Set();
-    const heuristic = (candidate) => options.allowDiagonal
-        ? pointDistanceMm(candidate, target)
-        : Math.abs(candidate.x - target.x) + Math.abs(candidate.y - target.y) + Math.abs(candidate.z - target.z);
+    const octileSqrt2Minus1 = Math.SQRT2 - 1;
+    const heuristic = (candidate) => {
+        const dx = Math.abs(candidate.x - target.x);
+        const dy = Math.abs(candidate.y - target.y);
+        const dz = Math.abs(candidate.z - target.z);
+        if (!options.allowDiagonal)
+            return dx + dy + dz;
+        const maxXY = dx > dy ? dx : dy;
+        const minXY = dx > dy ? dy : dx;
+        return maxXY + octileSqrt2Minus1 * minXY + dz;
+    };
     for (const entry of validSources) {
         const sourceIx = findIndex(xs, entry.source.x);
         const sourceIy = findIndex(ys, entry.source.y);

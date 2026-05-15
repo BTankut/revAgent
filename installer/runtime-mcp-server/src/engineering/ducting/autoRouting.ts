@@ -421,12 +421,24 @@ function findGridPathFromSources(
     const sourceForKey = new Map<number, number>();
     const gScore = new Map<number, number>();
     const closed = new Set<number>();
-    // Manhattan is admissible for the orthogonal grid; when XY diagonals are
-    // enabled it over-estimates (a 45° step costs s·√2 but Manhattan charges 2s),
-    // so we switch to Euclidean to keep A* optimal.
-    const heuristic = (candidate: PointMm) => options.allowDiagonal
-        ? pointDistanceMm(candidate, target)
-        : Math.abs(candidate.x - target.x) + Math.abs(candidate.y - target.y) + Math.abs(candidate.z - target.z);
+    // Heuristic admissibility:
+    //   - Orthogonal-only grid: Manhattan is exact and tight.
+    //   - With 8-way XY diagonals + pure-Z verticals: the minimum cost on an
+    //     unobstructed grid is `octile(|Δx|, |Δy|) + |Δz|`, where
+    //     `octile(a, b) = max(a,b) + (√2 - 1) · min(a,b)`. This is achievable
+    //     on the grid (move diagonally until one axis runs out, then straight)
+    //     so it bounds any path from below and stays admissible while being
+    //     tighter than pure Euclidean — A* explores fewer nodes.
+    const octileSqrt2Minus1 = Math.SQRT2 - 1;
+    const heuristic = (candidate: PointMm) => {
+        const dx = Math.abs(candidate.x - target.x);
+        const dy = Math.abs(candidate.y - target.y);
+        const dz = Math.abs(candidate.z - target.z);
+        if (!options.allowDiagonal) return dx + dy + dz;
+        const maxXY = dx > dy ? dx : dy;
+        const minXY = dx > dy ? dy : dx;
+        return maxXY + octileSqrt2Minus1 * minXY + dz;
+    };
 
     for (const entry of validSources) {
         const sourceIx = findIndex(xs, entry.source.x);

@@ -19,6 +19,23 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.12)
+
+Round-5 Gemini review on PR #23 commit `d8fcbc7` re-flagged the two
+deferred A*-state findings (vertical-reversal distinction, elbow
+penalty in `stepCost`); both remain in the deferred routing-cost
+sprint. One new finding was applied here.
+
+- **Octile heuristic when `allowDiagonal` (Gemini medium).** The
+  Sprint 1.8 switch to Euclidean made the heuristic admissible for
+  8-way XY + pure-Z grids, but it under-uses the structure of the
+  grid. Minimum achievable cost on an unobstructed 8-way XY +
+  orthogonal-Z grid is `octile(|Δx|, |Δy|) + |Δz|` where
+  `octile(a,b) = max(a,b) + (√2 − 1) · min(a,b)`; this stays admissible
+  while being a tighter lower bound than Euclidean, so A* expands
+  fewer nodes. Orthogonal-only paths keep the exact-and-tight
+  Manhattan heuristic.
+
 ## Review Fixes (Sprint 1.11)
 
 Round-4 review on PR #23 commit `fd9cee9`. Three of Gemini's perf
