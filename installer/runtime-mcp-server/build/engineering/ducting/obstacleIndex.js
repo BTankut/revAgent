@@ -159,7 +159,7 @@ function segmentAabb(start, end) {
 }
 function partitionByCenter(obstacles, axis, lo, hi, mid) {
     while (lo < hi) {
-        const center = (lo + hi) >> 1;
+        const center = Math.floor((lo + hi) / 2);
         const a = aabbCenter(obstacles[lo].expanded, axis);
         const b = aabbCenter(obstacles[center].expanded, axis);
         const c = aabbCenter(obstacles[hi].expanded, axis);
@@ -197,7 +197,7 @@ function buildAabbTreeNodeInRange(obstacles, lo, hi) {
         aabb = unionAabb(aabb, obstacles[index].expanded);
     }
     const axis = longestAxis(aabb);
-    const mid = (lo + hi) >> 1;
+    const mid = Math.floor((lo + hi) / 2);
     partitionByCenter(obstacles, axis, lo, hi, mid);
     return {
         aabb,

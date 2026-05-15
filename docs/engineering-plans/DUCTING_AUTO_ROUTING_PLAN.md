@@ -19,6 +19,34 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.16)
+
+Round-9 review on PR #23 commit `9538b72`. One Codex P2 correctness
+fix plus two small Gemini overflow-hardening fixes. The heavier
+A* hot-path rewrites flagged by Gemini round-8 (point-allocation
+reuse, typed-array A* state) are still on the next-sprint queue.
+
+- **Explicit `routingElevationMm` wins over spatial-derived elevations
+  (Codex P2).** When the caller supplied `routingElevationMm` and
+  `spatialZone` but omitted `allowedElevationsMm`, the planner was
+  reaching for `spatialContext.allowedElevationsMm` (derived from
+  `plenum_volumes`), routing at e.g. `z=2800` even though the caller
+  asked for `z=3200`. The new precedence — matching the schema
+  contract — is:
+    1. `input.allowedElevationsMm` (multi-elevation list)
+    2. `input.routingElevationMm` (explicit single elevation)
+    3. `spatialContext.allowedElevationsMm` (derived default)
+    4. `[defaultRouteZ]` (heuristic fallback)
+  A regression test asserts that `routingElevationMm: 3200` with a
+  `plenum_volumes` of `2800..3600` and no `allowedElevationsMm` runs
+  the route at `z=3200` with no projected-endpoint warning.
+- **AABB-tree midpoint uses `Math.floor`, not bitwise shift (Gemini
+  medium ×2).** `(lo + hi) >> 1` coerces to 32-bit signed and silently
+  overflows past `2^31 − 1`. Replaced with `Math.floor((lo + hi) / 2)`
+  in both `partitionByCenter` and `buildAabbTreeNodeInRange`. Practical
+  impact is small (it would need >1 B obstacles to manifest) but the
+  hardened form is cheap and unambiguous.
+
 ## Review Fixes (Sprint 1.15)
 
 Round-8 review on PR #23 commit `bcbd5a4`. Four findings applied; two

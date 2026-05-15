@@ -245,6 +245,46 @@ assert.equal(
 );
 assert.equal(projectedEndpoint.routeCandidates[0].pointsMm[0].z, 3000);
 
+// Sprint 1.16 (Codex P2): explicit `routingElevationMm` must win over
+// spatial-zone-derived allowedElevationsMm when the caller did not supply
+// `allowedElevationsMm`. Prior behaviour silently picked the plenum_volumes
+// min/max (2800/3600 below), routing at z=2800 even though the caller
+// asked for z=3200.
+const explicitRoutingOverSpatial = planDuctingAutoRoute({
+  sources: [{ id: "ahu-explicit", pointMm: { x: 0, y: 0, z: 3200 } }],
+  targets: [{ id: "vav-explicit", pointMm: { x: 4000, y: 0, z: 3200 } }],
+  routingElevationMm: 3200,
+  spatialZone: {
+    schema_version: "spatial-zone-extract.v1",
+    obstacles: [],
+    plenum_volumes: [{ id: "p1", z_min_mm: 2800, z_max_mm: 3600 }],
+    shafts: [],
+  },
+  gridStepMm: 1000,
+  clearanceMm: 0,
+});
+assert.equal(explicitRoutingOverSpatial.summary.status, "pass");
+assert.equal(
+  explicitRoutingOverSpatial.summary.routingElevationMm,
+  3200,
+  "summary must echo the explicit routingElevationMm",
+);
+assert.deepEqual(
+  explicitRoutingOverSpatial.summary.allowedElevationsMm,
+  [3200],
+  "explicit routingElevationMm must override spatial-zone-derived allowedElevationsMm",
+);
+assert.equal(
+  explicitRoutingOverSpatial.routeCandidates[0].pointsMm[0].z,
+  3200,
+  "route must run at the explicit routing elevation (3200), not the plenum min (2800)",
+);
+assert.equal(
+  explicitRoutingOverSpatial.issues.some((issue) => issue.code === "route_endpoint_z_projected"),
+  false,
+  "endpoint at the explicit routing elevation must not emit the projected-endpoint warning",
+);
+
 // Sprint 1.15 (Codex P2): a route whose source and target collapse to the same
 // grid node (identical points, or endpoint snapping merging them) must not
 // emit a `pass` candidate. The planner now rejects single-point paths with a

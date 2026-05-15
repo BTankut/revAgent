@@ -777,9 +777,27 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
     }
 
     const providedElevations = readAllowedElevations(input.allowedElevationsMm);
-    const allowedZs = providedElevations.length > 0
-        ? providedElevations
-        : (spatialContext && spatialContext.allowedElevationsMm.length > 0 ? spatialContext.allowedElevationsMm.slice() : [round(defaultRouteZ)]);
+    // Precedence (matches the schema contract on plan_ducting_auto_route):
+    //   1. User-supplied `allowedElevationsMm`           — explicit multi-elevation list wins.
+    //   2. User-supplied `routingElevationMm`            — explicit single elevation; must win
+    //                                                      over spatial-zone-derived defaults so
+    //                                                      callers who want a fixed plenum are not
+    //                                                      silently re-routed onto plenum_volumes
+    //                                                      min/max.
+    //   3. `spatialContext.allowedElevationsMm`          — derived from plenum_volumes when no
+    //                                                      explicit input was given.
+    //   4. `[defaultRouteZ]`                             — heuristic fallback (source or target z).
+    const explicitRoutingElevation = asNumber(input.routingElevationMm);
+    let allowedZs: number[];
+    if (providedElevations.length > 0) {
+        allowedZs = providedElevations;
+    } else if (explicitRoutingElevation !== undefined) {
+        allowedZs = [round(explicitRoutingElevation)];
+    } else if (spatialContext && spatialContext.allowedElevationsMm.length > 0) {
+        allowedZs = spatialContext.allowedElevationsMm.slice();
+    } else {
+        allowedZs = [round(defaultRouteZ)];
+    }
 
     const userObstacleRaw = Array.isArray(input.obstacles) ? input.obstacles.map(asRecord) : [];
     const spatialObstacleRaw = spatialContext ? spatialContext.obstacles.map((entry) => ({

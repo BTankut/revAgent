@@ -574,9 +574,20 @@ export function planDuctingAutoRoute(input = {}) {
         }
     }
     const providedElevations = readAllowedElevations(input.allowedElevationsMm);
-    const allowedZs = providedElevations.length > 0
-        ? providedElevations
-        : (spatialContext && spatialContext.allowedElevationsMm.length > 0 ? spatialContext.allowedElevationsMm.slice() : [round(defaultRouteZ)]);
+    const explicitRoutingElevation = asNumber(input.routingElevationMm);
+    let allowedZs;
+    if (providedElevations.length > 0) {
+        allowedZs = providedElevations;
+    }
+    else if (explicitRoutingElevation !== undefined) {
+        allowedZs = [round(explicitRoutingElevation)];
+    }
+    else if (spatialContext && spatialContext.allowedElevationsMm.length > 0) {
+        allowedZs = spatialContext.allowedElevationsMm.slice();
+    }
+    else {
+        allowedZs = [round(defaultRouteZ)];
+    }
     const userObstacleRaw = Array.isArray(input.obstacles) ? input.obstacles.map(asRecord) : [];
     const spatialObstacleRaw = spatialContext ? spatialContext.obstacles.map((entry) => ({
         id: entry.id,
