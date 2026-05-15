@@ -73,9 +73,17 @@ export function pointInsideObstacle(point: PointMm, obstacle: ObstacleAabb): boo
  * Exact 3D segment-AABB intersection using the slab method.
  * Correct for both axis-aligned and diagonal segments.
  */
+// Slab-method "axis parallel" tolerance: a segment whose displacement on an
+// axis is below this is treated as parallel to that slab. 1 µm matches the
+// `GEOM_TOLERANCE_MM` convention the rest of the planner uses for coordinate
+// equality; the previous 1e-9 was below double-precision float drift at mm
+// scale and could push near-axis-aligned segments through the
+// non-parallel branch with a huge `1/dir` term.
+const SLAB_PARALLEL_EPSILON_MM = 1e-3;
+
 export function segmentHitsObstacle(start: PointMm, end: PointMm, obstacle: ObstacleAabb): boolean {
     const aabb = obstacle.expanded;
-    const epsilon = 1e-9;
+    const epsilon = SLAB_PARALLEL_EPSILON_MM;
     let tEnter = 0;
     let tExit = 1;
 

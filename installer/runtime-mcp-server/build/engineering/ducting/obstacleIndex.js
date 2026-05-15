@@ -34,9 +34,10 @@ export function pointInsideObstacle(point, obstacle) {
         && point.z >= aabb.minZ
         && point.z <= aabb.maxZ;
 }
+const SLAB_PARALLEL_EPSILON_MM = 1e-3;
 export function segmentHitsObstacle(start, end, obstacle) {
     const aabb = obstacle.expanded;
-    const epsilon = 1e-9;
+    const epsilon = SLAB_PARALLEL_EPSILON_MM;
     let tEnter = 0;
     let tExit = 1;
     const dx = end.x - start.x;

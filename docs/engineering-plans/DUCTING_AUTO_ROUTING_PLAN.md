@@ -19,6 +19,28 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.25)
+
+Round-18 review on PR #23 commit `70057af`. One Gemini medium
+robustness fix; the other three findings are re-flags of items already
+in the pending / deferred queues.
+
+- **`segmentHitsObstacle` slab epsilon = 1 µm (Gemini medium).** The
+  parallel-axis tolerance was `1e-9`, far below double-precision float
+  drift at mm scale. A near-axis-aligned segment with `dir ≈ 1e-6`
+  would slip through the "not parallel" branch and use a huge
+  `1/dir`, producing numerically unstable `t1`/`t2`. Raised to a
+  named `SLAB_PARALLEL_EPSILON_MM = 1e-3` (1 µm), matching the
+  `GEOM_TOLERANCE_MM` convention the rest of the planner uses.
+- _Not applied_ (re-flag of existing queue items):
+  - `point()` allocation + heap object allocation — still in the
+    Pending heavier-rewrites queue.
+  - A* state vertical reversal (`ARRIVE_UP` vs `ARRIVE_DOWN`) — still
+    in the Deferred routing-cost sprint.
+  - `gridKey` overflow risk — theoretical (1 km bounds + 10 mm step
+    is well under `Number.MAX_SAFE_INTEGER` at ~1e13); leaving as-is
+    until a real workload reaches the limit.
+
 ## Review Fixes (Sprint 1.24)
 
 Round-17 review on PR #23 commit `18be1cd`. Two small Gemini medium
