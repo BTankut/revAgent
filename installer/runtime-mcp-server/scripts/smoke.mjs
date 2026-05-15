@@ -37,6 +37,8 @@ const expectedTools = [
   "focus_elements",
   "section_box_elements",
   "create_3d_view_for_elements",
+  "export_revit_view_image",
+  "export_revit_coordination_image",
   "show_element_in_plan_and_3d",
   "smart_focus_elements",
   "inspect_elements",

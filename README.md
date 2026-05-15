@@ -16,6 +16,8 @@ It is the single canonical source for production office deployment.
 - `installer/revit-plugin/`: bundled Revit add-in payload
 - `installer/command-payload/`: command set DLL and manifest backup
 - `installer/runtime-mcp-server/`: TypeScript source and bundled local runtime MCP server build for live Revit execution
+- `docs/REVIT_IMAGE_EXPORT.md`: visual QA export workflow for active views,
+  selected views, and coordination-focused 3D review images
 - `installer/revit-api-docs-mcp/`: TypeScript source and required companion local MCP server for Revit API DLL + XML documentation search
 - `installer/lib/`: shared PowerShell helper modules for installer/updater behavior
 - `installer/install-self-contained.ps1`: self-contained installer script
@@ -55,6 +57,10 @@ explicit:
   verified
 - the runtime MCP server exposes raw dynamic execution plus read-only context
   primitives for session, active view, elements, and parameter schema
+- the runtime MCP server also exposes Revit image export tools for visual QA:
+  `export_revit_view_image` is read-only, while
+  `export_revit_coordination_image` writes only a reusable review view and
+  image export settings, never physical model elements
 - the required docs server resolves class/member signatures before non-trivial snippets are generated, including bulk symbol resolution
 
 ## Requirements
