@@ -14,6 +14,8 @@ import { registerOpenExistingPlanForElementLevelTool } from "./open_existing_pla
 import { registerFocusElementsTool } from "./focus_elements.js";
 import { registerSectionBoxElementsTool } from "./section_box_elements.js";
 import { registerCreate3DViewForElementsTool } from "./create_3d_view_for_elements.js";
+import { registerExportRevitCoordinationImageTool } from "./export_revit_coordination_image.js";
+import { registerExportRevitViewImageTool } from "./export_revit_view_image.js";
 import { registerShowElementInPlanAnd3DTool } from "./show_element_in_plan_and_3d.js";
 import { registerSmartFocusElementsTool } from "./smart_focus_elements.js";
 import { registerInspectElementsTool } from "./inspect_elements.js";
@@ -45,6 +47,8 @@ export async function registerTools(server) {
     registerFocusElementsTool(server);
     registerSectionBoxElementsTool(server);
     registerCreate3DViewForElementsTool(server);
+    registerExportRevitViewImageTool(server);
+    registerExportRevitCoordinationImageTool(server);
     registerShowElementInPlanAnd3DTool(server);
     registerSmartFocusElementsTool(server);
     registerInspectElementsTool(server);
@@ -53,5 +57,5 @@ export async function registerTools(server) {
     registerApplyDcwDhwWritebackTool(server);
     registerAnalyzeHydronicPipingGraphTool(server);
     registerEvaluateDuctingDesignTool(server);
-    console.error("Registered 26 Revit MCP tools");
+    console.error("Registered 28 Revit MCP tools");
 }

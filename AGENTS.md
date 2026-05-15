@@ -30,6 +30,22 @@ Paketlerin pratik anlamı:
 
 Bu paketler mühendislik onayının yerine geçmez. Çıktılar QA, dry-run öneri, eksik veri yakalama, tablo/profil varsayımı görünürlüğü ve küçük kontrollü write-back için kullanılır. Modelde yazma yapılacaksa önce dry-run raporu, sonra küçük batch, sonra Revit'te tekrar inspection yapılır.
 
+## Visual QA and Revit Image Export
+
+Mekanik koordinasyon islerinde LLM'in sadece metin raporuna guvenmesi yeterli degildir. Yogun kanal, boru, sprinkler, elektrik ve mimari arka plan iceren gorunumlerde model sonucu mutlaka gorsel kanitla desteklenir.
+
+Kullanilacak runtime araclari:
+
+- `export_revit_view_image`: aktif gorunumu, aktif gorunumun visible region alanini veya secili bir Revit view'ini PNG/JPEG/TIFF/BMP/TARGA olarak export eder. Revit modelinde veya view ayarlarinda yazma yapmaz.
+- `export_revit_coordination_image`: hedef elementler icin tekrar kullanilabilir bir 3D QA view olusturur veya gunceller, section box ve yuksek kontrast grafik override uygular, sonra gorsel export eder. Fiziksel MEP elemani uretmez veya degistirmez; sadece review view ayarlari yazar.
+
+Pratik kullanim:
+
+1. Ham ekran kaniti gerekiyorsa once `export_revit_view_image` kullanilir.
+2. Goruntu yogun ve okunamiyorsa `export_revit_coordination_image` ile hedef element id'leri etrafinda odakli 3D kanit alinir.
+3. Cikti dosya yolu kullaniciya veya PR/review notuna yazilir.
+4. Gorsel export araclari da Revit MCP hard rule kapsamindadir; status preflight olmadan ve paralel calistirilmaz.
+
 ## Revit MCP Coordination - Hard Rule
 
 Revit'e gonderilen her status disi MCP gorevi oncesinde kisa durum kontrolu yapilir:

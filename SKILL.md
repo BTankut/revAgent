@@ -13,7 +13,7 @@ description: >
   "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
   "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
 license: UNLICENSED
-version: 0.4.3
+version: 0.4.4
 ---
 
 # Revit MCP — MEP Automation Expert
@@ -72,6 +72,15 @@ only the bare names appear, so the rules stay host-agnostic.
 - `create_3d_view_for_elements` - create or reuse a named 3D view for elements,
   enforce section box on/off, activate it, and focus/select the elements with
   rollback inside its own view update transactions
+- `export_revit_view_image` - export the active view, visible region, or a
+  selected view to PNG/JPEG/TIFF/BMP/TARGA through `Document.ExportImage`.
+  This is read-only and is the preferred way to capture visual evidence for an
+  LLM review.
+- `export_revit_coordination_image` - create or reuse a dedicated visual QA 3D
+  view, optionally section-box target elements, apply high-contrast review
+  graphics, and export an image. It writes only review view settings; it does
+  not create or modify ducts, pipes, terminals, fittings, or other physical MEP
+  model elements.
 - `show_element_in_plan_and_3d` - wrapper workflow that safely finds or uses one
   element, shows it in an existing plan, then optionally opens a focused 3D view
 - `smart_focus_elements` - wrapper workflow that tries active/requested view
@@ -200,6 +209,12 @@ Package responsibilities:
 Do not present any of these reports as final engineering approval. They are
 deterministic assistants for QA, sizing evidence, dry-run recommendations, and
 controlled write-back.
+
+For visual QA after any Revit MCP operation, use `export_revit_view_image` for
+raw plan/view evidence and `export_revit_coordination_image` when dense MEP
+systems need a focused 3D review image. Prefer PNG at `pixelSize` 2400 for
+linework-heavy plans. Keep generated image paths with the task notes so a human
+reviewer can reproduce the exact evidence.
 
 ---
 
