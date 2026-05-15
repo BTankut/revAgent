@@ -225,7 +225,11 @@ function createCoordinateGrid(sources, target, obstacles, bounds, gridStepMm, ve
     }
     if (target.z >= zMin - GEOM_TOLERANCE_MM && target.z <= zMax + GEOM_TOLERANCE_MM)
         zs.add(round(target.z));
-    return { xs: sortedNumbers(xs), ys: sortedNumbers(ys), zs: sortedNumbers(zs) };
+    let zArray = sortedNumbers(zs);
+    if (bounds) {
+        zArray = zArray.filter((z) => z >= bounds.minZ - GEOM_TOLERANCE_MM && z <= bounds.maxZ + GEOM_TOLERANCE_MM);
+    }
+    return { xs: sortedNumbers(xs), ys: sortedNumbers(ys), zs: zArray };
 }
 class MinHeap {
     values = [];

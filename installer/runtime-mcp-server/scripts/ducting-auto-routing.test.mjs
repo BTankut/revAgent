@@ -281,6 +281,48 @@ assert.equal(legacyExpansion.expanded.maxX, 150);
 assert.equal(legacyExpansion.expanded.minZ, -100, "Z expansion is clearance + halfHeight");
 assert.equal(legacyExpansion.expanded.maxZ, 200);
 
+// Sprint 1.28 (Codex P2): A* must not expand grid nodes outside routingBounds.
+// With bounds.z=[5500,6500], allowed=[3000,9000], verticalStepMm=1000, the
+// raw grid contains z=7000 — outside the caller's routing volume. A blocking
+// obstacle at z=6000 would otherwise tempt A* to detour through z=7000 and
+// silently violate the bounds contract. The Z grid must now be clipped to
+// bounds before search.
+const boundsClippedRoute = planDuctingAutoRoute({
+  sources: [{ id: "ahu", pointMm: { x: 0, y: 0, z: 6000 } }],
+  targets: [{ id: "vav", pointMm: { x: 4000, y: 0, z: 6000 } }],
+  allowedElevationsMm: [3000, 9000],
+  verticalStepMm: 1000,
+  obstacles: [
+    { id: "beam", aabbMm: { minX: 1800, minY: -500, minZ: 5900, maxX: 2200, maxY: 500, maxZ: 6100 } },
+  ],
+  routingBounds: { minX: -200, minY: -500, minZ: 5500, maxX: 4200, maxY: 500, maxZ: 6500 },
+  gridStepMm: 500,
+  clearanceMm: 0,
+});
+assert.equal(boundsClippedRoute.summary.status, "fail",
+  "with the corridor blocked at z=6000 and bounds.z capped at 6500, no detour through z=7000 is allowed");
+assert.ok(
+  boundsClippedRoute.issues.some((issue) => issue.code === "route_not_found"),
+  "blocked-corridor scenario must emit route_not_found",
+);
+
+// Companion sanity check: when the obstacle is removed, the same bounds let
+// the route run cleanly at z=6000.
+const boundsClippedNoBlock = planDuctingAutoRoute({
+  sources: [{ id: "ahu", pointMm: { x: 0, y: 0, z: 6000 } }],
+  targets: [{ id: "vav", pointMm: { x: 4000, y: 0, z: 6000 } }],
+  allowedElevationsMm: [3000, 9000],
+  verticalStepMm: 1000,
+  routingBounds: { minX: -200, minY: -500, minZ: 5500, maxX: 4200, maxY: 500, maxZ: 6500 },
+  gridStepMm: 500,
+  clearanceMm: 0,
+});
+assert.equal(boundsClippedNoBlock.summary.status, "pass");
+for (const point of boundsClippedNoBlock.routeCandidates[0].pointsMm) {
+  assert.ok(point.z >= 5500 && point.z <= 6500,
+    `every route waypoint must stay inside bounds.z [5500, 6500]; got z=${point.z}`);
+}
+
 // Sprint 1.27 (Codex P2): a user-supplied obstacle whose AABB cannot be parsed
 // must NOT silently drop the valid spatial-zone obstacle that shares its id.
 // Before this fix, an invalid user override would (1) win the merge by id,

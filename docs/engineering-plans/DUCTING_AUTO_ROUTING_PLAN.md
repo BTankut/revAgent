@@ -19,6 +19,26 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.28)
+
+Round-21 review on PR #23 commit `ec921ad`. One Codex P2 correctness
+fix that closes a routing-bounds enforcement gap.
+
+- **A* grid Z clipped to `routingBounds` (Codex P2).** X/Y were
+  clamped by `createCoordinateGrid` since the original implementation,
+  but Z was built independently from `allowedElevationsMm` +
+  `verticalStepMm` refinement, ignoring bounds. With
+  `bounds.z=[5500,6500]` + `allowed=[3000,9000]` +
+  `verticalStepMm=1000`, the raw grid still contained `z=7000`. A
+  blocking obstacle at `z=6000` could tempt A* to detour through
+  `z=7000` and silently violate the caller's explicit routing volume.
+  The grid Z array is now filtered to `[bounds.minZ - tol,
+  bounds.maxZ + tol]` whenever bounds is supplied. Regression test
+  asserts (a) the blocked-corridor scenario fails with
+  `route_not_found` instead of detouring out of bounds, and (b)
+  every waypoint stays inside the Z bounds when no obstacle is in
+  the way.
+
 ## Review Fixes (Sprint 1.27)
 
 Round-20 review on PR #23 commit `2ba57d6`. One Codex P2 correctness

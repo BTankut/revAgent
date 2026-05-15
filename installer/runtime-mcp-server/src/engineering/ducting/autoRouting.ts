@@ -350,7 +350,19 @@ function createCoordinateGrid(
     }
     if (target.z >= zMin - GEOM_TOLERANCE_MM && target.z <= zMax + GEOM_TOLERANCE_MM) zs.add(round(target.z));
 
-    return { xs: sortedNumbers(xs), ys: sortedNumbers(ys), zs: sortedNumbers(zs) };
+    let zArray = sortedNumbers(zs);
+    if (bounds) {
+        // Clip grid Z's to the routing bounds so A* never expands a node
+        // outside the caller's explicit routing volume. X/Y are already
+        // clamped above (createCoordinateGrid sets minX..maxY from bounds
+        // when supplied), but Z was built independently from allowedZs +
+        // verticalStepMm refinement. Without this clip, a configuration like
+        // bounds.z=[5500,6500] + allowed=[3000,9000] + verticalStepMm=1000
+        // would let A* detour through z=7000 to dodge a z=6000 obstacle.
+        zArray = zArray.filter((z) => z >= bounds.minZ - GEOM_TOLERANCE_MM && z <= bounds.maxZ + GEOM_TOLERANCE_MM);
+    }
+
+    return { xs: sortedNumbers(xs), ys: sortedNumbers(ys), zs: zArray };
 }
 
 class MinHeap {
