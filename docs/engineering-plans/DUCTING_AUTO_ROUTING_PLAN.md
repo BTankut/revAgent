@@ -19,6 +19,24 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.24)
+
+Round-17 review on PR #23 commit `18be1cd`. Two small Gemini medium
+fixes; one related Gemini HIGH (`point()` + heap object allocations)
+remains in the pending heavier-rewrite queue.
+
+- **`pointInsideBounds` uses `GEOM_TOLERANCE_MM` (Gemini medium).**
+  The bounds check was strict inequality, so a point that lies
+  exactly on a routing boundary could be rejected by floating-point
+  drift introduced by the snap/round trip. Now matches the tolerance
+  every other bounds check in the planner uses.
+- **`buildAabbTreeNodeInRange` single AABB per node (Gemini medium).**
+  The union loop was calling `unionAabb` per obstacle, allocating a
+  fresh `{minX,...,maxZ}` object on every iteration (O(N) allocations
+  per node, O(N log N) for the whole tree). Replaced with a
+  single-pass min/max over local scalars and one final AABB literal
+  per node.
+
 ## Review Fixes (Sprint 1.23)
 
 Round-16 review on PR #23 commit `e4cda98`. One Codex P2 correctness

@@ -279,12 +279,12 @@ class MinHeap {
 function pointInsideBounds(point, bounds) {
     if (!bounds)
         return true;
-    return point.x >= bounds.minX
-        && point.x <= bounds.maxX
-        && point.y >= bounds.minY
-        && point.y <= bounds.maxY
-        && point.z >= bounds.minZ
-        && point.z <= bounds.maxZ;
+    return point.x >= bounds.minX - GEOM_TOLERANCE_MM
+        && point.x <= bounds.maxX + GEOM_TOLERANCE_MM
+        && point.y >= bounds.minY - GEOM_TOLERANCE_MM
+        && point.y <= bounds.maxY + GEOM_TOLERANCE_MM
+        && point.z >= bounds.minZ - GEOM_TOLERANCE_MM
+        && point.z <= bounds.maxZ + GEOM_TOLERANCE_MM;
 }
 function findGridPathFromSources(sources, target, obstacleIndex, options) {
     const validSources = sources

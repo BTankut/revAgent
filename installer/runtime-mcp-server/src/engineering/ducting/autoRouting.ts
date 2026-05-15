@@ -407,12 +407,17 @@ class MinHeap {
 
 function pointInsideBounds(point: PointMm, bounds: AabbMm | undefined): boolean {
     if (!bounds) return true;
-    return point.x >= bounds.minX
-        && point.x <= bounds.maxX
-        && point.y >= bounds.minY
-        && point.y <= bounds.maxY
-        && point.z >= bounds.minZ
-        && point.z <= bounds.maxZ;
+    // GEOM_TOLERANCE_MM tolerates the float drift that creeps in via snap +
+    // round trips, so a point that lies exactly on the boundary (a common
+    // case for sources placed at a level elevation) is not rejected by
+    // strict inequality. Matches the tolerance every other bounds check in
+    // the planner uses.
+    return point.x >= bounds.minX - GEOM_TOLERANCE_MM
+        && point.x <= bounds.maxX + GEOM_TOLERANCE_MM
+        && point.y >= bounds.minY - GEOM_TOLERANCE_MM
+        && point.y <= bounds.maxY + GEOM_TOLERANCE_MM
+        && point.z >= bounds.minZ - GEOM_TOLERANCE_MM
+        && point.z <= bounds.maxZ + GEOM_TOLERANCE_MM;
 }
 
 interface PathSearchOptions {

@@ -232,10 +232,26 @@ function buildAabbTreeNodeInRange(obstacles: ObstacleAabb[], lo: number, hi: num
     if (lo === hi) {
         return { aabb: obstacles[lo].expanded, obstacle: obstacles[lo] };
     }
-    let aabb = obstacles[lo].expanded;
+    // Single-pass min/max over local scalars — `unionAabb` would have built a
+    // fresh `{minX,...,maxZ}` object on every iteration (O(N) allocations per
+    // node, O(N log N) for the whole tree). One AABB object per node now.
+    const first = obstacles[lo].expanded;
+    let minX = first.minX;
+    let minY = first.minY;
+    let minZ = first.minZ;
+    let maxX = first.maxX;
+    let maxY = first.maxY;
+    let maxZ = first.maxZ;
     for (let index = lo + 1; index <= hi; index++) {
-        aabb = unionAabb(aabb, obstacles[index].expanded);
+        const o = obstacles[index].expanded;
+        if (o.minX < minX) minX = o.minX;
+        if (o.minY < minY) minY = o.minY;
+        if (o.minZ < minZ) minZ = o.minZ;
+        if (o.maxX > maxX) maxX = o.maxX;
+        if (o.maxY > maxY) maxY = o.maxY;
+        if (o.maxZ > maxZ) maxZ = o.maxZ;
     }
+    const aabb: AabbMm = { minX, minY, minZ, maxX, maxY, maxZ };
     const axis = longestAxis(aabb);
     const mid = Math.floor((lo + hi) / 2);
     partitionByCenter(obstacles, axis, lo, hi, mid);

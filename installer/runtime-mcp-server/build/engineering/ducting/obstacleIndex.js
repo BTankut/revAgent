@@ -198,10 +198,29 @@ function buildAabbTreeNodeInRange(obstacles, lo, hi) {
     if (lo === hi) {
         return { aabb: obstacles[lo].expanded, obstacle: obstacles[lo] };
     }
-    let aabb = obstacles[lo].expanded;
+    const first = obstacles[lo].expanded;
+    let minX = first.minX;
+    let minY = first.minY;
+    let minZ = first.minZ;
+    let maxX = first.maxX;
+    let maxY = first.maxY;
+    let maxZ = first.maxZ;
     for (let index = lo + 1; index <= hi; index++) {
-        aabb = unionAabb(aabb, obstacles[index].expanded);
+        const o = obstacles[index].expanded;
+        if (o.minX < minX)
+            minX = o.minX;
+        if (o.minY < minY)
+            minY = o.minY;
+        if (o.minZ < minZ)
+            minZ = o.minZ;
+        if (o.maxX > maxX)
+            maxX = o.maxX;
+        if (o.maxY > maxY)
+            maxY = o.maxY;
+        if (o.maxZ > maxZ)
+            maxZ = o.maxZ;
     }
+    const aabb = { minX, minY, minZ, maxX, maxY, maxZ };
     const axis = longestAxis(aabb);
     const mid = Math.floor((lo + hi) / 2);
     partitionByCenter(obstacles, axis, lo, hi, mid);
