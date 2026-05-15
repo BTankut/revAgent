@@ -19,6 +19,35 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.15)
+
+Round-8 review on PR #23 commit `bcbd5a4`. Four findings applied; two
+heavier perf rewrites (point-allocation reuse, typed-array A* state) are
+held over to Sprint 1.16 pending review.
+
+- **Collapsed source/target route rejected (Codex P2).** When source
+  and target snap to the same grid node `findGridPathFromSources`
+  returned a one-point path; the old `=== 0` check only caught the
+  empty-path failure mode so the planner emitted a `pass` candidate
+  with `lengthMm: 0` and no segments. The check is now `< 2` and emits
+  `route_not_found` with a `reason` context (`collapsed_to_single_point`
+  or `no_path`), so the downstream evaluator no longer has to clean up
+  a zero-length candidate.
+- **Static neighbour-deltas (Gemini medium).** The 4-way / 8-way
+  `[dx, dy]` arrays are now module-level `Object.freeze`d constants
+  (`HORIZONTAL_NEIGHBORS_4WAY` / `HORIZONTAL_NEIGHBORS_8WAY`) instead
+  of being allocated on every `findGridPathFromSources` invocation.
+- **Step-cost without `Math.sqrt` for non-diagonal moves (Gemini
+  medium).** `evalNeighbor` now computes the step cost from the move
+  type: `|Δz|` for vertical moves, `|Δx|` or `|Δy|` for axis-aligned
+  horizontal moves, and `sqrt(Δx² + Δy²)` only for XY diagonals. Same
+  numerical result, but the majority of expansions avoid a sqrt.
+- **Hoisted `currentG` / `currentSource` lookups (Gemini medium).**
+  Both values are constant across all neighbours of an expansion. They
+  are now read once outside the neighbour loop and passed to
+  `evalNeighbor` as arguments, removing 4-6 redundant `Map.get` calls
+  per expansion.
+
 ## Review Fixes (Sprint 1.14)
 
 Round-7 review on PR #23 commit `9041b6f`. Two findings applied.

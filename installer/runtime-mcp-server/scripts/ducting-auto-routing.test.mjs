@@ -245,6 +245,29 @@ assert.equal(
 );
 assert.equal(projectedEndpoint.routeCandidates[0].pointsMm[0].z, 3000);
 
+// Sprint 1.15 (Codex P2): a route whose source and target collapse to the same
+// grid node (identical points, or endpoint snapping merging them) must not
+// emit a `pass` candidate. The planner now rejects single-point paths with a
+// `route_not_found` issue so the downstream ducting evaluator does not have
+// to clean up a `lengthMm: 0` candidate.
+const collapsedRoute = planDuctingAutoRoute({
+  sources: [{ id: "collapsed-s", pointMm: { x: 1000, y: 1000, z: 3000 } }],
+  targets: [{ id: "collapsed-t", pointMm: { x: 1000, y: 1000, z: 3000 } }],
+  gridStepMm: 1000,
+  clearanceMm: 0,
+});
+assert.equal(collapsedRoute.summary.status, "fail",
+  "source and target at the same point must not produce a pass candidate");
+assert.equal(
+  collapsedRoute.issues.some(
+    (issue) => issue.code === "route_not_found"
+      && issue.severity === "error"
+      && (issue.context?.reason === "collapsed_to_single_point" || issue.context?.reason === "no_path"),
+  ),
+  true,
+  "collapsed route must emit route_not_found with a reason context",
+);
+
 // Sprint 1.14 (Codex P2): an in-bounds endpoint that is NOT on an allowed
 // elevation or a verticalStepMm refined stop must still be projected with
 // the warning. Otherwise the planner would route at an arbitrary elevation

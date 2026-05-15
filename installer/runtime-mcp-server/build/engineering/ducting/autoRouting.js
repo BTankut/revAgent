@@ -6,6 +6,13 @@ const DIAGONAL_45_TOLERANCE_MM = 1;
 function is45DegreeDiagonalXY(dxMm, dyMm) {
     return Math.abs(Math.abs(dxMm) - Math.abs(dyMm)) <= DIAGONAL_45_TOLERANCE_MM;
 }
+const HORIZONTAL_NEIGHBORS_4WAY = Object.freeze([
+    [-1, 0], [1, 0], [0, -1], [0, 1],
+]);
+const HORIZONTAL_NEIGHBORS_8WAY = Object.freeze([
+    [-1, 0], [1, 0], [0, -1], [0, 1],
+    [-1, -1], [-1, 1], [1, -1], [1, 1],
+]);
 function pointFromRecord(record) {
     return pointFromValue(valueByFields(record, ["pointMm", "point_mm", "point", "locationMm", "location_mm", "location"]))
         ?? pointFromValue(record);
@@ -314,14 +321,9 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
     if (open.length === 0)
         return { points: [], expansions: 0, exhausted: false };
     const horizontalNeighbors = options.allowDiagonal
-        ? [
-            [-1, 0], [1, 0], [0, -1], [0, 1],
-            [-1, -1], [-1, 1], [1, -1], [1, 1],
-        ]
-        : [
-            [-1, 0], [1, 0], [0, -1], [0, 1],
-        ];
-    const evalNeighbor = (nIx, nIy, nIz, vertical, currentPoint, currentComp, currentArrival) => {
+        ? HORIZONTAL_NEIGHBORS_8WAY
+        : HORIZONTAL_NEIGHBORS_4WAY;
+    const evalNeighbor = (nIx, nIy, nIz, vertical, currentPoint, currentComp, currentArrival, currentG, currentSource) => {
         if (nIx < 0 || nIy < 0 || nIz < 0 || nIx >= xs.length || nIy >= ys.length || nIz >= zs.length)
             return;
         const neighborArrival = vertical ? ARRIVE_VERT : ARRIVE_HORIZ;
@@ -333,12 +335,26 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
             return;
         const startingRiser = vertical && currentArrival !== ARRIVE_VERT;
         const transitionPenalty = startingRiser ? options.riserPenalty : 0;
-        const stepCost = pointDistanceMm(currentPoint, neighborPoint) + transitionPenalty;
-        const tentative = (gScore.get(currentComp) ?? Number.POSITIVE_INFINITY) + stepCost;
+        let stepCost;
+        if (vertical) {
+            stepCost = Math.abs(neighborPoint.z - currentPoint.z);
+        }
+        else {
+            const dxStep = Math.abs(neighborPoint.x - currentPoint.x);
+            const dyStep = Math.abs(neighborPoint.y - currentPoint.y);
+            if (dxStep < GEOM_TOLERANCE_MM)
+                stepCost = dyStep;
+            else if (dyStep < GEOM_TOLERANCE_MM)
+                stepCost = dxStep;
+            else
+                stepCost = Math.sqrt(dxStep * dxStep + dyStep * dyStep);
+        }
+        stepCost += transitionPenalty;
+        const tentative = currentG + stepCost;
         if (tentative >= (gScore.get(neighborComp) ?? Number.POSITIVE_INFINITY))
             return;
         cameFrom.set(neighborComp, currentComp);
-        sourceForKey.set(neighborComp, sourceForKey.get(currentComp) ?? 0);
+        sourceForKey.set(neighborComp, currentSource);
         gScore.set(neighborComp, tentative);
         open.push({ key: neighborComp, priority: tentative + heuristic(neighborPoint) });
     };
@@ -377,6 +393,8 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
         const iy = iyFromGridKey(currentGridKey);
         const iz = izFromGridKey(currentGridKey);
         const currentPoint = point(ix, iy, iz);
+        const currentG = gScore.get(currentComp) ?? Number.POSITIVE_INFINITY;
+        const currentSource = sourceForKey.get(currentComp) ?? 0;
         for (const [dx, dy] of horizontalNeighbors) {
             const newIx = ix + dx;
             const newIy = iy + dy;
@@ -386,11 +404,11 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
                 if (!is45DegreeDiagonalXY(xs[newIx] - xs[ix], ys[newIy] - ys[iy]))
                     continue;
             }
-            evalNeighbor(newIx, newIy, iz, false, currentPoint, currentComp, currentArrival);
+            evalNeighbor(newIx, newIy, iz, false, currentPoint, currentComp, currentArrival, currentG, currentSource);
         }
         if (zs.length > 1) {
-            evalNeighbor(ix, iy, iz - 1, true, currentPoint, currentComp, currentArrival);
-            evalNeighbor(ix, iy, iz + 1, true, currentPoint, currentComp, currentArrival);
+            evalNeighbor(ix, iy, iz - 1, true, currentPoint, currentComp, currentArrival, currentG, currentSource);
+            evalNeighbor(ix, iy, iz + 1, true, currentPoint, currentComp, currentArrival, currentG, currentSource);
         }
     }
     return { points: [], expansions, exhausted: false };
@@ -451,10 +469,11 @@ function buildRouteFromSources(sources, target, obstacleIndex, options) {
             maxNodeExpansions: options.maxExpansions,
         }));
     }
-    if (path.points.length === 0) {
-        issues.push(makeIssue("route_not_found", "error", "No obstacle-free orthogonal route was found between source and target.", {
+    if (path.points.length < 2) {
+        issues.push(makeIssue("route_not_found", "error", "No usable route was generated between source and target.", {
             sourceIds: sources.map((entry) => entry.id),
             targetId: target.id,
+            reason: path.points.length === 1 ? "collapsed_to_single_point" : "no_path",
         }));
     }
     const hits = path.points.length > 0 ? routeObstacleHits(path.points, obstacleIndex) : [];
