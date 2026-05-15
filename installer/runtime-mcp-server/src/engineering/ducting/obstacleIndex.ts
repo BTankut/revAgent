@@ -27,18 +27,23 @@ export interface ObstacleIndex {
     someCandidateForSegment(start: PointMm, end: PointMm, predicate: (obstacle: ObstacleAabb) => boolean): boolean;
 }
 
-export function expandAabb(aabb: AabbMm, clearanceMm: number, ductHalfHeightMm: number): AabbMm {
+export function expandAabb(aabb: AabbMm, clearanceMm: number, ductHalfWidthMm: number, ductHalfHeightMm: number): AabbMm {
+    // The expanded AABB defines where the duct *centerline* must not enter:
+    // clearance is the air gap, ductHalf{Width,Height} is half the duct
+    // cross-section in the corresponding axis. X/Y use the half-width, Z uses
+    // the half-height. Callers that route round ducts pass the same value for
+    // both; rectangular ducts pass each axis separately.
     return {
-        minX: aabb.minX - clearanceMm,
-        minY: aabb.minY - clearanceMm,
+        minX: aabb.minX - clearanceMm - ductHalfWidthMm,
+        minY: aabb.minY - clearanceMm - ductHalfWidthMm,
         minZ: aabb.minZ - clearanceMm - ductHalfHeightMm,
-        maxX: aabb.maxX + clearanceMm,
-        maxY: aabb.maxY + clearanceMm,
+        maxX: aabb.maxX + clearanceMm + ductHalfWidthMm,
+        maxY: aabb.maxY + clearanceMm + ductHalfWidthMm,
         maxZ: aabb.maxZ + clearanceMm + ductHalfHeightMm,
     };
 }
 
-export function readObstacles(rawObstacles: Record<string, unknown>[], clearanceMm: number, ductHalfHeightMm: number): ObstacleAabb[] {
+export function readObstacles(rawObstacles: Record<string, unknown>[], clearanceMm: number, ductHalfWidthMm: number, ductHalfHeightMm: number): ObstacleAabb[] {
     const obstacles: ObstacleAabb[] = [];
     rawObstacles.forEach((raw, index) => {
         const aabb = aabbFromValue(valueByFields(raw, ["aabbMm", "aabb_mm", "aabb", "box"]) ?? raw);
@@ -48,7 +53,7 @@ export function readObstacles(rawObstacles: Record<string, unknown>[], clearance
             name: stringByFields(raw, ["name", "category", "obstacleType", "obstacle_type"]),
             obstacleType: stringByFields(raw, ["obstacleType", "obstacle_type"]),
             original: aabb,
-            expanded: expandAabb(aabb, clearanceMm, ductHalfHeightMm),
+            expanded: expandAabb(aabb, clearanceMm, ductHalfWidthMm, ductHalfHeightMm),
         });
     });
     return obstacles;

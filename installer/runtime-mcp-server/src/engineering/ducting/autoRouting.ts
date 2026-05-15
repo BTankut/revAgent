@@ -60,6 +60,7 @@ export interface DuctAutoRoutingInput {
     gridStepMm?: number;
     verticalStepMm?: number;
     clearanceMm?: number;
+    ductHalfWidthMm?: number;
     ductHalfHeightMm?: number;
     boundaryMarginMm?: number;
     maxNodeExpansions?: number;
@@ -626,7 +627,7 @@ function buildRouteFromSources(
     sources: RouteEndpoint[],
     target: RouteEndpoint,
     obstacleIndex: ObstacleIndex,
-    options: PathSearchOptions & { elbowPenalty: number; defaultRouteZ: number },
+    options: PathSearchOptions & { elbowPenalty: number },
 ): PlannedRoute {
     // Snap against the refined Z grid (allowedZs + verticalStepMm stops).
     // Endpoints that land exactly on an allowed elevation or a refined stop
@@ -759,6 +760,7 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
 
     const gridStepMm = asPositiveNumber(input.gridStepMm, 600);
     const clearanceMm = Math.max(0, asNumber(input.clearanceMm) ?? 150);
+    const ductHalfWidthMm = Math.max(0, asNumber(input.ductHalfWidthMm) ?? 0);
     const ductHalfHeightMm = Math.max(0, asNumber(input.ductHalfHeightMm) ?? 150);
     const marginMm = Math.max(gridStepMm, asNumber(input.boundaryMarginMm) ?? gridStepMm * 4);
     const maxExpansions = Math.max(100, Math.floor(asNumber(input.maxNodeExpansions) ?? 25000));
@@ -808,7 +810,7 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
         aabbMm: entry.aabbMm,
     }) as Record<string, unknown>) : [];
     const mergedObstacleRaw = mergeObstacleSources(spatialObstacleRaw, userObstacleRaw);
-    const obstacles = readObstacles(mergedObstacleRaw, clearanceMm, ductHalfHeightMm);
+    const obstacles = readObstacles(mergedObstacleRaw, clearanceMm, ductHalfWidthMm, ductHalfHeightMm);
     const obstacleIndexBackend: ObstacleIndexBackend = input.obstacleIndexBackend === "linear" ? "linear" : "aabb-tree";
     const obstacleIndex = buildObstacleIndex(obstacles, obstacleIndexBackend);
     const bounds = aabbFromValue(input.routingBounds);
@@ -854,7 +856,6 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
                 allowDiagonal,
                 allowedZs,
                 elbowPenalty,
-                defaultRouteZ,
             });
             routes.push(selected);
             issues.push(...selected.issues);
@@ -900,6 +901,7 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
             gridStepMm,
             verticalStepMm,
             clearanceMm,
+            ductHalfWidthMm,
             ductHalfHeightMm,
             allowedElevationsMm: allowedZs.slice(),
             routingElevationMm: round(defaultRouteZ),

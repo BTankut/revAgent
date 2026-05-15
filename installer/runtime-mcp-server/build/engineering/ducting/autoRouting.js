@@ -558,6 +558,7 @@ export function planDuctingAutoRoute(input = {}) {
         issues.push(makeIssue("route_target_point_invalid", "error", "One or more target records have no valid pointMm/location."));
     const gridStepMm = asPositiveNumber(input.gridStepMm, 600);
     const clearanceMm = Math.max(0, asNumber(input.clearanceMm) ?? 150);
+    const ductHalfWidthMm = Math.max(0, asNumber(input.ductHalfWidthMm) ?? 0);
     const ductHalfHeightMm = Math.max(0, asNumber(input.ductHalfHeightMm) ?? 150);
     const marginMm = Math.max(gridStepMm, asNumber(input.boundaryMarginMm) ?? gridStepMm * 4);
     const maxExpansions = Math.max(100, Math.floor(asNumber(input.maxNodeExpansions) ?? 25000));
@@ -597,7 +598,7 @@ export function planDuctingAutoRoute(input = {}) {
         aabbMm: entry.aabbMm,
     })) : [];
     const mergedObstacleRaw = mergeObstacleSources(spatialObstacleRaw, userObstacleRaw);
-    const obstacles = readObstacles(mergedObstacleRaw, clearanceMm, ductHalfHeightMm);
+    const obstacles = readObstacles(mergedObstacleRaw, clearanceMm, ductHalfWidthMm, ductHalfHeightMm);
     const obstacleIndexBackend = input.obstacleIndexBackend === "linear" ? "linear" : "aabb-tree";
     const obstacleIndex = buildObstacleIndex(obstacles, obstacleIndexBackend);
     const bounds = aabbFromValue(input.routingBounds);
@@ -641,7 +642,6 @@ export function planDuctingAutoRoute(input = {}) {
                 allowDiagonal,
                 allowedZs,
                 elbowPenalty,
-                defaultRouteZ,
             });
             routes.push(selected);
             issues.push(...selected.issues);
@@ -685,6 +685,7 @@ export function planDuctingAutoRoute(input = {}) {
             gridStepMm,
             verticalStepMm,
             clearanceMm,
+            ductHalfWidthMm,
             ductHalfHeightMm,
             allowedElevationsMm: allowedZs.slice(),
             routingElevationMm: round(defaultRouteZ),

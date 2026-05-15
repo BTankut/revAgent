@@ -19,6 +19,27 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.17)
+
+Round-10 review on PR #23 commit `7358d77`. One Gemini HIGH
+correctness fix and one small Gemini medium dead-carry cleanup.
+
+- **`ductHalfWidthMm` parameter on X/Y obstacle expansion (Gemini
+  HIGH).** `expandAabb` previously expanded obstacles by
+  `clearanceMm + ductHalfHeightMm` on Z but only `clearanceMm` on
+  X/Y, so the duct's physical half-width was silently ignored on the
+  horizontal axes. A duct with a non-zero half-width could clip the
+  obstacle face before the planner noticed. The MCP tool now accepts a
+  new optional `ductHalfWidthMm` (default `0`, preserving legacy
+  behaviour where the caller bakes the half-width into `clearanceMm`);
+  `expandAabb` adds it to both X and Y. Z keeps using
+  `ductHalfHeightMm`. Regression test asserts the per-axis expansion
+  math directly via `readObstacles`.
+- **Dead `defaultRouteZ` carry in `buildRouteFromSources` (Gemini
+  medium).** The options type declared `defaultRouteZ: number` and the
+  caller passed it through, but the function body never read it.
+  Removed from both the type and the call site.
+
 ## Review Fixes (Sprint 1.16)
 
 Round-9 review on PR #23 commit `9538b72`. One Codex P2 correctness

@@ -1,15 +1,15 @@
 import { aabbFromValue, stringByFields, valueByFields } from "./helpers.js";
-export function expandAabb(aabb, clearanceMm, ductHalfHeightMm) {
+export function expandAabb(aabb, clearanceMm, ductHalfWidthMm, ductHalfHeightMm) {
     return {
-        minX: aabb.minX - clearanceMm,
-        minY: aabb.minY - clearanceMm,
+        minX: aabb.minX - clearanceMm - ductHalfWidthMm,
+        minY: aabb.minY - clearanceMm - ductHalfWidthMm,
         minZ: aabb.minZ - clearanceMm - ductHalfHeightMm,
-        maxX: aabb.maxX + clearanceMm,
-        maxY: aabb.maxY + clearanceMm,
+        maxX: aabb.maxX + clearanceMm + ductHalfWidthMm,
+        maxY: aabb.maxY + clearanceMm + ductHalfWidthMm,
         maxZ: aabb.maxZ + clearanceMm + ductHalfHeightMm,
     };
 }
-export function readObstacles(rawObstacles, clearanceMm, ductHalfHeightMm) {
+export function readObstacles(rawObstacles, clearanceMm, ductHalfWidthMm, ductHalfHeightMm) {
     const obstacles = [];
     rawObstacles.forEach((raw, index) => {
         const aabb = aabbFromValue(valueByFields(raw, ["aabbMm", "aabb_mm", "aabb", "box"]) ?? raw);
@@ -20,7 +20,7 @@ export function readObstacles(rawObstacles, clearanceMm, ductHalfHeightMm) {
             name: stringByFields(raw, ["name", "category", "obstacleType", "obstacle_type"]),
             obstacleType: stringByFields(raw, ["obstacleType", "obstacle_type"]),
             original: aabb,
-            expanded: expandAabb(aabb, clearanceMm, ductHalfHeightMm),
+            expanded: expandAabb(aabb, clearanceMm, ductHalfWidthMm, ductHalfHeightMm),
         });
     });
     return obstacles;

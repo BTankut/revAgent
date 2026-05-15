@@ -245,6 +245,42 @@ assert.equal(
 );
 assert.equal(projectedEndpoint.routeCandidates[0].pointsMm[0].z, 3000);
 
+// Sprint 1.17 (Gemini HIGH): ductHalfWidthMm must expand obstacle AABBs on the
+// X/Y axes the same way ductHalfHeightMm expands them on Z. The expansion
+// asymmetry would otherwise let a route at the duct centerline cut into the
+// obstacle by half the duct width before the planner notices.
+const pillarObstacle = readObstacles(
+  [
+    {
+      id: "pillar",
+      aabbMm: { minX: 2000, minY: 2000, minZ: 2900, maxX: 2200, maxY: 2200, maxZ: 3100 },
+    },
+  ],
+  100, // clearanceMm
+  300, // ductHalfWidthMm
+  50,  // ductHalfHeightMm
+)[0];
+// Expanded AABB picks up `clearance + halfWidth` on X/Y and
+// `clearance + halfHeight` on Z. Asymmetry between width and height is the
+// expected case for rectangular ducts; round ducts pass equal values.
+assert.equal(pillarObstacle.expanded.minX, 1600, "ductHalfWidthMm must subtract from minX");
+assert.equal(pillarObstacle.expanded.minY, 1600, "ductHalfWidthMm must subtract from minY");
+assert.equal(pillarObstacle.expanded.minZ, 2750, "ductHalfHeightMm must subtract from minZ");
+assert.equal(pillarObstacle.expanded.maxX, 2600, "ductHalfWidthMm must add to maxX");
+assert.equal(pillarObstacle.expanded.maxY, 2600, "ductHalfWidthMm must add to maxY");
+assert.equal(pillarObstacle.expanded.maxZ, 3250, "ductHalfHeightMm must add to maxZ");
+
+// Default ductHalfWidthMm is 0, preserving legacy behaviour (callers that
+// previously baked the half-width into clearanceMm keep working unchanged).
+const legacyExpansion = readObstacles(
+  [{ id: "p", aabbMm: { minX: 0, minY: 0, minZ: 0, maxX: 100, maxY: 100, maxZ: 100 } }],
+  50, 0, 50,
+)[0];
+assert.equal(legacyExpansion.expanded.minX, -50, "halfWidth=0 → X expansion is clearance-only");
+assert.equal(legacyExpansion.expanded.maxX, 150);
+assert.equal(legacyExpansion.expanded.minZ, -100, "Z expansion is clearance + halfHeight");
+assert.equal(legacyExpansion.expanded.maxZ, 200);
+
 // Sprint 1.16 (Codex P2): explicit `routingElevationMm` must win over
 // spatial-zone-derived allowedElevationsMm when the caller did not supply
 // `allowedElevationsMm`. Prior behaviour silently picked the plenum_volumes
@@ -546,6 +582,7 @@ const obstacles = readObstacles(
   ],
   0,
   0,
+  0,
 );
 const obstacle = obstacles[0];
 const diagonalSegmentClose = segmentHitsObstacle(
@@ -569,6 +606,7 @@ const beamObstacle = readObstacles(
       aabbMm: { minX: 1500, minY: -500, minZ: 5800, maxX: 2500, maxY: 500, maxZ: 6100 },
     },
   ],
+  0,
   0,
   0,
 )[0];
@@ -608,6 +646,7 @@ const sceneObstacles = readObstacles(
     { id: "o4", aabbMm: { minX: 4500, minY: 0, minZ: 5800, maxX: 5500, maxY: 1500, maxZ: 6100 } },
     { id: "o5", aabbMm: { minX: 1500, minY: 0, minZ: 8800, maxX: 2500, maxY: 1500, maxZ: 9100 } },
   ],
+  0,
   0,
   0,
 );
