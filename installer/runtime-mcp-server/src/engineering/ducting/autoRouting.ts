@@ -757,7 +757,15 @@ function buildRouteFromSources(
     const elbowCount = path.points.length > 0 ? routeElbows(path.points) : 0;
     const verticals = path.points.length > 0 ? verticalStats(path.points) : { runCount: 0, runLengthMm: 0 };
     const score = lengthMm / 1000 + elbowCount * options.elbowPenalty + verticals.runCount * options.riserPenalty / 1000;
-    const sourceId = sources[path.sourceIndex ?? 0]?.id ?? "source";
+    // When the search produced a real route (≥2 points) report the actually
+    // selected source. When it did not — no path found, single-point collapse,
+    // or any other failure — `path.sourceIndex` defaults to 0 and would
+    // misleadingly attribute the failure to the first listed source even if a
+    // different one was the closer / more viable candidate. Use a clear
+    // sentinel instead.
+    const sourceId = path.points.length >= 2 && path.sourceIndex !== undefined && sources[path.sourceIndex]
+        ? sources[path.sourceIndex].id
+        : "(unselected)";
     return {
         id: `${sourceId}__${target.id}`,
         status: issues.some((issue) => issue.severity === "error") ? "fail" : "pass",
@@ -875,6 +883,35 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
     }
 
     const userObstacleRaw = Array.isArray(input.obstacles) ? input.obstacles.map(asRecord) : [];
+    // Flag user-supplied obstacles that `readObstacles` will silently skip
+    // (missing or unparseable AABB). spatialZoneAdapter already reports its
+    // own skip count via `spatial_zone_obstacle_aabb_unreadable`; this path
+    // covers the parallel case for `input.obstacles` so a caller does not
+    // think they have added a constraint that the planner is ignoring.
+    let userObstaclesSkipped = 0;
+    const skippedUserObstacleIds: string[] = [];
+    userObstacleRaw.forEach((raw, index) => {
+        const aabb = aabbFromValue(valueByFields(raw, ["aabbMm", "aabb_mm", "aabb", "box"]) ?? raw);
+        if (!aabb) {
+            userObstaclesSkipped++;
+            const id = stringByFields(raw, ["id", "elementId", "element_id", "uniqueId", "unique_id"]) ?? `obstacle-${index + 1}`;
+            skippedUserObstacleIds.push(id);
+        }
+    });
+    if (userObstaclesSkipped > 0) {
+        const noun = userObstaclesSkipped === 1 ? "entry" : "entries";
+        const verb = userObstaclesSkipped === 1 ? "was" : "were";
+        issues.push(makeIssue(
+            "route_user_obstacle_unreadable",
+            "warning",
+            `${userObstaclesSkipped} user-supplied obstacle ${noun} could not be parsed (missing or invalid AABB) and ${verb} skipped.`,
+            {
+                skippedCount: userObstaclesSkipped,
+                totalSupplied: userObstacleRaw.length,
+                skippedIds: skippedUserObstacleIds,
+            },
+        ));
+    }
     const spatialObstacleRaw = spatialContext ? spatialContext.obstacles.map((entry) => ({
         id: entry.id,
         name: entry.name,

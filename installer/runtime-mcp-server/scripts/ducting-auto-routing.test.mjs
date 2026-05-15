@@ -281,6 +281,32 @@ assert.equal(legacyExpansion.expanded.maxX, 150);
 assert.equal(legacyExpansion.expanded.minZ, -100, "Z expansion is clearance + halfHeight");
 assert.equal(legacyExpansion.expanded.maxZ, 200);
 
+// Sprint 1.26 (Gemini medium): user-supplied obstacles whose AABB cannot be
+// parsed must surface as a warning issue, parallel to the existing
+// spatial_zone_obstacle_aabb_unreadable issue for spatial-zone obstacles.
+const partiallyInvalidObstacles = planDuctingAutoRoute({
+  sources: [{ id: "s", pointMm: { x: 0, y: 0, z: 3000 } }],
+  targets: [{ id: "t", pointMm: { x: 5000, y: 0, z: 3000 } }],
+  obstacles: [
+    { id: "valid-pillar", aabbMm: { minX: 1500, minY: -100, minZ: 2900, maxX: 2500, maxY: 100, maxZ: 3100 } },
+    { id: "missing-aabb" },
+    { id: "bad-aabb", aabbMm: "not a real aabb" },
+  ],
+  gridStepMm: 1000,
+  clearanceMm: 0,
+});
+const skipIssue = partiallyInvalidObstacles.issues.find((issue) => issue.code === "route_user_obstacle_unreadable");
+assert.ok(skipIssue, "must emit route_user_obstacle_unreadable warning when user obstacles fail to parse");
+assert.equal(skipIssue.severity, "warning");
+assert.equal(skipIssue.context?.skippedCount, 2);
+assert.equal(skipIssue.context?.totalSupplied, 3);
+assert.deepEqual(skipIssue.context?.skippedIds, ["missing-aabb", "bad-aabb"]);
+assert.equal(
+  partiallyInvalidObstacles.summary.status,
+  "warn",
+  "warning-only issues should keep the summary at `warn` (the valid obstacle still allows a route)",
+);
+
 // Sprint 1.23 (Codex P2): the bounds preflight check (separate from the route
 // generation snap fixed in Sprint 1.11/1.14) was still snapping against the
 // raw allowedZs. With allowed=[3000,9000], verticalStepMm=1000, a source at

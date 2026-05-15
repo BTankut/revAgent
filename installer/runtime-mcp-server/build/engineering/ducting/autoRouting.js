@@ -533,7 +533,9 @@ function buildRouteFromSources(sources, target, obstacleIndex, options) {
     const elbowCount = path.points.length > 0 ? routeElbows(path.points) : 0;
     const verticals = path.points.length > 0 ? verticalStats(path.points) : { runCount: 0, runLengthMm: 0 };
     const score = lengthMm / 1000 + elbowCount * options.elbowPenalty + verticals.runCount * options.riserPenalty / 1000;
-    const sourceId = sources[path.sourceIndex ?? 0]?.id ?? "source";
+    const sourceId = path.points.length >= 2 && path.sourceIndex !== undefined && sources[path.sourceIndex]
+        ? sources[path.sourceIndex].id
+        : "(unselected)";
     return {
         id: `${sourceId}__${target.id}`,
         status: issues.some((issue) => issue.severity === "error") ? "fail" : "pass",
@@ -637,6 +639,25 @@ export function planDuctingAutoRoute(input = {}) {
         allowedZs = [round(defaultRouteZ)];
     }
     const userObstacleRaw = Array.isArray(input.obstacles) ? input.obstacles.map(asRecord) : [];
+    let userObstaclesSkipped = 0;
+    const skippedUserObstacleIds = [];
+    userObstacleRaw.forEach((raw, index) => {
+        const aabb = aabbFromValue(valueByFields(raw, ["aabbMm", "aabb_mm", "aabb", "box"]) ?? raw);
+        if (!aabb) {
+            userObstaclesSkipped++;
+            const id = stringByFields(raw, ["id", "elementId", "element_id", "uniqueId", "unique_id"]) ?? `obstacle-${index + 1}`;
+            skippedUserObstacleIds.push(id);
+        }
+    });
+    if (userObstaclesSkipped > 0) {
+        const noun = userObstaclesSkipped === 1 ? "entry" : "entries";
+        const verb = userObstaclesSkipped === 1 ? "was" : "were";
+        issues.push(makeIssue("route_user_obstacle_unreadable", "warning", `${userObstaclesSkipped} user-supplied obstacle ${noun} could not be parsed (missing or invalid AABB) and ${verb} skipped.`, {
+            skippedCount: userObstaclesSkipped,
+            totalSupplied: userObstacleRaw.length,
+            skippedIds: skippedUserObstacleIds,
+        }));
+    }
     const spatialObstacleRaw = spatialContext ? spatialContext.obstacles.map((entry) => ({
         id: entry.id,
         name: entry.name,

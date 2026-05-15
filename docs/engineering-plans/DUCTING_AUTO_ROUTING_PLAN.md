@@ -19,6 +19,36 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.26)
+
+Round-19 review on PR #23 commit `9df3c8c`. Two Gemini medium clarity
+fixes. The third finding (slab epsilon should be larger) is a more
+aggressive variant of Sprint 1.25's `1µm` choice; the current value
+matches the `GEOM_TOLERANCE_MM` convention, larger values risk missing
+sub-mm intersections, so we keep `1e-3 mm`.
+
+- **`sourceId` no-path sentinel (Gemini medium).** When the A* search
+  failed (no path, single-point collapse) `path.sourceIndex` defaulted
+  to `0` and the route's `sourceId` field silently named the first
+  listed source as the failing candidate even when a different source
+  was the closer / more viable one. The field now reports
+  `"(unselected)"` whenever the search did not actually select a
+  source (`path.points.length < 2` or `path.sourceIndex === undefined`).
+  The successful-path code path is unchanged; failed candidates are
+  filtered out of the public `routeCandidates` already, so this is
+  defensive cleanup rather than user-visible behaviour change.
+- **`route_user_obstacle_unreadable` warning (Gemini medium).**
+  `readObstacles` silently dropped user-supplied entries whose AABB
+  could not be parsed (missing `aabbMm`, wrong type, etc.). The
+  spatial-zone adapter already had a parallel `spatial_zone_obstacle_aabb_unreadable`
+  warning; the planner now emits the user-side equivalent with
+  `skippedCount`, `totalSupplied`, and the offending `skippedIds`
+  list, so a caller cannot quietly lose a constraint they thought
+  they had added. Regression test exercises a 3-obstacle scenario
+  with two malformed entries; the issue carries the correct counts
+  and ids, and the summary stays at `warn` because the valid obstacle
+  still permits a route.
+
 ## Review Fixes (Sprint 1.25)
 
 Round-18 review on PR #23 commit `70057af`. One Gemini medium
