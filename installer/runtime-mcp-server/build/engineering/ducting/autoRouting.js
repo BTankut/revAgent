@@ -248,7 +248,9 @@ class MinHeap {
             const parent = Math.floor((index - 1) / 2);
             if (this.values[parent].priority <= this.values[index].priority)
                 break;
-            [this.values[parent], this.values[index]] = [this.values[index], this.values[parent]];
+            const tmp = this.values[parent];
+            this.values[parent] = this.values[index];
+            this.values[index] = tmp;
             index = parent;
         }
     }
@@ -263,7 +265,9 @@ class MinHeap {
                 smallest = right;
             if (smallest === index)
                 break;
-            [this.values[smallest], this.values[index]] = [this.values[index], this.values[smallest]];
+            const tmp = this.values[smallest];
+            this.values[smallest] = this.values[index];
+            this.values[index] = tmp;
             index = smallest;
         }
     }
@@ -339,7 +343,7 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
         const dz = Math.abs(candidate.z - target.z);
         if (!options.allowDiagonal)
             return dx + dy + dz;
-        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        return Math.hypot(dx, dy) + dz;
     };
     for (const entry of validSources) {
         const sourceIx = findIndex(xs, entry.source.x);
@@ -384,7 +388,7 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
             else if (dyStep < GEOM_TOLERANCE_MM)
                 stepCost = dxStep;
             else
-                stepCost = Math.sqrt(dxStep * dxStep + dyStep * dyStep);
+                stepCost = Math.hypot(dxStep, dyStep);
         }
         stepCost += transitionPenalty;
         const tentative = currentG + stepCost;

@@ -373,7 +373,11 @@ class MinHeap {
         while (index > 0) {
             const parent = Math.floor((index - 1) / 2);
             if (this.values[parent].priority <= this.values[index].priority) break;
-            [this.values[parent], this.values[index]] = [this.values[index], this.values[parent]];
+            // Standard tmp swap — destructured swap allocates an intermediate
+            // array on every heap shuffle, which adds up across the A* run.
+            const tmp = this.values[parent];
+            this.values[parent] = this.values[index];
+            this.values[index] = tmp;
             index = parent;
         }
     }
@@ -386,7 +390,9 @@ class MinHeap {
             if (left < this.values.length && this.values[left].priority < this.values[smallest].priority) smallest = left;
             if (right < this.values.length && this.values[right].priority < this.values[smallest].priority) smallest = right;
             if (smallest === index) break;
-            [this.values[smallest], this.values[index]] = [this.values[index], this.values[smallest]];
+            const tmp = this.values[smallest];
+            this.values[smallest] = this.values[index];
+            this.values[index] = tmp;
             index = smallest;
         }
     }
@@ -494,21 +500,22 @@ function findGridPathFromSources(
     const closed = new Set<number>();
     // Heuristic admissibility:
     //   - Orthogonal-only grid: Manhattan is exact and tight.
-    //   - With 8-way XY diagonals + pure-Z verticals: we must stay below the
-    //     true edge cost. Sprint 1.12 tried octile because it is tighter than
-    //     Euclidean on equal-pitch diagonals, but the neighbour gate accepts
-    //     `|Δx| ≈ |Δy|` within DIAGONAL_45_TOLERANCE_MM, so the actual edge
-    //     cost is `hypot(Δx, Δy)`. Octile's `max + (√2-1)·min` can exceed
-    //     hypot for those 1 mm-slack diagonals (e.g. Δx=1000, Δy=999 →
-    //     hypot=1413.51 < octile=1413.80), which makes it inadmissible and
-    //     lets A* return non-minimum paths. Reverting to Euclidean keeps the
-    //     search admissible at the cost of a few extra expansions.
+    //   - With 8-way XY diagonals + pure-Z verticals: Z moves are pure
+    //     orthogonal (no XY+Z diagonal step exists), so the true minimum
+    //     cost on an unobstructed grid is `hypot(|Δx|, |Δy|) + |Δz|` — the
+    //     XY plane gets the Euclidean shortcut, the Z axis is added
+    //     orthogonally. By Minkowski this is ≥ pure 3D Euclidean
+    //     `sqrt(dx² + dy² + dz²)`, so it stays admissible while being a
+    //     tighter lower bound, and A* expands fewer nodes. Sprint 1.12 tried
+    //     octile because it is tighter than Euclidean on equal-pitch
+    //     diagonals, but the 1 mm tolerance gate breaks octile's
+    //     admissibility (Sprint 1.20).
     const heuristic = (candidate: PointMm) => {
         const dx = Math.abs(candidate.x - target.x);
         const dy = Math.abs(candidate.y - target.y);
         const dz = Math.abs(candidate.z - target.z);
         if (!options.allowDiagonal) return dx + dy + dz;
-        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        return Math.hypot(dx, dy) + dz;
     };
 
     for (const entry of validSources) {
@@ -559,7 +566,7 @@ function findGridPathFromSources(
             const dyStep = Math.abs(neighborPoint.y - currentPoint.y);
             if (dxStep < GEOM_TOLERANCE_MM) stepCost = dyStep;
             else if (dyStep < GEOM_TOLERANCE_MM) stepCost = dxStep;
-            else stepCost = Math.sqrt(dxStep * dxStep + dyStep * dyStep);
+            else stepCost = Math.hypot(dxStep, dyStep);
         }
         stepCost += transitionPenalty;
         const tentative = currentG + stepCost;

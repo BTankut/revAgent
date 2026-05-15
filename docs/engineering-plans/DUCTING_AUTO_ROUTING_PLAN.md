@@ -19,6 +19,29 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.21)
+
+Round-14 review on PR #23 commit `fce32cb`. Four small Gemini medium
+fixes; no behaviour change, all assertions remain green.
+
+- **MinHeap swap uses a tmp variable (Gemini medium ×2).** The push
+  bubble-up and pop sift-down used array destructuring
+  `[a, b] = [b, a]` which allocates an intermediate two-element array
+  on every heap shuffle. Replaced with the classic three-line tmp
+  swap on both call sites — same logic, no allocation.
+- **Tighter admissible heuristic `hypot(Δx, Δy) + Δz` when
+  `allowDiagonal=true` (Gemini medium).** Sprint 1.20 reverted to
+  pure 3D Euclidean (`sqrt(dx² + dy² + dz²)`) after octile turned
+  out to be inadmissible on the 1 mm-slack diagonal grid. Z moves
+  are still pure-orthogonal (no XY+Z diagonal step exists), so the
+  true minimum cost is `hypot(|Δx|, |Δy|) + |Δz|`. By Minkowski
+  inequality that is `≥ sqrt(dx² + dy² + dz²)`, so it stays admissible
+  while being a tighter lower bound and A* expands fewer nodes.
+- **`Math.hypot` for the diagonal step cost (Gemini medium).**
+  `Math.sqrt(dxStep² + dyStep²)` replaced with `Math.hypot(dxStep, dyStep)`
+  on the A* edge-cost path. Same numerical result for our coordinate
+  range, more idiomatic, overflow-robust on extreme inputs.
+
 ## Review Fixes (Sprint 1.20)
 
 Round-13 review on PR #23 commit `6e3abcf`. One Codex P2 admissibility
