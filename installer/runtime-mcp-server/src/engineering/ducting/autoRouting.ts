@@ -153,9 +153,16 @@ function routeElbows(points: PointMm[]): number {
         const a = points[index - 2];
         const b = points[index - 1];
         const c = points[index];
-        const left = { x: Math.sign(b.x - a.x), y: Math.sign(b.y - a.y), z: Math.sign(b.z - a.z) };
-        const right = { x: Math.sign(c.x - b.x), y: Math.sign(c.y - b.y), z: Math.sign(c.z - b.z) };
-        if (left.x !== right.x || left.y !== right.y || left.z !== right.z) count++;
+        // Inlined sign comparison — the previous version built two
+        // `{x,y,z}` objects per junction (≈3 N allocations for a path of
+        // length N) just to compare direction signs.
+        const dx1 = Math.sign(b.x - a.x);
+        const dy1 = Math.sign(b.y - a.y);
+        const dz1 = Math.sign(b.z - a.z);
+        const dx2 = Math.sign(c.x - b.x);
+        const dy2 = Math.sign(c.y - b.y);
+        const dz2 = Math.sign(c.z - b.z);
+        if (dx1 !== dx2 || dy1 !== dy2 || dz1 !== dz2) count++;
     }
     return count;
 }

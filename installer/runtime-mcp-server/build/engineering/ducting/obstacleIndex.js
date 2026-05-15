@@ -171,15 +171,21 @@ function partitionByCenter(obstacles, axis, lo, hi, mid) {
         else
             pivotIndex = hi;
         const pivotValue = aabbCenter(obstacles[pivotIndex].expanded, axis);
-        [obstacles[pivotIndex], obstacles[hi]] = [obstacles[hi], obstacles[pivotIndex]];
+        let tmp = obstacles[pivotIndex];
+        obstacles[pivotIndex] = obstacles[hi];
+        obstacles[hi] = tmp;
         let store = lo;
         for (let i = lo; i < hi; i++) {
             if (aabbCenter(obstacles[i].expanded, axis) < pivotValue) {
-                [obstacles[store], obstacles[i]] = [obstacles[i], obstacles[store]];
+                tmp = obstacles[store];
+                obstacles[store] = obstacles[i];
+                obstacles[i] = tmp;
                 store++;
             }
         }
-        [obstacles[store], obstacles[hi]] = [obstacles[hi], obstacles[store]];
+        tmp = obstacles[store];
+        obstacles[store] = obstacles[hi];
+        obstacles[hi] = tmp;
         if (store === mid)
             return;
         if (store < mid)

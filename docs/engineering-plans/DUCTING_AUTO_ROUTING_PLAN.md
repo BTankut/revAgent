@@ -19,6 +19,20 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.22)
+
+Round-15 review on PR #23 commit `330a5fb`. Two small Gemini medium
+allocation cleanups; no behaviour change.
+
+- **`routeElbows` inline sign compare (Gemini medium).** The function
+  built two `{x, y, z}` objects per junction (~3 N allocations for a
+  path of length N) just to compare direction signs. The function now
+  reads six local sign variables directly.
+- **`partitionByCenter` tmp swaps (Gemini medium).** The AABB-tree
+  build's three array-destructured swaps allocated a two-element
+  intermediate each. Replaced with classic tmp swaps for parity with
+  the Sprint 1.21 `MinHeap` cleanup.
+
 ## Review Fixes (Sprint 1.21)
 
 Round-14 review on PR #23 commit `fce32cb`. Four small Gemini medium

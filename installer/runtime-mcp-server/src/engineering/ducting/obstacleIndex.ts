@@ -204,16 +204,24 @@ function partitionByCenter(obstacles: ObstacleAabb[], axis: "x" | "y" | "z", lo:
         else if ((b <= a && a <= c) || (c <= a && a <= b)) pivotIndex = lo;
         else pivotIndex = hi;
         const pivotValue = aabbCenter(obstacles[pivotIndex].expanded, axis);
-        // Move pivot to the end, partition, then restore.
-        [obstacles[pivotIndex], obstacles[hi]] = [obstacles[hi], obstacles[pivotIndex]];
+        // Three classic tmp swaps — array-destructured swaps allocate a
+        // two-element intermediate on every step, which compounds across the
+        // partition.
+        let tmp = obstacles[pivotIndex];
+        obstacles[pivotIndex] = obstacles[hi];
+        obstacles[hi] = tmp;
         let store = lo;
         for (let i = lo; i < hi; i++) {
             if (aabbCenter(obstacles[i].expanded, axis) < pivotValue) {
-                [obstacles[store], obstacles[i]] = [obstacles[i], obstacles[store]];
+                tmp = obstacles[store];
+                obstacles[store] = obstacles[i];
+                obstacles[i] = tmp;
                 store++;
             }
         }
-        [obstacles[store], obstacles[hi]] = [obstacles[hi], obstacles[store]];
+        tmp = obstacles[store];
+        obstacles[store] = obstacles[hi];
+        obstacles[hi] = tmp;
         if (store === mid) return;
         if (store < mid) lo = store + 1;
         else hi = store - 1;
