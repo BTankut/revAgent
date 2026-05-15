@@ -137,12 +137,22 @@ function sortedNumbers(values) {
 }
 function createCoordinateGrid(sources, target, obstacles, bounds, gridStepMm, verticalStepMm, marginMm, allowedZs) {
     const allPoints = [...sources, target];
-    let minX = Math.min(...allPoints.map((point) => point.x));
-    let maxX = Math.max(...allPoints.map((point) => point.x));
-    let minY = Math.min(...allPoints.map((point) => point.y));
-    let maxY = Math.max(...allPoints.map((point) => point.y));
-    const zMin = Math.min(...allowedZs);
-    const zMax = Math.max(...allowedZs);
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const p of allPoints) {
+        if (p.x < minX)
+            minX = p.x;
+        if (p.x > maxX)
+            maxX = p.x;
+        if (p.y < minY)
+            minY = p.y;
+        if (p.y > maxY)
+            maxY = p.y;
+    }
+    const zMin = allowedZs[0];
+    const zMax = allowedZs[allowedZs.length - 1];
     for (const obstacle of obstacles) {
         if (!overlap1d(obstacle.expanded.minZ, obstacle.expanded.maxZ, zMin, zMax))
             continue;
@@ -451,8 +461,8 @@ function effectiveGridZs(allowedZs, verticalStepMm) {
     for (const z of allowedZs)
         zs.add(round(z));
     if (allowedZs.length > 1 && verticalStepMm > 0) {
-        const zMin = Math.min(...allowedZs);
-        const zMax = Math.max(...allowedZs);
+        const zMin = allowedZs[0];
+        const zMax = allowedZs[allowedZs.length - 1];
         addRangeCoordinates(zs, zMin, zMax, verticalStepMm);
     }
     return Array.from(zs).sort((a, b) => a - b);

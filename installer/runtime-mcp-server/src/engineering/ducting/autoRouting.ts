@@ -255,12 +255,22 @@ function createCoordinateGrid(
     allowedZs: number[],
 ): CoordinateGrid {
     const allPoints = [...sources, target];
-    let minX = Math.min(...allPoints.map((point) => point.x));
-    let maxX = Math.max(...allPoints.map((point) => point.x));
-    let minY = Math.min(...allPoints.map((point) => point.y));
-    let maxY = Math.max(...allPoints.map((point) => point.y));
-    const zMin = Math.min(...allowedZs);
-    const zMax = Math.max(...allowedZs);
+    // Single-pass min/max so the bounds calculation never spreads a large array
+    // into Math.min/max (V8 stack overflow risk past ~120 k arguments).
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const p of allPoints) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    // allowedZs is monotonically ascending (createCoordinateGrid is the only
+    // call site and it always passes a sorted-unique array).
+    const zMin = allowedZs[0];
+    const zMax = allowedZs[allowedZs.length - 1];
 
     for (const obstacle of obstacles) {
         if (!overlap1d(obstacle.expanded.minZ, obstacle.expanded.maxZ, zMin, zMax)) continue;
@@ -631,8 +641,10 @@ function effectiveGridZs(allowedZs: number[], verticalStepMm: number): number[] 
     const zs = new Set<number>();
     for (const z of allowedZs) zs.add(round(z));
     if (allowedZs.length > 1 && verticalStepMm > 0) {
-        const zMin = Math.min(...allowedZs);
-        const zMax = Math.max(...allowedZs);
+        // allowedZs is sorted ascending (readAllowedElevations / uniqueSortedRounded
+        // both guarantee this), so the bounds are just the first/last entries.
+        const zMin = allowedZs[0];
+        const zMax = allowedZs[allowedZs.length - 1];
         addRangeCoordinates(zs, zMin, zMax, verticalStepMm);
     }
     return Array.from(zs).sort((a, b) => a - b);

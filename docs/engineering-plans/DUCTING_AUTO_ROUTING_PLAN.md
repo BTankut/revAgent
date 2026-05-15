@@ -19,6 +19,22 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.19)
+
+Round-12 review on PR #23 commit `c5f59df`. Three small Gemini medium
+overflow-hardening fixes; no behaviour change.
+
+- **`createCoordinateGrid` bounds without spread (Gemini medium ×2).**
+  The X/Y bounds were computed via four separate
+  `Math.min/max(...allPoints.map(...))` spreads, which crashes V8 with
+  `RangeError: Maximum call stack size exceeded` past ≈120 k arguments.
+  Replaced with a single in-place loop. The Z bounds (`Math.min/max
+  (...allowedZs)`) hit the same risk but `allowedZs` is sorted, so we
+  read `allowedZs[0]` and `allowedZs[length-1]` directly.
+- **`effectiveGridZs` bounds without spread (Gemini medium).** Same
+  fix in the snap-target builder: `allowedZs` is sorted ascending so
+  the spread is replaced with first/last index access.
+
 ## Review Fixes (Sprint 1.18)
 
 Round-11 review on PR #23 commit `fcacc59`. Two small Gemini medium
