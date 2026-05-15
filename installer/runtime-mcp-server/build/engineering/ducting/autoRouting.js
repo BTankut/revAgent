@@ -560,6 +560,9 @@ function mergeObstacleSources(spatial, user) {
     const byId = new Map();
     const userIds = new Set();
     user.forEach((raw, index) => {
+        const aabb = aabbFromValue(valueByFields(raw, ["aabbMm", "aabb_mm", "aabb", "box"]) ?? raw);
+        if (!aabb)
+            return;
         const id = stringByFields(raw, ["id", "elementId", "element_id", "uniqueId", "unique_id"]) ?? `user-obstacle-${index + 1}`;
         userIds.add(id);
         byId.set(id, { ...raw, id });

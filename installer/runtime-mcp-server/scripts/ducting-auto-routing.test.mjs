@@ -281,6 +281,55 @@ assert.equal(legacyExpansion.expanded.maxX, 150);
 assert.equal(legacyExpansion.expanded.minZ, -100, "Z expansion is clearance + halfHeight");
 assert.equal(legacyExpansion.expanded.maxZ, 200);
 
+// Sprint 1.27 (Codex P2): a user-supplied obstacle whose AABB cannot be parsed
+// must NOT silently drop the valid spatial-zone obstacle that shares its id.
+// Before this fix, an invalid user override would (1) win the merge by id,
+// (2) get skipped by readObstacles, leaving the planner with no obstacle and
+// routing straight through what should be a real model element.
+const invalidUserOverrideKeepsSpatial = planDuctingAutoRoute({
+  sources: [{ id: "s", pointMm: { x: 0, y: 0, z: 3000 } }],
+  targets: [{ id: "t", pointMm: { x: 4000, y: 0, z: 3000 } }],
+  spatialZone: {
+    schema_version: "spatial-zone-extract.v1",
+    obstacles: [
+      {
+        id: "beam-A",
+        category: "Structural Framing",
+        aabb_mm: { min: [1500, -1000, 2900], max: [2500, 1000, 3100] },
+      },
+    ],
+    plenum_volumes: [{ id: "p", z_min_mm: 2900, z_max_mm: 3100 }],
+    shafts: [],
+  },
+  obstacles: [
+    { id: "beam-A" }, // override attempt with missing AABB
+  ],
+  routingBounds: { minX: -200, minY: -1500, minZ: 2900, maxX: 4200, maxY: 1500, maxZ: 3100 },
+  gridStepMm: 500,
+  clearanceMm: 0,
+});
+assert.equal(
+  invalidUserOverrideKeepsSpatial.summary.obstacleCount,
+  1,
+  "spatial-zone obstacle must survive when its id is matched by an unparseable user override",
+);
+assert.ok(
+  invalidUserOverrideKeepsSpatial.issues.some((issue) => issue.code === "route_user_obstacle_unreadable"),
+  "the rejected user override must still surface as the route_user_obstacle_unreadable warning",
+);
+// The valid spatial obstacle blocks the straight path; the route must detour
+// rather than slice through (1500-2500, -1000-1000).
+const detourRoute = invalidUserOverrideKeepsSpatial.routeCandidates[0];
+assert.ok(detourRoute, "a route candidate must still be generated using the surviving spatial obstacle");
+const cutsThroughBeam = detourRoute.segmentsMm.some((segment) => {
+  const x1 = segment.startMm.x;
+  const x2 = segment.endMm.x;
+  const y = (segment.startMm.y + segment.endMm.y) / 2;
+  return y > -1000 && y < 1000 && Math.min(x1, x2) < 2500 && Math.max(x1, x2) > 1500;
+});
+assert.equal(cutsThroughBeam, false,
+  "route must not slice through the spatial-zone beam that survived the failed override");
+
 // Sprint 1.26 (Gemini medium): user-supplied obstacles whose AABB cannot be
 // parsed must surface as a warning issue, parallel to the existing
 // spatial_zone_obstacle_aabb_unreadable issue for spatial-zone obstacles.

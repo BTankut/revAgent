@@ -792,6 +792,16 @@ function mergeObstacleSources(spatial: Record<string, unknown>[], user: Record<s
     const byId = new Map<string, Record<string, unknown>>();
     const userIds = new Set<string>();
     user.forEach((raw, index) => {
+        // Only honour the override if the user entry actually parses. An
+        // invalid user entry with the same id as a spatial-zone obstacle
+        // would otherwise drop the valid spatial entry from `userIds.has`
+        // below AND then be skipped by `readObstacles`, leaving the planner
+        // with no obstacle at all and routing straight through what should
+        // be a real beam/column. The user obstacle is still reported via
+        // `route_user_obstacle_unreadable` so the caller knows their
+        // override was rejected.
+        const aabb = aabbFromValue(valueByFields(raw, ["aabbMm", "aabb_mm", "aabb", "box"]) ?? raw);
+        if (!aabb) return;
         const id = stringByFields(raw, ["id", "elementId", "element_id", "uniqueId", "unique_id"]) ?? `user-obstacle-${index + 1}`;
         userIds.add(id);
         byId.set(id, { ...raw, id });

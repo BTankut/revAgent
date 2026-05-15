@@ -19,6 +19,25 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.27)
+
+Round-20 review on PR #23 commit `2ba57d6`. One Codex P2 correctness
+fix.
+
+- **Invalid user obstacle override must not drop the spatial-zone
+  obstacle (Codex P2).** When a user-supplied obstacle has the same
+  id as a spatial-zone obstacle but its AABB cannot be parsed,
+  `mergeObstacleSources` was registering the id in `userIds` first,
+  which made the valid spatial-zone entry skip its merge. Then
+  `readObstacles` skipped the invalid user entry, leaving the planner
+  with *no* obstacle for that id and a clean straight route through
+  the real beam/column. The merge now only honours a user override
+  when its AABB actually parses; invalid user entries are still
+  reported via the Sprint 1.26 `route_user_obstacle_unreadable`
+  warning so the caller knows their override was rejected. Regression
+  test asserts the spatial obstacle survives an invalid override and
+  the route detours around it.
+
 ## Review Fixes (Sprint 1.26)
 
 Round-19 review on PR #23 commit `9df3c8c`. Two Gemini medium clarity
