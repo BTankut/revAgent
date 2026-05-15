@@ -31,19 +31,20 @@ For quick evidence from the current plan:
 {
   "range": "current_view",
   "format": "png",
-  "pixelSize": 2400,
-  "dpi": "150"
+  "pixelSize": 6000,
+  "dpi": "300"
 }
 ```
 
-For the visible area of the current UI view:
+For technical reading, first zoom/focus the active Revit UI view to the area of
+interest, then export the visible region:
 
 ```json
 {
   "range": "visible_region",
   "format": "png",
   "zoom": 100,
-  "dpi": "150"
+  "dpi": "300"
 }
 ```
 
@@ -54,7 +55,8 @@ For a selected view without changing the active UI tab:
   "viewName": "Level 1 HVAC Plan",
   "range": "set_of_views",
   "format": "png",
-  "pixelSize": 2400
+  "pixelSize": 8000,
+  "dpi": "300"
 }
 ```
 
@@ -68,7 +70,8 @@ For coordination review around known element ids:
   "marginMm": 2000,
   "contextTransparency": 65,
   "format": "png",
-  "pixelSize": 2400
+  "pixelSize": 4000,
+  "dpi": "300"
 }
 ```
 
@@ -82,7 +85,10 @@ The smoke-tested export matrix covers:
 - DPI: 150 and 300
 - Formats: PNG, JPEG lossless, JPEG medium, TIFF, BMP, TARGA
 
-PNG is the default because it keeps linework sharp and file sizes reasonable.
+PNG at 300 DPI is the default because it keeps linework sharp and file sizes
+reasonable for Revit line drawings. Low-byte exports are not the default goal:
+LLM review needs readable text, tags, duct sizes, dimensions, grids, and
+leaders.
 Use JPEG only when smaller files matter more than exact line fidelity. BMP and
 TARGA are available because Revit supports them, but they are much larger and
 are not the preferred coordination format.
@@ -105,3 +111,17 @@ around the issue being reviewed.
 
 For production review, keep the generated image path in the task notes or PR
 comment so reviewers can reproduce the visual evidence.
+
+## LLM Review Quality Guidance
+
+Do not rely on a single low-resolution full-plan export for engineering review.
+Use a small image pack instead:
+
+1. Overview: full plan at `pixelSize` 6000-8000 and 300 DPI.
+2. Detail: focus/zoom the active view to the dense system area and export
+   `visible_region` at 300 DPI.
+3. Coordination: use `export_revit_coordination_image` for selected local
+   elements, not long system-wide element runs.
+4. Tile/crop very large visible-region outputs before asking an LLM to inspect
+   text. A 15000 px export can be excellent evidence, but it may be too large
+   for direct display in some clients.

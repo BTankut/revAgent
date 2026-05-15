@@ -71,10 +71,13 @@ Kullanılacak runtime araçları:
 Pratik kullanım:
 
 1. Ham ekran kanıtı gerekiyorsa `export_revit_view_image` kullanılır.
-2. Görüntü yoğun ve okunamıyorsa `export_revit_coordination_image` ile hedef
+2. Tam plan teknik okuma için tek başına düşük çözünürlükte export edilmez;
+   genel plan için 6000-8000 px / 300 DPI, detay için zoomlanmış
+   `visible_region` tercih edilir.
+3. Görüntü yoğun ve okunamıyorsa `export_revit_coordination_image` ile hedef
    element id'leri etrafında odaklı 3D kanıt alınır.
-3. Çıktı dosya yolu kullanıcıya veya PR/review notuna yazılır.
-4. Görsel export araçları da Revit MCP hard rule kapsamındadır; status preflight
+4. Çıktı dosya yolu kullanıcıya veya PR/review notuna yazılır.
+5. Görsel export araçları da Revit MCP hard rule kapsamındadır; status preflight
    olmadan ve paralel çalıştırılmaz.
 
 ## MEP Production Packages
