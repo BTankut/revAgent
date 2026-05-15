@@ -281,6 +281,40 @@ assert.equal(legacyExpansion.expanded.maxX, 150);
 assert.equal(legacyExpansion.expanded.minZ, -100, "Z expansion is clearance + halfHeight");
 assert.equal(legacyExpansion.expanded.maxZ, 200);
 
+// Sprint 1.29 (Gemini medium): when A* fails to find a route, the
+// `route_endpoint_z_projected` warning must aggregate ALL projected sources
+// instead of misleadingly attributing the projection to the first listed
+// source. Two sources both out-of-bounds → both projected → both reported.
+const multiSourceProjection = planDuctingAutoRoute({
+  sources: [
+    { id: "ahu-1", pointMm: { x: 0, y: 0, z: 2000 } }, // below allowed 3000
+    { id: "ahu-2", pointMm: { x: 0, y: 1000, z: 2000 } }, // also below
+  ],
+  // No usable target: pillar at the only routing elevation cuts both routes.
+  targets: [{ id: "vav", pointMm: { x: 4000, y: 0, z: 2000 } }],
+  allowedElevationsMm: [3000, 6000],
+  obstacles: [
+    { id: "wall", aabbMm: { minX: 1500, minY: -2000, minZ: 2900, maxX: 1600, maxY: 2000, maxZ: 6100 } },
+  ],
+  routingBounds: { minX: -200, minY: -2000, minZ: 2900, maxX: 4200, maxY: 2000, maxZ: 6100 },
+  gridStepMm: 500,
+  clearanceMm: 0,
+});
+const projectionIssue = multiSourceProjection.issues.find(
+  (issue) => issue.code === "route_endpoint_z_projected",
+);
+assert.ok(projectionIssue, "must emit route_endpoint_z_projected for out-of-bounds sources");
+assert.deepEqual(
+  projectionIssue.context?.sourceIds,
+  ["ahu-1", "ahu-2"],
+  "no-path projection warning must report every projected source, not just the first",
+);
+assert.equal(
+  projectionIssue.context?.sourceId,
+  "(multiple-or-unselected)",
+  "with multiple projected sources and no selected route, scalar sourceId should disambiguate",
+);
+
 // Sprint 1.28 (Codex P2): A* must not expand grid nodes outside routingBounds.
 // With bounds.z=[5500,6500], allowed=[3000,9000], verticalStepMm=1000, the
 // raw grid contains z=7000 — outside the caller's routing volume. A blocking

@@ -724,12 +724,21 @@ function buildRouteFromSources(
         obstacleIndex,
         options,
     );
-    const sourceEntry = path.sourceIndex !== undefined ? projectedSources[path.sourceIndex] : projectedSources[0];
+    const pathHasRoute = path.points.length >= 2;
+    const sourceEntry = path.sourceIndex !== undefined ? projectedSources[path.sourceIndex] : undefined;
     const issues: EngineeringIssue[] = [];
-    const sourceProjected = sourceEntry?.projected ?? false;
+    // When A* picked a specific source, report only that source's projection.
+    // When no path was found, aggregate all sources so the warning does not
+    // misleadingly attribute the projection to whichever source happened to
+    // be listed first.
+    const projectedSourceIds = pathHasRoute && sourceEntry
+        ? (sourceEntry.projected ? [sourceEntry.id] : [])
+        : projectedSources.filter((entry) => entry.projected).map((entry) => entry.id);
+    const sourceProjected = projectedSourceIds.length > 0;
     if (sourceProjected || snappedTarget.projected) {
         issues.push(makeIssue("route_endpoint_z_projected", "warning", "Endpoint was projected to the nearest allowed routing elevation; vertical riser/drop tail beyond the grid is not generated in this dry-run planner.", {
-            sourceId: sourceEntry?.id,
+            sourceId: pathHasRoute ? sourceEntry?.id : (projectedSourceIds.length === 1 ? projectedSourceIds[0] : "(multiple-or-unselected)"),
+            sourceIds: projectedSourceIds,
             targetId: target.id,
             allowedElevationsMm: options.allowedZs.slice(),
             sourceProjected,
@@ -738,7 +747,8 @@ function buildRouteFromSources(
     }
     if (path.exhausted) {
         issues.push(makeIssue("route_search_limit_exceeded", "error", "Auto-routing search exceeded maxNodeExpansions.", {
-            sourceId: sourceEntry?.id,
+            sourceId: pathHasRoute ? sourceEntry?.id : "(unselected)",
+            sourceIds: pathHasRoute ? undefined : projectedSources.map((entry) => entry.id),
             targetId: target.id,
             maxNodeExpansions: options.maxExpansions,
         }));

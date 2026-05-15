@@ -19,6 +19,28 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.29)
+
+Round-22 review on PR #23 commit `ca9647f`. One Gemini medium clarity
+fix that completes the multi-source error-reporting work started in
+Sprint 1.26.
+
+- **`route_endpoint_z_projected` aggregates every projected source
+  when no path is found (Gemini medium).** When A* picked a specific
+  source the issue used to (and still does) name only that source.
+  But on a no-path failure `sourceEntry` was defaulting to
+  `projectedSources[0]`, so the warning silently attributed the
+  projection to the first listed source even if other sources were
+  also projected. The issue context now carries:
+  - `sourceId` = the actually selected source when a path exists, or
+    the single projected source when there's only one, or
+    `"(multiple-or-unselected)"` otherwise.
+  - `sourceIds` = the full list of projected source ids on no-path
+    failure, so callers can see exactly which sources were affected.
+  The `route_search_limit_exceeded` issue picks up the same `sourceIds`
+  fallback so the multi-source attribution stays consistent. Regression
+  test covers the two-source out-of-bounds case.
+
 ## Review Fixes (Sprint 1.28)
 
 Round-21 review on PR #23 commit `ec921ad`. One Codex P2 correctness
