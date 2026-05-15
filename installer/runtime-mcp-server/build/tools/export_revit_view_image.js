@@ -47,9 +47,9 @@ export function registerExportRevitViewImageTool(server) {
         exactName: z.boolean().optional().default(true),
         range: rangeSchema.optional().describe("current_view and visible_region use the active UI view. set_of_views can export viewId/viewName without switching the UI."),
         format: formatSchema.optional().default("png"),
-        pixelSize: z.number().int().min(200).max(10000).optional().default(2400),
+        pixelSize: z.number().int().min(200).max(10000).optional().default(6000),
         zoom: z.number().int().min(1).max(1000).optional().default(100),
-        dpi: dpiSchema.optional().default("150"),
+        dpi: dpiSchema.optional().default("300"),
         fitDirection: fitDirectionSchema.optional().default("horizontal"),
         outputDir: z.string().optional(),
         filePrefix: z.string().optional(),
@@ -63,7 +63,7 @@ export function registerExportRevitViewImageTool(server) {
         const fileType = fileTypeByFormat[args.format || "png"];
         const resolution = resolutionByDpi[String(args.dpi || "150")];
         const fitDirection = fitDirectionByInput[args.fitDirection || "horizontal"];
-        const pixelSize = Math.trunc(args.pixelSize || 2400);
+        const pixelSize = Math.trunc(args.pixelSize || 6000);
         const zoom = Math.trunc(args.zoom || 100);
         const code = `
 var warnings = new List<string>();
@@ -164,7 +164,7 @@ return new {
   exportRange = requestedRange,
   format = ${csharpString(args.format || "png")},
   pixelSize = ${pixelSize},
-  dpi = ${csharpString(String(args.dpi || "150"))},
+  dpi = ${csharpString(String(args.dpi || "300"))},
   fitDirection = ${csharpString(args.fitDirection || "horizontal")},
   view = new { id = selectedView.Id.IntegerValue, name = selectedView.Name, type = selectedView.ViewType.ToString() },
   activeView = activeView == null ? null : new { id = activeView.Id.IntegerValue, name = activeView.Name, type = activeView.ViewType.ToString() },

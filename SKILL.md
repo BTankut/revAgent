@@ -146,8 +146,10 @@ surface is already trivially known — e.g. the bundled patterns under
 
 For visual QA after any Revit MCP operation, use `export_revit_view_image` for
 raw plan/view evidence and `export_revit_coordination_image` when dense MEP
-systems need a focused 3D review image. Prefer PNG for linework-heavy plans.
-Keep generated image paths with the task notes so a human reviewer can
+systems need a focused 3D review image. Prefer PNG at 300 DPI. For full plans,
+use `pixelSize` 6000-8000; for technical text reading, zoom/focus the active
+view and export `visible_region` instead of relying on one low-resolution full
+plan. Keep generated image paths with the task notes so a human reviewer can
 reproduce the exact evidence.
 
 ---

@@ -46,8 +46,8 @@ export function registerExportRevitCoordinationImageTool(server) {
         viewName: z.string().optional().default("DPE Visual QA - Coordination Export"),
         marginMm: z.number().min(0).max(20000).optional().default(2000),
         contextTransparency: z.number().int().min(0).max(90).optional().default(65),
-        pixelSize: z.number().int().min(200).max(10000).optional().default(2400),
-        dpi: dpiSchema.optional().default("150"),
+        pixelSize: z.number().int().min(200).max(10000).optional().default(4000),
+        dpi: dpiSchema.optional().default("300"),
         fitDirection: fitDirectionSchema.optional().default("horizontal"),
         format: formatSchema.optional().default("png"),
         outputDir: z.string().optional(),
@@ -60,7 +60,7 @@ export function registerExportRevitCoordinationImageTool(server) {
         const fileType = fileTypeByFormat[args.format || "png"];
         const resolution = resolutionByDpi[String(args.dpi || "150")];
         const fitDirection = fitDirectionByInput[args.fitDirection || "horizontal"];
-        const pixelSize = Math.trunc(args.pixelSize || 2400);
+        const pixelSize = Math.trunc(args.pixelSize || 4000);
         const marginMm = Number.isFinite(Number(args.marginMm)) ? Number(args.marginMm) : 2000;
         const transparency = Math.trunc(args.contextTransparency ?? 65);
         const code = `
@@ -203,7 +203,7 @@ return new {
   filePrefix = filePrefix,
   format = ${csharpString(args.format || "png")},
   pixelSize = ${pixelSize},
-  dpi = ${csharpString(String(args.dpi || "150"))},
+  dpi = ${csharpString(String(args.dpi || "300"))},
   files = files,
   warnings = warnings
 };`;
