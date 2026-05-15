@@ -1,6 +1,11 @@
 import { aabbFromValue, asBoolean, asNumber, asRecord, makeIssue, pointDistanceMm, pointFromValue, round, stringByFields, validationStatus, valueByFields, } from "./helpers.js";
 import { buildObstacleIndex, pointInsideObstacle, readObstacles, segmentHitsObstacle, } from "./obstacleIndex.js";
 import { mapSpatialZoneToRoutingContext } from "./spatialZoneAdapter.js";
+const GEOM_TOLERANCE_MM = 0.001;
+const DIAGONAL_45_TOLERANCE_MM = 1;
+function is45DegreeDiagonalXY(dxMm, dyMm) {
+    return Math.abs(Math.abs(dxMm) - Math.abs(dyMm)) <= DIAGONAL_45_TOLERANCE_MM;
+}
 function pointFromRecord(record) {
     return pointFromValue(valueByFields(record, ["pointMm", "point_mm", "point", "locationMm", "location_mm", "location"]))
         ?? pointFromValue(record);
@@ -60,7 +65,7 @@ function verticalStats(points) {
     let previousVerticalSign = 0;
     for (let index = 1; index < points.length; index++) {
         const dz = points[index].z - points[index - 1].z;
-        if (Math.abs(dz) > 0.001) {
+        if (Math.abs(dz) > GEOM_TOLERANCE_MM) {
             const sign = Math.sign(dz);
             if (sign !== previousVerticalSign)
                 runCount++;
@@ -89,7 +94,7 @@ function compressPath(points) {
         const dzRight = Math.sign(next.z - current.z);
         if (dxLeft === dxRight && dyLeft === dyRight && dzLeft === dzRight) {
             const xyDiagonal = dxLeft !== 0 && dyLeft !== 0;
-            if (!xyDiagonal || Math.abs(Math.abs(next.x - previous.x) - Math.abs(next.y - previous.y)) <= 1)
+            if (!xyDiagonal || is45DegreeDiagonalXY(next.x - previous.x, next.y - previous.y))
                 continue;
         }
         result.push(current);
@@ -113,11 +118,11 @@ function addRangeCoordinates(values, min, max, step) {
     values.add(round(max));
     const start = Math.ceil(min / step) * step;
     const end = Math.floor(max / step) * step;
-    for (let value = start; value <= end + 0.001; value += step)
+    for (let value = start; value <= end + GEOM_TOLERANCE_MM; value += step)
         values.add(round(value));
 }
 function addBoundedCoordinate(values, value, min, max) {
-    if (value >= min - 0.001 && value <= max + 0.001)
+    if (value >= min - GEOM_TOLERANCE_MM && value <= max + GEOM_TOLERANCE_MM)
         values.add(round(value));
 }
 function sortedNumbers(values) {
@@ -179,10 +184,10 @@ function createCoordinateGrid(sources, target, obstacles, bounds, gridStepMm, ve
         addRangeCoordinates(zs, zMin, zMax, verticalStepMm);
     }
     for (const source of sources) {
-        if (source.z >= zMin - 0.001 && source.z <= zMax + 0.001)
+        if (source.z >= zMin - GEOM_TOLERANCE_MM && source.z <= zMax + GEOM_TOLERANCE_MM)
             zs.add(round(source.z));
     }
-    if (target.z >= zMin - 0.001 && target.z <= zMax + 0.001)
+    if (target.z >= zMin - GEOM_TOLERANCE_MM && target.z <= zMax + GEOM_TOLERANCE_MM)
         zs.add(round(target.z));
     return { xs: sortedNumbers(xs), ys: sortedNumbers(ys), zs: sortedNumbers(zs) };
 }
@@ -265,7 +270,7 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
     const compose = (gk, arrival) => gk * 2 + arrival;
     const gridFromComposite = (comp) => Math.floor(comp / 2);
     const arrivalFromComposite = (comp) => comp % 2;
-    const findIndex = (values, target) => values.findIndex((value) => Math.abs(value - target) < 0.001);
+    const findIndex = (values, target) => values.findIndex((value) => Math.abs(value - target) < GEOM_TOLERANCE_MM);
     const targetIx = findIndex(xs, target.x);
     const targetIy = findIndex(ys, target.y);
     const targetIz = findIndex(zs, target.z);
@@ -316,6 +321,27 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
         : [
             [-1, 0], [1, 0], [0, -1], [0, 1],
         ];
+    const evalNeighbor = (nIx, nIy, nIz, vertical, currentPoint, currentComp, currentArrival) => {
+        if (nIx < 0 || nIy < 0 || nIz < 0 || nIx >= xs.length || nIy >= ys.length || nIz >= zs.length)
+            return;
+        const neighborArrival = vertical ? ARRIVE_VERT : ARRIVE_HORIZ;
+        const neighborComp = compose(gridKey(nIx, nIy, nIz), neighborArrival);
+        if (closed.has(neighborComp))
+            return;
+        const neighborPoint = point(nIx, nIy, nIz);
+        if (pointBlocked(neighborPoint) || segmentBlocked(currentPoint, neighborPoint))
+            return;
+        const startingRiser = vertical && currentArrival !== ARRIVE_VERT;
+        const transitionPenalty = startingRiser ? options.riserPenalty : 0;
+        const stepCost = pointDistanceMm(currentPoint, neighborPoint) + transitionPenalty;
+        const tentative = (gScore.get(currentComp) ?? Number.POSITIVE_INFINITY) + stepCost;
+        if (tentative >= (gScore.get(neighborComp) ?? Number.POSITIVE_INFINITY))
+            return;
+        cameFrom.set(neighborComp, currentComp);
+        sourceForKey.set(neighborComp, sourceForKey.get(currentComp) ?? 0);
+        gScore.set(neighborComp, tentative);
+        open.push({ key: neighborComp, priority: tentative + heuristic(neighborPoint) });
+    };
     let expansions = 0;
     while (open.length > 0) {
         const currentComp = open.pop().key;
@@ -351,41 +377,20 @@ function findGridPathFromSources(sources, target, obstacleIndex, options) {
         const iy = iyFromGridKey(currentGridKey);
         const iz = izFromGridKey(currentGridKey);
         const currentPoint = point(ix, iy, iz);
-        const evalNeighbor = (nIx, nIy, nIz, vertical) => {
-            if (nIx < 0 || nIy < 0 || nIz < 0 || nIx >= xs.length || nIy >= ys.length || nIz >= zs.length)
-                return;
-            const neighborArrival = vertical ? ARRIVE_VERT : ARRIVE_HORIZ;
-            const neighborComp = compose(gridKey(nIx, nIy, nIz), neighborArrival);
-            if (closed.has(neighborComp))
-                return;
-            const neighborPoint = point(nIx, nIy, nIz);
-            if (pointBlocked(neighborPoint) || segmentBlocked(currentPoint, neighborPoint))
-                return;
-            const startingRiser = vertical && currentArrival !== ARRIVE_VERT;
-            const transitionPenalty = startingRiser ? options.riserPenalty : 0;
-            const stepCost = pointDistanceMm(currentPoint, neighborPoint) + transitionPenalty;
-            const tentative = (gScore.get(currentComp) ?? Number.POSITIVE_INFINITY) + stepCost;
-            if (tentative >= (gScore.get(neighborComp) ?? Number.POSITIVE_INFINITY))
-                return;
-            cameFrom.set(neighborComp, currentComp);
-            sourceForKey.set(neighborComp, sourceForKey.get(currentComp) ?? 0);
-            gScore.set(neighborComp, tentative);
-            open.push({ key: neighborComp, priority: tentative + heuristic(neighborPoint) });
-        };
         for (const [dx, dy] of horizontalNeighbors) {
             const newIx = ix + dx;
             const newIy = iy + dy;
             if (dx !== 0 && dy !== 0) {
                 if (newIx < 0 || newIx >= xs.length || newIy < 0 || newIy >= ys.length)
                     continue;
-                if (Math.abs(Math.abs(xs[newIx] - xs[ix]) - Math.abs(ys[newIy] - ys[iy])) > 1)
+                if (!is45DegreeDiagonalXY(xs[newIx] - xs[ix], ys[newIy] - ys[iy]))
                     continue;
             }
-            evalNeighbor(newIx, newIy, iz, false);
+            evalNeighbor(newIx, newIy, iz, false, currentPoint, currentComp, currentArrival);
         }
         if (zs.length > 1) {
-            evalNeighbor(ix, iy, iz - 1, true);
-            evalNeighbor(ix, iy, iz + 1, true);
+            evalNeighbor(ix, iy, iz - 1, true, currentPoint, currentComp, currentArrival);
+            evalNeighbor(ix, iy, iz + 1, true, currentPoint, currentComp, currentArrival);
         }
     }
     return { points: [], expansions, exhausted: false };
@@ -421,7 +426,7 @@ function effectiveGridZs(allowedZs, verticalStepMm, endpointZs) {
         const zMin = Math.min(...allowedZs);
         const zMax = Math.max(...allowedZs);
         for (const z of endpointZs) {
-            if (z >= zMin - 0.001 && z <= zMax + 0.001)
+            if (z >= zMin - GEOM_TOLERANCE_MM && z <= zMax + GEOM_TOLERANCE_MM)
                 zs.add(round(z));
         }
     }
@@ -580,7 +585,7 @@ export function planDuctingAutoRoute(input = {}) {
     const routes = [];
     if (bounds) {
         for (const z of allowedZs) {
-            if (z < bounds.minZ - 0.001 || z > bounds.maxZ + 0.001) {
+            if (z < bounds.minZ - GEOM_TOLERANCE_MM || z > bounds.maxZ + GEOM_TOLERANCE_MM) {
                 issues.push(makeIssue("route_elevation_outside_bounds", "error", "Allowed routing elevation is outside the supplied routing bounds.", {
                     elevationMm: z,
                     minZ: bounds.minZ,

@@ -23,6 +23,21 @@ import {
 import { mapSpatialZoneToRoutingContext, type SpatialZoneRoutingContext } from "./spatialZoneAdapter.js";
 import type { AabbMm, EngineeringIssue, PointMm } from "./types.js";
 
+// Geometric epsilon used for "same point / same coordinate" comparisons across
+// the planner (Z-equality checks, grid-index lookup, bounds tolerance, etc).
+// 1 µm is well below any modelling precision Revit produces.
+const GEOM_TOLERANCE_MM = 0.001;
+// Per-step and cumulative tolerance for the 45° XY-diagonal contract.
+// The grid contains off-pitch detour coordinates (obstacle expanded.minX ± 1,
+// endpoint snaps), so a strict |Δx| === |Δy| check would discard legitimate
+// neighbours; 1 mm absorbs those snaps without admitting arbitrary-angle
+// segments.
+const DIAGONAL_45_TOLERANCE_MM = 1;
+
+function is45DegreeDiagonalXY(dxMm: number, dyMm: number): boolean {
+    return Math.abs(Math.abs(dxMm) - Math.abs(dyMm)) <= DIAGONAL_45_TOLERANCE_MM;
+}
+
 export interface DuctAutoRoutingInput {
     sources?: Record<string, unknown>[];
     targets?: Record<string, unknown>[];
@@ -143,7 +158,7 @@ function verticalStats(points: PointMm[]): { runCount: number; runLengthMm: numb
     let previousVerticalSign = 0;
     for (let index = 1; index < points.length; index++) {
         const dz = points[index].z - points[index - 1].z;
-        if (Math.abs(dz) > 0.001) {
+        if (Math.abs(dz) > GEOM_TOLERANCE_MM) {
             const sign = Math.sign(dz);
             if (sign !== previousVerticalSign) runCount++;
             previousVerticalSign = sign;
@@ -175,7 +190,7 @@ function compressPath(points: PointMm[]): PointMm[] {
             // and that slack must not accumulate across a merged span into an
             // arbitrary-angle segment.
             const xyDiagonal = dxLeft !== 0 && dyLeft !== 0;
-            if (!xyDiagonal || Math.abs(Math.abs(next.x - previous.x) - Math.abs(next.y - previous.y)) <= 1) continue;
+            if (!xyDiagonal || is45DegreeDiagonalXY(next.x - previous.x, next.y - previous.y)) continue;
         }
         result.push(current);
     }
@@ -200,11 +215,11 @@ function addRangeCoordinates(values: Set<number>, min: number, max: number, step
     values.add(round(max));
     const start = Math.ceil(min / step) * step;
     const end = Math.floor(max / step) * step;
-    for (let value = start; value <= end + 0.001; value += step) values.add(round(value));
+    for (let value = start; value <= end + GEOM_TOLERANCE_MM; value += step) values.add(round(value));
 }
 
 function addBoundedCoordinate(values: Set<number>, value: number, min: number, max: number): void {
-    if (value >= min - 0.001 && value <= max + 0.001) values.add(round(value));
+    if (value >= min - GEOM_TOLERANCE_MM && value <= max + GEOM_TOLERANCE_MM) values.add(round(value));
 }
 
 function sortedNumbers(values: Set<number>): number[] {
@@ -283,9 +298,9 @@ function createCoordinateGrid(
         addRangeCoordinates(zs, zMin, zMax, verticalStepMm);
     }
     for (const source of sources) {
-        if (source.z >= zMin - 0.001 && source.z <= zMax + 0.001) zs.add(round(source.z));
+        if (source.z >= zMin - GEOM_TOLERANCE_MM && source.z <= zMax + GEOM_TOLERANCE_MM) zs.add(round(source.z));
     }
-    if (target.z >= zMin - 0.001 && target.z <= zMax + 0.001) zs.add(round(target.z));
+    if (target.z >= zMin - GEOM_TOLERANCE_MM && target.z <= zMax + GEOM_TOLERANCE_MM) zs.add(round(target.z));
 
     return { xs: sortedNumbers(xs), ys: sortedNumbers(ys), zs: sortedNumbers(zs) };
 }
@@ -403,7 +418,7 @@ function findGridPathFromSources(
     const gridFromComposite = (comp: number) => Math.floor(comp / 2);
     const arrivalFromComposite = (comp: number) => comp % 2;
 
-    const findIndex = (values: number[], target: number) => values.findIndex((value) => Math.abs(value - target) < 0.001);
+    const findIndex = (values: number[], target: number) => values.findIndex((value) => Math.abs(value - target) < GEOM_TOLERANCE_MM);
     const targetIx = findIndex(xs, target.x);
     const targetIy = findIndex(ys, target.y);
     const targetIz = findIndex(zs, target.z);
@@ -463,6 +478,33 @@ function findGridPathFromSources(
             [-1, 0], [1, 0], [0, -1], [0, 1],
         ];
 
+    // evalNeighbor is hoisted out of the while-loop so the closure is allocated
+    // once per A* run instead of once per expansion (~25 k allocations). It
+    // closes over the search-wide state (xs/ys/zs, maps, options, heuristic);
+    // the per-expansion state (currentPoint, currentComp, currentArrival) is
+    // passed as parameters.
+    const evalNeighbor = (
+        nIx: number, nIy: number, nIz: number, vertical: boolean,
+        currentPoint: PointMm, currentComp: number, currentArrival: number,
+    ): void => {
+        if (nIx < 0 || nIy < 0 || nIz < 0 || nIx >= xs.length || nIy >= ys.length || nIz >= zs.length) return;
+        const neighborArrival = vertical ? ARRIVE_VERT : ARRIVE_HORIZ;
+        const neighborComp = compose(gridKey(nIx, nIy, nIz), neighborArrival);
+        if (closed.has(neighborComp)) return;
+        const neighborPoint = point(nIx, nIy, nIz);
+        if (pointBlocked(neighborPoint) || segmentBlocked(currentPoint, neighborPoint)) return;
+        // Per-run riser penalty: charged once when transitioning into a vertical run.
+        const startingRiser = vertical && currentArrival !== ARRIVE_VERT;
+        const transitionPenalty = startingRiser ? options.riserPenalty : 0;
+        const stepCost = pointDistanceMm(currentPoint, neighborPoint) + transitionPenalty;
+        const tentative = (gScore.get(currentComp) ?? Number.POSITIVE_INFINITY) + stepCost;
+        if (tentative >= (gScore.get(neighborComp) ?? Number.POSITIVE_INFINITY)) return;
+        cameFrom.set(neighborComp, currentComp);
+        sourceForKey.set(neighborComp, sourceForKey.get(currentComp) ?? 0);
+        gScore.set(neighborComp, tentative);
+        open.push({ key: neighborComp, priority: tentative + heuristic(neighborPoint) });
+    };
+
     let expansions = 0;
     while (open.length > 0) {
         const currentComp = open.pop()!.key;
@@ -498,29 +540,6 @@ function findGridPathFromSources(
         const iz = izFromGridKey(currentGridKey);
         const currentPoint = point(ix, iy, iz);
 
-        // Inline neighbour evaluation — the previous implementation built a per-expansion
-        // {ix,iy,iz,vertical}[] array (≈4–6 object allocations per expansion, × 25 k
-        // expansions per A* run), which showed up as measurable GC pressure on large
-        // scenes. We now process each neighbour directly.
-        const evalNeighbor = (nIx: number, nIy: number, nIz: number, vertical: boolean): void => {
-            if (nIx < 0 || nIy < 0 || nIz < 0 || nIx >= xs.length || nIy >= ys.length || nIz >= zs.length) return;
-            const neighborArrival = vertical ? ARRIVE_VERT : ARRIVE_HORIZ;
-            const neighborComp = compose(gridKey(nIx, nIy, nIz), neighborArrival);
-            if (closed.has(neighborComp)) return;
-            const neighborPoint = point(nIx, nIy, nIz);
-            if (pointBlocked(neighborPoint) || segmentBlocked(currentPoint, neighborPoint)) return;
-            // Per-run riser penalty: charged once when transitioning into a vertical run.
-            const startingRiser = vertical && currentArrival !== ARRIVE_VERT;
-            const transitionPenalty = startingRiser ? options.riserPenalty : 0;
-            const stepCost = pointDistanceMm(currentPoint, neighborPoint) + transitionPenalty;
-            const tentative = (gScore.get(currentComp) ?? Number.POSITIVE_INFINITY) + stepCost;
-            if (tentative >= (gScore.get(neighborComp) ?? Number.POSITIVE_INFINITY)) return;
-            cameFrom.set(neighborComp, currentComp);
-            sourceForKey.set(neighborComp, sourceForKey.get(currentComp) ?? 0);
-            gScore.set(neighborComp, tentative);
-            open.push({ key: neighborComp, priority: tentative + heuristic(neighborPoint) });
-        };
-
         for (const [dx, dy] of horizontalNeighbors) {
             const newIx = ix + dx;
             const newIy = iy + dy;
@@ -530,13 +549,13 @@ function findGridPathFromSources(
                 // Skip the diagonal unless |Δx| ≈ |Δy| in world space; the four axis-aligned
                 // moves still cover this neighbor.
                 if (newIx < 0 || newIx >= xs.length || newIy < 0 || newIy >= ys.length) continue;
-                if (Math.abs(Math.abs(xs[newIx] - xs[ix]) - Math.abs(ys[newIy] - ys[iy])) > 1) continue;
+                if (!is45DegreeDiagonalXY(xs[newIx] - xs[ix], ys[newIy] - ys[iy])) continue;
             }
-            evalNeighbor(newIx, newIy, iz, false);
+            evalNeighbor(newIx, newIy, iz, false, currentPoint, currentComp, currentArrival);
         }
         if (zs.length > 1) {
-            evalNeighbor(ix, iy, iz - 1, true);
-            evalNeighbor(ix, iy, iz + 1, true);
+            evalNeighbor(ix, iy, iz - 1, true, currentPoint, currentComp, currentArrival);
+            evalNeighbor(ix, iy, iz + 1, true, currentPoint, currentComp, currentArrival);
         }
     }
     return { points: [], expansions, exhausted: false };
@@ -573,7 +592,7 @@ function effectiveGridZs(allowedZs: number[], verticalStepMm: number, endpointZs
         const zMin = Math.min(...allowedZs);
         const zMax = Math.max(...allowedZs);
         for (const z of endpointZs) {
-            if (z >= zMin - 0.001 && z <= zMax + 0.001) zs.add(round(z));
+            if (z >= zMin - GEOM_TOLERANCE_MM && z <= zMax + GEOM_TOLERANCE_MM) zs.add(round(z));
         }
     }
     return Array.from(zs).sort((a, b) => a - b);
@@ -748,7 +767,7 @@ export function planDuctingAutoRoute(input: DuctAutoRoutingInput = {}): DuctAuto
     const routes: PlannedRoute[] = [];
     if (bounds) {
         for (const z of allowedZs) {
-            if (z < bounds.minZ - 0.001 || z > bounds.maxZ + 0.001) {
+            if (z < bounds.minZ - GEOM_TOLERANCE_MM || z > bounds.maxZ + GEOM_TOLERANCE_MM) {
                 issues.push(makeIssue("route_elevation_outside_bounds", "error", "Allowed routing elevation is outside the supplied routing bounds.", {
                     elevationMm: z,
                     minZ: bounds.minZ,

@@ -19,6 +19,27 @@ Create a production-safe duct auto-routing foundation that turns reviewed source
 - Obstacles are checked as expanded AABBs using clearance and duct half-height.
 - Trunk sharing, fitting optimization, native duct sizing, and actual `Duct.Create` commit remain later gates.
 
+## Review Fixes (Sprint 1.13)
+
+Round-6 Gemini review on PR #23 commit `8b729e4`. Three maintainability
+/ perf refactors; no behaviour change, all assertions remain green.
+
+- **`evalNeighbor` hoisted out of the while loop (Gemini medium).** The
+  arrow function was being re-allocated for every expanded node (~25 k
+  per A* run). It now lives outside the loop, closes over the
+  search-wide state only, and receives the per-expansion state
+  (`currentPoint`, `currentComp`, `currentArrival`) as parameters.
+- **45° tolerance helper (Gemini medium).** The repeated
+  `Math.abs(Math.abs(a) - Math.abs(b)) ≤ 1` check used in the neighbour
+  gate and in `compressPath` is now a single `is45DegreeDiagonalXY`
+  helper that both call.
+- **Shared `GEOM_TOLERANCE_MM` constant (Gemini medium).** The hardcoded
+  `0.001` geometric epsilon used across `verticalStats`,
+  `addBoundedCoordinate`, `createCoordinateGrid`, `findIndex`,
+  `effectiveGridZs`, and the bounds-check helper is now a single named
+  constant declared at the top of the module. The 45° tolerance gets
+  the same treatment via `DIAGONAL_45_TOLERANCE_MM`.
+
 ## Review Fixes (Sprint 1.12)
 
 Round-5 Gemini review on PR #23 commit `d8fcbc7` re-flagged the two
