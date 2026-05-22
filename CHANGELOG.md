@@ -34,6 +34,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
   selected unless the target element is actually present in the view-specific
   collector; focus results now warn when Revit changes the active view after
   a UI focus operation.
+- Added updater log retention so workstation install/update log folders are
+  pruned automatically to the latest 10 `.log` files, including the current
+  active log.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

@@ -287,6 +287,7 @@ try {
         installerLibPermissions = "installer\lib\RevitMcp.Permissions.psm1"
         installerLibUpdatePolicy = "installer\lib\RevitMcp.UpdatePolicy.psm1"
         installerLibProxy = "installer\lib\RevitMcp.Proxy.psm1"
+        installerLibLogRetention = "installer\lib\RevitMcp.LogRetention.psm1"
         installerLibCodexRegistration = "installer\lib\RevitMcp.CodexRegistration.psm1"
         installerLibReporting = "installer\lib\RevitMcp.Reporting.psm1"
         installer = "installer\install-self-contained.ps1"

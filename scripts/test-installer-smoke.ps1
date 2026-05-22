@@ -28,6 +28,7 @@ Import-Module (Join-Path $libRoot "RevitMcp.Package.psm1") -Force
 Import-Module (Join-Path $libRoot "RevitMcp.RevitVersions.psm1") -Force
 Import-Module (Join-Path $libRoot "RevitMcp.UpdatePolicy.psm1") -Force
 Import-Module (Join-Path $libRoot "RevitMcp.Proxy.psm1") -Force
+Import-Module (Join-Path $libRoot "RevitMcp.LogRetention.psm1") -Force
 Import-Module (Join-Path $libRoot "RevitMcp.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $libRoot "RevitMcp.Reporting.psm1") -Force
 
@@ -303,6 +304,20 @@ try {
     Write-RevitMcpJsonFile -Path $reportPath -Value $report
     $reportJson = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
     Assert-Equal $reportJson.status "current" "Report JSON status was not written."
+
+    Write-Host "Test updater log retention"
+    $logsRoot = Join-Path $tempRoot "logs-retention"
+    New-Item -ItemType Directory -Path $logsRoot -Force | Out-Null
+    for ($i = 1; $i -le 15; $i++) {
+        $path = Join-Path $logsRoot ("update-{0:00}.log" -f $i)
+        Set-Content -LiteralPath $path -Value ("log {0}" -f $i) -Encoding ASCII
+        (Get-Item -LiteralPath $path).LastWriteTimeUtc = [datetime]::UtcNow.AddMinutes(-1 * (15 - $i))
+    }
+    Invoke-RevitMcpLogRetention -LogsRoot $logsRoot -KeepLast 10 -ActiveLogPath (Join-Path $logsRoot "update-15.log")
+    $remainingLogs = @(Get-ChildItem -LiteralPath $logsRoot -File -Filter "*.log" | Sort-Object Name | Select-Object -ExpandProperty Name)
+    Assert-Equal $remainingLogs.Count 10 "Log retention must keep exactly the latest 10 log files."
+    Assert-True ($remainingLogs -contains "update-15.log") "Log retention must keep the active/latest log file."
+    Assert-True (-not ($remainingLogs -contains "update-01.log")) "Log retention must remove old log files."
 
     Write-Host "Installer/updater smoke tests passed." -ForegroundColor Green
 }

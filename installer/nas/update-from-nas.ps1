@@ -57,6 +57,7 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.RevitVersions.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Package.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.UpdatePolicy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Proxy.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
 
 $updaterVersion = "0.1.0"
 $script:RevitMcpTranscriptStarted = $false
@@ -110,6 +111,7 @@ function Initialize-RevitMcpTranscript {
 }
 
 function Complete-RevitMcpTranscript {
+    $logPath = $script:RevitMcpLogPath
     if ($script:RevitMcpTranscriptStarted) {
         try {
             Stop-Transcript | Out-Null
@@ -129,6 +131,14 @@ function Complete-RevitMcpTranscript {
     }
     else {
         $env:REVIT_MCP_LOG_PATH = $script:PreviousLogPath
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($logPath)) {
+        try {
+            Invoke-RevitMcpLogRetention -LogsRoot (Split-Path -Parent $logPath) -KeepLast 10 -ActiveLogPath $logPath
+        }
+        catch {
+        }
     }
 }
 

@@ -24,6 +24,7 @@ Import-Module (Join-Path $installerLibRoot "RevitMcp.HiddenLauncher.psm1") -Forc
 Import-Module (Join-Path $installerLibRoot "RevitMcp.ScheduledTask.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevitMcp.RevitVersions.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevitMcp.Permissions.psm1") -Force
+Import-Module (Join-Path $installerLibRoot "RevitMcp.LogRetention.psm1") -Force
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $revitVersionConfig = Get-RevitMcpVersionConfig -Version $RevitVersion -RepoRoot $repoRoot
@@ -893,6 +894,7 @@ function New-HiddenUpdaterScheduledTaskAction {
 $nasToolsSource = Join-Path $PSScriptRoot "nas"
 Repair-RevitMcpManagedInstallPermissions
 Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $updaterRoot -ConfigPath $updaterConfigPath
+Invoke-RevitMcpLogRetention -LogsRoot (Join-Path $updaterRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
 Repair-RevitMcpManagedInstallPermissions
 Repair-RevitMcpScheduledTaskAction -ConfigPath $updaterConfigPath -UpdaterPath (Join-Path $updaterRoot "update-from-nas.ps1")
 
