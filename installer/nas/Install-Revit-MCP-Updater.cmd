@@ -18,7 +18,7 @@ if defined REVIT_MCP_SKIP_CODEX set "EXTRA_ARGS=%EXTRA_ARGS% -SkipCodexMcpRegist
 if defined REVIT_MCP_SKIP_CODEX_USER set "EXTRA_ARGS=%EXTRA_ARGS% -SkipCodexUserIntegration"
 
 echo revAgent updater setup is starting.
-echo Channel: stable
+echo Release track: managed
 echo Managed package path: %REVIT_MCP_INSTALL_ROOT%
 echo Log folder: %REVIT_MCP_WORK_ROOT%\logs
 echo.
@@ -32,7 +32,7 @@ if not exist "%INSTALLER%" (
 )
 
 if not exist "%CHANNEL%" (
-    echo ERROR: stable channel manifest was not found.
+    echo ERROR: release manifest was not found.
     echo Expected path: %CHANNEL%
     echo.
     pause

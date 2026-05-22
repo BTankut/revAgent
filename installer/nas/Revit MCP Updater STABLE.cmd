@@ -13,7 +13,7 @@ if not exist "%GUI%" (
 )
 
 if not exist "%CHANNEL%" (
-  echo Stable channel manifest was not found:
+  echo Release manifest was not found:
   echo %CHANNEL%
   pause
   exit /b 1

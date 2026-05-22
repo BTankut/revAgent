@@ -69,5 +69,5 @@ $channelManifest = [ordered]@{
 }
 
 Write-JsonFile -Value $channelManifest -Path $channelPath -Depth 8
-Write-Host "Set stable channel to $Version" -ForegroundColor Green
-Write-Host "Updated channel: $channelPath"
+Write-Host "Set release target to $Version" -ForegroundColor Green
+Write-Host "Updated release manifest: $channelPath"

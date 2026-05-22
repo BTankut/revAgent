@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Show the installed revAgent version and the stable channel version.
+    Show the installed revAgent version and the available release version.
 #>
 
 [CmdletBinding()]
@@ -125,7 +125,7 @@ elseif (-not [string]::IsNullOrWhiteSpace($channelVersion)) {
         $status = "update available: {0} -> {1}" -f $installedVersion, $channelVersion
     }
     else {
-        $status = "restore available: {0} -> {1}" -f $installedVersion, $channelVersion
+        $status = "repair/reinstall available: {0} -> {1}" -f $installedVersion, $channelVersion
     }
 }
 else {
@@ -137,15 +137,14 @@ Write-Host "revAgent status" -ForegroundColor Cyan
 Write-Host "Computer        : $env:COMPUTERNAME"
 Write-Host "User            : $env:USERNAME"
 Write-Host "Installed       : $(Get-VersionLabel $installedVersion)"
-Write-Host "Channel         : $(if ($channelName) { $channelName } else { 'unknown' })"
-Write-Host "Channel version : $(Get-VersionLabel $channelVersion)"
+Write-Host "Available       : $(Get-VersionLabel $channelVersion)"
 Write-Host "Status          : $status"
 if (-not [string]::IsNullOrWhiteSpace($proxyUrl)) {
     Write-Host "Proxy           : $proxyUrl"
 }
 
 if ($report) {
-    $lastCheckSuffix = if ($reportMatchesCurrentChannel) { "" } else { " (previous channel target: $reportTargetVersion)" }
+    $lastCheckSuffix = if ($reportMatchesCurrentChannel) { "" } else { " (previous release target: $reportTargetVersion)" }
     Write-Host "Last check      : $($report.status) at $($report.atUtc)$lastCheckSuffix"
     if ($report.versionTransition) {
         Write-Host "Last transition : $($report.versionTransition)"
@@ -167,7 +166,7 @@ if ($Technical) {
 if ($status -like "update available:*") {
     Write-Host "Next step       : close Revit and run Update."
 }
-elseif ($status -like "restore available:*") {
-    Write-Host "Next step       : use Stable Restore if you want to install the stable package."
+elseif ($status -like "repair/reinstall available:*") {
+    Write-Host "Next step       : use Repair/Reinstall if you want to install the available release."
 }
 Write-Host ""

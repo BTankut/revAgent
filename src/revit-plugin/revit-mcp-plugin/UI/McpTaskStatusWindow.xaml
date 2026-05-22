@@ -52,20 +52,13 @@
                                Foreground="#FF555555"
                                TextTrimming="CharacterEllipsis"
                                Text="Version"/>
-                    <TextBlock x:Name="BuildStatusText"
+                    <TextBlock x:Name="UpdateStatusText"
                                Margin="0,1,0,0"
                                FontFamily="Segoe UI"
                                FontSize="9.5"
                                Foreground="#FF777777"
                                TextTrimming="CharacterEllipsis"
-                               Text="Build"/>
-                    <TextBlock x:Name="StableStatusText"
-                               Margin="0,1,0,0"
-                               FontFamily="Segoe UI"
-                               FontSize="9.5"
-                               Foreground="#FF777777"
-                               TextTrimming="CharacterEllipsis"
-                               Text="Stable"/>
+                               Text="Up to date"/>
                 </StackPanel>
             </Grid>
 

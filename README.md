@@ -30,7 +30,7 @@ It is the single canonical source for production office deployment.
 Development and production releases both happen from `main` in this repository.
 Historical branches in the old repositories are not part of office deployment.
 Modernization feature branches are for local build/test work only and must not
-publish to the NAS stable channel.
+publish to the NAS managed release channel.
 
 `src/revit-plugin` is source code. `installer/revit-plugin` is install payload.
 When the Revit add-in changes, build the source and refresh the payload binaries
@@ -120,7 +120,7 @@ pulling and reinstalling on every machine.
 - The NAS share is the single deployment source workstations read from.
 - A normal `git commit` / `git push` does not update the office.
 - A release is published only when `publish-nas-release.ps1` is run.
-- Office releases are published to the stable channel after local/manual testing.
+- Office releases are published to the managed release channel after local/manual testing.
 - Workstations run `update-from-nas.ps1`, usually through a scheduled task
   installed by `install-updater-task.ps1`.
 - Workstations install under `C:\ProgramData\DPE\RevitMCP`, not under
@@ -189,7 +189,7 @@ While an automation task is running, the add-in shows a `revAgent Status`
 window in Revit with the task name, elapsed time, and a warning not to use
 Revit until the task finishes. The top-right status area shows the installed
 release `Version`, the traceable git `Build`, and whether the workstation is
-on the `Stable` channel target; local install time is kept in the tooltip for
+up to date with the release target; local install time is kept in the tooltip for
 support only and is not used as the product version. The window appears in the
 Windows taskbar and can be minimized. Completed and failed states are shown
 with recent task history and stay visible until the user clicks `OK`. The

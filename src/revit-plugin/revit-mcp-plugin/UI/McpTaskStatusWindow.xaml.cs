@@ -261,19 +261,14 @@ namespace revit_mcp_plugin.UI
         {
             McpVersionInfo version = McpVersionInfo.Read();
             VersionText.Text = version.VersionDisplay;
-            BuildStatusText.Text = version.BuildDisplay;
-            BuildStatusText.Visibility = string.IsNullOrWhiteSpace(BuildStatusText.Text)
-                ? Visibility.Collapsed
-                : Visibility.Visible;
-            StableStatusText.Text = version.FormatStableLine();
-            StableStatusText.Visibility = string.IsNullOrWhiteSpace(StableStatusText.Text)
+            UpdateStatusText.Text = version.FormatUpdateStatusLine();
+            UpdateStatusText.Visibility = string.IsNullOrWhiteSpace(UpdateStatusText.Text)
                 ? Visibility.Collapsed
                 : Visibility.Visible;
 
             string tooltip = version.FormatToolTip();
             VersionText.ToolTip = tooltip;
-            BuildStatusText.ToolTip = tooltip;
-            StableStatusText.ToolTip = tooltip;
+            UpdateStatusText.ToolTip = tooltip;
         }
 
         private void UpdateElapsedText(string label = "Elapsed")

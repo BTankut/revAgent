@@ -2,7 +2,7 @@
 
 All notable Revit MCP workstation deployment changes are tracked here.
 
-## 2026-05-22 - main, next stable candidate
+## 2026-05-22 - main, next release candidate
 
 - Rewrote `main` back to the deployed `75128349` baseline and reapplied only
   the Revit image export feature line, leaving the bundled runtime at 21 tools.
@@ -22,15 +22,16 @@ All notable Revit MCP workstation deployment changes are tracked here.
   engineering branch work so production docs describe the current reusable
   runtime surface only.
 - Changed revAgent status metadata to a production version model: the visible
-  status now shows installed `Version`, git `Build`, and stable channel state,
-  while local install time is kept in support details only.
+  status now shows installed `Version` with the git build in parentheses plus
+  an `Up to date`/update state, while local install time is kept in support
+  details only.
 - Changed the default NAS release identifier from wall-clock minutes to a
   sortable CalVer + git build number + commit stamp format.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 
 Status: prepared on `main`; the exact NAS package version is generated during
-the separate `stable` publish step after local release validation.
+the separate managed release publish step after local release validation.
 
 ## 2026.05.13.1635-75128349
 

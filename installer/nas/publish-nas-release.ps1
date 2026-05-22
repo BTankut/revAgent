@@ -387,7 +387,7 @@ try {
             }
         }
         Write-JsonFile -Value $channelManifest -Path $channelPath -Depth 8
-        Write-Host "Updated channel: $channelPath" -ForegroundColor Green
+        Write-Host "Updated release manifest: $channelPath" -ForegroundColor Green
     }
 
     Write-Section "Refresh NAS tools"

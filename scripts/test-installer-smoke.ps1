@@ -192,7 +192,7 @@ try {
 
     Write-Host "Test GUI updater exposes update and restore actions"
     $guiText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Install-Revit-MCP-Updater-GUI.ps1")
-    Assert-True ($guiText -match 'Stable Restore') "GUI must expose a separate Stable Restore button."
+    Assert-True ($guiText -match 'Repair/Reinstall') "GUI must expose a separate repair/reinstall button."
     Assert-True ($guiText -match '-ForceUpdate') "GUI restore action must force the channel package install."
     Assert-True ($guiText -match 'UpdateEnabled') "GUI must gate the update button from channel status."
     Assert-True ($guiText -match '\$form\.Text = "revAgent"') "GUI title must use the revAgent product name."
@@ -201,7 +201,7 @@ try {
     Assert-True ($guiText -match '\$form\.ShowInTaskbar = \$true') "GUI must be visible in the taskbar."
     Assert-True ($guiText -match '\$form\.MinimizeBox = \$true') "GUI must be minimizable."
     Assert-True ($guiText -notmatch 'Guncelle|Surum|Kapat|Kurulum|Kanal|Hazir|Islem|Calisiyor|Baslatilamadi|bulunamadi|hata') "GUI product strings must remain English."
-    Assert-True ($guiText -notmatch 'Revit MCP Installer|Revit MCP install and update') "GUI product labels must not expose internal MCP wording."
+    Assert-True ($guiText -notmatch 'Revit MCP Installer|Revit MCP install and update|Stable Restore|Stable channel|Stable version') "GUI product labels must not expose internal MCP wording or legacy channel wording."
 
     Write-Host "Test Revit task status window product surface"
     $taskStatusXaml = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\UI\McpTaskStatusWindow.xaml")
@@ -210,23 +210,23 @@ try {
     Assert-True ($taskStatusXaml -match 'Title="revAgent Status"') "Task status window title must use revAgent."
     Assert-True ($taskStatusXaml -match 'Your AI agent inside Revit\.') "Task status window must show the revAgent product tagline."
     Assert-True ($taskStatusXaml -match '2026 Baris Tankut') "Task status window must show the revAgent copyright footer."
-    Assert-True ($taskStatusXaml -match 'BuildStatusText') "Task status window must expose the installed build identifier line."
-    Assert-True ($taskStatusXaml -match 'StableStatusText') "Task status window must expose the stable channel version line."
+    Assert-True ($taskStatusXaml -match 'UpdateStatusText') "Task status window must expose the update state line."
+    Assert-True ($taskStatusXaml -match 'Up to date') "Task status window must use user-facing update state wording."
     Assert-True ($taskStatusXaml -match 'WindowStyle="SingleBorderWindow"') "Task status window must expose a normal minimizable window frame."
     Assert-True ($taskStatusXaml -match 'ShowInTaskbar="True"') "Task status window must be visible in the taskbar."
     Assert-True ($taskStatusXaml -notmatch 'Revit MCP|Recent MCP') "Task status window XAML must not expose internal MCP wording."
     Assert-True ($taskStatusCode -notmatch 'Revit MCP is working|Revit MCP task|Revit MCP version') "Task status code must not expose internal MCP wording."
     Assert-True ($taskStatusCode -match 'VersionDisplay') "Task status code must present the installed product version label."
-    Assert-True ($taskStatusCode -match 'BuildDisplay') "Task status code must present a user-friendly build identifier label."
-    Assert-True ($taskStatusCode -match 'FormatStableLine') "Task status code must present a concise stable-version label."
+    Assert-True ($taskStatusCode -match 'FormatUpdateStatusLine') "Task status code must present a concise update-state label."
     $versionInfoCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpVersionInfo.cs")
     Assert-True ($versionInfoCode -match 'channelManifestPath') "Version info must read the configured channel manifest path."
     Assert-True ($versionInfoCode -match 'publishedAtUtc') "Version info must use release/channel publish timestamps when available."
     Assert-True ($versionInfoCode -match 'Version ') "Version info must label the installed product version clearly."
-    Assert-True ($versionInfoCode -match 'Build ') "Version info must label the build identifier clearly."
+    Assert-True ($versionInfoCode -match '\(" \+ build \+ "\)"') "Version info must place the build identifier in the Version line."
     Assert-True ($versionInfoCode -match 'Installed on this PC') "Version info must keep local install time in support details only."
     Assert-True ($versionInfoCode -notmatch 'Updated ') "Task status metadata must not expose local install time as the user-facing version."
-    Assert-True ($versionInfoCode -match 'Stable ') "Version info must label the available stable version clearly."
+    Assert-True ($versionInfoCode -match 'Up to date') "Version info must label current release state clearly."
+    Assert-True ($versionInfoCode -notmatch 'Stable ') "Version info must not expose legacy channel labels in the product UI."
     Assert-True ($taskStatusController -match 'revAgent Task Status UI') "Task status UI thread should use the product name."
 
     Write-Host "Test updater version status distinguishes update from restore"
@@ -249,9 +249,9 @@ try {
             version = "2026.05.15.1259-b397869c"
         })
     $versionOutput = & (Join-Path $RepoRoot "installer\nas\show-installed-version.ps1") -ConfigPath $configPath 2>&1 6>&1 | Out-String
-    Assert-True ($versionOutput -match 'restore available') "Newer local/dev install should be reported as restore available against older stable."
+    Assert-True ($versionOutput -match 'repair/reinstall available') "Newer local/dev install should be reported as repair/reinstall available against an older release target."
     Assert-True ($versionOutput -match 'revAgent status') "Version status window must use the revAgent product name."
-    Assert-True ($versionOutput -notmatch 'Revit MCP version status|Install root|Manual update|Config\s+:') "Default version status must not expose internal product or path details."
+    Assert-True ($versionOutput -notmatch 'Revit MCP version status|Install root|Manual update|Config\s+:|Stable|Channel\s+:|Channel version') "Default version status must not expose internal product, path details, or legacy channel wording."
 
     Write-RevitMcpJsonFile -Path $channelPath -Value ([ordered]@{
             app = "revit-mcp-skill"
@@ -259,7 +259,7 @@ try {
             version = "2026.05.23.1000-next"
         })
     $versionOutput = & (Join-Path $RepoRoot "installer\nas\show-installed-version.ps1") -ConfigPath $configPath 2>&1 6>&1 | Out-String
-    Assert-True ($versionOutput -match 'update available') "Older install should be reported as update available against newer stable."
+    Assert-True ($versionOutput -match 'update available') "Older install should be reported as update available against a newer release target."
 
     Write-Host "Test release version identity"
     $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")

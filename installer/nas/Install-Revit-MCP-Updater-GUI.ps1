@@ -148,7 +148,7 @@ function Get-ChannelStatus {
             UpdateEnabled = $false
             RestoreEnabled = $false
             UpdateButtonText = "Update"
-            StatusText = "Stable channel manifest could not be read."
+            StatusText = "Release manifest could not be read."
         }
     }
 
@@ -160,7 +160,7 @@ function Get-ChannelStatus {
             UpdateEnabled = $true
             RestoreEnabled = $false
             UpdateButtonText = "Install"
-            StatusText = "Not installed. Stable version can be installed: $channelVersion"
+            StatusText = "Not installed. Release can be installed: $channelVersion"
         }
     }
 
@@ -196,7 +196,7 @@ function Get-ChannelStatus {
         UpdateEnabled = $false
         RestoreEnabled = $true
         UpdateButtonText = "Update"
-        StatusText = "Installed version differs from or is newer than the stable target. Stable Restore is available: $installedVersion -> $channelVersion"
+        StatusText = "Installed version differs from or is newer than the release target. Repair/reinstall is available: $installedVersion -> $channelVersion"
     }
 }
 
@@ -295,7 +295,7 @@ $tagline.Margin = New-Object System.Windows.Forms.Padding(0, 2, 0, 8)
 $root.Controls.Add($tagline, 0, 1)
 
 $details = New-Object System.Windows.Forms.Label
-$details.Text = "Channel: stable`r`nManaged workstation package"
+$details.Text = "Release track: managed`r`nWorkstation package"
 $details.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $details.AutoSize = $true
 $details.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 8)
@@ -350,7 +350,7 @@ $runButton.Height = 32
 $buttonPanel.Controls.Add($runButton)
 
 $restoreButton = New-Object System.Windows.Forms.Button
-$restoreButton.Text = "Stable Restore"
+$restoreButton.Text = "Repair/Reinstall"
 $restoreButton.Width = 125
 $restoreButton.Height = 32
 $buttonPanel.Controls.Add($restoreButton)
@@ -411,7 +411,7 @@ function Start-InstallerOperation {
         return
     }
     if (-not (Test-Path -LiteralPath $ChannelManifestPath)) {
-        [System.Windows.Forms.MessageBox]::Show("Stable channel manifest was not found.", "revAgent") | Out-Null
+        [System.Windows.Forms.MessageBox]::Show("Release manifest was not found.", "revAgent") | Out-Null
         return
     }
 
@@ -423,10 +423,10 @@ function Start-InstallerOperation {
     }
 
     if ($Operation -eq "restore") {
-        $message = "Stable Restore reinstalls or repairs the channel target package with force.`r`n`r`nInstalled: $($status.InstalledVersion)`r`nStable: $($status.ChannelVersion)`r`n`r`nContinue?"
+        $message = "Repair/Reinstall installs the release target package with force.`r`n`r`nInstalled: $($status.InstalledVersion)`r`nRelease: $($status.ChannelVersion)`r`n`r`nContinue?"
         $choice = [System.Windows.Forms.MessageBox]::Show(
             $message,
-            "revAgent Stable Restore",
+            "revAgent Repair",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Warning)
         if ($choice -ne [System.Windows.Forms.DialogResult]::Yes) {
@@ -436,7 +436,7 @@ function Start-InstallerOperation {
 
     $script:ActiveLogPath = New-RunLogPath
     $script:LastLogLength = -1
-    $operationLabel = if ($Operation -eq "restore") { "Stable Restore" } else { "Install/update" }
+    $operationLabel = if ($Operation -eq "restore") { "Repair/reinstall" } else { "Install/update" }
     $logBox.Text = "$operationLabel starting...`r`n"
     $statusLabel.Text = "Running."
     $progress.Style = "Marquee"

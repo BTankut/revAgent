@@ -15,7 +15,6 @@ namespace revit_mcp_plugin.Core
             string fullVersion,
             string shortVersion,
             string versionDisplay,
-            string buildDisplay,
             DateTime? packagePublishedAtUtc,
             DateTime? installedAtUtc,
             string channelVersion,
@@ -26,8 +25,7 @@ namespace revit_mcp_plugin.Core
         {
             FullVersion = string.IsNullOrWhiteSpace(fullVersion) ? "development" : fullVersion;
             ShortVersion = string.IsNullOrWhiteSpace(shortVersion) ? "dev" : shortVersion;
-            VersionDisplay = string.IsNullOrWhiteSpace(versionDisplay) ? "Version " + FormatReleaseIdentifier(FullVersion) : versionDisplay;
-            BuildDisplay = string.IsNullOrWhiteSpace(buildDisplay) ? "Build " + ShortVersion : buildDisplay;
+            VersionDisplay = string.IsNullOrWhiteSpace(versionDisplay) ? FormatVersionDisplay(FullVersion) : versionDisplay;
             PackagePublishedAtUtc = packagePublishedAtUtc;
             InstalledAtUtc = installedAtUtc;
             ChannelVersion = string.IsNullOrWhiteSpace(channelVersion) ? string.Empty : channelVersion;
@@ -42,8 +40,6 @@ namespace revit_mcp_plugin.Core
         public string ShortVersion { get; private set; }
 
         public string VersionDisplay { get; private set; }
-
-        public string BuildDisplay { get; private set; }
 
         public DateTime? PackagePublishedAtUtc { get; private set; }
 
@@ -70,7 +66,7 @@ namespace revit_mcp_plugin.Core
                 }
             }
 
-            return new McpVersionInfo("development", "dev", "Version dev", "Build dev", null, null, string.Empty, string.Empty, null, null, null);
+            return new McpVersionInfo("development", "dev", "Version dev", null, null, string.Empty, string.Empty, null, null, null);
         }
 
         private static McpVersionInfo TryRead(string path)
@@ -101,7 +97,6 @@ namespace revit_mcp_plugin.Core
                     fullVersion,
                     Shorten(fullVersion),
                     FormatVersionDisplay(fullVersion),
-                    FormatBuildDisplay(fullVersion),
                     packagePublishedAtUtc,
                     installedAtUtc,
                     channelVersion,
@@ -212,7 +207,7 @@ namespace revit_mcp_plugin.Core
         {
             if (string.IsNullOrWhiteSpace(version))
             {
-                return "dev";
+                return string.Empty;
             }
 
             string trimmed = version.Trim();
@@ -238,20 +233,78 @@ namespace revit_mcp_plugin.Core
                 return commit.Groups[1].Value.ToLowerInvariant();
             }
 
-            return Shorten(version);
+            return string.Empty;
         }
 
         private static string FormatVersionDisplay(string version)
         {
-            return "Version " + FormatReleaseIdentifier(version);
+            string release = FormatReleaseIdentifier(version);
+            string build = ExtractBuildIdentifier(version);
+            if (!string.IsNullOrWhiteSpace(build) &&
+                !string.Equals(build, release, StringComparison.OrdinalIgnoreCase))
+            {
+                return "Version " + release + " (" + build + ")";
+            }
+
+            return "Version " + release;
         }
 
-        private static string FormatBuildDisplay(string version)
+        private static int CompareVersionIdentity(string left, string right)
         {
-            return "Build " + ExtractBuildIdentifier(version);
+            if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase))
+            {
+                return 0;
+            }
+
+            List<long> leftParts = ParseVersionNumericParts(left);
+            List<long> rightParts = ParseVersionNumericParts(right);
+            if (leftParts.Count > 0 && rightParts.Count > 0)
+            {
+                int count = Math.Max(leftParts.Count, rightParts.Count);
+                for (int i = 0; i < count; i++)
+                {
+                    long leftValue = i < leftParts.Count ? leftParts[i] : -1;
+                    long rightValue = i < rightParts.Count ? rightParts[i] : -1;
+                    if (leftValue < rightValue)
+                    {
+                        return -1;
+                    }
+
+                    if (leftValue > rightValue)
+                    {
+                        return 1;
+                    }
+                }
+            }
+
+            return StringComparer.OrdinalIgnoreCase.Compare(left ?? string.Empty, right ?? string.Empty);
         }
 
-        public string FormatStableLine()
+        private static List<long> ParseVersionNumericParts(string version)
+        {
+            List<long> parts = new List<long>();
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                return parts;
+            }
+
+            string baseVersion = version.Split('-')[0];
+            string[] tokens = baseVersion.Split('.');
+            foreach (string token in tokens)
+            {
+                long value;
+                if (!long.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+                {
+                    break;
+                }
+
+                parts.Add(value);
+            }
+
+            return parts;
+        }
+
+        public string FormatUpdateStatusLine()
         {
             if (string.IsNullOrWhiteSpace(ChannelVersion))
             {
@@ -260,10 +313,21 @@ namespace revit_mcp_plugin.Core
 
             if (string.Equals(FullVersion, ChannelVersion, StringComparison.OrdinalIgnoreCase))
             {
-                return "Stable current";
+                return "Up to date";
             }
 
-            return "Stable " + FormatReleaseIdentifier(ChannelVersion);
+            int comparison = CompareVersionIdentity(FullVersion, ChannelVersion);
+            if (comparison < 0)
+            {
+                return "Update available " + FormatReleaseIdentifier(ChannelVersion);
+            }
+
+            if (comparison > 0)
+            {
+                return "Ahead of release " + FormatReleaseIdentifier(ChannelVersion);
+            }
+
+            return "Release " + FormatReleaseIdentifier(ChannelVersion);
         }
 
         public string FormatToolTip()
@@ -293,13 +357,13 @@ namespace revit_mcp_plugin.Core
             if (!string.IsNullOrWhiteSpace(ChannelVersion))
             {
                 builder.AppendLine();
-                builder.Append("Stable version: ").Append(ChannelVersion);
+                builder.Append("Release target: ").Append(ChannelVersion);
             }
 
             if (ChannelPublishedAtUtc.HasValue)
             {
                 builder.AppendLine();
-                builder.Append("Stable published: ").Append(FormatSortTimestamp(ChannelPublishedAtUtc.Value.ToLocalTime()));
+                builder.Append("Release published: ").Append(FormatSortTimestamp(ChannelPublishedAtUtc.Value.ToLocalTime()));
             }
 
             return builder.ToString();
