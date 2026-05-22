@@ -934,7 +934,7 @@ Write-HiddenPowerShellLauncher -LauncherPath $hiddenLauncherPath -ScriptPath $lo
 $action = New-HiddenUpdaterScheduledTaskAction -LauncherPath $hiddenLauncherPath
 $dailyTrigger = New-RevitMcpDailyUpdateTrigger -DailyAt $DailyAt
 $triggers = @($dailyTrigger)
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
 

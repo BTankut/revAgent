@@ -56,7 +56,8 @@ function Repair-RevitMcpHiddenScheduledTaskAction {
             Write-Host "Scheduled task action repaired for hidden background checks: $Name"
         }
 
-        Set-ScheduledTask -TaskName $Name -Trigger $trigger | Out-Null
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Set-ScheduledTask -TaskName $Name -Trigger $trigger -Settings $settings | Out-Null
         Write-Host "Scheduled task schedule repaired for daily background checks at ${DailyAt}: $Name"
     }
     catch {

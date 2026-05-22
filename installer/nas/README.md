@@ -100,6 +100,9 @@ Scheduled background checks are launched through a hidden single-line WScript
 wrapper so PowerShell does not flash a terminal window or steal focus, and the
 wrapper returns the child PowerShell exit code. Manual update and repair remain
 available from the GUI and command launchers.
+The Scheduled Task does not use Windows `StartWhenAvailable`: GUI update runs
+already execute an immediate `RunNow` check, so missed daily checks must not
+start a second updater process in parallel.
 The elevated install also repairs permissions on the managed Revit MCP install
 root and the Revit MCP add-in manifest so that the per-user task can update the
 local package, runtime, add-in payload, cache, reports, logs, and hidden
