@@ -27,6 +27,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
   details only.
 - Changed the default NAS release identifier from wall-clock minutes to a
   sortable CalVer + git build number + commit stamp format.
+- Fixed the workstation updater installer initial check so `ConfigPath` is
+  passed as a real named PowerShell parameter instead of a positional string,
+  preventing first-install failures immediately after task registration.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

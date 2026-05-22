@@ -154,12 +154,12 @@ function Invoke-InitialUpdateCheck {
         return
     }
 
-    $arguments = @("-ConfigPath", $UpdaterConfigPath, "-NoNotifyUser", "-AllowManualCodexSetup")
     if ($ForceUpdate) {
-        $arguments += "-Force"
+        & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup -Force
+        return
     }
 
-    & $UpdaterPath @arguments
+    & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup
 }
 
 function Test-CurrentProcessElevated {
