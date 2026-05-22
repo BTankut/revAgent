@@ -674,7 +674,7 @@ namespace revit_mcp_plugin.Core
         {
             if (request == null)
             {
-                return "Revit MCP task";
+                return "revAgent task";
             }
 
             try
@@ -709,7 +709,7 @@ namespace revit_mcp_plugin.Core
             {
             }
 
-            return string.IsNullOrWhiteSpace(request.Method) ? "Revit MCP task" : request.Method;
+            return string.IsNullOrWhiteSpace(request.Method) ? "revAgent task" : request.Method;
         }
 
         private bool IsCommandResultFailure(object result, out string error)

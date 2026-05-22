@@ -147,7 +147,7 @@ namespace revit_mcp_plugin.Core
                     Dispatcher.Run();
                 }));
 
-                _uiThread.Name = "Revit MCP Task Status UI";
+                _uiThread.Name = "revAgent Task Status UI";
                 _uiThread.IsBackground = true;
                 _uiThread.SetApartmentState(ApartmentState.STA);
                 _uiThread.Start();

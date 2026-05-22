@@ -37,7 +37,6 @@ namespace revit_mcp_plugin.UI
         public McpTaskStatusWindow()
         {
             InitializeComponent();
-            AttachRevitOwner();
             ApplyVersionInfo();
 
             _elapsedTimer = new DispatcherTimer(DispatcherPriority.Background);
@@ -70,7 +69,7 @@ namespace revit_mcp_plugin.UI
             _fixedElapsedMs = 0;
 
             ApplyPalette("#FFFFF3D6", "#FFD18A00");
-            TitleText.Text = "Revit MCP is working";
+            TitleText.Text = "revAgent is working";
             TaskText.Text = "Task: " + SafeTaskName(task);
             MessageText.Text = "Please do not use Revit until this finishes.";
             ErrorText.Text = string.Empty;
@@ -90,7 +89,7 @@ namespace revit_mcp_plugin.UI
             _elapsedTimer.Stop();
 
             ApplyPalette("#FFE8F5E9", "#FF2E7D32");
-            TitleText.Text = "Revit MCP task completed";
+            TitleText.Text = "revAgent task completed";
             TaskText.Text = "Task: " + SafeTaskName(task);
             MessageText.Text = "You can use Revit now.";
             ErrorText.Text = string.Empty;
@@ -109,7 +108,7 @@ namespace revit_mcp_plugin.UI
             _elapsedTimer.Stop();
 
             ApplyPalette("#FFFFEBEE", "#FFC62828");
-            TitleText.Text = "Revit MCP task failed";
+            TitleText.Text = "revAgent task failed";
             TaskText.Text = "Task: " + SafeTaskName(task);
             MessageText.Text = "You can use Revit now. Check Codex for details.";
             ErrorText.Text = string.IsNullOrWhiteSpace(task.Error) ? string.Empty : "Error: " + task.Error;
@@ -262,9 +261,7 @@ namespace revit_mcp_plugin.UI
         {
             McpVersionInfo version = McpVersionInfo.Read();
             VersionText.Text = "v" + version.ShortVersion;
-            VersionText.ToolTip = string.IsNullOrWhiteSpace(version.SourcePath)
-                ? "Revit MCP version: " + version.FullVersion
-                : "Revit MCP version: " + version.FullVersion + Environment.NewLine + version.SourcePath;
+            VersionText.ToolTip = "revAgent version: " + version.FullVersion;
         }
 
         private void UpdateElapsedText(string label = "Elapsed")
@@ -325,7 +322,7 @@ namespace revit_mcp_plugin.UI
         {
             if (task == null || string.IsNullOrWhiteSpace(task.TaskName))
             {
-                return "Revit MCP task";
+                return "revAgent task";
             }
 
             return task.TaskName;

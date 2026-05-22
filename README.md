@@ -185,10 +185,11 @@ to the next free port up to `+20`, so multiple open Revit processes can listen
 on separate ports. The service is stopped during Revit shutdown, which releases
 the port. Set `REVIT_MCP_AUTOSTART=0` to disable automatic startup.
 
-While a Revit MCP command is running, the add-in shows a small topmost status
+While an automation task is running, the add-in shows a `revAgent Status`
 window in Revit with the task name, elapsed time, and a warning not to use
-Revit until the task finishes. Completed and failed states are shown briefly
-with recent task history and stay visible until the user clicks `OK`. The
+Revit until the task finishes. The window appears in the Windows taskbar and
+can be minimized. Completed and failed states are shown with recent task
+history and stay visible until the user clicks `OK`. The
 window close button is treated as acknowledge/hide after completion; during a
 running task it is ignored so closing the status window cannot close or crash
 Revit. Recent history uses compact state symbols (`✓` for completed, `✕` for

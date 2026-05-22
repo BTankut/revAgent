@@ -17,23 +17,23 @@ if defined REVIT_MCP_SKIP_NPM set "EXTRA_ARGS=%EXTRA_ARGS% -SkipNpmInstall"
 if defined REVIT_MCP_SKIP_CODEX set "EXTRA_ARGS=%EXTRA_ARGS% -SkipCodexMcpRegistration"
 if defined REVIT_MCP_SKIP_CODEX_USER set "EXTRA_ARGS=%EXTRA_ARGS% -SkipCodexUserIntegration"
 
-echo Revit MCP updater kurulumu basliyor.
-echo Kanal: %CHANNEL%
-echo Kurulum: %REVIT_MCP_INSTALL_ROOT%
-echo Log klasoru: %REVIT_MCP_WORK_ROOT%\logs
+echo revAgent updater setup is starting.
+echo Channel: stable
+echo Managed package path: %REVIT_MCP_INSTALL_ROOT%
+echo Log folder: %REVIT_MCP_WORK_ROOT%\logs
 echo.
 
 if not exist "%INSTALLER%" (
-    echo HATA: install-updater-task.ps1 bulunamadi.
-    echo Beklenen yer: %INSTALLER%
+    echo ERROR: install-updater-task.ps1 was not found.
+    echo Expected path: %INSTALLER%
     echo.
     pause
     exit /b 1
 )
 
 if not exist "%CHANNEL%" (
-    echo HATA: stable kanal dosyasi bulunamadi.
-    echo Beklenen yer: %CHANNEL%
+    echo ERROR: stable channel manifest was not found.
+    echo Expected path: %CHANNEL%
     echo.
     pause
     exit /b 1
@@ -44,13 +44,13 @@ set "RESULT=%ERRORLEVEL%"
 
 echo.
 if "%RESULT%"=="0" (
-    echo Islem tamamlandi.
-    echo Revit aciksa guncelleme ertelenmis olabilir.
-    echo Rapor: %REVIT_MCP_WORK_ROOT%\last-update-report.json
-    echo Log klasoru: %REVIT_MCP_WORK_ROOT%\logs
+    echo Operation completed.
+    echo If Revit is open, the update may have been deferred.
+    echo Report: %REVIT_MCP_WORK_ROOT%\last-update-report.json
+    echo Log folder: %REVIT_MCP_WORK_ROOT%\logs
 ) else (
-    echo Islem hata ile bitti. Kod: %RESULT%
-    echo Log klasoru: %REVIT_MCP_WORK_ROOT%\logs
+    echo Operation failed. Code: %RESULT%
+    echo Log folder: %REVIT_MCP_WORK_ROOT%\logs
 )
 echo.
 pause

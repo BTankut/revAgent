@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Simple GUI for installing or updating the Revit MCP workstation package.
+    Simple GUI for installing or updating the revAgent workstation package.
 #>
 
 [CmdletBinding()]
@@ -217,7 +217,7 @@ function Restart-ElevatedAndExit {
         Add-Type -AssemblyName System.Windows.Forms
         [System.Windows.Forms.MessageBox]::Show(
             "Administrator permission is required for installation.`r`n`r`n$($_.Exception.Message)",
-            "Revit MCP Installer",
+            "revAgent",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
     }
@@ -250,7 +250,11 @@ Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Revit MCP Installer"
+$form.Text = "revAgent"
+$form.ShowInTaskbar = $true
+$form.MinimizeBox = $true
+$form.MaximizeBox = $true
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
 $form.StartPosition = "CenterScreen"
 $form.Size = New-Object System.Drawing.Size(820, 560)
 $form.MinimumSize = New-Object System.Drawing.Size(700, 460)
@@ -268,13 +272,13 @@ $root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Fo
 $form.Controls.Add($root)
 
 $title = New-Object System.Windows.Forms.Label
-$title.Text = "Revit MCP install and update"
+$title.Text = "revAgent install and update"
 $title.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
 $title.AutoSize = $true
 $root.Controls.Add($title, 0, 0)
 
 $details = New-Object System.Windows.Forms.Label
-$details.Text = "Channel: $ChannelManifestPath`r`nInstall root: $InstallRoot"
+$details.Text = "Channel: stable`r`nManaged workstation package"
 $details.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $details.AutoSize = $true
 $details.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 8)
@@ -378,17 +382,17 @@ function Start-InstallerOperation {
     param([ValidateSet("update", "restore")] [string]$Operation)
 
     if (-not (Test-Path -LiteralPath $installerPath)) {
-        [System.Windows.Forms.MessageBox]::Show("Installer was not found:`r`n$installerPath", "Revit MCP Installer") | Out-Null
+        [System.Windows.Forms.MessageBox]::Show("Installer was not found.", "revAgent") | Out-Null
         return
     }
     if (-not (Test-Path -LiteralPath $ChannelManifestPath)) {
-        [System.Windows.Forms.MessageBox]::Show("Stable channel manifest was not found:`r`n$ChannelManifestPath", "Revit MCP Installer") | Out-Null
+        [System.Windows.Forms.MessageBox]::Show("Stable channel manifest was not found.", "revAgent") | Out-Null
         return
     }
 
     $status = Get-ChannelStatus
     if ($Operation -eq "update" -and -not [bool]$status.UpdateEnabled) {
-        [System.Windows.Forms.MessageBox]::Show("No update is available.`r`n`r`n$status", "Revit MCP Installer") | Out-Null
+        [System.Windows.Forms.MessageBox]::Show("No update is available.`r`n`r`n$($status.StatusText)", "revAgent") | Out-Null
         Set-ButtonsEnabled -Enabled $true
         return
     }
@@ -397,7 +401,7 @@ function Start-InstallerOperation {
         $message = "Stable Restore reinstalls or repairs the channel target package with force.`r`n`r`nInstalled: $($status.InstalledVersion)`r`nStable: $($status.ChannelVersion)`r`n`r`nContinue?"
         $choice = [System.Windows.Forms.MessageBox]::Show(
             $message,
-            "Revit MCP Stable Restore",
+            "revAgent Stable Restore",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Warning)
         if ($choice -ne [System.Windows.Forms.DialogResult]::Yes) {
@@ -408,8 +412,8 @@ function Start-InstallerOperation {
     $script:ActiveLogPath = New-RunLogPath
     $script:LastLogLength = -1
     $operationLabel = if ($Operation -eq "restore") { "Stable Restore" } else { "Install/update" }
-    $logBox.Text = "$operationLabel starting...`r`nLog: $script:ActiveLogPath`r`n"
-    $statusLabel.Text = "Running. Log: $script:ActiveLogPath"
+    $logBox.Text = "$operationLabel starting...`r`n"
+    $statusLabel.Text = "Running."
     $progress.Style = "Marquee"
     Set-ButtonsEnabled -Enabled $false
 
@@ -445,10 +449,10 @@ function Start-InstallerOperation {
     catch {
         $progress.Style = "Blocks"
         Set-ButtonsEnabled -Enabled $true
-        $statusLabel.Text = "Could not start. Log: $script:ActiveLogPath"
+        $statusLabel.Text = "Could not start."
         [System.Windows.Forms.MessageBox]::Show(
-            "PowerShell could not be started.`r`n$($_.Exception.Message)`r`nLog: $script:ActiveLogPath",
-            "Revit MCP Installer",
+            "PowerShell could not be started.`r`n$($_.Exception.Message)",
+            "revAgent",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
     }
@@ -497,7 +501,7 @@ function Refresh-LogBox {
 
     if ($text.Length -ne $script:LastLogLength) {
         $script:LastLogLength = $text.Length
-        $logBox.Text = $text
+        $logBox.Text = "Operation is running...`r`nThis can take a few minutes.`r`nUse Log Folder only if support requests diagnostic details."
         $logBox.SelectionStart = $logBox.TextLength
         $logBox.ScrollToCaret()
     }
@@ -516,18 +520,20 @@ $timer.Add_Tick({
         Set-ButtonsEnabled -Enabled $true
 
         if ($exitCode -eq 0) {
-            $statusLabel.Text = "Operation completed. Log: $script:ActiveLogPath"
+            $statusLabel.Text = "Operation completed."
+            $logBox.Text = "Operation completed."
             [System.Windows.Forms.MessageBox]::Show(
-                "Operation completed.`r`nLog: $script:ActiveLogPath",
-                "Revit MCP Installer",
+                "Operation completed.",
+                "revAgent",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
         }
         else {
-            $statusLabel.Text = "An error occurred. Log: $script:ActiveLogPath"
+            $statusLabel.Text = "An error occurred."
+            $logBox.Text = "Install/update finished with an error.`r`nUse Log Folder for diagnostic details."
             [System.Windows.Forms.MessageBox]::Show(
-                "Install/update finished with an error.`r`nLog: $script:ActiveLogPath",
-                "Revit MCP Installer",
+                "Install/update finished with an error. Open the log folder for details.",
+                "revAgent",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         }
@@ -570,8 +576,8 @@ $openLogsButton.Add_Click({
 $closeButton.Add_Click({
     if ($null -ne $script:ActiveProcess -and -not $script:ActiveProcess.HasExited) {
         [System.Windows.Forms.MessageBox]::Show(
-            "An operation is still running. Do not close before it finishes.`r`nLog: $script:ActiveLogPath",
-            "Revit MCP Installer",
+            "An operation is still running. Do not close before it finishes.",
+            "revAgent",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
         return
@@ -583,8 +589,8 @@ $form.Add_FormClosing({
     if ($null -ne $script:ActiveProcess -and -not $script:ActiveProcess.HasExited) {
         $_.Cancel = $true
         [System.Windows.Forms.MessageBox]::Show(
-            "An operation is still running. Do not close before it finishes.`r`nLog: $script:ActiveLogPath",
-            "Revit MCP Installer",
+            "An operation is still running. Do not close before it finishes.",
+            "revAgent",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
     }

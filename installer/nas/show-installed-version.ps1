@@ -1,11 +1,12 @@
 <#
 .SYNOPSIS
-    Show the installed Revit MCP version and the NAS channel version.
+    Show the installed revAgent version and the stable channel version.
 #>
 
 [CmdletBinding()]
 param(
-    [string]$ConfigPath = ""
+    [string]$ConfigPath = "",
+    [switch]$Technical
 )
 
 $ErrorActionPreference = "Stop"
@@ -127,7 +128,7 @@ else {
 }
 
 Write-Host ""
-Write-Host "Revit MCP version status" -ForegroundColor Cyan
+Write-Host "revAgent status" -ForegroundColor Cyan
 Write-Host "Computer        : $env:COMPUTERNAME"
 Write-Host "User            : $env:USERNAME"
 Write-Host "Installed       : $(Get-VersionLabel $installedVersion)"
@@ -153,13 +154,15 @@ else {
     Write-Host "Last check      : no local report"
 }
 
-Write-Host "Install root    : $installRoot"
-Write-Host "Config          : $ConfigPath"
-Write-Host "Manual update   : $manualUpdatePath"
+if ($Technical) {
+    Write-Host "Install root    : $installRoot"
+    Write-Host "Config          : $ConfigPath"
+    Write-Host "Manual update   : $manualUpdatePath"
+}
 if ($status -like "update available:*") {
-    Write-Host "Next step       : close Revit and run the manual update command above."
+    Write-Host "Next step       : close Revit and run Update."
 }
 elseif ($status -like "restore available:*") {
-    Write-Host "Next step       : use Stable Restore in the updater GUI if you want to install the channel stable package."
+    Write-Host "Next step       : use Stable Restore if you want to install the stable package."
 }
 Write-Host ""

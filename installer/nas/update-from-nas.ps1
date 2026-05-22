@@ -1000,7 +1000,7 @@ Codex hazir olduktan sonra devam etmek icin OK tusuna basin.
         Add-Type -AssemblyName System.Windows.Forms
         $result = [System.Windows.Forms.MessageBox]::Show(
             $message,
-            "Revit MCP Installer - Codex Desktop",
+            "revAgent - Codex Desktop",
             [System.Windows.Forms.MessageBoxButtons]::OKCancel,
             [System.Windows.Forms.MessageBoxIcon]::Information)
         return ($result -eq [System.Windows.Forms.DialogResult]::OK)
@@ -1955,7 +1955,7 @@ try {
         }
         Write-Host $message -ForegroundColor Yellow
         Write-UpdateReport -Status "update-available" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
-        Show-UserNotification -Title "Revit MCP update available" -Message $message -Key ("update-available|{0}" -f $targetVersion) -Icon "Information"
+        Show-UserNotification -Title "revAgent update available" -Message $message -Key ("update-available|{0}" -f $targetVersion) -Icon "Information"
         return
     }
 
@@ -1990,7 +1990,7 @@ try {
         }
         Write-Warning $message
         Write-UpdateReport -Status "deferred-revit-close-required" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
-        Show-UserNotification -Title "Revit MCP update requires Revit to close" -Message ($message + "`r`n`r`nLog: " + $script:RevitMcpLogPath) -Key ("deferred-revit-close-required|{0}" -f $targetVersion) -Icon "Warning"
+        Show-UserNotification -Title "revAgent update requires Revit to close" -Message $message -Key ("deferred-revit-close-required|{0}" -f $targetVersion) -Icon "Warning"
         return
     }
     elseif ($runningDecision.SkipRevitPayloadInstall) {
@@ -2135,14 +2135,14 @@ try {
     Write-JsonFile -Path $statePath -Value $newState
     Write-UpdateReport -Status "updated" -Message $updateMessage -Channel $channel -InstalledState $newState -PreviousVersion $installedVersion -InstalledVersion $targetVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
     Write-Host $updateMessage -ForegroundColor Green
-    Show-UserNotification -Title "Revit MCP updated" -Message ($updateMessage + "`r`n`r`nInstalled version: " + $targetVersion) -Key ("updated|{0}" -f $targetVersion) -Icon "Information"
+    Show-UserNotification -Title "revAgent updated" -Message ($updateMessage + "`r`n`r`nInstalled version: " + $targetVersion) -Key ("updated|{0}" -f $targetVersion) -Icon "Information"
 }
 catch {
     $message = $_.Exception.Message
     $failedVersion = if ($installedState) { [string]$installedState.version } else { "" }
     Write-UpdateReport -Status "failed" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $failedVersion -InstalledVersion $failedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
     Write-Host ""
-    Write-Host "Revit MCP update failed: $message" -ForegroundColor Red
+    Write-Host "revAgent update failed: $message" -ForegroundColor Red
     if (-not [string]::IsNullOrWhiteSpace($script:RevitMcpLogPath)) {
         Write-Host "Update log: $script:RevitMcpLogPath" -ForegroundColor Yellow
     }
