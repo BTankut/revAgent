@@ -526,7 +526,7 @@ function Refresh-LogBox {
 
     if ($text.Length -ne $script:LastLogLength) {
         $script:LastLogLength = $text.Length
-        $logBox.Text = "Operation is running...`r`nThis can take a few minutes.`r`nUse Log Folder only if support requests diagnostic details."
+        $logBox.Text = $text
         $logBox.SelectionStart = $logBox.TextLength
         $logBox.ScrollToCaret()
     }
@@ -546,7 +546,10 @@ $timer.Add_Tick({
 
         if ($exitCode -eq 0) {
             $statusLabel.Text = "Operation completed."
-            $logBox.Text = "Operation completed."
+            if (-not $logBox.Text.EndsWith("`r`n")) {
+                $logBox.AppendText("`r`n")
+            }
+            $logBox.AppendText("Operation completed.`r`n")
             [System.Windows.Forms.MessageBox]::Show(
                 "Operation completed.",
                 "revAgent",
@@ -555,7 +558,10 @@ $timer.Add_Tick({
         }
         else {
             $statusLabel.Text = "An error occurred."
-            $logBox.Text = "Install/update finished with an error.`r`nUse Log Folder for diagnostic details."
+            if (-not $logBox.Text.EndsWith("`r`n")) {
+                $logBox.AppendText("`r`n")
+            }
+            $logBox.AppendText("Install/update finished with an error. Use Log Folder for diagnostic details.`r`n")
             [System.Windows.Forms.MessageBox]::Show(
                 "Install/update finished with an error. Open the log folder for details.",
                 "revAgent",

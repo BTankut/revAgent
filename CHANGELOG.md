@@ -47,6 +47,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
   output, safer `find_elements` plan-candidate defaults, trimmed plan candidate
   blocks in focus workflows, actual image dimensions in view exports, clearer
   Revit `isModifiable` probe wording, and parameter schema alias diagnostics.
+- Restored live installer terminal output in the GUI so install/update progress
+  streams into the window again instead of being replaced by a generic running
+  message.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 
