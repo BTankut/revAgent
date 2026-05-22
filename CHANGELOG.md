@@ -40,6 +40,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Changed workstation automatic update checks to run once daily at 12:00 local
   time, and made the updater repair older logon/repeated scheduled-task
   triggers during the next update run.
+- Translated `AGENTS.md` to English and updated README, skill, installer, and
+  deployment docs to match the current updater schedule and log-retention
+  behavior.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

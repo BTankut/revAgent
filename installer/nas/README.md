@@ -95,18 +95,19 @@ folder if something fails. The GUI launchers start PowerShell hidden, so a
 separate terminal window should not remain beside the installer.
 
 The GUI requests admin rights as soon as it opens. The updater then registers a
-per-user Scheduled Task that checks silently at logon and every 30 minutes
-during the day. Scheduled background checks are launched through a hidden
-single-line WScript wrapper so PowerShell does not flash a terminal window or
-steal focus, and the wrapper returns the child PowerShell exit code.
+per-user Scheduled Task that checks silently once per day at 12:00 local time.
+Scheduled background checks are launched through a hidden single-line WScript
+wrapper so PowerShell does not flash a terminal window or steal focus, and the
+wrapper returns the child PowerShell exit code. Manual update and repair remain
+available from the GUI and command launchers.
 The elevated install also repairs permissions on the managed Revit MCP install
 root and the Revit MCP add-in manifest so that the per-user task can update the
 local package, runtime, add-in payload, cache, reports, logs, and hidden
 launcher files without another UAC prompt. Permission repair is targeted to the
 managed roots, known updater files, and active payload folders; it must not scan
 large `node_modules` or backup trees. If Windows still blocks Scheduled Task
-registration, the installer creates a Startup fallback that keeps a hidden
-per-user update loop running with the same interval.
+registration, the installer creates a Startup fallback that waits until the
+next daily 12:00 check time and then repeats once per day.
 
 If you want to copy a single launcher to a workstation desktop, copy the
 standalone launcher instead:
@@ -144,6 +145,9 @@ Logs are written to:
 C:\ProgramData\DPE\RevitMCP\updater\logs\
 ```
 
+Updater log retention is automatic. Install and update runs keep the latest
+10 `.log` files in the managed log folder and remove older logs.
+
 ## Update Behavior
 
 - Reads the target version from `channels\stable.json`.
@@ -155,6 +159,8 @@ C:\ProgramData\DPE\RevitMCP\updater\logs\
 - Runs `npm install --omit=dev --no-audit --no-fund` for the runtime and docs MCP servers.
 - Re-registers Codex MCP entries through the current user's Codex Desktop command when available, otherwise by updating `%USERPROFILE%\.codex\config.toml` directly.
 - Writes local and NAS report JSON files.
+- Repairs older workstation scheduled-task triggers so legacy logon/repeated
+  checks are replaced by the daily 12:00 schedule.
 
 This is a full package update, not a file-level delta update.
 
@@ -216,4 +222,7 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   `-AllowReplaceGitPackageTarget` is explicitly passed.
 - Release ZIPs include a generated legacy `kurulum/` alias so older installed
   updaters can install the renamed `installer/` layout safely.
-- Revit version metadata is centralized in `config\revit-versions.json`. Bu branch ve stable deploy hattı şu anda yalnızca Revit 2022 payload’ını destekler. 2023/2024/2025 gelecekteki genişleme için modellenmiştir; gerçek artifact üretilip doğrulanmadan installer/deploy tarafından açılmamalıdır.
+- Revit version metadata is centralized in `config\revit-versions.json`. The
+  current office deployment payload supports Revit 2022 only. Revit
+  2023/2024/2025 are modeled for future expansion and must remain blocked until
+  real payload artifacts are built and validated.

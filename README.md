@@ -122,9 +122,13 @@ pulling and reinstalling on every machine.
 - A release is published only when `publish-nas-release.ps1` is run.
 - Office releases are published to the managed release channel after local/manual testing.
 - Workstations run `update-from-nas.ps1`, usually through a scheduled task
-  installed by `install-updater-task.ps1`.
+  installed by `install-updater-task.ps1`; automatic checks run once daily at
+  12:00 local time, while manual update/repair remains available from the
+  updater UI and command launchers.
 - Workstations install under `C:\ProgramData\DPE\RevitMCP`, not under
   `C:\Projects` or user AppData folders.
+- Workstation updater logs are retained under the managed updater folder, with
+  automatic cleanup keeping the latest 10 `.log` files.
 
 See `installer/nas/README.md` for the full first-time workflow. For the
 developer and code-assistant context needed to continue development from a
@@ -195,9 +199,9 @@ Windows taskbar and can be minimized. Completed and failed states are shown
 with recent task history and stay visible until the user clicks `OK`. The
 window close button is treated as acknowledge/hide after completion; during a
 running task it is ignored so closing the status window cannot close or crash
-Revit. Recent history uses compact state symbols (`✓` for completed, `✕` for
-failed) and shows only the total Revit-side duration plus request size, for
-example `17:19:07  ✓  Final metric UI log probe  (2.9s)  [1 MB]`.
+Revit. Recent history uses compact state labels (`completed` / `failed`) and
+shows only the total Revit-side duration plus request size, for example
+`17:19:07  completed  Final metric UI log probe  (2.9s)  [1 MB]`.
 
 Then:
 
@@ -401,7 +405,7 @@ Expected bundled docs commands:
 
 ## Required companion: Revit API docs server
 
-This repo includes a second MCP server that reads the installed Revit API assemblies and XML doc files directly from the local Revit installation. It is kept as a separate process so the live Revit tool surface stays minimal, but the skill **depends on it** — it is the authoritative source for class and member signatures that the snippet generation step relies on.
+This repo includes a second MCP server that reads the installed Revit API assemblies and XML doc files directly from the local Revit installation. It is kept as a separate process so the live Revit tool surface stays minimal, but the skill **depends on it** - it is the authoritative source for class and member signatures that the snippet generation step relies on.
 
 Install it after the runtime server (Quick start already shows this step):
 
@@ -467,9 +471,9 @@ powershell -ExecutionPolicy Bypass -File .\installer\refresh-skill.ps1
 
 Useful flags:
 
-- `-RepoRoot <path>` — point at a specific local clone (defaults to the parent of the script).
-- `-ExtraPaths <path1,path2>` — add project-level installs, e.g. `<project>\.claude\skills\revit-mcp`.
-- `-NoConfirm` — skip per-target prompts (for unattended runs).
+- `-RepoRoot <path>` - point at a specific local clone (defaults to the parent of the script).
+- `-ExtraPaths <path1,path2>` - add project-level installs, e.g. `<project>\.claude\skills\revit-mcp`.
+- `-NoConfirm` - skip per-target prompts (for unattended runs).
 
 After the script finishes:
 

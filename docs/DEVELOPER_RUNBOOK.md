@@ -269,7 +269,10 @@ config\revit-versions.json
 
 The matrix contains target framework, build configuration, install-root
 candidates, add-in path pattern, API package mappings, and payload path
-expectations. Bu branch ve stable deploy hattı şu anda yalnızca Revit 2022 payload’ını destekler. 2023/2024/2025 gelecekteki genişleme için modellenmiştir; gerçek artifact üretilip doğrulanmadan installer/deploy tarafından açılmamalıdır. Installer paths must not pretend to deploy a version whose payload flag is false.
+expectations. The current office deployment payload supports Revit 2022 only.
+Revit 2023/2024/2025 are modeled for future expansion and must remain blocked
+until real payload artifacts are built and validated. Installer paths must not
+pretend to deploy a version whose payload flag is false.
 
 Use:
 
@@ -360,9 +363,9 @@ The current production status window behavior:
 - close button after completion acts as acknowledge/hide
 - status window should not steal foreground focus from other apps
 - recent task history is selectable and resizable
-- recent history uses compact state symbols and shows total Revit-side
-  duration plus request size, for example:
-  `17:19:07  ✓  Final metric UI log probe  (2.9s)  [1 MB]`
+- recent history uses compact state labels and shows total Revit-side duration
+  plus request size, for example:
+  `17:19:07  completed  Final metric UI log probe  (2.9s)  [1 MB]`
 - detailed transport metrics remain available in `get_revit_mcp_status` and in
   the add-in log:
   `C:\ProgramData\DPE\RevitMCP\revit-plugin\revit_mcp_plugin\Logs\mcp_YYYYMMDD.log`
@@ -475,6 +478,9 @@ C:\ProgramData\DPE\RevitMCP\updater\last-update-report.json
 C:\ProgramData\DPE\RevitMCP\updater\logs\
 ```
 
+The updater keeps only the latest 10 `.log` files in the managed log folder.
+Install and update runs prune older logs automatically.
+
 The workstation install root is:
 
 ```text
@@ -499,11 +505,11 @@ bootstrap creates a Startup-folder fallback:
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Revit MCP Auto Update.cmd
 ```
 
-The preferred updater registration is a per-user Scheduled Task. It runs at
-logon and repeats every 30 minutes. If Scheduled Task registration is blocked,
-the Startup fallback launches a hidden `auto-update-loop.ps1` process for the
-user session and checks on the same interval. This keeps long-running office
-workstations updated even when they are rarely restarted.
+The preferred updater registration is a per-user Scheduled Task. It runs once
+per day at 12:00 local time. If Scheduled Task registration is blocked, the
+Startup fallback launches a hidden `auto-update-loop.ps1` process for the user
+session and follows the same daily 12:00 schedule. Manual update and
+repair/reinstall remain available from the updater GUI and command launchers.
 
 The GUI requests admin rights immediately at startup. If Windows opens the GUI
 with different admin credentials, user-profile Codex integration may be written

@@ -9,14 +9,13 @@ description: >
   operate on HVAC, sanitary, domestic water, storm drainage, sprinkler,
   fire hose, fire pressurization, or smoke duct systems, or perform
   engineering calculations such as BOQ/quantity takeoff, pressure loss,
-  critical path, or system flow. Turkish trigger phrases also apply:
-  "kanal metrajı", "boru listesi", "sprinkler sayısı", "basınç kaybı hesapla",
-  "yağmur tesisatı", "difüzör sayısı", "BOQ çıkar".
+  critical path, or system flow. Localized Turkish requests for the same
+  mechanical MEP tasks are also in scope.
 license: UNLICENSED
 version: 0.4.4
 ---
 
-# Revit MCP — MEP Automation Expert
+# Revit MCP - MEP Automation Expert
 
 You are an MEP automation expert working through the Revit MCP server.
 Scope: HVAC ducts, sanitary, domestic water, storm drainage, sprinkler,
@@ -29,31 +28,31 @@ This skill assumes two MCP servers are installed and connected. Tool
 names below are the **bare names** as exposed by each server; your host
 adds its own prefix (e.g. Codex Desktop prepends `mcp_revit-mcp_`,
 Claude Code prepends `mcp__revit-mcp__`). Always call whichever
-prefixed form your host shows in the tool list — but in this document
+prefixed form your host shows in the tool list - but in this document
 only the bare names appear, so the rules stay host-agnostic.
 
-**Runtime server (`revit-mcp`)** — dynamic execution plus read-only context:
+**Runtime server (`revit-mcp`)** - dynamic execution plus read-only context:
 
 This runtime surface is intentionally reusable: live Revit execution, model
 context, view/focus helpers, parameter inspection, visual QA exports, and safe
 custom-code workflows.
 
-- `list_revit_instances` — discover reachable Revit MCP instances and ports
-- `get_revit_mcp_status` — read active/recent task status without waiting
+- `list_revit_instances` - discover reachable Revit MCP instances and ports
+- `get_revit_mcp_status` - read active/recent task status without waiting
   behind the active command lock; recent task records include request size and
   transport timing diagnostics for troubleshooting
-- `send_code_to_revit` — raw dynamic execution for explicit, broad control
-- `send_code_to_revit_safe` — read/preview execution with write-looking code
+- `send_code_to_revit` - raw dynamic execution for explicit, broad control
+- `send_code_to_revit_safe` - read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced
   `transactionMode: "none"`
-- `get_revit_session_context` — first-call context for version/build/culture,
+- `get_revit_session_context` - first-call context for version/build/culture,
   document state, active view, selection, MEP counts, and link counts
-- `get_active_view_context` — model-view vs sheet-view context; sheets return
+- `get_active_view_context` - model-view vs sheet-view context; sheets return
   placed viewports instead of direct model-category assumptions
-- `list_open_views` — list currently open Revit UI view tabs
-- `activate_view` — activate an existing plan, 3D, sheet, schedule, section,
+- `list_open_views` - list currently open Revit UI view tabs
+- `activate_view` - activate an existing plan, 3D, sheet, schedule, section,
   elevation, drafting, or legend view without opening a transaction
-- `close_view` — close an open Revit UI view tab without opening a transaction
+- `close_view` - close an open Revit UI view tab without opening a transaction
 - `get_ui_state` - read active view, open UI views, selected element ids and
   summaries, section box flags, and document writable state
 - `find_elements` - find elements by category plus text across id, name,
@@ -86,14 +85,14 @@ custom-code workflows.
 - `smart_focus_elements` - wrapper workflow that tries active/requested view
   focus without modal search, then optionally falls back to an existing
   same-level plan and 3D view
-- `inspect_elements` — targeted/selection element inspection: class,
+- `inspect_elements` - targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
-- `inspect_parameter_schema` — parameter schema for element ids or category
+- `inspect_parameter_schema` - parameter schema for element ids or category
   samples: BIP, storage type, unit, shared/read-only, raw/display values.
   Use `parameterNameMatchMode: "contains"` for broad discovery and
   `parameterNameMatchMode: "exact"` for write-preflight.
 
-**API docs server (`revit-api-docs`)** — required companion:
+**API docs server (`revit-api-docs`)** - required companion:
 
 - `search_api`
 - `get_type_details`
@@ -141,7 +140,7 @@ Default workflow for every Revit runtime task:
    explicitly asks for broad dynamic execution or a confirmed write.
 
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
-surface is already trivially known — e.g. the bundled patterns under
+surface is already trivially known - e.g. the bundled patterns under
 `references/patterns/`.
 
 ---
@@ -238,7 +237,7 @@ existing primitives for activation, focusing, and verification.
 
 ---
 
-## 1. Execution Contract — Hard Rules
+## 1. Execution Contract - Hard Rules
 
 The upstream `mcp-servers-for-revit` plugin compiles C# at runtime. Your
 code is injected into the body of:
@@ -287,7 +286,7 @@ Hard rules from live Revit 2022 testing:
 
 ---
 
-## 3. MEP Classes — Real API Status
+## 3. MEP Classes - Real API Status
 
 ### Compile-friendly classes
 
@@ -298,7 +297,7 @@ Autodesk.Revit.DB.Plumbing.Pipe        -> pipe segment
 Autodesk.Revit.DB.Plumbing.FlexPipe    -> flexible pipe
 ```
 
-### Classes that fail to compile — use category instead
+### Classes that fail to compile - use category instead
 
 ```text
 DuctFitting   -> OfCategory(BuiltInCategory.OST_DuctFitting)   + FamilyInstance
@@ -309,7 +308,7 @@ PipeAccessory -> OfCategory(BuiltInCategory.OST_PipeAccessory) + FamilyInstance
 
 ---
 
-## 4. FilteredElementCollector — Core Pattern
+## 4. FilteredElementCollector - Core Pattern
 
 Always append `.WhereElementIsNotElementType()`.
 
@@ -362,7 +361,7 @@ catch (Exception ex)
 
 ---
 
-## 6. Error Handling — Always Wrap
+## 6. Error Handling - Always Wrap
 
 ```csharp
 try
@@ -382,29 +381,29 @@ catch (Exception ex)
 
 Load these as needed for the current task:
 
-- `references/parameters.md` — parameter lookup order, BIP vs.
+- `references/parameters.md` - parameter lookup order, BIP vs.
   `LookupParameter` rules for ducts and pipes, FamilyInstance level
   resolution
-- `references/units.md` — `UnitTypeId` conversions (mm, m, m³/h, L/s,
+- `references/units.md` - `UnitTypeId` conversions (mm, m, m3/h, L/s,
   m/s, Pa, Pa/m). Never use `DisplayUnitType`.
-- `references/system-classification.md` — typical values for `System
+- `references/system-classification.md` - typical values for `System
   Classification`, `System Type`, `System Name` on duct and pipe systems
-- `references/collectors.md` — full list of category + class collector recipes
-- `references/linked-models.md` — linked architectural model lookup, room
+- `references/collectors.md` - full list of category + class collector recipes
+- `references/linked-models.md` - linked architectural model lookup, room
   matching, nearest-room fallback, level lock, performance patterns,
   CSV/Excel export safety, identity strategy, debug workflow, and the
   required `revit-api-docs` server workflow
-- `references/patterns/boq-duct.cs` — duct BOQ by system + size
-- `references/patterns/boq-pipe.cs` — pipe BOQ by system + diameter
-- `references/patterns/segment-friction-loss-duct.cs` — approximate duct
+- `references/patterns/boq-duct.cs` - duct BOQ by system + size
+- `references/patterns/boq-pipe.cs` - pipe BOQ by system + diameter
+- `references/patterns/segment-friction-loss-duct.cs` - approximate duct
   segment friction loss by system; excludes fittings/accessory local losses
-- `references/patterns/diffuser-count.cs` — diffuser count by system + level
+- `references/patterns/diffuser-count.cs` - diffuser count by system + level
 
 ---
 
 ## 8. Pre-Send Checklist
 
-Universal rules — check every snippet against this list:
+Universal rules - check every snippet against this list:
 
 - [ ] No `class` / `method` declaration. Only the body of `Execute`.
 - [ ] `document` and `parameters` are not redeclared.

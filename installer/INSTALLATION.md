@@ -40,6 +40,10 @@ It writes install and update logs under:
 C:\ProgramData\DPE\RevitMCP\updater\logs
 ```
 
+Automatic update checks run once daily at 12:00 local time. Manual update and
+repair/reinstall remain available from the NAS GUI and command launchers. The
+managed log folder is pruned automatically to keep the latest 10 `.log` files.
+
 ## Manual Repo-Root Install
 
 Use this only for development or emergency repair. Close Revit first.
