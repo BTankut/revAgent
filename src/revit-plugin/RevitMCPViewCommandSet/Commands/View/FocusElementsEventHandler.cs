@@ -5,6 +5,7 @@ using RevitMCPSDK.API.Interfaces;
 using RevitMCPViewCommandSet.Extensions;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 
 namespace RevitMCPViewCommandSet.Commands.View
@@ -241,6 +242,12 @@ namespace RevitMCPViewCommandSet.Commands.View
             string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom, _fitToScreen, out fitToScreenApplied, out fitToScreenMethod, out fitToScreenWarning);
             string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
             List<int> noBoundingBoxElementIds = ElementFocusHelpers.GetNoBoundingBoxElementIds(elements);
+            bool targetStillActive = targetView == null || (document.ActiveView != null && document.ActiveView.Id.GetIdValue() == targetView.Id.GetIdValue());
+            string focusWarning = "";
+            if (_zoom && targetView != null && !targetStillActive)
+            {
+                focusWarning = "Revit focus changed the active view after ShowElements; TargetView differs from final ActiveView.";
+            }
 
             return new ElementFocusResult
             {
@@ -259,7 +266,9 @@ namespace RevitMCPViewCommandSet.Commands.View
                 FitToScreen = fitToScreenApplied,
                 FitToScreenMethod = fitToScreenMethod,
                 FitToScreenWarning = fitToScreenWarning,
-                TargetView = targetView != null ? ViewCommandHelpers.BuildViewSummary(document, targetView, true, true) : null,
+                FocusWarning = focusWarning,
+                PlanVisibilityWarning = focusWarning,
+                TargetView = targetView != null ? ViewCommandHelpers.BuildViewSummary(document, targetView, targetStillActive, ViewCommandHelpers.FindOpenUIView(uiDocument, targetView.Id) != null) : null,
                 ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
                 OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument),
                 Elements = elements,
@@ -309,13 +318,14 @@ namespace RevitMCPViewCommandSet.Commands.View
                 ElementDiscoveryHelpers.ResolveElementLevel(document, firstElement, out levelId, out levelName);
                 if (levelId != null && levelId != ElementId.InvalidElementId)
                 {
-                    List<PlanCandidateSummary> planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, "", true);
+                    List<PlanCandidateSummary> planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, "", true, firstElement);
                     result.PlanCandidates = planCandidates;
-                    if (planCandidates.Count > 0)
+                    PlanCandidateSummary suggestedPlan = planCandidates.FirstOrDefault(p => p.ElementVisibleInView == true);
+                    if (suggestedPlan != null)
                     {
-                        Autodesk.Revit.DB.View suggested = document.GetElement(new ElementId(planCandidates[0].Id)) as Autodesk.Revit.DB.View;
+                        Autodesk.Revit.DB.View suggested = document.GetElement(new ElementId(suggestedPlan.Id)) as Autodesk.Revit.DB.View;
                         result.SuggestedView = ViewCommandHelpers.BuildViewSummary(document, suggested, false, suggested != null && ViewCommandHelpers.FindOpenUIView(uiDocument, suggested.Id) != null);
-                        result.FocusSuggestion = "Suggested existing plan: " + planCandidates[0].Name + ". Use open_existing_plan_for_element_level with planMode=elementLevel to open it without triggering Revit's modal closed-view search.";
+                        result.FocusSuggestion = "Suggested existing plan: " + suggestedPlan.Name + ". Use open_existing_plan_for_element_level with planMode=elementLevel to open it without triggering Revit's modal closed-view search.";
                     }
                 }
             }
@@ -352,41 +362,7 @@ namespace RevitMCPViewCommandSet.Commands.View
 
         private static bool IsElementVisibleInView(Document document, Element element, Autodesk.Revit.DB.View view, out string blockReason)
         {
-            blockReason = "";
-            ViewPlan plan = view as ViewPlan;
-            if (plan != null && plan.GenLevel != null)
-            {
-                ElementId elementLevelId;
-                string elementLevelName;
-                ElementDiscoveryHelpers.ResolveElementLevel(document, element, out elementLevelId, out elementLevelName);
-                if (elementLevelId == null || elementLevelId == ElementId.InvalidElementId)
-                {
-                    blockReason = "elementLevelCouldNotBeResolved";
-                    return false;
-                }
-
-                if (elementLevelId.GetIdValue() != plan.GenLevel.Id.GetIdValue())
-                {
-                    blockReason = "elementLevelDoesNotMatchPlanView";
-                    return false;
-                }
-            }
-
-            try
-            {
-                bool hasViewBox = element.get_BoundingBox(view) != null;
-                if (!hasViewBox)
-                {
-                    blockReason = "elementHasNoBoundingBoxInTargetView";
-                }
-
-                return hasViewBox;
-            }
-            catch
-            {
-                blockReason = "elementVisibilityCheckFailed";
-                return false;
-            }
+            return ElementFocusHelpers.IsElementVisibleInView(document, element, view, out blockReason);
         }
 
         private static string BuildVisibilityFailureMessage(string blockReason)

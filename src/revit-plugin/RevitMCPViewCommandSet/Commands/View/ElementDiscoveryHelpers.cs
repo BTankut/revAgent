@@ -18,6 +18,8 @@ namespace RevitMCPViewCommandSet.Commands.View
         public bool IsActive { get; set; }
         public int Score { get; set; }
         public string Reason { get; set; }
+        public bool? ElementVisibleInView { get; set; }
+        public string ElementVisibilityReason { get; set; }
     }
 
     public class ElementSearchItem
@@ -82,7 +84,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             List<PlanCandidateSummary> planCandidates = null;
             if (includePlanCandidates && levelId != null && levelId != ElementId.InvalidElementId)
             {
-                planCandidates = FindPlanCandidates(document, uiDocument, levelId, planNameContains, true);
+                planCandidates = FindPlanCandidates(document, uiDocument, levelId, planNameContains, true, element);
             }
 
             return new ElementSearchItem
@@ -261,7 +263,8 @@ namespace RevitMCPViewCommandSet.Commands.View
             UIDocument uiDocument,
             ElementId levelId,
             string nameContains,
-            bool preferMechanical)
+            bool preferMechanical,
+            Element targetElement = null)
         {
             HashSet<int> openViewIds = GetOpenViewIds(uiDocument);
             int activeViewId = document.ActiveView != null
@@ -283,7 +286,7 @@ namespace RevitMCPViewCommandSet.Commands.View
 
             foreach (ViewPlan plan in plans)
             {
-                PlanCandidateSummary candidate = BuildPlanCandidate(plan, openViewIds, activeViewId, nameContains, preferMechanical);
+                PlanCandidateSummary candidate = BuildPlanCandidate(document, plan, openViewIds, activeViewId, nameContains, preferMechanical, targetElement);
                 candidates.Add(candidate);
             }
 
@@ -375,11 +378,13 @@ namespace RevitMCPViewCommandSet.Commands.View
         }
 
         public static PlanCandidateSummary BuildPlanCandidate(
+            Document document,
             ViewPlan plan,
             HashSet<int> openViewIds,
             int activeViewId,
             string nameContains,
-            bool preferMechanical)
+            bool preferMechanical,
+            Element targetElement = null)
         {
             int score = 0;
             List<string> reasons = new List<string>();
@@ -422,6 +427,25 @@ namespace RevitMCPViewCommandSet.Commands.View
                 reasons.Add("already open");
             }
 
+            bool? elementVisibleInView = null;
+            string elementVisibilityReason = "";
+            if (targetElement != null)
+            {
+                string visibilityReason;
+                elementVisibleInView = ElementFocusHelpers.IsElementVisibleInView(document, targetElement, plan, out visibilityReason);
+                elementVisibilityReason = visibilityReason;
+                if (elementVisibleInView == true)
+                {
+                    score += 500;
+                    reasons.Add("element visible in view");
+                }
+                else
+                {
+                    score -= 1000;
+                    reasons.Add("element not visible in view: " + visibilityReason);
+                }
+            }
+
             return new PlanCandidateSummary
             {
                 Id = plan.Id.GetIdValue(),
@@ -432,15 +456,26 @@ namespace RevitMCPViewCommandSet.Commands.View
                 IsOpen = openViewIds.Contains(plan.Id.GetIdValue()),
                 IsActive = activeViewId == plan.Id.GetIdValue(),
                 Score = score,
-                Reason = reasons.Count > 0 ? string.Join(", ", reasons) : "same level plan"
+                Reason = reasons.Count > 0 ? string.Join(", ", reasons) : "same level plan",
+                ElementVisibleInView = elementVisibleInView,
+                ElementVisibilityReason = elementVisibilityReason
             };
         }
 
-        public static PlanCandidateSummary BuildActivePlanCandidate(ViewPlan plan)
+        public static PlanCandidateSummary BuildActivePlanCandidate(ViewPlan plan, Document document = null, Element targetElement = null)
         {
             if (plan == null)
             {
                 return null;
+            }
+
+            bool? elementVisibleInView = null;
+            string elementVisibilityReason = "";
+            if (document != null && targetElement != null)
+            {
+                string visibilityReason;
+                elementVisibleInView = ElementFocusHelpers.IsElementVisibleInView(document, targetElement, plan, out visibilityReason);
+                elementVisibilityReason = visibilityReason;
             }
 
             return new PlanCandidateSummary
@@ -453,7 +488,9 @@ namespace RevitMCPViewCommandSet.Commands.View
                 IsOpen = true,
                 IsActive = true,
                 Score = 1000,
-                Reason = "active plan requested"
+                Reason = "active plan requested",
+                ElementVisibleInView = elementVisibleInView,
+                ElementVisibilityReason = elementVisibilityReason
             };
         }
 

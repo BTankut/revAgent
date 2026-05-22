@@ -30,6 +30,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Fixed the workstation updater installer initial check so `ConfigPath` is
   passed as a real named PowerShell parameter instead of a positional string,
   preventing first-install failures immediately after task registration.
+- Tightened Revit plan/focus view selection so same-level callouts are not
+  selected unless the target element is actually present in the view-specific
+  collector; focus results now warn when Revit changes the active view after
+  a UI focus operation.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

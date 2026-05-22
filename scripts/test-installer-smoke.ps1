@@ -229,6 +229,19 @@ try {
     Assert-True ($versionInfoCode -notmatch 'Stable ') "Version info must not expose legacy channel labels in the product UI."
     Assert-True ($taskStatusController -match 'revAgent Task Status UI') "Task status UI thread should use the product name."
 
+    Write-Host "Test Revit view focus visibility guard"
+    $focusHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\ElementFocusHelpers.cs")
+    $focusHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\FocusElementsEventHandler.cs")
+    $openPlanCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\OpenExistingPlanForElementLevelEventHandler.cs")
+    $discoveryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\ElementDiscoveryHelpers.cs")
+    Assert-True ($focusHelpersCode -match 'new FilteredElementCollector\(document, view\.Id\)') "View visibility helper must use a view-specific collector."
+    Assert-True ($focusHelpersCode -match 'elementNotVisibleInTargetView') "View visibility helper must report non-visible target elements."
+    Assert-True ($focusHandlerCode -notmatch 'get_BoundingBox\(view\)') "focus_elements must not use a view bounding box as visibility proof."
+    Assert-True ($openPlanCode -match 'FindPlanCandidates\(document, uiDocument, levelId, _planNameContains, _preferMechanical, element\)') "open_existing_plan_for_element_level must rank plans with the target element visibility."
+    Assert-True ($openPlanCode -match 'FirstOrDefault\(c => c\.ElementVisibleInView == true\)') "open_existing_plan_for_element_level must select only plans containing the element."
+    Assert-True ($discoveryCode -match 'ElementVisibleInView') "Plan candidates must carry element-in-view diagnostics."
+    Assert-True ($focusHelpersCode -match 'FocusWarning') "Focus results must expose active-view mismatch diagnostics."
+
     Write-Host "Test updater version status distinguishes update from restore"
     $versionStatusRoot = Join-Path $tempRoot "version-status"
     $versionWorkRoot = Join-Path $versionStatusRoot "updater"

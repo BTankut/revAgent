@@ -73,6 +73,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         public int? ActivePlanLevelId { get; set; }
         public string ActivePlanLevelName { get; set; }
         public string PlanVisibilityWarning { get; set; }
+        public string FocusWarning { get; set; }
         public string CameraOrientation { get; set; }
         public bool CameraApplied { get; set; }
         public string CameraWarning { get; set; }
@@ -180,6 +181,55 @@ namespace RevitMCPViewCommandSet.Commands.View
             }
             catch
             {
+                return false;
+            }
+        }
+
+        public static bool IsElementVisibleInView(Document document, Element element, Autodesk.Revit.DB.View view, out string blockReason)
+        {
+            blockReason = "";
+            if (document == null || element == null || view == null)
+            {
+                blockReason = "missingDocumentElementOrView";
+                return false;
+            }
+
+            ViewPlan plan = view as ViewPlan;
+            if (plan != null && plan.GenLevel != null)
+            {
+                ElementId elementLevelId;
+                string elementLevelName;
+                ElementDiscoveryHelpers.ResolveElementLevel(document, element, out elementLevelId, out elementLevelName);
+                if (elementLevelId == null || elementLevelId == ElementId.InvalidElementId)
+                {
+                    blockReason = "elementLevelCouldNotBeResolved";
+                    return false;
+                }
+
+                if (elementLevelId.GetIdValue() != plan.GenLevel.Id.GetIdValue())
+                {
+                    blockReason = "elementLevelDoesNotMatchPlanView";
+                    return false;
+                }
+            }
+
+            try
+            {
+                bool collectedInView = new FilteredElementCollector(document, view.Id)
+                    .WhereElementIsNotElementType()
+                    .ToElementIds()
+                    .Any(id => id.GetIdValue() == element.Id.GetIdValue());
+
+                if (!collectedInView)
+                {
+                    blockReason = "elementNotVisibleInTargetView";
+                }
+
+                return collectedInView;
+            }
+            catch
+            {
+                blockReason = "elementVisibilityCollectorCheckFailed";
                 return false;
             }
         }

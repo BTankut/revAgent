@@ -88,7 +88,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                 }
 
                 _elementInfo = ElementDiscoveryHelpers.BuildElementSearchItem(document, uiDocument, element, false, _planNameContains);
-                _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical);
+                _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical, element);
 
                 if (UseActivePlanOnly())
                 {
@@ -99,7 +99,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                         return;
                     }
 
-                    PlanCandidateSummary activePlanCandidate = ElementDiscoveryHelpers.BuildActivePlanCandidate(activePlan);
+                    PlanCandidateSummary activePlanCandidate = ElementDiscoveryHelpers.BuildActivePlanCandidate(activePlan, document, element);
                     _pendingApp = app;
                     _pendingViewId = activePlan.Id;
                     _idlingAttempts = 0;
@@ -120,7 +120,12 @@ namespace RevitMCPViewCommandSet.Commands.View
                     return;
                 }
 
-                PlanCandidateSummary selected = _planCandidates[0];
+                PlanCandidateSummary selected = _planCandidates.FirstOrDefault(c => c.ElementVisibleInView == true);
+                if (selected == null)
+                {
+                    Complete(BuildFailure(document, uiDocument, "No existing non-template plan on the element level contains the target element."));
+                    return;
+                }
                 Autodesk.Revit.DB.View targetView = document.GetElement(new ElementId(selected.Id)) as Autodesk.Revit.DB.View;
                 if (targetView == null)
                 {
@@ -181,7 +186,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                     PlanCandidateSummary selected = _planCandidates != null ? _planCandidates.FirstOrDefault(p => p.Id == _pendingViewId.GetIdValue()) : null;
                     if (selected == null && UseActivePlanOnly())
                     {
-                        selected = ElementDiscoveryHelpers.BuildActivePlanCandidate(targetView as ViewPlan);
+                        selected = ElementDiscoveryHelpers.BuildActivePlanCandidate(targetView as ViewPlan, document, document.GetElement(new ElementId(_elementId)));
                     }
                     CompleteFromIdling(FocusAndBuildSuccess(uiDocument, targetView, selected, true, _idlingAttempts > 1));
                     return;
@@ -251,11 +256,29 @@ namespace RevitMCPViewCommandSet.Commands.View
                     activePlanMatchesElementLevel);
             }
 
+            string targetVisibilityReason;
+            if (_zoom && element != null && !ElementFocusHelpers.IsElementVisibleInView(document, element, targetView, out targetVisibilityReason))
+            {
+                return BuildTargetPlanVisibilityFailure(
+                    document,
+                    uiDocument,
+                    targetView,
+                    selected,
+                    elements,
+                    activeViewChanged,
+                    activePlanLevelId,
+                    activePlanLevelName,
+                    activePlanMatchesElementLevel,
+                    targetVisibilityReason);
+            }
+
             bool fitToScreenApplied;
             string fitToScreenMethod;
             string fitToScreenWarning;
             string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom, _fitToScreen, out fitToScreenApplied, out fitToScreenMethod, out fitToScreenWarning);
             string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
+            bool targetStillActive = document.ActiveView != null && document.ActiveView.Id.GetIdValue() == targetView.Id.GetIdValue();
+            string focusWarning = "";
 
             string planOpenMode;
             string planOpenNote;
@@ -279,6 +302,14 @@ namespace RevitMCPViewCommandSet.Commands.View
                     : "The active view was already the selected existing plan for the element level; no new plan was created.";
             }
 
+            if (_zoom && !targetStillActive)
+            {
+                focusWarning = "Revit focus changed the active view after ShowElements; TargetView/SelectedPlan differs from final ActiveView.";
+                planVisibilityWarning = string.IsNullOrWhiteSpace(planVisibilityWarning)
+                    ? focusWarning
+                    : planVisibilityWarning + " " + focusWarning;
+            }
+
             return new ElementFocusResult
             {
                 Success = true,
@@ -296,6 +327,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                 FitToScreen = fitToScreenApplied,
                 FitToScreenMethod = fitToScreenMethod,
                 FitToScreenWarning = fitToScreenWarning,
+                FocusWarning = focusWarning,
                 ActiveViewBefore = _activeViewBefore,
                 ActiveViewChanged = activeViewChanged,
                 PlanMode = _planMode,
@@ -305,8 +337,75 @@ namespace RevitMCPViewCommandSet.Commands.View
                 ActivePlanLevelId = activePlanLevelId,
                 ActivePlanLevelName = activePlanLevelName,
                 PlanVisibilityWarning = planVisibilityWarning,
-                TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
-                SelectedPlan = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
+                TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, targetStillActive, ViewCommandHelpers.FindOpenUIView(uiDocument, targetView.Id) != null),
+                SelectedPlan = ViewCommandHelpers.BuildViewSummary(document, targetView, targetStillActive, ViewCommandHelpers.FindOpenUIView(uiDocument, targetView.Id) != null),
+                ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
+                OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument),
+                Elements = elements,
+                LevelId = _elementInfo != null ? _elementInfo.LevelId : null,
+                LevelName = _elementInfo != null ? _elementInfo.LevelName : "",
+                PlanCandidates = _planCandidates,
+                PlanSelectionReason = selected != null ? selected.Reason : "",
+                BoundingBoxSource = "none",
+                BoundingBoxNote = ElementFocusHelpers.BuildBoundingBoxNote("none"),
+                BoundingBox = null
+            };
+        }
+
+        private ElementFocusResult BuildTargetPlanVisibilityFailure(
+            Document document,
+            UIDocument uiDocument,
+            Autodesk.Revit.DB.View targetView,
+            PlanCandidateSummary selected,
+            List<ElementSummary> elements,
+            bool activeViewChanged,
+            int? activePlanLevelId,
+            string activePlanLevelName,
+            bool activePlanMatchesElementLevel,
+            string visibilityReason)
+        {
+            string message = "The target plan does not contain the element; Revit ShowElements was not called to avoid changing focus to another view.";
+            PlanCandidateSummary suggestedPlan = _planCandidates != null ? _planCandidates.FirstOrDefault(p => p.ElementVisibleInView == true) : null;
+            ViewSummary suggestedView = null;
+            if (suggestedPlan != null && selected != null && suggestedPlan.Id != selected.Id)
+            {
+                Autodesk.Revit.DB.View suggested = document.GetElement(new ElementId(suggestedPlan.Id)) as Autodesk.Revit.DB.View;
+                suggestedView = ViewCommandHelpers.BuildViewSummary(
+                    document,
+                    suggested,
+                    false,
+                    suggested != null && ViewCommandHelpers.FindOpenUIView(uiDocument, suggested.Id) != null);
+                message += " Suggested existing plan: " + suggestedPlan.Name + ".";
+            }
+
+            return new ElementFocusResult
+            {
+                Success = false,
+                Action = "open_existing_plan_for_element_level",
+                Message = message,
+                Error = message,
+                Requested = false,
+                Deferred = false,
+                Changed = activeViewChanged,
+                Selected = false,
+                Zoomed = false,
+                FocusBlocked = true,
+                FocusBlockReason = string.IsNullOrWhiteSpace(visibilityReason) ? "elementNotVisibleInTargetView" : visibilityReason,
+                FocusSuggestion = suggestedPlan != null && selected != null && suggestedPlan.Id != selected.Id
+                    ? "Use " + suggestedPlan.Name + " or omit the restrictive planNameContains value."
+                    : "Use a plan view whose view-specific collector contains the element.",
+                SuggestedView = suggestedView,
+                ActiveViewBefore = _activeViewBefore,
+                ActiveViewChanged = activeViewChanged,
+                PlanMode = _planMode,
+                PlanOpenMode = UseActivePlanOnly() ? "activePlanOnlyBlocked" : "elementLevelExistingPlanBlocked",
+                PlanOpenNote = "The selected plan was rejected because the target element is not present in the view-specific collector.",
+                ActivePlanMatchesElementLevel = activePlanMatchesElementLevel,
+                ActivePlanLevelId = activePlanLevelId,
+                ActivePlanLevelName = activePlanLevelName,
+                PlanVisibilityWarning = "The selected plan does not contain the target element: " + visibilityReason + ".",
+                TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, document.ActiveView != null && document.ActiveView.Id.GetIdValue() == targetView.Id.GetIdValue(), targetView != null && ViewCommandHelpers.FindOpenUIView(uiDocument, targetView.Id) != null),
+                SelectedPlan = ViewCommandHelpers.BuildViewSummary(document, targetView, document.ActiveView != null && document.ActiveView.Id.GetIdValue() == targetView.Id.GetIdValue(), targetView != null && ViewCommandHelpers.FindOpenUIView(uiDocument, targetView.Id) != null),
                 ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
                 OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument),
                 Elements = elements,
