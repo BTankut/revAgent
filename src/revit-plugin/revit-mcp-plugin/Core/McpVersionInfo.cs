@@ -15,6 +15,7 @@ namespace revit_mcp_plugin.Core
             string fullVersion,
             string shortVersion,
             string buildDisplay,
+            DateTime? packagePublishedAtUtc,
             DateTime? installedAtUtc,
             string channelVersion,
             string channelDisplay,
@@ -25,6 +26,7 @@ namespace revit_mcp_plugin.Core
             FullVersion = string.IsNullOrWhiteSpace(fullVersion) ? "development" : fullVersion;
             ShortVersion = string.IsNullOrWhiteSpace(shortVersion) ? "dev" : shortVersion;
             BuildDisplay = string.IsNullOrWhiteSpace(buildDisplay) ? "Build " + ShortVersion : buildDisplay;
+            PackagePublishedAtUtc = packagePublishedAtUtc;
             InstalledAtUtc = installedAtUtc;
             ChannelVersion = string.IsNullOrWhiteSpace(channelVersion) ? string.Empty : channelVersion;
             ChannelDisplay = string.IsNullOrWhiteSpace(channelDisplay) ? string.Empty : channelDisplay;
@@ -38,6 +40,8 @@ namespace revit_mcp_plugin.Core
         public string ShortVersion { get; private set; }
 
         public string BuildDisplay { get; private set; }
+
+        public DateTime? PackagePublishedAtUtc { get; private set; }
 
         public DateTime? InstalledAtUtc { get; private set; }
 
@@ -62,7 +66,7 @@ namespace revit_mcp_plugin.Core
                 }
             }
 
-            return new McpVersionInfo("development", "dev", "Build dev", null, string.Empty, string.Empty, null, null, null);
+            return new McpVersionInfo("development", "dev", "Build dev", null, null, string.Empty, string.Empty, null, null, null);
         }
 
         private static McpVersionInfo TryRead(string path)
@@ -82,6 +86,7 @@ namespace revit_mcp_plugin.Core
                 }
 
                 DateTime? installedAtUtc = ReadUtcDate(json, "installedAtUtc") ?? ReadUtcDate(json, "publishedAtUtc");
+                DateTime? packagePublishedAtUtc = ReadPackagePublishedAtUtc(path, json);
                 string channelManifestPath = ResolveChannelManifestPath(path, json);
                 string channelVersion = string.Empty;
                 string channelDisplay = string.Empty;
@@ -91,7 +96,8 @@ namespace revit_mcp_plugin.Core
                 return new McpVersionInfo(
                     fullVersion,
                     Shorten(fullVersion),
-                    FormatBuildDisplay(fullVersion),
+                    FormatBuildDisplay(fullVersion, packagePublishedAtUtc ?? installedAtUtc),
+                    packagePublishedAtUtc,
                     installedAtUtc,
                     channelVersion,
                     channelDisplay,
@@ -197,14 +203,24 @@ namespace revit_mcp_plugin.Core
             return version.Length <= 12 ? version : version.Substring(0, 12);
         }
 
-        private static string FormatBuildDisplay(string version)
+        private static string FormatBuildDisplay(string version, DateTime? packagePublishedAtUtc)
         {
-            DateTime? versionDate = TryParseVersionDate(version);
+            if (packagePublishedAtUtc.HasValue)
+            {
+                return "Build " + FormatSortTimestamp(packagePublishedAtUtc.Value.ToLocalTime());
+            }
+
+            DateTime? versionDate = TryParseVersionDate(version, requireTime: true);
             if (versionDate.HasValue)
             {
-                return "Build " + versionDate.Value.ToString(
-                    HasVersionTime(version) ? "MMM d HH:mm" : "MMM d",
-                    CultureInfo.InvariantCulture);
+                return "Build " + FormatSortTimestamp(versionDate.Value);
+            }
+
+            DateTime? dateOnly = TryParseVersionDate(version, requireTime: false);
+            string suffix = ExtractVersionSuffix(version);
+            if (dateOnly.HasValue && !string.IsNullOrWhiteSpace(suffix))
+            {
+                return "Build " + dateOnly.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + " " + suffix;
             }
 
             return "Build " + Shorten(version);
@@ -217,7 +233,7 @@ namespace revit_mcp_plugin.Core
                 return string.Empty;
             }
 
-            return "Updated " + InstalledAtUtc.Value.ToLocalTime().ToString("MMM d HH:mm", CultureInfo.InvariantCulture);
+            return "Updated " + FormatSortTimestamp(InstalledAtUtc.Value.ToLocalTime());
         }
 
         public string FormatStableLine()
@@ -243,7 +259,7 @@ namespace revit_mcp_plugin.Core
             if (InstalledAtUtc.HasValue)
             {
                 builder.AppendLine();
-                builder.Append("Last updated: ").Append(InstalledAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture));
+                builder.Append("Last updated: ").Append(FormatSortTimestamp(InstalledAtUtc.Value.ToLocalTime()));
             }
 
             if (!string.IsNullOrWhiteSpace(ChannelVersion))
@@ -255,7 +271,7 @@ namespace revit_mcp_plugin.Core
             if (ChannelPublishedAtUtc.HasValue)
             {
                 builder.AppendLine();
-                builder.Append("Stable published: ").Append(ChannelPublishedAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture));
+                builder.Append("Stable published: ").Append(FormatSortTimestamp(ChannelPublishedAtUtc.Value.ToLocalTime()));
             }
 
             return builder.ToString();
@@ -282,16 +298,23 @@ namespace revit_mcp_plugin.Core
                 channelVersion = (string)json["version"] ?? string.Empty;
                 publishedAtUtc = ReadUtcDate(json, "publishedAtUtc");
 
-                DateTime? versionDate = TryParseVersionDate(channelVersion);
+                DateTime? versionDate = TryParseVersionDate(channelVersion, requireTime: true);
                 if (versionDate.HasValue)
                 {
-                    channelDisplay = versionDate.Value.ToString(
-                        HasVersionTime(channelVersion) ? "MMM d HH:mm" : "MMM d",
-                        CultureInfo.InvariantCulture);
+                    channelDisplay = FormatSortTimestamp(versionDate.Value);
                 }
                 else if (publishedAtUtc.HasValue)
                 {
-                    channelDisplay = publishedAtUtc.Value.ToLocalTime().ToString("MMM d HH:mm", CultureInfo.InvariantCulture);
+                    channelDisplay = FormatSortTimestamp(publishedAtUtc.Value.ToLocalTime());
+                }
+                else
+                {
+                    DateTime? dateOnly = TryParseVersionDate(channelVersion, requireTime: false);
+                    string suffix = ExtractVersionSuffix(channelVersion);
+                    if (dateOnly.HasValue && !string.IsNullOrWhiteSpace(suffix))
+                    {
+                        channelDisplay = dateOnly.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + " " + suffix;
+                    }
                 }
             }
             catch
@@ -357,7 +380,53 @@ namespace revit_mcp_plugin.Core
             return null;
         }
 
-        private static DateTime? TryParseVersionDate(string version)
+        private static DateTime? ReadPackagePublishedAtUtc(string statePath, JObject stateJson)
+        {
+            DateTime? direct = ReadUtcDate(stateJson, "publishedAtUtc");
+            if (direct.HasValue)
+            {
+                return direct;
+            }
+
+            DateTime? manifestPublished = ReadPublishedAtUtcFromJsonFile((string)stateJson["manifestPath"]);
+            if (manifestPublished.HasValue)
+            {
+                return manifestPublished;
+            }
+
+            string stateDir = string.IsNullOrWhiteSpace(statePath) ? null : Path.GetDirectoryName(statePath);
+            if (!string.IsNullOrWhiteSpace(stateDir))
+            {
+                DateTime? packageReleaseInfo = ReadPublishedAtUtcFromJsonFile(Path.Combine(stateDir, "..", "package", "release-info.json"));
+                if (packageReleaseInfo.HasValue)
+                {
+                    return packageReleaseInfo;
+                }
+            }
+
+            return null;
+        }
+
+        private static DateTime? ReadPublishedAtUtcFromJsonFile(string path)
+        {
+            try
+            {
+                path = ExpandPath(path);
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                {
+                    return null;
+                }
+
+                JObject json = JObject.Parse(File.ReadAllText(path));
+                return ReadUtcDate(json, "publishedAtUtc");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static DateTime? TryParseVersionDate(string version, bool requireTime)
         {
             if (string.IsNullOrWhiteSpace(version))
             {
@@ -383,6 +452,11 @@ namespace revit_mcp_plugin.Core
             int hour = 0;
             int minute = 0;
             string time = match.Groups["time"].Value;
+            if (requireTime && string.IsNullOrWhiteSpace(time))
+            {
+                return null;
+            }
+
             if (!string.IsNullOrWhiteSpace(time) && time.Length == 4)
             {
                 int.TryParse(time.Substring(0, 2), out hour);
@@ -399,9 +473,28 @@ namespace revit_mcp_plugin.Core
             }
         }
 
-        private static bool HasVersionTime(string version)
+        private static string FormatSortTimestamp(DateTime value)
         {
-            return Regex.IsMatch(version ?? string.Empty, @"^\d{4}\.\d{2}\.\d{2}\.\d{4}");
+            return value.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        }
+
+        private static string ExtractVersionSuffix(string version)
+        {
+            if (string.IsNullOrWhiteSpace(version))
+            {
+                return string.Empty;
+            }
+
+            Match commit = Regex.Match(version, @"-([0-9a-fA-F]{7,12})\b");
+            if (commit.Success)
+            {
+                return commit.Groups[1].Value;
+            }
+
+            string shortVersion = Shorten(version);
+            return string.Equals(shortVersion, version, StringComparison.OrdinalIgnoreCase)
+                ? string.Empty
+                : shortVersion;
         }
     }
 }

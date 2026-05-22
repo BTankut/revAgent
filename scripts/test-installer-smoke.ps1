@@ -221,6 +221,8 @@ try {
     Assert-True ($taskStatusCode -match 'FormatStableLine') "Task status code must present a concise stable-version label."
     $versionInfoCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpVersionInfo.cs")
     Assert-True ($versionInfoCode -match 'channelManifestPath') "Version info must read the configured channel manifest path."
+    Assert-True ($versionInfoCode -match 'publishedAtUtc') "Version info must use release/channel publish timestamps when available."
+    Assert-True ($versionInfoCode -match 'yyyy-MM-dd HH:mm') "Task status metadata must use a sortable timestamp format with time."
     Assert-True ($versionInfoCode -match 'Updated ') "Version info must label the local update timestamp clearly."
     Assert-True ($versionInfoCode -match 'Stable ') "Version info must label the available stable version clearly."
     Assert-True ($taskStatusController -match 'revAgent Task Status UI') "Task status UI thread should use the product name."
