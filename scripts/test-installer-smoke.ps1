@@ -196,6 +196,8 @@ try {
     Assert-True ($guiText -match '-ForceUpdate') "GUI restore action must force the channel package install."
     Assert-True ($guiText -match 'UpdateEnabled') "GUI must gate the update button from channel status."
     Assert-True ($guiText -match '\$form\.Text = "revAgent"') "GUI title must use the revAgent product name."
+    Assert-True ($guiText -match 'Your AI agent inside Revit\.') "GUI must show the revAgent product tagline."
+    Assert-True ($guiText -match '2026 Baris Tankut') "GUI must show the revAgent copyright footer."
     Assert-True ($guiText -match '\$form\.ShowInTaskbar = \$true') "GUI must be visible in the taskbar."
     Assert-True ($guiText -match '\$form\.MinimizeBox = \$true') "GUI must be minimizable."
     Assert-True ($guiText -notmatch 'Guncelle|Surum|Kapat|Kurulum|Kanal|Hazir|Islem|Calisiyor|Baslatilamadi|bulunamadi|hata') "GUI product strings must remain English."
@@ -206,6 +208,8 @@ try {
     $taskStatusCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\UI\McpTaskStatusWindow.xaml.cs")
     $taskStatusController = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpTaskStatusWindowController.cs")
     Assert-True ($taskStatusXaml -match 'Title="revAgent Status"') "Task status window title must use revAgent."
+    Assert-True ($taskStatusXaml -match 'Your AI agent inside Revit\.') "Task status window must show the revAgent product tagline."
+    Assert-True ($taskStatusXaml -match '2026 Baris Tankut') "Task status window must show the revAgent copyright footer."
     Assert-True ($taskStatusXaml -match 'WindowStyle="SingleBorderWindow"') "Task status window must expose a normal minimizable window frame."
     Assert-True ($taskStatusXaml -match 'ShowInTaskbar="True"') "Task status window must be visible in the taskbar."
     Assert-True ($taskStatusXaml -notmatch 'Revit MCP|Recent MCP') "Task status window XAML must not expose internal MCP wording."

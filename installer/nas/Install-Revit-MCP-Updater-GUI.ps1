@@ -32,6 +32,8 @@ $localVersionTool = Join-Path $workRoot "show-installed-version.ps1"
 $script:ActiveProcess = $null
 $script:ActiveLogPath = ""
 $script:LastLogLength = -1
+$productTagline = "Your AI agent inside Revit."
+$productFooter = "revAgent  |  " + [char]0x00A9 + " 2026 Baris Tankut  |  All rights reserved."
 
 function Join-CommandLine {
     param([string[]]$Arguments)
@@ -262,12 +264,14 @@ $form.MinimumSize = New-Object System.Drawing.Size(700, 460)
 $root = New-Object System.Windows.Forms.TableLayoutPanel
 $root.Dock = "Fill"
 $root.ColumnCount = 1
-$root.RowCount = 5
+$root.RowCount = 7
 $root.Padding = New-Object System.Windows.Forms.Padding(12)
 $root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
 $root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
 $root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
+$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
 $root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
 $root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
 $form.Controls.Add($root)
 
@@ -277,12 +281,20 @@ $title.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.Fon
 $title.AutoSize = $true
 $root.Controls.Add($title, 0, 0)
 
+$tagline = New-Object System.Windows.Forms.Label
+$tagline.Text = $productTagline
+$tagline.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$tagline.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+$tagline.AutoSize = $true
+$tagline.Margin = New-Object System.Windows.Forms.Padding(0, 2, 0, 8)
+$root.Controls.Add($tagline, 0, 1)
+
 $details = New-Object System.Windows.Forms.Label
 $details.Text = "Channel: stable`r`nManaged workstation package"
 $details.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $details.AutoSize = $true
 $details.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 8)
-$root.Controls.Add($details, 0, 1)
+$root.Controls.Add($details, 0, 2)
 
 $statusPanel = New-Object System.Windows.Forms.TableLayoutPanel
 $statusPanel.Dock = "Top"
@@ -293,7 +305,7 @@ $statusPanel.RowCount = 1
 $statusPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
 $statusPanel.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 170))) | Out-Null
 $statusPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
-$root.Controls.Add($statusPanel, 0, 2)
+$root.Controls.Add($statusPanel, 0, 3)
 
 $statusLabel = New-Object System.Windows.Forms.Label
 $statusLabel.Text = "Ready."
@@ -317,14 +329,14 @@ $logBox.ScrollBars = "Both"
 $logBox.WordWrap = $false
 $logBox.ReadOnly = $true
 $logBox.Font = New-Object System.Drawing.Font("Consolas", 9)
-$root.Controls.Add($logBox, 0, 3)
+$root.Controls.Add($logBox, 0, 4)
 
 $buttonPanel = New-Object System.Windows.Forms.FlowLayoutPanel
 $buttonPanel.Dock = "Fill"
 $buttonPanel.FlowDirection = "LeftToRight"
 $buttonPanel.AutoSize = $true
 $buttonPanel.Margin = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
-$root.Controls.Add($buttonPanel, 0, 4)
+$root.Controls.Add($buttonPanel, 0, 5)
 
 $runButton = New-Object System.Windows.Forms.Button
 $runButton.Text = "Update"
@@ -355,6 +367,14 @@ $closeButton.Text = "Close"
 $closeButton.Width = 90
 $closeButton.Height = 32
 $buttonPanel.Controls.Add($closeButton)
+
+$footer = New-Object System.Windows.Forms.Label
+$footer.Text = $productFooter
+$footer.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$footer.ForeColor = [System.Drawing.Color]::FromArgb(100, 100, 100)
+$footer.AutoSize = $true
+$footer.Margin = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
+$root.Controls.Add($footer, 0, 6)
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 700
