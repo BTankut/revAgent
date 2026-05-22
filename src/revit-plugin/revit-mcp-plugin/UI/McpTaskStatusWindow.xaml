@@ -24,8 +24,8 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
@@ -100,6 +100,7 @@
                     BorderThickness="1"
                     Background="#66FFFFFF"
                     Padding="8"
+                    VerticalAlignment="Stretch"
                     MinHeight="0">
                 <Grid MinHeight="0">
                     <Grid.RowDefinitions>
