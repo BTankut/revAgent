@@ -4,6 +4,67 @@ const elementIdSchema = z.union([
     z.number().int().positive(),
     z.string().regex(/^\d+$/),
 ]);
+function compactView(view) {
+    if (!view || typeof view !== "object")
+        return view;
+    return {
+        Id: view.Id ?? view.id,
+        Name: view.Name ?? view.name,
+        ViewType: view.ViewType ?? view.viewType,
+        Scale: view.Scale ?? view.scale,
+    };
+}
+function compactElement(element) {
+    if (!element || typeof element !== "object")
+        return element;
+    return {
+        Id: element.Id,
+        Name: element.Name,
+        Category: element.Category,
+        ClassName: element.ClassName,
+        FamilyName: element.FamilyName,
+        TypeName: element.TypeName,
+        LevelId: element.LevelId,
+        LevelName: element.LevelName,
+        Mark: element.Mark,
+        HasBoundingBox: element.HasBoundingBox,
+    };
+}
+function compactPlanResult(payload) {
+    if (!payload || typeof payload !== "object") {
+        return payload;
+    }
+    if (payload.Success === false) {
+        return payload;
+    }
+    return {
+        Success: payload.Success,
+        Action: payload.Action,
+        Message: payload.Message,
+        ResponseMode: "compact",
+        PlanMode: payload.PlanMode,
+        PlanOpenMode: payload.PlanOpenMode,
+        PlanOpenNote: payload.PlanOpenNote,
+        TargetView: compactView(payload.TargetView),
+        SelectedPlan: compactView(payload.SelectedPlan),
+        ActiveView: compactView(payload.ActiveView),
+        ActiveViewChanged: payload.ActiveViewChanged,
+        ActivePlanMatchesElementLevel: payload.ActivePlanMatchesElementLevel,
+        LevelId: payload.LevelId,
+        LevelName: payload.LevelName,
+        PlanSelectionReason: payload.PlanSelectionReason,
+        Selected: payload.Selected,
+        Zoomed: payload.Zoomed,
+        ZoomMethod: payload.ZoomMethod,
+        FitToScreen: payload.FitToScreen,
+        FitToScreenWarning: payload.FitToScreenWarning,
+        PlanVisibilityWarning: payload.PlanVisibilityWarning,
+        FocusWarning: payload.FocusWarning,
+        Element: compactElement(payload.ElementInfo),
+        PlanCandidatesTotal: payload.PlanCandidatesTotal,
+        PlanCandidatesTruncated: payload.PlanCandidatesTruncated,
+    };
+}
 export function registerOpenExistingPlanForElementLevelTool(server) {
     server.tool("open_existing_plan_for_element_level", "Open the best existing non-template plan view for an element's level, then select and zoom to the element. This does not create a new view.", {
         ...connectionTargetSchema(z),
@@ -17,6 +78,7 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
         fitToScreen: z.boolean().optional().describe("After opening/focusing the plan, run Revit UI ZoomToFit on the active view. Defaults false."),
         verboseCandidates: z.boolean().optional().describe("Return full PlanCandidates arrays. Defaults false; routine responses return only the top candidates."),
         maxPlanCandidates: z.number().int().min(0).max(50).optional().describe("Maximum PlanCandidates returned when verboseCandidates=false. Defaults 3."),
+        responseMode: z.enum(["compact", "full"]).optional().describe("Response shape. compact is the default for successful routine calls; full returns the raw tool result."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Timeout for asynchronous plan activation/focus. Defaults 20000."),
     }, async (args) => {
         try {
@@ -33,10 +95,14 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
                 ...executionOptionsFromArgs(args, "Open existing plan for element level"),
             });
             const payload = response && response.result ? response.result : response;
-            return formatJsonContent(trimPlanCandidatesInPayload(payload, {
+            const trimmedPayload = trimPlanCandidatesInPayload(payload, {
                 verboseCandidates: args.verboseCandidates,
                 maxPlanCandidates: args.maxPlanCandidates ?? 3,
-            }));
+            });
+            if (args.responseMode === "full" || (trimmedPayload && trimmedPayload.Success === false)) {
+                return formatJsonContent(trimmedPayload);
+            }
+            return formatJsonContent(compactPlanResult(trimmedPayload));
         }
         catch (error) {
             return formatJsonContent({

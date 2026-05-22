@@ -62,7 +62,8 @@ custom-code workflows.
   when view/crop/callout visibility must be proven.
 - `open_existing_plan_for_element_level` - choose an existing non-template plan
   for an element's level, or keep the active plan when `planMode=activePlan`,
-  then select and zoom to the element
+  then select and zoom to the element. Successful routine calls return compact
+  output by default; use `responseMode: "full"` for audit/debug output.
 - `focus_elements` - select and zoom to elements in the active or requested
   view without opening a transaction; when model bounding boxes are unavailable
   it reports the Revit UI focus fallback it used; by default it does not allow

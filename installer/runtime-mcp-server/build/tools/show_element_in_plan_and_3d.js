@@ -191,6 +191,7 @@ export function registerShowElementInPlanAnd3DTool(server) {
                 fitToScreen: args.fitToScreen,
                 verboseCandidates: args.verboseCandidates,
                 maxPlanCandidates: args.maxPlanCandidates ?? 3,
+                responseMode: "full",
                 timeoutMs: args.timeoutMs,
                 taskName: "Show element in existing plan",
             }, options));

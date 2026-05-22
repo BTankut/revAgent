@@ -53,7 +53,8 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Added `planCandidateMode` (`none`/`metadata`/`verified`) so broad element
   searches stay fast while verified view visibility remains available for
   focused presentation workflows.
-- Made successful `show_element_in_plan_and_3d` responses compact by default,
+- Made successful plan/focus responses compact by default for
+  `open_existing_plan_for_element_level` and `show_element_in_plan_and_3d`,
   moved read-only probe modifiable state under `apiProbeState`, and made
   parameter schema output prioritize user-facing built-in parameter labels over
   raw Revit enum aliases.
