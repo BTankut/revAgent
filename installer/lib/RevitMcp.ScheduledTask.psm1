@@ -2,13 +2,23 @@ Set-StrictMode -Version Latest
 
 Import-Module (Join-Path $PSScriptRoot "RevitMcp.HiddenLauncher.psm1")
 
+function New-RevitMcpDailyUpdateTrigger {
+    param(
+        [string]$DailyAt = "12:00"
+    )
+
+    $time = [datetime]::Parse($DailyAt)
+    return New-ScheduledTaskTrigger -Daily -At $time
+}
+
 function Repair-RevitMcpHiddenScheduledTaskAction {
     param(
         [string]$Name = "Revit MCP Auto Update",
         [Parameter(Mandatory = $true)]
         [string]$UpdaterPath,
         [Parameter(Mandatory = $true)]
-        [string]$UpdaterConfigPath
+        [string]$UpdaterConfigPath,
+        [string]$DailyAt = "12:00"
     )
 
     if ([string]::IsNullOrWhiteSpace($UpdaterConfigPath) -or
@@ -37,17 +47,21 @@ function Repair-RevitMcpHiddenScheduledTaskAction {
         $currentExecute = if ($currentAction.Count -gt 0) { [string]$currentAction[0].Execute } else { "" }
         $currentExecuteMatches = [string]::Equals($currentExecute, $desiredExecute, [System.StringComparison]::OrdinalIgnoreCase) -or
             [string]::Equals($currentExecute, "wscript.exe", [System.StringComparison]::OrdinalIgnoreCase)
-        if ([string]::Equals($currentArgs, $desiredArgs, [System.StringComparison]::OrdinalIgnoreCase) -and $currentExecuteMatches) {
-            return
+        $actionMatches = [string]::Equals($currentArgs, $desiredArgs, [System.StringComparison]::OrdinalIgnoreCase) -and $currentExecuteMatches
+        $trigger = New-RevitMcpDailyUpdateTrigger -DailyAt $DailyAt
+
+        if (-not $actionMatches) {
+            $action = New-RevitMcpHiddenUpdaterScheduledTaskAction -LauncherPath $launcherPath
+            Set-ScheduledTask -TaskName $Name -Action $action | Out-Null
+            Write-Host "Scheduled task action repaired for hidden background checks: $Name"
         }
 
-        $action = New-RevitMcpHiddenUpdaterScheduledTaskAction -LauncherPath $launcherPath
-        Set-ScheduledTask -TaskName $Name -Action $action | Out-Null
-        Write-Host "Scheduled task action repaired for hidden background checks: $Name"
+        Set-ScheduledTask -TaskName $Name -Trigger $trigger | Out-Null
+        Write-Host "Scheduled task schedule repaired for daily background checks at ${DailyAt}: $Name"
     }
     catch {
-        Write-Warning "Could not repair scheduled task action for hidden background checks: $($_.Exception.Message)"
+        Write-Warning "Could not repair scheduled task for hidden background checks: $($_.Exception.Message)"
     }
 }
 
-Export-ModuleMember -Function Repair-RevitMcpHiddenScheduledTaskAction
+Export-ModuleMember -Function Repair-RevitMcpHiddenScheduledTaskAction, New-RevitMcpDailyUpdateTrigger

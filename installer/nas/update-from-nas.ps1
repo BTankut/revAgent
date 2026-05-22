@@ -1801,13 +1801,15 @@ function Repair-RevitMcpScheduledTaskAction {
     param(
         [string]$Name,
         [string]$UpdaterPath,
-        [string]$UpdaterConfigPath
+        [string]$UpdaterConfigPath,
+        [string]$DailyAt = "12:00"
     )
 
-    Repair-RevitMcpHiddenScheduledTaskAction -Name $Name -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath
+    Repair-RevitMcpHiddenScheduledTaskAction -Name $Name -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath -DailyAt $DailyAt
 }
 
 $config = Import-UpdaterConfig -Path $ConfigPath
+$taskDailyAt = "12:00"
 if ($config) {
     if ([string]::IsNullOrWhiteSpace($ChannelManifestPath) -and $config.channelManifestPath) { $ChannelManifestPath = [string]$config.channelManifestPath }
     if ($config.installRoot) { $InstallRoot = [string]$config.installRoot }
@@ -1821,6 +1823,7 @@ if ($config) {
     if ($config.proxyBypass) { $ProxyBypass = [string]$config.proxyBypass }
     if ($config.codexWorkspaceRoot) { $CodexWorkspaceRoot = [string]$config.codexWorkspaceRoot }
     if ($config.taskName) { $TaskName = [string]$config.taskName }
+    if ($config.dailyAt) { $taskDailyAt = [string]$config.dailyAt }
     if ($config.legacyServerTargets) { $LegacyServerTargets = @($config.legacyServerTargets) }
     if ($config.reportsRoot) { $ReportsRoot = [string]$config.reportsRoot }
     if ($config.skipNpmInstall) { $SkipNpmInstall = $true }
@@ -1874,7 +1877,7 @@ $taskUpdaterPath = Join-Path $WorkRoot "update-from-nas.ps1"
 if (-not (Test-Path -LiteralPath $taskUpdaterPath -PathType Leaf)) {
     $taskUpdaterPath = $PSCommandPath
 }
-Repair-RevitMcpScheduledTaskAction -Name $TaskName -UpdaterPath $taskUpdaterPath -UpdaterConfigPath $ConfigPath
+Repair-RevitMcpScheduledTaskAction -Name $TaskName -UpdaterPath $taskUpdaterPath -UpdaterConfigPath $ConfigPath -DailyAt $taskDailyAt
 
 $channelDir = Split-Path -Parent $ChannelManifestPath
 if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {

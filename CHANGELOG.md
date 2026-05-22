@@ -37,6 +37,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Added updater log retention so workstation install/update log folders are
   pruned automatically to the latest 10 `.log` files, including the current
   active log.
+- Changed workstation automatic update checks to run once daily at 12:00 local
+  time, and made the updater repair older logon/repeated scheduled-task
+  triggers during the next update run.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

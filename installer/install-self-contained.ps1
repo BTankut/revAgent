@@ -381,15 +381,19 @@ function Repair-RevitMcpScheduledTaskAction {
     )
 
     $taskName = "Revit MCP Auto Update"
+    $dailyAt = "12:00"
     try {
         $config = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json
         if ($config.taskName) {
             $taskName = [string]$config.taskName
         }
+        if ($config.dailyAt) {
+            $dailyAt = [string]$config.dailyAt
+        }
     }
     catch {}
 
-    Repair-RevitMcpHiddenScheduledTaskAction -Name $taskName -UpdaterPath $UpdaterPath -UpdaterConfigPath $ConfigPath
+    Repair-RevitMcpHiddenScheduledTaskAction -Name $taskName -UpdaterPath $UpdaterPath -UpdaterConfigPath $ConfigPath -DailyAt $dailyAt
 }
 
 if ($Uninstall -and [string]::IsNullOrWhiteSpace($RevitInstallRoot)) {

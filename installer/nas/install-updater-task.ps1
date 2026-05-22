@@ -4,9 +4,10 @@
 
 .DESCRIPTION
     Copies update-from-nas.ps1 to a local managed folder, writes updater config,
-    and registers a per-user scheduled task. The task reads the NAS channel
-    manifest at logon and on a repeated interval. Revit-loaded payload updates
-    are deferred while Revit is open; non-Revit payload updates may continue.
+    and registers a per-user scheduled task. The task reads the NAS release
+    target once per day at the configured local time. Revit-loaded payload
+    updates are deferred while Revit is open; non-Revit payload updates may
+    continue.
 #>
 
 [CmdletBinding()]
@@ -28,7 +29,7 @@ param(
     [string[]]$LegacyServerTargets = @(),
     [string]$ReportsRoot = "",
     [string]$TaskName = "Revit MCP Auto Update",
-    [string]$DailyAt = "09:00",
+    [string]$DailyAt = "12:00",
     [ValidateRange(5, 1440)]
     [int]$CheckIntervalMinutes = 30,
     [ValidateRange(15, 10080)]
@@ -735,6 +736,7 @@ function Write-UpdaterCommandFiles {
         [string]$UpdaterConfigPath,
         [string]$UpdaterWorkRoot,
         [string]$VersionToolPath = "",
+        [string]$DailyAt = "12:00",
         [int]$CheckIntervalMinutes = 30,
         [switch]$InstallStartupFallback
     )
@@ -771,18 +773,32 @@ function Write-UpdaterCommandFiles {
             "    [string]`$UpdaterPath,",
             "    [Parameter(Mandatory = `$true)]",
             "    [string]`$ConfigPath,",
-            "    [int]`$IntervalMinutes = $CheckIntervalMinutes",
+            "    [string]`$DailyAt = `"$DailyAt`"",
             ")",
             "",
             "`$ErrorActionPreference = `"Continue`"",
-            "`$intervalSeconds = [Math]::Max(300, `$IntervalMinutes * 60)",
+            "function Get-NextRunTime {",
+            "    param([string]`$RunAt)",
+            "    try {",
+            "        `$time = [datetime]::Parse(`$RunAt)",
+            "    }",
+            "    catch {",
+            "        `$time = [datetime]::Parse(`"12:00`")",
+            "    }",
+            "    `$now = Get-Date",
+            "    `$next = Get-Date -Year `$now.Year -Month `$now.Month -Day `$now.Day -Hour `$time.Hour -Minute `$time.Minute -Second 0",
+            "    if (`$next -le `$now) { `$next = `$next.AddDays(1) }",
+            "    return `$next",
+            "}",
             "while (`$true) {",
+            "    `$nextRun = Get-NextRunTime -RunAt `$DailyAt",
+            "    `$sleepSeconds = [Math]::Max(60, [int][Math]::Ceiling((`$nextRun - (Get-Date)).TotalSeconds))",
+            "    Start-Sleep -Seconds `$sleepSeconds",
             "    try {",
             "        & `$UpdaterPath -ConfigPath `$ConfigPath -NotifyUser",
             "    }",
             "    catch {",
             "    }",
-            "    Start-Sleep -Seconds `$intervalSeconds",
             "}"
         )
         $loopScriptLines | Set-Content -LiteralPath $loopScriptPath -Encoding ASCII
@@ -796,9 +812,9 @@ function Write-UpdaterCommandFiles {
         Write-HiddenPowerShellLauncher `
             -LauncherPath $startupCommandPath `
             -ScriptPath $loopScriptPath `
-            -ScriptArguments @("-UpdaterPath", $UpdaterPath, "-ConfigPath", $UpdaterConfigPath, "-IntervalMinutes", [string]$CheckIntervalMinutes)
+            -ScriptArguments @("-UpdaterPath", $UpdaterPath, "-ConfigPath", $UpdaterConfigPath, "-DailyAt", [string]$DailyAt)
         Write-Host "Startup fallback: $startupCommandPath" -ForegroundColor Yellow
-        Write-Host "Startup fallback interval: every $CheckIntervalMinutes minutes" -ForegroundColor Yellow
+        Write-Host "Startup fallback schedule: daily at $DailyAt" -ForegroundColor Yellow
     }
 
     return $manualCommandPath
@@ -887,6 +903,7 @@ $config = [ordered]@{
     skipCodexMcpRegistration = [bool]$SkipCodexMcpRegistration
     skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
     skipProxySetup = [bool]$SkipProxySetup
+    dailyAt = $DailyAt
     checkIntervalMinutes = $CheckIntervalMinutes
     taskName = $TaskName
     notifyUser = $true
@@ -896,7 +913,7 @@ $config = [ordered]@{
     installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
 }
 Write-JsonFile -Path $configPath -Value $config
-$manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -CheckIntervalMinutes $CheckIntervalMinutes
+$manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -DailyAt $DailyAt -CheckIntervalMinutes $CheckIntervalMinutes
 $versionCommandPath = Join-Path $WorkRoot "Show-Revit-MCP-Version.cmd"
 Repair-RevitMcpUpdaterPermissions
 
@@ -912,29 +929,23 @@ if ($NoScheduledTask) {
     return
 }
 
-$time = [datetime]::Parse($DailyAt)
 $hiddenLauncherPath = Get-HiddenUpdaterLauncherPath -UpdaterConfigPath $configPath
 Write-HiddenPowerShellLauncher -LauncherPath $hiddenLauncherPath -ScriptPath $localUpdater -ScriptArguments @("-ConfigPath", $configPath, "-NotifyUser") -WaitForExit
 $action = New-HiddenUpdaterScheduledTaskAction -LauncherPath $hiddenLauncherPath
-$dailyTrigger = New-ScheduledTaskTrigger -Daily -At $time
-$repetitionTemplate = New-ScheduledTaskTrigger -Once -At $time -RepetitionInterval (New-TimeSpan -Minutes $CheckIntervalMinutes) -RepetitionDuration (New-TimeSpan -Days 1)
-$dailyTrigger.Repetition = $repetitionTemplate.Repetition
-$triggers = @(
-    (New-ScheduledTaskTrigger -AtLogOn),
-    $dailyTrigger
-)
+$dailyTrigger = New-RevitMcpDailyUpdateTrigger -DailyAt $DailyAt
+$triggers = @($dailyTrigger)
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
 
 try {
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Description "Checks the NAS Revit MCP channel at logon and every $CheckIntervalMinutes minutes. Revit-loaded payload updates are deferred while Revit is open." -Force | Out-Null
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Description "Checks the revAgent release target daily at $DailyAt. Revit-loaded payload updates are deferred while Revit is open." -Force | Out-Null
     Write-Host "Task registered : $TaskName" -ForegroundColor Green
-    Write-Host "Task interval   : every $CheckIntervalMinutes minutes" -ForegroundColor Green
+    Write-Host "Task schedule   : daily at $DailyAt" -ForegroundColor Green
 }
 catch {
     Write-Warning "Scheduled task could not be registered: $($_.Exception.Message)"
-    Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -CheckIntervalMinutes $CheckIntervalMinutes -InstallStartupFallback | Out-Null
+    Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -DailyAt $DailyAt -CheckIntervalMinutes $CheckIntervalMinutes -InstallStartupFallback | Out-Null
 }
 
 Write-Host "Updater installed: $localUpdater" -ForegroundColor Green
