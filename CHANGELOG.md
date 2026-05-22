@@ -50,6 +50,13 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Restored live installer terminal output in the GUI so install/update progress
   streams into the window again instead of being replaced by a generic running
   message.
+- Added `planCandidateMode` (`none`/`metadata`/`verified`) so broad element
+  searches stay fast while verified view visibility remains available for
+  focused presentation workflows.
+- Made successful `show_element_in_plan_and_3d` responses compact by default,
+  moved read-only probe modifiable state under `apiProbeState`, and made
+  parameter schema output prioritize user-facing built-in parameter labels over
+  raw Revit enum aliases.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

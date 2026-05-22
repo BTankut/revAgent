@@ -104,9 +104,11 @@ try
         document = new {
             title = document.Title,
             isWorkshared = document.IsWorkshared,
-            isReadOnly = document.IsReadOnly,
+            isReadOnly = document.IsReadOnly
+        },
+        apiProbeState = new {
             isModifiable = document.IsModifiable,
-            isModifiableNote = "Revit API state sampled during this read-only tool probe. Use get_ui_state for the current idle UI document state."
+            note = "Revit API state sampled during this read-only tool probe. Use get_ui_state for the current idle UI document state."
         },
         activeView = new {
             id = activeView.Id.IntegerValue,

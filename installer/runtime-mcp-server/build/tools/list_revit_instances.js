@@ -16,9 +16,11 @@ try
             title = document.Title,
             pathName = document.PathName,
             isWorkshared = document.IsWorkshared,
-            isReadOnly = document.IsReadOnly,
+            isReadOnly = document.IsReadOnly
+        },
+        apiProbeState = new {
             isModifiable = document.IsModifiable,
-            isModifiableNote = "Revit API state sampled during this read-only instance probe. Use get_ui_state on the target instance for idle UI document state."
+            note = "Revit API state sampled during this read-only instance probe. Use get_ui_state on the target instance for idle UI document state."
         },
         activeView = new {
             id = activeView.Id.IntegerValue,

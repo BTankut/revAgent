@@ -82,12 +82,12 @@ namespace RevitMCPViewCommandSet.Commands.View
                 ElementDiscoveryHelpers.ResolveElementLevel(document, element, out levelId, out levelName);
                 if (levelId == null || levelId == ElementId.InvalidElementId)
                 {
-                    _elementInfo = ElementDiscoveryHelpers.BuildElementSearchItem(document, uiDocument, element, false, _planNameContains);
+                    _elementInfo = ElementDiscoveryHelpers.BuildElementSearchItem(document, uiDocument, element, false, _planNameContains, "none");
                     Complete(BuildFailure(document, uiDocument, "Element level could not be resolved."));
                     return;
                 }
 
-                _elementInfo = ElementDiscoveryHelpers.BuildElementSearchItem(document, uiDocument, element, false, _planNameContains);
+                _elementInfo = ElementDiscoveryHelpers.BuildElementSearchItem(document, uiDocument, element, false, _planNameContains, "none");
                 _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical, element);
 
                 if (UseActivePlanOnly())

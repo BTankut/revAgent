@@ -13,6 +13,93 @@ function buildDefault3DViewName(elementId, element) {
         : "Element";
     return `3D - ${label} ${elementId}`.replace(/[{}[\];<>?`~]/g, "").slice(0, 90);
 }
+function compactElement(element) {
+    if (!element || typeof element !== "object")
+        return element;
+    return {
+        Id: element.Id,
+        Name: element.Name,
+        Category: element.Category,
+        FamilyName: element.FamilyName,
+        TypeName: element.TypeName,
+        LevelId: element.LevelId,
+        LevelName: element.LevelName,
+        Mark: element.Mark,
+        MatchScore: element.MatchScore,
+        MatchConfidence: element.MatchConfidence,
+    };
+}
+function compactView(view) {
+    if (!view || typeof view !== "object")
+        return view;
+    return {
+        Id: view.Id ?? view.id,
+        Name: view.Name ?? view.name,
+        ViewType: view.ViewType ?? view.viewType,
+        Scale: view.Scale ?? view.scale,
+    };
+}
+function summarizeFind(findResult) {
+    if (!findResult || typeof findResult !== "object")
+        return findResult;
+    return {
+        Success: findResult.Success,
+        Count: findResult.Count,
+        Truncated: findResult.Truncated,
+        Ambiguous: findResult.Ambiguous,
+        TopScore: findResult.TopScore,
+        TopConfidence: findResult.TopConfidence,
+        TopScoreTiedCount: findResult.TopScoreTiedCount,
+        PlanCandidateMode: findResult.PlanCandidateMode,
+        SelectionHint: findResult.SelectionHint,
+    };
+}
+function summarizePlan(planResult) {
+    if (!planResult || typeof planResult !== "object")
+        return planResult;
+    return {
+        Success: planResult.Success,
+        Message: planResult.Message,
+        PlanMode: planResult.PlanMode,
+        PlanOpenMode: planResult.PlanOpenMode,
+        PlanOpenNote: planResult.PlanOpenNote,
+        SelectedPlan: compactView(planResult.SelectedPlan),
+        TargetView: compactView(planResult.TargetView),
+        ActiveView: compactView(planResult.ActiveView),
+        ActiveViewChanged: planResult.ActiveViewChanged,
+        ActivePlanMatchesElementLevel: planResult.ActivePlanMatchesElementLevel,
+        PlanSelectionReason: planResult.PlanSelectionReason,
+        ZoomMethod: planResult.ZoomMethod,
+        Selected: planResult.Selected,
+        Zoomed: planResult.Zoomed,
+        FitToScreen: planResult.FitToScreen,
+        FitToScreenWarning: planResult.FitToScreenWarning,
+        PlanVisibilityWarning: planResult.PlanVisibilityWarning,
+        FocusWarning: planResult.FocusWarning,
+        PlanCandidatesTotal: planResult.PlanCandidatesTotal,
+        PlanCandidatesTruncated: planResult.PlanCandidatesTruncated,
+    };
+}
+function summarizeThreeD(threeDResult) {
+    if (!threeDResult || typeof threeDResult !== "object")
+        return threeDResult;
+    return {
+        Success: threeDResult.Success,
+        Message: threeDResult.Message,
+        TargetView: compactView(threeDResult.TargetView),
+        ActiveView: compactView(threeDResult.ActiveView),
+        CreatedView: threeDResult.CreatedView,
+        ReusedView: threeDResult.ReusedView,
+        SectionBoxApplied: threeDResult.SectionBoxApplied,
+        SectionBoxState: threeDResult.SectionBoxState,
+        CameraOrientation: threeDResult.CameraOrientation,
+        CameraApplied: threeDResult.CameraApplied,
+        CameraWarning: threeDResult.CameraWarning,
+        ZoomMethod: threeDResult.ZoomMethod,
+        Selected: threeDResult.Selected,
+        Zoomed: threeDResult.Zoomed,
+    };
+}
 export function registerShowElementInPlanAnd3DTool(server) {
     server.tool("show_element_in_plan_and_3d", "Safely find or use one Revit element, show it in an existing plan, then optionally create/reuse a focused 3D view. Ambiguous search results are rejected by default for large-project safety.", {
         ...connectionTargetSchema(z),
@@ -28,6 +115,7 @@ export function registerShowElementInPlanAnd3DTool(server) {
         includeSearchPlanCandidates: z.boolean().optional().describe("Include plan candidates during the initial search. Defaults false; the plan-open step computes focused candidates separately."),
         verboseCandidates: z.boolean().optional().describe("Return full PlanCandidates arrays from nested steps. Defaults false."),
         maxPlanCandidates: z.number().int().min(0).max(50).optional().describe("Maximum nested PlanCandidates returned when verboseCandidates=false. Defaults 3."),
+        responseMode: z.enum(["compact", "full"]).optional().describe("Response shape. compact is the default for successful routine calls; full returns nested raw tool results."),
         select: z.boolean().optional().describe("Select the element in plan/3D. Defaults true."),
         zoom: z.boolean().optional().describe("Show/zoom the element in plan/3D. Defaults true."),
         fitToScreen: z.boolean().optional().describe("Run Revit UI ZoomToFit after focusing views. Defaults false."),
@@ -137,7 +225,7 @@ export function registerShowElementInPlanAnd3DTool(server) {
                 }, options));
             }
             const threeDSuccess = args.create3d === false || (threeDResult && threeDResult.Success !== false);
-            return formatJsonContent(trimPlanCandidatesInPayload({
+            const fullPayload = trimPlanCandidatesInPayload({
                 Success: threeDSuccess,
                 Action: "show_element_in_plan_and_3d",
                 Message: args.create3d === false
@@ -153,7 +241,21 @@ export function registerShowElementInPlanAnd3DTool(server) {
             }, {
                 verboseCandidates: args.verboseCandidates,
                 maxPlanCandidates: args.maxPlanCandidates ?? 3,
-            }));
+            });
+            if (args.responseMode === "full" || !threeDSuccess) {
+                return formatJsonContent(fullPayload);
+            }
+            return formatJsonContent({
+                Success: fullPayload.Success,
+                Action: fullPayload.Action,
+                Message: fullPayload.Message,
+                ResponseMode: "compact",
+                ChosenElementId: chosenElementId,
+                ChosenElement: compactElement(chosenElement),
+                FindSummary: summarizeFind(findResult),
+                PlanSummary: summarizePlan(planResult),
+                ThreeDSummary: summarizeThreeD(threeDResult),
+            });
         }
         catch (error) {
             return formatJsonContent({

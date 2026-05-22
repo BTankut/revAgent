@@ -40,6 +40,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         public string MatchConfidence { get; set; }
         public string MatchReason { get; set; }
         public List<string> MatchFields { get; set; }
+        public string PlanCandidateMode { get; set; }
         public List<PlanCandidateSummary> PlanCandidates { get; set; }
         public int? PlanCandidatesTotal { get; set; }
         public bool PlanCandidatesTruncated { get; set; }
@@ -72,6 +73,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             Element element,
             bool includePlanCandidates,
             string planNameContains,
+            string planCandidateMode,
             SearchMatchSummary matchSummary = null)
         {
             if (element == null)
@@ -86,7 +88,8 @@ namespace RevitMCPViewCommandSet.Commands.View
             List<PlanCandidateSummary> planCandidates = null;
             if (includePlanCandidates && levelId != null && levelId != ElementId.InvalidElementId)
             {
-                planCandidates = FindPlanCandidates(document, uiDocument, levelId, planNameContains, true, element);
+                bool verifyVisibility = string.Equals(planCandidateMode, "verified", StringComparison.OrdinalIgnoreCase);
+                planCandidates = FindPlanCandidates(document, uiDocument, levelId, planNameContains, true, verifyVisibility ? element : null);
             }
 
             return new ElementSearchItem
@@ -107,6 +110,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                 MatchConfidence = matchSummary != null ? matchSummary.Confidence : "",
                 MatchReason = matchSummary != null ? matchSummary.Reason : "",
                 MatchFields = matchSummary != null ? matchSummary.Fields : new List<string>(),
+                PlanCandidateMode = includePlanCandidates ? planCandidateMode : "none",
                 PlanCandidates = planCandidates
             };
         }

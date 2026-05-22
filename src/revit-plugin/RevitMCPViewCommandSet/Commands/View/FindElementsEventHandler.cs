@@ -24,6 +24,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         public string TopConfidence { get; set; }
         public int TopScoreTiedCount { get; set; }
         public string SelectionHint { get; set; }
+        public string PlanCandidateMode { get; set; }
         public List<ElementSearchItem> Elements { get; set; }
     }
 
@@ -33,6 +34,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         private string _query;
         private List<string> _categoryNames = new List<string>();
         private bool _includePlanCandidates;
+        private string _planCandidateMode;
         private string _planNameContains;
         private int _limit;
         private int _maxPlanCandidates;
@@ -44,6 +46,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             string query,
             List<string> categoryNames,
             bool includePlanCandidates,
+            string planCandidateMode,
             string planNameContains,
             int limit,
             int maxPlanCandidates)
@@ -51,6 +54,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             _query = query ?? "";
             _categoryNames = categoryNames ?? new List<string>();
             _includePlanCandidates = includePlanCandidates;
+            _planCandidateMode = string.IsNullOrWhiteSpace(planCandidateMode) ? "none" : planCandidateMode;
             _planNameContains = planNameContains ?? "";
             _limit = limit;
             _maxPlanCandidates = Math.Max(0, Math.Min(25, maxPlanCandidates));
@@ -112,6 +116,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                         m.Item1,
                         _includePlanCandidates,
                         _planNameContains,
+                        _planCandidateMode,
                         m.Item2))
                     .ToList();
 
@@ -142,6 +147,7 @@ namespace RevitMCPViewCommandSet.Commands.View
                     TopConfidence = topConfidence,
                     TopScoreTiedCount = tiedCount,
                     SelectionHint = selectionHint,
+                    PlanCandidateMode = _planCandidateMode,
                     Elements = items
                 });
             }

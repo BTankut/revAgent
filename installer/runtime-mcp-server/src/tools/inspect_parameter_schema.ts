@@ -109,9 +109,10 @@ object ParameterSchema(Parameter p, string source)
     return new {
         source = source,
         name = parameterName,
-        builtInParameter = builtIn,
-        builtInParameterId = builtInParameterId,
         displayBuiltInParameter = displayBuiltInParameter,
+        builtInParameter = displayBuiltInParameter,
+        builtInParameterId = builtInParameterId,
+        rawBuiltInParameterAlias = builtIn,
         builtInParameterNote = builtInParameterNote,
         storageType = p.StorageType.ToString(),
         hasValue = p.HasValue,
@@ -206,7 +207,7 @@ catch (Exception ex)
 }
 
 export function registerInspectParameterSchemaTool(server) {
-    server.tool("inspect_parameter_schema", "Read-only parameter schema inspection for selected ids or a category sample: BIP, storage type, unit type, shared/read-only flags, raw and display values.", {
+    server.tool("inspect_parameter_schema", "Read-only parameter schema inspection for selected ids or a category sample: user-facing BIP display label/id, raw enum alias, storage type, unit type, shared/read-only flags, raw and display values.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         elementIds: z.array(z.union([z.number(), z.string()])).optional().describe("Element ids to inspect."),

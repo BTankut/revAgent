@@ -57,8 +57,9 @@ custom-code workflows.
   summaries, section box flags, and document writable state
 - `find_elements` - find elements by category plus text across id, name,
   family, type, mark, comments, and return match confidence. Existing plan
-  candidates are opt-in through `includePlanCandidates=true` because view
-  visibility checks are intentionally more expensive.
+  candidates are opt-in through `planCandidateMode`; use `none` for fastest
+  discovery, `metadata` for quick same-level view ranking, and `verified` only
+  when view/crop/callout visibility must be proven.
 - `open_existing_plan_for_element_level` - choose an existing non-template plan
   for an element's level, or keep the active plan when `planMode=activePlan`,
   then select and zoom to the element
@@ -82,15 +83,17 @@ custom-code workflows.
   not create or modify ducts, pipes, terminals, fittings, or other physical MEP
   model elements.
 - `show_element_in_plan_and_3d` - wrapper workflow that safely finds or uses one
-  element, shows it in an existing plan, then optionally opens a focused 3D view
+  element, shows it in an existing plan, then optionally opens a focused 3D
+  view. Successful routine calls return a compact summary by default; use
+  `responseMode: "full"` for audit/debug output.
 - `smart_focus_elements` - wrapper workflow that tries active/requested view
   focus without modal search, then optionally falls back to an existing
   same-level plan and 3D view
 - `inspect_elements` - targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
 - `inspect_parameter_schema` - parameter schema for element ids or category
-  samples: BIP name/id, alias note, storage type, unit, shared/read-only,
-  raw/display values.
+  samples: user-facing BIP display name/id first, raw enum alias as diagnostic
+  data, alias note, storage type, unit, shared/read-only, raw/display values.
   Use `parameterNameMatchMode: "contains"` for broad discovery and
   `parameterNameMatchMode: "exact"` for write-preflight.
 
@@ -141,6 +144,20 @@ Default workflow for every Revit runtime task:
    rejects `transactionMode: "auto"` and always executes with
    `transactionMode: "none"`. Use raw `send_code_to_revit` only when the user
    explicitly asks for broad dynamic execution or a confirmed write.
+
+Plan candidate mode rules:
+
+- For broad element discovery, use `find_elements` with
+  `planCandidateMode: "none"` or omit it.
+- If the user only needs likely plan names, use `planCandidateMode: "metadata"`.
+  This ranks same-level plans quickly but does not prove crop/callout
+  visibility.
+- If the user says "show", "open the plan", "focus", "bring to screen", or a
+  callout/crop may matter, use a verified workflow: `open_existing_plan_for_element_level`,
+  `show_element_in_plan_and_3d`, or `find_elements` with
+  `planCandidateMode: "verified"` for a narrow 1-3 element set.
+- Do not use verified candidates for broad searches in large projects unless
+  the user explicitly needs view visibility proof.
 
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known - e.g. the bundled patterns under

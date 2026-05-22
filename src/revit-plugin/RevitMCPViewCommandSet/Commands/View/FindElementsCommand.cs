@@ -28,6 +28,17 @@ namespace RevitMCPViewCommandSet.Commands.View
             string query = parameters != null && parameters["query"] != null ? parameters["query"].Value<string>() : "";
             List<string> categoryNames = ParseStringArray(parameters, "categoryNames");
             bool includePlanCandidates = parameters != null && parameters["includePlanCandidates"] != null && parameters["includePlanCandidates"].Value<bool>();
+            string planCandidateMode = parameters != null && parameters["planCandidateMode"] != null ? parameters["planCandidateMode"].Value<string>() : "";
+            if (string.IsNullOrWhiteSpace(planCandidateMode))
+            {
+                planCandidateMode = includePlanCandidates ? "verified" : "none";
+            }
+            planCandidateMode = planCandidateMode.Trim().ToLowerInvariant();
+            if (planCandidateMode != "none" && planCandidateMode != "metadata" && planCandidateMode != "verified")
+            {
+                planCandidateMode = includePlanCandidates ? "verified" : "none";
+            }
+            includePlanCandidates = planCandidateMode != "none";
             int maxPlanCandidates = parameters != null && parameters["maxPlanCandidates"] != null ? parameters["maxPlanCandidates"].Value<int>() : 3;
             if (maxPlanCandidates < 0) maxPlanCandidates = 0;
             if (maxPlanCandidates > 25) maxPlanCandidates = 25;
@@ -39,7 +50,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             if (timeoutMs < 1000) timeoutMs = 1000;
             if (timeoutMs > 120000) timeoutMs = 120000;
 
-            _handler.SetRequest(query, categoryNames, includePlanCandidates, planNameContains, limit, maxPlanCandidates);
+            _handler.SetRequest(query, categoryNames, includePlanCandidates, planCandidateMode, planNameContains, limit, maxPlanCandidates);
             if (RaiseAndWaitForCompletion(timeoutMs))
             {
                 return _handler.ResultInfo;
