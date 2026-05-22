@@ -35,9 +35,8 @@ only the bare names appear, so the rules stay host-agnostic.
 **Runtime server (`revit-mcp`)** — dynamic execution plus read-only context:
 
 This runtime surface is intentionally reusable: live Revit execution, model
-context, view/focus helpers, parameter inspection, and image export. It does
-not include bundled task-specific duct/pipe sizing, auto-routing, hydronic,
-sanitary, fire-piping, or other production engineering package tools.
+context, view/focus helpers, parameter inspection, visual QA exports, and safe
+custom-code workflows.
 
 - `list_revit_instances` — discover reachable Revit MCP instances and ports
 - `get_revit_mcp_status` — read active/recent task status without waiting

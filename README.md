@@ -528,7 +528,9 @@ The required docs server is separate and exposes its own API lookup tools:
 - `list_namespace`
 - `resolve_api_symbols_bulk`
 
-There are no narrow task-specific static runtime tools or bundled MEP sizing/routing production packages in the bundled distribution beyond these reusable UI/context/image primitives.
+Together, these tools define the current production runtime surface: live Revit
+execution, session/context discovery, view navigation, focused visual QA,
+parameter inspection, and safe custom-code workflows.
 
 ## Why `send_code_to_revit` stays primary
 

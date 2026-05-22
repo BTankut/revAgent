@@ -83,11 +83,10 @@ Pratik kullanim:
 ## Current Runtime Surface
 
 Bu dagitimdaki `revit-mcp` runtime yuzeyi tekrar kullanilabilir Revit erisim,
-model context, view/focus, parameter inspection ve image export araclarindan
-olusur. Bu dagitimda hazir duct/pipe sizing, auto-routing, hydronic, sanitary,
-fire-piping veya benzeri task-specific uretim muhendisligi paketleri yoktur.
-Bu tur hesap veya tasarim isleri gerekiyorsa model verisi dogrulanir ve is
-ayri, denetlenebilir bir workflow veya ayri repo/paket uzerinden ele alinir.
+model context, view/focus, parameter inspection, image export ve guvenli custom
+code workflow araclarindan olusur. Bu yuzey, model sorgulama, gorsel QA,
+view navigasyonu, parametre inceleme ve kontrollu Revit API operasyonlari icin
+production runtime katmanidir.
 
 ## File And Deployment Discipline
 

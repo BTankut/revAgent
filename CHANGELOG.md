@@ -18,9 +18,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Restored the real `src/revit-plugin/RevitMCPCommandSet` source layout and
   removed the unused `SampleCommandSet` source tree to keep add-in source
   aligned with the installed command payload.
-- Removed deployment-facing references to the experimental MEP engineering
-  packages. This release candidate does not include bundled duct/pipe sizing,
-  auto-routing, hydronic, sanitary/rainwater, or fire-piping production tools.
+- Removed stale deployment-facing references from the experimental MEP
+  engineering branch work so production docs describe the current reusable
+  runtime surface only.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 
