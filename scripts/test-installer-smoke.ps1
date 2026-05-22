@@ -151,7 +151,7 @@ try {
     foreach ($relativePath in @(
             "src\revit-plugin\revit-mcp-plugin.sln",
             "src\revit-plugin\revit-mcp-plugin\revit-mcp-plugin.csproj",
-            "src\revit-plugin\SampleCommandSet\SampleCommandSet.csproj"
+            "src\revit-plugin\RevitMCPCommandSet\RevitMCPCommandSet.csproj"
         )) {
         $projectText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot $relativePath)
         Assert-True ($projectText -notmatch $legacyRevitConfigPattern) "$relativePath still contains legacy Revit 2020/2021 build configuration."
