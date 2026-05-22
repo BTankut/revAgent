@@ -40,15 +40,33 @@
                            FontSize="17"
                            FontWeight="SemiBold"
                            Text="revAgent is working"/>
-                <TextBlock x:Name="VersionText"
-                           Grid.Column="1"
-                           Margin="12,2,0,0"
-                           HorizontalAlignment="Right"
-                           VerticalAlignment="Top"
-                           FontFamily="Segoe UI"
-                           FontSize="11"
-                           Foreground="#FF666666"
-                           Text="v----"/>
+                <StackPanel Grid.Column="1"
+                            Margin="12,0,0,0"
+                            Width="170"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Top"
+                            TextBlock.TextAlignment="Right">
+                    <TextBlock x:Name="VersionText"
+                               FontFamily="Segoe UI"
+                               FontSize="11"
+                               Foreground="#FF555555"
+                               TextTrimming="CharacterEllipsis"
+                               Text="Build"/>
+                    <TextBlock x:Name="InstalledStatusText"
+                               Margin="0,1,0,0"
+                               FontFamily="Segoe UI"
+                               FontSize="9.5"
+                               Foreground="#FF777777"
+                               TextTrimming="CharacterEllipsis"
+                               Text="Updated"/>
+                    <TextBlock x:Name="StableStatusText"
+                               Margin="0,1,0,0"
+                               FontFamily="Segoe UI"
+                               FontSize="9.5"
+                               Foreground="#FF777777"
+                               TextTrimming="CharacterEllipsis"
+                               Text="Stable"/>
+                </StackPanel>
             </Grid>
 
             <TextBlock Grid.Row="1"

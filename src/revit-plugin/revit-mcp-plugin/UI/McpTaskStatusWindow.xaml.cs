@@ -260,8 +260,20 @@ namespace revit_mcp_plugin.UI
         private void ApplyVersionInfo()
         {
             McpVersionInfo version = McpVersionInfo.Read();
-            VersionText.Text = "v" + version.ShortVersion;
-            VersionText.ToolTip = "revAgent version: " + version.FullVersion;
+            VersionText.Text = version.BuildDisplay;
+            InstalledStatusText.Text = version.FormatInstalledLine();
+            InstalledStatusText.Visibility = string.IsNullOrWhiteSpace(InstalledStatusText.Text)
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            StableStatusText.Text = version.FormatStableLine();
+            StableStatusText.Visibility = string.IsNullOrWhiteSpace(StableStatusText.Text)
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+
+            string tooltip = version.FormatToolTip();
+            VersionText.ToolTip = tooltip;
+            InstalledStatusText.ToolTip = tooltip;
+            StableStatusText.ToolTip = tooltip;
         }
 
         private void UpdateElapsedText(string label = "Elapsed")
