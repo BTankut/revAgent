@@ -15,6 +15,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Updated `README.md`, `SKILL.md`, and `AGENTS.md` to describe the current
   reusable runtime surface only: live Revit execution, context/view/focus,
   parameter inspection, and image export.
+- Restored the real `src/revit-plugin/RevitMCPCommandSet` source layout and
+  removed the unused `SampleCommandSet` source tree to keep add-in source
+  aligned with the installed command payload.
 - Removed deployment-facing references to the experimental MEP engineering
   packages. This release candidate does not include bundled duct/pipe sizing,
   auto-routing, hydronic, sanitary/rainwater, or fire-piping production tools.

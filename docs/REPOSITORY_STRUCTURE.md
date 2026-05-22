@@ -29,8 +29,8 @@ package.
 |       |-- README.md
 |       |-- revit-mcp-plugin.sln
 |       |-- revit-mcp-plugin/
+|       |-- RevitMCPCommandSet/
 |       |-- RevitMCPViewCommandSet/
-|       `-- SampleCommandSet/
 `-- installer/
     |-- INSTALLATION.md
     |-- install-self-contained.ps1
@@ -49,18 +49,31 @@ The main add-in host is `src/revit-plugin/revit-mcp-plugin`. UI view tools are
 implemented as the separate
 `src/revit-plugin/RevitMCPViewCommandSet` project so the dynamic
 `send_code_to_revit` command payload stays isolated. This command set owns view
-activation/close, element focus, and 3D section box behavior. `SampleCommandSet`
-is legacy sample source and is not part of the deployed production command set.
+activation/close, element focus, and 3D section box behavior.
+
+The dynamic execution and low-level context command source lives in
+`src/revit-plugin/RevitMCPCommandSet`. `SampleCommandSet` is intentionally not
+kept in this repository because it is not used by the installed production
+payload and causes source-layout confusion.
 
 `installer/revit-plugin` is install payload. Production installers copy from this
 folder into `C:\ProgramData\DPE\RevitMCP`. Do not edit the binary payload by
-hand. Build the source and refresh the payload binaries with:
+hand. Build the host/view source and refresh those payload binaries with:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -RevitVersion 2022
 ```
 
 Then commit both the source change and the refreshed payload binaries.
+
+When `src/revit-plugin/RevitMCPCommandSet` changes, validate it explicitly:
+
+```powershell
+dotnet build .\src\revit-plugin\RevitMCPCommandSet\RevitMCPCommandSet.csproj -c "Release R22" /p:RevitMcpDeployCommandSet=false
+```
+
+The stable dynamic command payload under `installer/command-payload` is not
+refreshed by default; replacing it is an explicit release task.
 
 `installer/runtime-mcp-server/src` and `installer/revit-api-docs-mcp/src` are
 the TypeScript MCP source trees. Their `build/` folders remain the runtime
