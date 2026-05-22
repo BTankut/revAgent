@@ -2,7 +2,7 @@
 
 All notable Revit MCP workstation deployment changes are tracked here.
 
-## 2026.05.22.1038-1b2d44f - main, next stable candidate
+## 2026-05-22 - main, next stable candidate
 
 - Rewrote `main` back to the deployed `75128349` baseline and reapplied only
   the Revit image export feature line, leaving the bundled runtime at 21 tools.
@@ -21,8 +21,8 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 
-Status: prepared on `main`; publish to NAS `stable` separately after local
-release validation.
+Status: prepared on `main`; the exact NAS package version is generated during
+the separate `stable` publish step after local release validation.
 
 ## 2026.05.13.1635-75128349
 
