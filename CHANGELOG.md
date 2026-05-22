@@ -2,7 +2,29 @@
 
 All notable Revit MCP workstation deployment changes are tracked here.
 
-## Unreleased
+## 2026.05.22.1038-1b2d44f - main, next stable candidate
+
+- Rewrote `main` back to the deployed `75128349` baseline and reapplied only
+  the Revit image export feature line, leaving the bundled runtime at 21 tools.
+- Added `export_revit_view_image` for read-only active/requested view image
+  export and `export_revit_coordination_image` for focused visual QA exports
+  through a reusable review view.
+- Tuned image export guidance for LLM review: full-plan exports should use
+  6000-8000 px / 300 DPI, while technical text/detail review should use a
+  zoomed `visible_region`.
+- Updated `README.md`, `SKILL.md`, and `AGENTS.md` to describe the current
+  reusable runtime surface only: live Revit execution, context/view/focus,
+  parameter inspection, and image export.
+- Removed deployment-facing references to the experimental MEP engineering
+  packages. This release candidate does not include bundled duct/pipe sizing,
+  auto-routing, hydronic, sanitary/rainwater, or fire-piping production tools.
+- Cleaned local and remote branch/worktree state so office development resumes
+  from a single `main` history.
+
+Status: prepared on `main`; publish to NAS `stable` separately after local
+release validation.
+
+## 2026.05.13.1635-75128349
 
 - Quoted the bundled Node.js MSI path in the updater's `msiexec` fallback so NAS deployment paths containing spaces, such as user/share folders, do not fail with MSI exit code 1639.
 - Clarified `show-installed-version.ps1` output when the NAS channel has advanced after the last updater run, so stale "Already up to date" report messages are marked as previous-run context and the manual update path is shown as the next step.

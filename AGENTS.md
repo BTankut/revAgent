@@ -80,6 +80,15 @@ Pratik kullanim:
 5. Gorsel export araclari da Revit MCP hard rule kapsamindadir; status preflight
    olmadan ve paralel calistirilmaz.
 
+## Current Runtime Surface
+
+Bu dagitimdaki `revit-mcp` runtime yuzeyi tekrar kullanilabilir Revit erisim,
+model context, view/focus, parameter inspection ve image export araclarindan
+olusur. Bu dagitimda hazir duct/pipe sizing, auto-routing, hydronic, sanitary,
+fire-piping veya benzeri task-specific uretim muhendisligi paketleri yoktur.
+Bu tur hesap veya tasarim isleri gerekiyorsa model verisi dogrulanir ve is
+ayri, denetlenebilir bir workflow veya ayri repo/paket uzerinden ele alinir.
+
 ## File And Deployment Discipline
 
 - Ana uygulama veya model dosyalari kullanici istemedikce geri alinmaz.
