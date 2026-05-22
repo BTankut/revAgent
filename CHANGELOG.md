@@ -58,6 +58,12 @@ All notable Revit MCP workstation deployment changes are tracked here.
   moved read-only probe modifiable state under `apiProbeState`, and made
   parameter schema output prioritize user-facing built-in parameter labels over
   raw Revit enum aliases.
+- Added workstation updater npm dependency fingerprint checks and a managed
+  local npm dependency cache so runtime/docs `npm install` is skipped when
+  installed or cached `node_modules` already matches the current lockfile.
+- Optimized `open_existing_plan_for_element_level` so direct calls return early
+  when the active plan already matches the element level and requested plan
+  name, avoiding the expensive verified plan-candidate scan.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

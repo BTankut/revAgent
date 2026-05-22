@@ -1061,6 +1061,219 @@ function Ensure-UpdateDependencies {
     }
 }
 
+function Get-NpmDependencyFingerprint {
+    param([string]$WorkingDirectory)
+
+    foreach ($relativePath in @("package-lock.json", "npm-shrinkwrap.json", "package.json")) {
+        $candidate = Join-Path $WorkingDirectory $relativePath
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return [pscustomobject][ordered]@{
+                path = $relativePath
+                sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $candidate).Hash
+            }
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        path = ""
+        sha256 = ""
+    }
+}
+
+function Get-NpmDependencyMarkerPath {
+    param([string]$WorkingDirectory)
+
+    return Join-Path $WorkingDirectory ".revagent-npm-dependencies.json"
+}
+
+function Get-NpmPackageCacheName {
+    param([string]$WorkingDirectory)
+
+    $packageJsonPath = Join-Path $WorkingDirectory "package.json"
+    $name = ""
+    if (Test-Path -LiteralPath $packageJsonPath -PathType Leaf) {
+        try {
+            $packageJson = Get-Content -Raw -LiteralPath $packageJsonPath | ConvertFrom-Json
+            $name = [string]$packageJson.name
+        }
+        catch {
+            $name = ""
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($name)) {
+        $name = Split-Path -Leaf $WorkingDirectory
+    }
+
+    $safeName = ($name -replace '[^A-Za-z0-9._-]', '_').Trim("_")
+    if ([string]::IsNullOrWhiteSpace($safeName)) {
+        return "package"
+    }
+
+    return $safeName
+}
+
+function Get-NpmDependencyCacheNodeModulesPath {
+    param(
+        [string]$CacheRoot,
+        [string]$WorkingDirectory,
+        [object]$Fingerprint
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CacheRoot) -or [string]::IsNullOrWhiteSpace([string]$Fingerprint.sha256)) {
+        return ""
+    }
+
+    $packageName = Get-NpmPackageCacheName -WorkingDirectory $WorkingDirectory
+    return Join-Path $CacheRoot (Join-Path $packageName (Join-Path ([string]$Fingerprint.sha256) "node_modules"))
+}
+
+function Test-NpmDependenciesCurrent {
+    param(
+        [string]$WorkingDirectory,
+        [object]$Fingerprint
+    )
+
+    $nodeModulesPath = Join-Path $WorkingDirectory "node_modules"
+    if (-not (Test-Path -LiteralPath $nodeModulesPath -PathType Container)) {
+        return $false
+    }
+
+    $markerPath = Get-NpmDependencyMarkerPath -WorkingDirectory $WorkingDirectory
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $marker = Get-Content -Raw -LiteralPath $markerPath | ConvertFrom-Json
+        return [string]::Equals([string]$marker.fingerprintPath, [string]$Fingerprint.path, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals([string]$marker.fingerprintSha256, [string]$Fingerprint.sha256, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [bool]$marker.omitDev
+    }
+    catch {
+        return $false
+    }
+}
+
+function Restore-NpmDependenciesFromCache {
+    param(
+        [string]$WorkingDirectory,
+        [object]$Fingerprint,
+        [string]$CacheRoot
+    )
+
+    $nodeModulesPath = Join-Path $WorkingDirectory "node_modules"
+    if (Test-Path -LiteralPath $nodeModulesPath -PathType Container) {
+        return $false
+    }
+
+    $cacheNodeModulesPath = Get-NpmDependencyCacheNodeModulesPath -CacheRoot $CacheRoot -WorkingDirectory $WorkingDirectory -Fingerprint $Fingerprint
+    if ([string]::IsNullOrWhiteSpace($cacheNodeModulesPath) -or -not (Test-Path -LiteralPath $cacheNodeModulesPath -PathType Container)) {
+        return $false
+    }
+
+    try {
+        New-Item -ItemType Junction -Path $nodeModulesPath -Target $cacheNodeModulesPath -Force | Out-Null
+        Write-NpmDependencyMarker -WorkingDirectory $WorkingDirectory -Fingerprint $Fingerprint
+        return $true
+    }
+    catch {
+        Write-Warning "Could not link cached npm dependencies; copying instead. $($_.Exception.Message)"
+        Copy-Item -LiteralPath $cacheNodeModulesPath -Destination $nodeModulesPath -Recurse -Force
+        Write-NpmDependencyMarker -WorkingDirectory $WorkingDirectory -Fingerprint $Fingerprint
+        return $true
+    }
+}
+
+function Remove-StaleNpmDependencyJunction {
+    param([string]$WorkingDirectory)
+
+    $nodeModulesPath = Join-Path $WorkingDirectory "node_modules"
+    if (-not (Test-Path -LiteralPath $nodeModulesPath -PathType Container)) {
+        return
+    }
+
+    $item = Get-Item -LiteralPath $nodeModulesPath -Force
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+        return
+    }
+
+    Remove-Item -LiteralPath $nodeModulesPath -Force
+}
+
+function Write-NpmDependencyMarker {
+    param(
+        [string]$WorkingDirectory,
+        [object]$Fingerprint
+    )
+
+    $marker = [ordered]@{
+        schemaVersion = 1
+        app = "revAgent"
+        fingerprintPath = [string]$Fingerprint.path
+        fingerprintSha256 = [string]$Fingerprint.sha256
+        omitDev = $true
+        installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $markerPath = Get-NpmDependencyMarkerPath -WorkingDirectory $WorkingDirectory
+    $marker | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $markerPath -Encoding UTF8
+}
+
+function Save-NpmDependenciesToCache {
+    param(
+        [string]$WorkingDirectory,
+        [object]$Fingerprint,
+        [string]$CacheRoot
+    )
+
+    $nodeModulesPath = Join-Path $WorkingDirectory "node_modules"
+    if (-not (Test-Path -LiteralPath $nodeModulesPath -PathType Container)) {
+        return
+    }
+
+    $cacheNodeModulesPath = Get-NpmDependencyCacheNodeModulesPath -CacheRoot $CacheRoot -WorkingDirectory $WorkingDirectory -Fingerprint $Fingerprint
+    if ([string]::IsNullOrWhiteSpace($cacheNodeModulesPath) -or (Test-Path -LiteralPath $cacheNodeModulesPath -PathType Container)) {
+        return
+    }
+
+    $cachePackageRoot = Split-Path -Parent $cacheNodeModulesPath
+    New-Item -ItemType Directory -Path $cachePackageRoot -Force | Out-Null
+    Copy-Item -LiteralPath $nodeModulesPath -Destination $cachePackageRoot -Recurse -Force
+}
+
+function Invoke-NpmInstallIfNeeded {
+    param(
+        [string]$NpmPath,
+        [string]$WorkingDirectory,
+        [string]$Label,
+        [string]$CacheRoot
+    )
+
+    $fingerprint = Get-NpmDependencyFingerprint -WorkingDirectory $WorkingDirectory
+    if ([string]::IsNullOrWhiteSpace([string]$fingerprint.sha256)) {
+        Write-Host "$Label dependencies: package manifest not found; running npm install."
+        Invoke-External -FilePath $NpmPath -Arguments @("install", "--omit=dev", "--no-audit", "--no-fund") -WorkingDirectory $WorkingDirectory
+        return
+    }
+
+    if (Test-NpmDependenciesCurrent -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint) {
+        Write-Host "$Label dependencies: current; npm install skipped."
+        return
+    }
+
+    Remove-StaleNpmDependencyJunction -WorkingDirectory $WorkingDirectory
+
+    if (Restore-NpmDependenciesFromCache -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint -CacheRoot $CacheRoot) {
+        Write-Host "$Label dependencies: restored from local cache; npm install skipped."
+        return
+    }
+
+    Write-Host "$Label dependencies: installing or refreshing."
+    Invoke-External -FilePath $NpmPath -Arguments @("install", "--omit=dev", "--no-audit", "--no-fund") -WorkingDirectory $WorkingDirectory
+    Write-NpmDependencyMarker -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint
+    Save-NpmDependenciesToCache -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint -CacheRoot $CacheRoot
+}
+
 function ConvertTo-TomlString {
     param([string]$Value)
 
@@ -2070,9 +2283,10 @@ try {
             (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
         )
 
-        Invoke-External -FilePath $npmPath -Arguments @("install", "--omit=dev", "--no-audit", "--no-fund") -WorkingDirectory $ServerTarget
+        $npmDependencyCacheRoot = Join-Path $InstallRoot "dependencies\npm"
+        Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
 
-        Invoke-External -FilePath $npmPath -Arguments @("install", "--omit=dev", "--no-audit", "--no-fund") -WorkingDirectory $docsServerPath
+        Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
 
         $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
         Invoke-External -FilePath $powershellPath -Arguments @(

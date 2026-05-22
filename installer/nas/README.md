@@ -156,7 +156,10 @@ Updater log retention is automatic. Install and update runs keep the latest
 - Verifies the package SHA256 hash before install.
 - Replaces the managed local package copy under `C:\ProgramData\DPE\RevitMCP\package`.
 - Runs `install-self-contained.ps1`.
-- Runs `npm install --omit=dev --no-audit --no-fund` for the runtime and docs MCP servers.
+- Checks the runtime and docs server npm dependency fingerprints before running
+  `npm install --omit=dev --no-audit --no-fund`; if `node_modules` and the
+  stored lockfile marker already match, or the same lockfile exists in the
+  managed local npm dependency cache, npm install is skipped and logged.
 - Re-registers Codex MCP entries through the current user's Codex Desktop command when available, otherwise by updating `%USERPROFILE%\.codex\config.toml` directly.
 - Writes local and NAS report JSON files.
 - Repairs older workstation scheduled-task triggers so legacy logon/repeated

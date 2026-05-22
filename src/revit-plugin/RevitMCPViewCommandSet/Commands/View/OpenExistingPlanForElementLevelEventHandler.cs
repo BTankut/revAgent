@@ -88,7 +88,16 @@ namespace RevitMCPViewCommandSet.Commands.View
                 }
 
                 _elementInfo = ElementDiscoveryHelpers.BuildElementSearchItem(document, uiDocument, element, false, _planNameContains, "none");
-                _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical, element);
+                if (!UseActivePlanOnly())
+                {
+                    PlanCandidateSummary activePlanCandidate;
+                    if (TryUseActivePlanWithoutCandidateScan(document, element, levelId, out activePlanCandidate))
+                    {
+                        _planCandidates = new List<PlanCandidateSummary> { activePlanCandidate };
+                        Complete(FocusAndBuildSuccess(uiDocument, document.ActiveView, activePlanCandidate, false, false));
+                        return;
+                    }
+                }
 
                 if (UseActivePlanOnly())
                 {
@@ -113,6 +122,8 @@ namespace RevitMCPViewCommandSet.Commands.View
                     Complete(FocusAndBuildSuccess(uiDocument, activePlan, activePlanCandidate, false, false));
                     return;
                 }
+
+                _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical, element);
 
                 if (_planCandidates.Count == 0)
                 {
@@ -552,6 +563,46 @@ namespace RevitMCPViewCommandSet.Commands.View
             }
 
             return "elementLevel";
+        }
+
+        private bool TryUseActivePlanWithoutCandidateScan(
+            Document document,
+            Element element,
+            ElementId levelId,
+            out PlanCandidateSummary activePlanCandidate)
+        {
+            activePlanCandidate = null;
+
+            ViewPlan activePlan = document.ActiveView as ViewPlan;
+            if (activePlan == null || activePlan.IsTemplate || activePlan.GenLevel == null)
+            {
+                return false;
+            }
+
+            if (levelId == null || levelId == ElementId.InvalidElementId ||
+                activePlan.GenLevel.Id.GetIdValue() != levelId.GetIdValue())
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(_planNameContains) &&
+                (activePlan.Name ?? "").IndexOf(_planNameContains, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return false;
+            }
+
+            activePlanCandidate = ElementDiscoveryHelpers.BuildActivePlanCandidate(activePlan, document, element);
+            if (activePlanCandidate != null)
+            {
+                activePlanCandidate.Reason = "active plan already matched element level";
+            }
+
+            if (_zoom && activePlanCandidate != null && activePlanCandidate.ElementVisibleInView == false)
+            {
+                return false;
+            }
+
+            return activePlanCandidate != null;
         }
 
         private bool UseActivePlanOnly()
