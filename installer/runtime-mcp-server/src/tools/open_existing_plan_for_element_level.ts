@@ -6,6 +6,7 @@ import {
     formatJsonContent,
     sendRevitCommand,
     taskMetadataSchema,
+    trimPlanCandidatesInPayload,
 } from "../utils/revitToolHelpers.js";
 
 const elementIdSchema = z.union([
@@ -24,6 +25,8 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
         select: z.boolean().optional().describe("Select the element after activating the plan. Defaults true."),
         zoom: z.boolean().optional().describe("Zoom/show the element after activating the plan. Defaults true."),
         fitToScreen: z.boolean().optional().describe("After opening/focusing the plan, run Revit UI ZoomToFit on the active view. Defaults false."),
+        verboseCandidates: z.boolean().optional().describe("Return full PlanCandidates arrays. Defaults false; routine responses return only the top candidates."),
+        maxPlanCandidates: z.number().int().min(0).max(50).optional().describe("Maximum PlanCandidates returned when verboseCandidates=false. Defaults 3."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Timeout for asynchronous plan activation/focus. Defaults 20000."),
     }, async (args) => {
         try {
@@ -39,7 +42,11 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
             }, {
                 ...executionOptionsFromArgs(args, "Open existing plan for element level"),
             });
-            return formatJsonContent(response && response.result ? response.result : response);
+            const payload = response && response.result ? response.result : response;
+            return formatJsonContent(trimPlanCandidatesInPayload(payload, {
+                verboseCandidates: args.verboseCandidates,
+                maxPlanCandidates: args.maxPlanCandidates ?? 3,
+            }));
         }
         catch (error) {
             return formatJsonContent({

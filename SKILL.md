@@ -39,8 +39,8 @@ custom-code workflows.
 
 - `list_revit_instances` - discover reachable Revit MCP instances and ports
 - `get_revit_mcp_status` - read active/recent task status without waiting
-  behind the active command lock; recent task records include request size and
-  transport timing diagnostics for troubleshooting
+  behind the active command lock; default output is compact, with optional
+  recent task limits and transport diagnostics for troubleshooting
 - `send_code_to_revit` - raw dynamic execution for explicit, broad control
 - `send_code_to_revit_safe` - read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced
@@ -56,8 +56,9 @@ custom-code workflows.
 - `get_ui_state` - read active view, open UI views, selected element ids and
   summaries, section box flags, and document writable state
 - `find_elements` - find elements by category plus text across id, name,
-  family, type, mark, comments, and return match confidence plus existing plan
-  candidates by level
+  family, type, mark, comments, and return match confidence. Existing plan
+  candidates are opt-in through `includePlanCandidates=true` because view
+  visibility checks are intentionally more expensive.
 - `open_existing_plan_for_element_level` - choose an existing non-template plan
   for an element's level, or keep the active plan when `planMode=activePlan`,
   then select and zoom to the element
@@ -73,8 +74,8 @@ custom-code workflows.
   rollback inside its own view update transactions
 - `export_revit_view_image` - export the active view, visible region, or a
   selected view to PNG/JPEG/TIFF/BMP/TARGA through `Document.ExportImage`.
-  This is read-only and is the preferred way to capture visual evidence for an
-  LLM review.
+  This is read-only, reports actual generated image dimensions, and is the
+  preferred way to capture visual evidence for an LLM review.
 - `export_revit_coordination_image` - create or reuse a dedicated visual QA 3D
   view, optionally section-box target elements, apply high-contrast review
   graphics, and export an image. It writes only review view settings; it does
@@ -88,7 +89,8 @@ custom-code workflows.
 - `inspect_elements` - targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
 - `inspect_parameter_schema` - parameter schema for element ids or category
-  samples: BIP, storage type, unit, shared/read-only, raw/display values.
+  samples: BIP name/id, alias note, storage type, unit, shared/read-only,
+  raw/display values.
   Use `parameterNameMatchMode: "contains"` for broad discovery and
   `parameterNameMatchMode: "exact"` for write-preflight.
 
@@ -117,8 +119,9 @@ Default workflow for every Revit runtime task:
 0. Before sending any non-status Revit MCP runtime command, call
    `get_revit_mcp_status`. If `activeTask` is not null, do not send a new
    Revit command. Report the active task name and elapsed time, then wait or
-   poll `get_revit_mcp_status` until the active task clears. This preflight is
-   required even before the first context call.
+   poll `get_revit_mcp_status` until the active task clears. Keep routine
+   checks compact; request diagnostics only while troubleshooting. This
+   preflight is required even before the first context call.
 1. Do not run Revit MCP runtime tools in parallel. Revit API execution is
    single-threaded through the Revit UI process, and overlapping MCP calls can
    leave the socket service alive while the command handler is still busy.

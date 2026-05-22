@@ -82,6 +82,107 @@ export function normalizeRevitExecutionResponse(response) {
     return parsed;
 }
 
+function clampInt(value, fallback, min, max) {
+    const parsed = Number.parseInt(String(value ?? ""), 10);
+    if (!Number.isFinite(parsed)) {
+        return fallback;
+    }
+    return Math.max(min, Math.min(max, parsed));
+}
+
+export function trimPlanCandidatesInPayload(payload, options = {}) {
+    const verbose = options.verboseCandidates === true;
+    const maxCandidates = clampInt(options.maxPlanCandidates, 3, 0, 100);
+    if (verbose) {
+        return payload;
+    }
+
+    const visit = (value) => {
+        if (Array.isArray(value)) {
+            return value.map((item) => visit(item));
+        }
+        if (!value || typeof value !== "object") {
+            return value;
+        }
+
+        const clone = {};
+        for (const [key, child] of Object.entries(value)) {
+            if (key === "PlanCandidates" && Array.isArray(child)) {
+                clone.PlanCandidatesTotal = child.length;
+                clone.PlanCandidatesTruncated = child.length > maxCandidates;
+                clone[key] = child.slice(0, maxCandidates).map((item) => visit(item));
+                continue;
+            }
+            clone[key] = visit(child);
+        }
+        return clone;
+    };
+
+    return visit(payload);
+}
+
+function compactTaskInfo(task, includeDiagnostics) {
+    if (!task || typeof task !== "object") {
+        return task;
+    }
+    const compact = {
+        id: task.id,
+        requestId: task.requestId,
+        method: task.method,
+        taskName: task.taskName,
+        state: task.state,
+        startedAtUtc: task.startedAtUtc,
+        finishedAtUtc: task.finishedAtUtc,
+        elapsedMs: task.elapsedMs,
+        port: task.port,
+        error: task.error,
+    };
+    if (includeDiagnostics) {
+        compact.framing = task.framing;
+        compact.requestBytes = task.requestBytes;
+        compact.receiveMs = task.receiveMs;
+        compact.parseMs = task.parseMs;
+        compact.executeMs = task.executeMs;
+        compact.responseBytes = task.responseBytes;
+    }
+    return compact;
+}
+
+export function compactMcpStatusPayload(payload, options = {}) {
+    const includeRecentTasks = options.includeRecentTasks !== false;
+    const includeDiagnostics = options.includeDiagnostics === true;
+    const recentLimit = clampInt(options.recentLimit, 3, 0, 20);
+
+    const target = payload && typeof payload === "object" && payload.result && typeof payload.result === "object"
+        ? payload.result
+        : payload;
+    if (!target || typeof target !== "object") {
+        return payload;
+    }
+
+    const clone = { ...target };
+    clone.activeTask = compactTaskInfo(target.activeTask, includeDiagnostics);
+
+    if (Array.isArray(target.recentTasks)) {
+        clone.recentTasksTotal = target.recentTasks.length;
+        if (includeRecentTasks) {
+            clone.recentTasks = target.recentTasks
+                .slice(0, recentLimit)
+                .map((task) => compactTaskInfo(task, includeDiagnostics));
+            clone.recentTasksTruncated = target.recentTasks.length > recentLimit;
+        }
+        else {
+            delete clone.recentTasks;
+            clone.recentTasksIncluded = false;
+        }
+    }
+
+    if (payload && typeof payload === "object" && payload.result && typeof payload.result === "object") {
+        return { ...payload, result: clone };
+    }
+    return clone;
+}
+
 export async function executeRevitCode(code, options = {}) {
     const params = {
         code,

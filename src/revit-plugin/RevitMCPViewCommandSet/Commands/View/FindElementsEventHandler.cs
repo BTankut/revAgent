@@ -35,6 +35,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         private bool _includePlanCandidates;
         private string _planNameContains;
         private int _limit;
+        private int _maxPlanCandidates;
 
         public FindElementsResult ResultInfo { get; private set; }
         public bool TaskCompleted { get; private set; }
@@ -44,13 +45,15 @@ namespace RevitMCPViewCommandSet.Commands.View
             List<string> categoryNames,
             bool includePlanCandidates,
             string planNameContains,
-            int limit)
+            int limit,
+            int maxPlanCandidates)
         {
             _query = query ?? "";
             _categoryNames = categoryNames ?? new List<string>();
             _includePlanCandidates = includePlanCandidates;
             _planNameContains = planNameContains ?? "";
             _limit = limit;
+            _maxPlanCandidates = Math.Max(0, Math.Min(25, maxPlanCandidates));
             TaskCompleted = false;
             ResultInfo = null;
             _resetEvent.Reset();
@@ -112,6 +115,11 @@ namespace RevitMCPViewCommandSet.Commands.View
                         m.Item2))
                     .ToList();
 
+                foreach (ElementSearchItem item in items)
+                {
+                    TrimPlanCandidates(item);
+                }
+
                 int topScore = orderedMatches.Count > 0 ? orderedMatches[0].Item2.Score : 0;
                 int tiedCount = topScore > 0 ? orderedMatches.Count(m => m.Item2.Score == topScore) : 0;
                 string topConfidence = orderedMatches.Count > 0 ? orderedMatches[0].Item2.Confidence : "none";
@@ -153,6 +161,21 @@ namespace RevitMCPViewCommandSet.Commands.View
             ResultInfo = result;
             TaskCompleted = true;
             _resetEvent.Set();
+        }
+
+        private void TrimPlanCandidates(ElementSearchItem item)
+        {
+            if (item == null || item.PlanCandidates == null)
+            {
+                return;
+            }
+
+            item.PlanCandidatesTotal = item.PlanCandidates.Count;
+            if (item.PlanCandidates.Count > _maxPlanCandidates)
+            {
+                item.PlanCandidates = item.PlanCandidates.Take(_maxPlanCandidates).ToList();
+                item.PlanCandidatesTruncated = true;
+            }
         }
 
         public string GetName()

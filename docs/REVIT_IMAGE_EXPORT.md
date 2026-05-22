@@ -11,6 +11,9 @@ status preflight and single-command rule.
   - Revit write action: none.
   - Best for: raw screenshots, active plan evidence, exported visible region,
     high-resolution PNG/JPEG/TIFF/BMP/TARGA output.
+  - Output: each generated file reports `bytes`, `width`, and `height`. Treat
+    `pixelSize` as the Revit export request; Revit may produce a different
+    actual image size for visible-region exports.
 
 - `export_revit_coordination_image`
   - Purpose: create or reuse a dedicated visual QA 3D view, optionally focus a
@@ -89,6 +92,10 @@ PNG at 300 DPI is the default because it keeps linework sharp and file sizes
 reasonable for Revit line drawings. Low-byte exports are not the default goal:
 LLM review needs readable text, tags, duct sizes, dimensions, grids, and
 leaders.
+For `visible_region`, Revit can preserve the visible viewport aspect and return
+dimensions larger or taller than the requested `pixelSize`; verify
+`files[].width` and `files[].height` before judging whether an export is useful
+for technical review.
 Use JPEG only when smaller files matter more than exact line fidelity. BMP and
 TARGA are available because Revit supports them, but they are much larger and
 are not the preferred coordination format.

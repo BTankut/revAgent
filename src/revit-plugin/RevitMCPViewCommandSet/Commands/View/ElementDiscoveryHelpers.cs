@@ -41,6 +41,8 @@ namespace RevitMCPViewCommandSet.Commands.View
         public string MatchReason { get; set; }
         public List<string> MatchFields { get; set; }
         public List<PlanCandidateSummary> PlanCandidates { get; set; }
+        public int? PlanCandidatesTotal { get; set; }
+        public bool PlanCandidatesTruncated { get; set; }
     }
 
     public class SearchMatchSummary

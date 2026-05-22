@@ -6,6 +6,7 @@ import {
     formatJsonContent,
     sendRevitCommand,
     taskMetadataSchema,
+    trimPlanCandidatesInPayload,
 } from "../utils/revitToolHelpers.js";
 
 const elementIdSchema = z.union([
@@ -36,6 +37,9 @@ export function registerShowElementInPlanAnd3DTool(server) {
         planMode: z.enum(["elementLevel", "activePlan"]).optional().describe("elementLevel opens the best existing same-level plan. activePlan keeps the current active plan. Defaults elementLevel."),
         planNameContains: z.string().optional().describe("Optional plan name preference such as HVAC, Mechanical, or Roof Level."),
         preferMechanical: z.boolean().optional().describe("Prefer HVAC/mechanical/MEP named plans on the same level. Defaults true."),
+        includeSearchPlanCandidates: z.boolean().optional().describe("Include plan candidates during the initial search. Defaults false; the plan-open step computes focused candidates separately."),
+        verboseCandidates: z.boolean().optional().describe("Return full PlanCandidates arrays from nested steps. Defaults false."),
+        maxPlanCandidates: z.number().int().min(0).max(50).optional().describe("Maximum nested PlanCandidates returned when verboseCandidates=false. Defaults 3."),
         select: z.boolean().optional().describe("Select the element in plan/3D. Defaults true."),
         zoom: z.boolean().optional().describe("Show/zoom the element in plan/3D. Defaults true."),
         fitToScreen: z.boolean().optional().describe("Run Revit UI ZoomToFit after focusing views. Defaults false."),
@@ -66,7 +70,8 @@ export function registerShowElementInPlanAnd3DTool(server) {
                 findResult = unwrapResponse(await sendRevitCommand("find_elements", {
                     query: args.query,
                     categoryNames: args.categoryNames,
-                    includePlanCandidates: true,
+                    includePlanCandidates: args.includeSearchPlanCandidates === true,
+                    maxPlanCandidates: args.maxPlanCandidates ?? 3,
                     planNameContains: args.planNameContains,
                     limit: args.searchLimit || 20,
                     timeoutMs: args.timeoutMs,
@@ -115,6 +120,8 @@ export function registerShowElementInPlanAnd3DTool(server) {
                 select: args.select,
                 zoom: args.zoom,
                 fitToScreen: args.fitToScreen,
+                verboseCandidates: args.verboseCandidates,
+                maxPlanCandidates: args.maxPlanCandidates ?? 3,
                 timeoutMs: args.timeoutMs,
                 taskName: "Show element in existing plan",
             }, options));
@@ -152,7 +159,7 @@ export function registerShowElementInPlanAnd3DTool(server) {
             }
 
             const threeDSuccess = args.create3d === false || (threeDResult && threeDResult.Success !== false);
-            return formatJsonContent({
+            return formatJsonContent(trimPlanCandidatesInPayload({
                 Success: threeDSuccess,
                 Action: "show_element_in_plan_and_3d",
                 Message: args.create3d === false
@@ -165,7 +172,10 @@ export function registerShowElementInPlanAnd3DTool(server) {
                 Find: findResult,
                 Plan: planResult,
                 ThreeD: threeDResult,
-            });
+            }, {
+                verboseCandidates: args.verboseCandidates,
+                maxPlanCandidates: args.maxPlanCandidates ?? 3,
+            }));
         }
         catch (error) {
             return formatJsonContent({

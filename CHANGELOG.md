@@ -43,6 +43,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Translated `AGENTS.md` to English and updated README, skill, installer, and
   deployment docs to match the current updater schedule and log-retention
   behavior.
+- Added full-test hotfixes for routine office use: compact Revit task status
+  output, safer `find_elements` plan-candidate defaults, trimmed plan candidate
+  blocks in focus workflows, actual image dimensions in view exports, clearer
+  Revit `isModifiable` probe wording, and parameter schema alias diagnostics.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

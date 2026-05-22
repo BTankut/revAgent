@@ -5,6 +5,7 @@ import {
     withRevitConnection,
 } from "../utils/ConnectionManager.js";
 import {
+    compactMcpStatusPayload,
     formatJsonContent,
     normalizeRevitExecutionResponse,
 } from "../utils/revitToolHelpers.js";
@@ -25,7 +26,8 @@ try
             pathName = document.PathName,
             isWorkshared = document.IsWorkshared,
             isReadOnly = document.IsReadOnly,
-            isModifiable = document.IsModifiable
+            isModifiable = document.IsModifiable,
+            isModifiableNote = "Revit API state sampled during this read-only instance probe. Use get_ui_state on the target instance for idle UI document state."
         },
         activeView = new {
             id = activeView.Id.IntegerValue,
@@ -106,7 +108,10 @@ async function probeTarget(target, timeoutMs) {
                 port: target.port,
                 source: target.source,
             },
-            status,
+            status: compactMcpStatusPayload(status, {
+                recentLimit: 3,
+                includeDiagnostics: false,
+            }),
             info: payloadFromResponse(response),
         };
     }
@@ -119,7 +124,10 @@ async function probeTarget(target, timeoutMs) {
                 port: target.port,
                 source: target.source,
             },
-            status,
+            status: compactMcpStatusPayload(status, {
+                recentLimit: 3,
+                includeDiagnostics: false,
+            }),
             info: null,
             infoError: error instanceof Error ? error.message : String(error),
         };

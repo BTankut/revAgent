@@ -50,6 +50,9 @@ string RawValue(Parameter p)
 object ParameterSchema(Parameter p, string source)
 {
     string builtIn = "";
+    int? builtInParameterId = null;
+    string displayBuiltInParameter = "";
+    string builtInParameterNote = "";
     bool isShared = false;
     string dataType = "";
     string unitType = "";
@@ -57,9 +60,35 @@ object ParameterSchema(Parameter p, string source)
     try
     {
         InternalDefinition idef = p.Definition as InternalDefinition;
-        if (idef != null) builtIn = idef.BuiltInParameter.ToString();
+        if (idef != null)
+        {
+            builtIn = idef.BuiltInParameter.ToString();
+            builtInParameterId = (int)idef.BuiltInParameter;
+            displayBuiltInParameter = builtIn;
+        }
     }
     catch {}
+    string parameterName = p.Definition != null ? p.Definition.Name : "";
+    if (!string.IsNullOrWhiteSpace(builtIn))
+    {
+        if (string.Equals(parameterName, "Mark", StringComparison.OrdinalIgnoreCase))
+        {
+            displayBuiltInParameter = "ALL_MODEL_MARK";
+        }
+        else if (string.Equals(parameterName, "Type Mark", StringComparison.OrdinalIgnoreCase))
+        {
+            displayBuiltInParameter = "ALL_MODEL_TYPE_MARK";
+        }
+
+        string normalizedName = parameterName.Replace(" ", "_");
+        if (!string.Equals(displayBuiltInParameter, builtIn, StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(normalizedName) &&
+             builtIn.IndexOf(normalizedName, StringComparison.OrdinalIgnoreCase) < 0 &&
+             displayBuiltInParameter.IndexOf(normalizedName, StringComparison.OrdinalIgnoreCase) < 0))
+        {
+            builtInParameterNote = "Revit BuiltInParameter enum names may stringify as aliases. Use builtInParameterId for exact API identity and displayBuiltInParameter for human review.";
+        }
+    }
     try { isShared = p.IsShared; } catch {}
     try { dataType = p.Definition.GetDataType().TypeId; } catch {}
     try { unitType = p.GetUnitTypeId().TypeId; } catch {}
@@ -67,8 +96,11 @@ object ParameterSchema(Parameter p, string source)
 
     return new {
         source = source,
-        name = p.Definition != null ? p.Definition.Name : "",
+        name = parameterName,
         builtInParameter = builtIn,
+        builtInParameterId = builtInParameterId,
+        displayBuiltInParameter = displayBuiltInParameter,
+        builtInParameterNote = builtInParameterNote,
         storageType = p.StorageType.ToString(),
         hasValue = p.HasValue,
         isReadOnly = p.IsReadOnly,

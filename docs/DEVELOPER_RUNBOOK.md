@@ -320,6 +320,10 @@ Before every non-status Revit MCP runtime command:
 4. Poll only `get_revit_mcp_status` until the task clears.
 5. Then send the next Revit command.
 
+Use the compact status defaults for routine preflight. Increase `recentLimit`
+or set `includeDiagnostics=true` only when investigating a transport or runtime
+issue.
+
 Do not run Revit MCP runtime commands in parallel. The only exception is
 status polling while a task is already active.
 
@@ -366,8 +370,8 @@ The current production status window behavior:
 - recent history uses compact state labels and shows total Revit-side duration
   plus request size, for example:
   `17:19:07  completed  Final metric UI log probe  (2.9s)  [1 MB]`
-- detailed transport metrics remain available in `get_revit_mcp_status` and in
-  the add-in log:
+- detailed transport metrics remain available through
+  `get_revit_mcp_status(includeDiagnostics=true)` and in the add-in log:
   `C:\ProgramData\DPE\RevitMCP\revit-plugin\revit_mcp_plugin\Logs\mcp_YYYYMMDD.log`
 
 Transport metrics in logs include `framing`, `requestBytes`, `receiveMs`,
