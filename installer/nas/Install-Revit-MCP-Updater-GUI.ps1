@@ -68,6 +68,131 @@ function Test-IsAdministrator {
     }
 }
 
+function Read-JsonFile {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-VersionSortDate {
+    param([string]$Version)
+
+    if ([string]::IsNullOrWhiteSpace($Version)) {
+        return $null
+    }
+
+    if ($Version -match '^(\d{4})\.(\d{2})\.(\d{2})\.(\d{4})') {
+        $hourMinute = $Matches[4]
+        return [datetime]::new(
+            [int]$Matches[1],
+            [int]$Matches[2],
+            [int]$Matches[3],
+            [int]$hourMinute.Substring(0, 2),
+            [int]$hourMinute.Substring(2, 2),
+            0)
+    }
+
+    if ($Version -match '^(\d{4})\.(\d{2})\.(\d{2})') {
+        return [datetime]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], 0, 0, 0)
+    }
+
+    return $null
+}
+
+function Compare-RevitMcpVersion {
+    param(
+        [string]$Left,
+        [string]$Right
+    )
+
+    if ([string]::Equals($Left, $Right, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return 0
+    }
+
+    $leftDate = Get-VersionSortDate -Version $Left
+    $rightDate = Get-VersionSortDate -Version $Right
+    if ($null -ne $leftDate -and $null -ne $rightDate -and $leftDate -ne $rightDate) {
+        return [DateTime]::Compare($leftDate, $rightDate)
+    }
+
+    return [System.StringComparer]::OrdinalIgnoreCase.Compare($Left, $Right)
+}
+
+function Get-ChannelStatus {
+    $installed = Read-JsonFile -Path (Join-Path $workRoot "installed.json")
+    $channel = Read-JsonFile -Path $ChannelManifestPath
+    $installedVersion = if ($installed -and $installed.version) { [string]$installed.version } else { "" }
+    $channelVersion = if ($channel -and $channel.version) { [string]$channel.version } else { "" }
+
+    if ($null -eq $channel -or [string]::IsNullOrWhiteSpace($channelVersion)) {
+        return [pscustomobject]@{
+            Code = "channel-missing"
+            InstalledVersion = $installedVersion
+            ChannelVersion = $channelVersion
+            UpdateEnabled = $false
+            RestoreEnabled = $false
+            UpdateButtonText = "Update"
+            StatusText = "Stable channel manifest could not be read."
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($installedVersion)) {
+        return [pscustomobject]@{
+            Code = "not-installed"
+            InstalledVersion = $installedVersion
+            ChannelVersion = $channelVersion
+            UpdateEnabled = $true
+            RestoreEnabled = $false
+            UpdateButtonText = "Install"
+            StatusText = "Not installed. Stable version can be installed: $channelVersion"
+        }
+    }
+
+    if ([string]::Equals($installedVersion, $channelVersion, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject]@{
+            Code = "current"
+            InstalledVersion = $installedVersion
+            ChannelVersion = $channelVersion
+            UpdateEnabled = $false
+            RestoreEnabled = $true
+            UpdateButtonText = "Update"
+            StatusText = "Current: $installedVersion. Restore/repair is available."
+        }
+    }
+
+    $comparison = Compare-RevitMcpVersion -Left $installedVersion -Right $channelVersion
+    if ($comparison -lt 0) {
+        return [pscustomobject]@{
+            Code = "update-available"
+            InstalledVersion = $installedVersion
+            ChannelVersion = $channelVersion
+            UpdateEnabled = $true
+            RestoreEnabled = $true
+            UpdateButtonText = "Update"
+            StatusText = "Update available: $installedVersion -> $channelVersion"
+        }
+    }
+
+    return [pscustomobject]@{
+        Code = "restore-available"
+        InstalledVersion = $installedVersion
+        ChannelVersion = $channelVersion
+        UpdateEnabled = $false
+        RestoreEnabled = $true
+        UpdateButtonText = "Update"
+        StatusText = "Installed version differs from or is newer than the stable target. Stable Restore is available: $installedVersion -> $channelVersion"
+    }
+}
+
 function Restart-ElevatedAndExit {
     $arguments = @(
         "-STA",
@@ -91,7 +216,7 @@ function Restart-ElevatedAndExit {
     catch {
         Add-Type -AssemblyName System.Windows.Forms
         [System.Windows.Forms.MessageBox]::Show(
-            "Kurulum icin admin yetkisi gerekli.`r`n`r`n$($_.Exception.Message)",
+            "Administrator permission is required for installation.`r`n`r`n$($_.Exception.Message)",
             "Revit MCP Installer",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
@@ -143,13 +268,13 @@ $root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Fo
 $form.Controls.Add($root)
 
 $title = New-Object System.Windows.Forms.Label
-$title.Text = "Revit MCP kurulum ve guncelleme"
+$title.Text = "Revit MCP install and update"
 $title.Font = New-Object System.Drawing.Font("Segoe UI", 13, [System.Drawing.FontStyle]::Bold)
 $title.AutoSize = $true
 $root.Controls.Add($title, 0, 0)
 
 $details = New-Object System.Windows.Forms.Label
-$details.Text = "Kanal: $ChannelManifestPath`r`nKurulum: $InstallRoot"
+$details.Text = "Channel: $ChannelManifestPath`r`nInstall root: $InstallRoot"
 $details.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $details.AutoSize = $true
 $details.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 8)
@@ -167,7 +292,7 @@ $statusPanel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Win
 $root.Controls.Add($statusPanel, 0, 2)
 
 $statusLabel = New-Object System.Windows.Forms.Label
-$statusLabel.Text = "Hazir."
+$statusLabel.Text = "Ready."
 $statusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $statusLabel.AutoSize = $true
 $statusPanel.Controls.Add($statusLabel, 0, 0)
@@ -198,25 +323,31 @@ $buttonPanel.Margin = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
 $root.Controls.Add($buttonPanel, 0, 4)
 
 $runButton = New-Object System.Windows.Forms.Button
-$runButton.Text = "Kur / Guncelle"
-$runButton.Width = 130
+$runButton.Text = "Update"
+$runButton.Width = 110
 $runButton.Height = 32
 $buttonPanel.Controls.Add($runButton)
 
+$restoreButton = New-Object System.Windows.Forms.Button
+$restoreButton.Text = "Stable Restore"
+$restoreButton.Width = 125
+$restoreButton.Height = 32
+$buttonPanel.Controls.Add($restoreButton)
+
 $versionButton = New-Object System.Windows.Forms.Button
-$versionButton.Text = "Surum kontrol"
+$versionButton.Text = "Version Check"
 $versionButton.Width = 120
 $versionButton.Height = 32
 $buttonPanel.Controls.Add($versionButton)
 
 $openLogsButton = New-Object System.Windows.Forms.Button
-$openLogsButton.Text = "Log klasoru"
+$openLogsButton.Text = "Log Folder"
 $openLogsButton.Width = 110
 $openLogsButton.Height = 32
 $buttonPanel.Controls.Add($openLogsButton)
 
 $closeButton = New-Object System.Windows.Forms.Button
-$closeButton.Text = "Kapat"
+$closeButton.Text = "Close"
 $closeButton.Width = 90
 $closeButton.Height = 32
 $buttonPanel.Controls.Add($closeButton)
@@ -226,9 +357,101 @@ $timer.Interval = 700
 
 function Set-ButtonsEnabled {
     param([bool]$Enabled)
-    $runButton.Enabled = $Enabled
-    $versionButton.Enabled = $Enabled
-    $closeButton.Enabled = $Enabled
+    if (-not $Enabled) {
+        $runButton.Enabled = $false
+        $restoreButton.Enabled = $false
+        $versionButton.Enabled = $false
+        $closeButton.Enabled = $false
+        return
+    }
+
+    $status = Get-ChannelStatus
+    $runButton.Text = $status.UpdateButtonText
+    $runButton.Enabled = [bool]$status.UpdateEnabled
+    $restoreButton.Enabled = [bool]$status.RestoreEnabled
+    $versionButton.Enabled = $true
+    $closeButton.Enabled = $true
+    $statusLabel.Text = [string]$status.StatusText
+}
+
+function Start-InstallerOperation {
+    param([ValidateSet("update", "restore")] [string]$Operation)
+
+    if (-not (Test-Path -LiteralPath $installerPath)) {
+        [System.Windows.Forms.MessageBox]::Show("Installer was not found:`r`n$installerPath", "Revit MCP Installer") | Out-Null
+        return
+    }
+    if (-not (Test-Path -LiteralPath $ChannelManifestPath)) {
+        [System.Windows.Forms.MessageBox]::Show("Stable channel manifest was not found:`r`n$ChannelManifestPath", "Revit MCP Installer") | Out-Null
+        return
+    }
+
+    $status = Get-ChannelStatus
+    if ($Operation -eq "update" -and -not [bool]$status.UpdateEnabled) {
+        [System.Windows.Forms.MessageBox]::Show("No update is available.`r`n`r`n$status", "Revit MCP Installer") | Out-Null
+        Set-ButtonsEnabled -Enabled $true
+        return
+    }
+
+    if ($Operation -eq "restore") {
+        $message = "Stable Restore reinstalls or repairs the channel target package with force.`r`n`r`nInstalled: $($status.InstalledVersion)`r`nStable: $($status.ChannelVersion)`r`n`r`nContinue?"
+        $choice = [System.Windows.Forms.MessageBox]::Show(
+            $message,
+            "Revit MCP Stable Restore",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Warning)
+        if ($choice -ne [System.Windows.Forms.DialogResult]::Yes) {
+            return
+        }
+    }
+
+    $script:ActiveLogPath = New-RunLogPath
+    $script:LastLogLength = -1
+    $operationLabel = if ($Operation -eq "restore") { "Stable Restore" } else { "Install/update" }
+    $logBox.Text = "$operationLabel starting...`r`nLog: $script:ActiveLogPath`r`n"
+    $statusLabel.Text = "Running. Log: $script:ActiveLogPath"
+    $progress.Style = "Marquee"
+    Set-ButtonsEnabled -Enabled $false
+
+    $arguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $installerPath,
+        "-ChannelManifestPath", $ChannelManifestPath,
+        "-InstallRoot", $InstallRoot,
+        "-WorkRoot", $workRoot,
+        "-PackageTarget", $packageTarget,
+        "-ServerTarget", $serverTarget,
+        "-RunNow",
+        "-LogPath", $script:ActiveLogPath
+    )
+    if ($Operation -eq "restore") {
+        $arguments += "-ForceUpdate"
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $powershellPath
+    $psi.Arguments = Join-CommandLine -Arguments $arguments
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+
+    try {
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $psi
+        [void]$process.Start()
+        $script:ActiveProcess = $process
+        $timer.Start()
+    }
+    catch {
+        $progress.Style = "Blocks"
+        Set-ButtonsEnabled -Enabled $true
+        $statusLabel.Text = "Could not start. Log: $script:ActiveLogPath"
+        [System.Windows.Forms.MessageBox]::Show(
+            "PowerShell could not be started.`r`n$($_.Exception.Message)`r`nLog: $script:ActiveLogPath",
+            "Revit MCP Installer",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    }
 }
 
 function Read-LogFileText {
@@ -293,17 +516,17 @@ $timer.Add_Tick({
         Set-ButtonsEnabled -Enabled $true
 
         if ($exitCode -eq 0) {
-            $statusLabel.Text = "Islem tamamlandi. Log: $script:ActiveLogPath"
+            $statusLabel.Text = "Operation completed. Log: $script:ActiveLogPath"
             [System.Windows.Forms.MessageBox]::Show(
-                "Islem tamamlandi.`r`nLog: $script:ActiveLogPath",
+                "Operation completed.`r`nLog: $script:ActiveLogPath",
                 "Revit MCP Installer",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
         }
         else {
-            $statusLabel.Text = "Hata olustu. Log: $script:ActiveLogPath"
+            $statusLabel.Text = "An error occurred. Log: $script:ActiveLogPath"
             [System.Windows.Forms.MessageBox]::Show(
-                "Kurulum/guncelleme hata ile bitti.`r`nLog: $script:ActiveLogPath",
+                "Install/update finished with an error.`r`nLog: $script:ActiveLogPath",
                 "Revit MCP Installer",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
@@ -312,74 +535,27 @@ $timer.Add_Tick({
 })
 
 $runButton.Add_Click({
-    if (-not (Test-Path -LiteralPath $installerPath)) {
-        [System.Windows.Forms.MessageBox]::Show("Installer bulunamadi:`r`n$installerPath", "Revit MCP Installer") | Out-Null
-        return
-    }
-    if (-not (Test-Path -LiteralPath $ChannelManifestPath)) {
-        [System.Windows.Forms.MessageBox]::Show("Stable kanal dosyasi bulunamadi:`r`n$ChannelManifestPath", "Revit MCP Installer") | Out-Null
-        return
-    }
+    Start-InstallerOperation -Operation "update"
+})
 
-    $script:ActiveLogPath = New-RunLogPath
-    $script:LastLogLength = -1
-    $logBox.Text = "Kurulum/guncelleme basliyor...`r`nLog: $script:ActiveLogPath`r`n"
-    $statusLabel.Text = "Calisiyor. Log: $script:ActiveLogPath"
-    $progress.Style = "Marquee"
-    Set-ButtonsEnabled -Enabled $false
-
-    $arguments = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $installerPath,
-        "-ChannelManifestPath", $ChannelManifestPath,
-        "-InstallRoot", $InstallRoot,
-        "-WorkRoot", $workRoot,
-        "-PackageTarget", $packageTarget,
-        "-ServerTarget", $serverTarget,
-        "-RunNow",
-        "-LogPath", $script:ActiveLogPath
-    )
-
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $powershellPath
-    $psi.Arguments = Join-CommandLine -Arguments $arguments
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-
-    try {
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $psi
-        [void]$process.Start()
-        $script:ActiveProcess = $process
-        $timer.Start()
-    }
-    catch {
-        $progress.Style = "Blocks"
-        Set-ButtonsEnabled -Enabled $true
-        $statusLabel.Text = "Baslatilamadi. Log: $script:ActiveLogPath"
-        [System.Windows.Forms.MessageBox]::Show(
-            "PowerShell baslatilamadi.`r`n$($_.Exception.Message)`r`nLog: $script:ActiveLogPath",
-            "Revit MCP Installer",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
-    }
+$restoreButton.Add_Click({
+    Start-InstallerOperation -Operation "restore"
 })
 
 $versionButton.Add_Click({
     if (-not (Test-Path -LiteralPath $localVersionTool)) {
-        $logBox.Text = "Surum kontrol araci henuz kurulu degil.`r`nOnce Kur / Guncelle calistirin."
+        $logBox.Text = "Version check tool is not installed yet.`r`nRun Install/Update first."
         return
     }
 
     try {
         $output = & $powershellPath -NoProfile -ExecutionPolicy Bypass -File $localVersionTool -ConfigPath $configPath 2>&1 | Out-String
         $logBox.Text = $output
-        $statusLabel.Text = "Surum kontrol tamamlandi."
+        $statusLabel.Text = "Version check completed."
     }
     catch {
-        $logBox.Text = "Surum kontrol hata verdi:`r`n$($_.Exception.Message)"
-        $statusLabel.Text = "Surum kontrol hata verdi."
+        $logBox.Text = "Version check failed:`r`n$($_.Exception.Message)"
+        $statusLabel.Text = "Version check failed."
     }
 })
 
@@ -394,7 +570,7 @@ $openLogsButton.Add_Click({
 $closeButton.Add_Click({
     if ($null -ne $script:ActiveProcess -and -not $script:ActiveProcess.HasExited) {
         [System.Windows.Forms.MessageBox]::Show(
-            "Islem devam ediyor. Bitmeden kapatmayin.`r`nLog: $script:ActiveLogPath",
+            "An operation is still running. Do not close before it finishes.`r`nLog: $script:ActiveLogPath",
             "Revit MCP Installer",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
@@ -407,11 +583,13 @@ $form.Add_FormClosing({
     if ($null -ne $script:ActiveProcess -and -not $script:ActiveProcess.HasExited) {
         $_.Cancel = $true
         [System.Windows.Forms.MessageBox]::Show(
-            "Islem devam ediyor. Bitmeden kapatmayin.`r`nLog: $script:ActiveLogPath",
+            "An operation is still running. Do not close before it finishes.`r`nLog: $script:ActiveLogPath",
             "Revit MCP Installer",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
     }
 })
+
+Set-ButtonsEnabled -Enabled $true
 
 [void][System.Windows.Forms.Application]::Run($form)

@@ -39,7 +39,8 @@ param(
     [switch]$SkipCodexUserIntegration,
     [switch]$SkipProxySetup,
     [switch]$NoScheduledTask,
-    [switch]$RunNow
+    [switch]$RunNow,
+    [switch]$ForceUpdate
 )
 
 $ErrorActionPreference = "Stop"
@@ -144,7 +145,8 @@ function Write-JsonFile {
 function Invoke-InitialUpdateCheck {
     param(
         [string]$UpdaterPath,
-        [string]$UpdaterConfigPath
+        [string]$UpdaterConfigPath,
+        [switch]$ForceUpdate
     )
 
     if ($env:REVIT_MCP_AUDIT_ONLY) {
@@ -152,7 +154,12 @@ function Invoke-InitialUpdateCheck {
         return
     }
 
-    & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup
+    $arguments = @("-ConfigPath", $UpdaterConfigPath, "-NoNotifyUser", "-AllowManualCodexSetup")
+    if ($ForceUpdate) {
+        $arguments += "-Force"
+    }
+
+    & $UpdaterPath @arguments
 }
 
 function Test-CurrentProcessElevated {
@@ -890,7 +897,7 @@ if ($NoScheduledTask) {
     if ($RunNow) {
         Write-Host ""
         Write-Host "Running initial update check..."
-        Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath
+        Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate
     }
     return
 }
@@ -928,7 +935,7 @@ Write-Host "Show version    : $versionCommandPath" -ForegroundColor Green
 if ($RunNow) {
     Write-Host ""
     Write-Host "Running initial update check..."
-    Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath
+    Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate
 }
 }
 catch {

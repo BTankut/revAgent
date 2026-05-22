@@ -36,6 +36,50 @@ function Get-VersionLabel {
     return $Version
 }
 
+function Get-VersionSortDate {
+    param([string]$Version)
+
+    if ([string]::IsNullOrWhiteSpace($Version)) {
+        return $null
+    }
+
+    if ($Version -match '^(\d{4})\.(\d{2})\.(\d{2})\.(\d{4})') {
+        $hourMinute = $Matches[4]
+        return [datetime]::new(
+            [int]$Matches[1],
+            [int]$Matches[2],
+            [int]$Matches[3],
+            [int]$hourMinute.Substring(0, 2),
+            [int]$hourMinute.Substring(2, 2),
+            0)
+    }
+
+    if ($Version -match '^(\d{4})\.(\d{2})\.(\d{2})') {
+        return [datetime]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], 0, 0, 0)
+    }
+
+    return $null
+}
+
+function Compare-RevitMcpVersion {
+    param(
+        [string]$Left,
+        [string]$Right
+    )
+
+    if ([string]::Equals($Left, $Right, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return 0
+    }
+
+    $leftDate = Get-VersionSortDate -Version $Left
+    $rightDate = Get-VersionSortDate -Version $Right
+    if ($null -ne $leftDate -and $null -ne $rightDate -and $leftDate -ne $rightDate) {
+        return [DateTime]::Compare($leftDate, $rightDate)
+    }
+
+    return [System.StringComparer]::OrdinalIgnoreCase.Compare($Left, $Right)
+}
+
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
 $defaultInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
 $defaultWorkRoot = Join-Path $defaultInstallRoot "updater"
@@ -70,7 +114,13 @@ elseif (-not [string]::IsNullOrWhiteSpace($channelVersion) -and $installedVersio
     $status = "current"
 }
 elseif (-not [string]::IsNullOrWhiteSpace($channelVersion)) {
-    $status = "update available: {0} -> {1}" -f $installedVersion, $channelVersion
+    $comparison = Compare-RevitMcpVersion -Left $installedVersion -Right $channelVersion
+    if ($comparison -lt 0) {
+        $status = "update available: {0} -> {1}" -f $installedVersion, $channelVersion
+    }
+    else {
+        $status = "restore available: {0} -> {1}" -f $installedVersion, $channelVersion
+    }
 }
 else {
     $status = "installed; channel could not be checked"
@@ -108,5 +158,8 @@ Write-Host "Config          : $ConfigPath"
 Write-Host "Manual update   : $manualUpdatePath"
 if ($status -like "update available:*") {
     Write-Host "Next step       : close Revit and run the manual update command above."
+}
+elseif ($status -like "restore available:*") {
+    Write-Host "Next step       : use Stable Restore in the updater GUI if you want to install the channel stable package."
 }
 Write-Host ""

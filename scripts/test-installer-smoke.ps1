@@ -185,6 +185,47 @@ try {
         )) {
         Assert-True ($installerParams -contains $name) "install-self-contained.ps1 lost public parameter -$name."
     }
+    $updaterTaskParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
+    foreach ($name in @("ChannelManifestPath", "RunNow", "ForceUpdate")) {
+        Assert-True ($updaterTaskParams -contains $name) "install-updater-task.ps1 lost public parameter -$name."
+    }
+
+    Write-Host "Test GUI updater exposes update and restore actions"
+    $guiText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Install-Revit-MCP-Updater-GUI.ps1")
+    Assert-True ($guiText -match 'Stable Restore') "GUI must expose a separate Stable Restore button."
+    Assert-True ($guiText -match '-ForceUpdate') "GUI restore action must force the channel package install."
+    Assert-True ($guiText -match 'UpdateEnabled') "GUI must gate the update button from channel status."
+    Assert-True ($guiText -notmatch 'Guncelle|Surum|Kapat|Kurulum|Kanal|Hazir|Islem|Calisiyor|Baslatilamadi|bulunamadi|hata') "GUI product strings must remain English."
+
+    Write-Host "Test updater version status distinguishes update from restore"
+    $versionStatusRoot = Join-Path $tempRoot "version-status"
+    $versionWorkRoot = Join-Path $versionStatusRoot "updater"
+    New-Item -ItemType Directory -Path $versionWorkRoot -Force | Out-Null
+    $channelPath = Join-Path $versionStatusRoot "stable.json"
+    $configPath = Join-Path $versionWorkRoot "updater-config.json"
+    Write-RevitMcpJsonFile -Path (Join-Path $versionWorkRoot "installed.json") -Value ([ordered]@{
+            version = "2026.05.22.localtest-abc"
+        })
+    Write-RevitMcpJsonFile -Path $configPath -Value ([ordered]@{
+            installRoot = $versionStatusRoot
+            workRoot = $versionWorkRoot
+            channelManifestPath = $channelPath
+        })
+    Write-RevitMcpJsonFile -Path $channelPath -Value ([ordered]@{
+            app = "revit-mcp-skill"
+            channel = "stable"
+            version = "2026.05.15.1259-b397869c"
+        })
+    $versionOutput = & (Join-Path $RepoRoot "installer\nas\show-installed-version.ps1") -ConfigPath $configPath 2>&1 6>&1 | Out-String
+    Assert-True ($versionOutput -match 'restore available') "Newer local/dev install should be reported as restore available against older stable."
+
+    Write-RevitMcpJsonFile -Path $channelPath -Value ([ordered]@{
+            app = "revit-mcp-skill"
+            channel = "stable"
+            version = "2026.05.23.1000-next"
+        })
+    $versionOutput = & (Join-Path $RepoRoot "installer\nas\show-installed-version.ps1") -ConfigPath $configPath 2>&1 6>&1 | Out-String
+    Assert-True ($versionOutput -match 'update available') "Older install should be reported as update available against newer stable."
 
     Write-Host "Test bundled Node MSI path quoting"
     $updaterText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
