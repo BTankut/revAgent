@@ -210,20 +210,22 @@ try {
     Assert-True ($taskStatusXaml -match 'Title="revAgent Status"') "Task status window title must use revAgent."
     Assert-True ($taskStatusXaml -match 'Your AI agent inside Revit\.') "Task status window must show the revAgent product tagline."
     Assert-True ($taskStatusXaml -match '2026 Baris Tankut') "Task status window must show the revAgent copyright footer."
-    Assert-True ($taskStatusXaml -match 'InstalledStatusText') "Task status window must expose the local update timestamp line."
+    Assert-True ($taskStatusXaml -match 'BuildStatusText') "Task status window must expose the installed build identifier line."
     Assert-True ($taskStatusXaml -match 'StableStatusText') "Task status window must expose the stable channel version line."
     Assert-True ($taskStatusXaml -match 'WindowStyle="SingleBorderWindow"') "Task status window must expose a normal minimizable window frame."
     Assert-True ($taskStatusXaml -match 'ShowInTaskbar="True"') "Task status window must be visible in the taskbar."
     Assert-True ($taskStatusXaml -notmatch 'Revit MCP|Recent MCP') "Task status window XAML must not expose internal MCP wording."
     Assert-True ($taskStatusCode -notmatch 'Revit MCP is working|Revit MCP task|Revit MCP version') "Task status code must not expose internal MCP wording."
-    Assert-True ($taskStatusCode -match 'BuildDisplay') "Task status code must present a user-friendly build label."
-    Assert-True ($taskStatusCode -match 'FormatInstalledLine') "Task status code must present a concise last-updated label."
+    Assert-True ($taskStatusCode -match 'VersionDisplay') "Task status code must present the installed product version label."
+    Assert-True ($taskStatusCode -match 'BuildDisplay') "Task status code must present a user-friendly build identifier label."
     Assert-True ($taskStatusCode -match 'FormatStableLine') "Task status code must present a concise stable-version label."
     $versionInfoCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpVersionInfo.cs")
     Assert-True ($versionInfoCode -match 'channelManifestPath') "Version info must read the configured channel manifest path."
     Assert-True ($versionInfoCode -match 'publishedAtUtc') "Version info must use release/channel publish timestamps when available."
-    Assert-True ($versionInfoCode -match 'yyyy-MM-dd HH:mm') "Task status metadata must use a sortable timestamp format with time."
-    Assert-True ($versionInfoCode -match 'Updated ') "Version info must label the local update timestamp clearly."
+    Assert-True ($versionInfoCode -match 'Version ') "Version info must label the installed product version clearly."
+    Assert-True ($versionInfoCode -match 'Build ') "Version info must label the build identifier clearly."
+    Assert-True ($versionInfoCode -match 'Installed on this PC') "Version info must keep local install time in support details only."
+    Assert-True ($versionInfoCode -notmatch 'Updated ') "Task status metadata must not expose local install time as the user-facing version."
     Assert-True ($versionInfoCode -match 'Stable ') "Version info must label the available stable version clearly."
     Assert-True ($taskStatusController -match 'revAgent Task Status UI') "Task status UI thread should use the product name."
 
@@ -258,6 +260,11 @@ try {
         })
     $versionOutput = & (Join-Path $RepoRoot "installer\nas\show-installed-version.ps1") -ConfigPath $configPath 2>&1 6>&1 | Out-String
     Assert-True ($versionOutput -match 'update available') "Older install should be reported as update available against newer stable."
+
+    Write-Host "Test release version identity"
+    $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
+    Assert-True ($publishText -match 'rev-list", "--count", "HEAD"') "Default release version must use a monotonically increasing git build number."
+    Assert-True ($publishText -notmatch 'yyyy\.MM\.dd\.HHmm') "Default release version must not use local wall-clock minutes as the version identity."
 
     Write-Host "Test bundled Node MSI path quoting"
     $updaterText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")

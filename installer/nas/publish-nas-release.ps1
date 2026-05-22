@@ -193,6 +193,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\install-self-co
 
 $commit = Get-GitValue -Repository $RepoRoot -Arguments @("rev-parse", "HEAD") -Fallback "unknown"
 $shortCommit = if ($commit -ne "unknown" -and $commit.Length -ge 8) { $commit.Substring(0, 8) } else { "nogit" }
+$commitCount = Get-GitValue -Repository $RepoRoot -Arguments @("rev-list", "--count", "HEAD") -Fallback "0"
+if ($commitCount -notmatch '^\d+$') {
+    $commitCount = "0"
+}
 $branch = Get-GitValue -Repository $RepoRoot -Arguments @("branch", "--show-current") -Fallback "unknown"
 $dirtyStatus = Get-GitValue -Repository $RepoRoot -Arguments @("status", "--porcelain") -Fallback ""
 $isDirty = -not [string]::IsNullOrWhiteSpace($dirtyStatus)
@@ -202,7 +206,7 @@ if ($isDirty -and -not $AllowDirty) {
 }
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
-    $Version = "{0}-{1}" -f (Get-Date -Format "yyyy.MM.dd.HHmm"), $shortCommit
+    $Version = "{0}.{1}-{2}" -f (Get-Date -Format "yyyy.MM.dd"), $commitCount, $shortCommit
 }
 Assert-SafeVersion -Value $Version
 

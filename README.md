@@ -187,9 +187,12 @@ the port. Set `REVIT_MCP_AUTOSTART=0` to disable automatic startup.
 
 While an automation task is running, the add-in shows a `revAgent Status`
 window in Revit with the task name, elapsed time, and a warning not to use
-Revit until the task finishes. The window appears in the Windows taskbar and
-can be minimized. Completed and failed states are shown with recent task
-history and stay visible until the user clicks `OK`. The
+Revit until the task finishes. The top-right status area shows the installed
+release `Version`, the traceable git `Build`, and whether the workstation is
+on the `Stable` channel target; local install time is kept in the tooltip for
+support only and is not used as the product version. The window appears in the
+Windows taskbar and can be minimized. Completed and failed states are shown
+with recent task history and stay visible until the user clicks `OK`. The
 window close button is treated as acknowledge/hide after completion; during a
 running task it is ignored so closing the status window cannot close or crash
 Revit. Recent history uses compact state symbols (`✓` for completed, `✕` for

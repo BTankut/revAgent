@@ -37,29 +37,27 @@ function Get-VersionLabel {
     return $Version
 }
 
-function Get-VersionSortDate {
+function Get-VersionNumericParts {
     param([string]$Version)
 
     if ([string]::IsNullOrWhiteSpace($Version)) {
         return $null
     }
 
-    if ($Version -match '^(\d{4})\.(\d{2})\.(\d{2})\.(\d{4})') {
-        $hourMinute = $Matches[4]
-        return [datetime]::new(
-            [int]$Matches[1],
-            [int]$Matches[2],
-            [int]$Matches[3],
-            [int]$hourMinute.Substring(0, 2),
-            [int]$hourMinute.Substring(2, 2),
-            0)
+    $baseVersion = ($Version -split '-', 2)[0]
+    $parts = @()
+    foreach ($part in ($baseVersion -split '\.')) {
+        if ($part -notmatch '^\d+$') {
+            break
+        }
+        $parts += [int64]$part
     }
 
-    if ($Version -match '^(\d{4})\.(\d{2})\.(\d{2})') {
-        return [datetime]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], 0, 0, 0)
+    if ($parts.Count -eq 0) {
+        return $null
     }
 
-    return $null
+    return $parts
 }
 
 function Compare-RevitMcpVersion {
@@ -72,10 +70,17 @@ function Compare-RevitMcpVersion {
         return 0
     }
 
-    $leftDate = Get-VersionSortDate -Version $Left
-    $rightDate = Get-VersionSortDate -Version $Right
-    if ($null -ne $leftDate -and $null -ne $rightDate -and $leftDate -ne $rightDate) {
-        return [DateTime]::Compare($leftDate, $rightDate)
+    $leftParts = @(Get-VersionNumericParts -Version $Left)
+    $rightParts = @(Get-VersionNumericParts -Version $Right)
+    if ($leftParts.Count -gt 0 -and $rightParts.Count -gt 0) {
+        $max = [Math]::Max($leftParts.Count, $rightParts.Count)
+        for ($i = 0; $i -lt $max; $i++) {
+            $leftValue = if ($i -lt $leftParts.Count) { $leftParts[$i] } else { -1 }
+            $rightValue = if ($i -lt $rightParts.Count) { $rightParts[$i] } else { -1 }
+            if ($leftValue -ne $rightValue) {
+                return [Math]::Sign($leftValue - $rightValue)
+            }
+        }
     }
 
     return [System.StringComparer]::OrdinalIgnoreCase.Compare($Left, $Right)

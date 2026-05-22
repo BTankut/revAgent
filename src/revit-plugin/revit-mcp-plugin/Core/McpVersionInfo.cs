@@ -14,6 +14,7 @@ namespace revit_mcp_plugin.Core
         private McpVersionInfo(
             string fullVersion,
             string shortVersion,
+            string versionDisplay,
             string buildDisplay,
             DateTime? packagePublishedAtUtc,
             DateTime? installedAtUtc,
@@ -25,6 +26,7 @@ namespace revit_mcp_plugin.Core
         {
             FullVersion = string.IsNullOrWhiteSpace(fullVersion) ? "development" : fullVersion;
             ShortVersion = string.IsNullOrWhiteSpace(shortVersion) ? "dev" : shortVersion;
+            VersionDisplay = string.IsNullOrWhiteSpace(versionDisplay) ? "Version " + FormatReleaseIdentifier(FullVersion) : versionDisplay;
             BuildDisplay = string.IsNullOrWhiteSpace(buildDisplay) ? "Build " + ShortVersion : buildDisplay;
             PackagePublishedAtUtc = packagePublishedAtUtc;
             InstalledAtUtc = installedAtUtc;
@@ -38,6 +40,8 @@ namespace revit_mcp_plugin.Core
         public string FullVersion { get; private set; }
 
         public string ShortVersion { get; private set; }
+
+        public string VersionDisplay { get; private set; }
 
         public string BuildDisplay { get; private set; }
 
@@ -66,7 +70,7 @@ namespace revit_mcp_plugin.Core
                 }
             }
 
-            return new McpVersionInfo("development", "dev", "Build dev", null, null, string.Empty, string.Empty, null, null, null);
+            return new McpVersionInfo("development", "dev", "Version dev", "Build dev", null, null, string.Empty, string.Empty, null, null, null);
         }
 
         private static McpVersionInfo TryRead(string path)
@@ -96,7 +100,8 @@ namespace revit_mcp_plugin.Core
                 return new McpVersionInfo(
                     fullVersion,
                     Shorten(fullVersion),
-                    FormatBuildDisplay(fullVersion, packagePublishedAtUtc ?? installedAtUtc),
+                    FormatVersionDisplay(fullVersion),
+                    FormatBuildDisplay(fullVersion),
                     packagePublishedAtUtc,
                     installedAtUtc,
                     channelVersion,
@@ -203,63 +208,86 @@ namespace revit_mcp_plugin.Core
             return version.Length <= 12 ? version : version.Substring(0, 12);
         }
 
-        private static string FormatBuildDisplay(string version, DateTime? packagePublishedAtUtc)
+        private static string FormatReleaseIdentifier(string version)
         {
-            if (packagePublishedAtUtc.HasValue)
+            if (string.IsNullOrWhiteSpace(version))
             {
-                return "Build " + FormatSortTimestamp(packagePublishedAtUtc.Value.ToLocalTime());
+                return "dev";
             }
 
-            DateTime? versionDate = TryParseVersionDate(version, requireTime: true);
-            if (versionDate.HasValue)
+            string trimmed = version.Trim();
+            Match commit = Regex.Match(trimmed, @"^(?<release>.+)-(?<commit>[0-9a-fA-F]{7,40})$");
+            if (commit.Success)
             {
-                return "Build " + FormatSortTimestamp(versionDate.Value);
+                return commit.Groups["release"].Value;
             }
 
-            DateTime? dateOnly = TryParseVersionDate(version, requireTime: false);
-            string suffix = ExtractVersionSuffix(version);
-            if (dateOnly.HasValue && !string.IsNullOrWhiteSpace(suffix))
-            {
-                return "Build " + dateOnly.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + " " + suffix;
-            }
-
-            return "Build " + Shorten(version);
+            return trimmed.Length <= 28 ? trimmed : trimmed.Substring(0, 28);
         }
 
-        public string FormatInstalledLine()
+        private static string ExtractBuildIdentifier(string version)
         {
-            if (!InstalledAtUtc.HasValue)
+            if (string.IsNullOrWhiteSpace(version))
             {
-                return string.Empty;
+                return "dev";
             }
 
-            return "Updated " + FormatSortTimestamp(InstalledAtUtc.Value.ToLocalTime());
+            Match commit = Regex.Match(version.Trim(), @"-([0-9a-fA-F]{7,12})\b");
+            if (commit.Success)
+            {
+                return commit.Groups[1].Value.ToLowerInvariant();
+            }
+
+            return Shorten(version);
+        }
+
+        private static string FormatVersionDisplay(string version)
+        {
+            return "Version " + FormatReleaseIdentifier(version);
+        }
+
+        private static string FormatBuildDisplay(string version)
+        {
+            return "Build " + ExtractBuildIdentifier(version);
         }
 
         public string FormatStableLine()
         {
-            if (!string.IsNullOrWhiteSpace(ChannelDisplay))
+            if (string.IsNullOrWhiteSpace(ChannelVersion))
             {
-                return "Stable " + ChannelDisplay;
+                return string.Empty;
             }
 
-            if (!string.IsNullOrWhiteSpace(ChannelVersion))
+            if (string.Equals(FullVersion, ChannelVersion, StringComparison.OrdinalIgnoreCase))
             {
-                return "Stable " + Shorten(ChannelVersion);
+                return "Stable current";
             }
 
-            return string.Empty;
+            return "Stable " + FormatReleaseIdentifier(ChannelVersion);
         }
 
         public string FormatToolTip()
         {
             StringBuilder builder = new StringBuilder();
-            builder.Append("revAgent build: ").Append(FullVersion);
+            builder.Append("revAgent version: ").Append(FullVersion);
+
+            string buildIdentifier = ExtractBuildIdentifier(FullVersion);
+            if (!string.IsNullOrWhiteSpace(buildIdentifier))
+            {
+                builder.AppendLine();
+                builder.Append("Build: ").Append(buildIdentifier);
+            }
+
+            if (PackagePublishedAtUtc.HasValue)
+            {
+                builder.AppendLine();
+                builder.Append("Published: ").Append(FormatSortTimestamp(PackagePublishedAtUtc.Value.ToLocalTime()));
+            }
 
             if (InstalledAtUtc.HasValue)
             {
                 builder.AppendLine();
-                builder.Append("Last updated: ").Append(FormatSortTimestamp(InstalledAtUtc.Value.ToLocalTime()));
+                builder.Append("Installed on this PC: ").Append(FormatSortTimestamp(InstalledAtUtc.Value.ToLocalTime()));
             }
 
             if (!string.IsNullOrWhiteSpace(ChannelVersion))
@@ -297,25 +325,7 @@ namespace revit_mcp_plugin.Core
                 JObject json = JObject.Parse(File.ReadAllText(path));
                 channelVersion = (string)json["version"] ?? string.Empty;
                 publishedAtUtc = ReadUtcDate(json, "publishedAtUtc");
-
-                DateTime? versionDate = TryParseVersionDate(channelVersion, requireTime: true);
-                if (versionDate.HasValue)
-                {
-                    channelDisplay = FormatSortTimestamp(versionDate.Value);
-                }
-                else if (publishedAtUtc.HasValue)
-                {
-                    channelDisplay = FormatSortTimestamp(publishedAtUtc.Value.ToLocalTime());
-                }
-                else
-                {
-                    DateTime? dateOnly = TryParseVersionDate(channelVersion, requireTime: false);
-                    string suffix = ExtractVersionSuffix(channelVersion);
-                    if (dateOnly.HasValue && !string.IsNullOrWhiteSpace(suffix))
-                    {
-                        channelDisplay = dateOnly.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + " " + suffix;
-                    }
-                }
+                channelDisplay = FormatReleaseIdentifier(channelVersion);
             }
             catch
             {

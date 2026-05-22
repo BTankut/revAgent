@@ -260,9 +260,9 @@ namespace revit_mcp_plugin.UI
         private void ApplyVersionInfo()
         {
             McpVersionInfo version = McpVersionInfo.Read();
-            VersionText.Text = version.BuildDisplay;
-            InstalledStatusText.Text = version.FormatInstalledLine();
-            InstalledStatusText.Visibility = string.IsNullOrWhiteSpace(InstalledStatusText.Text)
+            VersionText.Text = version.VersionDisplay;
+            BuildStatusText.Text = version.BuildDisplay;
+            BuildStatusText.Visibility = string.IsNullOrWhiteSpace(BuildStatusText.Text)
                 ? Visibility.Collapsed
                 : Visibility.Visible;
             StableStatusText.Text = version.FormatStableLine();
@@ -272,7 +272,7 @@ namespace revit_mcp_plugin.UI
 
             string tooltip = version.FormatToolTip();
             VersionText.ToolTip = tooltip;
-            InstalledStatusText.ToolTip = tooltip;
+            BuildStatusText.ToolTip = tooltip;
             StableStatusText.ToolTip = tooltip;
         }
 

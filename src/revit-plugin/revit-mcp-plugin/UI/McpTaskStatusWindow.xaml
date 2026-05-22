@@ -51,14 +51,14 @@
                                FontSize="11"
                                Foreground="#FF555555"
                                TextTrimming="CharacterEllipsis"
-                               Text="Build"/>
-                    <TextBlock x:Name="InstalledStatusText"
+                               Text="Version"/>
+                    <TextBlock x:Name="BuildStatusText"
                                Margin="0,1,0,0"
                                FontFamily="Segoe UI"
                                FontSize="9.5"
                                Foreground="#FF777777"
                                TextTrimming="CharacterEllipsis"
-                               Text="Updated"/>
+                               Text="Build"/>
                     <TextBlock x:Name="StableStatusText"
                                Margin="0,1,0,0"
                                FontFamily="Segoe UI"
