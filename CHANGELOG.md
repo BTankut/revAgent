@@ -132,6 +132,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Reduced coordination-image technical debt by making raster/highlight
   post-crop a fallback-only path. The default single-target path now frames in
   Revit view space first, then performs raster analysis only for QA metrics.
+- Added `targetVisualStyle` for coordination exports so debug/LLM evidence can
+  keep high-contrast highlighting while report-style output can use soft,
+  outline-only, or raw native target appearance. Each export clears stale
+  target-element overrides before applying the requested style.
 - Added `allowFinalUpscale=false` as the coordination-image default so the
   tool widens an under-resolved model crop and reports
   `target_fill_limited_by_source_resolution` instead of silently upscaling a

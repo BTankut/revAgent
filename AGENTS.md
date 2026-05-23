@@ -71,6 +71,9 @@ Available runtime tools:
   projection to tighten the 3D view crop box before raster export.
   Raster/highlight post-crop is only a fallback when model crop-box framing is
   unavailable; raster highlight pixels are QA metrics, not the framing source.
+  Use `targetVisualStyle="qa_high_contrast"` for debug/LLM QA,
+  `technical_report` or `outline_only` for report evidence, and `raw` when the
+  target should keep its native appearance.
 
 Practical use:
 

@@ -84,6 +84,7 @@ For coordination review around known element ids:
   "marginMm": 2000,
   "singleElementMarginMm": 300,
   "contextTransparency": 65,
+  "targetVisualStyle": "technical_report",
   "format": "png",
   "pixelSize": 1400,
   "preExportPixelSize": 0,
@@ -179,6 +180,17 @@ The response reports `files[].croppedToTargetHighlight`,
 `files[].highlightPixelCount`, `files[].actualHighlightFillRatio`,
 `files[].estimatedTargetFillRatio`, `files[].cropBasis`, and
 `files[].highlightCrop.cropBasis`.
+
+Use `targetVisualStyle` to match the output intent:
+
+- `qa_high_contrast`: strong neon target fill and thick lines for LLM/debug QA.
+- `technical_report`: softer linework and translucent fill for report-style
+  evidence.
+- `outline_only`: colored outline without surface fill.
+- `raw`: clears stale target-element overrides and applies no new target
+  override; only model framing/crop is applied.
+- `auto`: chooses high contrast for coordination/clash intent and a softer
+  report style for raw evidence.
 
 Do not use `export_revit_coordination_image` as the primary tool for live
 Revit view navigation, selected-element zoom, or opening an element in a new

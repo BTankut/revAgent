@@ -15,6 +15,7 @@ const intentSchema = z.enum(["raw_evidence", "coordination_overlay", "system_foc
 const formatSchema = z.enum(["png", "jpg_lossless", "jpg_medium", "tiff", "bmp", "targa"]);
 const dpiSchema = z.enum(["72", "150", "300", "600"]);
 const fitDirectionSchema = z.enum(["horizontal", "vertical"]);
+const targetVisualStyleSchema = z.enum(["auto", "qa_high_contrast", "technical_report", "outline_only", "raw"]);
 
 const fileTypeByFormat = {
   png: "PNG",
@@ -57,10 +58,11 @@ function csharpIntList(values) {
 export function registerExportRevitCoordinationImageTool(server) {
   server.tool(
     "export_revit_coordination_image",
-    "[VISUAL_ARTIFACT_EXPORT_ONLY] Create or reuse a visual QA 3D view, optionally section-box target elements, apply high-contrast coordination graphics, and export an image artifact. Use this when the user asks for PNG/JPEG/report/LLM visual evidence. Do not use this as the primary tool for live view navigation, selected-element zoom, or opening an element in a Revit view; for that workflow use create_3d_view_for_elements or show_element_in_plan_and_3d, then optionally export the active view with export_revit_view_image. It only writes review view settings; it does not create or modify MEP model elements.",
+    "[VISUAL_ARTIFACT_EXPORT_ONLY] Create or reuse a visual QA 3D view, optionally section-box target elements, apply a selectable target visual style, and export an image artifact. Use qa_high_contrast for debug/LLM evidence, technical_report or outline_only for report-style evidence, and raw when the target must keep native appearance. Use this when the user asks for PNG/JPEG/report/LLM visual evidence. Do not use this as the primary tool for live view navigation, selected-element zoom, or opening an element in a Revit view; for that workflow use create_3d_view_for_elements or show_element_in_plan_and_3d, then optionally export the active view with export_revit_view_image. It only writes review view settings; it does not create or modify MEP model elements.",
     {
       ...connectionTargetSchema(z),
       intent: intentSchema.optional().default("coordination_overlay"),
+      targetVisualStyle: targetVisualStyleSchema.optional().default("auto").describe("Target override style. auto chooses qa_high_contrast for coordination/clash and technical_report for raw/report-style evidence. raw applies no target override."),
       elementIds: z.array(z.union([z.number(), z.string()])).optional().describe("Optional element ids to focus/highlight. When provided, the review view receives a section box around these elements."),
       viewName: z.string().optional().default("DPE Visual QA - Coordination Export"),
       marginMm: z.number().min(0).max(20000).optional().default(2000),
@@ -85,6 +87,11 @@ export function registerExportRevitCoordinationImageTool(server) {
     async (args) => {
       const outputDir = path.resolve(args.outputDir || defaultOutputDir());
       const filePrefix = safePrefix(args.filePrefix);
+      const requestedIntent = args.intent || "coordination_overlay";
+      const requestedTargetVisualStyle = args.targetVisualStyle || "auto";
+      const resolvedTargetVisualStyle = requestedTargetVisualStyle === "auto"
+        ? (requestedIntent === "raw_evidence" ? "technical_report" : "qa_high_contrast")
+        : requestedTargetVisualStyle;
       const fileType = fileTypeByFormat[args.format || "png"];
       const resolution = resolutionByDpi[String(args.dpi || "150")];
       const fitDirection = fitDirectionByInput[args.fitDirection || "horizontal"];
@@ -105,7 +112,8 @@ var warnings = new List<string>();
 string outputDir = ${csharpString(outputDir)};
 string filePrefix = ${csharpString(filePrefix)};
 string desiredViewName = ${csharpString(args.viewName || "DPE Visual QA - Coordination Export")};
-string intent = ${csharpString(args.intent || "coordination_overlay")};
+string intent = ${csharpString(requestedIntent)};
+string targetVisualStyle = ${csharpString(resolvedTargetVisualStyle)};
 var requestedElementIds = ${csharpIntList(args.elementIds)};
 double marginFeet = ${marginMm} / 304.8;
 double singleElementMarginFeet = ${singleElementMarginMm} / 304.8;
@@ -329,35 +337,61 @@ if (merged != null) {
   }
 }
 
-var targetGraphics = new OverrideGraphicSettings();
-var targetColor = new Color(0, 255, 128);
-targetGraphics.SetProjectionLineColor(targetColor);
-targetGraphics.SetCutLineColor(targetColor);
-targetGraphics.SetProjectionLineWeight(12);
-targetGraphics.SetCutLineWeight(12);
-try { targetGraphics.SetHalftone(false); } catch {}
-try { targetGraphics.SetSurfaceTransparency(1); } catch {}
-try {
-  var solidFill = new FilteredElementCollector(document)
-    .OfClass(typeof(FillPatternElement))
-    .Cast<FillPatternElement>()
-    .FirstOrDefault(fp => fp.GetFillPattern() != null && fp.GetFillPattern().IsSolidFill);
-  if (solidFill != null) {
-    targetGraphics.SetSurfaceForegroundPatternId(solidFill.Id);
-    targetGraphics.SetSurfaceForegroundPatternColor(targetColor);
-    targetGraphics.SetSurfaceForegroundPatternVisible(true);
-    targetGraphics.SetCutForegroundPatternId(solidFill.Id);
-    targetGraphics.SetCutForegroundPatternColor(targetColor);
-    targetGraphics.SetCutForegroundPatternVisible(true);
+bool targetOverrideApplied = false;
+string targetOverrideMode = targetVisualStyle;
+int targetOverrideResetCount = 0;
+foreach (var element in targetElements) {
+  try {
+    reviewView.SetElementOverrides(element.Id, new OverrideGraphicSettings());
+    targetOverrideResetCount++;
   }
-}
-catch (Exception ex) {
-  warnings.Add("coordination_target_surface_override_failed:" + ex.Message);
+  catch { warnings.Add("coordination_element_override_reset_failed:" + element.Id.IntegerValue.ToString()); }
 }
 
-foreach (var element in targetElements) {
-  try { reviewView.SetElementOverrides(element.Id, targetGraphics); }
-  catch { warnings.Add("coordination_element_override_failed:" + element.Id.IntegerValue.ToString()); }
+if (!String.Equals(targetVisualStyle, "raw", System.StringComparison.OrdinalIgnoreCase)) {
+  var targetGraphics = new OverrideGraphicSettings();
+  var targetColor = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase)
+    ? new Color(0, 255, 128)
+    : new Color(0, 170, 255);
+  int lineWeight = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase) ? 12 : 4;
+  int surfaceTransparency = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase) ? 1 : 65;
+  bool applySurfaceFill =
+    String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase) ||
+    String.Equals(targetVisualStyle, "technical_report", System.StringComparison.OrdinalIgnoreCase);
+
+  targetGraphics.SetProjectionLineColor(targetColor);
+  targetGraphics.SetCutLineColor(targetColor);
+  targetGraphics.SetProjectionLineWeight(lineWeight);
+  targetGraphics.SetCutLineWeight(lineWeight);
+  try { targetGraphics.SetHalftone(false); } catch {}
+  if (applySurfaceFill) {
+    try { targetGraphics.SetSurfaceTransparency(surfaceTransparency); } catch {}
+    try {
+      var solidFill = new FilteredElementCollector(document)
+        .OfClass(typeof(FillPatternElement))
+        .Cast<FillPatternElement>()
+        .FirstOrDefault(fp => fp.GetFillPattern() != null && fp.GetFillPattern().IsSolidFill);
+      if (solidFill != null) {
+        targetGraphics.SetSurfaceForegroundPatternId(solidFill.Id);
+        targetGraphics.SetSurfaceForegroundPatternColor(targetColor);
+        targetGraphics.SetSurfaceForegroundPatternVisible(true);
+        targetGraphics.SetCutForegroundPatternId(solidFill.Id);
+        targetGraphics.SetCutForegroundPatternColor(targetColor);
+        targetGraphics.SetCutForegroundPatternVisible(true);
+      }
+    }
+    catch (Exception ex) {
+      warnings.Add("coordination_target_surface_override_failed:" + ex.Message);
+    }
+  }
+
+  foreach (var element in targetElements) {
+    try {
+      reviewView.SetElementOverrides(element.Id, targetGraphics);
+      targetOverrideApplied = true;
+    }
+    catch { warnings.Add("coordination_element_override_failed:" + element.Id.IntegerValue.ToString()); }
+  }
 }
 
 var contextGraphics = new OverrideGraphicSettings();
@@ -835,6 +869,10 @@ return new {
   tool = "export_revit_coordination_image",
   revitWriteAction = "review_view_only",
   intent = intent,
+  targetVisualStyle = targetVisualStyle,
+  targetOverrideApplied = targetOverrideApplied,
+  targetOverrideMode = targetOverrideMode,
+  targetOverrideResetCount = targetOverrideResetCount,
   view = new { id = reviewView.Id.IntegerValue, name = reviewView.Name, created = createdView, sectionBoxActive = reviewView.IsSectionBoxActive },
   framing = new {
     mode = framingMode,

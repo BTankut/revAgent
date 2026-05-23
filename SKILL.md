@@ -91,7 +91,9 @@ custom-code workflows.
   fallback when model crop-box framing is unavailable. `pixelSize` is the final
   image size, `preExportPixelSize` is the optional Revit source export size,
   and `allowFinalUpscale=false` prevents pixelated enlargement. Raster
-  highlight pixels are QA-only. Do not use it as the primary tool for live view navigation,
+  highlight pixels are QA-only. Use `targetVisualStyle` to choose
+  `qa_high_contrast`, `technical_report`, `outline_only`, or `raw` output.
+  Do not use it as the primary tool for live view navigation,
   selected-element zoom, or opening an element in a Revit view. It writes only
   review view settings; it does not create or modify ducts, pipes, terminals,
   fittings, or other physical MEP model elements.
@@ -230,7 +232,9 @@ the result. Treat `actualHighlightFillRatio` only as raster QA; if
 `target_fill_limited_by_source_resolution` appears, report it and adjust source
 resolution only if the user needs a sharper or tighter artifact. Keep generated
 image paths with the task notes so a human reviewer can reproduce the exact
-evidence.
+evidence. Use `targetVisualStyle="qa_high_contrast"` for debug/LLM QA,
+`technical_report` or `outline_only` for report-style evidence, and `raw` when
+the target must keep its native appearance.
 
 ### Element Evidence Workflow
 
