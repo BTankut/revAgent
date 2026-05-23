@@ -2160,6 +2160,65 @@ function Repair-RevitMcpScheduledTaskAction {
     Repair-RevitMcpHiddenScheduledTaskAction -Name $Name -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath -DailyAt $DailyAt
 }
 
+function Install-UpdaterToolsFromPackage {
+    param(
+        [string]$SourceRoot,
+        [string]$DestinationRoot,
+        [string]$ConfigPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SourceRoot) -or
+        -not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
+        return
+    }
+
+    New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+    foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1")) {
+        $source = Join-Path $SourceRoot $toolName
+        if (Test-Path -LiteralPath $source -PathType Leaf) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationRoot $toolName) -Force
+        }
+    }
+    $libSource = Join-Path (Split-Path -Parent $SourceRoot) "lib"
+    if (Test-Path -LiteralPath $libSource -PathType Container) {
+        $libDestination = Join-Path $DestinationRoot "lib"
+        if (Test-Path -LiteralPath $libDestination) {
+            Remove-Item -LiteralPath $libDestination -Recurse -Force
+        }
+        Copy-Item -LiteralPath $libSource -Destination $libDestination -Recurse -Force
+    }
+    $configSource = Join-Path (Split-Path -Parent $SourceRoot) "config"
+    if (-not (Test-Path -LiteralPath $configSource -PathType Container)) {
+        $configSource = Join-Path (Split-Path -Parent (Split-Path -Parent $SourceRoot)) "config"
+    }
+    if (Test-Path -LiteralPath $configSource -PathType Container) {
+        $configDestination = Join-Path $DestinationRoot "config"
+        if (Test-Path -LiteralPath $configDestination) {
+            Remove-Item -LiteralPath $configDestination -Recurse -Force
+        }
+        Copy-Item -LiteralPath $configSource -Destination $configDestination -Recurse -Force
+    }
+
+    $updaterPath = Join-Path $DestinationRoot "update-from-nas.ps1"
+    $versionToolPath = Join-Path $DestinationRoot "show-installed-version.ps1"
+    if (Test-Path -LiteralPath $updaterPath -PathType Leaf) {
+        @(
+            "@echo off",
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -NoNotifyUser -AllowManualCodexSetup",
+            "pause"
+        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Update-Revit-MCP-Now.cmd") -Encoding ASCII
+    }
+    if (Test-Path -LiteralPath $versionToolPath -PathType Leaf) {
+        @(
+            "@echo off",
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$versionToolPath`" -ConfigPath `"$ConfigPath`"",
+            "pause"
+        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Show-Revit-MCP-Version.cmd") -Encoding ASCII
+    }
+
+    Write-Host "Updater tools refreshed: $DestinationRoot"
+}
+
 $config = Import-UpdaterConfig -Path $ConfigPath
 $taskDailyAt = "12:00"
 if ($config) {
@@ -2413,104 +2472,122 @@ try {
 
     $installer = Join-Path $PackageTarget $packageLayout.installerRelativePath
     $docsServerPath = Join-Path $PackageTarget $packageLayout.docsServerRelativePath
-    $installArgs = @{
+    $fastPackageOnlyUpdate = $skipRevitPayloadInstall -and
+        $skipRuntimePayloadInstall -and
+        $skipDocsPayloadWork -and
+        $skipCodexSkillInstallForThisUpdate -and
+        $skipCodexMcpRegistrationForThisUpdate
+
+    if ($fastPackageOnlyUpdate) {
+        Write-Host "Fast update path : package/updater metadata only; self-contained installer skipped." -ForegroundColor Green
+        $nasToolsSource = Join-Path (Split-Path -Parent $installer) "nas"
+        Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $WorkRoot -ConfigPath $ConfigPath
+        Invoke-RevitMcpLogRetention -LogsRoot (Join-Path $WorkRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
+        Write-Host "Runtime dependencies: skipped; runtime payload unchanged."
+        Write-Host "Documentation server dependencies: skipped; docs payload unchanged."
+        Write-Host "Revit API index: skipped; docs payload unchanged."
+        Write-Host "Codex MCP registration: skipped; runtime/docs entry points unchanged."
+    }
+    else {
+        $installArgs = @{
         RevitVersion = $RevitVersion
         InstallRoot = $InstallRoot
         ServerTarget = $ServerTarget
         RevitInstallRoot = $RevitInstallRoot
-    }
-    if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
-        $installArgs["WorkspaceAgentsTarget"] = $WorkspaceAgentsTarget
-    }
-    if ($LegacyServerTargets.Count -gt 0) {
-        $installArgs["LegacyServerTargets"] = $LegacyServerTargets
-    }
-    if ($SkipCodexUserIntegration) {
-        $installArgs["SkipCodexUserIntegration"] = $true
-    }
-    if ($skipCodexSkillInstallForThisUpdate) {
-        $installArgs["SkipCodexSkillInstall"] = $true
-    }
-    $installArgs["SuppressNextSteps"] = $true
-    if ($skipRevitPayloadInstall) {
-        $installArgs["SkipRevitPayloadInstall"] = $true
-    }
-    if ($skipRuntimePayloadInstall) {
-        $installArgs["SkipRuntimePayloadInstall"] = $true
-    }
-
-    & $installer @installArgs
-
-    if (-not $SkipNpmInstall) {
-        $npmPath = Resolve-RequiredCommand -Name "npm.cmd" -Candidates @(
-            (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
-            (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
-        )
-        $powershellPath = Resolve-RequiredCommand -Name "powershell" -Candidates @(
-            (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
-        )
-
-        $npmDependencyCacheRoot = Join-Path $InstallRoot "dependencies\npm"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
+            $installArgs["WorkspaceAgentsTarget"] = $WorkspaceAgentsTarget
+        }
+        if ($LegacyServerTargets.Count -gt 0) {
+            $installArgs["LegacyServerTargets"] = $LegacyServerTargets
+        }
+        if ($SkipCodexUserIntegration) {
+            $installArgs["SkipCodexUserIntegration"] = $true
+        }
+        if ($skipCodexSkillInstallForThisUpdate) {
+            $installArgs["SkipCodexSkillInstall"] = $true
+        }
+        $installArgs["SuppressNextSteps"] = $true
+        if ($skipRevitPayloadInstall) {
+            $installArgs["SkipRevitPayloadInstall"] = $true
+        }
         if ($skipRuntimePayloadInstall) {
-            Write-Host "Runtime dependencies: skipped; runtime payload unchanged."
-        }
-        else {
-            Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
+            $installArgs["SkipRuntimePayloadInstall"] = $true
         }
 
-        $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
-        if ($skipDocsPayloadWork -and (Test-Path -LiteralPath $docsCachePath -PathType Leaf)) {
-            Write-Host "Documentation server dependencies: skipped; docs payload unchanged."
-            Write-Host "Revit API index: skipped; docs payload unchanged."
-        }
-        else {
-            Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
+        & $installer @installArgs
 
-            Invoke-External -FilePath $powershellPath -Arguments @(
-                "-ExecutionPolicy", "Bypass",
-                "-File", (Join-Path $docsServerPath "scripts\build-index.ps1"),
-                "-RevitRoot", $RevitInstallRoot,
-                "-OutputPath", $docsCachePath
-            ) -WorkingDirectory $docsServerPath
-        }
-    }
+        if (-not $SkipNpmInstall) {
+            $npmPath = Resolve-RequiredCommand -Name "npm.cmd" -Candidates @(
+                (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
+                (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
+            )
+            $powershellPath = Resolve-RequiredCommand -Name "powershell" -Candidates @(
+                (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
+            )
 
-    if ((-not $SkipCodexMcpRegistration) -and $skipCodexMcpRegistrationForThisUpdate) {
-        Write-Host "Codex MCP registration: skipped; runtime/docs entry points unchanged."
-    }
-    elseif (-not $SkipCodexMcpRegistration) {
-        Ensure-CodexDesktop
-        $nodePath = Resolve-RequiredCommand -Name "node.exe" -Candidates @(
-            (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
-            (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")
-        )
-        $runtimeServerPath = Join-Path $ServerTarget "build\index.js"
-        $docsServerEntryPath = Join-Path $docsServerPath "build\index.js"
-        $registeredWithCommand = $false
-        $codexPath = Resolve-CodexDesktopCommand
-        if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
-            try {
-                try {
-                    & $codexPath mcp remove revit-mcp 2>$null | Out-Null
-                }
-                catch {}
-                try {
-                    & $codexPath mcp remove revit-api-docs 2>$null | Out-Null
-                }
-                catch {}
-
-                Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-mcp", "--", $nodePath, $runtimeServerPath) -WorkingDirectory $WorkRoot
-                Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-api-docs", "--", $nodePath, $docsServerEntryPath) -WorkingDirectory $WorkRoot
-                $registeredWithCommand = $true
+            $npmDependencyCacheRoot = Join-Path $InstallRoot "dependencies\npm"
+            if ($skipRuntimePayloadInstall) {
+                Write-Host "Runtime dependencies: skipped; runtime payload unchanged."
             }
-            catch {
-                Write-Warning "Codex MCP command registration failed; updating config.toml directly. $($_.Exception.Message)"
+            else {
+                Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
+            }
+
+            $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
+            if ($skipDocsPayloadWork -and (Test-Path -LiteralPath $docsCachePath -PathType Leaf)) {
+                Write-Host "Documentation server dependencies: skipped; docs payload unchanged."
+                Write-Host "Revit API index: skipped; docs payload unchanged."
+            }
+            else {
+                Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
+
+                Invoke-External -FilePath $powershellPath -Arguments @(
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", (Join-Path $docsServerPath "scripts\build-index.ps1"),
+                    "-RevitRoot", $RevitInstallRoot,
+                    "-OutputPath", $docsCachePath
+                ) -WorkingDirectory $docsServerPath
             }
         }
 
-        if (-not $registeredWithCommand) {
-            Write-Host "Codex MCP command was not found; updating config.toml directly."
-            Register-CodexMcpServersInConfig -NodePath $nodePath -RuntimeServerPath $runtimeServerPath -DocsServerPath $docsServerEntryPath
+        if ((-not $SkipCodexMcpRegistration) -and $skipCodexMcpRegistrationForThisUpdate) {
+            Write-Host "Codex MCP registration: skipped; runtime/docs entry points unchanged."
+        }
+        elseif (-not $SkipCodexMcpRegistration) {
+            Ensure-CodexDesktop
+            $nodePath = Resolve-RequiredCommand -Name "node.exe" -Candidates @(
+                (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
+                (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")
+            )
+            $runtimeServerPath = Join-Path $ServerTarget "build\index.js"
+            $docsServerEntryPath = Join-Path $docsServerPath "build\index.js"
+            $registeredWithCommand = $false
+            $codexPath = Resolve-CodexDesktopCommand
+            if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
+                try {
+                    try {
+                        & $codexPath mcp remove revit-mcp 2>$null | Out-Null
+                    }
+                    catch {}
+                    try {
+                        & $codexPath mcp remove revit-api-docs 2>$null | Out-Null
+                    }
+                    catch {}
+
+                    Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-mcp", "--", $nodePath, $runtimeServerPath) -WorkingDirectory $WorkRoot
+                    Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-api-docs", "--", $nodePath, $docsServerEntryPath) -WorkingDirectory $WorkRoot
+                    $registeredWithCommand = $true
+                }
+                catch {
+                    Write-Warning "Codex MCP command registration failed; updating config.toml directly. $($_.Exception.Message)"
+                }
+            }
+
+            if (-not $registeredWithCommand) {
+                Write-Host "Codex MCP command was not found; updating config.toml directly."
+                Register-CodexMcpServersInConfig -NodePath $nodePath -RuntimeServerPath $runtimeServerPath -DocsServerPath $docsServerEntryPath
+            }
         }
     }
 
