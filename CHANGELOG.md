@@ -136,6 +136,11 @@ All notable Revit MCP workstation deployment changes are tracked here.
   keep high-contrast highlighting while report-style output can use soft,
   outline-only, or raw native target appearance. Each export clears stale
   target-element overrides before applying the requested style.
+- Made coordination export `auto` style report-friendly by default:
+  `coordination_overlay` resolves to `outline_only`, `raw_evidence` resolves
+  to `raw`, and strong `qa_high_contrast` highlighting now requires an
+  explicit style request. Missing target highlight pixels in `raw` mode are
+  returned as notices instead of trust-affecting warnings.
 - Added `allowFinalUpscale=false` as the coordination-image default so the
   tool widens an under-resolved model crop and reports
   `target_fill_limited_by_source_resolution` instead of silently upscaling a

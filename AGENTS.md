@@ -75,6 +75,8 @@ Available runtime tools:
   `technical_report` or `outline_only` for report evidence, and `raw` when the
   target should keep its native appearance. Keep high contrast for QA/debug;
   use softer styles only for report, presentation, or native technical output.
+  The `auto` style is report-friendly and never selects `qa_high_contrast`;
+  request `qa_high_contrast` explicitly when strong QA marking is required.
 
 Practical use:
 

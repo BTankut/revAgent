@@ -18,8 +18,8 @@ status preflight and single-command rule.
 
 - `export_revit_coordination_image`
   - Purpose: create or reuse a dedicated visual QA 3D view, optionally focus a
-    section box around selected elements, apply high-contrast overrides, and
-    export the result.
+    section box around selected elements, apply the requested target visual
+    style, and export the result.
   - Revit write action: review view settings only.
   - Best for: dense MEP coordination review where the model view is too noisy
     for an LLM to inspect reliably.
@@ -28,8 +28,9 @@ status preflight and single-command rule.
     camera on the target section box, and tighten the 3D view crop box from
     the model bounding-box projection before raster export. Post-process crop
     is only a fallback when model crop-box framing is unavailable.
-    Target-pixel detection is QA-only and produces warnings when exported
-    highlight pixels are not measurable.
+    Target-pixel detection is QA-only. Missing highlight pixels are reported as
+    warnings for surface-highlight styles and as notices for `raw` /
+    `outline_only`.
 
 Neither tool creates ducts, pipes, fittings, terminals, sprinklers, or other
 physical MEP model elements.
@@ -171,10 +172,12 @@ resolution.
 Raster color detection is only a QA pass after export: the detector
 accepts green, yellow/cyan, and high-chroma target output instead of only exact
 RGB green. If no target pixels are detected, the export is still considered
-valid when the model projection crop succeeded; the tool returns
-`target_highlight_pixels_not_detected` as a warning. `actualHighlightFillRatio`
-is only populated from real detected pixels. Use `estimatedTargetFillRatio`
-for the model-projection estimate.
+valid when the model projection crop succeeded. Surface-highlight styles return
+`target_highlight_pixels_not_detected` as a warning; `raw` and `outline_only`
+return `target_highlight_pixels_not_detected_visual_style_expected` as a notice
+because there may be no filled target pixels to detect. `actualHighlightFillRatio`
+is only populated from real detected pixels. Use `estimatedTargetFillRatio` for
+the model-projection estimate.
 The response reports `files[].croppedToTargetHighlight`,
 `files[].postProcessedCropApplied`, `files[].rasterPostCropApplied`,
 `files[].highlightPixelCount`, `files[].actualHighlightFillRatio`,
@@ -191,8 +194,10 @@ Use `targetVisualStyle` to match the output intent:
   surface fill.
 - `raw`: clears stale target-element overrides and applies no new target
   override; only model framing/crop is applied.
-- `auto`: chooses high contrast for coordination/clash intent and a softer
-  report style for raw evidence.
+- `auto`: report-friendly and never selects `qa_high_contrast` by itself.
+  `raw_evidence` resolves to `raw`, `coordination_overlay` resolves to
+  `outline_only`, and `system_focus` / `clash_clearance` resolve to
+  `technical_report`.
 
 Do not use `export_revit_coordination_image` as the primary tool for live
 Revit view navigation, selected-element zoom, or opening an element in a new

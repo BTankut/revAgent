@@ -39,11 +39,18 @@ function csharpIntList(values) {
         .map((value) => Math.trunc(value));
     return `new List<int> { ${ints.join(", ")} }`;
 }
+function resolveAutoTargetVisualStyle(intent) {
+    if (intent === "raw_evidence")
+        return "raw";
+    if (intent === "coordination_overlay")
+        return "outline_only";
+    return "technical_report";
+}
 export function registerExportRevitCoordinationImageTool(server) {
-    server.tool("export_revit_coordination_image", "[VISUAL_ARTIFACT_EXPORT_ONLY] Create or reuse a visual QA 3D view, optionally section-box target elements, apply a selectable target visual style, and export an image artifact. Use qa_high_contrast for debug/LLM evidence, technical_report or outline_only for report-style evidence, and raw when the target must keep native appearance. Use this when the user asks for PNG/JPEG/report/LLM visual evidence. Do not use this as the primary tool for live view navigation, selected-element zoom, or opening an element in a Revit view; for that workflow use create_3d_view_for_elements or show_element_in_plan_and_3d, then optionally export the active view with export_revit_view_image. It only writes review view settings; it does not create or modify MEP model elements.", {
+    server.tool("export_revit_coordination_image", "[VISUAL_ARTIFACT_EXPORT_ONLY] Create or reuse a visual QA 3D view, optionally section-box target elements, apply a selectable target visual style, and export an image artifact. Auto style is report-friendly and never selects qa_high_contrast by itself. Use qa_high_contrast explicitly for debug/LLM evidence, technical_report or outline_only for report-style evidence, and raw when the target must keep native appearance. Use this when the user asks for PNG/JPEG/report/LLM visual evidence. Do not use this as the primary tool for live view navigation, selected-element zoom, or opening an element in a Revit view; for that workflow use create_3d_view_for_elements or show_element_in_plan_and_3d, then optionally export the active view with export_revit_view_image. It only writes review view settings; it does not create or modify MEP model elements.", {
         ...connectionTargetSchema(z),
         intent: intentSchema.optional().default("coordination_overlay"),
-        targetVisualStyle: targetVisualStyleSchema.optional().default("auto").describe("Target override style. auto chooses qa_high_contrast for coordination/clash and technical_report for raw/report-style evidence. raw applies no target override."),
+        targetVisualStyle: targetVisualStyleSchema.optional().default("auto").describe("Target override style. auto is report-friendly: raw_evidence -> raw, coordination_overlay -> outline_only, system_focus/clash_clearance -> technical_report. qa_high_contrast is used only when explicitly requested. raw applies no target override."),
         elementIds: z.array(z.union([z.number(), z.string()])).optional().describe("Optional element ids to focus/highlight. When provided, the review view receives a section box around these elements."),
         viewName: z.string().optional().default("DPE Visual QA - Coordination Export"),
         marginMm: z.number().min(0).max(20000).optional().default(2000),
@@ -70,7 +77,7 @@ export function registerExportRevitCoordinationImageTool(server) {
         const requestedIntent = args.intent || "coordination_overlay";
         const requestedTargetVisualStyle = args.targetVisualStyle || "auto";
         const resolvedTargetVisualStyle = requestedTargetVisualStyle === "auto"
-            ? (requestedIntent === "raw_evidence" ? "technical_report" : "qa_high_contrast")
+            ? resolveAutoTargetVisualStyle(requestedIntent)
             : requestedTargetVisualStyle;
         const fileType = fileTypeByFormat[args.format || "png"];
         const resolution = resolutionByDpi[String(args.dpi || "150")];
@@ -88,6 +95,7 @@ export function registerExportRevitCoordinationImageTool(server) {
         const transparency = Math.trunc(args.contextTransparency ?? 65);
         const code = `
 var warnings = new List<string>();
+var notices = new List<string>();
 string outputDir = ${csharpString(outputDir)};
 string filePrefix = ${csharpString(filePrefix)};
 string desiredViewName = ${csharpString(args.viewName || "DPE Visual QA - Coordination Export")};
@@ -617,7 +625,13 @@ Func<string, object[]> analyzeCoordinationImageQuality = (f) => {
 
     bool highlightPixelsDetected = highlightCount >= 8 && maxX >= minX && maxY >= minY;
     if (!highlightPixelsDetected) {
-      warnings.Add("target_highlight_pixels_not_detected:" + System.IO.Path.GetFileName(f));
+      if (String.Equals(targetVisualStyle, "raw", System.StringComparison.OrdinalIgnoreCase) ||
+          String.Equals(targetVisualStyle, "outline_only", System.StringComparison.OrdinalIgnoreCase)) {
+        notices.Add("target_highlight_pixels_not_detected_visual_style_expected:" + targetVisualStyle + ":" + System.IO.Path.GetFileName(f));
+      }
+      else {
+        warnings.Add("target_highlight_pixels_not_detected:" + System.IO.Path.GetFileName(f));
+      }
     }
 
     bool modelProjectionAvailable = targetCropEstimateAvailable && targetElements.Count == 1;
@@ -891,7 +905,8 @@ return new {
   dpi = ${csharpString(String(args.dpi || "300"))},
   fitDirection = ${csharpString(args.fitDirection || "horizontal")},
   files = files,
-  warnings = warnings
+  warnings = warnings,
+  notices = notices
 };`;
         const response = await executeRevitCode(code, {
             ...executionOptionsFromArgs(args),
