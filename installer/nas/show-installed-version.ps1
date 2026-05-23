@@ -149,6 +149,9 @@ if ($report) {
     if ($report.versionTransition) {
         Write-Host "Last transition : $($report.versionTransition)"
     }
+    if ($report.pendingVersionTransition) {
+        Write-Host "Pending update  : $($report.pendingVersionTransition)"
+    }
     if ($report.message) {
         $messageSuffix = if ($reportMatchesCurrentChannel) { "" } else { " (from previous updater run)" }
         Write-Host "Last message    : $($report.message)$messageSuffix"

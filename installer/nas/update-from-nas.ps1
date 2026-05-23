@@ -1808,7 +1808,13 @@ function Write-UpdateReport {
     else {
         $null
     }
-    $transition = if ($targetReportVersion) {
+    $transition = if ($targetReportVersion -and $Status -eq "updated") {
+        "{0} -> {1}" -f (Get-VersionLabel $previousReportVersion), $targetReportVersion
+    }
+    else {
+        $null
+    }
+    $pendingTransition = if ($targetReportVersion -and ($Status -eq "update-available" -or $Status -eq "deferred-revit-close-required")) {
         "{0} -> {1}" -f (Get-VersionLabel $previousReportVersion), $targetReportVersion
     }
     else {
@@ -1829,6 +1835,7 @@ function Write-UpdateReport {
         targetVersion = $targetReportVersion
         installedVersion = $installedReportVersion
         versionTransition = $transition
+        pendingVersionTransition = $pendingTransition
         paths = [ordered]@{
             installRoot = $InstallRoot
             packageTarget = $PackageTarget

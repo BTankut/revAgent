@@ -221,7 +221,8 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   Desktop is installed but its command helper is missing, MCP entries are
   written directly to `%USERPROFILE%\.codex\config.toml`.
 - Pending updates that require the user to close Revit show a throttled user
-  notification instead of failing silently in the background.
+  notification instead of failing silently in the background. Status output
+  reports these as `Pending update`, not as completed version transitions.
 - Official Autodesk Revit and Windows system folders are not deleted.
 - Cleanup is limited to known Revit MCP-owned install paths.
 - The managed package target is refused if it is a Git working tree unless

@@ -70,6 +70,8 @@ All notable Revit MCP workstation deployment changes are tracked here.
   so first-time plan opens verify only the selected plan by default, with slower
   full verified fallback still available when the selected plan does not contain
   the element.
+- Changed updater status reporting so Revit-close deferrals are displayed as
+  pending updates rather than completed version transitions.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 
