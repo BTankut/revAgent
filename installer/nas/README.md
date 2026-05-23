@@ -178,6 +178,29 @@ This is still a full package download and local package replacement. It is not
 a byte-level delta patch. The install phase is incremental for the Revit payload
 and runtime payload when their fingerprints are unchanged.
 
+### Update Scope Matrix
+
+The updater decides from the release manifest, not from the version number
+alone. Each release stores component hashes and directory fingerprints, and the
+workstation compares them with the installed package before choosing an install
+path.
+
+| Change in release | Install path | Revit may stay open? | Notes |
+| --- | --- | --- | --- |
+| No change already installed | Current/no-op | Yes | Returns before proxy, task, Node/Codex, npm, and package work. |
+| Updater or installer scripts only | Fast package-only update | Yes | Refreshes the managed package and updater tools. `install-self-contained.ps1` is skipped. If the fast step fails, the updater warns and falls back to the full repair/install path. |
+| Runtime MCP server/tool code | Runtime payload update | Yes, if Revit payload is unchanged | Refreshes `C:\ProgramData\DPE\RevitMCP\runtime`, checks npm fingerprints/cache, and refreshes MCP registration when entry points changed. |
+| Revit add-in, command set, command payload, or add-in manifest | Revit payload update | No | If `Revit.exe` is running, the update is deferred and the user is told to save/sync, close Revit, and run update again. |
+| `SKILL.md` or `AGENTS.md` | Codex skill/workstation role refresh | Yes, if Revit payload is unchanged | Refreshes the machine Codex payload and user-profile junction/hardlink integration. |
+| Revit API docs MCP server | Docs payload update | Yes, if Revit payload is unchanged | Refreshes docs server dependencies/index only when the docs payload fingerprint changed. |
+| Mixed changes | Combined path | Depends on Revit payload | Any Revit payload change makes the release Revit-close-required. Non-Revit changes are applied together after that gate passes. |
+
+Fast package-only updates are intentionally narrow. They are allowed only when
+all of these are true: Revit payload unchanged, runtime payload unchanged, docs
+payload unchanged, Codex skill/AGENTS unchanged, and MCP entry points unchanged.
+If any one of those checks is false, the updater uses the normal installer path
+for that scope.
+
 The updater and installer share helper modules under `installer\lib` in the
 release package. When tools are copied to NAS `tools\`, the matching
 `tools\lib` and `tools\config` folders must be copied with them. Local updater

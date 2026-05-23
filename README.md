@@ -132,6 +132,15 @@ pulling and reinstalling on every machine.
 - Workstation updates check npm dependency lockfile markers and the managed
   local npm cache, then skip runtime dependency installation when the installed
   or cached `node_modules` already matches.
+- Release manifests classify changed surfaces before install. Updater-only
+  changes use a fast package/updater refresh path. Runtime MCP server changes
+  refresh only the runtime payload and related MCP registration. Revit add-in or
+  command payload changes are deferred until Revit is closed. Skill/AGENTS and
+  docs-server changes refresh their own payloads without touching Revit files
+  when the Revit payload is unchanged.
+- If the fast package-only path fails, the updater warns in the log/report and
+  falls back to the full repair/install path instead of leaving the workstation
+  half-updated.
 
 See `installer/nas/README.md` for the full first-time workflow. For the
 developer and code-assistant context needed to continue development from a

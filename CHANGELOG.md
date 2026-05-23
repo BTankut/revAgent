@@ -84,6 +84,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
   refresh step fails, the updater warns the user, records the fallback in the
   report, and continues through the full repair/install path instead of leaving
   the workstation half-updated.
+- Documented and test-locked the update scope matrix so updater-only, runtime,
+  Revit payload, Codex skill/AGENTS, and docs-server changes route through the
+  intended install path.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 
