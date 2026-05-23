@@ -66,8 +66,11 @@ export function registerExportRevitCoordinationImageTool(server) {
       marginMm: z.number().min(0).max(20000).optional().default(2000),
       singleElementMarginMm: z.number().min(0).max(20000).optional().default(300).describe("Maximum section-box margin when exactly one target element is exported. This keeps single-element QA exports tightly framed."),
       contextTransparency: z.number().int().min(0).max(90).optional().default(65),
-      pixelSize: z.number().int().min(200).max(10000).optional().default(4000),
-      enforcePixelSize: z.boolean().optional().default(true).describe("When true, post-processes PNG/JPEG/BMP/TIFF output so the requested fit direction dimension equals pixelSize. TARGA cannot be resized by this tool."),
+      pixelSize: z.number().int().min(200).max(10000).optional().default(4000).describe("Final image size for the requested fit direction after crop/downsample. For coordination crops, Revit may export a higher-resolution source first."),
+      preExportPixelSize: z.number().int().min(0).max(20000).optional().default(0).describe("Optional Revit source export size before crop/downsample. Use 0 or omit for automatic high-resolution source export on single-target model-projection crops."),
+      maxAutoPreExportPixelSize: z.number().int().min(1000).max(20000).optional().default(10000).describe("Upper bound for automatic high-resolution source exports used before single-target model-projection crops."),
+      allowFinalUpscale: z.boolean().optional().default(false).describe("When false, model-projection crops are widened instead of enlarging a tiny source crop to the final pixelSize. This preserves image quality even when targetMinFillRatio cannot be reached within Revit's source export limit."),
+      enforcePixelSize: z.boolean().optional().default(true).describe("When true, post-processes PNG/JPEG/BMP/TIFF output so the final requested fit direction dimension equals pixelSize. TARGA cannot be resized by this tool."),
       cropToTargetHighlight: z.boolean().optional().default(true).describe("When true, post-processes single-target coordination images using the Revit model bounding box/camera projection as the primary crop source. Raster highlight pixels are used only as QA metrics."),
       targetMinFillRatio: z.number().min(0.1).max(0.9).optional().default(0.4).describe("Minimum target occupancy used when sizing model-bounding-box projection crops. Raster highlight fill, when detected, is reported separately as QA."),
       highlightCropPaddingPx: z.number().int().min(0).max(2000).optional().default(24).describe("Debug fallback padding for highlight-pixel crops when model projection is not available."),
@@ -86,6 +89,9 @@ export function registerExportRevitCoordinationImageTool(server) {
       const resolution = resolutionByDpi[String(args.dpi || "150")];
       const fitDirection = fitDirectionByInput[args.fitDirection || "horizontal"];
       const pixelSize = Math.trunc(args.pixelSize || 4000);
+      const preExportPixelSize = Number.isFinite(Number(args.preExportPixelSize)) ? Math.max(0, Math.trunc(Number(args.preExportPixelSize))) : 0;
+      const maxAutoPreExportPixelSize = Number.isFinite(Number(args.maxAutoPreExportPixelSize)) ? Math.max(1000, Math.min(20000, Math.trunc(Number(args.maxAutoPreExportPixelSize)))) : 10000;
+      const allowFinalUpscale = args.allowFinalUpscale === true;
       const marginMm = Number.isFinite(Number(args.marginMm)) ? Number(args.marginMm) : 2000;
       const singleElementMarginMm = Number.isFinite(Number(args.singleElementMarginMm)) ? Number(args.singleElementMarginMm) : 300;
       const enforcePixelSize = args.enforcePixelSize !== false;
@@ -105,9 +111,15 @@ double marginFeet = ${marginMm} / 304.8;
 double singleElementMarginFeet = ${singleElementMarginMm} / 304.8;
 int contextTransparency = ${transparency};
 int requestedPixelSize = ${pixelSize};
+int requestedPreExportPixelSize = ${preExportPixelSize};
+int maxAutoPreExportPixelSize = ${maxAutoPreExportPixelSize};
+int revitExportPixelSize = requestedPixelSize;
+bool autoPreExportPixelSize = requestedPreExportPixelSize <= 0;
+string preExportPixelSizeReason = "same_as_final_pixel_size";
 string requestedFitDirection = ${csharpString(args.fitDirection || "horizontal")};
 bool enforcePixelSize = ${enforcePixelSize ? "true" : "false"};
 bool cropToTargetHighlight = ${cropToTargetHighlight ? "true" : "false"};
+bool allowFinalUpscale = ${allowFinalUpscale ? "true" : "false"};
 double targetMinFillRatio = ${targetMinFillRatio};
 int highlightCropPaddingPx = ${highlightCropPaddingPx};
 
@@ -177,6 +189,8 @@ bool targetCropEstimateAvailable = false;
 double targetCropCenterXRatio = 0.5;
 double targetCropCenterYRatio = 0.5;
 double targetCropFillRatioEstimate = 0.0;
+bool modelCropBoxApplied = false;
+double modelCropBoxTargetFillRatio = 0.0;
 
 Func<BoundingBoxXYZ, XYZ, double> projectedExtentOnAxis = (box, axis) => {
   if (box == null || axis == null) return 0.0;
@@ -256,6 +270,44 @@ if (merged != null) {
           if (local.Y < minLocalY) minLocalY = local.Y;
           if (local.Y > maxLocalY) maxLocalY = local.Y;
         }
+        if (cropToTargetHighlight && targetElements.Count == 1) {
+          try {
+            double safeFillRatioForViewCrop = Math.Max(0.1, Math.Min(0.9, targetMinFillRatio));
+            double targetLocalSpanX = Math.Max(0.000001, maxLocalX - minLocalX);
+            double targetLocalSpanY = Math.Max(0.000001, maxLocalY - minLocalY);
+            double desiredLocalSpan = Math.Max(targetLocalSpanX, targetLocalSpanY) / safeFillRatioForViewCrop;
+            double centerLocalXForCrop = (minLocalX + maxLocalX) / 2.0;
+            double centerLocalYForCrop = (minLocalY + maxLocalY) / 2.0;
+            var tightenedCrop = new BoundingBoxXYZ();
+            tightenedCrop.Transform = viewCrop.Transform;
+            tightenedCrop.Min = new XYZ(
+              centerLocalXForCrop - (desiredLocalSpan / 2.0),
+              centerLocalYForCrop - (desiredLocalSpan / 2.0),
+              viewCrop.Min.Z);
+            tightenedCrop.Max = new XYZ(
+              centerLocalXForCrop + (desiredLocalSpan / 2.0),
+              centerLocalYForCrop + (desiredLocalSpan / 2.0),
+              viewCrop.Max.Z);
+            reviewView.CropBox = tightenedCrop;
+            modelCropBoxApplied = true;
+            viewCrop = reviewView.CropBox;
+            inverseCropTransform = viewCrop.Transform.Inverse;
+            minLocalX = Double.MaxValue;
+            maxLocalX = Double.MinValue;
+            minLocalY = Double.MaxValue;
+            maxLocalY = Double.MinValue;
+            foreach (var point in targetPoints) {
+              var local = inverseCropTransform.OfPoint(point);
+              if (local.X < minLocalX) minLocalX = local.X;
+              if (local.X > maxLocalX) maxLocalX = local.X;
+              if (local.Y < minLocalY) minLocalY = local.Y;
+              if (local.Y > maxLocalY) maxLocalY = local.Y;
+            }
+          }
+          catch (Exception ex) {
+            warnings.Add("coordination_model_crop_box_tighten_failed:" + ex.Message);
+          }
+        }
         double cropSpanX = Math.Max(0.000001, viewCrop.Max.X - viewCrop.Min.X);
         double cropSpanY = Math.Max(0.000001, viewCrop.Max.Y - viewCrop.Min.Y);
         double centerLocalX = (minLocalX + maxLocalX) / 2.0;
@@ -263,6 +315,7 @@ if (merged != null) {
         targetCropCenterXRatio = Math.Max(0.02, Math.Min(0.98, (centerLocalX - viewCrop.Min.X) / cropSpanX));
         targetCropCenterYRatio = Math.Max(0.02, Math.Min(0.98, 1.0 - ((centerLocalY - viewCrop.Min.Y) / cropSpanY)));
         targetCropFillRatioEstimate = Math.Max((maxLocalX - minLocalX) / cropSpanX, (maxLocalY - minLocalY) / cropSpanY);
+        modelCropBoxTargetFillRatio = targetCropFillRatioEstimate;
         targetCropEstimateAvailable = targetCropFillRatioEstimate > 0.0;
       }
     }
@@ -327,11 +380,25 @@ foreach (var bic in contextCategories) {
 }
 
 var before = new HashSet<string>(System.IO.Directory.GetFiles(outputDir).Select(f => System.IO.Path.GetFullPath(f)), System.StringComparer.OrdinalIgnoreCase);
+
+if (requestedPreExportPixelSize > 0) {
+  revitExportPixelSize = Math.Max(200, Math.Min(20000, requestedPreExportPixelSize));
+  preExportPixelSizeReason = "explicit_pre_export_pixel_size";
+}
+else if (cropToTargetHighlight && targetElements.Count == 1 && targetCropEstimateAvailable && targetCropFillRatioEstimate > 0.000001) {
+  double safeFillRatioForSource = Math.Max(0.1, Math.Min(0.9, targetMinFillRatio));
+  int neededSourceSize = (int)Math.Ceiling((double)requestedPixelSize * safeFillRatioForSource / Math.Max(0.000001, targetCropFillRatioEstimate));
+  revitExportPixelSize = Math.Max(requestedPixelSize, Math.Min(maxAutoPreExportPixelSize, neededSourceSize));
+  preExportPixelSizeReason = revitExportPixelSize > requestedPixelSize
+    ? "auto_model_bbox_projection_source_resolution"
+    : "auto_same_as_final_pixel_size";
+}
+
 var options = new ImageExportOptions();
 options.FilePath = System.IO.Path.Combine(outputDir, sanitize(filePrefix));
 options.ExportRange = ExportRange.SetOfViews;
 options.ZoomType = ZoomFitType.FitToPage;
-options.PixelSize = ${pixelSize};
+options.PixelSize = revitExportPixelSize;
 options.FitDirection = FitDirectionType.${fitDirection};
 options.ImageResolution = ImageResolution.${resolution};
 options.HLRandWFViewsFileType = ImageFileType.${fileType};
@@ -555,6 +622,16 @@ Func<string, object[]> cropImageToModelProjection = (f) => {
       int desiredSide = Math.Min(minImageSide, Math.Max(24, Math.Min(projectionDesiredSide, contextGuardSide)));
       cropWidth = Math.Min(width, desiredSide);
       cropHeight = Math.Min(height, desiredSide);
+      if (enforcePixelSize && !allowFinalUpscale) {
+        int minimumSourceCropSide = Math.Min(minImageSide, Math.Max(1, requestedPixelSize));
+        if (cropWidth < minimumSourceCropSide || cropHeight < minimumSourceCropSide) {
+          cropWidth = Math.Min(width, Math.Max(cropWidth, minimumSourceCropSide));
+          cropHeight = Math.Min(height, Math.Max(cropHeight, minimumSourceCropSide));
+          if (projectionDesiredSide < minimumSourceCropSide) {
+            warnings.Add("target_fill_limited_by_source_resolution:" + System.IO.Path.GetFileName(f));
+          }
+        }
+      }
       double centerX = Math.Max(0.0, Math.Min(1.0, targetCropCenterXRatio)) * (double)width;
       double centerY = Math.Max(0.0, Math.Min(1.0, targetCropCenterYRatio)) * (double)height;
       cropX = (int)Math.Round(centerX - ((double)cropWidth / 2.0));
@@ -591,7 +668,16 @@ Func<string, object[]> cropImageToModelProjection = (f) => {
 
     if (cropWidth <= 0 || cropHeight <= 0 ||
         (cropWidth >= width * 0.98 && cropHeight >= height * 0.98)) {
-      return new object[] { false, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, 0, targetMinFillRatio, 0.0, "none", estimatedTargetFillRatio, highlightPixelsDetected };
+      int fullImageHighlightDimension = 0;
+      double fullImageHighlightFillRatio = 0.0;
+      if (highlightPixelsDetected) {
+        int highlightWidth = Math.Max(1, maxX - minX + 1);
+        int highlightHeight = Math.Max(1, maxY - minY + 1);
+        fullImageHighlightDimension = Math.Max(highlightWidth, highlightHeight);
+        fullImageHighlightFillRatio = (double)fullImageHighlightDimension / (double)Math.Max(width, height);
+      }
+      string nonRasterCropBasis = modelProjectionAvailable ? "model_bbox_projection" : "none";
+      return new object[] { false, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, fullImageHighlightDimension, targetMinFillRatio, fullImageHighlightFillRatio, nonRasterCropBasis, estimatedTargetFillRatio, highlightPixelsDetected };
     }
 
     int maxHighlightDimension = 0;
@@ -642,6 +728,7 @@ Func<string, object> buildFileSummary = (f) => {
   bool highlightPixelsDetected = false;
   double actualHighlightFillRatio = 0.0;
   double estimatedTargetFillRatio = 0.0;
+  bool sourceCropUpscaledToFinal = false;
   string cropBasis = "none";
   object highlightCrop = null;
   try {
@@ -654,17 +741,27 @@ Func<string, object> buildFileSummary = (f) => {
       if (crop.Length >= 14 && crop[13] != null) estimatedTargetFillRatio = Convert.ToDouble(crop[13], System.Globalization.CultureInfo.InvariantCulture);
       if (crop.Length >= 15 && crop[14] != null) highlightPixelsDetected = Convert.ToBoolean(crop[14]);
       if (croppedToTargetHighlight) {
+        int sourceCropWidth = Convert.ToInt32(crop[5]);
+        int sourceCropHeight = Convert.ToInt32(crop[6]);
+        int sourceFitDimension = String.Equals(requestedFitDirection, "vertical", System.StringComparison.OrdinalIgnoreCase)
+          ? sourceCropHeight
+          : sourceCropWidth;
+        sourceCropUpscaledToFinal = enforcePixelSize && sourceFitDimension > 0 && sourceFitDimension < requestedPixelSize;
+        if (sourceCropUpscaledToFinal) {
+          warnings.Add("image_source_crop_below_final_pixel_size:" + System.IO.Path.GetFileName(f));
+        }
         highlightCrop = new {
           originalWidth = Convert.ToInt32(crop[1]),
           originalHeight = Convert.ToInt32(crop[2]),
           x = Convert.ToInt32(crop[3]),
           y = Convert.ToInt32(crop[4]),
-          width = Convert.ToInt32(crop[5]),
-          height = Convert.ToInt32(crop[6]),
+          width = sourceCropWidth,
+          height = sourceCropHeight,
           maxHighlightDimension = Convert.ToInt32(crop[9]),
           targetMinFillRatio = Convert.ToDouble(crop[10], System.Globalization.CultureInfo.InvariantCulture),
           actualHighlightFillRatio = actualHighlightFillRatio,
           estimatedTargetFillRatio = estimatedTargetFillRatio,
+          sourceCropUpscaledToFinal = sourceCropUpscaledToFinal,
           cropBasis = cropBasis
         };
       }
@@ -688,7 +785,12 @@ Func<string, object> buildFileSummary = (f) => {
     width = width,
     height = height,
     requestedPixelSize = requestedPixelSize,
+    preExportPixelSize = revitExportPixelSize,
+    requestedPreExportPixelSize = requestedPreExportPixelSize,
+    autoPreExportPixelSize = autoPreExportPixelSize,
+    preExportPixelSizeReason = preExportPixelSizeReason,
     resizedToRequestedPixelSize = resizedToRequestedPixelSize,
+    sourceCropUpscaledToFinal = sourceCropUpscaledToFinal,
     croppedToTargetHighlight = croppedToTargetHighlight,
     croppedToModelProjection = cropBasis == "model_bbox_projection",
     highlightPixelCount = highlightPixelCount,
@@ -720,6 +822,8 @@ return new {
     mode = framingMode,
     sectionBoxApplied = sectionBoxApplied,
     cameraFramedToTargets = cameraFramedToTargets,
+    modelCropBoxApplied = modelCropBoxApplied,
+    modelCropBoxTargetFillRatio = modelCropBoxTargetFillRatio,
     framingDistanceFeet = framingDistanceFeet
   },
   requestedElementCount = requestedElementIds.Count,
@@ -730,13 +834,19 @@ return new {
   format = ${csharpString(args.format || "png")},
   pixelSize = ${pixelSize},
   requestedPixelSize = ${pixelSize},
+  preExportPixelSize = revitExportPixelSize,
+  requestedPreExportPixelSize = requestedPreExportPixelSize,
+  maxAutoPreExportPixelSize = maxAutoPreExportPixelSize,
+  autoPreExportPixelSize = autoPreExportPixelSize,
+  preExportPixelSizeReason = preExportPixelSizeReason,
   enforcePixelSize = enforcePixelSize,
   cropToTargetHighlight = cropToTargetHighlight,
+  allowFinalUpscale = allowFinalUpscale,
   targetMinFillRatio = targetMinFillRatio,
   highlightCropPaddingPx = highlightCropPaddingPx,
   pixelSizeNote = enforcePixelSize
-    ? "PNG/JPEG/BMP/TIFF output is post-processed so the requested fit-direction dimension equals requestedPixelSize. TARGA reports actual Revit output dimensions."
-    : "pixelSize is the Revit export request. Check files[].width and files[].height for actual output dimensions.",
+    ? "For coordination crops, Revit may export a higher-resolution source first, crop that source, then downsample to requestedPixelSize. TARGA reports actual Revit output dimensions."
+    : "pixelSize is the final request, and preExportPixelSize is the Revit source export request. Check files[].width and files[].height for actual output dimensions.",
   marginMm = ${marginMm},
   singleElementMarginMm = ${singleElementMarginMm},
   effectiveMarginMm = effectiveMarginMm,

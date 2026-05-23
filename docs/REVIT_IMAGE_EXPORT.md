@@ -84,7 +84,10 @@ For coordination review around known element ids:
   "singleElementMarginMm": 300,
   "contextTransparency": 65,
   "format": "png",
-  "pixelSize": 4000,
+  "pixelSize": 1400,
+  "preExportPixelSize": 0,
+  "maxAutoPreExportPixelSize": 10000,
+  "allowFinalUpscale": false,
   "enforcePixelSize": true,
   "cropToTargetHighlight": true,
   "targetMinFillRatio": 0.4,
@@ -107,6 +110,14 @@ PNG at 300 DPI is the default because it keeps linework sharp and file sizes
 reasonable for Revit line drawings. Low-byte exports are not the default goal:
 LLM review needs readable text, tags, duct sizes, dimensions, grids, and
 leaders.
+For coordination crops, `pixelSize` is the final image size after crop and
+optional downsample. `preExportPixelSize` is the Revit source export size
+before crop. Leave `preExportPixelSize` at `0` for automatic high-resolution
+single-target crops: the tool estimates the needed source resolution from the
+model-bbox projection, caps it with `maxAutoPreExportPixelSize`, crops the
+high-resolution source, and then downsamples to the requested final
+`pixelSize`. By default `allowFinalUpscale=false`, so the crop is widened
+instead of enlarging a tiny low-resolution crop into a large final image.
 For `visible_region`, Revit can initially preserve the visible viewport aspect
 and return dimensions larger or taller than the requested `pixelSize`. With the
 default `enforcePixelSize=true`, the tool post-processes PNG/JPEG/BMP/TIFF
@@ -139,7 +150,21 @@ orientation centered on the target section box and reports
 `framing.cameraFramedToTargets`. Because Revit can still keep a wide 3D export
 canvas, `cropToTargetHighlight=true` uses the Revit model bounding box,
 section box, and camera projection as the primary crop source for single-target
-exports. Raster color detection is only a QA pass after export: the detector
+exports. Before raster export, the tool also tightens the reusable 3D view crop
+box from the projected model bbox and reports
+`framing.modelCropBoxApplied`; this is the primary quality path because Revit
+renders the target larger instead of relying on post-export magnification.
+In automatic mode the source Revit export can still be larger than the
+final image; `files[].preExportPixelSize`, `files[].preExportPixelSizeReason`,
+and `files[].sourceCropUpscaledToFinal` make that path auditable. If the model
+crop source still has fewer pixels than the final requested size, the tool
+returns `image_source_crop_below_final_pixel_size` so the caller can raise
+`preExportPixelSize` or `maxAutoPreExportPixelSize`. With the default
+`allowFinalUpscale=false`, the tool instead widens the crop to preserve source
+quality and reports `target_fill_limited_by_source_resolution` when the
+requested `targetMinFillRatio` cannot be achieved within the available source
+resolution.
+Raster color detection is only a QA pass after export: the detector
 accepts green, yellow/cyan, and high-chroma target output instead of only exact
 RGB green. If no target pixels are detected, the export is still considered
 valid when the model projection crop succeeded; the tool returns

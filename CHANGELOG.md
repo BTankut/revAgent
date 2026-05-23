@@ -121,6 +121,18 @@ All notable Revit MCP workstation deployment changes are tracked here.
   the primary crop basis, raster highlight pixels are QA-only, and
   `estimatedTargetFillRatio` is reported separately from real
   `actualHighlightFillRatio` measurements.
+- Split coordination-image source and final resolution: `pixelSize` is now the
+  final downsampled artifact size, while automatic or explicit
+  `preExportPixelSize` controls the high-resolution Revit source used before
+  model-bbox crop, preventing tiny crops from being enlarged into pixelated
+  review images.
+- Tightened the Revit 3D view crop box from the projected target model bbox
+  before raster export, so single-target coordination images render the target
+  larger at source instead of depending on post-export magnification.
+- Added `allowFinalUpscale=false` as the coordination-image default so the
+  tool widens an under-resolved model crop and reports
+  `target_fill_limited_by_source_resolution` instead of silently upscaling a
+  tiny source crop.
 - Normalized runtime response casing to canonical lowercase `success` without
   duplicate `Success` fields, and renamed probe-time modifiable-state fields so
   `apiProbeState.isModifiable` no longer looks like the idle UI editability
