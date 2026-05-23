@@ -170,6 +170,9 @@ Updater log retention is automatic. Install and update runs keep the latest
   stored lockfile marker already match, or the same lockfile exists in the
   managed local npm dependency cache, npm install is skipped and logged.
 - Re-registers Codex MCP entries through the current user's Codex Desktop command when available, otherwise by updating `%USERPROFILE%\.codex\config.toml` directly.
+- Enforces the standard Codex memory settings in `%USERPROFILE%\.codex\config.toml`
+  idempotently and removes legacy `.codex` backup artifacts created by older
+  installers.
 - Writes local and NAS report JSON files.
 - Repairs older workstation scheduled-task triggers so legacy logon/repeated
   checks are replaced by the daily 12:00 schedule.
@@ -187,7 +190,7 @@ path.
 
 | Change in release | Install path | Revit may stay open? | Notes |
 | --- | --- | --- | --- |
-| No change already installed | Current/no-op | Yes | Returns before proxy, task, Node/Codex, npm, and package work. |
+| No change already installed | Current/no-op | Yes | Returns before proxy, task, Codex Desktop, npm, and package work after lightweight Codex config/backup hygiene. |
 | Updater or installer scripts only | Fast package-only update | Yes | Refreshes the managed package and updater tools. `install-self-contained.ps1` is skipped. If the fast step fails, the updater warns and falls back to the full repair/install path. |
 | Runtime MCP server/tool code | Runtime payload update | Yes, if Revit payload is unchanged | Refreshes `C:\ProgramData\DPE\RevitMCP\runtime`, checks npm fingerprints/cache, and refreshes MCP registration when entry points changed. |
 | Revit add-in, command set, command payload, or add-in manifest | Revit payload update | No | If `Revit.exe` is running, the update is deferred and the user is told to save/sync, close Revit, and run update again. |
@@ -251,6 +254,12 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   background update checks do not block waiting for user setup. If Codex
   Desktop is installed but its command helper is missing, MCP entries are
   written directly to `%USERPROFILE%\.codex\config.toml`.
+- Codex memory settings are written idempotently. Existing `[features]` and
+  `[memories]` sections are reused; the updater does not append duplicate
+  memory blocks on repeated runs.
+- Older timestamped `.codex` backup files from prior installers are deleted
+  during update/repair. Managed package backups under the updater work folder
+  are retained only for the latest 3 package replacements.
 - Pending updates that require the user to close Revit show a throttled user
   notification instead of failing silently in the background. Status output
   reports these as `Pending update`, not as completed version transitions.
@@ -258,7 +267,8 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   already installed. `Repair/Reinstall` remains the explicit path that refreshes
   the updater wrapper, task registration, permissions, and the full package.
 - Already-current update checks return before proxy, scheduled-task,
-  Node/Codex, and npm preparation work.
+  Node/Codex Desktop, and npm preparation work after the lightweight Codex
+  config/backup hygiene step.
 - Official Autodesk Revit and Windows system folders are not deleted.
 - Cleanup is limited to known Revit MCP-owned install paths.
 - The managed package target is refused if it is a Git working tree unless

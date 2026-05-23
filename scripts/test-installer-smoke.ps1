@@ -398,6 +398,25 @@ try {
     $codexText = Get-Content -Raw -LiteralPath $codexConfig
     Assert-True ($codexText -match '\[mcp_servers\.revit-mcp\]') "Codex runtime MCP section was not written."
     Assert-True ($codexText -match '\[mcp_servers\.revit-api-docs\]') "Codex docs MCP section was not written."
+    Assert-True ($codexText -match '(?m)^\[features\]\s*$') "Codex features section was not written."
+    Assert-True ($codexText -match '(?m)^memories\s*=\s*true\s*$') "Codex memories feature was not enabled."
+    Assert-True ($codexText -match '(?m)^chronicle\s*=\s*false\s*$') "Codex chronicle feature was not disabled."
+    Assert-True ($codexText -match '(?m)^\[memories\]\s*$') "Codex memories section was not written."
+    Assert-True ($codexText -match '(?m)^disable_on_external_context\s*=\s*true\s*$') "Codex external-context memory guard was not enabled."
+    Assert-True ($codexText -match '(?m)^generate_memories\s*=\s*true\s*$') "Codex memory generation was not enabled."
+    Assert-True ($codexText -match '(?m)^use_memories\s*=\s*true\s*$') "Codex memory use was not enabled."
+    Register-RevitMcpCodexMcpServersInConfig -ConfigPath $codexConfig -NodePath "node.exe" -RuntimeServerPath "runtime\build\index.js" -DocsServerPath "docs\build\index.js" | Out-Null
+    $codexTextAfterSecondWrite = Get-Content -Raw -LiteralPath $codexConfig
+    Assert-Equal ([regex]::Matches($codexTextAfterSecondWrite, '(?m)^\[features\]\s*$').Count) 1 "Codex features section must not be duplicated."
+    Assert-Equal ([regex]::Matches($codexTextAfterSecondWrite, '(?m)^\[memories\]\s*$').Count) 1 "Codex memories section must not be duplicated."
+    Assert-Equal ([regex]::Matches($codexTextAfterSecondWrite, '(?m)^memories\s*=\s*true\s*$').Count) 1 "Codex memories feature must not be duplicated."
+    Assert-True ($updaterText -match 'Set-RevitMcpCodexMemoryConfig') "Updater must enforce Codex memory config, including fast/no-op update paths."
+    Assert-True ($updaterText -match 'Remove-CodexProfileBackupArtifacts') "Updater must clean old Codex profile backup artifacts."
+    $installerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\install-self-contained.ps1")
+    Assert-True ($installerText -match 'Set-RevitMcpCodexMemoryConfig') "Installer must enforce Codex memory config."
+    Assert-True ($installerText -match 'Remove-CodexProfileBackupArtifacts') "Installer must clean old Codex profile backup artifacts."
+    Assert-True ($installerText -notmatch 'Copy-Item[^\r\n]*AGENTS\.md\.backup-') "Installer must not create AGENTS.md backup files."
+    Assert-True ($installerText -notmatch 'Move-Item[^\r\n]*revit-mcp\.backup|codexSkillBackupsRoot') "Installer must not create Codex skill backup directories."
     $report = New-RevitMcpUpdateReport -Status "current" -Message "ok" -PreviousVersion "1" -InstalledVersion "1"
     $reportPath = Join-Path $tempRoot "report.json"
     Write-RevitMcpJsonFile -Path $reportPath -Value $report
@@ -417,6 +436,18 @@ try {
     Assert-Equal $remainingLogs.Count 10 "Log retention must keep exactly the latest 10 log files."
     Assert-True ($remainingLogs -contains "update-15.log") "Log retention must keep the active/latest log file."
     Assert-True (-not ($remainingLogs -contains "update-01.log")) "Log retention must remove old log files."
+    $backupRoot = Join-Path $tempRoot "backup-retention"
+    New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+    for ($i = 1; $i -le 6; $i++) {
+        $path = Join-Path $backupRoot ("revit-mcp-skill.backup-{0:00}" -f $i)
+        New-Item -ItemType Directory -Path $path -Force | Out-Null
+        (Get-Item -LiteralPath $path).LastWriteTimeUtc = [datetime]::UtcNow.AddMinutes(-1 * (6 - $i))
+    }
+    Invoke-RevitMcpDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
+    $remainingBackups = @(Get-ChildItem -LiteralPath $backupRoot -Directory -Filter "revit-mcp-skill.backup-*" | Sort-Object Name | Select-Object -ExpandProperty Name)
+    Assert-Equal $remainingBackups.Count 3 "Backup retention must keep exactly the latest 3 package backup folders."
+    Assert-True ($remainingBackups -contains "revit-mcp-skill.backup-06") "Backup retention must keep the latest package backup folder."
+    Assert-True (-not ($remainingBackups -contains "revit-mcp-skill.backup-01")) "Backup retention must remove old package backup folders."
 
     Write-Host "Installer/updater smoke tests passed." -ForegroundColor Green
 }

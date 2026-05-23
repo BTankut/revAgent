@@ -26,6 +26,7 @@ Import-Module (Join-Path $installerLibRoot "RevitMcp.ScheduledTask.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevitMcp.RevitVersions.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevitMcp.Permissions.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevitMcp.LogRetention.psm1") -Force
+Import-Module (Join-Path $installerLibRoot "RevitMcp.CodexRegistration.psm1") -Force
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $revitVersionConfig = Get-RevitMcpVersionConfig -Version $RevitVersion -RepoRoot $repoRoot
@@ -61,8 +62,8 @@ $codexMachineAgentsTarget = Join-Path $codexMachineRoot "AGENTS.md"
 $codexRoot = Join-Path $env:USERPROFILE ".codex"
 $codexSkillsRoot = Join-Path $codexRoot "skills"
 $codexSkillTarget = Join-Path $codexSkillsRoot "revit-mcp"
-$codexSkillBackupsRoot = Join-Path $codexRoot "skill-backups"
 $codexAgentsTarget = Join-Path $codexRoot "AGENTS.md"
+$codexConfigTarget = Join-Path $codexRoot "config.toml"
 $defaultLegacyServerTargets = @(
     "C:\Projects\revit-mcp",
     "C:\Projects\revit-mcp-server",
@@ -552,15 +553,37 @@ function Test-RevitMcpRuntimeDirectory {
     }
 }
 
-function Remove-StaleSkillBackups {
-    if (-not (Test-Path -LiteralPath $codexSkillsRoot)) {
+function Remove-CodexProfileBackupArtifacts {
+    if (-not (Test-Path -LiteralPath $codexRoot)) {
         return
     }
 
-    Get-ChildItem -LiteralPath $codexSkillsRoot -Directory -Filter "revit-mcp.backup-*" -ErrorAction SilentlyContinue |
-        ForEach-Object {
-            Remove-RevitMcpPath -Path $_.FullName -Label "active skill backup directory" -Recurse
-        }
+    $removed = 0
+    foreach ($pattern in @("AGENTS.md.backup-*", "config.toml.backup-*")) {
+        Get-ChildItem -LiteralPath $codexRoot -File -Filter $pattern -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+                $removed++
+            }
+    }
+
+    if (Test-Path -LiteralPath $codexSkillsRoot) {
+        Get-ChildItem -LiteralPath $codexSkillsRoot -Directory -Filter "revit-mcp.backup-*" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Remove-RevitMcpPath -Path $_.FullName -Label "active skill backup directory" -Recurse
+                $removed++
+            }
+    }
+
+    $legacySkillBackupsRoot = Join-Path $codexRoot "skill-backups"
+    if (Test-Path -LiteralPath $legacySkillBackupsRoot) {
+        Remove-RevitMcpPath -Path $legacySkillBackupsRoot -Label "legacy Codex skill backup root" -Recurse -AllowedNamePattern "(?i)(^skill-backups$)"
+        $removed++
+    }
+
+    if ($removed -gt 0) {
+        Write-Host ("Codex cleanup   : removed {0} old backup artifact(s)" -f $removed) -ForegroundColor Green
+    }
 }
 
 function Repair-RevitMcpManagedInstallPermissions {
@@ -614,7 +637,9 @@ function Invoke-RevitMcpCleanup {
         Write-Host "Runtime payload cleanup skipped; existing runtime files were left untouched." -ForegroundColor Yellow
     }
 
-    Remove-StaleSkillBackups
+    if (-not $SkipCodexUserIntegration) {
+        Remove-CodexProfileBackupArtifacts
+    }
 
     if ($ForUninstall) {
         Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex Revit MCP skill directory" -Recurse
@@ -787,10 +812,7 @@ if (-not $SkipCodexSkillInstall) {
         New-Item -ItemType Directory -Path $codexSkillsRoot -Force | Out-Null
 
         if (Test-Path -LiteralPath $codexSkillTarget) {
-            $backupStamp = Get-Date -Format "yyyyMMdd-HHmmss"
-            New-Item -ItemType Directory -Path $codexSkillBackupsRoot -Force | Out-Null
-            $skillBackup = Join-Path $codexSkillBackupsRoot "revit-mcp.backup-$backupStamp"
-            Move-Item -LiteralPath $codexSkillTarget -Destination $skillBackup
+            Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex Revit MCP skill directory" -Recurse
         }
 
         New-ReparsePointOrCopyDirectory -Source $codexMachineSkillTarget -Destination $codexSkillTarget
@@ -808,18 +830,8 @@ Copy-Item -LiteralPath $agentsSource -Destination $codexMachineAgentsTarget -For
 if (-not $SkipCodexUserIntegration) {
     New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
 
-    $shouldBackupAgents = $false
-    if (Test-Path -LiteralPath $codexAgentsTarget) {
-        $existingAgents = Get-Item -LiteralPath $codexAgentsTarget
-        $shouldBackupAgents = $existingAgents.Length -gt 0
-    }
-
-    if ($shouldBackupAgents) {
-        $agentsBackup = Join-Path $codexRoot ("AGENTS.md.backup-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
-        Copy-Item -LiteralPath $codexAgentsTarget -Destination $agentsBackup -Force
-    }
-
     New-HardLinkOrCopyFile -Source $codexMachineAgentsTarget -Destination $codexAgentsTarget
+    [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $codexConfigTarget)
 }
 
 if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
@@ -832,14 +844,6 @@ if ((-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) -and
     $workspaceAgentsDir = Split-Path -Parent $workspaceAgentsFullPath
     if (-not [string]::IsNullOrWhiteSpace($workspaceAgentsDir)) {
         New-Item -ItemType Directory -Path $workspaceAgentsDir -Force | Out-Null
-    }
-
-    if (Test-Path -LiteralPath $workspaceAgentsFullPath) {
-        $existingWorkspaceAgents = Get-Item -LiteralPath $workspaceAgentsFullPath
-        if ($existingWorkspaceAgents.Length -gt 0) {
-            $workspaceAgentsBackup = $workspaceAgentsFullPath + ".backup-" + (Get-Date -Format "yyyyMMdd-HHmmss")
-            Copy-Item -LiteralPath $workspaceAgentsFullPath -Destination $workspaceAgentsBackup -Force
-        }
     }
 
     Copy-Item -LiteralPath $codexMachineAgentsTarget -Destination $workspaceAgentsFullPath -Force

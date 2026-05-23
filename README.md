@@ -233,6 +233,9 @@ The installer keeps the canonical Codex payload under
 skill and `AGENTS.md` locations, the installer may create a junction/hardlink
 under `%USERPROFILE%\.codex` as a compatibility integration. Pass
 `-SkipCodexUserIntegration` to leave the user profile untouched.
+When user-profile integration is enabled, the installer also standardizes the
+Codex memory settings in `%USERPROFILE%\.codex\config.toml` without duplicating
+existing sections or keys.
 
 ## What the installer deploys
 
@@ -257,7 +260,11 @@ Before copying, the installer cleans the known Revit MCP install locations it
 owns: the Revit MCP add-in manifest, old `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin`,
 old `%LOCALAPPDATA%\revit-mcp-plugin`, the runtime `-ServerTarget`, known
 legacy `C:\Projects\...` runtime targets, and stale `revit-mcp.backup-*` folders under active Codex
-skills. This prevents old files from surviving directory/layout changes.
+skills. It also removes old installer-created `.codex` backup artifacts such
+as `AGENTS.md.backup-*`, `config.toml.backup-*`, and the legacy
+`.codex\skill-backups` directory. New installs overwrite managed Codex
+integration targets directly instead of creating timestamped backups. This
+prevents old files from surviving directory/layout changes.
 Cleanup is guarded by path checks and does not delete Autodesk Revit program
 files, Windows system folders, Revit add-in root folders themselves, or broad
 workspace/user directories.
@@ -477,7 +484,7 @@ revit-mcp-skill/
 
 ## Refreshing an existing install
 
-When a new version of the skill lands in this repo, run the refresh script. It detects how the skill was previously installed (git clone, symlink, or plain copy) under each known host location and updates each install with the matching strategy (`git pull` for clones, no-op for symlinks, backup + resync for copies).
+When a new version of the skill lands in this repo, run the refresh script. It detects how the skill was previously installed (git clone, symlink, or plain copy) under each known host location and updates each install with the matching strategy (`git pull` for clones, no-op for symlinks, wipe + resync for copies).
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\installer\refresh-skill.ps1
@@ -497,7 +504,7 @@ After the script finishes:
 
 ## Host compatibility
 
-The office installation flow registers MCP servers through the current user's installed Codex Desktop command on Windows, with a direct `config.toml` update fallback when that command helper is missing. The skill itself is host-agnostic: any MCP/skill-capable LLM host can use it if both MCP servers are registered:
+The office installation flow registers MCP servers through the current user's installed Codex Desktop command on Windows, with a direct `config.toml` update fallback when that command helper is missing. It also writes the standard Codex memory configuration idempotently under `%USERPROFILE%\.codex\config.toml`. The skill itself is host-agnostic: any MCP/skill-capable LLM host can use it if both MCP servers are registered:
 
 - `revit-mcp` for live Revit execution and inspection
 - `revit-api-docs` for required API class/member lookup

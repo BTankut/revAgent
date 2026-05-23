@@ -31,6 +31,10 @@ Claude Code prepends `mcp__revit-mcp__`). Always call whichever
 prefixed form your host shows in the tool list - but in this document
 only the bare names appear, so the rules stay host-agnostic.
 
+Office install/update standardizes Codex memory settings idempotently in
+`%USERPROFILE%\.codex\config.toml` and must not create timestamped `.codex`
+backup artifacts during normal operation.
+
 **Runtime server (`revit-mcp`)** - dynamic execution plus read-only context:
 
 This runtime surface is intentionally reusable: live Revit execution, model

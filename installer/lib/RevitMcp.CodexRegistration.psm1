@@ -50,6 +50,67 @@ function Set-RevitMcpCodexMcpServerConfig {
     return $ConfigPath
 }
 
+function Set-RevitMcpTomlScalar {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Content,
+        [Parameter(Mandatory = $true)]
+        [string]$Section,
+        [Parameter(Mandatory = $true)]
+        [string]$Key,
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    $sectionPattern = "(?ms)^\[$([regex]::Escape($Section))\]\s*.*?(?=^\[|\z)"
+    $keyPattern = "(?m)^(\s*)$([regex]::Escape($Key))\s*=.*$"
+    if ($Content -match $sectionPattern) {
+        return [regex]::Replace($Content, $sectionPattern, [System.Text.RegularExpressions.MatchEvaluator]{
+            param($match)
+            $block = [string]$match.Value
+            if ($block -match $keyPattern) {
+                return [regex]::Replace($block, $keyPattern, "`$1$Key = $Value")
+            }
+
+            return ($block.TrimEnd() + "`r`n$Key = $Value`r`n")
+        })
+    }
+
+    $prefix = if ([string]::IsNullOrWhiteSpace($Content)) { "" } else { $Content.TrimEnd() + "`r`n`r`n" }
+    return $prefix + "[$Section]`r`n$Key = $Value`r`n"
+}
+
+function Set-RevitMcpCodexMemoryConfig {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigPath
+    )
+
+    $configDir = Split-Path -Parent $ConfigPath
+    if (-not [string]::IsNullOrWhiteSpace($configDir)) {
+        New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+    }
+
+    $content = if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
+        Get-Content -Raw -LiteralPath $ConfigPath
+    }
+    else {
+        ""
+    }
+    $original = $content
+
+    $content = Set-RevitMcpTomlScalar -Content $content -Section "features" -Key "memories" -Value "true"
+    $content = Set-RevitMcpTomlScalar -Content $content -Section "features" -Key "chronicle" -Value "false"
+    $content = Set-RevitMcpTomlScalar -Content $content -Section "memories" -Key "disable_on_external_context" -Value "true"
+    $content = Set-RevitMcpTomlScalar -Content $content -Section "memories" -Key "generate_memories" -Value "true"
+    $content = Set-RevitMcpTomlScalar -Content $content -Section "memories" -Key "use_memories" -Value "true"
+
+    if ($content -ne $original) {
+        Set-Content -LiteralPath $ConfigPath -Value $content -Encoding UTF8
+    }
+    return $ConfigPath
+}
+
 function Register-RevitMcpCodexMcpServersInConfig {
     param(
         [Parameter(Mandatory = $true)]
@@ -64,7 +125,8 @@ function Register-RevitMcpCodexMcpServersInConfig {
 
     [void](Set-RevitMcpCodexMcpServerConfig -ConfigPath $ConfigPath -Name "revit-mcp" -Command $NodePath -McpArgs @($RuntimeServerPath))
     [void](Set-RevitMcpCodexMcpServerConfig -ConfigPath $ConfigPath -Name "revit-api-docs" -Command $NodePath -McpArgs @($DocsServerPath))
+    [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $ConfigPath)
     return $ConfigPath
 }
 
-Export-ModuleMember -Function ConvertTo-RevitMcpTomlString, Set-RevitMcpCodexMcpServerConfig, Register-RevitMcpCodexMcpServersInConfig
+Export-ModuleMember -Function ConvertTo-RevitMcpTomlString, Set-RevitMcpCodexMcpServerConfig, Set-RevitMcpCodexMemoryConfig, Register-RevitMcpCodexMcpServersInConfig

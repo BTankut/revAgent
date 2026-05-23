@@ -58,6 +58,7 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.Package.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.UpdatePolicy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Proxy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
 
 $updaterVersion = "0.1.0"
 $script:RevitMcpTranscriptStarted = $false
@@ -1349,7 +1350,55 @@ function Register-CodexMcpServersInConfig {
 
     $configPath = Set-CodexMcpServerConfig -Name "revit-mcp" -Command $NodePath -McpArgs @($RuntimeServerPath)
     [void](Set-CodexMcpServerConfig -Name "revit-api-docs" -Command $NodePath -McpArgs @($DocsServerPath))
+    [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $configPath)
     Write-Host "Codex MCP config : $configPath"
+}
+
+function Set-CodexMemoryConfig {
+    $configRoot = Join-Path $env:USERPROFILE ".codex"
+    $configPath = Join-Path $configRoot "config.toml"
+    [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $configPath)
+    Write-Host "Codex memory config: enabled"
+    return $configPath
+}
+
+function Remove-CodexProfileBackupArtifacts {
+    if ($SkipCodexUserIntegration) {
+        return
+    }
+
+    $codexRoot = Join-Path $env:USERPROFILE ".codex"
+    if (-not (Test-Path -LiteralPath $codexRoot -PathType Container)) {
+        return
+    }
+
+    $removed = 0
+    foreach ($pattern in @("AGENTS.md.backup-*", "config.toml.backup-*")) {
+        Get-ChildItem -LiteralPath $codexRoot -File -Filter $pattern -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+                $removed++
+            }
+    }
+
+    $codexSkillsRoot = Join-Path $codexRoot "skills"
+    if (Test-Path -LiteralPath $codexSkillsRoot -PathType Container) {
+        Get-ChildItem -LiteralPath $codexSkillsRoot -Directory -Filter "revit-mcp.backup-*" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+                $removed++
+            }
+    }
+
+    $legacySkillBackupsRoot = Join-Path $codexRoot "skill-backups"
+    if (Test-Path -LiteralPath $legacySkillBackupsRoot -PathType Container) {
+        Remove-Item -LiteralPath $legacySkillBackupsRoot -Recurse -Force -ErrorAction Stop
+        $removed++
+    }
+
+    if ($removed -gt 0) {
+        Write-Host ("Codex cleanup   : removed {0} old backup artifact(s)" -f $removed) -ForegroundColor Green
+    }
 }
 
 function Resolve-RevitInstallRoot {
@@ -2281,6 +2330,7 @@ $cacheRoot = Join-Path $WorkRoot "cache"
 $stagingRoot = Join-Path $WorkRoot "staging"
 $backupRoot = Join-Path $WorkRoot "backups"
 New-Item -ItemType Directory -Path $cacheRoot, $stagingRoot, $backupRoot -Force | Out-Null
+Invoke-RevitMcpDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
 
 $taskUpdaterPath = Join-Path $WorkRoot "update-from-nas.ps1"
 if (-not (Test-Path -LiteralPath $taskUpdaterPath -PathType Leaf)) {
@@ -2358,6 +2408,11 @@ try {
             }
         })
     $isPackageCurrent = ($installedVersion -eq $targetVersion -and $installedSha -eq $targetSha)
+
+    if ((-not $AuditOnly) -and (-not $SkipCodexUserIntegration)) {
+        Remove-CodexProfileBackupArtifacts
+        [void](Set-CodexMemoryConfig)
+    }
 
     if (-not $Force -and $isPackageCurrent -and -not $requiresRevitClosed) {
         $message = "Already up to date."
@@ -2465,6 +2520,7 @@ try {
     if (Test-Path -LiteralPath $PackageTarget) {
         $backupPath = Join-Path $backupRoot ("revit-mcp-skill.backup-" + $stamp)
         Move-Item -LiteralPath $PackageTarget -Destination $backupPath
+        Invoke-RevitMcpDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
     }
 
     New-Item -ItemType Directory -Path (Split-Path -Parent $PackageTarget) -Force | Out-Null

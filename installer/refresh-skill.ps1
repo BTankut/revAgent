@@ -10,7 +10,7 @@
 
       git clone  -> git fetch + ff-only pull
       symlink    -> reports the target; no copy needed
-      copy       -> backup, wipe, resync from -RepoRoot
+      copy       -> wipe, resync from -RepoRoot
 
     Run this after pulling the latest skill commit on disk so every host
     that has an old install gets refreshed without manual file juggling.
@@ -131,22 +131,17 @@ function Update-Target {
 
         "copy" {
             Write-Ok "Plain copy detected."
-            if (-not (Confirm-Action "Backup, wipe, and resync $Path from $Source?")) {
+            if (-not (Confirm-Action "Wipe and resync $Path from $Source?")) {
                 return [pscustomobject]@{
                     Host = $HostName; Path = $Path; Kind = "copy"; Action = "skipped"
                 }
             }
-            $stamp  = Get-Date -Format "yyyyMMdd-HHmmss"
-            $backup = "$Path.backup-$stamp"
-            Copy-Item -Recurse -LiteralPath $Path -Destination $backup
-            Write-Ok "Backup at $backup"
-
             Remove-Item -Recurse -Force -LiteralPath $Path
             New-Item -ItemType Directory -Path $Path -Force | Out-Null
             Sync-Copy -Source $Source -Destination $Path
             Write-Ok "Resynced from $Source."
             return [pscustomobject]@{
-                Host = $HostName; Path = $Path; Kind = "copy"; Action = "resynced ($backup)"
+                Host = $HostName; Path = $Path; Kind = "copy"; Action = "resynced"
             }
         }
     }

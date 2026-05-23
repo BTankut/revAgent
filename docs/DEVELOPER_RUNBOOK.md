@@ -520,6 +520,11 @@ with different admin credentials, user-profile Codex integration may be written
 under that admin profile instead of the operator profile. Prefer approving UAC
 with the same Windows user when possible.
 
+When user-profile Codex integration is enabled, install/update writes the
+standard Codex memory settings to `%USERPROFILE%\.codex\config.toml`
+idempotently. The helper reuses existing `[features]` and `[memories]` sections
+and must not append duplicate blocks on repeated runs.
+
 Background updater notifications:
 
 - `deferred-revit-close-required`: user must save/sync, close Revit, and rerun
@@ -564,7 +569,10 @@ The installer cleans only known Revit MCP-owned locations. It must not delete:
 
 Known cleanup targets include the Revit MCP add-in manifest, old user-profile
 add-in payloads, old local command folders, managed runtime targets, active
-skill backup folders, and known legacy runtime folders.
+skill backup folders, legacy `.codex` backup artifacts, and known legacy
+runtime folders. Normal install/update must not create new timestamped
+`.codex\AGENTS.md.backup-*`, `.codex\config.toml.backup-*`, or
+`.codex\skill-backups` entries.
 
 Uninstall command:
 
