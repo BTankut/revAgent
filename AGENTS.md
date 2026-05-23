@@ -83,6 +83,19 @@ Practical use:
 5. Image export tools are still covered by the Revit MCP hard rule: status
    preflight first, no parallel runtime commands.
 
+Live Revit navigation is a different intent from image export:
+
+- For "show", "select", "zoom", "open on screen", "open a new 3D view",
+  "ekranda göster", "seç", or "yakından gör", use live view tools such as
+  `focus_elements`, `smart_focus_elements`, `create_3d_view_for_elements`, or
+  `show_element_in_plan_and_3d`.
+- For "PNG", "JPEG", "export", "report image", "evidence image", or
+  "görsel çıktı", use `export_revit_view_image` or
+  `export_revit_coordination_image`.
+- Do not use `export_revit_coordination_image` as the primary tool for live
+  selected-element zoom or opening an element in a Revit view. Use live view
+  navigation first, then optionally export the active view.
+
 ## Current Runtime Surface
 
 The current `revit-mcp` runtime surface is a reusable production access layer

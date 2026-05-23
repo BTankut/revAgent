@@ -57,7 +57,7 @@ function csharpIntList(values) {
 export function registerExportRevitCoordinationImageTool(server) {
   server.tool(
     "export_revit_coordination_image",
-    "Create or reuse a visual QA 3D view, optionally section-box target elements, apply high-contrast coordination graphics, and export an image. It only writes review view settings; it does not create or modify MEP model elements.",
+    "[VISUAL_ARTIFACT_EXPORT_ONLY] Create or reuse a visual QA 3D view, optionally section-box target elements, apply high-contrast coordination graphics, and export an image artifact. Use this when the user asks for PNG/JPEG/report/LLM visual evidence. Do not use this as the primary tool for live view navigation, selected-element zoom, or opening an element in a Revit view; for that workflow use create_3d_view_for_elements or show_element_in_plan_and_3d, then optionally export the active view with export_revit_view_image. It only writes review view settings; it does not create or modify MEP model elements.",
     {
       ...connectionTargetSchema(z),
       intent: intentSchema.optional().default("coordination_overlay"),

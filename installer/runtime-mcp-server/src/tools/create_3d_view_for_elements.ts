@@ -14,7 +14,7 @@ const elementIdSchema = z.union([
 ]);
 
 export function registerCreate3DViewForElementsTool(server) {
-    server.tool("create_3d_view_for_elements", "Create or reuse a 3D Revit view for elements, optionally apply or clear a section box, activate the view, and focus/select the elements. This can modify the document because views and section boxes are project data.", {
+    server.tool("create_3d_view_for_elements", "[LIVE_VIEW_NAVIGATION_PRIMITIVE] Create or reuse a 3D Revit view for elements, optionally apply or clear a section box, activate the view, and focus/select the elements. Use this when the user wants to see, open, zoom to, or inspect elements live inside Revit. This can modify the document because views and section boxes are project data.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         elementIds: z.array(elementIdSchema).min(1).describe("ElementId values to show in the 3D view."),

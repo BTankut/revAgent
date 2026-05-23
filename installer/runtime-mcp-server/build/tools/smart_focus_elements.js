@@ -8,7 +8,7 @@ function unwrapResponse(response) {
     return response && response.result ? response.result : response;
 }
 export function registerSmartFocusElementsTool(server) {
-    server.tool("smart_focus_elements", "Focus Revit elements without triggering Revit's modal closed-view search. It can try the active/requested view first, then open the best existing same-level plan, and optionally create/reuse a 3D view.", {
+    server.tool("smart_focus_elements", "[LIVE_VIEW_WORKFLOW_WRAPPER] Focus Revit elements without triggering Revit's modal closed-view search. It can try the active/requested view first, then open the best existing same-level plan, and optionally create/reuse a 3D view. Use this for live Revit focus/navigation, not image artifact export.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         elementIds: z.array(elementIdSchema).min(1).describe("ElementId values to select and show."),

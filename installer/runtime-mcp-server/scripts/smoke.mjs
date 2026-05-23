@@ -47,6 +47,40 @@ const expectedTools = [
 
 assert.deepEqual([...tools.keys()], expectedTools);
 
+const create3dDescription = tools.get("create_3d_view_for_elements").description;
+const showPlan3dDescription = tools.get("show_element_in_plan_and_3d").description;
+const coordinationDescription = tools.get("export_revit_coordination_image").description;
+assert.match(create3dDescription, /LIVE_VIEW_NAVIGATION_PRIMITIVE/);
+assert.match(showPlan3dDescription, /LIVE_VIEW_WORKFLOW_WRAPPER/);
+assert.match(coordinationDescription, /VISUAL_ARTIFACT_EXPORT_ONLY/);
+assert.match(coordinationDescription, /Do not use this as the primary tool for live view navigation/);
+
+const chooseExpectedToolForIntent = (utterance) => {
+  const text = utterance.toLocaleLowerCase("tr-TR");
+  if (/(png|jpeg|jpg|export|çıktı|görsel|rapor|evidence)/.test(text)) {
+    return "export_revit_coordination_image";
+  }
+  if (/(plan).*(3d)|(3d).*(plan)/.test(text)) {
+    return "show_element_in_plan_and_3d";
+  }
+  if (/(3d|yakından|zoom|seç|göster|ekranda|aç)/.test(text)) {
+    return "create_3d_view_for_elements";
+  }
+  return null;
+};
+assert.equal(
+  chooseExpectedToolForIntent("seçili elemanı yeni 3D'de açıp zoomla"),
+  "create_3d_view_for_elements",
+);
+assert.notEqual(
+  chooseExpectedToolForIntent("seçili elemanı yeni 3D'de açıp zoomla"),
+  "export_revit_coordination_image",
+);
+assert.equal(
+  chooseExpectedToolForIntent("bu eleman için rapora PNG görsel çıktı al"),
+  "export_revit_coordination_image",
+);
+
 const normalized = normalizeRevitExecutionResponse({
   result: JSON.stringify({ success: true, count: 2 }),
 });

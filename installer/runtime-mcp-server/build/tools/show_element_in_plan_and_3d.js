@@ -101,7 +101,7 @@ function summarizeThreeD(threeDResult) {
     };
 }
 export function registerShowElementInPlanAnd3DTool(server) {
-    server.tool("show_element_in_plan_and_3d", "Safely find or use one Revit element, show it in an existing plan, then optionally create/reuse a focused 3D view. Ambiguous search results are rejected by default for large-project safety.", {
+    server.tool("show_element_in_plan_and_3d", "[LIVE_VIEW_WORKFLOW_WRAPPER] Safely find or use one Revit element, show it in an existing plan, then optionally call create_3d_view_for_elements to create/reuse a focused 3D view. Use this when the user wants a combined plan plus 3D live Revit view workflow. Ambiguous search results are rejected by default for large-project safety.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         elementId: elementIdSchema.optional().describe("Known ElementId. When supplied, search is skipped."),

@@ -68,14 +68,14 @@ custom-code workflows.
   for an element's level, or keep the active plan when `planMode=activePlan`,
   then select and zoom to the element. Successful routine calls return compact
   output by default; use `responseMode: "full"` for audit/debug output.
-- `focus_elements` - select and zoom to elements in the active or requested
+- `focus_elements` - live view primitive: select and zoom to elements in the active or requested
   view without opening a transaction; when model bounding boxes are unavailable
   it reports the Revit UI focus fallback it used; by default it does not allow
   Revit's modal closed-view search dialog
 - `section_box_elements` - activate a 3D view if needed, apply a section box
   around elements, make the section box boundary visible when possible, then
   optionally select and zoom to them
-- `create_3d_view_for_elements` - create or reuse a named 3D view for elements,
+- `create_3d_view_for_elements` - live view navigation primitive: create or reuse a named 3D view for elements,
   enforce section box on/off, activate it, and focus/select the elements with
   rollback inside its own view update transactions
 - `export_revit_view_image` - export the active view, visible region, or a
@@ -83,18 +83,19 @@ custom-code workflows.
   This is read-only, reports actual generated image dimensions, and by default
   normalizes PNG/JPEG/BMP/TIFF output so the requested `pixelSize` is the final
   fit-direction dimension.
-- `export_revit_coordination_image` - create or reuse a dedicated visual QA 3D
+- `export_revit_coordination_image` - visual artifact export only: create or reuse a dedicated visual QA 3D
   view, optionally section-box target elements, apply high-contrast review
   graphics, and export an image. Single-element exports use a tighter default
   frame, a target-centered 3D camera, and post-cropping around the green target
-  override pixels. It writes only review view settings; it does not create or
-  modify ducts, pipes, terminals, fittings, or other physical MEP model
-  elements.
-- `show_element_in_plan_and_3d` - wrapper workflow that safely finds or uses one
+  override pixels. Do not use it as the primary tool for live view navigation,
+  selected-element zoom, or opening an element in a Revit view. It writes only
+  review view settings; it does not create or modify ducts, pipes, terminals,
+  fittings, or other physical MEP model elements.
+- `show_element_in_plan_and_3d` - live view workflow wrapper that safely finds or uses one
   element, shows it in an existing plan, then optionally opens a focused 3D
   view. Successful routine calls return a compact summary by default; use
   `responseMode: "full"` for audit/debug output.
-- `smart_focus_elements` - wrapper workflow that tries active/requested view
+- `smart_focus_elements` - live view workflow wrapper that tries active/requested view
   focus without modal search, then optionally falls back to an existing
   same-level plan and 3D view
 - `inspect_elements` - targeted/selection element inspection: class,
@@ -173,6 +174,32 @@ Plan candidate mode rules:
 Use `send_code_to_revit` directly (skipping docs lookup) only when the API
 surface is already trivially known - e.g. the bundled patterns under
 `references/patterns/`.
+
+---
+
+## Tool Intent Decision Tree
+
+Separate live Revit navigation from image artifact export before choosing a
+tool.
+
+- If the user says "show", "select", "zoom", "open on screen", "open a new 3D
+  view", "bring it into view", "ekranda göster", "seç", "yakından gör", or
+  similar live-navigation wording, use live view tools:
+  - Known element ids and a 3D view is wanted: `create_3d_view_for_elements`.
+  - Plan plus 3D workflow is wanted: `show_element_in_plan_and_3d`.
+  - Current/requested view focus only is wanted: `focus_elements` or
+    `smart_focus_elements`.
+- If the user says "export", "PNG", "JPEG", "image file", "report image",
+  "evidence image", "LLM visual evidence", "görsel çıktı", or "rapora görsel",
+  use export tools:
+  - Existing active/requested view image: `export_revit_view_image`.
+  - Coordination/review image artifact around target ids:
+    `export_revit_coordination_image`.
+- Do not use `export_revit_coordination_image` as the primary tool for live
+  view navigation, selected-element zoom, or opening an element in a new Revit
+  view. For that workflow, first use `create_3d_view_for_elements` or
+  `show_element_in_plan_and_3d`, then optionally export the active view with
+  `export_revit_view_image`.
 
 ---
 

@@ -143,6 +143,12 @@ crop side, defaulting to 0.4. The response reports
 `files[].croppedToTargetHighlight`, `files[].highlightPixelCount`,
 `files[].actualHighlightFillRatio`, and `files[].highlightCrop`.
 
+Do not use `export_revit_coordination_image` as the primary tool for live
+Revit view navigation, selected-element zoom, or opening an element in a new
+view. For that workflow, use `create_3d_view_for_elements` or
+`show_element_in_plan_and_3d` first, then export the active view with
+`export_revit_view_image` if an image artifact is still required.
+
 For production review, keep the generated image path in the task notes or PR
 comment so reviewers can reproduce the visual evidence.
 

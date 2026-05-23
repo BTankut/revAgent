@@ -56,7 +56,7 @@ function csharpNullableInt(value) {
 export function registerExportRevitViewImageTool(server) {
   server.tool(
     "export_revit_view_image",
-    "Export the active Revit view or a selected Revit view to PNG/JPEG/TIFF/BMP/TARGA using Document.ExportImage. Read-only: it does not create or modify Revit elements or views.",
+    "[VISUAL_ARTIFACT_EXPORT] Export the active Revit view or a selected Revit view to PNG/JPEG/TIFF/BMP/TARGA using Document.ExportImage. Use this when the user asks for an image file, report/evidence screenshot, or LLM visual artifact from an existing view. Read-only: it does not create or modify Revit elements or views.",
     {
       ...connectionTargetSchema(z),
       viewId: z.union([z.number(), z.string()]).optional().describe("Optional Revit view id. When supplied, export uses set_of_views because Revit cannot export a non-active visible region."),
