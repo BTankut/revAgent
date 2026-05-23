@@ -90,6 +90,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Added idempotent Codex memory configuration during install/update, removed
   normal `.codex` backup creation, cleaned legacy `.codex` backup artifacts,
   and capped managed package backups to the latest 3 replacement folders.
+- Fixed fast/package-only updates so `revit-api-docs-mcp` gets its
+  `node_modules` junction and dependency marker restored after the managed
+  package folder is replaced, even when the docs payload and API index are
+  unchanged.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

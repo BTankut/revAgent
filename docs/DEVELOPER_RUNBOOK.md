@@ -454,6 +454,15 @@ Release ZIP compatibility:
 - generated legacy alias inside the ZIP: `kurulum/`
 - purpose: older workstation updaters can still install renamed layouts
 
+Dependency restore note:
+
+- The runtime server lives outside the managed package folder, but
+  `revit-api-docs-mcp` lives inside `C:\ProgramData\DPE\RevitMCP\package`.
+  Every versioned update replaces that package folder, so the updater must
+  restore `installer\revit-api-docs-mcp\node_modules` and the
+  `.revagent-npm-dependencies.json` marker even when the docs payload itself is
+  unchanged and the Revit API index rebuild is skipped.
+
 ## Workstation Install And Update
 
 Stable workstation GUI:

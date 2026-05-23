@@ -1275,6 +1275,13 @@ function Invoke-NpmInstallIfNeeded {
     Save-NpmDependenciesToCache -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint -CacheRoot $CacheRoot
 }
 
+function Resolve-NpmCommand {
+    return Resolve-RequiredCommand -Name "npm.cmd" -Candidates @(
+        (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
+        (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
+    )
+}
+
 function ConvertTo-TomlString {
     param([string]$Value)
 
@@ -2528,6 +2535,7 @@ try {
 
     $installer = Join-Path $PackageTarget $packageLayout.installerRelativePath
     $docsServerPath = Join-Path $PackageTarget $packageLayout.docsServerRelativePath
+    $npmDependencyCacheRoot = Join-Path $InstallRoot "dependencies\npm"
     $fastPackageOnlyUpdate = $skipRevitPayloadInstall -and
         $skipRuntimePayloadInstall -and
         $skipDocsPayloadWork -and
@@ -2544,7 +2552,13 @@ try {
             Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $WorkRoot -ConfigPath $ConfigPath
             Invoke-RevitMcpLogRetention -LogsRoot (Join-Path $WorkRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
             Write-Host "Runtime dependencies: skipped; runtime payload unchanged."
-            Write-Host "Documentation server dependencies: skipped; docs payload unchanged."
+            if ($SkipNpmInstall) {
+                Write-Host "Documentation server dependencies: skipped by -SkipNpmInstall."
+            }
+            else {
+                $npmPath = Resolve-NpmCommand
+                Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
+            }
             Write-Host "Revit API index: skipped; docs payload unchanged."
             Write-Host "Codex MCP registration: skipped; runtime/docs entry points unchanged."
         }
@@ -2585,15 +2599,11 @@ try {
         & $installer @installArgs
 
         if (-not $SkipNpmInstall) {
-            $npmPath = Resolve-RequiredCommand -Name "npm.cmd" -Candidates @(
-                (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
-                (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
-            )
+            $npmPath = Resolve-NpmCommand
             $powershellPath = Resolve-RequiredCommand -Name "powershell" -Candidates @(
                 (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
             )
 
-            $npmDependencyCacheRoot = Join-Path $InstallRoot "dependencies\npm"
             if ($skipRuntimePayloadInstall) {
                 Write-Host "Runtime dependencies: skipped; runtime payload unchanged."
             }
@@ -2602,13 +2612,11 @@ try {
             }
 
             $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
+            Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
             if ($skipDocsPayloadWork -and (Test-Path -LiteralPath $docsCachePath -PathType Leaf)) {
-                Write-Host "Documentation server dependencies: skipped; docs payload unchanged."
                 Write-Host "Revit API index: skipped; docs payload unchanged."
             }
             else {
-                Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
-
                 Invoke-External -FilePath $powershellPath -Arguments @(
                     "-ExecutionPolicy", "Bypass",
                     "-File", (Join-Path $docsServerPath "scripts\build-index.ps1"),

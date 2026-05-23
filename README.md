@@ -131,7 +131,10 @@ pulling and reinstalling on every machine.
   automatic cleanup keeping the latest 10 `.log` files.
 - Workstation updates check npm dependency lockfile markers and the managed
   local npm cache, then skip runtime dependency installation when the installed
-  or cached `node_modules` already matches.
+  or cached `node_modules` already matches. The docs server dependency junction
+  is restored even when its payload fingerprint is unchanged, because the docs
+  server is stored inside the managed package folder that is replaced on every
+  versioned update.
 - Release manifests classify changed surfaces before install. Updater-only
   changes use a fast package/updater refresh path. Runtime MCP server changes
   refresh only the runtime payload and related MCP registration. Revit add-in or

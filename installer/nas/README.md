@@ -163,8 +163,10 @@ Updater log retention is automatic. Install and update runs keep the latest
   are left untouched whenever their component hashes are unchanged, even if
   Revit is closed. The runtime server payload is also left untouched when the
   release-level runtime directory fingerprint matches the installed package.
-  If runtime/docs entry points are unchanged, dependency refresh, docs index
-  rebuild, and MCP registration refresh are skipped as well.
+  If runtime/docs entry points are unchanged, runtime dependency refresh, docs
+  index rebuild, and MCP registration refresh are skipped. The docs server
+  dependency junction is still restored after package replacement because the
+  docs server lives inside the managed package folder.
 - Checks the runtime and docs server npm dependency fingerprints before running
   `npm install --omit=dev --no-audit --no-fund`; if `node_modules` and the
   stored lockfile marker already match, or the same lockfile exists in the
@@ -191,7 +193,7 @@ path.
 | Change in release | Install path | Revit may stay open? | Notes |
 | --- | --- | --- | --- |
 | No change already installed | Current/no-op | Yes | Returns before proxy, task, Codex Desktop, npm, and package work after lightweight Codex config/backup hygiene. |
-| Updater or installer scripts only | Fast package-only update | Yes | Refreshes the managed package and updater tools. `install-self-contained.ps1` is skipped. If the fast step fails, the updater warns and falls back to the full repair/install path. |
+| Updater or installer scripts only | Fast package-only update | Yes | Refreshes the managed package and updater tools, then restores the docs server dependency junction from cache. `install-self-contained.ps1` is skipped. If the fast step fails, the updater warns and falls back to the full repair/install path. |
 | Runtime MCP server/tool code | Runtime payload update | Yes, if Revit payload is unchanged | Refreshes `C:\ProgramData\DPE\RevitMCP\runtime`, checks npm fingerprints/cache, and refreshes MCP registration when entry points changed. |
 | Revit add-in, command set, command payload, or add-in manifest | Revit payload update | No | If `Revit.exe` is running, the update is deferred and the user is told to save/sync, close Revit, and run update again. |
 | `SKILL.md` or `AGENTS.md` | Codex skill/workstation role refresh | Yes, if Revit payload is unchanged | Refreshes the machine Codex payload and user-profile junction/hardlink integration. |
@@ -202,7 +204,9 @@ Fast package-only updates are intentionally narrow. They are allowed only when
 all of these are true: Revit payload unchanged, runtime payload unchanged, docs
 payload unchanged, Codex skill/AGENTS unchanged, and MCP entry points unchanged.
 If any one of those checks is false, the updater uses the normal installer path
-for that scope.
+for that scope. Because every update replaces the managed package folder, the
+fast path still restores `installer\revit-api-docs-mcp\node_modules` and its
+`.revagent-npm-dependencies.json` marker from the managed npm cache.
 
 The updater and installer share helper modules under `installer\lib` in the
 release package. When tools are copied to NAS `tools\`, the matching
