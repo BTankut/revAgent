@@ -160,6 +160,10 @@ foreach (var element in targetElements) {
   }
 }
 
+bool sectionBoxApplied = false;
+bool cameraFramedToTargets = false;
+double framingDistanceFeet = 0.0;
+string framingMode = "full_3d_view";
 if (merged != null) {
   double effectiveMarginFeet = targetElements.Count == 1 ? Math.Min(marginFeet, singleElementMarginFeet) : marginFeet;
   var section = new BoundingBoxXYZ();
@@ -167,6 +171,33 @@ if (merged != null) {
   section.Max = new XYZ(merged.Max.X + effectiveMarginFeet, merged.Max.Y + effectiveMarginFeet, merged.Max.Z + effectiveMarginFeet);
   reviewView.IsSectionBoxActive = true;
   reviewView.SetSectionBox(section);
+  sectionBoxApplied = true;
+  framingMode = "section_box_and_camera";
+
+  try {
+    XYZ center = new XYZ(
+      (section.Min.X + section.Max.X) / 2.0,
+      (section.Min.Y + section.Max.Y) / 2.0,
+      (section.Min.Z + section.Max.Z) / 2.0);
+    double dx = Math.Max(0.1, section.Max.X - section.Min.X);
+    double dy = Math.Max(0.1, section.Max.Y - section.Min.Y);
+    double dz = Math.Max(0.1, section.Max.Z - section.Min.Z);
+    double diagonal = Math.Sqrt((dx * dx) + (dy * dy) + (dz * dz));
+    XYZ forward = new XYZ(-0.60, -0.60, -0.50).Normalize();
+    XYZ right = XYZ.BasisZ.CrossProduct(forward);
+    if (right.GetLength() < 0.000001) right = XYZ.BasisX;
+    right = right.Normalize();
+    XYZ up = forward.CrossProduct(right).Normalize();
+    framingDistanceFeet = Math.Max(diagonal * 2.25, 10.0);
+    XYZ eye = center.Subtract(forward.Multiply(framingDistanceFeet));
+    reviewView.SetOrientation(new ViewOrientation3D(eye, up, forward));
+    try { reviewView.CropBoxActive = true; } catch {}
+    try { reviewView.CropBoxVisible = false; } catch {}
+    cameraFramedToTargets = true;
+  }
+  catch (Exception ex) {
+    warnings.Add("coordination_camera_frame_failed:" + ex.Message);
+  }
 }
 
 var targetGraphics = new OverrideGraphicSettings();
@@ -380,6 +411,12 @@ return new {
   revitWriteAction = "review_view_only",
   intent = intent,
   view = new { id = reviewView.Id.IntegerValue, name = reviewView.Name, created = createdView, sectionBoxActive = reviewView.IsSectionBoxActive },
+  framing = new {
+    mode = framingMode,
+    sectionBoxApplied = sectionBoxApplied,
+    cameraFramedToTargets = cameraFramedToTargets,
+    framingDistanceFeet = framingDistanceFeet
+  },
   requestedElementCount = requestedElementIds.Count,
   foundElementCount = targetElements.Count,
   missingElementIds = missingIds,

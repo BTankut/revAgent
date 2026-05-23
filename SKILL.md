@@ -86,8 +86,8 @@ custom-code workflows.
 - `export_revit_coordination_image` - create or reuse a dedicated visual QA 3D
   view, optionally section-box target elements, apply high-contrast review
   graphics, and export an image. Single-element exports use a tighter default
-  frame than multi-element exports. It writes only review view settings; it
-  does not create or modify ducts, pipes, terminals, fittings, or other
+  frame and a target-centered 3D camera. It writes only review view settings;
+  it does not create or modify ducts, pipes, terminals, fittings, or other
   physical MEP model elements.
 - `show_element_in_plan_and_3d` - wrapper workflow that safely finds or uses one
   element, shows it in an existing plan, then optionally opens a focused 3D

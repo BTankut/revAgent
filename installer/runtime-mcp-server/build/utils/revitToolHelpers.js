@@ -44,13 +44,19 @@ export function normalizeSuccessCasing(payload) {
         for (const [key, child] of Object.entries(value)) {
             clone[key] = visit(child);
         }
-        if (Object.prototype.hasOwnProperty.call(clone, "Success") &&
-            !Object.prototype.hasOwnProperty.call(clone, "success")) {
-            clone.success = clone.Success;
+        if (Object.prototype.hasOwnProperty.call(clone, "Success")) {
+            if (!Object.prototype.hasOwnProperty.call(clone, "success")) {
+                clone.success = clone.Success;
+            }
+            delete clone.Success;
         }
-        if (Object.prototype.hasOwnProperty.call(clone, "success") &&
-            !Object.prototype.hasOwnProperty.call(clone, "Success")) {
-            clone.Success = clone.success;
+        if (Object.prototype.hasOwnProperty.call(clone, "SUCCESS") &&
+            !Object.prototype.hasOwnProperty.call(clone, "success")) {
+            clone.success = clone.SUCCESS;
+            delete clone.SUCCESS;
+        }
+        else if (Object.prototype.hasOwnProperty.call(clone, "SUCCESS")) {
+            delete clone.SUCCESS;
         }
         return clone;
     };

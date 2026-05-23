@@ -24,8 +24,9 @@ status preflight and single-command rule.
   - Best for: dense MEP coordination review where the model view is too noisy
     for an LLM to inspect reliably.
   - Output: each generated file reports `bytes`, `width`, and `height`. Single
-    target exports use a tighter default section-box margin so the target does
-    not disappear in a wide 3D frame.
+    target exports use a tighter default section-box margin and recenter the 3D
+    camera on the target section box so the target does not disappear in a wide
+    model frame.
 
 Neither tool creates ducts, pipes, fittings, terminals, sprinklers, or other
 physical MEP model elements.
@@ -128,7 +129,9 @@ across the model, their combined bounding box will intentionally create a large
 review region. For tight coordination evidence, pass only the local elements
 around the issue being reviewed. When exactly one element is supplied,
 `singleElementMarginMm` caps the section-box margin independently from the
-multi-element `marginMm` default.
+multi-element `marginMm` default. The tool also sets a deterministic 3D camera
+orientation centered on the target section box and reports
+`framing.cameraFramedToTargets`.
 
 For production review, keep the generated image path in the task notes or PR
 comment so reviewers can reproduce the visual evidence.

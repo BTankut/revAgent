@@ -67,7 +67,7 @@ Available runtime tools:
   applies section box and high-contrast graphic overrides around target
   elements, then exports an image. It does not create or modify physical MEP
   elements; it writes only review view settings. Single target exports use a
-  tighter default frame than multi-element exports.
+  tighter default frame and a target-centered 3D camera.
 
 Practical use:
 
