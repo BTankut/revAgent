@@ -56,6 +56,17 @@ assert.equal(normalized.result.count, 2);
 const content = formatJsonContent({ success: true });
 assert.equal(content.content[0].type, "text");
 assert.match(content.content[0].text, /"success": true/);
+assert.match(content.content[0].text, /"Success": true/);
+
+const successAliasContent = formatJsonContent({
+  Success: true,
+  nested: { success: false },
+});
+const successAliasPayload = JSON.parse(successAliasContent.content[0].text);
+assert.equal(successAliasPayload.success, true);
+assert.equal(successAliasPayload.Success, true);
+assert.equal(successAliasPayload.nested.success, false);
+assert.equal(successAliasPayload.nested.Success, false);
 
 const trimmed = truncateText("abcdef", 3);
 assert.equal(trimmed.truncated, true);

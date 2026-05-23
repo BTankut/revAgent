@@ -32,12 +32,37 @@ export function executionOptionsFromArgs(args = {}, defaultTaskName) {
         ...taskOptionsFromArgs(args, defaultTaskName),
     };
 }
+export function normalizeSuccessCasing(payload) {
+    const visit = (value) => {
+        if (Array.isArray(value)) {
+            return value.map((item) => visit(item));
+        }
+        if (!value || typeof value !== "object") {
+            return value;
+        }
+        const clone = {};
+        for (const [key, child] of Object.entries(value)) {
+            clone[key] = visit(child);
+        }
+        if (Object.prototype.hasOwnProperty.call(clone, "Success") &&
+            !Object.prototype.hasOwnProperty.call(clone, "success")) {
+            clone.success = clone.Success;
+        }
+        if (Object.prototype.hasOwnProperty.call(clone, "success") &&
+            !Object.prototype.hasOwnProperty.call(clone, "Success")) {
+            clone.Success = clone.success;
+        }
+        return clone;
+    };
+    return visit(payload);
+}
 export function formatJsonContent(payload) {
+    const normalizedPayload = normalizeSuccessCasing(payload);
     return {
         content: [
             {
                 type: "text",
-                text: JSON.stringify(payload, null, 2),
+                text: JSON.stringify(normalizedPayload, null, 2),
             },
         ],
     };

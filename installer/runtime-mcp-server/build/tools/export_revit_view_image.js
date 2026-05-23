@@ -48,6 +48,7 @@ export function registerExportRevitViewImageTool(server) {
         range: rangeSchema.optional().describe("current_view and visible_region use the active UI view. set_of_views can export viewId/viewName without switching the UI."),
         format: formatSchema.optional().default("png"),
         pixelSize: z.number().int().min(200).max(10000).optional().default(6000),
+        enforcePixelSize: z.boolean().optional().default(true).describe("When true, post-processes PNG/JPEG/BMP/TIFF output so the requested fit direction dimension equals pixelSize. TARGA cannot be resized by this tool."),
         zoom: z.number().int().min(1).max(1000).optional().default(100),
         dpi: dpiSchema.optional().default("300"),
         fitDirection: fitDirectionSchema.optional().default("horizontal"),
@@ -64,6 +65,7 @@ export function registerExportRevitViewImageTool(server) {
         const resolution = resolutionByDpi[String(args.dpi || "150")];
         const fitDirection = fitDirectionByInput[args.fitDirection || "horizontal"];
         const pixelSize = Math.trunc(args.pixelSize || 6000);
+        const enforcePixelSize = args.enforcePixelSize !== false;
         const zoom = Math.trunc(args.zoom || 100);
         const code = `
 var warnings = new List<string>();
@@ -74,6 +76,9 @@ string viewNameInput = ${csharpString(args.viewName || "")};
 int? viewIdInput = ${csharpNullableInt(args.viewId)};
 bool exactName = ${args.exactName === false ? "false" : "true"};
 bool selectorProvided = viewIdInput.HasValue || !String.IsNullOrWhiteSpace(viewNameInput);
+int requestedPixelSize = ${pixelSize};
+string requestedFitDirection = ${csharpString(args.fitDirection || "horizontal")};
+bool enforcePixelSize = ${enforcePixelSize ? "true" : "false"};
 
 System.IO.Directory.CreateDirectory(outputDir);
 
@@ -210,11 +215,74 @@ Func<string, int[]> readImageSize = (f) => {
   return null;
 };
 
+Func<string, int[], bool> resizeImageToRequestedPixelSize = (f, size) => {
+  if (!enforcePixelSize || requestedPixelSize <= 0 || size == null || size.Length != 2) return false;
+  int originalWidth = size[0];
+  int originalHeight = size[1];
+  if (originalWidth <= 0 || originalHeight <= 0) return false;
+
+  int targetWidth = originalWidth;
+  int targetHeight = originalHeight;
+  if (String.Equals(requestedFitDirection, "vertical", System.StringComparison.OrdinalIgnoreCase)) {
+    targetHeight = requestedPixelSize;
+    targetWidth = Math.Max(1, (int)Math.Round((double)originalWidth * (double)targetHeight / (double)originalHeight));
+  }
+  else {
+    targetWidth = requestedPixelSize;
+    targetHeight = Math.Max(1, (int)Math.Round((double)originalHeight * (double)targetWidth / (double)originalWidth));
+  }
+
+  if (targetWidth == originalWidth && targetHeight == originalHeight) return false;
+
+  string extension = System.IO.Path.GetExtension(f).ToLowerInvariant();
+  Func<System.Windows.Media.Imaging.BitmapEncoder> createEncoder = null;
+  if (extension == ".png") createEncoder = () => new System.Windows.Media.Imaging.PngBitmapEncoder();
+  else if (extension == ".jpg" || extension == ".jpeg") createEncoder = () => new System.Windows.Media.Imaging.JpegBitmapEncoder();
+  else if (extension == ".bmp") createEncoder = () => new System.Windows.Media.Imaging.BmpBitmapEncoder();
+  else if (extension == ".tif" || extension == ".tiff") createEncoder = () => new System.Windows.Media.Imaging.TiffBitmapEncoder();
+  else {
+    warnings.Add("image_resize_unsupported_format:" + System.IO.Path.GetFileName(f));
+    return false;
+  }
+
+  string tempFile = f + ".resize-tmp";
+  try {
+    var source = new System.Windows.Media.Imaging.BitmapImage();
+    source.BeginInit();
+    source.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+    source.UriSource = new Uri(f, UriKind.Absolute);
+    source.EndInit();
+    source.Freeze();
+
+    double scaleX = (double)targetWidth / (double)source.PixelWidth;
+    double scaleY = (double)targetHeight / (double)source.PixelHeight;
+    var resized = new System.Windows.Media.Imaging.TransformedBitmap(source, new System.Windows.Media.ScaleTransform(scaleX, scaleY));
+    resized.Freeze();
+
+    var encoder = createEncoder();
+    encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(resized));
+    using (var stream = new System.IO.FileStream(tempFile, System.IO.FileMode.Create, System.IO.FileAccess.Write)) {
+      encoder.Save(stream);
+    }
+    System.IO.File.Delete(f);
+    System.IO.File.Move(tempFile, f);
+    return true;
+  }
+  catch (Exception ex) {
+    try { if (System.IO.File.Exists(tempFile)) System.IO.File.Delete(tempFile); } catch {}
+    warnings.Add("image_resize_failed:" + System.IO.Path.GetFileName(f) + ":" + ex.Message);
+    return false;
+  }
+};
+
 Func<string, object> buildFileSummary = (f) => {
   int? width = null;
   int? height = null;
+  bool resizedToRequestedPixelSize = false;
   try {
     int[] size = readImageSize(f);
+    resizedToRequestedPixelSize = resizeImageToRequestedPixelSize(f, size);
+    if (resizedToRequestedPixelSize) size = readImageSize(f);
     if (size != null && size.Length == 2) {
       width = size[0];
       height = size[1];
@@ -229,7 +297,9 @@ Func<string, object> buildFileSummary = (f) => {
     fileName = System.IO.Path.GetFileName(f),
     bytes = new System.IO.FileInfo(f).Length,
     width = width,
-    height = height
+    height = height,
+    requestedPixelSize = requestedPixelSize,
+    resizedToRequestedPixelSize = resizedToRequestedPixelSize
   };
 };
 
@@ -248,7 +318,10 @@ return new {
   format = ${csharpString(args.format || "png")},
   pixelSize = ${pixelSize},
   requestedPixelSize = ${pixelSize},
-  pixelSizeNote = "pixelSize is the Revit export request. Check files[].width and files[].height for actual output dimensions.",
+  enforcePixelSize = enforcePixelSize,
+  pixelSizeNote = enforcePixelSize
+    ? "PNG/JPEG/BMP/TIFF output is post-processed so the requested fit-direction dimension equals requestedPixelSize. TARGA reports actual Revit output dimensions."
+    : "pixelSize is the Revit export request. Check files[].width and files[].height for actual output dimensions.",
   dpi = ${csharpString(String(args.dpi || "300"))},
   fitDirection = ${csharpString(args.fitDirection || "horizontal")},
   view = new { id = selectedView.Id.IntegerValue, name = selectedView.Name, type = selectedView.ViewType.ToString() },

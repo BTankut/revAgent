@@ -64,8 +64,10 @@ export function registerExportRevitCoordinationImageTool(server) {
       elementIds: z.array(z.union([z.number(), z.string()])).optional().describe("Optional element ids to focus/highlight. When provided, the review view receives a section box around these elements."),
       viewName: z.string().optional().default("DPE Visual QA - Coordination Export"),
       marginMm: z.number().min(0).max(20000).optional().default(2000),
+      singleElementMarginMm: z.number().min(0).max(20000).optional().default(300).describe("Maximum section-box margin when exactly one target element is exported. This keeps single-element QA exports tightly framed."),
       contextTransparency: z.number().int().min(0).max(90).optional().default(65),
       pixelSize: z.number().int().min(200).max(10000).optional().default(4000),
+      enforcePixelSize: z.boolean().optional().default(true).describe("When true, post-processes PNG/JPEG/BMP/TIFF output so the requested fit direction dimension equals pixelSize. TARGA cannot be resized by this tool."),
       dpi: dpiSchema.optional().default("300"),
       fitDirection: fitDirectionSchema.optional().default("horizontal"),
       format: formatSchema.optional().default("png"),
@@ -82,6 +84,8 @@ export function registerExportRevitCoordinationImageTool(server) {
       const fitDirection = fitDirectionByInput[args.fitDirection || "horizontal"];
       const pixelSize = Math.trunc(args.pixelSize || 4000);
       const marginMm = Number.isFinite(Number(args.marginMm)) ? Number(args.marginMm) : 2000;
+      const singleElementMarginMm = Number.isFinite(Number(args.singleElementMarginMm)) ? Number(args.singleElementMarginMm) : 300;
+      const enforcePixelSize = args.enforcePixelSize !== false;
       const transparency = Math.trunc(args.contextTransparency ?? 65);
 
       const code = `
@@ -92,7 +96,11 @@ string desiredViewName = ${csharpString(args.viewName || "DPE Visual QA - Coordi
 string intent = ${csharpString(args.intent || "coordination_overlay")};
 var requestedElementIds = ${csharpIntList(args.elementIds)};
 double marginFeet = ${marginMm} / 304.8;
+double singleElementMarginFeet = ${singleElementMarginMm} / 304.8;
 int contextTransparency = ${transparency};
+int requestedPixelSize = ${pixelSize};
+string requestedFitDirection = ${csharpString(args.fitDirection || "horizontal")};
+bool enforcePixelSize = ${enforcePixelSize ? "true" : "false"};
 
 System.IO.Directory.CreateDirectory(outputDir);
 
@@ -153,9 +161,10 @@ foreach (var element in targetElements) {
 }
 
 if (merged != null) {
+  double effectiveMarginFeet = targetElements.Count == 1 ? Math.Min(marginFeet, singleElementMarginFeet) : marginFeet;
   var section = new BoundingBoxXYZ();
-  section.Min = new XYZ(merged.Min.X - marginFeet, merged.Min.Y - marginFeet, merged.Min.Z - marginFeet);
-  section.Max = new XYZ(merged.Max.X + marginFeet, merged.Max.Y + marginFeet, merged.Max.Z + marginFeet);
+  section.Min = new XYZ(merged.Min.X - effectiveMarginFeet, merged.Min.Y - effectiveMarginFeet, merged.Min.Z - effectiveMarginFeet);
+  section.Max = new XYZ(merged.Max.X + effectiveMarginFeet, merged.Max.Y + effectiveMarginFeet, merged.Max.Z + effectiveMarginFeet);
   reviewView.IsSectionBoxActive = true;
   reviewView.SetSectionBox(section);
 }
@@ -204,12 +213,166 @@ options.ShouldCreateWebSite = false;
 options.SetViewsAndSheets(new List<ElementId> { reviewView.Id });
 document.ExportImage(options);
 
+Func<byte[], int, int> readInt32BigEndian = (bytes, offset) =>
+  (bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3];
+Func<byte[], int, int> readInt16BigEndian = (bytes, offset) =>
+  (bytes[offset] << 8) | bytes[offset + 1];
+Func<byte[], int, int> readInt16LittleEndian = (bytes, offset) =>
+  bytes[offset] | (bytes[offset + 1] << 8);
+Func<byte[], int, int> readInt32LittleEndian = (bytes, offset) =>
+  bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24);
+Func<string, int[]> readImageSize = (f) => {
+  byte[] bytes = System.IO.File.ReadAllBytes(f);
+  if (bytes.Length >= 24 &&
+      bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) {
+    return new int[] { readInt32BigEndian(bytes, 16), readInt32BigEndian(bytes, 20) };
+  }
+  if (bytes.Length >= 26 && bytes[0] == 0x42 && bytes[1] == 0x4D) {
+    return new int[] { readInt32LittleEndian(bytes, 18), Math.Abs(readInt32LittleEndian(bytes, 22)) };
+  }
+  if (bytes.Length >= 18) {
+    string extension = System.IO.Path.GetExtension(f).ToLowerInvariant();
+    if (extension == ".tga" || extension == ".targa") {
+      int tgaWidth = readInt16LittleEndian(bytes, 12);
+      int tgaHeight = readInt16LittleEndian(bytes, 14);
+      if (tgaWidth > 0 && tgaHeight > 0) return new int[] { tgaWidth, tgaHeight };
+    }
+  }
+  if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8) {
+    int offset = 2;
+    while (offset + 9 < bytes.Length) {
+      if (bytes[offset] != 0xFF) { offset++; continue; }
+      byte marker = bytes[offset + 1];
+      if (marker == 0xD8 || marker == 0xD9) { offset += 2; continue; }
+      int segmentLength = readInt16BigEndian(bytes, offset + 2);
+      if (segmentLength < 2 || offset + 2 + segmentLength > bytes.Length) break;
+      bool isSof = (marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC);
+      if (isSof && offset + 8 < bytes.Length) {
+        return new int[] { readInt16BigEndian(bytes, offset + 7), readInt16BigEndian(bytes, offset + 5) };
+      }
+      offset += 2 + segmentLength;
+    }
+  }
+  if (bytes.Length >= 16 &&
+      ((bytes[0] == 0x49 && bytes[1] == 0x49) || (bytes[0] == 0x4D && bytes[1] == 0x4D))) {
+    bool little = bytes[0] == 0x49;
+    Func<int, int> read16 = (offset) => little ? readInt16LittleEndian(bytes, offset) : readInt16BigEndian(bytes, offset);
+    Func<int, int> read32 = (offset) => little ? readInt32LittleEndian(bytes, offset) : readInt32BigEndian(bytes, offset);
+    int ifdOffset = read32(4);
+    if (ifdOffset > 0 && ifdOffset + 2 < bytes.Length) {
+      int entries = read16(ifdOffset);
+      int width = 0;
+      int height = 0;
+      for (int i = 0; i < entries; i++) {
+        int entryOffset = ifdOffset + 2 + (i * 12);
+        if (entryOffset + 12 > bytes.Length) break;
+        int tag = read16(entryOffset);
+        int value = read32(entryOffset + 8);
+        if (tag == 256) width = value;
+        if (tag == 257) height = value;
+      }
+      if (width > 0 && height > 0) return new int[] { width, height };
+    }
+  }
+  return null;
+};
+
+Func<string, int[], bool> resizeImageToRequestedPixelSize = (f, size) => {
+  if (!enforcePixelSize || requestedPixelSize <= 0 || size == null || size.Length != 2) return false;
+  int originalWidth = size[0];
+  int originalHeight = size[1];
+  if (originalWidth <= 0 || originalHeight <= 0) return false;
+
+  int targetWidth = originalWidth;
+  int targetHeight = originalHeight;
+  if (String.Equals(requestedFitDirection, "vertical", System.StringComparison.OrdinalIgnoreCase)) {
+    targetHeight = requestedPixelSize;
+    targetWidth = Math.Max(1, (int)Math.Round((double)originalWidth * (double)targetHeight / (double)originalHeight));
+  }
+  else {
+    targetWidth = requestedPixelSize;
+    targetHeight = Math.Max(1, (int)Math.Round((double)originalHeight * (double)targetWidth / (double)originalWidth));
+  }
+
+  if (targetWidth == originalWidth && targetHeight == originalHeight) return false;
+
+  string extension = System.IO.Path.GetExtension(f).ToLowerInvariant();
+  Func<System.Windows.Media.Imaging.BitmapEncoder> createEncoder = null;
+  if (extension == ".png") createEncoder = () => new System.Windows.Media.Imaging.PngBitmapEncoder();
+  else if (extension == ".jpg" || extension == ".jpeg") createEncoder = () => new System.Windows.Media.Imaging.JpegBitmapEncoder();
+  else if (extension == ".bmp") createEncoder = () => new System.Windows.Media.Imaging.BmpBitmapEncoder();
+  else if (extension == ".tif" || extension == ".tiff") createEncoder = () => new System.Windows.Media.Imaging.TiffBitmapEncoder();
+  else {
+    warnings.Add("image_resize_unsupported_format:" + System.IO.Path.GetFileName(f));
+    return false;
+  }
+
+  string tempFile = f + ".resize-tmp";
+  try {
+    var source = new System.Windows.Media.Imaging.BitmapImage();
+    source.BeginInit();
+    source.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+    source.UriSource = new Uri(f, UriKind.Absolute);
+    source.EndInit();
+    source.Freeze();
+
+    double scaleX = (double)targetWidth / (double)source.PixelWidth;
+    double scaleY = (double)targetHeight / (double)source.PixelHeight;
+    var resized = new System.Windows.Media.Imaging.TransformedBitmap(source, new System.Windows.Media.ScaleTransform(scaleX, scaleY));
+    resized.Freeze();
+
+    var encoder = createEncoder();
+    encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(resized));
+    using (var stream = new System.IO.FileStream(tempFile, System.IO.FileMode.Create, System.IO.FileAccess.Write)) {
+      encoder.Save(stream);
+    }
+    System.IO.File.Delete(f);
+    System.IO.File.Move(tempFile, f);
+    return true;
+  }
+  catch (Exception ex) {
+    try { if (System.IO.File.Exists(tempFile)) System.IO.File.Delete(tempFile); } catch {}
+    warnings.Add("image_resize_failed:" + System.IO.Path.GetFileName(f) + ":" + ex.Message);
+    return false;
+  }
+};
+
+Func<string, object> buildFileSummary = (f) => {
+  int? width = null;
+  int? height = null;
+  bool resizedToRequestedPixelSize = false;
+  try {
+    int[] size = readImageSize(f);
+    resizedToRequestedPixelSize = resizeImageToRequestedPixelSize(f, size);
+    if (resizedToRequestedPixelSize) size = readImageSize(f);
+    if (size != null && size.Length == 2) {
+      width = size[0];
+      height = size[1];
+    }
+  }
+  catch (Exception ex) {
+    warnings.Add("image_dimension_probe_failed:" + System.IO.Path.GetFileName(f) + ":" + ex.Message);
+  }
+
+  return new {
+    path = f,
+    fileName = System.IO.Path.GetFileName(f),
+    bytes = new System.IO.FileInfo(f).Length,
+    width = width,
+    height = height,
+    requestedPixelSize = requestedPixelSize,
+    resizedToRequestedPixelSize = resizedToRequestedPixelSize
+  };
+};
+
 var files = System.IO.Directory.GetFiles(outputDir)
   .Select(f => System.IO.Path.GetFullPath(f))
   .Where(f => !before.Contains(f))
   .OrderBy(f => f)
-  .Select(f => new { path = f, fileName = System.IO.Path.GetFileName(f), bytes = new System.IO.FileInfo(f).Length })
+  .Select(f => buildFileSummary(f))
   .ToList();
+
+double effectiveMarginMm = targetElements.Count == 1 ? Math.Min(${marginMm}, ${singleElementMarginMm}) : ${marginMm};
 
 return new {
   success = files.Count > 0,
@@ -224,7 +387,16 @@ return new {
   filePrefix = filePrefix,
   format = ${csharpString(args.format || "png")},
   pixelSize = ${pixelSize},
+  requestedPixelSize = ${pixelSize},
+  enforcePixelSize = enforcePixelSize,
+  pixelSizeNote = enforcePixelSize
+    ? "PNG/JPEG/BMP/TIFF output is post-processed so the requested fit-direction dimension equals requestedPixelSize. TARGA reports actual Revit output dimensions."
+    : "pixelSize is the Revit export request. Check files[].width and files[].height for actual output dimensions.",
+  marginMm = ${marginMm},
+  singleElementMarginMm = ${singleElementMarginMm},
+  effectiveMarginMm = effectiveMarginMm,
   dpi = ${csharpString(String(args.dpi || "300"))},
+  fitDirection = ${csharpString(args.fitDirection || "horizontal")},
   files = files,
   warnings = warnings
 };`;

@@ -94,6 +94,14 @@ All notable Revit MCP workstation deployment changes are tracked here.
   `node_modules` junction and dependency marker restored after the managed
   package folder is replaced, even when the docs payload and API index are
   unchanged.
+- Tightened image export response contracts: `visible_region` and coordination
+  exports now normalize PNG/JPEG/BMP/TIFF output to the requested fit-direction
+  `pixelSize`, coordination exports include per-file `width`/`height`, and
+  single-element coordination framing uses a tighter default margin.
+- Normalized runtime response casing by adding compatible `success`/`Success`
+  aliases in JSON responses, and renamed probe-time modifiable-state fields so
+  `apiProbeState.isModifiable` no longer looks like the idle UI editability
+  state.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

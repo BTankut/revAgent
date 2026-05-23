@@ -12,8 +12,9 @@ status preflight and single-command rule.
   - Best for: raw screenshots, active plan evidence, exported visible region,
     high-resolution PNG/JPEG/TIFF/BMP/TARGA output.
   - Output: each generated file reports `bytes`, `width`, and `height`. Treat
-    `pixelSize` as the Revit export request; Revit may produce a different
-    actual image size for visible-region exports.
+    `pixelSize` as the requested final size. By default, PNG/JPEG/BMP/TIFF
+    exports are normalized after Revit export so the requested fit-direction
+    dimension equals `pixelSize`. TARGA reports Revit's actual output size.
 
 - `export_revit_coordination_image`
   - Purpose: create or reuse a dedicated visual QA 3D view, optionally focus a
@@ -22,6 +23,9 @@ status preflight and single-command rule.
   - Revit write action: review view settings only.
   - Best for: dense MEP coordination review where the model view is too noisy
     for an LLM to inspect reliably.
+  - Output: each generated file reports `bytes`, `width`, and `height`. Single
+    target exports use a tighter default section-box margin so the target does
+    not disappear in a wide 3D frame.
 
 Neither tool creates ducts, pipes, fittings, terminals, sprinklers, or other
 physical MEP model elements.
@@ -46,6 +50,9 @@ interest, then export the visible region:
 {
   "range": "visible_region",
   "format": "png",
+  "pixelSize": 2400,
+  "fitDirection": "horizontal",
+  "enforcePixelSize": true,
   "zoom": 100,
   "dpi": "300"
 }
@@ -71,9 +78,11 @@ For coordination review around known element ids:
   "elementIds": [12345, 67890],
   "viewName": "DPE Visual QA - Coordination Export",
   "marginMm": 2000,
+  "singleElementMarginMm": 300,
   "contextTransparency": 65,
   "format": "png",
   "pixelSize": 4000,
+  "enforcePixelSize": true,
   "dpi": "300"
 }
 ```
@@ -92,10 +101,13 @@ PNG at 300 DPI is the default because it keeps linework sharp and file sizes
 reasonable for Revit line drawings. Low-byte exports are not the default goal:
 LLM review needs readable text, tags, duct sizes, dimensions, grids, and
 leaders.
-For `visible_region`, Revit can preserve the visible viewport aspect and return
-dimensions larger or taller than the requested `pixelSize`; verify
-`files[].width` and `files[].height` before judging whether an export is useful
-for technical review.
+For `visible_region`, Revit can initially preserve the visible viewport aspect
+and return dimensions larger or taller than the requested `pixelSize`. With the
+default `enforcePixelSize=true`, the tool post-processes PNG/JPEG/BMP/TIFF
+files so `files[].width == pixelSize` for `fitDirection="horizontal"` or
+`files[].height == pixelSize` for `fitDirection="vertical"`. Verify
+`files[].width`, `files[].height`, and `files[].resizedToRequestedPixelSize`
+before judging whether an export is useful for technical review.
 Use JPEG only when smaller files matter more than exact line fidelity. BMP and
 TARGA are available because Revit supports them, but they are much larger and
 are not the preferred coordination format.
@@ -114,7 +126,9 @@ architectural backgrounds at the same time, prefer the coordination tool:
 Element scope matters. If the selected ducts or pipes are long and spread
 across the model, their combined bounding box will intentionally create a large
 review region. For tight coordination evidence, pass only the local elements
-around the issue being reviewed.
+around the issue being reviewed. When exactly one element is supplied,
+`singleElementMarginMm` caps the section-box margin independently from the
+multi-element `marginMm` default.
 
 For production review, keep the generated image path in the task notes or PR
 comment so reviewers can reproduce the visual evidence.

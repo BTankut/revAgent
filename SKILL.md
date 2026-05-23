@@ -80,13 +80,15 @@ custom-code workflows.
   rollback inside its own view update transactions
 - `export_revit_view_image` - export the active view, visible region, or a
   selected view to PNG/JPEG/TIFF/BMP/TARGA through `Document.ExportImage`.
-  This is read-only, reports actual generated image dimensions, and is the
-  preferred way to capture visual evidence for an LLM review.
+  This is read-only, reports actual generated image dimensions, and by default
+  normalizes PNG/JPEG/BMP/TIFF output so the requested `pixelSize` is the final
+  fit-direction dimension.
 - `export_revit_coordination_image` - create or reuse a dedicated visual QA 3D
   view, optionally section-box target elements, apply high-contrast review
-  graphics, and export an image. It writes only review view settings; it does
-  not create or modify ducts, pipes, terminals, fittings, or other physical MEP
-  model elements.
+  graphics, and export an image. Single-element exports use a tighter default
+  frame than multi-element exports. It writes only review view settings; it
+  does not create or modify ducts, pipes, terminals, fittings, or other
+  physical MEP model elements.
 - `show_element_in_plan_and_3d` - wrapper workflow that safely finds or uses one
   element, shows it in an existing plan, then optionally opens a focused 3D
   view. Successful routine calls return a compact summary by default; use
@@ -180,8 +182,11 @@ raw plan/view evidence and `export_revit_coordination_image` when dense MEP
 systems need a focused 3D review image. Prefer PNG at 300 DPI. For full plans,
 use `pixelSize` 6000-8000; for technical text reading, zoom/focus the active
 view and export `visible_region` instead of relying on one low-resolution full
-plan. Keep generated image paths with the task notes so a human reviewer can
-reproduce the exact evidence.
+plan. Keep `enforcePixelSize` on unless the raw Revit export dimensions are
+being debugged. For one target element in a dense model, use coordination
+export with the default `singleElementMarginMm` or lower it further for a
+tighter frame. Keep generated image paths with the task notes so a human
+reviewer can reproduce the exact evidence.
 
 ---
 

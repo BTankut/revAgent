@@ -61,18 +61,21 @@ Available runtime tools:
 
 - `export_revit_view_image`: exports the active view, the active view's visible
   region, or a selected Revit view to PNG/JPEG/TIFF/BMP/TARGA. It does not
-  write model elements or view settings.
+  write model elements or view settings. PNG/JPEG/BMP/TIFF exports are
+  normalized to the requested `pixelSize` by default.
 - `export_revit_coordination_image`: creates or updates a reusable 3D QA view,
   applies section box and high-contrast graphic overrides around target
   elements, then exports an image. It does not create or modify physical MEP
-  elements; it writes only review view settings.
+  elements; it writes only review view settings. Single target exports use a
+  tighter default frame than multi-element exports.
 
 Practical use:
 
 1. Use `export_revit_view_image` when raw screen/view evidence is enough.
 2. Do not rely on one low-resolution full-plan export for technical plan
    reading. Use 6000-8000 px / 300 DPI for full plans, and use a zoomed
-   `visible_region` export for detail review.
+   `visible_region` export for detail review. Leave `enforcePixelSize` enabled
+   unless debugging raw Revit export dimensions.
 3. If the image is dense or unreadable, use `export_revit_coordination_image`
    around target element ids for focused 3D evidence.
 4. Record the exported file path in the user response or review note.

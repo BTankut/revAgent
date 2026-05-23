@@ -118,8 +118,10 @@ try
             isReadOnly = document.IsReadOnly
         },
         apiProbeState = new {
-            isModifiable = document.IsModifiable,
-            note = "Revit API state sampled during this read-only tool probe. Use get_ui_state for the current idle UI document state."
+            sampledInsideReadOnlyTool = true,
+            documentIsModifiableDuringProbe = document.IsModifiable,
+            meaning = "Internal Revit API state sampled while this read-only tool is executing. This is not the idle UI editability state.",
+            currentUiStateSource = "Use get_ui_state.document.isModifiable for the current idle UI document state."
         },
         activeView = new {
             id = activeView.Id.IntegerValue,
