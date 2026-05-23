@@ -214,13 +214,14 @@ plan. Keep `enforcePixelSize` on unless the raw Revit export dimensions are
 being debugged. For one target element in a dense model, use coordination
 export with the default `singleElementMarginMm` or lower it further for a
 tighter frame; leave `cropToTargetHighlight` enabled so the exported image is
-cropped around the green target override if Revit keeps a wide 3D frame. Keep
+cropped around the target highlight if Revit keeps a wide 3D frame. Keep
 the default `targetMinFillRatio` unless wider context is more important than
 target readability; check `actualHighlightFillRatio` when judging whether the
-export is framed tightly enough. If `highlightPixelCount` is zero but
-`cropBasis` is `bbox_center_fallback`, the color detector failed but the tool
-still cropped from the model bounding-box estimate. Keep generated image paths
-with the task notes so a human reviewer can reproduce the exact evidence.
+export is framed tightly enough. If `highlightPixelCount` is zero and
+`cropBasis` is `bbox_center_fallback`, no actual target pixels were detected:
+the image may still be usable, but `actualHighlightFillRatio` is intentionally
+`0` and `estimatedFallbackFillRatio` is diagnostic only. Keep generated image
+paths with the task notes so a human reviewer can reproduce the exact evidence.
 
 ---
 

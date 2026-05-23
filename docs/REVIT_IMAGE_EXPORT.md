@@ -138,15 +138,17 @@ around the issue being reviewed. When exactly one element is supplied,
 multi-element `marginMm` default. The tool also sets a deterministic 3D camera
 orientation centered on the target section box and reports
 `framing.cameraFramedToTargets`. Because Revit can still keep a wide 3D export
-canvas, `cropToTargetHighlight=true` first tries to post-crop around the green
-target override pixels. Revit can anti-alias or transform override colors in a
-way that prevents exact pixel matching, so a single-target export falls back to
-a model bounding-box-centered crop when no target pixels are detected. The crop
-is constrained by `targetMinFillRatio` so the largest target dimension should
-occupy at least the requested share of the final crop side, defaulting to 0.4.
+canvas, `cropToTargetHighlight=true` first tries to post-crop around target
+highlight pixels. Revit can anti-alias or transform override colors, so the
+detector accepts green, yellow/cyan, and high-chroma target output instead of
+only exact RGB green. If no target pixels are detected, a single-target export
+falls back to a tight model bounding-box-centered crop. In that fallback mode
+`actualHighlightFillRatio` remains `0` because no real target pixels were
+measured; use `estimatedFallbackFillRatio` only as a diagnostic estimate.
 The response reports `files[].croppedToTargetHighlight`,
 `files[].highlightPixelCount`, `files[].actualHighlightFillRatio`,
-`files[].cropBasis`, and `files[].highlightCrop.cropBasis`.
+`files[].estimatedFallbackFillRatio`, `files[].cropBasis`, and
+`files[].highlightCrop.cropBasis`.
 
 Do not use `export_revit_coordination_image` as the primary tool for live
 Revit view navigation, selected-element zoom, or opening an element in a new

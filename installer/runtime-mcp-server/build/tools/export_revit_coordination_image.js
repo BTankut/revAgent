@@ -474,7 +474,16 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
         bool isTargetGreen =
           (g >= 135 && g > r + 45 && g > b + 25 && r <= 150 && b <= 190) ||
           (g >= 105 && g > r + 25 && g > b + 10 && r <= 190 && b <= 220);
-        if (!isTargetGreen) continue;
+        bool isTargetYellow =
+          (r >= 135 && g >= 110 && b <= 190 && r > b + 35 && g > b + 25);
+        bool isTargetCyan =
+          (g >= 115 && b >= 95 && r <= 180 && g > r + 20 && b > r + 10);
+        int maxChannel = Math.Max(r, Math.Max(g, b));
+        int minChannel = Math.Min(r, Math.Min(g, b));
+        bool isTargetHighChroma =
+          (maxChannel >= 140 && (maxChannel - minChannel) >= 80 && g >= 95 && r <= 245 && b <= 245);
+        bool isTargetHighlight = isTargetGreen || isTargetYellow || isTargetCyan || isTargetHighChroma;
+        if (!isTargetHighlight) continue;
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
         if (y < minY) minY = y;
@@ -489,10 +498,8 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
         double fallbackSafeFillRatio = Math.Max(0.1, Math.Min(0.9, targetMinFillRatio));
         int minImageSide = Math.Max(1, Math.Min(width, height));
         int estimatedMaxTargetDimension = Math.Max(8, (int)Math.Round(Math.Max(0.01, Math.Min(1.0, targetCropFillRatioEstimate)) * (double)minImageSide));
-        int fallbackRatioLimitedSide = Math.Max(estimatedMaxTargetDimension, (int)Math.Ceiling((double)estimatedMaxTargetDimension / fallbackSafeFillRatio));
-        int forcedContextSide = Math.Max(96, (int)Math.Round((double)minImageSide * 0.45));
-        int minSafeSide = Math.Min(minImageSide, estimatedMaxTargetDimension + (2 * Math.Max(0, highlightCropPaddingPx)));
-        int fallbackDesiredSide = Math.Min(minImageSide, Math.Max(minSafeSide, Math.Max(64, Math.Min(fallbackRatioLimitedSide, forcedContextSide))));
+        double fallbackSideRatio = Math.Max(0.06, Math.Min(0.18, 0.04 / fallbackSafeFillRatio));
+        int fallbackDesiredSide = Math.Min(minImageSide, Math.Max(64, (int)Math.Round((double)minImageSide * fallbackSideRatio)));
         int fallbackCropWidth = Math.Min(width, fallbackDesiredSide);
         int fallbackCropHeight = Math.Min(height, fallbackDesiredSide);
         double fallbackCenterX = Math.Max(0.0, Math.Min(1.0, targetCropCenterXRatio)) * (double)width;
@@ -503,7 +510,7 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
         if (fallbackCropY < 0) fallbackCropY = 0;
         if (fallbackCropX + fallbackCropWidth > width) fallbackCropX = Math.Max(0, width - fallbackCropWidth);
         if (fallbackCropY + fallbackCropHeight > height) fallbackCropY = Math.Max(0, height - fallbackCropHeight);
-        double fallbackActualFillRatio = (double)estimatedMaxTargetDimension / (double)Math.Max(fallbackCropWidth, fallbackCropHeight);
+        double fallbackEstimatedFillRatio = (double)estimatedMaxTargetDimension / (double)Math.Max(fallbackCropWidth, fallbackCropHeight);
 
         if (fallbackCropWidth > 0 && fallbackCropHeight > 0 &&
             (fallbackCropWidth < width * 0.98 || fallbackCropHeight < height * 0.98)) {
@@ -517,11 +524,12 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
           System.IO.File.Delete(f);
           System.IO.File.Move(tempFile, f);
           warnings.Add("image_highlight_crop_bbox_fallback_used:" + System.IO.Path.GetFileName(f));
-          if (fallbackActualFillRatio < fallbackSafeFillRatio) warnings.Add("image_highlight_crop_fill_ratio_estimate_not_met:" + System.IO.Path.GetFileName(f));
-          return new object[] { true, width, height, fallbackCropX, fallbackCropY, fallbackCropWidth, fallbackCropHeight, 0, highlightCount, estimatedMaxTargetDimension, fallbackSafeFillRatio, fallbackActualFillRatio, "bbox_center_fallback" };
+          warnings.Add("image_highlight_crop_actual_pixels_unavailable:" + System.IO.Path.GetFileName(f));
+          if (fallbackEstimatedFillRatio < fallbackSafeFillRatio) warnings.Add("image_highlight_crop_fill_ratio_estimate_not_met:" + System.IO.Path.GetFileName(f));
+          return new object[] { true, width, height, fallbackCropX, fallbackCropY, fallbackCropWidth, fallbackCropHeight, 0, highlightCount, estimatedMaxTargetDimension, fallbackSafeFillRatio, 0.0, "bbox_center_fallback", fallbackEstimatedFillRatio };
         }
       }
-      return new object[] { false, width, height, 0, 0, 0, 0, 0, highlightCount, 0, targetMinFillRatio, 0.0, "none" };
+      return new object[] { false, width, height, 0, 0, 0, 0, 0, highlightCount, 0, targetMinFillRatio, 0.0, "none", 0.0 };
     }
 
     int highlightWidth = Math.Max(1, maxX - minX + 1);
@@ -549,7 +557,7 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
     if (cropWidth <= 0 || cropHeight <= 0 ||
         (cropWidth >= width * 0.98 && cropHeight >= height * 0.98)) {
       if (actualFillRatio < safeFillRatio) warnings.Add("image_highlight_crop_fill_ratio_not_met:" + System.IO.Path.GetFileName(f));
-      return new object[] { false, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, maxHighlightDimension, safeFillRatio, actualFillRatio, "none" };
+      return new object[] { false, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, maxHighlightDimension, safeFillRatio, actualFillRatio, "none", 0.0 };
     }
 
     var cropped = new System.Windows.Media.Imaging.CroppedBitmap(converted, new System.Windows.Int32Rect(cropX, cropY, cropWidth, cropHeight));
@@ -562,12 +570,12 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
     System.IO.File.Delete(f);
     System.IO.File.Move(tempFile, f);
     if (actualFillRatio < safeFillRatio) warnings.Add("image_highlight_crop_fill_ratio_not_met:" + System.IO.Path.GetFileName(f));
-    return new object[] { true, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, maxHighlightDimension, safeFillRatio, actualFillRatio, "highlight_pixels" };
+    return new object[] { true, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, maxHighlightDimension, safeFillRatio, actualFillRatio, "highlight_pixels", 0.0 };
   }
   catch (Exception ex) {
     try { if (System.IO.File.Exists(tempFile)) System.IO.File.Delete(tempFile); } catch {}
     warnings.Add("image_highlight_crop_failed:" + System.IO.Path.GetFileName(f) + ":" + ex.Message);
-    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0, "none" };
+    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0, "none", 0.0 };
   }
 };
 
@@ -578,6 +586,7 @@ Func<string, object> buildFileSummary = (f) => {
   bool croppedToTargetHighlight = false;
   int highlightPixelCount = 0;
   double actualHighlightFillRatio = 0.0;
+  double estimatedFallbackFillRatio = 0.0;
   string cropBasis = "none";
   object highlightCrop = null;
   try {
@@ -587,6 +596,7 @@ Func<string, object> buildFileSummary = (f) => {
       highlightPixelCount = Convert.ToInt32(crop[8]);
       actualHighlightFillRatio = Convert.ToDouble(crop[11], System.Globalization.CultureInfo.InvariantCulture);
       if (crop.Length >= 13 && crop[12] != null) cropBasis = crop[12].ToString();
+      if (crop.Length >= 14 && crop[13] != null) estimatedFallbackFillRatio = Convert.ToDouble(crop[13], System.Globalization.CultureInfo.InvariantCulture);
       if (croppedToTargetHighlight) {
         highlightCrop = new {
           originalWidth = Convert.ToInt32(crop[1]),
@@ -598,6 +608,7 @@ Func<string, object> buildFileSummary = (f) => {
           maxHighlightDimension = Convert.ToInt32(crop[9]),
           targetMinFillRatio = Convert.ToDouble(crop[10], System.Globalization.CultureInfo.InvariantCulture),
           actualHighlightFillRatio = actualHighlightFillRatio,
+          estimatedFallbackFillRatio = estimatedFallbackFillRatio,
           cropBasis = cropBasis
         };
       }
@@ -626,6 +637,7 @@ Func<string, object> buildFileSummary = (f) => {
     highlightPixelCount = highlightPixelCount,
     targetMinFillRatio = targetMinFillRatio,
     actualHighlightFillRatio = actualHighlightFillRatio,
+    estimatedFallbackFillRatio = estimatedFallbackFillRatio,
     cropBasis = cropBasis,
     highlightCrop = highlightCrop
   };
