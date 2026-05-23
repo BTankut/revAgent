@@ -44,20 +44,25 @@ function compactPlanResult(payload) {
     if (!payload || typeof payload !== "object") {
         return payload;
     }
-    if (payload.Success === false) {
-        return payload;
-    }
-
     return {
         Success: payload.Success,
         Action: payload.Action,
         Message: payload.Message,
+        Error: payload.Error,
         ResponseMode: "compact",
         PlanMode: payload.PlanMode,
+        PlanCandidateMode: payload.PlanCandidateMode,
+        FallbackUsed: payload.FallbackUsed,
+        VerifiedCandidateCount: payload.VerifiedCandidateCount,
+        RejectedCandidateCount: payload.RejectedCandidateCount,
         PlanOpenMode: payload.PlanOpenMode,
         PlanOpenNote: payload.PlanOpenNote,
+        FocusBlocked: payload.FocusBlocked,
+        FocusBlockReason: payload.FocusBlockReason,
+        FocusSuggestion: payload.FocusSuggestion,
         TargetView: compactView(payload.TargetView),
         SelectedPlan: compactView(payload.SelectedPlan),
+        SuggestedView: compactView(payload.SuggestedView),
         ActiveView: compactView(payload.ActiveView),
         ActiveViewChanged: payload.ActiveViewChanged,
         ActivePlanMatchesElementLevel: payload.ActivePlanMatchesElementLevel,
@@ -83,8 +88,9 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
         ...taskMetadataSchema(z),
         elementId: elementIdSchema.describe("ElementId to locate in an existing plan view."),
         planMode: z.enum(["elementLevel", "activePlan"]).optional().describe("elementLevel opens the best existing plan on the element level. activePlan keeps the current active plan and does not switch to the element level. Defaults elementLevel."),
-        planCandidateMode: z.enum(["metadataFirst", "verified"]).optional().describe("Plan selection strategy for elementLevel mode. metadataFirst is the default and ranks same-level plans without scanning every candidate view, then verifies only the selected view. verified scans all candidate views before selecting and is slower."),
-        fallbackToVerified: z.boolean().optional().describe("When metadataFirst selects a plan that does not contain the element, run the slower verified scan before failing. Defaults true."),
+        planCandidateMode: z.enum(["metadataFirst", "verified"]).optional().describe("Plan selection strategy for elementLevel mode. metadataFirst is the default and ranks same-level plans without scanning every candidate view, then verifies a small number of ranked candidates. verified scans all candidate views before selecting and is slower."),
+        fallbackToVerified: z.boolean().optional().describe("When metadataFirst cannot find a visible element within the limited ranked-candidate check, run the slower verified scan before failing. Defaults true."),
+        maxMetadataVerifyCandidates: z.number().int().min(1).max(25).optional().describe("Maximum ranked metadata candidates verified before fallback. Defaults 5."),
         planNameContains: z.string().optional().describe("Optional plan name preference such as HVAC, Mechanical, or Roof Level."),
         preferMechanical: z.boolean().optional().describe("Prefer HVAC/mechanical/MEP named plans on the same level. Defaults true."),
         select: z.boolean().optional().describe("Select the element after activating the plan. Defaults true."),
@@ -101,6 +107,7 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
                 planMode: args.planMode,
                 planCandidateMode: args.planCandidateMode,
                 fallbackToVerified: args.fallbackToVerified,
+                maxMetadataVerifyCandidates: args.maxMetadataVerifyCandidates,
                 planNameContains: args.planNameContains,
                 preferMechanical: args.preferMechanical,
                 select: args.select,
@@ -115,7 +122,7 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
                 verboseCandidates: args.verboseCandidates,
                 maxPlanCandidates: args.maxPlanCandidates ?? 3,
             });
-            if (args.responseMode === "full" || (trimmedPayload && trimmedPayload.Success === false)) {
+            if (args.responseMode === "full") {
                 return formatJsonContent(trimmedPayload);
             }
             return formatJsonContent(compactPlanResult(trimmedPayload));

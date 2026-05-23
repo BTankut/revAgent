@@ -18,6 +18,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         private string _planMode;
         private string _planCandidateMode;
         private bool _fallbackToVerified;
+        private int _maxMetadataVerifyCandidates;
         private bool _preferMechanical;
         private bool _select;
         private bool _zoom;
@@ -28,6 +29,9 @@ namespace RevitMCPViewCommandSet.Commands.View
         private ElementSearchItem _elementInfo;
         private List<PlanCandidateSummary> _planCandidates;
         private ViewSummary _activeViewBefore;
+        private bool _metadataFallbackUsed;
+        private int _verifiedCandidateCount;
+        private int _rejectedCandidateCount;
 
         public ElementFocusResult ResultInfo { get; private set; }
         public bool TaskCompleted { get; private set; }
@@ -38,6 +42,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             string planMode,
             string planCandidateMode,
             bool fallbackToVerified,
+            int maxMetadataVerifyCandidates,
             bool preferMechanical,
             bool select,
             bool zoom,
@@ -48,6 +53,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             _planMode = NormalizePlanMode(planMode);
             _planCandidateMode = NormalizePlanCandidateMode(planCandidateMode);
             _fallbackToVerified = fallbackToVerified;
+            _maxMetadataVerifyCandidates = Math.Max(1, Math.Min(25, maxMetadataVerifyCandidates));
             _preferMechanical = preferMechanical;
             _select = select;
             _zoom = zoom;
@@ -58,6 +64,9 @@ namespace RevitMCPViewCommandSet.Commands.View
             _elementInfo = null;
             _planCandidates = null;
             _activeViewBefore = null;
+            _metadataFallbackUsed = false;
+            _verifiedCandidateCount = 0;
+            _rejectedCandidateCount = 0;
             TaskCompleted = false;
             ResultInfo = null;
             _resetEvent.Reset();
@@ -139,32 +148,25 @@ namespace RevitMCPViewCommandSet.Commands.View
                         return;
                     }
 
-                    selected = _planCandidates.FirstOrDefault();
-                    Autodesk.Revit.DB.View metadataTargetView = selected != null ? document.GetElement(new ElementId(selected.Id)) as Autodesk.Revit.DB.View : null;
-                    ViewPlan metadataTargetPlan = metadataTargetView as ViewPlan;
-                    if (metadataTargetPlan == null)
-                    {
-                        Complete(BuildFailure(document, uiDocument, "Selected plan view no longer exists."));
-                        return;
-                    }
-
-                    selected = BuildVerifiedCandidateForPlan(document, uiDocument, metadataTargetPlan, element, "metadata-first selected plan");
-                    ReplacePlanCandidate(selected);
-                    if (selected.ElementVisibleInView != true)
+                    selected = VerifyMetadataCandidatesInOrder(document, uiDocument, element);
+                    if (selected == null)
                     {
                         if (!_fallbackToVerified)
                         {
-                            Complete(BuildFailure(document, uiDocument, "Metadata-first selected plan does not contain the target element."));
+                            Complete(BuildFailure(document, uiDocument, "No metadata-first candidate contained the target element within the verification cap."));
                             return;
                         }
 
+                        _metadataFallbackUsed = true;
                         _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical, element);
+                        _verifiedCandidateCount += _planCandidates.Count;
                         selected = _planCandidates.FirstOrDefault(c => c.ElementVisibleInView == true);
                     }
                 }
                 else
                 {
                     _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical, element);
+                    _verifiedCandidateCount = _planCandidates.Count;
                     selected = _planCandidates.FirstOrDefault(c => c.ElementVisibleInView == true);
                 }
 
@@ -384,6 +386,10 @@ namespace RevitMCPViewCommandSet.Commands.View
                 ActiveViewBefore = _activeViewBefore,
                 ActiveViewChanged = activeViewChanged,
                 PlanMode = _planMode,
+                PlanCandidateMode = _planCandidateMode,
+                FallbackUsed = _metadataFallbackUsed,
+                VerifiedCandidateCount = _verifiedCandidateCount,
+                RejectedCandidateCount = _rejectedCandidateCount,
                 PlanOpenMode = planOpenMode,
                 PlanOpenNote = planOpenNote,
                 ActivePlanMatchesElementLevel = activePlanMatchesElementLevel,
@@ -451,6 +457,10 @@ namespace RevitMCPViewCommandSet.Commands.View
                 ActiveViewBefore = _activeViewBefore,
                 ActiveViewChanged = activeViewChanged,
                 PlanMode = _planMode,
+                PlanCandidateMode = _planCandidateMode,
+                FallbackUsed = _metadataFallbackUsed,
+                VerifiedCandidateCount = _verifiedCandidateCount,
+                RejectedCandidateCount = _rejectedCandidateCount,
                 PlanOpenMode = UseActivePlanOnly() ? "activePlanOnlyBlocked" : "elementLevelExistingPlanBlocked",
                 PlanOpenNote = "The selected plan was rejected because the target element is not present in the view-specific collector.",
                 ActivePlanMatchesElementLevel = activePlanMatchesElementLevel,
@@ -517,6 +527,10 @@ namespace RevitMCPViewCommandSet.Commands.View
                 ActiveViewBefore = _activeViewBefore,
                 ActiveViewChanged = activeViewChanged,
                 PlanMode = _planMode,
+                PlanCandidateMode = _planCandidateMode,
+                FallbackUsed = _metadataFallbackUsed,
+                VerifiedCandidateCount = _verifiedCandidateCount,
+                RejectedCandidateCount = _rejectedCandidateCount,
                 PlanOpenMode = "activePlanOnlyBlocked",
                 PlanOpenNote = "The active plan was kept as requested, but focus was blocked because its level does not match the element level.",
                 ActivePlanMatchesElementLevel = activePlanMatchesElementLevel,
@@ -564,6 +578,10 @@ namespace RevitMCPViewCommandSet.Commands.View
                 Error = error,
                 ActiveViewBefore = _activeViewBefore,
                 PlanMode = _planMode,
+                PlanCandidateMode = _planCandidateMode,
+                FallbackUsed = _metadataFallbackUsed,
+                VerifiedCandidateCount = _verifiedCandidateCount,
+                RejectedCandidateCount = _rejectedCandidateCount,
                 ActiveView = document != null ? ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true) : null,
                 OpenViews = uiDocument != null ? ViewCommandHelpers.GetOpenViewSummaries(uiDocument) : null,
                 Elements = elements,
@@ -660,6 +678,51 @@ namespace RevitMCPViewCommandSet.Commands.View
             }
 
             return activePlanCandidate != null;
+        }
+
+        private PlanCandidateSummary VerifyMetadataCandidatesInOrder(
+            Document document,
+            UIDocument uiDocument,
+            Element element)
+        {
+            if (_planCandidates == null || _planCandidates.Count == 0)
+            {
+                return null;
+            }
+
+            List<PlanCandidateSummary> candidates = _planCandidates
+                .Take(_maxMetadataVerifyCandidates)
+                .ToList();
+
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                PlanCandidateSummary metadataCandidate = candidates[i];
+                Autodesk.Revit.DB.View metadataTargetView = document.GetElement(new ElementId(metadataCandidate.Id)) as Autodesk.Revit.DB.View;
+                ViewPlan metadataTargetPlan = metadataTargetView as ViewPlan;
+                if (metadataTargetPlan == null)
+                {
+                    _rejectedCandidateCount++;
+                    continue;
+                }
+
+                PlanCandidateSummary verified = BuildVerifiedCandidateForPlan(
+                    document,
+                    uiDocument,
+                    metadataTargetPlan,
+                    element,
+                    string.Format("metadata-first candidate {0} of {1}", i + 1, candidates.Count));
+                _verifiedCandidateCount++;
+                ReplacePlanCandidate(verified);
+
+                if (verified != null && verified.ElementVisibleInView == true)
+                {
+                    return verified;
+                }
+
+                _rejectedCandidateCount++;
+            }
+
+            return null;
         }
 
         private PlanCandidateSummary BuildVerifiedCandidateForPlan(

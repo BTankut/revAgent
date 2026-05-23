@@ -67,9 +67,8 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Removed `StartWhenAvailable` from the scheduled updater task and from task
   repair so GUI-triggered `RunNow` installs cannot race a missed daily task run.
 - Added `metadataFirst` plan selection for `open_existing_plan_for_element_level`
-  so first-time plan opens verify only the selected plan by default, with slower
-  full verified fallback still available when the selected plan does not contain
-  the element.
+  so first-time plan opens verify a bounded set of ranked metadata candidates
+  before using the slower full verified fallback.
 - Changed updater status reporting so Revit-close deferrals are displayed as
   pending updates rather than completed version transitions.
 - Cleaned local and remote branch/worktree state so office development resumes

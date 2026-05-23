@@ -156,8 +156,8 @@ Plan candidate mode rules:
 - If the user says "show", "open the plan", "focus", or "bring to screen", use
   `open_existing_plan_for_element_level` or `show_element_in_plan_and_3d`. The
   open-plan tool defaults to `planCandidateMode: "metadataFirst"`: it ranks
-  likely same-level plans quickly, verifies only the selected plan, and falls
-  back to full verified scanning if needed.
+  likely same-level plans quickly, verifies a small bounded set of ranked plans
+  in order, and falls back to full verified scanning if needed.
 - If callout/crop correctness is more important than speed, pass
   `planCandidateMode: "verified"` for a narrow 1-3 element set.
 - Do not use verified candidates for broad searches in large projects unless

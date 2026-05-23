@@ -67,6 +67,10 @@ namespace RevitMCPViewCommandSet.Commands.View
         public ViewSummary ActiveViewBefore { get; set; }
         public bool ActiveViewChanged { get; set; }
         public string PlanMode { get; set; }
+        public string PlanCandidateMode { get; set; }
+        public bool FallbackUsed { get; set; }
+        public int VerifiedCandidateCount { get; set; }
+        public int RejectedCandidateCount { get; set; }
         public string PlanOpenMode { get; set; }
         public string PlanOpenNote { get; set; }
         public bool ActivePlanMatchesElementLevel { get; set; }
