@@ -84,8 +84,8 @@ custom-code workflows.
   normalizes PNG/JPEG/BMP/TIFF output so the requested `pixelSize` is the final
   fit-direction dimension.
 - `export_revit_coordination_image` - visual artifact export only: create or reuse a dedicated visual QA 3D
-  view, optionally section-box target elements, apply high-contrast review
-  graphics, and export an image. Single-element exports use a tighter default
+  view, optionally section-box target elements, apply the selected target
+  visual style/review graphics, and export an image. Single-element exports use a tighter default
   frame, a target-centered 3D camera, and model-bounding-box/camera-projection
   view crop-box tightening before raster export. Post-process crop is only a
   fallback when model crop-box framing is unavailable. `pixelSize` is the final
