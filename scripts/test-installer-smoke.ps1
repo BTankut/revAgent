@@ -334,6 +334,8 @@ try {
     Assert-True ($coordinationImageToolCode -match '\"raw\"') "Coordination image export must support raw target style with no target override."
     Assert-True ($coordinationImageToolCode -match 'targetOverrideApplied') "Coordination image export must report whether a target override was applied."
     Assert-True ($coordinationImageToolCode -match 'targetOverrideResetCount') "Coordination image export must clear stale target element overrides before applying the requested style."
+    Assert-True ($coordinationImageToolCode -match 'isOutlineOnly \? 1 : 4') "Coordination image export must keep outline-only target linework thin."
+    Assert-True ($coordinationImageToolCode -match 'isOutlineOnly \? 100 : 65') "Coordination image export must make outline-only target surfaces transparent."
     Assert-True ($coordinationImageToolCode -match 'singleElementMarginMm') "Coordination image export must expose a tighter single-element margin."
     Assert-True ($coordinationImageToolCode -match 'preExportPixelSize') "Coordination image export must separate Revit source export resolution from final image size."
     Assert-True ($coordinationImageToolCode -match 'maxAutoPreExportPixelSize') "Coordination image export must cap automatic high-resolution source exports."

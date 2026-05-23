@@ -353,8 +353,9 @@ if (!String.Equals(targetVisualStyle, "raw", System.StringComparison.OrdinalIgno
   var targetColor = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase)
     ? new Color(0, 255, 128)
     : new Color(0, 170, 255);
-  int lineWeight = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase) ? 12 : 4;
-  int surfaceTransparency = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase) ? 1 : 65;
+  bool isOutlineOnly = String.Equals(targetVisualStyle, "outline_only", System.StringComparison.OrdinalIgnoreCase);
+  int lineWeight = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase) ? 12 : (isOutlineOnly ? 1 : 4);
+  int surfaceTransparency = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase) ? 1 : (isOutlineOnly ? 100 : 65);
   bool applySurfaceFill =
     String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase) ||
     String.Equals(targetVisualStyle, "technical_report", System.StringComparison.OrdinalIgnoreCase);
@@ -364,8 +365,8 @@ if (!String.Equals(targetVisualStyle, "raw", System.StringComparison.OrdinalIgno
   targetGraphics.SetProjectionLineWeight(lineWeight);
   targetGraphics.SetCutLineWeight(lineWeight);
   try { targetGraphics.SetHalftone(false); } catch {}
+  try { targetGraphics.SetSurfaceTransparency(surfaceTransparency); } catch {}
   if (applySurfaceFill) {
-    try { targetGraphics.SetSurfaceTransparency(surfaceTransparency); } catch {}
     try {
       var solidFill = new FilteredElementCollector(document)
         .OfClass(typeof(FillPatternElement))
