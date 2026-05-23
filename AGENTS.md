@@ -67,8 +67,10 @@ Available runtime tools:
   applies section box and high-contrast graphic overrides around target
   elements, then exports an image. It does not create or modify physical MEP
   elements; it writes only review view settings. Single target exports use a
-  tighter default frame, a target-centered 3D camera, and post-cropping around
-  the green target override pixels with a minimum target-fill ratio.
+  tighter default frame, a target-centered 3D camera, and model-bounding-box
+  projection to tighten the 3D view crop box before raster export.
+  Raster/highlight post-crop is only a fallback when model crop-box framing is
+  unavailable; raster highlight pixels are QA metrics, not the framing source.
 
 Practical use:
 
@@ -79,6 +81,8 @@ Practical use:
    unless debugging raw Revit export dimensions.
 3. If the image is dense or unreadable, use `export_revit_coordination_image`
    around target element ids for focused 3D evidence.
+   For single-target exports, prefer the normal model-first result:
+   `cropBasis: "model_bbox_projection"` and `postProcessedCropApplied=false`.
 4. Record the exported file path in the user response or review note.
 5. Image export tools are still covered by the Revit MCP hard rule: status
    preflight first, no parallel runtime commands.

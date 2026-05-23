@@ -88,11 +88,10 @@ custom-code workflows.
   graphics, and export an image. Single-element exports use a tighter default
   frame, a target-centered 3D camera, and model-bounding-box/camera-projection
   view crop-box tightening before raster export. Post-process crop is only a
-  fallback when model crop-box framing is unavailable. For cropped coordination
-  exports, `pixelSize` is the final image size; `preExportPixelSize` is the
-  Revit source export size before crop and can be automatic.
-  `allowFinalUpscale` defaults to false so tiny source crops are not enlarged
-  into pixelated final images. Raster highlight pixels are QA-only. Do not use it as the primary tool for live view navigation,
+  fallback when model crop-box framing is unavailable. `pixelSize` is the final
+  image size, `preExportPixelSize` is the optional Revit source export size,
+  and `allowFinalUpscale=false` prevents pixelated enlargement. Raster
+  highlight pixels are QA-only. Do not use it as the primary tool for live view navigation,
   selected-element zoom, or opening an element in a Revit view. It writes only
   review view settings; it does not create or modify ducts, pipes, terminals,
   fittings, or other physical MEP model elements.
@@ -223,21 +222,15 @@ framed by the Revit 3D view crop box from the model bounding-box/camera
 projection before raster export. Keep the default `targetMinFillRatio` unless
 wider context is more important than target readability. Prefer
 `cropBasis: "model_bbox_projection"` for single-target exports. If
-`postProcessedCropApplied` is true, treat it as a fallback path, not the normal
-coordination export path. Treat `actualHighlightFillRatio` only as raster QA:
-if `highlightPixelCount` is zero, the crop can still be valid, but
-`actualHighlightFillRatio` must stay `0` and `estimatedTargetFillRatio` is only
-the model-projection estimate. For small final images, leave
-`preExportPixelSize` at `0` so the tool can export a higher-resolution Revit
-source, crop from the model projection, then downsample to the final
-`pixelSize`. Keep `allowFinalUpscale=false` unless target visual size is more
-important than source sharpness. If `sourceCropUpscaledToFinal` is true or
-`image_source_crop_below_final_pixel_size` is returned, raise
-`preExportPixelSize` or `maxAutoPreExportPixelSize`. If
-`target_fill_limited_by_source_resolution` is returned, the tool preserved
-sharpness by widening the crop because the requested `targetMinFillRatio` was
-not reachable within the source export cap. Keep generated image paths with the
-task notes so a human reviewer can reproduce the exact evidence.
+`postProcessedCropApplied` is true, treat it as fallback behavior to mention in
+the result. Treat `actualHighlightFillRatio` only as raster QA; if
+`highlightPixelCount` is zero, the model crop can still be valid. Leave
+`preExportPixelSize` at `0` and `allowFinalUpscale=false` by default. If
+`sourceCropUpscaledToFinal`, `image_source_crop_below_final_pixel_size`, or
+`target_fill_limited_by_source_resolution` appears, report it and adjust source
+resolution only if the user needs a sharper or tighter artifact. Keep generated
+image paths with the task notes so a human reviewer can reproduce the exact
+evidence.
 
 ---
 
