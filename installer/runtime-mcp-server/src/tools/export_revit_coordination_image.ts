@@ -173,6 +173,34 @@ bool sectionBoxApplied = false;
 bool cameraFramedToTargets = false;
 double framingDistanceFeet = 0.0;
 string framingMode = "full_3d_view";
+bool targetCropEstimateAvailable = false;
+double targetCropCenterXRatio = 0.5;
+double targetCropCenterYRatio = 0.5;
+double targetCropFillRatioEstimate = 0.0;
+
+Func<BoundingBoxXYZ, XYZ, double> projectedExtentOnAxis = (box, axis) => {
+  if (box == null || axis == null) return 0.0;
+  var points = new List<XYZ> {
+    new XYZ(box.Min.X, box.Min.Y, box.Min.Z),
+    new XYZ(box.Min.X, box.Min.Y, box.Max.Z),
+    new XYZ(box.Min.X, box.Max.Y, box.Min.Z),
+    new XYZ(box.Min.X, box.Max.Y, box.Max.Z),
+    new XYZ(box.Max.X, box.Min.Y, box.Min.Z),
+    new XYZ(box.Max.X, box.Min.Y, box.Max.Z),
+    new XYZ(box.Max.X, box.Max.Y, box.Min.Z),
+    new XYZ(box.Max.X, box.Max.Y, box.Max.Z)
+  };
+  double min = Double.MaxValue;
+  double max = Double.MinValue;
+  foreach (var point in points) {
+    double value = point.DotProduct(axis);
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+  if (max < min) return 0.0;
+  return max - min;
+};
+
 if (merged != null) {
   double effectiveMarginFeet = targetElements.Count == 1 ? Math.Min(marginFeet, singleElementMarginFeet) : marginFeet;
   var section = new BoundingBoxXYZ();
@@ -197,6 +225,26 @@ if (merged != null) {
     if (right.GetLength() < 0.000001) right = XYZ.BasisX;
     right = right.Normalize();
     XYZ up = forward.CrossProduct(right).Normalize();
+
+    try {
+      XYZ targetCenter = new XYZ(
+        (merged.Min.X + merged.Max.X) / 2.0,
+        (merged.Min.Y + merged.Max.Y) / 2.0,
+        (merged.Min.Z + merged.Max.Z) / 2.0);
+      double sectionRightExtent = Math.Max(0.000001, projectedExtentOnAxis(section, right));
+      double sectionUpExtent = Math.Max(0.000001, projectedExtentOnAxis(section, up));
+      double targetRightExtent = Math.Max(0.000001, projectedExtentOnAxis(merged, right));
+      double targetUpExtent = Math.Max(0.000001, projectedExtentOnAxis(merged, up));
+      XYZ targetOffset = targetCenter.Subtract(center);
+      targetCropCenterXRatio = Math.Max(0.05, Math.Min(0.95, 0.5 + (targetOffset.DotProduct(right) / sectionRightExtent)));
+      targetCropCenterYRatio = Math.Max(0.05, Math.Min(0.95, 0.5 - (targetOffset.DotProduct(up) / sectionUpExtent)));
+      targetCropFillRatioEstimate = Math.Max(targetRightExtent / sectionRightExtent, targetUpExtent / sectionUpExtent);
+      targetCropEstimateAvailable = targetCropFillRatioEstimate > 0.0;
+    }
+    catch (Exception ex) {
+      warnings.Add("coordination_bbox_crop_estimate_failed:" + ex.Message);
+    }
+
     framingDistanceFeet = Math.Max(diagonal * 2.25, 10.0);
     XYZ eye = center.Subtract(forward.Multiply(framingDistanceFeet));
     reviewView.SetOrientation(new ViewOrientation3D(eye, up, forward));
@@ -210,10 +258,30 @@ if (merged != null) {
 }
 
 var targetGraphics = new OverrideGraphicSettings();
-targetGraphics.SetProjectionLineColor(new Color(0, 255, 128));
-targetGraphics.SetCutLineColor(new Color(0, 255, 128));
-targetGraphics.SetProjectionLineWeight(7);
-targetGraphics.SetCutLineWeight(7);
+var targetColor = new Color(0, 255, 128);
+targetGraphics.SetProjectionLineColor(targetColor);
+targetGraphics.SetCutLineColor(targetColor);
+targetGraphics.SetProjectionLineWeight(12);
+targetGraphics.SetCutLineWeight(12);
+try { targetGraphics.SetHalftone(false); } catch {}
+try { targetGraphics.SetSurfaceTransparency(1); } catch {}
+try {
+  var solidFill = new FilteredElementCollector(document)
+    .OfClass(typeof(FillPatternElement))
+    .Cast<FillPatternElement>()
+    .FirstOrDefault(fp => fp.GetFillPattern() != null && fp.GetFillPattern().IsSolidFill);
+  if (solidFill != null) {
+    targetGraphics.SetSurfaceForegroundPatternId(solidFill.Id);
+    targetGraphics.SetSurfaceForegroundPatternColor(targetColor);
+    targetGraphics.SetSurfaceForegroundPatternVisible(true);
+    targetGraphics.SetCutForegroundPatternId(solidFill.Id);
+    targetGraphics.SetCutForegroundPatternColor(targetColor);
+    targetGraphics.SetCutForegroundPatternVisible(true);
+  }
+}
+catch (Exception ex) {
+  warnings.Add("coordination_target_surface_override_failed:" + ex.Message);
+}
 
 foreach (var element in targetElements) {
   try { reviewView.SetElementOverrides(element.Id, targetGraphics); }
@@ -379,7 +447,7 @@ Func<string, int[], bool> resizeImageToRequestedPixelSize = (f, size) => {
 
 Func<string, object[]> cropImageToTargetHighlight = (f) => {
   if (!cropToTargetHighlight || targetElements.Count == 0) {
-    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0 };
+    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0, "none" };
   }
 
   string extension = System.IO.Path.GetExtension(f).ToLowerInvariant();
@@ -390,7 +458,7 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
   else if (extension == ".tif" || extension == ".tiff") createEncoder = () => new System.Windows.Media.Imaging.TiffBitmapEncoder();
   else {
     warnings.Add("image_highlight_crop_unsupported_format:" + System.IO.Path.GetFileName(f));
-    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0 };
+    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0, "none" };
   }
 
   string tempFile = f + ".crop-tmp";
@@ -422,7 +490,9 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
         int b = pixels[offset];
         int g = pixels[offset + 1];
         int r = pixels[offset + 2];
-        bool isTargetGreen = g >= 135 && g > r + 45 && g > b + 25 && r <= 150 && b <= 190;
+        bool isTargetGreen =
+          (g >= 135 && g > r + 45 && g > b + 25 && r <= 150 && b <= 190) ||
+          (g >= 105 && g > r + 25 && g > b + 10 && r <= 190 && b <= 220);
         if (!isTargetGreen) continue;
         if (x < minX) minX = x;
         if (x > maxX) maxX = x;
@@ -434,7 +504,43 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
 
     if (highlightCount < 8 || maxX < minX || maxY < minY) {
       warnings.Add("image_highlight_crop_target_pixels_not_found:" + System.IO.Path.GetFileName(f));
-      return new object[] { false, width, height, 0, 0, 0, 0, 0, highlightCount, 0, targetMinFillRatio, 0.0 };
+      if (targetCropEstimateAvailable && targetElements.Count == 1) {
+        double safeFillRatio = Math.Max(0.1, Math.Min(0.9, targetMinFillRatio));
+        int minImageSide = Math.Max(1, Math.Min(width, height));
+        int estimatedMaxTargetDimension = Math.Max(8, (int)Math.Round(Math.Max(0.01, Math.Min(1.0, targetCropFillRatioEstimate)) * (double)minImageSide));
+        int ratioLimitedSide = Math.Max(estimatedMaxTargetDimension, (int)Math.Ceiling((double)estimatedMaxTargetDimension / safeFillRatio));
+        int forcedContextSide = Math.Max(96, (int)Math.Round((double)minImageSide * 0.45));
+        int minSafeSide = Math.Min(minImageSide, estimatedMaxTargetDimension + (2 * Math.Max(0, highlightCropPaddingPx)));
+        int desiredSide = Math.Min(minImageSide, Math.Max(minSafeSide, Math.Max(64, Math.Min(ratioLimitedSide, forcedContextSide))));
+        int cropWidth = Math.Min(width, desiredSide);
+        int cropHeight = Math.Min(height, desiredSide);
+        double centerX = Math.Max(0.0, Math.Min(1.0, targetCropCenterXRatio)) * (double)width;
+        double centerY = Math.Max(0.0, Math.Min(1.0, targetCropCenterYRatio)) * (double)height;
+        int cropX = (int)Math.Round(centerX - ((double)cropWidth / 2.0));
+        int cropY = (int)Math.Round(centerY - ((double)cropHeight / 2.0));
+        if (cropX < 0) cropX = 0;
+        if (cropY < 0) cropY = 0;
+        if (cropX + cropWidth > width) cropX = Math.Max(0, width - cropWidth);
+        if (cropY + cropHeight > height) cropY = Math.Max(0, height - cropHeight);
+        double actualFillRatio = (double)estimatedMaxTargetDimension / (double)Math.Max(cropWidth, cropHeight);
+
+        if (cropWidth > 0 && cropHeight > 0 &&
+            (cropWidth < width * 0.98 || cropHeight < height * 0.98)) {
+          var fallbackCropped = new System.Windows.Media.Imaging.CroppedBitmap(converted, new System.Windows.Int32Rect(cropX, cropY, cropWidth, cropHeight));
+          fallbackCropped.Freeze();
+          var fallbackEncoder = createEncoder();
+          fallbackEncoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(fallbackCropped));
+          using (var stream = new System.IO.FileStream(tempFile, System.IO.FileMode.Create, System.IO.FileAccess.Write)) {
+            fallbackEncoder.Save(stream);
+          }
+          System.IO.File.Delete(f);
+          System.IO.File.Move(tempFile, f);
+          warnings.Add("image_highlight_crop_bbox_fallback_used:" + System.IO.Path.GetFileName(f));
+          if (actualFillRatio < safeFillRatio) warnings.Add("image_highlight_crop_fill_ratio_estimate_not_met:" + System.IO.Path.GetFileName(f));
+          return new object[] { true, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, estimatedMaxTargetDimension, safeFillRatio, actualFillRatio, "bbox_center_fallback" };
+        }
+      }
+      return new object[] { false, width, height, 0, 0, 0, 0, 0, highlightCount, 0, targetMinFillRatio, 0.0, "none" };
     }
 
     int highlightWidth = Math.Max(1, maxX - minX + 1);
@@ -462,7 +568,7 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
     if (cropWidth <= 0 || cropHeight <= 0 ||
         (cropWidth >= width * 0.98 && cropHeight >= height * 0.98)) {
       if (actualFillRatio < safeFillRatio) warnings.Add("image_highlight_crop_fill_ratio_not_met:" + System.IO.Path.GetFileName(f));
-      return new object[] { false, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, maxHighlightDimension, safeFillRatio, actualFillRatio };
+      return new object[] { false, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, maxHighlightDimension, safeFillRatio, actualFillRatio, "none" };
     }
 
     var cropped = new System.Windows.Media.Imaging.CroppedBitmap(converted, new System.Windows.Int32Rect(cropX, cropY, cropWidth, cropHeight));
@@ -475,12 +581,12 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
     System.IO.File.Delete(f);
     System.IO.File.Move(tempFile, f);
     if (actualFillRatio < safeFillRatio) warnings.Add("image_highlight_crop_fill_ratio_not_met:" + System.IO.Path.GetFileName(f));
-    return new object[] { true, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, maxHighlightDimension, safeFillRatio, actualFillRatio };
+    return new object[] { true, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, maxHighlightDimension, safeFillRatio, actualFillRatio, "highlight_pixels" };
   }
   catch (Exception ex) {
     try { if (System.IO.File.Exists(tempFile)) System.IO.File.Delete(tempFile); } catch {}
     warnings.Add("image_highlight_crop_failed:" + System.IO.Path.GetFileName(f) + ":" + ex.Message);
-    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0 };
+    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0, "none" };
   }
 };
 
@@ -491,6 +597,7 @@ Func<string, object> buildFileSummary = (f) => {
   bool croppedToTargetHighlight = false;
   int highlightPixelCount = 0;
   double actualHighlightFillRatio = 0.0;
+  string cropBasis = "none";
   object highlightCrop = null;
   try {
     object[] crop = cropImageToTargetHighlight(f);
@@ -498,6 +605,7 @@ Func<string, object> buildFileSummary = (f) => {
       croppedToTargetHighlight = crop[0] is bool && (bool)crop[0];
       highlightPixelCount = Convert.ToInt32(crop[8]);
       actualHighlightFillRatio = Convert.ToDouble(crop[11], System.Globalization.CultureInfo.InvariantCulture);
+      if (crop.Length >= 13 && crop[12] != null) cropBasis = crop[12].ToString();
       if (croppedToTargetHighlight) {
         highlightCrop = new {
           originalWidth = Convert.ToInt32(crop[1]),
@@ -508,7 +616,8 @@ Func<string, object> buildFileSummary = (f) => {
           height = Convert.ToInt32(crop[6]),
           maxHighlightDimension = Convert.ToInt32(crop[9]),
           targetMinFillRatio = Convert.ToDouble(crop[10], System.Globalization.CultureInfo.InvariantCulture),
-          actualHighlightFillRatio = actualHighlightFillRatio
+          actualHighlightFillRatio = actualHighlightFillRatio,
+          cropBasis = cropBasis
         };
       }
     }
@@ -536,6 +645,7 @@ Func<string, object> buildFileSummary = (f) => {
     highlightPixelCount = highlightPixelCount,
     targetMinFillRatio = targetMinFillRatio,
     actualHighlightFillRatio = actualHighlightFillRatio,
+    cropBasis = cropBasis,
     highlightCrop = highlightCrop
   };
 };

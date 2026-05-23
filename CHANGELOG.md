@@ -108,6 +108,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
   show/open/zoom/select requests route to `create_3d_view_for_elements`,
   `show_element_in_plan_and_3d`, or focus tools, while PNG/JPEG/report
   evidence requests route to image export tools.
+- Hardened coordination-image crop detection: target overrides now include
+  green surface fill where Revit supports it, the pixel detector accepts
+  anti-aliased green variants, and single-target exports fall back to a
+  bounding-box-centered crop when no green target pixels are detected.
 - Normalized runtime response casing to canonical lowercase `success` without
   duplicate `Success` fields, and renamed probe-time modifiable-state fields so
   `apiProbeState.isModifiable` no longer looks like the idle UI editability
