@@ -188,8 +188,10 @@ being debugged. For one target element in a dense model, use coordination
 export with the default `singleElementMarginMm` or lower it further for a
 tighter frame; leave `cropToTargetHighlight` enabled so the exported image is
 cropped around the green target override if Revit keeps a wide 3D frame. Keep
-generated image paths with the task notes so a human reviewer can reproduce
-the exact evidence.
+the default `targetMinFillRatio` unless wider context is more important than
+target readability; check `actualHighlightFillRatio` when judging whether the
+export is framed tightly enough. Keep generated image paths with the task notes
+so a human reviewer can reproduce the exact evidence.
 
 ---
 

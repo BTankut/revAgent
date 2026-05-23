@@ -86,7 +86,8 @@ For coordination review around known element ids:
   "pixelSize": 4000,
   "enforcePixelSize": true,
   "cropToTargetHighlight": true,
-  "highlightCropPaddingPx": 180,
+  "targetMinFillRatio": 0.4,
+  "highlightCropPaddingPx": 24,
   "dpi": "300"
 }
 ```
@@ -136,8 +137,11 @@ multi-element `marginMm` default. The tool also sets a deterministic 3D camera
 orientation centered on the target section box and reports
 `framing.cameraFramedToTargets`. Because Revit can still keep a wide 3D export
 canvas, `cropToTargetHighlight=true` post-crops around the green target override
-pixels and reports `files[].croppedToTargetHighlight`,
-`files[].highlightPixelCount`, and `files[].highlightCrop`.
+pixels. The crop is constrained by `targetMinFillRatio` so the largest target
+highlight dimension should occupy at least the requested share of the final
+crop side, defaulting to 0.4. The response reports
+`files[].croppedToTargetHighlight`, `files[].highlightPixelCount`,
+`files[].actualHighlightFillRatio`, and `files[].highlightCrop`.
 
 For production review, keep the generated image path in the task notes or PR
 comment so reviewers can reproduce the visual evidence.

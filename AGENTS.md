@@ -68,7 +68,7 @@ Available runtime tools:
   elements, then exports an image. It does not create or modify physical MEP
   elements; it writes only review view settings. Single target exports use a
   tighter default frame, a target-centered 3D camera, and post-cropping around
-  the green target override pixels.
+  the green target override pixels with a minimum target-fill ratio.
 
 Practical use:
 

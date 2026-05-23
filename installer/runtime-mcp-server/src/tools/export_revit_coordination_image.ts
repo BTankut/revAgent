@@ -69,7 +69,8 @@ export function registerExportRevitCoordinationImageTool(server) {
       pixelSize: z.number().int().min(200).max(10000).optional().default(4000),
       enforcePixelSize: z.boolean().optional().default(true).describe("When true, post-processes PNG/JPEG/BMP/TIFF output so the requested fit direction dimension equals pixelSize. TARGA cannot be resized by this tool."),
       cropToTargetHighlight: z.boolean().optional().default(true).describe("When true, post-processes coordination images around the green target override pixels so single targets do not remain tiny in a wide 3D export."),
-      highlightCropPaddingPx: z.number().int().min(0).max(2000).optional().default(180),
+      targetMinFillRatio: z.number().min(0.1).max(0.9).optional().default(0.4).describe("Minimum final crop occupancy for the largest target-highlight dimension. Defaults to 0.4, meaning the target highlight should occupy at least 40% of the cropped image side."),
+      highlightCropPaddingPx: z.number().int().min(0).max(2000).optional().default(24).describe("Maximum context padding around target-highlight pixels. The minimum target fill ratio takes precedence over this padding."),
       dpi: dpiSchema.optional().default("300"),
       fitDirection: fitDirectionSchema.optional().default("horizontal"),
       format: formatSchema.optional().default("png"),
@@ -89,7 +90,8 @@ export function registerExportRevitCoordinationImageTool(server) {
       const singleElementMarginMm = Number.isFinite(Number(args.singleElementMarginMm)) ? Number(args.singleElementMarginMm) : 300;
       const enforcePixelSize = args.enforcePixelSize !== false;
       const cropToTargetHighlight = args.cropToTargetHighlight !== false;
-      const highlightCropPaddingPx = Number.isFinite(Number(args.highlightCropPaddingPx)) ? Math.trunc(args.highlightCropPaddingPx) : 180;
+      const targetMinFillRatio = Number.isFinite(Number(args.targetMinFillRatio)) ? Math.max(0.1, Math.min(0.9, Number(args.targetMinFillRatio))) : 0.4;
+      const highlightCropPaddingPx = Number.isFinite(Number(args.highlightCropPaddingPx)) ? Math.trunc(args.highlightCropPaddingPx) : 24;
       const transparency = Math.trunc(args.contextTransparency ?? 65);
 
       const code = `
@@ -106,6 +108,7 @@ int requestedPixelSize = ${pixelSize};
 string requestedFitDirection = ${csharpString(args.fitDirection || "horizontal")};
 bool enforcePixelSize = ${enforcePixelSize ? "true" : "false"};
 bool cropToTargetHighlight = ${cropToTargetHighlight ? "true" : "false"};
+double targetMinFillRatio = ${targetMinFillRatio};
 int highlightCropPaddingPx = ${highlightCropPaddingPx};
 
 System.IO.Directory.CreateDirectory(outputDir);
@@ -376,7 +379,7 @@ Func<string, int[], bool> resizeImageToRequestedPixelSize = (f, size) => {
 
 Func<string, object[]> cropImageToTargetHighlight = (f) => {
   if (!cropToTargetHighlight || targetElements.Count == 0) {
-    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0 };
   }
 
   string extension = System.IO.Path.GetExtension(f).ToLowerInvariant();
@@ -387,7 +390,7 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
   else if (extension == ".tif" || extension == ".tiff") createEncoder = () => new System.Windows.Media.Imaging.TiffBitmapEncoder();
   else {
     warnings.Add("image_highlight_crop_unsupported_format:" + System.IO.Path.GetFileName(f));
-    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0 };
   }
 
   string tempFile = f + ".crop-tmp";
@@ -431,23 +434,35 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
 
     if (highlightCount < 8 || maxX < minX || maxY < minY) {
       warnings.Add("image_highlight_crop_target_pixels_not_found:" + System.IO.Path.GetFileName(f));
-      return new object[] { false, width, height, 0, 0, 0, 0, 0, highlightCount, 0 };
+      return new object[] { false, width, height, 0, 0, 0, 0, 0, highlightCount, 0, targetMinFillRatio, 0.0 };
     }
 
     int highlightWidth = Math.Max(1, maxX - minX + 1);
     int highlightHeight = Math.Max(1, maxY - minY + 1);
-    int padX = Math.Max(highlightCropPaddingPx, (int)Math.Round(highlightWidth * 1.75));
-    int padY = Math.Max(highlightCropPaddingPx, (int)Math.Round(highlightHeight * 1.75));
-    int cropX = Math.Max(0, minX - padX);
-    int cropY = Math.Max(0, minY - padY);
-    int cropRight = Math.Min(width - 1, maxX + padX);
-    int cropBottom = Math.Min(height - 1, maxY + padY);
-    int cropWidth = cropRight - cropX + 1;
-    int cropHeight = cropBottom - cropY + 1;
+    int maxHighlightDimension = Math.Max(highlightWidth, highlightHeight);
+    double safeFillRatio = Math.Max(0.1, Math.Min(0.9, targetMinFillRatio));
+    int ratioLimitedSide = Math.Max(maxHighlightDimension, (int)Math.Ceiling((double)maxHighlightDimension / safeFillRatio));
+    int paddedSide = maxHighlightDimension + (2 * Math.Max(0, highlightCropPaddingPx));
+    int desiredSide = Math.Max(maxHighlightDimension + 2, Math.Min(ratioLimitedSide, paddedSide));
+    int cropWidth = Math.Min(width, desiredSide);
+    int cropHeight = Math.Min(height, desiredSide);
+    if (cropWidth < highlightWidth) cropWidth = Math.Min(width, highlightWidth);
+    if (cropHeight < highlightHeight) cropHeight = Math.Min(height, highlightHeight);
+
+    double centerX = ((double)minX + (double)maxX) / 2.0;
+    double centerY = ((double)minY + (double)maxY) / 2.0;
+    int cropX = (int)Math.Round(centerX - ((double)cropWidth / 2.0));
+    int cropY = (int)Math.Round(centerY - ((double)cropHeight / 2.0));
+    if (cropX < 0) cropX = 0;
+    if (cropY < 0) cropY = 0;
+    if (cropX + cropWidth > width) cropX = Math.Max(0, width - cropWidth);
+    if (cropY + cropHeight > height) cropY = Math.Max(0, height - cropHeight);
+    double actualFillRatio = (double)maxHighlightDimension / (double)Math.Max(cropWidth, cropHeight);
 
     if (cropWidth <= 0 || cropHeight <= 0 ||
         (cropWidth >= width * 0.98 && cropHeight >= height * 0.98)) {
-      return new object[] { false, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, Math.Max(highlightWidth, highlightHeight) };
+      if (actualFillRatio < safeFillRatio) warnings.Add("image_highlight_crop_fill_ratio_not_met:" + System.IO.Path.GetFileName(f));
+      return new object[] { false, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, maxHighlightDimension, safeFillRatio, actualFillRatio };
     }
 
     var cropped = new System.Windows.Media.Imaging.CroppedBitmap(converted, new System.Windows.Int32Rect(cropX, cropY, cropWidth, cropHeight));
@@ -459,12 +474,13 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
     }
     System.IO.File.Delete(f);
     System.IO.File.Move(tempFile, f);
-    return new object[] { true, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, Math.Max(highlightWidth, highlightHeight) };
+    if (actualFillRatio < safeFillRatio) warnings.Add("image_highlight_crop_fill_ratio_not_met:" + System.IO.Path.GetFileName(f));
+    return new object[] { true, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, maxHighlightDimension, safeFillRatio, actualFillRatio };
   }
   catch (Exception ex) {
     try { if (System.IO.File.Exists(tempFile)) System.IO.File.Delete(tempFile); } catch {}
     warnings.Add("image_highlight_crop_failed:" + System.IO.Path.GetFileName(f) + ":" + ex.Message);
-    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0 };
   }
 };
 
@@ -474,12 +490,14 @@ Func<string, object> buildFileSummary = (f) => {
   bool resizedToRequestedPixelSize = false;
   bool croppedToTargetHighlight = false;
   int highlightPixelCount = 0;
+  double actualHighlightFillRatio = 0.0;
   object highlightCrop = null;
   try {
     object[] crop = cropImageToTargetHighlight(f);
-    if (crop != null && crop.Length >= 10) {
+    if (crop != null && crop.Length >= 12) {
       croppedToTargetHighlight = crop[0] is bool && (bool)crop[0];
       highlightPixelCount = Convert.ToInt32(crop[8]);
+      actualHighlightFillRatio = Convert.ToDouble(crop[11], System.Globalization.CultureInfo.InvariantCulture);
       if (croppedToTargetHighlight) {
         highlightCrop = new {
           originalWidth = Convert.ToInt32(crop[1]),
@@ -488,7 +506,9 @@ Func<string, object> buildFileSummary = (f) => {
           y = Convert.ToInt32(crop[4]),
           width = Convert.ToInt32(crop[5]),
           height = Convert.ToInt32(crop[6]),
-          maxHighlightDimension = Convert.ToInt32(crop[9])
+          maxHighlightDimension = Convert.ToInt32(crop[9]),
+          targetMinFillRatio = Convert.ToDouble(crop[10], System.Globalization.CultureInfo.InvariantCulture),
+          actualHighlightFillRatio = actualHighlightFillRatio
         };
       }
     }
@@ -514,6 +534,8 @@ Func<string, object> buildFileSummary = (f) => {
     resizedToRequestedPixelSize = resizedToRequestedPixelSize,
     croppedToTargetHighlight = croppedToTargetHighlight,
     highlightPixelCount = highlightPixelCount,
+    targetMinFillRatio = targetMinFillRatio,
+    actualHighlightFillRatio = actualHighlightFillRatio,
     highlightCrop = highlightCrop
   };
 };
@@ -549,6 +571,7 @@ return new {
   requestedPixelSize = ${pixelSize},
   enforcePixelSize = enforcePixelSize,
   cropToTargetHighlight = cropToTargetHighlight,
+  targetMinFillRatio = targetMinFillRatio,
   highlightCropPaddingPx = highlightCropPaddingPx,
   pixelSizeNote = enforcePixelSize
     ? "PNG/JPEG/BMP/TIFF output is post-processed so the requested fit-direction dimension equals requestedPixelSize. TARGA reports actual Revit output dimensions."

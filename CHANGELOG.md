@@ -100,6 +100,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
   single-element coordination framing uses a tighter default margin, an
   explicit 3D camera orientation centered on the target section box, and a
   target-highlight post-crop when Revit still exports a wide 3D canvas.
+- Tightened coordination-image framing again by adding `targetMinFillRatio`
+  and reducing default highlight-crop padding, so a single highlighted target
+  must occupy a meaningful share of the cropped image instead of remaining a
+  tiny feature in a wide canvas.
 - Normalized runtime response casing to canonical lowercase `success` without
   duplicate `Success` fields, and renamed probe-time modifiable-state fields so
   `apiProbeState.isModifiable` no longer looks like the idle UI editability
