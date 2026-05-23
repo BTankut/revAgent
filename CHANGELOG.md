@@ -80,6 +80,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
   unchanged runtime payloads are left in place instead of being removed and
   recopied. The same incremental path now skips unchanged docs index refresh,
   unchanged Codex skill refresh, and redundant MCP registration.
+- Added a guarded fallback for metadata-only fast updates: if the fast updater
+  refresh step fails, the updater warns the user, records the fallback in the
+  report, and continues through the full repair/install path instead of leaving
+  the workstation half-updated.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

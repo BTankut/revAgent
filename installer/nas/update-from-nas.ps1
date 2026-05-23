@@ -2477,23 +2477,34 @@ try {
         $skipDocsPayloadWork -and
         $skipCodexSkillInstallForThisUpdate -and
         $skipCodexMcpRegistrationForThisUpdate
+    $fastUpdateFallbackUsed = $false
+    $fastUpdateFallbackMessage = ""
+    $runSelfContainedInstaller = (-not $fastPackageOnlyUpdate)
 
     if ($fastPackageOnlyUpdate) {
-        Write-Host "Fast update path : package/updater metadata only; self-contained installer skipped." -ForegroundColor Green
-        $nasToolsSource = Join-Path (Split-Path -Parent $installer) "nas"
-        Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $WorkRoot -ConfigPath $ConfigPath
-        Invoke-RevitMcpLogRetention -LogsRoot (Join-Path $WorkRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
-        Write-Host "Runtime dependencies: skipped; runtime payload unchanged."
-        Write-Host "Documentation server dependencies: skipped; docs payload unchanged."
-        Write-Host "Revit API index: skipped; docs payload unchanged."
-        Write-Host "Codex MCP registration: skipped; runtime/docs entry points unchanged."
+        try {
+            Write-Host "Fast update path : package/updater metadata only; self-contained installer skipped." -ForegroundColor Green
+            $nasToolsSource = Join-Path (Split-Path -Parent $installer) "nas"
+            Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $WorkRoot -ConfigPath $ConfigPath
+            Invoke-RevitMcpLogRetention -LogsRoot (Join-Path $WorkRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
+            Write-Host "Runtime dependencies: skipped; runtime payload unchanged."
+            Write-Host "Documentation server dependencies: skipped; docs payload unchanged."
+            Write-Host "Revit API index: skipped; docs payload unchanged."
+            Write-Host "Codex MCP registration: skipped; runtime/docs entry points unchanged."
+        }
+        catch {
+            $fastUpdateFallbackUsed = $true
+            $fastUpdateFallbackMessage = $_.Exception.Message
+            $runSelfContainedInstaller = $true
+            Write-Warning "Fast update path failed; falling back to the full repair/install path. $fastUpdateFallbackMessage"
+        }
     }
-    else {
+    if ($runSelfContainedInstaller) {
         $installArgs = @{
-        RevitVersion = $RevitVersion
-        InstallRoot = $InstallRoot
-        ServerTarget = $ServerTarget
-        RevitInstallRoot = $RevitInstallRoot
+            RevitVersion = $RevitVersion
+            InstallRoot = $InstallRoot
+            ServerTarget = $ServerTarget
+            RevitInstallRoot = $RevitInstallRoot
         }
         if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
             $installArgs["WorkspaceAgentsTarget"] = $WorkspaceAgentsTarget
@@ -2608,6 +2619,9 @@ try {
         docsPayloadWorkSkipped = [bool]$skipDocsPayloadWork
         codexSkillInstallSkipped = [bool]$skipCodexSkillInstallForThisUpdate
         codexMcpRegistrationSkipped = [bool]$skipCodexMcpRegistrationForThisUpdate
+        fastPackageOnlyUpdate = [bool]$fastPackageOnlyUpdate
+        fastUpdateFallbackUsed = [bool]$fastUpdateFallbackUsed
+        fastUpdateFallbackMessage = $fastUpdateFallbackMessage
         revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
         updaterVersion = $updaterVersion
         skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
@@ -2621,6 +2635,9 @@ try {
         }
     }
     $updateMessage = "Updated: $installedVersionLabel -> $targetVersion."
+    if ($fastUpdateFallbackUsed) {
+        $updateMessage += " Fast update path failed; full repair/install path completed."
+    }
     Write-JsonFile -Path $statePath -Value $newState
     Write-UpdateReport -Status "updated" -Message $updateMessage -Channel $channel -InstalledState $newState -PreviousVersion $installedVersion -InstalledVersion $targetVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
     Write-Host $updateMessage -ForegroundColor Green
