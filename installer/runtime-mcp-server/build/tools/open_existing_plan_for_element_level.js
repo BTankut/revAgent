@@ -71,6 +71,8 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
         ...taskMetadataSchema(z),
         elementId: elementIdSchema.describe("ElementId to locate in an existing plan view."),
         planMode: z.enum(["elementLevel", "activePlan"]).optional().describe("elementLevel opens the best existing plan on the element level. activePlan keeps the current active plan and does not switch to the element level. Defaults elementLevel."),
+        planCandidateMode: z.enum(["metadataFirst", "verified"]).optional().describe("Plan selection strategy for elementLevel mode. metadataFirst is the default and ranks same-level plans without scanning every candidate view, then verifies only the selected view. verified scans all candidate views before selecting and is slower."),
+        fallbackToVerified: z.boolean().optional().describe("When metadataFirst selects a plan that does not contain the element, run the slower verified scan before failing. Defaults true."),
         planNameContains: z.string().optional().describe("Optional plan name preference such as HVAC, Mechanical, or Roof Level."),
         preferMechanical: z.boolean().optional().describe("Prefer HVAC/mechanical/MEP named plans on the same level. Defaults true."),
         select: z.boolean().optional().describe("Select the element after activating the plan. Defaults true."),
@@ -85,6 +87,8 @@ export function registerOpenExistingPlanForElementLevelTool(server) {
             const response = await sendRevitCommand("open_existing_plan_for_element_level", {
                 elementId: args.elementId,
                 planMode: args.planMode,
+                planCandidateMode: args.planCandidateMode,
+                fallbackToVerified: args.fallbackToVerified,
                 planNameContains: args.planNameContains,
                 preferMechanical: args.preferMechanical,
                 select: args.select,

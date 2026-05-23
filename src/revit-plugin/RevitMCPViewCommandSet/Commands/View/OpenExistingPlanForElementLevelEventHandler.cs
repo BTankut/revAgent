@@ -16,6 +16,8 @@ namespace RevitMCPViewCommandSet.Commands.View
         private int _elementId;
         private string _planNameContains;
         private string _planMode;
+        private string _planCandidateMode;
+        private bool _fallbackToVerified;
         private bool _preferMechanical;
         private bool _select;
         private bool _zoom;
@@ -34,6 +36,8 @@ namespace RevitMCPViewCommandSet.Commands.View
             int elementId,
             string planNameContains,
             string planMode,
+            string planCandidateMode,
+            bool fallbackToVerified,
             bool preferMechanical,
             bool select,
             bool zoom,
@@ -42,6 +46,8 @@ namespace RevitMCPViewCommandSet.Commands.View
             _elementId = elementId;
             _planNameContains = planNameContains ?? "";
             _planMode = NormalizePlanMode(planMode);
+            _planCandidateMode = NormalizePlanCandidateMode(planCandidateMode);
+            _fallbackToVerified = fallbackToVerified;
             _preferMechanical = preferMechanical;
             _select = select;
             _zoom = zoom;
@@ -123,7 +129,44 @@ namespace RevitMCPViewCommandSet.Commands.View
                     return;
                 }
 
-                _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical, element);
+                PlanCandidateSummary selected = null;
+                if (UseMetadataFirstPlanCandidates())
+                {
+                    _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical, null);
+                    if (_planCandidates.Count == 0)
+                    {
+                        Complete(BuildFailure(document, uiDocument, "No existing non-template plan was found for the element level."));
+                        return;
+                    }
+
+                    selected = _planCandidates.FirstOrDefault();
+                    Autodesk.Revit.DB.View metadataTargetView = selected != null ? document.GetElement(new ElementId(selected.Id)) as Autodesk.Revit.DB.View : null;
+                    ViewPlan metadataTargetPlan = metadataTargetView as ViewPlan;
+                    if (metadataTargetPlan == null)
+                    {
+                        Complete(BuildFailure(document, uiDocument, "Selected plan view no longer exists."));
+                        return;
+                    }
+
+                    selected = BuildVerifiedCandidateForPlan(document, uiDocument, metadataTargetPlan, element, "metadata-first selected plan");
+                    ReplacePlanCandidate(selected);
+                    if (selected.ElementVisibleInView != true)
+                    {
+                        if (!_fallbackToVerified)
+                        {
+                            Complete(BuildFailure(document, uiDocument, "Metadata-first selected plan does not contain the target element."));
+                            return;
+                        }
+
+                        _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical, element);
+                        selected = _planCandidates.FirstOrDefault(c => c.ElementVisibleInView == true);
+                    }
+                }
+                else
+                {
+                    _planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, _planNameContains, _preferMechanical, element);
+                    selected = _planCandidates.FirstOrDefault(c => c.ElementVisibleInView == true);
+                }
 
                 if (_planCandidates.Count == 0)
                 {
@@ -131,7 +174,6 @@ namespace RevitMCPViewCommandSet.Commands.View
                     return;
                 }
 
-                PlanCandidateSummary selected = _planCandidates.FirstOrDefault(c => c.ElementVisibleInView == true);
                 if (selected == null)
                 {
                     Complete(BuildFailure(document, uiDocument, "No existing non-template plan on the element level contains the target element."));
@@ -565,6 +607,21 @@ namespace RevitMCPViewCommandSet.Commands.View
             return "elementLevel";
         }
 
+        private static string NormalizePlanCandidateMode(string value)
+        {
+            if (string.Equals(value, "verified", StringComparison.OrdinalIgnoreCase))
+            {
+                return "verified";
+            }
+
+            return "metadataFirst";
+        }
+
+        private bool UseMetadataFirstPlanCandidates()
+        {
+            return string.Equals(_planCandidateMode, "metadataFirst", StringComparison.OrdinalIgnoreCase);
+        }
+
         private bool TryUseActivePlanWithoutCandidateScan(
             Document document,
             Element element,
@@ -603,6 +660,60 @@ namespace RevitMCPViewCommandSet.Commands.View
             }
 
             return activePlanCandidate != null;
+        }
+
+        private PlanCandidateSummary BuildVerifiedCandidateForPlan(
+            Document document,
+            UIDocument uiDocument,
+            ViewPlan plan,
+            Element element,
+            string reasonPrefix)
+        {
+            HashSet<int> openViewIds = new HashSet<int>();
+            if (uiDocument != null)
+            {
+                foreach (UIView uiView in uiDocument.GetOpenUIViews())
+                {
+                    openViewIds.Add(uiView.ViewId.GetIdValue());
+                }
+            }
+
+            int activeViewId = document.ActiveView != null
+                ? document.ActiveView.Id.GetIdValue()
+                : -1;
+
+            PlanCandidateSummary candidate = ElementDiscoveryHelpers.BuildPlanCandidate(document, plan, openViewIds, activeViewId, _planNameContains, _preferMechanical, element);
+            if (candidate != null && !string.IsNullOrWhiteSpace(reasonPrefix))
+            {
+                candidate.Reason = reasonPrefix + ", " + candidate.Reason;
+            }
+
+            return candidate;
+        }
+
+        private void ReplacePlanCandidate(PlanCandidateSummary candidate)
+        {
+            if (candidate == null)
+            {
+                return;
+            }
+
+            if (_planCandidates == null)
+            {
+                _planCandidates = new List<PlanCandidateSummary> { candidate };
+                return;
+            }
+
+            for (int i = 0; i < _planCandidates.Count; i++)
+            {
+                if (_planCandidates[i].Id == candidate.Id)
+                {
+                    _planCandidates[i] = candidate;
+                    return;
+                }
+            }
+
+            _planCandidates.Insert(0, candidate);
         }
 
         private bool UseActivePlanOnly()
