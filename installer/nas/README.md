@@ -158,7 +158,11 @@ Updater log retention is automatic. Install and update runs keep the latest
 - Copies the versioned ZIP from NAS.
 - Verifies the package SHA256 hash before install.
 - Replaces the managed local package copy under `C:\ProgramData\DPE\RevitMCP\package`.
-- Runs `install-self-contained.ps1`.
+- Runs `install-self-contained.ps1`, but skips unchanged payload surfaces when
+  the release manifest proves they are identical. Revit add-in/command files
+  are left untouched whenever their component hashes are unchanged, even if
+  Revit is closed. The runtime server payload is also left untouched when the
+  release-level runtime directory fingerprint matches the installed package.
 - Checks the runtime and docs server npm dependency fingerprints before running
   `npm install --omit=dev --no-audit --no-fund`; if `node_modules` and the
   stored lockfile marker already match, or the same lockfile exists in the
@@ -168,7 +172,9 @@ Updater log retention is automatic. Install and update runs keep the latest
 - Repairs older workstation scheduled-task triggers so legacy logon/repeated
   checks are replaced by the daily 12:00 schedule.
 
-This is a full package update, not a file-level delta update.
+This is still a full package download and local package replacement. It is not
+a byte-level delta patch. The install phase is incremental for the Revit payload
+and runtime payload when their fingerprints are unchanged.
 
 The updater and installer share helper modules under `installer\lib` in the
 release package. When tools are copied to NAS `tools\`, the matching

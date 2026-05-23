@@ -17,7 +17,7 @@ function Get-RevitMcpUpdateDecision {
     return [pscustomobject]@{
         RequiresRevitClosed = $requiresRevitClosed
         DeferForRevitClose = ([bool]$IsRevitRunning -and $requiresRevitClosed)
-        SkipRevitPayloadInstall = ([bool]$IsRevitRunning -and -not $requiresRevitClosed)
+        SkipRevitPayloadInstall = (-not $requiresRevitClosed)
     }
 }
 

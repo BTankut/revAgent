@@ -1492,6 +1492,80 @@ function Get-RelativeFileSha256OrNull {
     return ""
 }
 
+function Get-DirectoryTreeSha256OrNull {
+    param(
+        [string]$Root,
+        [string]$RelativePath,
+        [string[]]$ExcludeDirectoryNames = @("node_modules", ".git")
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Root) -or [string]::IsNullOrWhiteSpace($RelativePath)) {
+        return ""
+    }
+
+    $path = Join-Path $Root $RelativePath
+    if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+        return ""
+    }
+
+    $excluded = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $ExcludeDirectoryNames) {
+        if (-not [string]::IsNullOrWhiteSpace($name)) {
+            [void]$excluded.Add($name)
+        }
+    }
+
+    $files = Get-ChildItem -LiteralPath $path -Recurse -File -Force |
+        Where-Object {
+            $relative = $_.FullName.Substring($path.Length).TrimStart("\", "/")
+            $parts = $relative -split '[\\/]'
+            foreach ($part in $parts) {
+                if ($excluded.Contains($part)) {
+                    return $false
+                }
+            }
+            return $true
+        } |
+        Sort-Object FullName
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($file in $files) {
+        $relative = $file.FullName.Substring($path.Length).TrimStart("\", "/").Replace("\", "/")
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash
+        [void]$lines.Add(("{0}|{1}|{2}" -f $relative, $file.Length, $hash))
+    }
+
+    $payload = [System.Text.Encoding]::UTF8.GetBytes(($lines.ToArray() -join "`n"))
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha.ComputeHash($payload)
+    }
+    finally {
+        $sha.Dispose()
+    }
+
+    return ([System.BitConverter]::ToString($digest) -replace "-", "")
+}
+
+function Test-DirectoryPayloadUnchanged {
+    param(
+        [object]$Manifest,
+        [string]$ComponentKey,
+        [string]$PackageTarget
+    )
+
+    $component = Get-ComponentByKey -Manifest $Manifest -Key $ComponentKey
+    $targetSha = Get-ComponentSha256 -Component $component
+    $relativePath = Get-ComponentPath -Component $component
+    if ([string]::IsNullOrWhiteSpace($targetSha) -or [string]::IsNullOrWhiteSpace($relativePath)) {
+        return $false
+    }
+
+    $installedSha = Get-DirectoryTreeSha256OrNull -Root $PackageTarget -RelativePath $relativePath
+    return (-not [string]::IsNullOrWhiteSpace($installedSha)) -and
+        [string]::Equals($installedSha, $targetSha, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Get-InstalledReleaseManifest {
     param(
         [object]$InstalledState,
@@ -2161,6 +2235,7 @@ try {
         -RevitPayloadChangeCount $revitPayloadChanges.Count
     $requiresRevitClosed = [bool]$updateDecision.RequiresRevitClosed
     $skipRevitPayloadInstall = $false
+    $skipRuntimePayloadInstall = $false
     $revitChangeLabels = @($revitPayloadChanges | ForEach-Object {
             if (-not [string]::IsNullOrWhiteSpace([string]$_.path)) {
                 [string]$_.path
@@ -2205,7 +2280,8 @@ try {
         }
     }
     else {
-        Write-Host "Revit payload    : unchanged; Revit can stay open." -ForegroundColor Green
+        $skipRevitPayloadInstall = [bool]$updateDecision.SkipRevitPayloadInstall
+        Write-Host "Revit payload    : unchanged; existing Revit files will be left untouched." -ForegroundColor Green
     }
 
     $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
@@ -2255,6 +2331,11 @@ try {
 
     $packageLayout = Resolve-PackageLayout -Root $extractRoot -ReleaseManifest $releaseManifest
 
+    if (Test-DirectoryPayloadUnchanged -Manifest $releaseManifest -ComponentKey "runtimePayload" -PackageTarget $PackageTarget) {
+        $skipRuntimePayloadInstall = $true
+        Write-Host "Runtime payload  : unchanged; existing runtime files will be left untouched." -ForegroundColor Green
+    }
+
     if (Test-Path -LiteralPath $PackageTarget) {
         $backupPath = Join-Path $backupRoot ("revit-mcp-skill.backup-" + $stamp)
         Move-Item -LiteralPath $PackageTarget -Destination $backupPath
@@ -2283,6 +2364,9 @@ try {
     $installArgs["SuppressNextSteps"] = $true
     if ($skipRevitPayloadInstall) {
         $installArgs["SkipRevitPayloadInstall"] = $true
+    }
+    if ($skipRuntimePayloadInstall) {
+        $installArgs["SkipRuntimePayloadInstall"] = $true
     }
 
     & $installer @installArgs
@@ -2359,6 +2443,7 @@ try {
         updatePolicy = if ($releaseManifest) { $releaseManifest.updatePolicy } else { $null }
         revitPayloadChanged = [bool]$requiresRevitClosed
         revitPayloadSkipped = [bool]$skipRevitPayloadInstall
+        runtimePayloadSkipped = [bool]$skipRuntimePayloadInstall
         revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
         updaterVersion = $updaterVersion
         skipCodexUserIntegration = [bool]$SkipCodexUserIntegration

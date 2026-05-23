@@ -144,6 +144,61 @@ function Get-RelativeFileHash {
     }
 }
 
+function Get-DirectoryTreeHash {
+    param(
+        [string]$Root,
+        [string]$RelativePath,
+        [string[]]$ExcludeDirectoryNames = @("node_modules", ".git")
+    )
+
+    $path = Join-Path $Root $RelativePath
+    if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+        return $null
+    }
+
+    $excluded = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $ExcludeDirectoryNames) {
+        if (-not [string]::IsNullOrWhiteSpace($name)) {
+            [void]$excluded.Add($name)
+        }
+    }
+
+    $files = Get-ChildItem -LiteralPath $path -Recurse -File -Force |
+        Where-Object {
+            $relative = $_.FullName.Substring($path.Length).TrimStart("\", "/")
+            $parts = $relative -split '[\\/]'
+            foreach ($part in $parts) {
+                if ($excluded.Contains($part)) {
+                    return $false
+                }
+            }
+            return $true
+        } |
+        Sort-Object FullName
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($file in $files) {
+        $relative = $file.FullName.Substring($path.Length).TrimStart("\", "/").Replace("\", "/")
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash
+        [void]$lines.Add(("{0}|{1}|{2}" -f $relative, $file.Length, $hash))
+    }
+
+    $payload = [System.Text.Encoding]::UTF8.GetBytes(($lines.ToArray() -join "`n"))
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha.ComputeHash($payload)
+    }
+    finally {
+        $sha.Dispose()
+    }
+
+    return [ordered]@{
+        path = $RelativePath
+        sha256 = ([System.BitConverter]::ToString($digest) -replace "-", "")
+        fileCount = $lines.Count
+    }
+}
+
 function ConvertTo-ComponentKey {
     param(
         [string]$Prefix,
@@ -332,6 +387,8 @@ try {
     foreach ($entry in $componentPaths.GetEnumerator()) {
         $components[$entry.Key] = Get-RelativeFileHash -Root $packageRoot -RelativePath $entry.Value
     }
+    $components["runtimePayload"] = Get-DirectoryTreeHash -Root $packageRoot -RelativePath "installer\runtime-mcp-server"
+    $components["docsServerPayload"] = Get-DirectoryTreeHash -Root $packageRoot -RelativePath "installer\revit-api-docs-mcp"
 
     Write-Section "Write manifests"
     $manifestPath = Join-Path $releaseDir "manifest.json"

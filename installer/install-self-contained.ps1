@@ -11,6 +11,7 @@ param(
     [switch]$SkipCodexUserIntegration,
     [switch]$SkipLegacyCleanup,
     [switch]$SkipRevitPayloadInstall,
+    [switch]$SkipRuntimePayloadInstall,
     [switch]$SuppressNextSteps,
     [switch]$Uninstall,
     [switch]$RemoveAgents
@@ -596,16 +597,21 @@ function Invoke-RevitMcpCleanup {
         }
     }
     else {
-        Write-Host "Revit add-in cleanup skipped; active Revit files were left untouched." -ForegroundColor Yellow
+        Write-Host "Revit add-in cleanup skipped; existing Revit files were left untouched." -ForegroundColor Yellow
     }
 
-    foreach ($target in Get-RuntimeCleanupTargets) {
-        if (-not (Test-RevitMcpRuntimeDirectory -Path $target)) {
-            Write-Warning "Skipping runtime cleanup because the directory does not look like a Revit MCP runtime install: $target"
-            continue
-        }
+    if (-not $SkipRuntimePayloadInstall) {
+        foreach ($target in Get-RuntimeCleanupTargets) {
+            if (-not (Test-RevitMcpRuntimeDirectory -Path $target)) {
+                Write-Warning "Skipping runtime cleanup because the directory does not look like a Revit MCP runtime install: $target"
+                continue
+            }
 
-        Remove-RevitMcpPath -Path $target -Label "runtime MCP server directory" -Recurse
+            Remove-RevitMcpPath -Path $target -Label "runtime MCP server directory" -Recurse
+        }
+    }
+    else {
+        Write-Host "Runtime payload cleanup skipped; existing runtime files were left untouched." -ForegroundColor Yellow
     }
 
     Remove-StaleSkillBackups
@@ -629,7 +635,7 @@ function Invoke-RevitMcpCleanup {
     }
 }
 
-Repair-RevitMcpManagedInstallPermissions -IncludeExistingPayloadTrees
+Repair-RevitMcpManagedInstallPermissions -IncludeExistingPayloadTrees:((-not $SkipRevitPayloadInstall) -and (-not $SkipRuntimePayloadInstall))
 Invoke-RevitMcpCleanup -ForUninstall:$Uninstall
 
 if ($Uninstall) {
@@ -654,11 +660,16 @@ if (-not $SkipRevitPayloadInstall) {
     Write-AddinManifest -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -AssemblyPath (Join-Path $pluginTarget "RevitMCPPlugin.dll")
 }
 else {
-    Write-Host "Revit add-in payload install skipped; existing Revit-loaded files were left untouched." -ForegroundColor Yellow
+    Write-Host "Revit add-in payload install skipped; existing Revit files were left untouched." -ForegroundColor Yellow
 }
-# Expand the bundled runtime server contents into the target directory.
-Copy-Item -Path (Join-Path $serverSource "*") -Destination $ServerTarget -Recurse -Force
-Set-Content -LiteralPath (Join-Path $ServerTarget ".revit-mcp-self-contained-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
+if (-not $SkipRuntimePayloadInstall) {
+    # Expand the bundled runtime server contents into the target directory.
+    Copy-Item -Path (Join-Path $serverSource "*") -Destination $ServerTarget -Recurse -Force
+    Set-Content -LiteralPath (Join-Path $ServerTarget ".revit-mcp-self-contained-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
+}
+else {
+    Write-Host "Runtime payload install skipped; existing runtime files were left untouched." -ForegroundColor Yellow
+}
 Set-Content -LiteralPath (Join-Path $InstallRoot ".revit-mcp-programdata-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
 
 # The required Revit API docs MCP server remains in the repo under installer\revit-api-docs-mcp.
@@ -906,13 +917,16 @@ Write-Host "Self-contained Revit MCP bundle installed for Revit $RevitVersion" -
 Write-Host "Install root: $InstallRoot"
 Write-Host "Revit install root: $revitInstallRoot"
 if ($SkipRevitPayloadInstall) {
-    Write-Host "Revit addin payload: skipped; existing Revit-loaded files were left untouched."
+    Write-Host "Revit addin payload: skipped; existing Revit files were left untouched."
 }
 else {
     Write-Host "Revit addin manifest path: $addinRoot"
     Write-Host "Plugin payload path: $pluginTarget"
 }
 Write-Host "Runtime server path: $ServerTarget"
+if ($SkipRuntimePayloadInstall) {
+    Write-Host "Runtime payload: skipped; existing runtime files were left untouched."
+}
 Write-Host "Required docs server path: $docsServerSource"
 if (-not $SkipCodexSkillInstall) {
     Write-Host "Machine Codex skill path: $codexMachineSkillTarget"

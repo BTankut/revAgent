@@ -74,6 +74,11 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Shortened normal GUI update checks: already-current updates now return before
   proxy, scheduled-task, Node/Codex, and npm checks, while the GUI update button
   runs the updater directly instead of reinstalling the updater wrapper.
+- Made version-change updates less invasive when only updater/docs metadata
+  changed: unchanged Revit add-in/command payloads are skipped even when Revit
+  is closed, release manifests now include runtime directory fingerprints, and
+  unchanged runtime payloads are left in place instead of being removed and
+  recopied.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 
