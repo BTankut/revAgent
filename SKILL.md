@@ -86,12 +86,13 @@ custom-code workflows.
 - `export_revit_coordination_image` - visual artifact export only: create or reuse a dedicated visual QA 3D
   view, optionally section-box target elements, apply high-contrast review
   graphics, and export an image. Single-element exports use a tighter default
-frame, a target-centered 3D camera, and model-bounding-box/camera-projection
-view crop-box tightening before raster export, with post-cropping as a
-secondary guard. For cropped coordination exports, `pixelSize` is the final
-image size; `preExportPixelSize` is the Revit source export size before crop
-and can be automatic. `allowFinalUpscale` defaults to false so tiny source
-crops are not enlarged into pixelated final images. Raster highlight pixels are QA-only. Do not use it as the primary tool for live view navigation,
+  frame, a target-centered 3D camera, and model-bounding-box/camera-projection
+  view crop-box tightening before raster export. Post-process crop is only a
+  fallback when model crop-box framing is unavailable. For cropped coordination
+  exports, `pixelSize` is the final image size; `preExportPixelSize` is the
+  Revit source export size before crop and can be automatic.
+  `allowFinalUpscale` defaults to false so tiny source crops are not enlarged
+  into pixelated final images. Raster highlight pixels are QA-only. Do not use it as the primary tool for live view navigation,
   selected-element zoom, or opening an element in a Revit view. It writes only
   review view settings; it does not create or modify ducts, pipes, terminals,
   fittings, or other physical MEP model elements.
@@ -218,10 +219,12 @@ plan. Keep `enforcePixelSize` on unless the raw Revit export dimensions are
 being debugged. For one target element in a dense model, use coordination
 export with the default `singleElementMarginMm` or lower it further for a
 tighter frame; leave `cropToTargetHighlight` enabled so the exported image is
-cropped from the model bounding-box/camera projection if Revit keeps a wide 3D
-frame. Keep the default `targetMinFillRatio` unless wider context is more
-important than target readability. Prefer `cropBasis: "model_bbox_projection"`
-for single-target exports. Treat `actualHighlightFillRatio` only as raster QA:
+framed by the Revit 3D view crop box from the model bounding-box/camera
+projection before raster export. Keep the default `targetMinFillRatio` unless
+wider context is more important than target readability. Prefer
+`cropBasis: "model_bbox_projection"` for single-target exports. If
+`postProcessedCropApplied` is true, treat it as a fallback path, not the normal
+coordination export path. Treat `actualHighlightFillRatio` only as raster QA:
 if `highlightPixelCount` is zero, the crop can still be valid, but
 `actualHighlightFillRatio` must stay `0` and `estimatedTargetFillRatio` is only
 the model-projection estimate. For small final images, leave

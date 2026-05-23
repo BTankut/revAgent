@@ -52,7 +52,7 @@ export function registerExportRevitCoordinationImageTool(server) {
         maxAutoPreExportPixelSize: z.number().int().min(1000).max(20000).optional().default(10000).describe("Upper bound for automatic high-resolution source exports used before single-target model-projection crops."),
         allowFinalUpscale: z.boolean().optional().default(false).describe("When false, model-projection crops are widened instead of enlarging a tiny source crop to the final pixelSize. This preserves image quality even when targetMinFillRatio cannot be reached within Revit's source export limit."),
         enforcePixelSize: z.boolean().optional().default(true).describe("When true, post-processes PNG/JPEG/BMP/TIFF output so the final requested fit direction dimension equals pixelSize. TARGA cannot be resized by this tool."),
-        cropToTargetHighlight: z.boolean().optional().default(true).describe("When true, post-processes single-target coordination images using the Revit model bounding box/camera projection as the primary crop source. Raster highlight pixels are used only as QA metrics."),
+        cropToTargetHighlight: z.boolean().optional().default(true).describe("When true, tightens the Revit 3D view crop box from model bbox/camera projection. Raster highlight pixels are QA metrics only unless Revit model crop-box framing is unavailable."),
         targetMinFillRatio: z.number().min(0.1).max(0.9).optional().default(0.4).describe("Minimum target occupancy used when sizing model-bounding-box projection crops. Raster highlight fill, when detected, is reported separately as QA."),
         highlightCropPaddingPx: z.number().int().min(0).max(2000).optional().default(24).describe("Debug fallback padding for highlight-pixel crops when model projection is not available."),
         dpi: dpiSchema.optional().default("300"),
@@ -511,7 +511,7 @@ Func<string, int[], bool> resizeImageToRequestedPixelSize = (f, size) => {
   }
 };
 
-Func<string, object[]> cropImageToModelProjection = (f) => {
+Func<string, object[]> analyzeCoordinationImageQuality = (f) => {
   if (!cropToTargetHighlight || targetElements.Count == 0) {
     return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0, "none", 0.0, false };
   }
@@ -584,6 +584,7 @@ Func<string, object[]> cropImageToModelProjection = (f) => {
     }
 
     bool modelProjectionAvailable = targetCropEstimateAvailable && targetElements.Count == 1;
+    bool allowPostProcessCrop = !modelCropBoxApplied;
     int cropX = 0;
     int cropY = 0;
     int cropWidth = width;
@@ -592,7 +593,7 @@ Func<string, object[]> cropImageToModelProjection = (f) => {
     double estimatedTargetFillRatio = 0.0;
     string cropBasis = "none";
 
-    if (modelProjectionAvailable) {
+    if (modelProjectionAvailable && allowPostProcessCrop) {
       double safeFillRatio = Math.Max(0.1, Math.Min(0.9, targetMinFillRatio));
       int minImageSide = Math.Max(1, Math.Min(width, height));
       estimatedMaxTargetDimension = Math.Max(8, (int)Math.Round(Math.Max(0.01, Math.Min(1.0, targetCropFillRatioEstimate)) * (double)minImageSide));
@@ -620,9 +621,9 @@ Func<string, object[]> cropImageToModelProjection = (f) => {
       if (cropX + cropWidth > width) cropX = Math.Max(0, width - cropWidth);
       if (cropY + cropHeight > height) cropY = Math.Max(0, height - cropHeight);
       estimatedTargetFillRatio = (double)estimatedMaxTargetDimension / (double)Math.Max(cropWidth, cropHeight);
-      cropBasis = "model_bbox_projection";
+      cropBasis = "model_bbox_projection_post_crop";
     }
-    else if (highlightPixelsDetected) {
+    else if (!modelProjectionAvailable && allowPostProcessCrop && highlightPixelsDetected) {
       int highlightWidth = Math.Max(1, maxX - minX + 1);
       int highlightHeight = Math.Max(1, maxY - minY + 1);
       int maxHighlightDimensionForCrop = Math.Max(highlightWidth, highlightHeight);
@@ -642,7 +643,18 @@ Func<string, object[]> cropImageToModelProjection = (f) => {
       if (cropY < 0) cropY = 0;
       if (cropX + cropWidth > width) cropX = Math.Max(0, width - cropWidth);
       if (cropY + cropHeight > height) cropY = Math.Max(0, height - cropHeight);
-      cropBasis = "highlight_pixels";
+      cropBasis = "highlight_pixels_post_crop_fallback";
+    }
+    else if (modelProjectionAvailable) {
+      int fullImageHighlightDimension = 0;
+      double fullImageHighlightFillRatio = 0.0;
+      if (highlightPixelsDetected) {
+        int highlightWidth = Math.Max(1, maxX - minX + 1);
+        int highlightHeight = Math.Max(1, maxY - minY + 1);
+        fullImageHighlightDimension = Math.Max(highlightWidth, highlightHeight);
+        fullImageHighlightFillRatio = (double)fullImageHighlightDimension / (double)Math.Max(width, height);
+      }
+      return new object[] { false, width, height, 0, 0, width, height, 0, highlightCount, fullImageHighlightDimension, targetMinFillRatio, fullImageHighlightFillRatio, "model_bbox_projection", targetCropFillRatioEstimate, highlightPixelsDetected };
     }
 
     if (cropWidth <= 0 || cropHeight <= 0 ||
@@ -671,7 +683,7 @@ Func<string, object[]> cropImageToModelProjection = (f) => {
         int overlapHeight = overlapMaxY - overlapMinY + 1;
         maxHighlightDimension = Math.Max(overlapWidth, overlapHeight);
         actualHighlightFillRatio = (double)maxHighlightDimension / (double)Math.Max(cropWidth, cropHeight);
-        if (cropBasis == "model_bbox_projection" && actualHighlightFillRatio < targetMinFillRatio) {
+        if (cropBasis.StartsWith("model_bbox_projection") && actualHighlightFillRatio < targetMinFillRatio) {
           warnings.Add("target_highlight_pixels_below_requested_fill:" + System.IO.Path.GetFileName(f));
         }
       }
@@ -693,7 +705,7 @@ Func<string, object[]> cropImageToModelProjection = (f) => {
   }
   catch (Exception ex) {
     try { if (System.IO.File.Exists(tempFile)) System.IO.File.Delete(tempFile); } catch {}
-    warnings.Add("image_model_projection_crop_failed:" + System.IO.Path.GetFileName(f) + ":" + ex.Message);
+    warnings.Add("image_coordination_quality_analysis_failed:" + System.IO.Path.GetFileName(f) + ":" + ex.Message);
     return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, targetMinFillRatio, 0.0, "none", 0.0, false };
   }
 };
@@ -708,15 +720,19 @@ Func<string, object> buildFileSummary = (f) => {
   double actualHighlightFillRatio = 0.0;
   double estimatedTargetFillRatio = 0.0;
   bool sourceCropUpscaledToFinal = false;
+  bool postProcessedCropApplied = false;
+  bool rasterPostCropApplied = false;
   string cropBasis = "none";
   object highlightCrop = null;
   try {
-    object[] crop = cropImageToModelProjection(f);
+    object[] crop = analyzeCoordinationImageQuality(f);
     if (crop != null && crop.Length >= 12) {
       croppedToTargetHighlight = crop[0] is bool && (bool)crop[0];
+      postProcessedCropApplied = croppedToTargetHighlight;
       highlightPixelCount = Convert.ToInt32(crop[8]);
       actualHighlightFillRatio = Convert.ToDouble(crop[11], System.Globalization.CultureInfo.InvariantCulture);
       if (crop.Length >= 13 && crop[12] != null) cropBasis = crop[12].ToString();
+      rasterPostCropApplied = croppedToTargetHighlight && cropBasis.StartsWith("highlight_pixels");
       if (crop.Length >= 14 && crop[13] != null) estimatedTargetFillRatio = Convert.ToDouble(crop[13], System.Globalization.CultureInfo.InvariantCulture);
       if (crop.Length >= 15 && crop[14] != null) highlightPixelsDetected = Convert.ToBoolean(crop[14]);
       if (croppedToTargetHighlight) {
@@ -771,7 +787,9 @@ Func<string, object> buildFileSummary = (f) => {
     resizedToRequestedPixelSize = resizedToRequestedPixelSize,
     sourceCropUpscaledToFinal = sourceCropUpscaledToFinal,
     croppedToTargetHighlight = croppedToTargetHighlight,
-    croppedToModelProjection = cropBasis == "model_bbox_projection",
+    postProcessedCropApplied = postProcessedCropApplied,
+    rasterPostCropApplied = rasterPostCropApplied,
+    croppedToModelProjection = cropBasis.StartsWith("model_bbox_projection"),
     highlightPixelCount = highlightPixelCount,
     highlightPixelsDetected = highlightPixelsDetected,
     targetMinFillRatio = targetMinFillRatio,

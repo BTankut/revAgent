@@ -129,6 +129,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Tightened the Revit 3D view crop box from the projected target model bbox
   before raster export, so single-target coordination images render the target
   larger at source instead of depending on post-export magnification.
+- Reduced coordination-image technical debt by making raster/highlight
+  post-crop a fallback-only path. The default single-target path now frames in
+  Revit view space first, then performs raster analysis only for QA metrics.
 - Added `allowFinalUpscale=false` as the coordination-image default so the
   tool widens an under-resolved model crop and reports
   `target_fill_limited_by_source_resolution` instead of silently upscaling a

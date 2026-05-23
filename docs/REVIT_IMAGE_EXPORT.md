@@ -24,11 +24,12 @@ status preflight and single-command rule.
   - Best for: dense MEP coordination review where the model view is too noisy
     for an LLM to inspect reliably.
   - Output: each generated file reports `bytes`, `width`, and `height`. Single
-    target exports use a tighter default section-box margin and recenter the 3D
-    camera on the target section box. If Revit still exports a wide 3D frame,
-    the tool post-crops from the model bounding-box/camera projection before
-    final pixel-size normalization. Target-pixel detection is QA-only and
-    produces warnings when exported highlight pixels are not measurable.
+    target exports use a tighter default section-box margin, recenter the 3D
+    camera on the target section box, and tighten the 3D view crop box from
+    the model bounding-box projection before raster export. Post-process crop
+    is only a fallback when model crop-box framing is unavailable.
+    Target-pixel detection is QA-only and produces warnings when exported
+    highlight pixels are not measurable.
 
 Neither tool creates ducts, pipes, fittings, terminals, sprinklers, or other
 physical MEP model elements.
@@ -148,12 +149,14 @@ around the issue being reviewed. When exactly one element is supplied,
 multi-element `marginMm` default. The tool also sets a deterministic 3D camera
 orientation centered on the target section box and reports
 `framing.cameraFramedToTargets`. Because Revit can still keep a wide 3D export
-canvas, `cropToTargetHighlight=true` uses the Revit model bounding box,
-section box, and camera projection as the primary crop source for single-target
-exports. Before raster export, the tool also tightens the reusable 3D view crop
-box from the projected model bbox and reports
+canvas, `cropToTargetHighlight=true` tightens the reusable 3D view crop box
+from the projected model bbox and reports
 `framing.modelCropBoxApplied`; this is the primary quality path because Revit
 renders the target larger instead of relying on post-export magnification.
+Post-process crop is now only a fallback when model crop-box framing is not
+available. If that fallback is used, `files[].postProcessedCropApplied` is
+true and `files[].cropBasis` is either `model_bbox_projection_post_crop` or
+`highlight_pixels_post_crop_fallback`.
 In automatic mode the source Revit export can still be larger than the
 final image; `files[].preExportPixelSize`, `files[].preExportPixelSizeReason`,
 and `files[].sourceCropUpscaledToFinal` make that path auditable. If the model
@@ -172,6 +175,7 @@ valid when the model projection crop succeeded; the tool returns
 is only populated from real detected pixels. Use `estimatedTargetFillRatio`
 for the model-projection estimate.
 The response reports `files[].croppedToTargetHighlight`,
+`files[].postProcessedCropApplied`, `files[].rasterPostCropApplied`,
 `files[].highlightPixelCount`, `files[].actualHighlightFillRatio`,
 `files[].estimatedTargetFillRatio`, `files[].cropBasis`, and
 `files[].highlightCrop.cropBasis`.
