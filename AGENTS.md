@@ -100,6 +100,12 @@ Live Revit navigation is a different intent from image export:
   selected-element zoom or opening an element in a Revit view. Use live view
   navigation first, then optionally export the active view.
 
+For element evidence requests, use the same order every time: status check,
+resolve ids/selection, live focus with `show_element_in_plan_and_3d` or
+`create_3d_view_for_elements`, verify the focused state, export focused QA
+evidence with `export_revit_coordination_image`, then return the image path and
+trust-affecting warnings.
+
 ## Current Runtime Surface
 
 The current `revit-mcp` runtime surface is a reusable production access layer

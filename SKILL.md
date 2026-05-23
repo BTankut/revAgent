@@ -232,6 +232,29 @@ resolution only if the user needs a sharper or tighter artifact. Keep generated
 image paths with the task notes so a human reviewer can reproduce the exact
 evidence.
 
+### Element Evidence Workflow
+
+Use this recipe when the user asks to show, verify, and return visual evidence
+for one element or a small element set.
+
+1. Call `get_revit_mcp_status`; wait if a task is active.
+2. Resolve element ids:
+   - use provided ids directly,
+   - use `get_ui_state` when the user implies the current selection,
+   - use `find_elements` when the user describes the element by name, type,
+     category, mark, or system.
+3. For live Revit focus, use `show_element_in_plan_and_3d` when plan plus 3D
+   context is useful. Use `create_3d_view_for_elements` when only a focused 3D
+   view is needed. Do not use `export_revit_coordination_image` for live
+   navigation.
+4. Verify the focus result through the tool response or `get_ui_state`: confirm
+   selected ids, active/focused view, and any warnings.
+5. Export the evidence artifact with `export_revit_coordination_image` for
+   focused 3D QA. For one target, expect `cropBasis:
+   "model_bbox_projection"` and `postProcessedCropApplied=false`.
+6. Return a compact evidence summary: element ids, focused view name, image
+   path, and only the warnings that affect trust in the evidence.
+
 ---
 
 ## Operational Playbook
