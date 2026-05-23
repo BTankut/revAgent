@@ -234,7 +234,9 @@ resolution only if the user needs a sharper or tighter artifact. Keep generated
 image paths with the task notes so a human reviewer can reproduce the exact
 evidence. Use `targetVisualStyle="qa_high_contrast"` for debug/LLM QA,
 `technical_report` or `outline_only` for report-style evidence, and `raw` when
-the target must keep its native appearance.
+the target must keep its native appearance. Do not weaken `qa_high_contrast`
+for QA/debug work; choose a softer style only when the output intent is report,
+presentation, or native technical appearance.
 
 ### Element Evidence Workflow
 

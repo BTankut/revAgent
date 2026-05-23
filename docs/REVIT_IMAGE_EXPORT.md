@@ -184,8 +184,9 @@ The response reports `files[].croppedToTargetHighlight`,
 Use `targetVisualStyle` to match the output intent:
 
 - `qa_high_contrast`: strong neon target fill and thick lines for LLM/debug QA.
-- `technical_report`: softer linework and translucent fill for report-style
-  evidence.
+  This mode intentionally stays visually aggressive.
+- `technical_report`: thin linework and highly translucent fill for
+  report-style evidence.
 - `outline_only`: thin colored outline with transparent target surfaces and no
   surface fill.
 - `raw`: clears stale target-element overrides and applies no new target

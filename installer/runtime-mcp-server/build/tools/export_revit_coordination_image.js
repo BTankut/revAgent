@@ -329,15 +329,17 @@ foreach (var element in targetElements) {
 
 if (!String.Equals(targetVisualStyle, "raw", System.StringComparison.OrdinalIgnoreCase)) {
   var targetGraphics = new OverrideGraphicSettings();
-  var targetColor = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase)
+  bool isQaHighContrast = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase);
+  bool isTechnicalReport = String.Equals(targetVisualStyle, "technical_report", System.StringComparison.OrdinalIgnoreCase);
+  bool isOutlineOnly = String.Equals(targetVisualStyle, "outline_only", System.StringComparison.OrdinalIgnoreCase);
+  var targetColor = isQaHighContrast
     ? new Color(0, 255, 128)
     : new Color(0, 170, 255);
-  bool isOutlineOnly = String.Equals(targetVisualStyle, "outline_only", System.StringComparison.OrdinalIgnoreCase);
-  int lineWeight = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase) ? 12 : (isOutlineOnly ? 1 : 4);
-  int surfaceTransparency = String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase) ? 1 : (isOutlineOnly ? 100 : 65);
+  int lineWeight = isQaHighContrast ? 12 : 1;
+  int surfaceTransparency = isQaHighContrast ? 1 : (isOutlineOnly ? 100 : 85);
   bool applySurfaceFill =
-    String.Equals(targetVisualStyle, "qa_high_contrast", System.StringComparison.OrdinalIgnoreCase) ||
-    String.Equals(targetVisualStyle, "technical_report", System.StringComparison.OrdinalIgnoreCase);
+    isQaHighContrast ||
+    isTechnicalReport;
 
   targetGraphics.SetProjectionLineColor(targetColor);
   targetGraphics.SetCutLineColor(targetColor);

@@ -73,7 +73,8 @@ Available runtime tools:
   unavailable; raster highlight pixels are QA metrics, not the framing source.
   Use `targetVisualStyle="qa_high_contrast"` for debug/LLM QA,
   `technical_report` or `outline_only` for report evidence, and `raw` when the
-  target should keep its native appearance.
+  target should keep its native appearance. Keep high contrast for QA/debug;
+  use softer styles only for report, presentation, or native technical output.
 
 Practical use:
 
