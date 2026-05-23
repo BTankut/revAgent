@@ -149,7 +149,7 @@ function Get-DirectoryTreeHash {
         [string]$Root,
         [string]$RelativePath,
         [string[]]$ExcludeDirectoryNames = @("node_modules", ".git"),
-        [string[]]$ExcludeFileNames = @(".npm-deps.sha256")
+        [string[]]$ExcludeFileNames = @(".revagent-npm-dependencies.json", ".npm-deps.sha256")
     )
 
     $path = Join-Path $Root $RelativePath

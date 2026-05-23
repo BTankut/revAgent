@@ -1497,7 +1497,7 @@ function Get-DirectoryTreeSha256OrNull {
         [string]$Root,
         [string]$RelativePath,
         [string[]]$ExcludeDirectoryNames = @("node_modules", ".git"),
-        [string[]]$ExcludeFileNames = @(".npm-deps.sha256")
+        [string[]]$ExcludeFileNames = @(".revagent-npm-dependencies.json", ".npm-deps.sha256")
     )
 
     if ([string]::IsNullOrWhiteSpace($Root) -or [string]::IsNullOrWhiteSpace($RelativePath)) {
