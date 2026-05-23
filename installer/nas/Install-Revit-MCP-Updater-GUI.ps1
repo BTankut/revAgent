@@ -442,18 +442,40 @@ function Start-InstallerOperation {
     $progress.Style = "Marquee"
     Set-ButtonsEnabled -Enabled $false
 
-    $arguments = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $installerPath,
-        "-ChannelManifestPath", $ChannelManifestPath,
-        "-InstallRoot", $InstallRoot,
-        "-WorkRoot", $workRoot,
-        "-PackageTarget", $packageTarget,
-        "-ServerTarget", $serverTarget,
-        "-RunNow",
-        "-LogPath", $script:ActiveLogPath
-    )
+    $directUpdaterPath = Join-Path $PSScriptRoot "update-from-nas.ps1"
+    $useDirectUpdate = $Operation -eq "update" -and
+        -not [string]::IsNullOrWhiteSpace($status.InstalledVersion) -and
+        (Test-Path -LiteralPath $directUpdaterPath -PathType Leaf)
+
+    if ($useDirectUpdate) {
+        $arguments = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $directUpdaterPath,
+            "-ChannelManifestPath", $ChannelManifestPath,
+            "-InstallRoot", $InstallRoot,
+            "-WorkRoot", $workRoot,
+            "-PackageTarget", $packageTarget,
+            "-ServerTarget", $serverTarget,
+            "-NoNotifyUser",
+            "-AllowManualCodexSetup",
+            "-LogPath", $script:ActiveLogPath
+        )
+    }
+    else {
+        $arguments = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $installerPath,
+            "-ChannelManifestPath", $ChannelManifestPath,
+            "-InstallRoot", $InstallRoot,
+            "-WorkRoot", $workRoot,
+            "-PackageTarget", $packageTarget,
+            "-ServerTarget", $serverTarget,
+            "-RunNow",
+            "-LogPath", $script:ActiveLogPath
+        )
+    }
     if ($Operation -eq "restore") {
         $arguments += "-ForceUpdate"
     }

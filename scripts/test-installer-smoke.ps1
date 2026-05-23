@@ -201,6 +201,10 @@ try {
     Assert-True ($guiText -match 'Repair/Reinstall') "GUI must expose a separate repair/reinstall button."
     Assert-True ($guiText -match '-ForceUpdate') "GUI restore action must force the channel package install."
     Assert-True ($guiText -match 'UpdateEnabled') "GUI must gate the update button from channel status."
+    Assert-True ($guiText -match '\$directUpdaterPath = Join-Path \$PSScriptRoot "update-from-nas\.ps1"') "GUI update action must use the direct updater instead of reinstalling the updater wrapper."
+    Assert-True ($guiText -match '\$useDirectUpdate = \$Operation -eq "update"') "GUI must reserve direct updater execution for normal updates."
+    Assert-True ($guiText -match '"-File", \$directUpdaterPath') "Normal GUI updates must run update-from-nas.ps1 directly."
+    Assert-True ($guiText -match '"-File", \$installerPath') "First install and repair must still use install-updater-task.ps1."
     Assert-True ($guiText -match '\$form\.Text = "revAgent"') "GUI title must use the revAgent product name."
     Assert-True ($guiText -match 'Your AI agent inside Revit\.') "GUI must show the revAgent product tagline."
     Assert-True ($guiText -match '2026 Baris Tankut') "GUI must show the revAgent copyright footer."
@@ -333,6 +337,7 @@ try {
     $scheduledTaskModuleText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.ScheduledTask.psm1")
     Assert-True ($scheduledTaskModuleText -match 'Set-ScheduledTask -TaskName \$Name -Trigger \$trigger') "Updater repair must replace legacy repeated triggers with the daily trigger."
     Assert-True ($scheduledTaskModuleText -match 'Set-ScheduledTask -TaskName \$Name -Trigger \$trigger -Settings \$settings') "Updater repair must clear legacy StartWhenAvailable settings."
+    Assert-True ($scheduledTaskModuleText -match 'Set-ScheduledTask -TaskName \$Name -Trigger \$trigger -Settings \$settings -ErrorAction Stop') "Scheduled-task repair permission errors must be caught as warnings."
     Assert-True ($scheduledTaskModuleText -notmatch 'StartWhenAvailable') "Updater scheduled-task repair must not preserve StartWhenAvailable."
 
     Write-Host "Test bundled Node MSI path quoting"
@@ -349,6 +354,9 @@ try {
     Assert-True ($updaterText -match 'Remove-StaleNpmDependencyJunction') "Updater must remove stale cached dependency junctions before refreshing."
     Assert-True ($updaterText -match 'Invoke-NpmInstallIfNeeded -NpmPath \$npmPath -WorkingDirectory \$ServerTarget .* -CacheRoot \$npmDependencyCacheRoot') "Runtime npm install must use the dependency gate."
     Assert-True ($updaterText -match 'Invoke-NpmInstallIfNeeded -NpmPath \$npmPath -WorkingDirectory \$docsServerPath .* -CacheRoot \$npmDependencyCacheRoot') "Docs server npm install must use the dependency gate."
+    Assert-True ($updaterText.IndexOf('Already up to date.') -lt $updaterText.IndexOf('Initialize-RevitMcpWorkstationProxy -ProxyUrl')) "No-op current updates must return before proxy setup."
+    Assert-True ($updaterText.IndexOf('Already up to date.') -lt $updaterText.IndexOf('Ensure-UpdateDependencies -SkipNpmInstall')) "No-op current updates must return before Node/Codex/npm dependency checks."
+    Assert-True ($updaterText.IndexOf('deferred-revit-close-required') -lt $updaterText.IndexOf('Ensure-UpdateDependencies -SkipNpmInstall')) "Revit-close deferrals must return before Node/Codex/npm dependency checks."
     Assert-True ($updaterText -match '\$Status -eq "updated"') "Completed version transition must only be reported for successful updates."
     Assert-True ($updaterText -match 'pendingVersionTransition') "Deferred or available updates must be reported as pending, not completed transitions."
     $statusText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\show-installed-version.ps1")

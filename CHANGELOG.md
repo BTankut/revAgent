@@ -71,6 +71,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
   before using the slower full verified fallback.
 - Changed updater status reporting so Revit-close deferrals are displayed as
   pending updates rather than completed version transitions.
+- Shortened normal GUI update checks: already-current updates now return before
+  proxy, scheduled-task, Node/Codex, and npm checks, while the GUI update button
+  runs the updater directly instead of reinstalling the updater wrapper.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

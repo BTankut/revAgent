@@ -52,12 +52,12 @@ function Repair-RevitMcpHiddenScheduledTaskAction {
 
         if (-not $actionMatches) {
             $action = New-RevitMcpHiddenUpdaterScheduledTaskAction -LauncherPath $launcherPath
-            Set-ScheduledTask -TaskName $Name -Action $action | Out-Null
+            Set-ScheduledTask -TaskName $Name -Action $action -ErrorAction Stop | Out-Null
             Write-Host "Scheduled task action repaired for hidden background checks: $Name"
         }
 
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-        Set-ScheduledTask -TaskName $Name -Trigger $trigger -Settings $settings | Out-Null
+        Set-ScheduledTask -TaskName $Name -Trigger $trigger -Settings $settings -ErrorAction Stop | Out-Null
         Write-Host "Scheduled task schedule repaired for daily background checks at ${DailyAt}: $Name"
     }
     catch {

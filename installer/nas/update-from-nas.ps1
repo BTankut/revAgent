@@ -2025,6 +2025,13 @@ function Repair-RevitMcpScheduledTaskAction {
         [string]$DailyAt = "12:00"
     )
 
+    if ([string]::IsNullOrWhiteSpace($UpdaterConfigPath) -or
+        [string]::IsNullOrWhiteSpace($UpdaterPath) -or
+        -not (Test-Path -LiteralPath $UpdaterConfigPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
+        return
+    }
+
     Repair-RevitMcpHiddenScheduledTaskAction -Name $Name -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath -DailyAt $DailyAt
 }
 
@@ -2091,13 +2098,10 @@ $stagingRoot = Join-Path $WorkRoot "staging"
 $backupRoot = Join-Path $WorkRoot "backups"
 New-Item -ItemType Directory -Path $cacheRoot, $stagingRoot, $backupRoot -Force | Out-Null
 
-Initialize-RevitMcpWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
-
 $taskUpdaterPath = Join-Path $WorkRoot "update-from-nas.ps1"
 if (-not (Test-Path -LiteralPath $taskUpdaterPath -PathType Leaf)) {
     $taskUpdaterPath = $PSCommandPath
 }
-Repair-RevitMcpScheduledTaskAction -Name $TaskName -UpdaterPath $taskUpdaterPath -UpdaterConfigPath $ConfigPath -DailyAt $taskDailyAt
 
 $channelDir = Split-Path -Parent $ChannelManifestPath
 if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
@@ -2167,8 +2171,6 @@ try {
         })
     $isPackageCurrent = ($installedVersion -eq $targetVersion -and $installedSha -eq $targetSha)
 
-    Ensure-UpdateDependencies -SkipNpmInstall:$SkipNpmInstall -SkipCodexMcpRegistration:$SkipCodexMcpRegistration
-
     if (-not $Force -and $isPackageCurrent -and -not $requiresRevitClosed) {
         $message = "Already up to date."
         Write-Host $message -ForegroundColor Green
@@ -2230,6 +2232,10 @@ try {
         $skipRevitPayloadInstall = [bool]$runningDecision.SkipRevitPayloadInstall
         Write-Warning "Revit is running, but this update does not change Revit add-in/command files. Non-Revit files will be updated without touching the active Revit payload."
     }
+
+    Initialize-RevitMcpWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
+    Repair-RevitMcpScheduledTaskAction -Name $TaskName -UpdaterPath $taskUpdaterPath -UpdaterConfigPath $ConfigPath -DailyAt $taskDailyAt
+    Ensure-UpdateDependencies -SkipNpmInstall:$SkipNpmInstall -SkipCodexMcpRegistration:$SkipCodexMcpRegistration
 
     if ((Test-Path -LiteralPath (Join-Path $PackageTarget ".git")) -and -not $AllowReplaceGitPackageTarget) {
         throw "PackageTarget is a git working tree. Refusing to replace it without -AllowReplaceGitPackageTarget: $PackageTarget"

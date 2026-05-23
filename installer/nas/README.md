@@ -223,6 +223,11 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
 - Pending updates that require the user to close Revit show a throttled user
   notification instead of failing silently in the background. Status output
   reports these as `Pending update`, not as completed version transitions.
+- Normal GUI updates run `update-from-nas.ps1` directly after the updater is
+  already installed. `Repair/Reinstall` remains the explicit path that refreshes
+  the updater wrapper, task registration, permissions, and the full package.
+- Already-current update checks return before proxy, scheduled-task,
+  Node/Codex, and npm preparation work.
 - Official Autodesk Revit and Windows system folders are not deleted.
 - Cleanup is limited to known Revit MCP-owned install paths.
 - The managed package target is refused if it is a Git working tree unless
