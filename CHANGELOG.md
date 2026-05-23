@@ -87,6 +87,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Documented and test-locked the update scope matrix so updater-only, runtime,
   Revit payload, Codex skill/AGENTS, and docs-server changes route through the
   intended install path.
+- Added idempotent Codex memory configuration during install/update, removed
+  normal `.codex` backup creation, cleaned legacy `.codex` backup artifacts,
+  and capped managed package backups to the latest 3 replacement folders.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 
