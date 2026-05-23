@@ -322,7 +322,10 @@ Before every non-status Revit MCP runtime command:
 
 Use the compact status defaults for routine preflight. Increase `recentLimit`
 or set `includeDiagnostics=true` only when investigating a transport or runtime
-issue.
+issue. The status payload includes `runtimeIdentity` (`runtimeVersion`,
+`schemaVersion`, `toolSurfaceVersion`, `processStartedAtUtc`,
+`buildTimestampUtc`, and `buildHash`); check it when a workstation may be
+running an older runtime after an update or restart.
 
 Do not run Revit MCP runtime commands in parallel. The only exception is
 status polling while a task is already active.

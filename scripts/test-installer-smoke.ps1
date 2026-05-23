@@ -288,6 +288,7 @@ try {
     $viewImageToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\export_revit_view_image.ts")
     $coordinationImageToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\export_revit_coordination_image.ts")
     $create3dToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\create_3d_view_for_elements.ts")
+    $statusToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_revit_mcp_status.ts")
     $toolHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\revitToolHelpers.ts")
     $parameterSchemaToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_parameter_schema.ts")
     Assert-True ($focusHelpersCode -match 'new FilteredElementCollector\(document, view\.Id\)') "View visibility helper must use a view-specific collector."
@@ -319,6 +320,13 @@ try {
     Assert-True ($sessionContextToolCode -notmatch 'apiProbeState\s*=\s*new\s*\{\s*isModifiable\s*=') "Session context must not expose apiProbeState.isModifiable."
     Assert-True ($instanceListToolCode -match 'documentIsModifiableDuringProbe') "Instance list must label probe-time modifiable state clearly."
     Assert-True ($instanceListToolCode -notmatch 'apiProbeState\s*=\s*new\s*\{\s*isModifiable\s*=') "Instance list must not expose apiProbeState.isModifiable."
+    Assert-True ($statusToolCode -match 'runtimeIdentity') "Status output must include runtime identity metadata."
+    Assert-True ($statusToolCode -match 'runtimeVersion') "Status output must include the active runtime version."
+    Assert-True ($statusToolCode -match 'schemaVersion') "Status output must include the status/schema version."
+    Assert-True ($statusToolCode -match 'toolSurfaceVersion') "Status output must include the registered tool surface version."
+    Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
+    Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
+    Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
     Assert-True ($toolHelpersCode -match 'normalizeSuccessCasing') "Runtime formatter must normalize response success casing."
     Assert-True ($toolHelpersCode -match 'delete clone\.Success') "Runtime formatter must emit canonical lowercase success instead of success/Success duplicates."
     Assert-True ($viewImageToolCode -match 'enforcePixelSize') "View image export must expose enforcePixelSize."
@@ -331,7 +339,9 @@ try {
     Assert-True ($coordinationImageToolCode -match 'resolveAutoTargetVisualStyle') "Coordination image export must resolve auto target visual style explicitly."
     Assert-True ($coordinationImageToolCode -match '(?s)intent === "coordination_overlay".*return "outline_only"') "Coordination image export auto style must not default coordination overlays to high-contrast QA."
     Assert-True ($coordinationImageToolCode -match '(?s)intent === "raw_evidence".*return "raw"') "Coordination image export auto style must keep raw evidence unhighlighted."
-    Assert-True ($coordinationImageToolCode -match 'qa_high_contrast') "Coordination image export must keep an explicit high-contrast QA target style."
+    Assert-True ($coordinationImageToolCode -match '(?s)intent === "system_focus".*return "technical_report"') "Coordination image export auto style must map system focus to technical report styling."
+    Assert-True ($coordinationImageToolCode -match '(?s)intent === "clash_clearance".*return "technical_report"') "Coordination image export auto style must map clash clearance to technical report styling."
+    Assert-True ($coordinationImageToolCode -match 'qa_high_contrast is used only when explicitly requested') "Coordination image export must keep high-contrast QA styling explicit-only."
     Assert-True ($coordinationImageToolCode -match 'isQaHighContrast \? 12 : 1') "Coordination image export must preserve thick QA linework only in high-contrast mode."
     Assert-True ($coordinationImageToolCode -match 'technical_report') "Coordination image export must support a softer technical-report target style."
     Assert-True ($coordinationImageToolCode -match 'outline_only') "Coordination image export must support outline-only target highlighting."

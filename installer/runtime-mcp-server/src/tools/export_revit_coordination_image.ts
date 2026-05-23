@@ -58,6 +58,8 @@ function csharpIntList(values) {
 function resolveAutoTargetVisualStyle(intent) {
   if (intent === "raw_evidence") return "raw";
   if (intent === "coordination_overlay") return "outline_only";
+  if (intent === "system_focus") return "technical_report";
+  if (intent === "clash_clearance") return "technical_report";
   return "technical_report";
 }
 

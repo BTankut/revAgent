@@ -44,7 +44,10 @@ custom-code workflows.
 - `list_revit_instances` - discover reachable Revit MCP instances and ports
 - `get_revit_mcp_status` - read active/recent task status without waiting
   behind the active command lock; default output is compact, with optional
-  recent task limits and transport diagnostics for troubleshooting
+  recent task limits and transport diagnostics for troubleshooting. It also
+  returns `runtimeIdentity` (`runtimeVersion`, `schemaVersion`,
+  `toolSurfaceVersion`, `processStartedAtUtc`, `buildTimestampUtc`, and
+  `buildHash`) so agents can confirm which runtime/schema is actually active.
 - `send_code_to_revit` - raw dynamic execution for explicit, broad control
 - `send_code_to_revit_safe` - read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced

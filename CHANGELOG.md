@@ -47,6 +47,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
   output, safer `find_elements` plan-candidate defaults, trimmed plan candidate
   blocks in focus workflows, actual image dimensions in view exports, clearer
   Revit `isModifiable` probe wording, and parameter schema alias diagnostics.
+- Added runtime identity metadata to `get_revit_mcp_status` so agents can see
+  the active runtime version, schema/tool surface version, process start time,
+  build timestamp, and git build hash.
 - Restored live installer terminal output in the GUI so install/update progress
   streams into the window again instead of being replaced by a generic running
   message.
@@ -58,6 +61,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
   moved read-only probe modifiable state under `apiProbeState`, and made
   parameter schema output prioritize user-facing built-in parameter labels over
   raw Revit enum aliases.
+- Locked `export_revit_coordination_image` auto styling to report-friendly
+  defaults: raw evidence stays raw, coordination overlays use outline-only
+  styling, system focus and clash clearance use technical-report styling, and
+  high-contrast QA styling is explicit-only.
 - Added workstation updater npm dependency fingerprint checks and a managed
   local npm dependency cache so runtime/docs `npm install` is skipped when
   installed or cached `node_modules` already matches the current lockfile.

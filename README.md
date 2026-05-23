@@ -180,7 +180,10 @@ elapsed time, recent completed/failed tasks, and service port. Routine status
 responses stay compact by default: recent task records are limited to the latest
 few items and transport diagnostics are hidden unless explicitly requested.
 Status calls bypass the per-port command lock so Codex can query progress during
-a long Revit operation.
+a long Revit operation. Every response also includes `runtimeIdentity` with the
+active `runtimeVersion`, status `schemaVersion`, `toolSurfaceVersion`,
+`processStartedAtUtc`, `buildTimestampUtc`, and `buildHash`, so agents can
+detect whether the running runtime matches the deployed build.
 
 The Revit socket protocol uses length-prefixed JSON-RPC frames by default, so
 large snippets and parameter payloads are not limited by the old single-read

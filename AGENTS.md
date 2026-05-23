@@ -64,7 +64,7 @@ Available runtime tools:
   write model elements or view settings. PNG/JPEG/BMP/TIFF exports are
   normalized to the requested `pixelSize` by default.
 - `export_revit_coordination_image`: creates or updates a reusable 3D QA view,
-  applies section box and high-contrast graphic overrides around target
+  applies a section box and selectable target visual style around target
   elements, then exports an image. It does not create or modify physical MEP
   elements; it writes only review view settings. Single target exports use a
   tighter default frame, a target-centered 3D camera, and model-bounding-box

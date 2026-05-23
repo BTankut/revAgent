@@ -44,6 +44,10 @@ function resolveAutoTargetVisualStyle(intent) {
         return "raw";
     if (intent === "coordination_overlay")
         return "outline_only";
+    if (intent === "system_focus")
+        return "technical_report";
+    if (intent === "clash_clearance")
+        return "technical_report";
     return "technical_report";
 }
 export function registerExportRevitCoordinationImageTool(server) {
