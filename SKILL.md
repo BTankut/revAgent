@@ -86,8 +86,8 @@ custom-code workflows.
 - `export_revit_coordination_image` - visual artifact export only: create or reuse a dedicated visual QA 3D
   view, optionally section-box target elements, apply high-contrast review
   graphics, and export an image. Single-element exports use a tighter default
-  frame, a target-centered 3D camera, and post-cropping around the green target
-  override pixels. Do not use it as the primary tool for live view navigation,
+  frame, a target-centered 3D camera, and model-bounding-box/camera-projection
+  post-cropping. Raster highlight pixels are QA-only. Do not use it as the primary tool for live view navigation,
   selected-element zoom, or opening an element in a Revit view. It writes only
   review view settings; it does not create or modify ducts, pipes, terminals,
   fittings, or other physical MEP model elements.
@@ -214,14 +214,14 @@ plan. Keep `enforcePixelSize` on unless the raw Revit export dimensions are
 being debugged. For one target element in a dense model, use coordination
 export with the default `singleElementMarginMm` or lower it further for a
 tighter frame; leave `cropToTargetHighlight` enabled so the exported image is
-cropped around the target highlight if Revit keeps a wide 3D frame. Keep
-the default `targetMinFillRatio` unless wider context is more important than
-target readability; check `actualHighlightFillRatio` when judging whether the
-export is framed tightly enough. If `highlightPixelCount` is zero and
-`cropBasis` is `bbox_center_fallback`, no actual target pixels were detected:
-the image may still be usable, but `actualHighlightFillRatio` is intentionally
-`0` and `estimatedFallbackFillRatio` is diagnostic only. Keep generated image
-paths with the task notes so a human reviewer can reproduce the exact evidence.
+cropped from the model bounding-box/camera projection if Revit keeps a wide 3D
+frame. Keep the default `targetMinFillRatio` unless wider context is more
+important than target readability. Prefer `cropBasis: "model_bbox_projection"`
+for single-target exports. Treat `actualHighlightFillRatio` only as raster QA:
+if `highlightPixelCount` is zero, the crop can still be valid, but
+`actualHighlightFillRatio` must stay `0` and `estimatedTargetFillRatio` is only
+the model-projection estimate. Keep generated image paths with the task notes
+so a human reviewer can reproduce the exact evidence.
 
 ---
 

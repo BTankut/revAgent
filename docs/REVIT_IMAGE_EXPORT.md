@@ -26,10 +26,9 @@ status preflight and single-command rule.
   - Output: each generated file reports `bytes`, `width`, and `height`. Single
     target exports use a tighter default section-box margin and recenter the 3D
     camera on the target section box. If Revit still exports a wide 3D frame,
-    the tool post-crops around the green target override pixels before final
-    pixel-size normalization. If Revit's exported colors do not match the
-    target-pixel detector, a single-target export falls back to a model
-    bounding-box-centered crop.
+    the tool post-crops from the model bounding-box/camera projection before
+    final pixel-size normalization. Target-pixel detection is QA-only and
+    produces warnings when exported highlight pixels are not measurable.
 
 Neither tool creates ducts, pipes, fittings, terminals, sprinklers, or other
 physical MEP model elements.
@@ -138,16 +137,18 @@ around the issue being reviewed. When exactly one element is supplied,
 multi-element `marginMm` default. The tool also sets a deterministic 3D camera
 orientation centered on the target section box and reports
 `framing.cameraFramedToTargets`. Because Revit can still keep a wide 3D export
-canvas, `cropToTargetHighlight=true` first tries to post-crop around target
-highlight pixels. Revit can anti-alias or transform override colors, so the
-detector accepts green, yellow/cyan, and high-chroma target output instead of
-only exact RGB green. If no target pixels are detected, a single-target export
-falls back to a tight model bounding-box-centered crop. In that fallback mode
-`actualHighlightFillRatio` remains `0` because no real target pixels were
-measured; use `estimatedFallbackFillRatio` only as a diagnostic estimate.
+canvas, `cropToTargetHighlight=true` uses the Revit model bounding box,
+section box, and camera projection as the primary crop source for single-target
+exports. Raster color detection is only a QA pass after export: the detector
+accepts green, yellow/cyan, and high-chroma target output instead of only exact
+RGB green. If no target pixels are detected, the export is still considered
+valid when the model projection crop succeeded; the tool returns
+`target_highlight_pixels_not_detected` as a warning. `actualHighlightFillRatio`
+is only populated from real detected pixels. Use `estimatedTargetFillRatio`
+for the model-projection estimate.
 The response reports `files[].croppedToTargetHighlight`,
 `files[].highlightPixelCount`, `files[].actualHighlightFillRatio`,
-`files[].estimatedFallbackFillRatio`, `files[].cropBasis`, and
+`files[].estimatedTargetFillRatio`, `files[].cropBasis`, and
 `files[].highlightCrop.cropBasis`.
 
 Do not use `export_revit_coordination_image` as the primary tool for live

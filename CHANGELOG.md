@@ -116,10 +116,11 @@ All notable Revit MCP workstation deployment changes are tracked here.
   generated C# fallback variables no longer collide at compile time, and WPF
   image loading bypasses URI caching so the final resize uses the cropped
   image instead of re-reading the original wide export.
-- Tightened coordination-image fallback semantics after live cross-machine QA:
-  target pixel detection now accepts yellow/cyan/high-chroma Revit highlight
-  output, bbox fallback uses a tighter center crop, and fallback estimates are
-  reported separately from real `actualHighlightFillRatio` measurements.
+- Moved coordination-image crop authority from raster color detection to Revit
+  model geometry: single-target exports now use model bbox/camera projection as
+  the primary crop basis, raster highlight pixels are QA-only, and
+  `estimatedTargetFillRatio` is reported separately from real
+  `actualHighlightFillRatio` measurements.
 - Normalized runtime response casing to canonical lowercase `success` without
   duplicate `Success` fields, and renamed probe-time modifiable-state fields so
   `apiProbeState.isModifiable` no longer looks like the idle UI editability
