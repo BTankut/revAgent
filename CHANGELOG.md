@@ -78,7 +78,8 @@ All notable Revit MCP workstation deployment changes are tracked here.
   changed: unchanged Revit add-in/command payloads are skipped even when Revit
   is closed, release manifests now include runtime directory fingerprints, and
   unchanged runtime payloads are left in place instead of being removed and
-  recopied.
+  recopied. The same incremental path now skips unchanged docs index refresh,
+  unchanged Codex skill refresh, and redundant MCP registration.
 - Cleaned local and remote branch/worktree state so office development resumes
   from a single `main` history.
 

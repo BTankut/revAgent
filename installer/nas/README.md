@@ -163,6 +163,8 @@ Updater log retention is automatic. Install and update runs keep the latest
   are left untouched whenever their component hashes are unchanged, even if
   Revit is closed. The runtime server payload is also left untouched when the
   release-level runtime directory fingerprint matches the installed package.
+  If runtime/docs entry points are unchanged, dependency refresh, docs index
+  rebuild, and MCP registration refresh are skipped as well.
 - Checks the runtime and docs server npm dependency fingerprints before running
   `npm install --omit=dev --no-audit --no-fund`; if `node_modules` and the
   stored lockfile marker already match, or the same lockfile exists in the

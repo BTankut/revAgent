@@ -1566,6 +1566,46 @@ function Test-DirectoryPayloadUnchanged {
         [string]::Equals($installedSha, $targetSha, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
+function Test-ManifestComponentUnchanged {
+    param(
+        [object]$TargetManifest,
+        [object]$InstalledManifest,
+        [string]$ComponentKey,
+        [string]$PackageTarget
+    )
+
+    $targetComponent = Get-ComponentByKey -Manifest $TargetManifest -Key $ComponentKey
+    $targetSha = Get-ComponentSha256 -Component $targetComponent
+    if ([string]::IsNullOrWhiteSpace($targetSha)) {
+        return $false
+    }
+
+    $installedSha = Get-InstalledComponentSha256 -Key $ComponentKey -TargetComponent $targetComponent -InstalledManifest $InstalledManifest -PackageTarget $PackageTarget
+    return (-not [string]::IsNullOrWhiteSpace($installedSha)) -and
+        [string]::Equals($installedSha, $targetSha, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-CodexSkillInstallPresent {
+    param(
+        [string]$InstallRoot,
+        [switch]$SkipUserIntegration
+    )
+
+    $machineSkillPath = Join-Path $InstallRoot "codex\skills\revit-mcp"
+    if (-not (Test-Path -LiteralPath (Join-Path $machineSkillPath "SKILL.md") -PathType Leaf)) {
+        return $false
+    }
+
+    if (-not $SkipUserIntegration) {
+        $userSkillPath = Join-Path $env:USERPROFILE ".codex\skills\revit-mcp"
+        if (-not (Test-Path -LiteralPath $userSkillPath)) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Get-InstalledReleaseManifest {
     param(
         [object]$InstalledState,
@@ -2236,6 +2276,9 @@ try {
     $requiresRevitClosed = [bool]$updateDecision.RequiresRevitClosed
     $skipRevitPayloadInstall = $false
     $skipRuntimePayloadInstall = $false
+    $skipDocsPayloadWork = $false
+    $skipCodexSkillInstallForThisUpdate = $false
+    $skipCodexMcpRegistrationForThisUpdate = $false
     $revitChangeLabels = @($revitPayloadChanges | ForEach-Object {
             if (-not [string]::IsNullOrWhiteSpace([string]$_.path)) {
                 [string]$_.path
@@ -2335,6 +2378,20 @@ try {
         $skipRuntimePayloadInstall = $true
         Write-Host "Runtime payload  : unchanged; existing runtime files will be left untouched." -ForegroundColor Green
     }
+    if (Test-DirectoryPayloadUnchanged -Manifest $releaseManifest -ComponentKey "docsServerPayload" -PackageTarget $PackageTarget) {
+        $skipDocsPayloadWork = $true
+        Write-Host "Docs payload     : unchanged; docs dependency/index refresh will be skipped." -ForegroundColor Green
+    }
+    if ((Test-ManifestComponentUnchanged -TargetManifest $releaseManifest -InstalledManifest $installedManifest -ComponentKey "skill" -PackageTarget $PackageTarget) -and
+        (Test-ManifestComponentUnchanged -TargetManifest $releaseManifest -InstalledManifest $installedManifest -ComponentKey "agents" -PackageTarget $PackageTarget) -and
+        (Test-CodexSkillInstallPresent -InstallRoot $InstallRoot -SkipUserIntegration:$SkipCodexUserIntegration)) {
+        $skipCodexSkillInstallForThisUpdate = $true
+        Write-Host "Codex skill      : unchanged; existing skill integration will be left untouched." -ForegroundColor Green
+    }
+    if ($skipRuntimePayloadInstall -and $skipDocsPayloadWork) {
+        $skipCodexMcpRegistrationForThisUpdate = $true
+        Write-Host "Codex MCP config : unchanged entry points; registration refresh will be skipped." -ForegroundColor Green
+    }
 
     if (Test-Path -LiteralPath $PackageTarget) {
         $backupPath = Join-Path $backupRoot ("revit-mcp-skill.backup-" + $stamp)
@@ -2361,6 +2418,9 @@ try {
     if ($SkipCodexUserIntegration) {
         $installArgs["SkipCodexUserIntegration"] = $true
     }
+    if ($skipCodexSkillInstallForThisUpdate) {
+        $installArgs["SkipCodexSkillInstall"] = $true
+    }
     $installArgs["SuppressNextSteps"] = $true
     if ($skipRevitPayloadInstall) {
         $installArgs["SkipRevitPayloadInstall"] = $true
@@ -2381,20 +2441,34 @@ try {
         )
 
         $npmDependencyCacheRoot = Join-Path $InstallRoot "dependencies\npm"
-        Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
-
-        Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
+        if ($skipRuntimePayloadInstall) {
+            Write-Host "Runtime dependencies: skipped; runtime payload unchanged."
+        }
+        else {
+            Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
+        }
 
         $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
-        Invoke-External -FilePath $powershellPath -Arguments @(
-            "-ExecutionPolicy", "Bypass",
-            "-File", (Join-Path $docsServerPath "scripts\build-index.ps1"),
-            "-RevitRoot", $RevitInstallRoot,
-            "-OutputPath", $docsCachePath
-        ) -WorkingDirectory $docsServerPath
+        if ($skipDocsPayloadWork -and (Test-Path -LiteralPath $docsCachePath -PathType Leaf)) {
+            Write-Host "Documentation server dependencies: skipped; docs payload unchanged."
+            Write-Host "Revit API index: skipped; docs payload unchanged."
+        }
+        else {
+            Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
+
+            Invoke-External -FilePath $powershellPath -Arguments @(
+                "-ExecutionPolicy", "Bypass",
+                "-File", (Join-Path $docsServerPath "scripts\build-index.ps1"),
+                "-RevitRoot", $RevitInstallRoot,
+                "-OutputPath", $docsCachePath
+            ) -WorkingDirectory $docsServerPath
+        }
     }
 
-    if (-not $SkipCodexMcpRegistration) {
+    if ((-not $SkipCodexMcpRegistration) -and $skipCodexMcpRegistrationForThisUpdate) {
+        Write-Host "Codex MCP registration: skipped; runtime/docs entry points unchanged."
+    }
+    elseif (-not $SkipCodexMcpRegistration) {
         Ensure-CodexDesktop
         $nodePath = Resolve-RequiredCommand -Name "node.exe" -Candidates @(
             (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
@@ -2444,6 +2518,9 @@ try {
         revitPayloadChanged = [bool]$requiresRevitClosed
         revitPayloadSkipped = [bool]$skipRevitPayloadInstall
         runtimePayloadSkipped = [bool]$skipRuntimePayloadInstall
+        docsPayloadWorkSkipped = [bool]$skipDocsPayloadWork
+        codexSkillInstallSkipped = [bool]$skipCodexSkillInstallForThisUpdate
+        codexMcpRegistrationSkipped = [bool]$skipCodexMcpRegistrationForThisUpdate
         revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
         updaterVersion = $updaterVersion
         skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
