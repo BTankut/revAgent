@@ -12,7 +12,7 @@ function readJsonFile(pathToRead) {
         if (!pathToRead || !fs.existsSync(pathToRead)) {
             return null;
         }
-        return JSON.parse(fs.readFileSync(pathToRead, "utf8"));
+        return JSON.parse(fs.readFileSync(pathToRead, "utf8").replace(/^\uFEFF/, ""));
     }
     catch {
         return null;

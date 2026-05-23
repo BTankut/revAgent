@@ -327,6 +327,7 @@ try {
     Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
     Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
+    Assert-True ($statusToolCode -match 'replace\(/\^\\uFEFF/') "Status identity must tolerate PowerShell-written UTF-8 BOM JSON files."
     Assert-True ($toolHelpersCode -match 'normalizeSuccessCasing') "Runtime formatter must normalize response success casing."
     Assert-True ($toolHelpersCode -match 'delete clone\.Success') "Runtime formatter must emit canonical lowercase success instead of success/Success duplicates."
     Assert-True ($viewImageToolCode -match 'enforcePixelSize') "View image export must expose enforcePixelSize."
