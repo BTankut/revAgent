@@ -1496,7 +1496,8 @@ function Get-DirectoryTreeSha256OrNull {
     param(
         [string]$Root,
         [string]$RelativePath,
-        [string[]]$ExcludeDirectoryNames = @("node_modules", ".git")
+        [string[]]$ExcludeDirectoryNames = @("node_modules", ".git"),
+        [string[]]$ExcludeFileNames = @(".npm-deps.sha256")
     )
 
     if ([string]::IsNullOrWhiteSpace($Root) -or [string]::IsNullOrWhiteSpace($RelativePath)) {
@@ -1514,9 +1515,19 @@ function Get-DirectoryTreeSha256OrNull {
             [void]$excluded.Add($name)
         }
     }
+    $excludedFiles = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $ExcludeFileNames) {
+        if (-not [string]::IsNullOrWhiteSpace($name)) {
+            [void]$excludedFiles.Add($name)
+        }
+    }
 
     $files = Get-ChildItem -LiteralPath $path -Recurse -File -Force |
         Where-Object {
+            if ($excludedFiles.Contains($_.Name)) {
+                return $false
+            }
+
             $relative = $_.FullName.Substring($path.Length).TrimStart("\", "/")
             $parts = $relative -split '[\\/]'
             foreach ($part in $parts) {
@@ -2353,7 +2364,6 @@ try {
     }
 
     Initialize-RevitMcpWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
-    Repair-RevitMcpScheduledTaskAction -Name $TaskName -UpdaterPath $taskUpdaterPath -UpdaterConfigPath $ConfigPath -DailyAt $taskDailyAt
     Ensure-UpdateDependencies -SkipNpmInstall:$SkipNpmInstall -SkipCodexMcpRegistration:$SkipCodexMcpRegistration
 
     if ((Test-Path -LiteralPath (Join-Path $PackageTarget ".git")) -and -not $AllowReplaceGitPackageTarget) {
