@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import { registerTools } from "../build/tools/register.js";
+import { resolveAutoTargetVisualStyle } from "../build/tools/export_revit_coordination_image.js";
 import {
   formatJsonContent,
   normalizeRevitExecutionResponse,
@@ -54,6 +55,19 @@ assert.match(create3dDescription, /LIVE_VIEW_NAVIGATION_PRIMITIVE/);
 assert.match(showPlan3dDescription, /LIVE_VIEW_WORKFLOW_WRAPPER/);
 assert.match(coordinationDescription, /VISUAL_ARTIFACT_EXPORT_ONLY/);
 assert.match(coordinationDescription, /Do not use this as the primary tool for live view navigation/);
+assert.match(coordinationDescription, /Use qa_high_contrast explicitly/);
+
+const autoStyleExpectations = {
+  raw_evidence: "raw",
+  coordination_overlay: "outline_only",
+  system_focus: "technical_report",
+  clash_clearance: "technical_report",
+};
+for (const [intent, expectedStyle] of Object.entries(autoStyleExpectations)) {
+  const resolvedStyle = resolveAutoTargetVisualStyle(intent);
+  assert.equal(resolvedStyle, expectedStyle);
+  assert.notEqual(resolvedStyle, "qa_high_contrast");
+}
 
 const chooseExpectedToolForIntent = (utterance) => {
   const text = utterance.toLocaleLowerCase("tr-TR");

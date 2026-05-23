@@ -39,7 +39,7 @@ function csharpIntList(values) {
         .map((value) => Math.trunc(value));
     return `new List<int> { ${ints.join(", ")} }`;
 }
-function resolveAutoTargetVisualStyle(intent) {
+export function resolveAutoTargetVisualStyle(intent) {
     if (intent === "raw_evidence")
         return "raw";
     if (intent === "coordination_overlay")

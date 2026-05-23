@@ -65,6 +65,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
   defaults: raw evidence stays raw, coordination overlays use outline-only
   styling, system focus and clash clearance use technical-report styling, and
   high-contrast QA styling is explicit-only.
+- Added direct runtime smoke assertions for those auto-style mappings so the
+  behavior is tested as executable runtime logic, not only as installer-side
+  source text inspection.
 - Added workstation updater npm dependency fingerprint checks and a managed
   local npm dependency cache so runtime/docs `npm install` is skipped when
   installed or cached `node_modules` already matches the current lockfile.

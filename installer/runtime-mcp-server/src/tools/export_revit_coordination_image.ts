@@ -55,7 +55,7 @@ function csharpIntList(values) {
   return `new List<int> { ${ints.join(", ")} }`;
 }
 
-function resolveAutoTargetVisualStyle(intent) {
+export function resolveAutoTargetVisualStyle(intent) {
   if (intent === "raw_evidence") return "raw";
   if (intent === "coordination_overlay") return "outline_only";
   if (intent === "system_focus") return "technical_report";
