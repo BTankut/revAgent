@@ -25,8 +25,9 @@ status preflight and single-command rule.
     for an LLM to inspect reliably.
   - Output: each generated file reports `bytes`, `width`, and `height`. Single
     target exports use a tighter default section-box margin and recenter the 3D
-    camera on the target section box so the target does not disappear in a wide
-    model frame.
+    camera on the target section box. If Revit still exports a wide 3D frame,
+    the tool post-crops around the green target override pixels before final
+    pixel-size normalization.
 
 Neither tool creates ducts, pipes, fittings, terminals, sprinklers, or other
 physical MEP model elements.
@@ -84,6 +85,8 @@ For coordination review around known element ids:
   "format": "png",
   "pixelSize": 4000,
   "enforcePixelSize": true,
+  "cropToTargetHighlight": true,
+  "highlightCropPaddingPx": 180,
   "dpi": "300"
 }
 ```
@@ -131,7 +134,10 @@ around the issue being reviewed. When exactly one element is supplied,
 `singleElementMarginMm` caps the section-box margin independently from the
 multi-element `marginMm` default. The tool also sets a deterministic 3D camera
 orientation centered on the target section box and reports
-`framing.cameraFramedToTargets`.
+`framing.cameraFramedToTargets`. Because Revit can still keep a wide 3D export
+canvas, `cropToTargetHighlight=true` post-crops around the green target override
+pixels and reports `files[].croppedToTargetHighlight`,
+`files[].highlightPixelCount`, and `files[].highlightCrop`.
 
 For production review, keep the generated image path in the task notes or PR
 comment so reviewers can reproduce the visual evidence.

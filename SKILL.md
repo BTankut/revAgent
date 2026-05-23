@@ -86,9 +86,10 @@ custom-code workflows.
 - `export_revit_coordination_image` - create or reuse a dedicated visual QA 3D
   view, optionally section-box target elements, apply high-contrast review
   graphics, and export an image. Single-element exports use a tighter default
-  frame and a target-centered 3D camera. It writes only review view settings;
-  it does not create or modify ducts, pipes, terminals, fittings, or other
-  physical MEP model elements.
+  frame, a target-centered 3D camera, and post-cropping around the green target
+  override pixels. It writes only review view settings; it does not create or
+  modify ducts, pipes, terminals, fittings, or other physical MEP model
+  elements.
 - `show_element_in_plan_and_3d` - wrapper workflow that safely finds or uses one
   element, shows it in an existing plan, then optionally opens a focused 3D
   view. Successful routine calls return a compact summary by default; use
@@ -185,8 +186,10 @@ view and export `visible_region` instead of relying on one low-resolution full
 plan. Keep `enforcePixelSize` on unless the raw Revit export dimensions are
 being debugged. For one target element in a dense model, use coordination
 export with the default `singleElementMarginMm` or lower it further for a
-tighter frame. Keep generated image paths with the task notes so a human
-reviewer can reproduce the exact evidence.
+tighter frame; leave `cropToTargetHighlight` enabled so the exported image is
+cropped around the green target override if Revit keeps a wide 3D frame. Keep
+generated image paths with the task notes so a human reviewer can reproduce
+the exact evidence.
 
 ---
 

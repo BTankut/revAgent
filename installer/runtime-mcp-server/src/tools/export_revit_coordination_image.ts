@@ -68,6 +68,8 @@ export function registerExportRevitCoordinationImageTool(server) {
       contextTransparency: z.number().int().min(0).max(90).optional().default(65),
       pixelSize: z.number().int().min(200).max(10000).optional().default(4000),
       enforcePixelSize: z.boolean().optional().default(true).describe("When true, post-processes PNG/JPEG/BMP/TIFF output so the requested fit direction dimension equals pixelSize. TARGA cannot be resized by this tool."),
+      cropToTargetHighlight: z.boolean().optional().default(true).describe("When true, post-processes coordination images around the green target override pixels so single targets do not remain tiny in a wide 3D export."),
+      highlightCropPaddingPx: z.number().int().min(0).max(2000).optional().default(180),
       dpi: dpiSchema.optional().default("300"),
       fitDirection: fitDirectionSchema.optional().default("horizontal"),
       format: formatSchema.optional().default("png"),
@@ -86,6 +88,8 @@ export function registerExportRevitCoordinationImageTool(server) {
       const marginMm = Number.isFinite(Number(args.marginMm)) ? Number(args.marginMm) : 2000;
       const singleElementMarginMm = Number.isFinite(Number(args.singleElementMarginMm)) ? Number(args.singleElementMarginMm) : 300;
       const enforcePixelSize = args.enforcePixelSize !== false;
+      const cropToTargetHighlight = args.cropToTargetHighlight !== false;
+      const highlightCropPaddingPx = Number.isFinite(Number(args.highlightCropPaddingPx)) ? Math.trunc(args.highlightCropPaddingPx) : 180;
       const transparency = Math.trunc(args.contextTransparency ?? 65);
 
       const code = `
@@ -101,6 +105,8 @@ int contextTransparency = ${transparency};
 int requestedPixelSize = ${pixelSize};
 string requestedFitDirection = ${csharpString(args.fitDirection || "horizontal")};
 bool enforcePixelSize = ${enforcePixelSize ? "true" : "false"};
+bool cropToTargetHighlight = ${cropToTargetHighlight ? "true" : "false"};
+int highlightCropPaddingPx = ${highlightCropPaddingPx};
 
 System.IO.Directory.CreateDirectory(outputDir);
 
@@ -368,11 +374,124 @@ Func<string, int[], bool> resizeImageToRequestedPixelSize = (f, size) => {
   }
 };
 
+Func<string, object[]> cropImageToTargetHighlight = (f) => {
+  if (!cropToTargetHighlight || targetElements.Count == 0) {
+    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+  }
+
+  string extension = System.IO.Path.GetExtension(f).ToLowerInvariant();
+  Func<System.Windows.Media.Imaging.BitmapEncoder> createEncoder = null;
+  if (extension == ".png") createEncoder = () => new System.Windows.Media.Imaging.PngBitmapEncoder();
+  else if (extension == ".jpg" || extension == ".jpeg") createEncoder = () => new System.Windows.Media.Imaging.JpegBitmapEncoder();
+  else if (extension == ".bmp") createEncoder = () => new System.Windows.Media.Imaging.BmpBitmapEncoder();
+  else if (extension == ".tif" || extension == ".tiff") createEncoder = () => new System.Windows.Media.Imaging.TiffBitmapEncoder();
+  else {
+    warnings.Add("image_highlight_crop_unsupported_format:" + System.IO.Path.GetFileName(f));
+    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+  }
+
+  string tempFile = f + ".crop-tmp";
+  try {
+    var source = new System.Windows.Media.Imaging.BitmapImage();
+    source.BeginInit();
+    source.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+    source.UriSource = new Uri(f, UriKind.Absolute);
+    source.EndInit();
+    source.Freeze();
+
+    var converted = new System.Windows.Media.Imaging.FormatConvertedBitmap(source, System.Windows.Media.PixelFormats.Bgra32, null, 0);
+    converted.Freeze();
+    int width = converted.PixelWidth;
+    int height = converted.PixelHeight;
+    int stride = width * 4;
+    byte[] pixels = new byte[stride * height];
+    converted.CopyPixels(pixels, stride, 0);
+
+    int minX = width;
+    int minY = height;
+    int maxX = -1;
+    int maxY = -1;
+    int highlightCount = 0;
+    for (int y = 0; y < height; y++) {
+      int row = y * stride;
+      for (int x = 0; x < width; x++) {
+        int offset = row + (x * 4);
+        int b = pixels[offset];
+        int g = pixels[offset + 1];
+        int r = pixels[offset + 2];
+        bool isTargetGreen = g >= 135 && g > r + 45 && g > b + 25 && r <= 150 && b <= 190;
+        if (!isTargetGreen) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        highlightCount++;
+      }
+    }
+
+    if (highlightCount < 8 || maxX < minX || maxY < minY) {
+      warnings.Add("image_highlight_crop_target_pixels_not_found:" + System.IO.Path.GetFileName(f));
+      return new object[] { false, width, height, 0, 0, 0, 0, 0, highlightCount, 0 };
+    }
+
+    int highlightWidth = Math.Max(1, maxX - minX + 1);
+    int highlightHeight = Math.Max(1, maxY - minY + 1);
+    int padX = Math.Max(highlightCropPaddingPx, (int)Math.Round(highlightWidth * 1.75));
+    int padY = Math.Max(highlightCropPaddingPx, (int)Math.Round(highlightHeight * 1.75));
+    int cropX = Math.Max(0, minX - padX);
+    int cropY = Math.Max(0, minY - padY);
+    int cropRight = Math.Min(width - 1, maxX + padX);
+    int cropBottom = Math.Min(height - 1, maxY + padY);
+    int cropWidth = cropRight - cropX + 1;
+    int cropHeight = cropBottom - cropY + 1;
+
+    if (cropWidth <= 0 || cropHeight <= 0 ||
+        (cropWidth >= width * 0.98 && cropHeight >= height * 0.98)) {
+      return new object[] { false, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, Math.Max(highlightWidth, highlightHeight) };
+    }
+
+    var cropped = new System.Windows.Media.Imaging.CroppedBitmap(converted, new System.Windows.Int32Rect(cropX, cropY, cropWidth, cropHeight));
+    cropped.Freeze();
+    var encoder = createEncoder();
+    encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(cropped));
+    using (var stream = new System.IO.FileStream(tempFile, System.IO.FileMode.Create, System.IO.FileAccess.Write)) {
+      encoder.Save(stream);
+    }
+    System.IO.File.Delete(f);
+    System.IO.File.Move(tempFile, f);
+    return new object[] { true, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, Math.Max(highlightWidth, highlightHeight) };
+  }
+  catch (Exception ex) {
+    try { if (System.IO.File.Exists(tempFile)) System.IO.File.Delete(tempFile); } catch {}
+    warnings.Add("image_highlight_crop_failed:" + System.IO.Path.GetFileName(f) + ":" + ex.Message);
+    return new object[] { false, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+  }
+};
+
 Func<string, object> buildFileSummary = (f) => {
   int? width = null;
   int? height = null;
   bool resizedToRequestedPixelSize = false;
+  bool croppedToTargetHighlight = false;
+  int highlightPixelCount = 0;
+  object highlightCrop = null;
   try {
+    object[] crop = cropImageToTargetHighlight(f);
+    if (crop != null && crop.Length >= 10) {
+      croppedToTargetHighlight = crop[0] is bool && (bool)crop[0];
+      highlightPixelCount = Convert.ToInt32(crop[8]);
+      if (croppedToTargetHighlight) {
+        highlightCrop = new {
+          originalWidth = Convert.ToInt32(crop[1]),
+          originalHeight = Convert.ToInt32(crop[2]),
+          x = Convert.ToInt32(crop[3]),
+          y = Convert.ToInt32(crop[4]),
+          width = Convert.ToInt32(crop[5]),
+          height = Convert.ToInt32(crop[6]),
+          maxHighlightDimension = Convert.ToInt32(crop[9])
+        };
+      }
+    }
     int[] size = readImageSize(f);
     resizedToRequestedPixelSize = resizeImageToRequestedPixelSize(f, size);
     if (resizedToRequestedPixelSize) size = readImageSize(f);
@@ -392,7 +511,10 @@ Func<string, object> buildFileSummary = (f) => {
     width = width,
     height = height,
     requestedPixelSize = requestedPixelSize,
-    resizedToRequestedPixelSize = resizedToRequestedPixelSize
+    resizedToRequestedPixelSize = resizedToRequestedPixelSize,
+    croppedToTargetHighlight = croppedToTargetHighlight,
+    highlightPixelCount = highlightPixelCount,
+    highlightCrop = highlightCrop
   };
 };
 
@@ -426,6 +548,8 @@ return new {
   pixelSize = ${pixelSize},
   requestedPixelSize = ${pixelSize},
   enforcePixelSize = enforcePixelSize,
+  cropToTargetHighlight = cropToTargetHighlight,
+  highlightCropPaddingPx = highlightCropPaddingPx,
   pixelSizeNote = enforcePixelSize
     ? "PNG/JPEG/BMP/TIFF output is post-processed so the requested fit-direction dimension equals requestedPixelSize. TARGA reports actual Revit output dimensions."
     : "pixelSize is the Revit export request. Check files[].width and files[].height for actual output dimensions.",

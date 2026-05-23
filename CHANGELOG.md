@@ -97,8 +97,9 @@ All notable Revit MCP workstation deployment changes are tracked here.
 - Tightened image export response contracts: `visible_region` and coordination
   exports now normalize PNG/JPEG/BMP/TIFF output to the requested fit-direction
   `pixelSize`, coordination exports include per-file `width`/`height`, and
-  single-element coordination framing uses a tighter default margin plus an
-  explicit 3D camera orientation centered on the target section box.
+  single-element coordination framing uses a tighter default margin, an
+  explicit 3D camera orientation centered on the target section box, and a
+  target-highlight post-crop when Revit still exports a wide 3D canvas.
 - Normalized runtime response casing to canonical lowercase `success` without
   duplicate `Success` fields, and renamed probe-time modifiable-state fields so
   `apiProbeState.isModifiable` no longer looks like the idle UI editability
