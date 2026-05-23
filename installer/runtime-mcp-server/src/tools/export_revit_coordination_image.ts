@@ -420,6 +420,7 @@ Func<string, int[], bool> resizeImageToRequestedPixelSize = (f, size) => {
     var source = new System.Windows.Media.Imaging.BitmapImage();
     source.BeginInit();
     source.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+    source.CreateOptions = System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreImageCache;
     source.UriSource = new Uri(f, UriKind.Absolute);
     source.EndInit();
     source.Freeze();
@@ -466,6 +467,7 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
     var source = new System.Windows.Media.Imaging.BitmapImage();
     source.BeginInit();
     source.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+    source.CreateOptions = System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreImageCache;
     source.UriSource = new Uri(f, UriKind.Absolute);
     source.EndInit();
     source.Freeze();
@@ -505,28 +507,28 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
     if (highlightCount < 8 || maxX < minX || maxY < minY) {
       warnings.Add("image_highlight_crop_target_pixels_not_found:" + System.IO.Path.GetFileName(f));
       if (targetCropEstimateAvailable && targetElements.Count == 1) {
-        double safeFillRatio = Math.Max(0.1, Math.Min(0.9, targetMinFillRatio));
+        double fallbackSafeFillRatio = Math.Max(0.1, Math.Min(0.9, targetMinFillRatio));
         int minImageSide = Math.Max(1, Math.Min(width, height));
         int estimatedMaxTargetDimension = Math.Max(8, (int)Math.Round(Math.Max(0.01, Math.Min(1.0, targetCropFillRatioEstimate)) * (double)minImageSide));
-        int ratioLimitedSide = Math.Max(estimatedMaxTargetDimension, (int)Math.Ceiling((double)estimatedMaxTargetDimension / safeFillRatio));
+        int fallbackRatioLimitedSide = Math.Max(estimatedMaxTargetDimension, (int)Math.Ceiling((double)estimatedMaxTargetDimension / fallbackSafeFillRatio));
         int forcedContextSide = Math.Max(96, (int)Math.Round((double)minImageSide * 0.45));
         int minSafeSide = Math.Min(minImageSide, estimatedMaxTargetDimension + (2 * Math.Max(0, highlightCropPaddingPx)));
-        int desiredSide = Math.Min(minImageSide, Math.Max(minSafeSide, Math.Max(64, Math.Min(ratioLimitedSide, forcedContextSide))));
-        int cropWidth = Math.Min(width, desiredSide);
-        int cropHeight = Math.Min(height, desiredSide);
-        double centerX = Math.Max(0.0, Math.Min(1.0, targetCropCenterXRatio)) * (double)width;
-        double centerY = Math.Max(0.0, Math.Min(1.0, targetCropCenterYRatio)) * (double)height;
-        int cropX = (int)Math.Round(centerX - ((double)cropWidth / 2.0));
-        int cropY = (int)Math.Round(centerY - ((double)cropHeight / 2.0));
-        if (cropX < 0) cropX = 0;
-        if (cropY < 0) cropY = 0;
-        if (cropX + cropWidth > width) cropX = Math.Max(0, width - cropWidth);
-        if (cropY + cropHeight > height) cropY = Math.Max(0, height - cropHeight);
-        double actualFillRatio = (double)estimatedMaxTargetDimension / (double)Math.Max(cropWidth, cropHeight);
+        int fallbackDesiredSide = Math.Min(minImageSide, Math.Max(minSafeSide, Math.Max(64, Math.Min(fallbackRatioLimitedSide, forcedContextSide))));
+        int fallbackCropWidth = Math.Min(width, fallbackDesiredSide);
+        int fallbackCropHeight = Math.Min(height, fallbackDesiredSide);
+        double fallbackCenterX = Math.Max(0.0, Math.Min(1.0, targetCropCenterXRatio)) * (double)width;
+        double fallbackCenterY = Math.Max(0.0, Math.Min(1.0, targetCropCenterYRatio)) * (double)height;
+        int fallbackCropX = (int)Math.Round(fallbackCenterX - ((double)fallbackCropWidth / 2.0));
+        int fallbackCropY = (int)Math.Round(fallbackCenterY - ((double)fallbackCropHeight / 2.0));
+        if (fallbackCropX < 0) fallbackCropX = 0;
+        if (fallbackCropY < 0) fallbackCropY = 0;
+        if (fallbackCropX + fallbackCropWidth > width) fallbackCropX = Math.Max(0, width - fallbackCropWidth);
+        if (fallbackCropY + fallbackCropHeight > height) fallbackCropY = Math.Max(0, height - fallbackCropHeight);
+        double fallbackActualFillRatio = (double)estimatedMaxTargetDimension / (double)Math.Max(fallbackCropWidth, fallbackCropHeight);
 
-        if (cropWidth > 0 && cropHeight > 0 &&
-            (cropWidth < width * 0.98 || cropHeight < height * 0.98)) {
-          var fallbackCropped = new System.Windows.Media.Imaging.CroppedBitmap(converted, new System.Windows.Int32Rect(cropX, cropY, cropWidth, cropHeight));
+        if (fallbackCropWidth > 0 && fallbackCropHeight > 0 &&
+            (fallbackCropWidth < width * 0.98 || fallbackCropHeight < height * 0.98)) {
+          var fallbackCropped = new System.Windows.Media.Imaging.CroppedBitmap(converted, new System.Windows.Int32Rect(fallbackCropX, fallbackCropY, fallbackCropWidth, fallbackCropHeight));
           fallbackCropped.Freeze();
           var fallbackEncoder = createEncoder();
           fallbackEncoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(fallbackCropped));
@@ -536,8 +538,8 @@ Func<string, object[]> cropImageToTargetHighlight = (f) => {
           System.IO.File.Delete(f);
           System.IO.File.Move(tempFile, f);
           warnings.Add("image_highlight_crop_bbox_fallback_used:" + System.IO.Path.GetFileName(f));
-          if (actualFillRatio < safeFillRatio) warnings.Add("image_highlight_crop_fill_ratio_estimate_not_met:" + System.IO.Path.GetFileName(f));
-          return new object[] { true, width, height, cropX, cropY, cropWidth, cropHeight, 0, highlightCount, estimatedMaxTargetDimension, safeFillRatio, actualFillRatio, "bbox_center_fallback" };
+          if (fallbackActualFillRatio < fallbackSafeFillRatio) warnings.Add("image_highlight_crop_fill_ratio_estimate_not_met:" + System.IO.Path.GetFileName(f));
+          return new object[] { true, width, height, fallbackCropX, fallbackCropY, fallbackCropWidth, fallbackCropHeight, 0, highlightCount, estimatedMaxTargetDimension, fallbackSafeFillRatio, fallbackActualFillRatio, "bbox_center_fallback" };
         }
       }
       return new object[] { false, width, height, 0, 0, 0, 0, 0, highlightCount, 0, targetMinFillRatio, 0.0, "none" };

@@ -341,6 +341,8 @@ try {
     Assert-True ($coordinationImageToolCode -match 'bbox_center_fallback') "Coordination image export must fall back to bounding-box-centered crop when green pixels are not detected."
     Assert-True ($coordinationImageToolCode -match 'image_highlight_crop_bbox_fallback_used') "Coordination image export must report when bbox crop fallback is used."
     Assert-True ($coordinationImageToolCode -match 'cropBasis') "Coordination image export must report whether crop came from highlight pixels or bbox fallback."
+    Assert-True ($coordinationImageToolCode -match 'IgnoreImageCache') "Coordination image export must bypass WPF URI caching so resize uses the cropped image, not the original wide export."
+    Assert-True ($coordinationImageToolCode -match 'fallbackSafeFillRatio') "Coordination image export bbox fallback variables must not collide with highlight-crop variables in generated C#."
     Assert-True ($coordinationImageToolCode -match 'highlightCropPaddingPx: z\.number\(\)\.int\(\)\.min\(0\)\.max\(2000\)\.optional\(\)\.default\(24\)') "Coordination image export must use tight default highlight padding so small targets do not stay tiny."
     Assert-True ($coordinationImageToolCode -match 'Math\.Ceiling\(\(double\)maxHighlightDimension / safeFillRatio\)') "Coordination image export must size highlight crops from the minimum fill ratio."
     Assert-True ($coordinationImageToolCode -match 'croppedToTargetHighlight') "Coordination image export must report target-highlight crop results."

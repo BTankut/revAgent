@@ -112,6 +112,10 @@ All notable Revit MCP workstation deployment changes are tracked here.
   green surface fill where Revit supports it, the pixel detector accepts
   anti-aliased green variants, and single-target exports fall back to a
   bounding-box-centered crop when no green target pixels are detected.
+- Fixed coordination-image crop execution regressions found in live Revit:
+  generated C# fallback variables no longer collide at compile time, and WPF
+  image loading bypasses URI caching so the final resize uses the cropped
+  image instead of re-reading the original wide export.
 - Normalized runtime response casing to canonical lowercase `success` without
   duplicate `Success` fields, and renamed probe-time modifiable-state fields so
   `apiProbeState.isModifiable` no longer looks like the idle UI editability
