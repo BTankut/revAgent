@@ -3,10 +3,14 @@
 This folder contains the Revit add-in source that used to live in the separate
 `BTankut/revit-mcp-plugin` repository.
 
+Product-facing UI and docs should use `revAgent`. The source folder,
+assemblies, namespaces, manifests, and command-set names here intentionally keep
+their `revit-mcp` / `RevitMCP*` implementation identities.
+
 Production source projects:
 
 - `revit-mcp-plugin/`: main Revit add-in host, socket service, command registry,
-  and status window.
+  and revAgent status window.
 - `RevitMCPCommandSet/`: dynamic execution and read-only context commands used
   by `send_code_to_revit`, `get_current_view_elements`,
   `get_current_view_info`, and `get_selected_elements`.

@@ -1,10 +1,15 @@
-# Revit MCP Skill Package - Production Monorepo
+# revAgent Workstation Package - Production Monorepo
 
-This repo packages the Revit MCP skill, Revit add-in source and payload,
-bundled local runtime MCP server, required companion Revit API docs MCP server,
-installer, NAS updater, and deployment documentation in one place.
+This repo packages the revAgent workstation product: the `revit-mcp` skill,
+Revit add-in source and payload, bundled local runtime MCP server, required
+companion Revit API docs MCP server, installer, NAS updater, and deployment
+documentation in one place.
 
 It is the single canonical source for production office deployment.
+
+Product-facing documentation should use **revAgent**. The names `revit-mcp`,
+`RevitMCP*`, `mcp-servers-for-revit`, and `C:\ProgramData\DPE\RevitMCP`
+remain exact implementation, tool, package, manifest, and path identifiers.
 
 ## What this repo provides
 
@@ -229,10 +234,12 @@ Then:
 1. Open Revit.
 2. If Revit asks about the unsigned add-in publisher, choose `Always Load`.
    This can appear once after a fresh install or DLL update.
-3. The MCP socket service starts automatically; the `Revit MCP Switch` button is
-   only a manual on/off override.
+3. The MCP socket service starts automatically. The current legacy ribbon
+   button label `Revit MCP Switch` is only a manual on/off override for
+   revAgent's socket bridge.
 4. Click `Settings` in the `mcp-servers-for-revit` ribbon tab if you need to
-   enable or review command availability.
+   enable or review command availability. Treat that tab name as the installed
+   add-in manifest identity, not the product name.
 5. Run `/skills reload` inside Codex, or restart Codex.
 
 The installer keeps the canonical Codex payload under
@@ -263,11 +270,13 @@ After install, the same payload is copied into the real system locations below:
   - `C:\ProgramData\DPE\RevitMCP\codex\skills\revit-mcp`
   - `C:\ProgramData\DPE\RevitMCP\codex\AGENTS.md`
 
-Before copying, the installer cleans the known Revit MCP install locations it
-owns: the Revit MCP add-in manifest, old `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin`,
+Before copying, the installer cleans the known revAgent/RevitMCP install
+locations it owns: the exact `mcp-servers-for-revit.addin` manifest, old
+`%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin`,
 old `%LOCALAPPDATA%\revit-mcp-plugin`, the runtime `-ServerTarget`, known
-legacy `C:\Projects\...` runtime targets, and stale `revit-mcp.backup-*` folders under active Codex
-skills. It also removes old installer-created `.codex` backup artifacts such
+legacy `C:\Projects\...` runtime targets, and stale `revit-mcp.backup-*`
+folders under active Codex skills. It also removes old installer-created
+`.codex` backup artifacts such
 as `AGENTS.md.backup-*`, `config.toml.backup-*`, and the legacy
 `.codex\skill-backups` directory. New installs overwrite managed Codex
 integration targets directly instead of creating timestamped backups. This
@@ -399,7 +408,7 @@ Expected MCP servers:
 
 11. If the installer stops with a Roslyn runtime error, repair the Revit 2022 installation first. Do not try to fix a normal end-user install by adding NuGet packages into the deployed bundle.
 
-Expected bundled runtime commands:
+Expected bundled runtime commands: 21 tools registered by the runtime server.
 
 - `list_revit_instances`
 - `get_revit_mcp_status`
@@ -465,6 +474,18 @@ Bundled docs tools:
 revit-mcp-skill/
 |-- README.md
 |-- SKILL.md
+|-- AGENTS.md
+|-- CHANGELOG.md
+|-- config/
+|   `-- revit-versions.json
+|-- docs/
+|   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
+|   |-- DEVELOPER_RUNBOOK.md
+|   |-- MONOREPO_MIGRATION.md
+|   |-- PLATFORM_ARCHITECTURE.md
+|   |-- PLATFORM_MODERNIZATION_SUMMARY.md
+|   |-- REPOSITORY_STRUCTURE.md
+|   `-- REVIT_IMAGE_EXPORT.md
 |-- references/
 |   |-- parameters.md
 |   |-- units.md
@@ -478,9 +499,17 @@ revit-mcp-skill/
 |       `-- diffuser-count.cs
 |-- evals/
 |   `-- evals.json
+|-- scripts/
+|   |-- build-revit-plugin.ps1
+|   |-- test-all.ps1
+|   `-- test-installer-smoke.ps1
+|-- src/
+|   `-- revit-plugin/
 `-- installer/
     |-- INSTALLATION.md
     |-- install-self-contained.ps1
+    |-- lib/
+    |-- nas/
     |-- revit-api-docs-mcp/
     |-- revit-plugin/
     |   |-- mcp-servers-for-revit.addin
@@ -526,31 +555,23 @@ Host-specific notes:
 
 ## Bundled runtime tool surface
 
-The runtime MCP server intentionally exposes raw dynamic execution plus a small set of high-value context primitives:
+The runtime MCP server registers 21 tools in
+`installer/runtime-mcp-server/src/tools/register.ts`. They intentionally cover a
+small production surface instead of many narrow one-off commands.
 
-- `list_revit_instances`
-- `get_revit_mcp_status`
-- `send_code_to_revit`
-- `send_code_to_revit_safe`
-- `get_revit_session_context`
-- `get_active_view_context`
-- `list_open_views`
-- `activate_view`
-- `close_view`
-- `get_ui_state`
-- `find_elements`
-- `open_existing_plan_for_element_level`
-- `focus_elements`
-- `section_box_elements`
-- `create_3d_view_for_elements`
-- `export_revit_view_image`
-- `export_revit_coordination_image`
-- `show_element_in_plan_and_3d`
-- `smart_focus_elements`
-- `inspect_elements`
-- `inspect_parameter_schema`
+| Area | Tools | Write behavior and use |
+| --- | --- | --- |
+| Instance and status | `list_revit_instances`, `get_revit_mcp_status` | Read-only. `get_revit_mcp_status` is the only runtime tool intended to run while another Revit task is active. |
+| Dynamic execution | `send_code_to_revit`, `send_code_to_revit_safe` | Raw `send_code_to_revit` can write if the supplied C# writes. `send_code_to_revit_safe` is for read/preview work and rejects write-looking snippets. |
+| Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_parameter_schema` | Read-only model/session/parameter inspection before engineering decisions or writes. |
+| Live view navigation | `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. |
+| View-data writes | `section_box_elements`, `create_3d_view_for_elements` | Can modify project view data by applying section boxes or creating/reusing 3D review views. Use explicit intent and verify afterward. |
+| Image artifacts | `export_revit_view_image`, `export_revit_coordination_image` | `export_revit_view_image` is read-only. `export_revit_coordination_image` writes only review view settings and image export settings, never ducts, pipes, fittings, terminals, or other physical model elements. |
 
-The Revit add-in command payload still provides the low-level `send_code_to_revit` and selection commands internally. UI view operations are exposed separately through `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, and `focus_elements` so common discovery and view-focus workflows do not need dynamic C# snippets. `find_elements` returns match score, confidence, fields, and ambiguity hints so large projects with many same-named elements can be narrowed before writes; same-level plan candidates are controlled by `planCandidateMode`: `none` is the default and fastest, `metadata` ranks likely same-level plans without view-visibility proof, and `verified` confirms element visibility in each candidate view and is intentionally slower. `focus_elements` now checks visibility in the active/requested view before calling Revit `ShowElements`; by default it fails with a suggested existing plan instead of triggering Revit's modal closed-view search dialog. `open_existing_plan_for_element_level` supports explicit `planMode`: `elementLevel` opens an existing plan on the element's level, while `activePlan` keeps the current active plan and reports any level mismatch. Its default `planCandidateMode` is `metadataFirst`: rank same-level plans quickly, verify a small bounded set of ranked plans in order, and fall back to the slower full verified scan only if those candidates do not contain the element. If the active plan already matches the element level and requested plan name, `open_existing_plan_for_element_level` uses it directly instead of rescanning verified plan candidates. If `activePlan` is used on a plan whose level does not match the element level, the command returns `success: false`, `FocusBlocked: true`, `FocusBlockReason: "elementLevelDoesNotMatchPlanView"`, and a `SuggestedView` instead of calling `ShowElements` and opening Revit's closed-view search prompt. Routine plan/focus wrappers trim long `PlanCandidates` arrays by default, return compact successful responses by default, and expose `verboseCandidates=true` plus `responseMode: "full"` when a full audit list is needed. `section_box_elements` and `create_3d_view_for_elements` are also exposed as dedicated UI/view commands because applying or clearing a 3D section box and creating a view are project-data writes that need explicit Revit transactions and verification. `export_revit_view_image` exports the active/requested Revit view without model writes, reports output dimensions per generated file, and normalizes PNG/JPEG/BMP/TIFF output to the requested `pixelSize` by default; `export_revit_coordination_image` creates or updates only a review view, returns width/height per file, tightens the Revit 3D view crop box from single-target model bbox/camera projection before raster export, and keeps raster/highlight post-crop only as a fallback when model crop-box framing is unavailable. `focus_elements`, `open_existing_plan_for_element_level`, and `create_3d_view_for_elements` report their UI zoom method, support optional `fitToScreen` through Revit `UIView.ZoomToFit`, and separate per-element `HasBoundingBox` from operation-level `BoundingBox` so automation can tell whether a section-box/focus box was computed or Revit UI focus was used. Plan opening responses identify whether the active view was changed to an existing same-level plan, and 3D view creation responses report section box confirmation and view-name conflict resolution. `inspect_parameter_schema` reports a user-facing built-in parameter display label/id first and keeps raw Revit enum aliases as diagnostic data, so aliases such as `DOOR_NUMBER` are not mistaken for parameter intent. `create_3d_view_for_elements` can also set a simple 3D camera orientation with framing padding without turning on section box. The wrapper-only `show_element_in_plan_and_3d` tool composes safe search, existing-plan focus, and optional 3D focus into one workflow; by default it rejects ambiguous search results instead of guessing and returns a compact success summary unless `responseMode: "full"` is requested. The wrapper-only `smart_focus_elements` tool first tries the active/requested view without modal search, then can fall back to an existing same-level plan and optional 3D view.
+The Revit add-in command payload still provides the low-level dynamic execution
+bridge internally. Common discovery, UI focus, plan/3D view workflow, parameter
+inspection, and visual QA paths are exposed as dedicated runtime tools so most
+production tasks can be audited before any broad custom C# write is used.
 
 Runtime commands perform a lightweight internal `mcp_status` preflight before sending non-status work to Revit and fail fast when another task is active. Agent workflows should still call `get_revit_mcp_status` explicitly before each Revit operation so the user can see what is running and why a command is being delayed.
 

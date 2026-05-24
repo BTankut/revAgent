@@ -1,7 +1,9 @@
-# Repository Structure
+# revAgent Repository Structure
 
-This repository is the single canonical source for the Revit MCP workstation
-package.
+This repository is the single canonical source for the revAgent workstation
+package. Internal implementation names such as `revit-mcp`, `RevitMCP*`,
+`mcp-servers-for-revit`, and `C:\ProgramData\DPE\RevitMCP` remain exact names
+for servers, assemblies, manifests, and installed paths.
 
 ## Main Areas
 
@@ -14,11 +16,13 @@ package.
 |-- config/
 |   `-- revit-versions.json
 |-- docs/
-|   |-- DEVELOPER_RUNBOOK.md
-|   |-- PLATFORM_ARCHITECTURE.md
 |   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
+|   |-- DEVELOPER_RUNBOOK.md
+|   |-- MONOREPO_MIGRATION.md
+|   |-- PLATFORM_ARCHITECTURE.md
+|   |-- PLATFORM_MODERNIZATION_SUMMARY.md
 |   |-- REPOSITORY_STRUCTURE.md
-|   `-- MONOREPO_MIGRATION.md
+|   `-- REVIT_IMAGE_EXPORT.md
 |-- references/
 |-- scripts/
 |   |-- build-revit-plugin.ps1

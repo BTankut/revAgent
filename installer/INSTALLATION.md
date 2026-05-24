@@ -1,8 +1,12 @@
-# Revit MCP Self-Contained Installation
+# revAgent Self-Contained Installation
 
-This folder contains the installable workstation payload for the Revit MCP
-package. End users should normally install through the NAS updater rather than
-running these scripts manually.
+This folder contains the installable workstation payload for revAgent. End
+users should normally install through the NAS updater rather than running these
+scripts manually.
+
+The implementation still uses exact names such as `revit-mcp`,
+`revit-api-docs`, `RevitMCP*`, and `C:\ProgramData\DPE\RevitMCP`; do not rename
+those when documenting commands or paths.
 
 ## Contents
 
@@ -78,8 +82,10 @@ and skill integration should also be removed.
 
 ## Safety Notes
 
-- Revit must be closed before install/update because the add-in DLL is replaced.
-- The installer manages only known Revit MCP paths.
+- Revit must be closed before a full install/repair or any update that replaces
+  add-in or command DLLs. Non-Revit revAgent payload updates may be applied by
+  the NAS updater while Revit is open.
+- The installer manages only known revAgent/RevitMCP paths.
 - Autodesk Revit program files, Windows system folders, and broad user folders are not deleted.
 - Revit 2022 is detected from explicit input, environment variables, standard install paths, and registry candidates.
 - If Revit cannot be found, the installer stops with a clear error.

@@ -1,8 +1,12 @@
-# Revit MCP Platform Architecture
+# revAgent Platform Architecture
 
-This repo is a self-contained workstation deployment platform for Revit MCP.
+This repo is a self-contained workstation deployment platform for revAgent.
 The production technology choices stay the same: C# Revit add-in, local Node
 MCP servers, and PowerShell installer/updater orchestration.
+
+Use **revAgent** for product-facing wording. Keep `revit-mcp`, `RevitMCP*`,
+`mcp-servers-for-revit`, and `C:\ProgramData\DPE\RevitMCP` only where an exact
+server, package, assembly, manifest, or installed path is being named.
 
 ## Runtime Components
 
@@ -14,16 +18,34 @@ MCP servers, and PowerShell installer/updater orchestration.
   assemblies used by `send_code_to_revit`.
 - `installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPViewCommandSet/`:
   bundled UI view commands for listing, activating, and closing Revit view
-  tabs, focusing elements in a view, and applying 3D section boxes around
-  elements. Focus/view activation commands avoid the dynamic code transaction
-  wrapper; section box changes use a normal Revit transaction against the
-  target 3D view.
+  tabs, finding/focusing elements, opening existing same-level plans, creating
+  focused 3D review views, and applying 3D section boxes. Focus/view activation
+  commands avoid the dynamic code transaction wrapper; section box and 3D view
+  changes use normal Revit transactions against project view data.
 - `installer/runtime-mcp-server/src/`: TypeScript source for the live Revit MCP
   runtime server. `npm run build` emits `build/`, which remains the installer
   and Codex registration contract.
 - `installer/revit-api-docs-mcp/src/`: TypeScript source for the Revit API docs
   MCP server. It indexes local Revit API DLL/XML files and serves API lookup
   tools from `build/index.js`.
+
+The current runtime server registers 21 tools:
+
+- status and targeting: `list_revit_instances`, `get_revit_mcp_status`
+- dynamic execution: `send_code_to_revit`, `send_code_to_revit_safe`
+- model/session context: `get_revit_session_context`,
+  `get_active_view_context`, `inspect_elements`, `inspect_parameter_schema`
+- live view workflows: `list_open_views`, `activate_view`, `close_view`,
+  `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`,
+  `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements`
+- project view-data operations: `section_box_elements`,
+  `create_3d_view_for_elements`
+- image evidence: `export_revit_view_image`,
+  `export_revit_coordination_image`
+
+The companion docs server registers 5 lookup tools: `search_api`,
+`get_type_details`, `get_member_details`, `list_namespace`, and
+`resolve_api_symbols_bulk`.
 
 ## Runtime Transport And Status
 
@@ -57,7 +79,8 @@ the add-in log under the installed payload `Logs\` folder.
 - `installer/nas/install-updater-task.ps1`: workstation updater bootstrap and
   scheduled task registration.
 - `installer/nas/update-from-nas.ps1`: NAS channel updater.
-- `installer/nas/Install-Revit-MCP-Updater-GUI.ps1`: GUI bootstrap wrapper.
+- `installer/nas/Install-Revit-MCP-Updater-GUI.ps1`: revAgent GUI bootstrap
+  wrapper.
 - `installer/nas/Revit MCP Updater STABLE.cmd`: standalone stable launcher.
 - `installer/nas/publish-nas-release.ps1`: release packaging tool. Do not run
   it during local modernization or smoke-test work.

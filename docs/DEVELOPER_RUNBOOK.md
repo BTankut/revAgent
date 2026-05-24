@@ -7,6 +7,7 @@ that can clone this repository and reach the NAS share.
 
 ## Canonical Sources
 
+- Product name: `revAgent`
 - GitHub repository: `BTankut/revit-mcp-skill`
 - Local development path on the current workstation:
   `C:\Projects\revit-mcp-skill`
@@ -23,6 +24,10 @@ to the NAS and a channel file points at that release.
 
 Development and production releases are managed from `main`. Historical
 branches or older repositories are not part of the current production flow.
+Use `revAgent` for product-facing text and UI-facing documentation. Keep
+`revit-mcp`, `RevitMCP*`, `mcp-servers-for-revit`, and
+`C:\ProgramData\DPE\RevitMCP` only when an exact repo, MCP server, skill,
+assembly, manifest, task, package, or path identity is required.
 
 ## First Files To Read After Cloning
 
@@ -55,11 +60,13 @@ revit-mcp-skill/
 |-- config/
 |   `-- revit-versions.json
 |-- docs/
-|   |-- DEVELOPER_RUNBOOK.md
-|   |-- PLATFORM_ARCHITECTURE.md
 |   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
+|   |-- DEVELOPER_RUNBOOK.md
+|   |-- MONOREPO_MIGRATION.md
+|   |-- PLATFORM_ARCHITECTURE.md
+|   |-- PLATFORM_MODERNIZATION_SUMMARY.md
 |   |-- REPOSITORY_STRUCTURE.md
-|   `-- MONOREPO_MIGRATION.md
+|   `-- REVIT_IMAGE_EXPORT.md
 |-- references/
 |-- scripts/
 |   |-- build-revit-plugin.ps1
@@ -571,7 +578,8 @@ Revit for skill/docs/runtime/updater-only changes.
 
 ## Cleanup And Uninstall Safety
 
-The installer cleans only known Revit MCP-owned locations. It must not delete:
+The installer cleans only known revAgent/RevitMCP-owned locations. It must not
+delete:
 
 - Autodesk Revit program files
 - Windows system folders
@@ -579,11 +587,11 @@ The installer cleans only known Revit MCP-owned locations. It must not delete:
 - broad workspace roots
 - official Revit add-in root folders themselves
 
-Known cleanup targets include the Revit MCP add-in manifest, old user-profile
-add-in payloads, old local command folders, managed runtime targets, active
-skill backup folders, legacy `.codex` backup artifacts, and known legacy
-runtime folders. Normal install/update must not create new timestamped
-`.codex\AGENTS.md.backup-*`, `.codex\config.toml.backup-*`, or
+Known cleanup targets include the revAgent/RevitMCP add-in manifest, old
+user-profile add-in payloads, old local command folders, managed runtime
+targets, active skill backup folders, legacy `.codex` backup artifacts, and
+known legacy runtime folders. Normal install/update must not create new
+timestamped `.codex\AGENTS.md.backup-*`, `.codex\config.toml.backup-*`, or
 `.codex\skill-backups` entries.
 
 Uninstall command:
@@ -676,6 +684,9 @@ When behavior changes, update the relevant docs in the same commit:
 - `docs/DEVELOPER_RUNBOOK.md` for development and release process changes
 - `installer/nas/README.md` for workstation updater workflow changes
 - `SKILL.md` and `AGENTS.md` for live Revit MCP coordination rules
+- Product-facing docs should say `revAgent`; exact implementation identities
+  should stay unchanged when they are tool, path, manifest, package, or server
+  names.
 
 This runbook should stay operational and command-oriented. Avoid vague history.
 Write down exact paths, exact commands, and the current source of truth.

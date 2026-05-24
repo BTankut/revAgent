@@ -1,7 +1,12 @@
-# NAS Deployment for Revit MCP
+# NAS Deployment for revAgent
 
-This folder contains the tools used to publish Revit MCP releases to the NAS
-and keep office workstations updated from that single deployment source.
+This folder contains the tools used to publish revAgent releases to the NAS and
+keep office workstations updated from that single deployment source.
+
+Use `revAgent` for product-facing wording. Keep `revit-mcp-skill`,
+`RevitMCP*`, `revit-mcp`, `mcp-servers-for-revit`, and
+`C:\ProgramData\DPE\RevitMCP` only as exact release, server, assembly, manifest,
+or path identifiers.
 
 ## Deployment Model
 
@@ -103,14 +108,15 @@ available from the GUI and command launchers.
 The Scheduled Task does not use Windows `StartWhenAvailable`: GUI update runs
 already execute an immediate `RunNow` check, so missed daily checks must not
 start a second updater process in parallel.
-The elevated install also repairs permissions on the managed Revit MCP install
-root and the Revit MCP add-in manifest so that the per-user task can update the
-local package, runtime, add-in payload, cache, reports, logs, and hidden
-launcher files without another UAC prompt. Permission repair is targeted to the
-managed roots, known updater files, and active payload folders; it must not scan
-large `node_modules` or backup trees. If Windows still blocks Scheduled Task
-registration, the installer creates a Startup fallback that waits until the
-next daily 12:00 check time and then repeats once per day.
+The elevated install also repairs permissions on the managed revAgent install
+root and the exact `mcp-servers-for-revit.addin` manifest so that the per-user
+task can update the local package, runtime, add-in payload, cache, reports,
+logs, and hidden launcher files without another UAC prompt. Permission repair
+is targeted to the managed roots, known updater files, and active payload
+folders; it must not scan large `node_modules` or backup trees. If Windows
+still blocks Scheduled Task registration, the installer creates a Startup
+fallback that waits until the next daily 12:00 check time and then repeats once
+per day.
 
 If you want to copy a single launcher to a workstation desktop, copy the
 standalone launcher instead:
@@ -254,7 +260,7 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   running; those updates are deferred so the user can save/sync and close
   Revit. Non-Revit payload updates may still be applied while Revit is open.
 - Missing Node.js/npm or missing Codex Desktop install is detected before local
-  Revit MCP files are replaced. Manual GUI installs can pause for Codex setup;
+  revAgent files are replaced. Manual GUI installs can pause for Codex setup;
   background update checks do not block waiting for user setup. If Codex
   Desktop is installed but its command helper is missing, MCP entries are
   written directly to `%USERPROFILE%\.codex\config.toml`.
@@ -274,7 +280,7 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   Node/Codex Desktop, and npm preparation work after the lightweight Codex
   config/backup hygiene step.
 - Official Autodesk Revit and Windows system folders are not deleted.
-- Cleanup is limited to known Revit MCP-owned install paths.
+- Cleanup is limited to known revAgent/RevitMCP-owned install paths.
 - The managed package target is refused if it is a Git working tree unless
   `-AllowReplaceGitPackageTarget` is explicitly passed.
 - Release ZIPs include a generated legacy `kurulum/` alias so older installed

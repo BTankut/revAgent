@@ -1,6 +1,6 @@
 # Changelog
 
-All notable Revit MCP workstation deployment changes are tracked here.
+All notable revAgent workstation deployment changes are tracked here.
 
 ## 2026-05-22 - main, next release candidate
 
