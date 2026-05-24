@@ -48,6 +48,14 @@ namespace revit_mcp_plugin.Core
             });
         }
 
+        public void ShowGuarded(McpTaskInfo task)
+        {
+            Post(task, delegate(McpTaskStatusWindow window, McpTaskInfo snapshot)
+            {
+                window.ShowGuarded(snapshot);
+            });
+        }
+
         public void Shutdown()
         {
             Dispatcher dispatcher;

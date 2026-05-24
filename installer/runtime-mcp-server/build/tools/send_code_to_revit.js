@@ -39,6 +39,10 @@ export function registerSendCodeToRevitTool(server) {
             .boolean()
             .optional()
             .describe("When true, ERROR: string results or { success:false } objects are reported as failed tool calls. Defaults true. This cannot roll back a write if the snippet swallowed its own exception."),
+        parseJsonResult: z
+            .boolean()
+            .optional()
+            .describe("When true, parse JSON-looking result strings, including double-encoded JSON strings. Defaults true. Set false to inspect the raw wire result."),
     }, async (args, extra) => {
         const params = {
             code: args.code,
@@ -54,9 +58,12 @@ export function registerSendCodeToRevitTool(server) {
             const response = await withRevitConnection(async (revitClient) => {
                 return await revitClient.sendCommand("send_code_to_revit", params, options);
             }, options);
+            const normalizedResponse = args.parseJsonResult === false
+                ? response
+                : normalizeRevitExecutionResponse(response);
             const errorLikeResult = args.reportErrorResultAsFailure === false
                 ? null
-                : findErrorLikeResult(response);
+                : findErrorLikeResult(normalizedResponse);
             if (errorLikeResult) {
                 return {
                     content: [
@@ -71,7 +78,7 @@ export function registerSendCodeToRevitTool(server) {
                 content: [
                     {
                         type: "text",
-                        text: `Code execution successful!\nResult: ${JSON.stringify(response, null, 2)}`,
+                        text: `Code execution successful!\nResult: ${JSON.stringify(normalizedResponse, null, 2)}`,
                     },
                 ],
             };

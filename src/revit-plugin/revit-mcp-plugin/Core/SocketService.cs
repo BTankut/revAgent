@@ -574,7 +574,17 @@ namespace revit_mcp_plugin.Core
                         metrics.ResponseBytes = GetResponseWireBytes(response, metrics.Framing);
                     }
 
-                    if (IsCommandResultFailure(result, out string commandError))
+                    if (IsCommandResultGuarded(result, out string guardReason))
+                    {
+                        McpTaskInfo guardedTask = McpTaskStatusService.Instance.GuardTask(
+                            activeTask,
+                            guardReason,
+                            metrics != null ? (long?)metrics.ExecuteMs : null,
+                            metrics != null ? (long?)metrics.ResponseBytes : null);
+                        LogTaskMetrics(guardedTask, metrics);
+                        McpTaskStatusWindowController.Instance.ShowGuarded(guardedTask);
+                    }
+                    else if (IsCommandResultFailure(result, out string commandError))
                     {
                         McpTaskInfo failedTask = McpTaskStatusService.Instance.FailTask(
                             activeTask,
@@ -712,6 +722,44 @@ namespace revit_mcp_plugin.Core
             return string.IsNullOrWhiteSpace(request.Method) ? "revAgent task" : request.Method;
         }
 
+        private bool IsCommandResultGuarded(object result, out string reason)
+        {
+            reason = null;
+
+            try
+            {
+                JToken token = result as JToken;
+                if (token == null && result != null)
+                {
+                    token = JToken.FromObject(result);
+                }
+
+                if (token == null || token.Type != JTokenType.Object)
+                {
+                    return false;
+                }
+
+                JObject obj = (JObject)token;
+                if (!IsExplicitSuccessFalse(obj))
+                {
+                    return false;
+                }
+
+                if (GetBooleanProperty(obj, "focusBlocked") == true ||
+                    GetBooleanProperty(obj, "guarded") == true ||
+                    GetBooleanProperty(obj, "blocked") == true)
+                {
+                    reason = ExtractGuardMessage(obj);
+                    return true;
+                }
+            }
+            catch
+            {
+            }
+
+            return false;
+        }
+
         private bool IsCommandResultFailure(object result, out string error)
         {
             error = null;
@@ -759,9 +807,73 @@ namespace revit_mcp_plugin.Core
             return false;
         }
 
+        private bool IsExplicitSuccessFalse(JObject obj)
+        {
+            if (obj == null)
+            {
+                return false;
+            }
+
+            return obj.TryGetValue("success", StringComparison.OrdinalIgnoreCase, out JToken successToken) &&
+                successToken.Type == JTokenType.Boolean &&
+                successToken.Value<bool>() == false;
+        }
+
+        private bool? GetBooleanProperty(JObject obj, string propertyName)
+        {
+            if (obj == null ||
+                !obj.TryGetValue(propertyName, StringComparison.OrdinalIgnoreCase, out JToken token) ||
+                token == null ||
+                token.Type == JTokenType.Null)
+            {
+                return null;
+            }
+
+            if (token.Type == JTokenType.Boolean)
+            {
+                return token.Value<bool>();
+            }
+
+            if (token.Type == JTokenType.String &&
+                bool.TryParse(token.Value<string>(), out bool parsed))
+            {
+                return parsed;
+            }
+
+            return null;
+        }
+
+        private string ExtractGuardMessage(JObject obj)
+        {
+            string reason = ExtractText(obj, "focusBlockReason", "blockReason", "guardReason", "safetyReason");
+            string message = ExtractText(obj, "message", "errorMessage", "error");
+
+            if (!string.IsNullOrWhiteSpace(message) && !string.IsNullOrWhiteSpace(reason))
+            {
+                return message + " [" + reason + "]";
+            }
+
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                return message;
+            }
+
+            if (!string.IsNullOrWhiteSpace(reason))
+            {
+                return reason;
+            }
+
+            return "Command was blocked by a safety guard";
+        }
+
         private string ExtractErrorMessage(JObject obj)
         {
-            string[] keys = { "errorMessage", "message", "error" };
+            string text = ExtractText(obj, "errorMessage", "message", "error");
+            return string.IsNullOrWhiteSpace(text) ? "Command returned success=false" : text;
+        }
+
+        private string ExtractText(JObject obj, params string[] keys)
+        {
             foreach (string key in keys)
             {
                 if (obj.TryGetValue(key, StringComparison.OrdinalIgnoreCase, out JToken value) &&
@@ -778,7 +890,7 @@ namespace revit_mcp_plugin.Core
                 }
             }
 
-            return "Command returned success=false";
+            return null;
         }
 
         private string CreateSuccessResponse(string id, object result)

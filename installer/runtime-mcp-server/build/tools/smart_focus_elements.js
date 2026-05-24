@@ -1,11 +1,82 @@
 import { z } from "zod";
-import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
+import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, trimPlanCandidatesInPayload, } from "../utils/revitToolHelpers.js";
 const elementIdSchema = z.union([
     z.number().int().positive(),
     z.string().regex(/^\d+$/),
 ]);
 function unwrapResponse(response) {
     return response && response.result ? response.result : response;
+}
+function isSuccess(payload) {
+    if (!payload || typeof payload !== "object") {
+        return false;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, "Success")) {
+        return payload.Success !== false;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, "success")) {
+        return payload.success !== false;
+    }
+    return true;
+}
+function compactView(view) {
+    if (!view || typeof view !== "object") {
+        return view || null;
+    }
+    return {
+        id: view.Id ?? view.id,
+        name: view.Name ?? view.name,
+        viewType: view.ViewType ?? view.viewType,
+        isActive: view.IsActive ?? view.isActive,
+        isOpen: view.IsOpen ?? view.isOpen,
+        isSectionBoxActive: view.IsSectionBoxActive ?? view.isSectionBoxActive,
+    };
+}
+function compactFocusResult(result) {
+    if (!result || typeof result !== "object") {
+        return result || null;
+    }
+    const planCandidates = result.PlanCandidates ?? result.planCandidates;
+    return {
+        success: result.Success ?? result.success,
+        message: result.Message ?? result.message,
+        error: result.Error ?? result.error,
+        focusBlocked: result.FocusBlocked ?? result.focusBlocked,
+        focusBlockReason: result.FocusBlockReason ?? result.focusBlockReason,
+        focusSuggestion: result.FocusSuggestion ?? result.focusSuggestion,
+        changed: result.Changed ?? result.changed,
+        selected: result.Selected ?? result.selected,
+        zoomed: result.Zoomed ?? result.zoomed,
+        activeViewChanged: result.ActiveViewChanged ?? result.activeViewChanged,
+        planOpenMode: result.PlanOpenMode ?? result.planOpenMode,
+        levelName: result.LevelName ?? result.levelName,
+        activeView: compactView(result.ActiveView ?? result.activeView),
+        targetView: compactView(result.TargetView ?? result.targetView),
+        selectedPlan: compactView(result.SelectedPlan ?? result.selectedPlan),
+        suggestedView: compactView(result.SuggestedView ?? result.suggestedView),
+        planCandidatesTotal: Array.isArray(planCandidates)
+            ? planCandidates.length
+            : (result.PlanCandidatesTotal ?? result.planCandidatesTotal),
+        planCandidatesTruncated: result.PlanCandidatesTruncated ?? result.planCandidatesTruncated,
+        createdView: result.CreatedView ?? result.createdView,
+        reusedView: result.ReusedView ?? result.reusedView,
+        sectionBoxApplied: result.SectionBoxApplied ?? result.sectionBoxApplied,
+        cameraOrientation: result.CameraOrientation ?? result.cameraOrientation,
+        cameraApplied: result.CameraApplied ?? result.cameraApplied,
+    };
+}
+function compactSmartFocusPayload(payload) {
+    return {
+        Success: payload.Success,
+        Action: payload.Action,
+        Message: payload.Message,
+        ResponseMode: "compact",
+        Mode: payload.Mode,
+        UsedStep: payload.UsedStep,
+        FocusSummary: compactFocusResult(payload.Focus),
+        PlanSummary: compactFocusResult(payload.Plan),
+        ThreeDSummary: compactFocusResult(payload.ThreeD),
+    };
 }
 export function registerSmartFocusElementsTool(server) {
     server.tool("smart_focus_elements", "[LIVE_VIEW_WORKFLOW_WRAPPER] Focus Revit elements without triggering Revit's modal closed-view search. It can try the active/requested view first, then open the best existing same-level plan, and optionally create/reuse a 3D view. Use this for live Revit focus/navigation, not image artifact export.", {
@@ -30,6 +101,9 @@ export function registerSmartFocusElementsTool(server) {
         framingPaddingMm: z.number().min(0).max(100000).optional().describe("Padding in millimeters for 3D camera framing. Defaults to paddingMm or 500."),
         paddingMm: z.number().min(0).max(100000).optional().describe("Section box padding in millimeters when sectionBox=true. Defaults 500."),
         allowPartial: z.boolean().optional().describe("Continue when some supplied element ids are not found. Defaults false."),
+        verboseCandidates: z.boolean().optional().describe("Return full PlanCandidates arrays from nested steps. Defaults false."),
+        maxPlanCandidates: z.number().int().min(0).max(50).optional().describe("Maximum nested PlanCandidates returned when verboseCandidates=false. Defaults 3."),
+        responseMode: z.enum(["compact", "full"]).optional().describe("Response shape. compact is the default for successful routine calls; full returns nested raw tool results."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Socket timeout in milliseconds. Defaults 120000."),
     }, async (args) => {
         try {
@@ -53,16 +127,25 @@ export function registerSmartFocusElementsTool(server) {
                     timeoutMs: args.timeoutMs,
                     taskName: "Try focus elements in active/requested view",
                 }, options));
-                if (activeFocus && activeFocus.Success !== false) {
-                    return formatJsonContent({
+                if (activeFocus && isSuccess(activeFocus)) {
+                    const fullPayload = trimPlanCandidatesInPayload({
                         Success: true,
                         Action: "smart_focus_elements",
+                        Message: "Elements were focused in the active/requested view.",
                         Mode: mode,
                         UsedStep: "activeOrRequestedView",
                         Focus: activeFocus,
+                    }, {
+                        verboseCandidates: args.verboseCandidates,
+                        maxPlanCandidates: args.maxPlanCandidates ?? 3,
                     });
+                    return formatJsonContent(args.responseMode === "full"
+                        ? fullPayload
+                        : compactSmartFocusPayload(fullPayload));
                 }
-                if (mode === "activeOnly" || !activeFocus || activeFocus.FocusBlocked !== true) {
+                const activeFocusBlocked = activeFocus &&
+                    (activeFocus.FocusBlocked === true || activeFocus.focusBlocked === true);
+                if (mode === "activeOnly" || !activeFocus || !activeFocusBlocked) {
                     return formatJsonContent({
                         Success: false,
                         Action: "smart_focus_elements",
@@ -112,16 +195,27 @@ export function registerSmartFocusElementsTool(server) {
                     taskName: "Smart focus optional 3D view",
                 }, options));
             }
-            const success = args.create3d === true ? threeD && threeD.Success !== false : true;
-            return formatJsonContent({
+            const success = args.create3d === true ? Boolean(threeD && isSuccess(threeD)) : true;
+            const fullPayload = trimPlanCandidatesInPayload({
                 Success: success,
                 Action: "smart_focus_elements",
+                Message: args.create3d === true
+                    ? success
+                        ? "Elements were focused in a same-level plan and focused in 3D."
+                        : "Elements were focused in a same-level plan, but the 3D step failed."
+                    : "Elements were focused in a same-level plan.",
                 Mode: mode,
                 UsedStep: args.create3d === true ? "elementLevelPlanThen3D" : "elementLevelPlan",
                 Focus: activeFocus,
                 Plan: planFocus,
                 ThreeD: threeD,
+            }, {
+                verboseCandidates: args.verboseCandidates,
+                maxPlanCandidates: args.maxPlanCandidates ?? 3,
             });
+            return formatJsonContent(args.responseMode === "full" || !success
+                ? fullPayload
+                : compactSmartFocusPayload(fullPayload));
         }
         catch (error) {
             return formatJsonContent({

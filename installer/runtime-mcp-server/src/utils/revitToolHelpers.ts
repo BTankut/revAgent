@@ -199,7 +199,9 @@ export function compactMcpStatusPayload(payload, options = {}) {
     clone.activeTask = compactTaskInfo(target.activeTask, includeDiagnostics);
 
     if (Array.isArray(target.recentTasks)) {
-        clone.recentTasksTotal = target.recentTasks.length;
+        clone.recentHistoryCount = target.recentHistoryCount ?? target.recentTasks.length;
+        clone.recentHistoryCapacity = target.recentHistoryCapacity ?? 20;
+        delete clone.recentTasksTotal;
         if (includeRecentTasks) {
             clone.recentTasks = target.recentTasks
                 .slice(0, recentLimit)

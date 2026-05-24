@@ -193,6 +193,70 @@ catch (Exception ex)
     return new { success = false, error = ex.ToString() };
 }`;
 }
+function summarizeParameterIdentity(parameter) {
+    if (!parameter || typeof parameter !== "object") {
+        return {};
+    }
+    return {
+        source: parameter.source,
+        displayBuiltInParameter: parameter.displayBuiltInParameter,
+        builtInParameterId: parameter.builtInParameterId,
+        rawBuiltInParameterAlias: parameter.rawBuiltInParameterAlias,
+        storageType: parameter.storageType,
+        isShared: parameter.isShared,
+        isReadOnly: parameter.isReadOnly,
+        dataType: parameter.dataType,
+        unitType: parameter.unitType,
+    };
+}
+function withDuplicateDisplayNameWarnings(payload, args) {
+    if (args.parameterNameMatchMode !== "exact" ||
+        !payload ||
+        typeof payload !== "object" ||
+        !Array.isArray(payload.elements)) {
+        return payload;
+    }
+    const duplicateDisplayNameWarnings = [];
+    const warnings = Array.isArray(payload.warnings) ? [...payload.warnings] : [];
+    for (const element of payload.elements) {
+        const parameters = Array.isArray(element?.parameters) ? element.parameters : [];
+        const byDisplayName = new Map();
+        for (const parameter of parameters) {
+            const name = typeof parameter?.name === "string" ? parameter.name.trim() : "";
+            if (!name) {
+                continue;
+            }
+            const key = name.toLocaleLowerCase("en-US");
+            if (!byDisplayName.has(key)) {
+                byDisplayName.set(key, { name, matches: [] });
+            }
+            byDisplayName.get(key).matches.push(parameter);
+        }
+        for (const group of byDisplayName.values()) {
+            if (group.matches.length < 2) {
+                continue;
+            }
+            const warning = {
+                elementId: element?.id,
+                parameterName: group.name,
+                count: group.matches.length,
+                severity: "write_preflight_warning",
+                message: `Duplicate display name '${group.name}' matched ${group.matches.length} parameters on element ${element?.id}. Display name alone is ambiguous for write-back; choose by source, builtInParameterId, shared flag, storage type, or read-only state.`,
+                matches: group.matches.map(summarizeParameterIdentity),
+            };
+            duplicateDisplayNameWarnings.push(warning);
+            warnings.push(`duplicate_display_name: elementId=${element?.id}; parameterName=${group.name}; count=${group.matches.length}; display name alone is ambiguous for write-back.`);
+        }
+    }
+    if (duplicateDisplayNameWarnings.length === 0) {
+        return payload;
+    }
+    return {
+        ...payload,
+        warnings,
+        duplicateDisplayNameWarnings,
+    };
+}
 export function registerInspectParameterSchemaTool(server) {
     server.tool("inspect_parameter_schema", "Read-only parameter schema inspection for selected ids or a category sample: user-facing BIP display label/id, raw enum alias, storage type, unit type, shared/read-only flags, raw and display values.", {
         ...connectionTargetSchema(z),
@@ -218,7 +282,8 @@ export function registerInspectParameterSchemaTool(server) {
                 ...executionOptionsFromArgs(args, "Inspect Revit parameter schema"),
                 transactionMode: "none",
             });
-            return formatJsonContent(response && response.result ? response.result : response);
+            const payload = response && response.result ? response.result : response;
+            return formatJsonContent(withDuplicateDisplayNameWarnings(payload, args));
         }
         catch (error) {
             return formatJsonContent({

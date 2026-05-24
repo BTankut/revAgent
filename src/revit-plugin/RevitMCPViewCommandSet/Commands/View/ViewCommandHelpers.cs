@@ -34,6 +34,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         public bool Deferred { get; set; }
         public bool Changed { get; set; }
         public bool Closed { get; set; }
+        public bool ActiveViewChanged { get; set; }
         public ViewSummary TargetView { get; set; }
         public ViewSummary ActiveView { get; set; }
         public List<ViewSummary> OpenViews { get; set; }

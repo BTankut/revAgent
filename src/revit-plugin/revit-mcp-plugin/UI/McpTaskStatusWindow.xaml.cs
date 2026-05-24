@@ -120,6 +120,25 @@ namespace revit_mcp_plugin.UI
             ShowAndPosition();
         }
 
+        public void ShowGuarded(McpTaskInfo task)
+        {
+            _isRunning = false;
+            _fixedElapsedMs = GetDisplayElapsedMs(task);
+            _elapsedTimer.Stop();
+
+            ApplyPalette("#FFFFF8E1", "#FFFF8F00");
+            TitleText.Text = "revAgent task guarded";
+            TaskText.Text = "Task: " + SafeTaskName(task);
+            MessageText.Text = "A safety guard blocked the Revit action. You can use Revit now.";
+            ErrorText.Text = string.IsNullOrWhiteSpace(task.Error) ? string.Empty : "Guard: " + task.Error;
+            ErrorText.Visibility = string.IsNullOrWhiteSpace(task.Error) ? Visibility.Collapsed : Visibility.Visible;
+            AckButton.Visibility = Visibility.Visible;
+
+            UpdateElapsedText("Duration");
+            AddHistory(task, "guarded");
+            ShowAndPosition();
+        }
+
         private void ShowAndPosition()
         {
             if (_isClosed)
@@ -345,6 +364,12 @@ namespace revit_mcp_plugin.UI
             if (string.Equals(state, "failed", StringComparison.OrdinalIgnoreCase))
             {
                 return "\u2715";
+            }
+
+            if (string.Equals(state, "guarded", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(state, "blocked", StringComparison.OrdinalIgnoreCase))
+            {
+                return "!";
             }
 
             return "?";

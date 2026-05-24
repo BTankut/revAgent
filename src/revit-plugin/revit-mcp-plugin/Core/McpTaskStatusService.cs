@@ -153,6 +153,11 @@ namespace revit_mcp_plugin.Core
             return FinishTask(startedTask, "failed", Trim(NormalizeErrorMessage(error), 600), executeMs, responseBytes);
         }
 
+        public McpTaskInfo GuardTask(McpTaskInfo startedTask, string reason, long? executeMs = null, long? responseBytes = null)
+        {
+            return FinishTask(startedTask, "guarded", Trim(NormalizeErrorMessage(reason), 600), executeMs, responseBytes);
+        }
+
         public object GetSnapshot(bool isRunning, int port)
         {
             lock (_sync)
@@ -173,6 +178,8 @@ namespace revit_mcp_plugin.Core
                     },
                     activeTask = active,
                     recentTasks = recent,
+                    recentHistoryCount = recent.Length,
+                    recentHistoryCapacity = MaxRecentTasks,
                     plan = new
                     {
                         pending = _planPending.ToArray(),

@@ -20,6 +20,7 @@ namespace RevitMCPViewCommandSet.Commands.View
         private UIApplication _pendingApp;
         private ElementId _pendingCloseViewId;
         private ElementId _pendingFallbackViewId;
+        private ElementId _activeViewBeforeCloseId;
         private int _idlingAttempts;
 
         public ViewOperationResult ResultInfo { get; private set; }
@@ -34,6 +35,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             _pendingApp = null;
             _pendingCloseViewId = ElementId.InvalidElementId;
             _pendingFallbackViewId = ElementId.InvalidElementId;
+            _activeViewBeforeCloseId = ElementId.InvalidElementId;
             _idlingAttempts = 0;
             TaskCompleted = false;
             ResultInfo = null;
@@ -101,6 +103,9 @@ namespace RevitMCPViewCommandSet.Commands.View
 
                 bool isActiveTarget = document.ActiveView != null &&
                     document.ActiveView.Id.GetIdValue() == targetView.Id.GetIdValue();
+                _activeViewBeforeCloseId = document.ActiveView != null
+                    ? document.ActiveView.Id
+                    : ElementId.InvalidElementId;
                 if (isActiveTarget)
                 {
                     UIView fallbackUIView = openViews.FirstOrDefault(v => v.ViewId.GetIdValue() != targetView.Id.GetIdValue());
@@ -154,7 +159,9 @@ namespace RevitMCPViewCommandSet.Commands.View
                     Success = true,
                     Action = "close_view",
                     Message = "View closed.",
+                    Changed = true,
                     Closed = true,
+                    ActiveViewChanged = DidActiveViewChange(document),
                     TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, false, false),
                     ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
                     OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument)
@@ -274,16 +281,32 @@ namespace RevitMCPViewCommandSet.Commands.View
 
         private ViewOperationResult OnClosedResult(Document document, UIDocument uiDocument, Autodesk.Revit.DB.View targetView, bool closed)
         {
+            bool activeViewChanged = DidActiveViewChange(document);
             return new ViewOperationResult
             {
                 Success = true,
                 Action = "close_view",
                 Message = closed ? "View closed." : "Target view was already closed.",
+                Changed = closed || activeViewChanged,
                 Closed = closed,
+                ActiveViewChanged = activeViewChanged,
                 TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, false, false),
                 ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
                 OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument)
             };
+        }
+
+        private bool DidActiveViewChange(Document document)
+        {
+            if (document == null ||
+                document.ActiveView == null ||
+                _activeViewBeforeCloseId == null ||
+                _activeViewBeforeCloseId == ElementId.InvalidElementId)
+            {
+                return false;
+            }
+
+            return document.ActiveView.Id.GetIdValue() != _activeViewBeforeCloseId.GetIdValue();
         }
 
         private void CompleteFromIdling(ViewOperationResult result)

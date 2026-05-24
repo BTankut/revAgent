@@ -5,8 +5,8 @@ import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
 import { connectionOptionsFromArgs, connectionTargetSchema, compactMcpStatusPayload, formatJsonContent, normalizeRevitExecutionResponse, } from "../utils/revitToolHelpers.js";
 const RUNTIME_PROCESS_STARTED_AT_UTC = new Date().toISOString();
-const STATUS_SCHEMA_VERSION = "revit-mcp-status.v2";
-const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.21";
+const STATUS_SCHEMA_VERSION = "revit-mcp-status.v3";
+const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.22";
 function readJsonFile(pathToRead) {
     try {
         if (!pathToRead || !fs.existsSync(pathToRead)) {
