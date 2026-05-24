@@ -28,7 +28,7 @@ param(
     [string]$CodexWorkspaceRoot = "C:\Projects",
     [string[]]$LegacyServerTargets = @(),
     [string]$ReportsRoot = "",
-    [string]$TaskName = "Revit MCP Auto Update",
+    [string]$TaskName = "revAgent Auto Update",
     [string]$DailyAt = "12:00",
     [ValidateRange(5, 1440)]
     [int]$CheckIntervalMinutes = 30,
@@ -50,7 +50,7 @@ $nasLibRoot = @(
     (Join-Path (Split-Path -Parent $PSScriptRoot) "lib")
 ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
 if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
-    throw "Revit MCP updater lib folder was not found beside or above: $PSScriptRoot"
+    throw "revAgent updater lib folder was not found beside or above: $PSScriptRoot"
 }
 Import-Module (Join-Path $nasLibRoot "RevitMcp.HiddenLauncher.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.ScheduledTask.psm1") -Force
@@ -803,12 +803,14 @@ function Write-UpdaterCommandFiles {
         )
         $loopScriptLines | Set-Content -LiteralPath $loopScriptPath -Encoding ASCII
 
-        $oldStartupCommandPath = Join-Path $startupRoot "Revit MCP Auto Update.cmd"
-        if (Test-Path -LiteralPath $oldStartupCommandPath -PathType Leaf) {
-            Remove-Item -LiteralPath $oldStartupCommandPath -Force
+        foreach ($legacyStartupName in @("Revit MCP Auto Update.cmd", "Revit MCP Auto Update.vbs")) {
+            $legacyStartupPath = Join-Path $startupRoot $legacyStartupName
+            if (Test-Path -LiteralPath $legacyStartupPath -PathType Leaf) {
+                Remove-Item -LiteralPath $legacyStartupPath -Force
+            }
         }
 
-        $startupCommandPath = Join-Path $startupRoot "Revit MCP Auto Update.vbs"
+        $startupCommandPath = Join-Path $startupRoot "revAgent Auto Update.vbs"
         Write-HiddenPowerShellLauncher `
             -LauncherPath $startupCommandPath `
             -ScriptPath $loopScriptPath `
@@ -942,6 +944,21 @@ try {
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal -Description "Checks the revAgent release target daily at $DailyAt. Revit-loaded payload updates are deferred while Revit is open." -Force | Out-Null
     Write-Host "Task registered : $TaskName" -ForegroundColor Green
     Write-Host "Task schedule   : daily at $DailyAt" -ForegroundColor Green
+    foreach ($legacyTaskName in @("Revit MCP Auto Update")) {
+        if ([string]::Equals($legacyTaskName, $TaskName, [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        $legacyTask = Get-ScheduledTask -TaskName $legacyTaskName -ErrorAction SilentlyContinue
+        if ($legacyTask) {
+            try {
+                Unregister-ScheduledTask -TaskName $legacyTaskName -Confirm:$false -ErrorAction Stop | Out-Null
+                Write-Host "Removed legacy task: $legacyTaskName" -ForegroundColor Yellow
+            }
+            catch {
+                Write-Warning "Could not remove legacy updater scheduled task '$legacyTaskName': $($_.Exception.Message)"
+            }
+        }
+    }
 }
 catch {
     Write-Warning "Scheduled task could not be registered: $($_.Exception.Message)"
@@ -961,7 +978,7 @@ if ($RunNow) {
 }
 catch {
     Write-Host ""
-    Write-Host "Revit MCP updater install failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "revAgent updater install failed: $($_.Exception.Message)" -ForegroundColor Red
     if (-not [string]::IsNullOrWhiteSpace($script:RevitMcpLogPath)) {
         Write-Host "Install log: $script:RevitMcpLogPath" -ForegroundColor Yellow
     }

@@ -525,13 +525,14 @@ If registering a scheduled task fails because the user is not elevated, the
 bootstrap creates a Startup-folder fallback:
 
 ```text
-%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\Revit MCP Auto Update.cmd
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\revAgent Auto Update.vbs
 ```
 
 The preferred updater registration is a per-user Scheduled Task. It runs once
 per day at 12:00 local time. If Scheduled Task registration is blocked, the
 Startup fallback launches a hidden `auto-update-loop.ps1` process for the user
-session and follows the same daily 12:00 schedule. Manual update and
+session and follows the same daily 12:00 schedule. New installs remove legacy
+`Revit MCP Auto Update.cmd` / `.vbs` fallback launchers. Manual update and
 repair/reinstall remain available from the updater GUI and command launchers.
 
 The GUI requests admin rights immediately at startup. If Windows opens the GUI

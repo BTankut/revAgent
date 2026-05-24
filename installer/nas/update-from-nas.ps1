@@ -33,7 +33,7 @@ param(
     [switch]$SkipProxySetup,
     [switch]$AllowManualCodexSetup,
     [string]$CodexWorkspaceRoot = "C:\Projects",
-    [string]$TaskName = "Revit MCP Auto Update",
+    [string]$TaskName = "revAgent Auto Update",
     [string]$LogPath = "",
     [switch]$NotifyUser,
     [switch]$NoNotifyUser,
@@ -49,7 +49,7 @@ $nasLibRoot = @(
     (Join-Path (Split-Path -Parent $PSScriptRoot) "lib")
 ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
 if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
-    throw "Revit MCP updater lib folder was not found beside or above: $PSScriptRoot"
+    throw "revAgent updater lib folder was not found beside or above: $PSScriptRoot"
 }
 Import-Module (Join-Path $nasLibRoot "RevitMcp.HiddenLauncher.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.ScheduledTask.psm1") -Force
@@ -246,7 +246,7 @@ function Resolve-RequiredCommand {
     if (-not [string]::IsNullOrWhiteSpace($InstallHint)) {
         $message += " $InstallHint"
     }
-    $message += " Then run the Revit MCP updater again."
+    $message += " Then run the revAgent updater again."
     throw $message
 }
 
@@ -1210,7 +1210,7 @@ function Write-NpmDependencyMarker {
 
     $marker = [ordered]@{
         schemaVersion = 1
-        app = "revAgent"
+        app = "revit-mcp-skill"
         fingerprintPath = [string]$Fingerprint.path
         fingerprintSha256 = [string]$Fingerprint.sha256
         omitDev = $true
@@ -2109,7 +2109,7 @@ function Show-UserNotification {
 
     $state = [ordered]@{
         schemaVersion = 1
-        app = "revit-mcp-skill"
+        app = "revAgent"
         key = $Key
         title = $Title
         message = $Message
@@ -2201,6 +2201,7 @@ function New-HiddenUpdaterScheduledTaskAction {
 function Repair-RevitMcpScheduledTaskAction {
     param(
         [string]$Name,
+        [string[]]$LegacyNames = @("Revit MCP Auto Update"),
         [string]$UpdaterPath,
         [string]$UpdaterConfigPath,
         [string]$DailyAt = "12:00"
@@ -2213,7 +2214,7 @@ function Repair-RevitMcpScheduledTaskAction {
         return
     }
 
-    Repair-RevitMcpHiddenScheduledTaskAction -Name $Name -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath -DailyAt $DailyAt
+    Repair-RevitMcpHiddenScheduledTaskAction -Name $Name -LegacyNames $LegacyNames -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath -DailyAt $DailyAt
 }
 
 function Install-UpdaterToolsFromPackage {
@@ -2290,6 +2291,9 @@ if ($config) {
     if ($config.proxyBypass) { $ProxyBypass = [string]$config.proxyBypass }
     if ($config.codexWorkspaceRoot) { $CodexWorkspaceRoot = [string]$config.codexWorkspaceRoot }
     if ($config.taskName) { $TaskName = [string]$config.taskName }
+    if ([string]::Equals($TaskName, "Revit MCP Auto Update", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $TaskName = "revAgent Auto Update"
+    }
     if ($config.dailyAt) { $taskDailyAt = [string]$config.dailyAt }
     if ($config.legacyServerTargets) { $LegacyServerTargets = @($config.legacyServerTargets) }
     if ($config.reportsRoot) { $ReportsRoot = [string]$config.reportsRoot }

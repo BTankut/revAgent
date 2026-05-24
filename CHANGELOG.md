@@ -40,6 +40,9 @@ All notable revAgent workstation deployment changes are tracked here.
 - Changed workstation automatic update checks to run once daily at 12:00 local
   time, and made the updater repair older logon/repeated scheduled-task
   triggers during the next update run.
+- Changed workstation update reminder surfaces to use the `revAgent` product
+  name by default and migrate/remove legacy `Revit MCP Auto Update` scheduled
+  task and Startup fallback names during install/update repair.
 - Translated `AGENTS.md` to English and updated README, skill, installer, and
   deployment docs to match the current updater schedule and log-retention
   behavior.
