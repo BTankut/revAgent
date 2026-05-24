@@ -35,7 +35,7 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool fitToScreen = parameters != null && parameters["fitToScreen"] != null && parameters["fitToScreen"].Value<bool>();
             bool allowClosedViewSearch = parameters != null && parameters["allowClosedViewSearch"] != null && parameters["allowClosedViewSearch"].Value<bool>();
             bool allowPartial = parameters != null && parameters["allowPartial"] != null && parameters["allowPartial"].Value<bool>();
-            int timeoutMs = parameters != null && parameters["timeoutMs"] != null ? parameters["timeoutMs"].Value<int>() : 15000;
+            int timeoutMs = parameters != null && parameters["timeoutMs"] != null ? parameters["timeoutMs"].Value<int>() : 5000;
             if (timeoutMs < 1000) timeoutMs = 1000;
             if (timeoutMs > 120000) timeoutMs = 120000;
 

@@ -311,21 +311,25 @@ namespace RevitMCPViewCommandSet.Commands.View
                 firstElement = document.GetElement(new ElementId(elements[0].Id));
             }
 
-            if (firstElement != null)
+            if (firstElement != null && focusView is ViewPlan)
             {
                 ElementId levelId;
                 string levelName;
                 ElementDiscoveryHelpers.ResolveElementLevel(document, firstElement, out levelId, out levelName);
                 if (levelId != null && levelId != ElementId.InvalidElementId)
                 {
-                    List<PlanCandidateSummary> planCandidates = ElementDiscoveryHelpers.FindPlanCandidates(document, uiDocument, levelId, "", true, firstElement);
+                    List<PlanCandidateSummary> planCandidates = ElementDiscoveryHelpers
+                        .FindPlanCandidates(document, uiDocument, levelId, "", true, null)
+                        .Take(3)
+                        .ToList();
+                    result.PlanCandidateMode = "metadataOnlyFastGuard";
                     result.PlanCandidates = planCandidates;
-                    PlanCandidateSummary suggestedPlan = planCandidates.FirstOrDefault(p => p.ElementVisibleInView == true);
+                    PlanCandidateSummary suggestedPlan = planCandidates.FirstOrDefault();
                     if (suggestedPlan != null)
                     {
                         Autodesk.Revit.DB.View suggested = document.GetElement(new ElementId(suggestedPlan.Id)) as Autodesk.Revit.DB.View;
                         result.SuggestedView = ViewCommandHelpers.BuildViewSummary(document, suggested, false, suggested != null && ViewCommandHelpers.FindOpenUIView(uiDocument, suggested.Id) != null);
-                        result.FocusSuggestion = "Suggested existing plan: " + suggestedPlan.Name + ". Use open_existing_plan_for_element_level with planMode=elementLevel to open it without triggering Revit's modal closed-view search.";
+                        result.FocusSuggestion = "Likely same-level plan: " + suggestedPlan.Name + ". Use open_existing_plan_for_element_level with planMode=elementLevel to verify visibility and open it without triggering Revit's modal closed-view search.";
                     }
                 }
             }

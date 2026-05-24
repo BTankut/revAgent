@@ -220,9 +220,10 @@ namespace RevitMCPViewCommandSet.Commands.View
             try
             {
                 bool collectedInView = new FilteredElementCollector(document, view.Id)
+                    .WherePasses(new ElementIdSetFilter(new List<ElementId> { element.Id }))
                     .WhereElementIsNotElementType()
                     .ToElementIds()
-                    .Any(id => id.GetIdValue() == element.Id.GetIdValue());
+                    .Count > 0;
 
                 if (!collectedInView)
                 {

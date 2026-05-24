@@ -126,11 +126,11 @@ namespace revit_mcp_plugin.UI
             _fixedElapsedMs = GetDisplayElapsedMs(task);
             _elapsedTimer.Stop();
 
-            ApplyPalette("#FFFFF8E1", "#FFFF8F00");
+            ApplyPalette("#FFE8F1FA", "#FF2F6F9F");
             TitleText.Text = "revAgent task guarded";
             TaskText.Text = "Task: " + SafeTaskName(task);
-            MessageText.Text = "A safety guard blocked the Revit action. You can use Revit now.";
-            ErrorText.Text = string.IsNullOrWhiteSpace(task.Error) ? string.Empty : "Guard: " + task.Error;
+            MessageText.Text = "Guarded / blocked by safety. No unsafe Revit action was run.";
+            ErrorText.Text = string.IsNullOrWhiteSpace(task.Error) ? string.Empty : "Safety note: " + task.Error;
             ErrorText.Visibility = string.IsNullOrWhiteSpace(task.Error) ? Visibility.Collapsed : Visibility.Visible;
             AckButton.Visibility = Visibility.Visible;
 
@@ -310,7 +310,7 @@ namespace revit_mcp_plugin.UI
             string line = string.Format(
                 "{0}  {1}  {2}  ({3}){4}",
                 finished,
-                StateSymbol(state),
+                StateLabel(state),
                 SafeTaskName(task),
                 FormatDuration(TimeSpan.FromMilliseconds(GetDisplayElapsedMs(task))),
                 FormatMetrics(task));
@@ -354,7 +354,7 @@ namespace revit_mcp_plugin.UI
             return task.TaskName;
         }
 
-        private static string StateSymbol(string state)
+        private static string StateLabel(string state)
         {
             if (string.Equals(state, "completed", StringComparison.OrdinalIgnoreCase))
             {
@@ -369,7 +369,7 @@ namespace revit_mcp_plugin.UI
             if (string.Equals(state, "guarded", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(state, "blocked", StringComparison.OrdinalIgnoreCase))
             {
-                return "!";
+                return "guarded";
             }
 
             return "?";
