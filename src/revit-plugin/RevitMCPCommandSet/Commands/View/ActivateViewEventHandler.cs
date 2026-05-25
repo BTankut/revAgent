@@ -159,6 +159,7 @@ namespace RevitMCPCommandSet.Commands.View
                         Requested = true,
                         Deferred = _idlingAttempts > 1,
                         Changed = true,
+                        ActiveViewChanged = true,
                         TargetView = ViewCommandHelpers.BuildViewSummary(document, targetView, true, true),
                         ActiveView = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true),
                         OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument)
