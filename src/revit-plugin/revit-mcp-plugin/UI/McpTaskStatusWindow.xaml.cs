@@ -369,7 +369,7 @@ namespace revit_mcp_plugin.UI
             if (string.Equals(state, "guarded", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(state, "blocked", StringComparison.OrdinalIgnoreCase))
             {
-                return "guarded";
+                return "!";
             }
 
             return "?";

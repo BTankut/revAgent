@@ -398,9 +398,10 @@ The current production status window behavior:
   transaction inside `transactionMode: "auto"`; it should read as guarded/warning
   behavior, not as a red model-operation failure
 - recent task history is selectable and resizable
-- recent history uses compact state labels and shows total Revit-side duration
+- recent history uses compact state symbols: `✓` for completed, `!` for guarded
+  safety blocks, and `✕` for failed tasks. It shows total Revit-side duration
   plus request size, for example:
-  `17:19:07  completed  Final metric UI log probe  (2.9s)  [1 MB]`
+  `17:19:07  ✓  Final metric UI log probe  (2.9s)  [1 MB]`
 - detailed transport metrics remain available through
   `get_revit_mcp_status(includeDiagnostics=true)` and in the add-in log:
   `C:\ProgramData\DPE\RevitMCP\revit-plugin\revit_mcp_plugin\Logs\mcp_YYYYMMDD.log`

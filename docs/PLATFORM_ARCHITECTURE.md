@@ -84,8 +84,8 @@ Every completed task records transport metrics in the status model:
 
 The Revit status window intentionally shows only the state symbol, task name,
 total Revit-side duration, and request size. Guarded safety blocks are displayed
-as guarded/warning states rather than red failures. Detailed metrics are written
-to the add-in log under the installed payload `Logs\` folder.
+as warning states with `!` in recent history rather than red failures. Detailed
+metrics are written to the add-in log under the installed payload `Logs\` folder.
 
 ## Deployment Components
 

@@ -9,6 +9,8 @@ All notable revAgent workstation deployment changes are tracked here.
   `transactionMode: "auto"`, `transactionMode: "none"`, guarded manual
   transaction handling, manual rollback in `none`, and direct
   `Newtonsoft.Json.JsonConvert` compilation.
+- Changed revAgent recent task history so guarded safety blocks use the warning
+  symbol `!`, while failed tasks keep the distinct failure symbol.
 
 ## 2026.05.25.175-71319629
 

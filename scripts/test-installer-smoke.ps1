@@ -293,7 +293,8 @@ try {
     Assert-True ($taskStatusService -match 'GuardTask') "Task status service must support a guarded task state."
     Assert-True ($socketServiceCode -match 'IsCommandResultGuarded') "Socket service must classify expected safety blocks as guarded tasks."
     Assert-True ($taskStatusCode -match 'Guarded / blocked by safety') "Task status window must describe guarded tasks as a safety block, not a failure."
-    Assert-True ($taskStatusCode -notmatch 'return "!"') "Task status history must not render guarded tasks with an error-like exclamation symbol."
+    Assert-True ($taskStatusCode -match 'return "!"') "Task status history must render guarded tasks with the warning-style exclamation symbol."
+    Assert-True ($taskStatusCode -match 'return "\\u2715"') "Failed task history must keep a distinct failure symbol."
 
     Write-Host "Test Revit view focus visibility guard"
     $focusHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\ElementFocusHelpers.cs")

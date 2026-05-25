@@ -235,9 +235,10 @@ Windows taskbar and can be minimized. Completed and failed states are shown
 with recent task history and stay visible until the user clicks `OK`. The
 window close button is treated as acknowledge/hide after completion; during a
 running task it is ignored so closing the status window cannot close or crash
-Revit. Recent history uses compact state labels (`completed` / `failed`) and
-shows only the total Revit-side duration plus request size, for example
-`17:19:07  completed  Final metric UI log probe  (2.9s)  [1 MB]`.
+Revit. Recent history uses compact state symbols: `✓` for completed, `!` for
+guarded safety blocks, and `✕` for failed tasks. It shows only the total
+Revit-side duration plus request size, for example
+`17:19:07  ✓  Final metric UI log probe  (2.9s)  [1 MB]`.
 
 Then:
 
