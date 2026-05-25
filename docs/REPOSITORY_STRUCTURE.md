@@ -27,6 +27,7 @@ for servers, assemblies, manifests, and installed paths.
 |-- scripts/
 |   |-- build-revit-plugin.ps1
 |   |-- test-all.ps1
+|   |-- test-commandset-live.ps1
 |   `-- test-installer-smoke.ps1
 |-- src/
 |   `-- revit-plugin/
@@ -86,6 +87,10 @@ installed Revit command-set payload copy before commit/release validation.
 `installer/runtime-mcp-server/src` and `installer/revit-api-docs-mcp/src` are
 the TypeScript MCP source trees. Their `build/` folders remain the runtime
 payload contract consumed by installer and Codex MCP registrations.
+
+`scripts/test-commandset-live.ps1` is the optional live Revit commandset gate.
+It is not part of `test-all` because it requires a running Revit session, but it
+should be used when dynamic command payload behavior changes.
 
 `installer/lib` contains shared PowerShell helper modules for updater/installer
 behavior. `config/revit-versions.json` is the central Revit version matrix.

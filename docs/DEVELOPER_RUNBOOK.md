@@ -314,6 +314,20 @@ Aggregate non-Revit tests can also be run with:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
 ```
 
+When `src/revit-plugin/RevitMCPCommandSet` or `installer/command-payload`
+changes, run the optional live commandset gate on a workstation with Revit 2022
+open and an active document:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-live.ps1
+```
+
+This gate is intentionally separate from `test-all`: it connects to the Revit
+MCP socket, status-checks before each command, and validates real commandset
+behavior for `transactionMode: "auto"`, `transactionMode: "none"`, guarded
+manual transaction blocking, manual rollback in `none`, and
+`Newtonsoft.Json.JsonConvert` compilation.
+
 This local flow does not run `publish-nas-release.ps1` and does not touch
 `channels\stable.json`.
 

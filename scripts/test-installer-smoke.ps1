@@ -172,6 +172,12 @@ try {
     Assert-True ($executeCodeHandler -match 'JsonProperty\("guarded"\)') "Dynamic execution results must expose guarded for the status UI."
     Assert-True ($executeCodeHandler -match 'GetMetadataReferences') "Dynamic commandset must centralize metadata reference collection."
     Assert-True ($executeCodeHandler -match 'Dictionary<string, Assembly> chosen') "Dynamic commandset must de-duplicate loaded assemblies by simple name."
+    $liveCommandsetTest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-commandset-live.ps1")
+    Assert-True ($liveCommandsetTest -match 'Assert-RevitMcpReady') "Live commandset integration gate must status-check before non-status commands."
+    Assert-True ($liveCommandsetTest -match 'transactionMode auto') "Live commandset integration gate must cover transactionMode auto."
+    Assert-True ($liveCommandsetTest -match 'transactionMode none') "Live commandset integration gate must cover transactionMode none."
+    Assert-True ($liveCommandsetTest -match 'manual_transaction_requires_transactionMode_none') "Live commandset integration gate must assert the manual transaction guard reason."
+    Assert-True ($liveCommandsetTest -match 'Newtonsoft\.Json\.JsonConvert') "Live commandset integration gate must cover Newtonsoft dynamic compilation."
 
     Write-Host "Test Revit command registry includes view command set tools"
     $viewCommandJson = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPViewCommandSet\command.json") | ConvertFrom-Json

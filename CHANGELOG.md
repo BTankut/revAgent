@@ -2,6 +2,14 @@
 
 All notable revAgent workstation deployment changes are tracked here.
 
+## Unreleased
+
+- Added an optional live Revit commandset integration gate,
+  `scripts/test-commandset-live.ps1`, for real Revit 2022 validation of
+  `transactionMode: "auto"`, `transactionMode: "none"`, guarded manual
+  transaction handling, manual rollback in `none`, and direct
+  `Newtonsoft.Json.JsonConvert` compilation.
+
 ## 2026.05.25.175-71319629
 
 - Added command-payload `transactionMode` handling in the Revit C# execution

@@ -404,6 +404,20 @@ npm run test
 
 Use `scripts\test-all.ps1` to run the non-Revit checks in one command.
 
+When the dynamic command payload changes and Revit 2022 is available, run the
+optional live commandset gate separately:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-live.ps1
+```
+
+This live gate connects to the Revit MCP socket, performs a status preflight
+before each non-status command, and validates `transactionMode` behavior,
+guarded manual-transaction handling, manual rollback in `none`, and
+`Newtonsoft.Json.JsonConvert` dynamic compilation. It is not included in
+`scripts\test-all.ps1` because it requires a running Revit session with an
+active document.
+
 9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
 10. Verify that both MCP servers are registered:
 

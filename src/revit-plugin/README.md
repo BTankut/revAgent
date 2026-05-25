@@ -58,6 +58,13 @@ refreshed by default. Replace it only as an explicit release task, and keep it
 aligned with the installed Revit command payload copy when command-set behavior
 changes.
 
+For commandset behavior changes, run the optional live Revit gate after the
+payload is installed into the active Revit session:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ..\..\scripts\test-commandset-live.ps1
+```
+
 Commit the source changes and the refreshed payload binaries in the same commit.
 
 Historical branches in the old plugin repository are not part of the production
