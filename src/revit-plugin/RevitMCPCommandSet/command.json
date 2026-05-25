@@ -1,6 +1,6 @@
 {
   "name": "RevitMCPCommandSet",
-  "description": "Shared core Revit bridge commands for dynamic execution and lightweight context",
+  "description": "Shared Revit bridge commands for dynamic execution, lightweight context, UI state, selection, focus, and view navigation",
   "developer": {
     "name": "mcp-servers-for-revit",
     "email": "",
@@ -26,6 +26,51 @@
     {
       "commandName": "send_code_to_revit",
       "description": "Execute dynamic C# code in Revit with access to the Document and Revit API",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "list_open_views",
+      "description": "List open Revit UI views",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "activate_view",
+      "description": "Activate a Revit UI view without opening a transaction",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "close_view",
+      "description": "Close an open Revit UI view without opening a transaction",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "get_ui_state",
+      "description": "Read active view, open views, selection, and document UI state",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "find_elements",
+      "description": "Find Revit elements by category and text across name, family, type, mark, and comments",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "open_existing_plan_for_element_level",
+      "description": "Open an existing plan view for an element's level and focus the element without creating a new view",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "focus_elements",
+      "description": "Select and zoom to Revit elements in the active or requested view without opening a transaction",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "section_box_elements",
+      "description": "Apply a 3D section box around Revit elements and optionally select and zoom to them",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "create_3d_view_for_elements",
+      "description": "Create or reuse a 3D view for Revit elements, optionally apply/clear section box, activate it, and focus the elements",
       "assemblyPath": "RevitMCPCommandSet.dll"
     }
   ]

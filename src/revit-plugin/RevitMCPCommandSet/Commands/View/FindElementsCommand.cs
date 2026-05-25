@@ -4,7 +4,7 @@ using RevitMCPSDK.API.Base;
 using System;
 using System.Collections.Generic;
 
-namespace RevitMCPViewCommandSet.Commands.View
+namespace RevitMCPCommandSet.Commands.View
 {
     public class FindElementsCommand : ExternalEventCommandBase
     {

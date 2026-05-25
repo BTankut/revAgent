@@ -72,46 +72,55 @@ function Get-Configuration {
     return [string](Get-RevitMcpVersionConfig -Version $Version -RepoRoot $RepoRoot).buildConfiguration
 }
 
-function Update-ViewCommandRegistry {
+function Update-BridgeCommandRegistry {
     param(
         [string]$RegistryPath,
-        [string]$ViewCommandJsonPath,
+        [string]$CommandJsonPath,
         [string]$Version
     )
 
     if (-not (Test-Path -LiteralPath $RegistryPath -PathType Leaf)) {
         throw "Command registry was not found: $RegistryPath"
     }
-    if (-not (Test-Path -LiteralPath $ViewCommandJsonPath -PathType Leaf)) {
-        throw "View command json was not found: $ViewCommandJsonPath"
+    if (-not (Test-Path -LiteralPath $CommandJsonPath -PathType Leaf)) {
+        throw "Bridge command json was not found: $CommandJsonPath"
     }
 
-    $registry = Get-Content -LiteralPath $RegistryPath -Raw | ConvertFrom-Json
-    $viewCommandSet = Get-Content -LiteralPath $ViewCommandJsonPath -Raw | ConvertFrom-Json
-    $viewCommandNames = @($viewCommandSet.commands | ForEach-Object { [string]$_.commandName })
-    $viewDeveloper = [pscustomobject]@{
-        name = "mcp-servers-for-revit"
-        email = ""
-        website = ""
-        organization = "mcp-servers-for-revit"
+    $commandSet = Get-Content -LiteralPath $CommandJsonPath -Raw | ConvertFrom-Json
+    $commandSetName = [string]$commandSet.name
+    if ([string]::IsNullOrWhiteSpace($commandSetName)) {
+        throw "Bridge command json is missing name: $CommandJsonPath"
     }
 
-    $commands = @($registry.Commands | Where-Object {
-            $viewCommandNames -notcontains [string]$_.commandName
-        })
+    $developer = $commandSet.developer
+    if ($null -eq $developer) {
+        $developer = [pscustomobject]@{
+            name = "mcp-servers-for-revit"
+            email = ""
+            website = ""
+            organization = "mcp-servers-for-revit"
+        }
+    }
 
-    foreach ($command in $viewCommandSet.commands) {
+    $commands = @()
+    foreach ($command in $commandSet.commands) {
+        $assemblyFile = [string]$command.assemblyPath
+        if ([string]::IsNullOrWhiteSpace($assemblyFile)) {
+            $assemblyFile = "$commandSetName.dll"
+        }
         $commands += [pscustomobject]@{
             commandName = [string]$command.commandName
-            assemblyPath = "RevitMCPViewCommandSet\\$Version\\RevitMCPViewCommandSet.dll"
+            assemblyPath = "$commandSetName\\$Version\\$assemblyFile"
             enabled = $true
             supportedRevitVersions = @($Version)
-            developer = $viewDeveloper
+            developer = $developer
             description = [string]$command.description
         }
     }
 
-    $registry.Commands = $commands
+    $registry = [pscustomobject]@{
+        Commands = $commands
+    }
     $registry | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $RegistryPath -Encoding UTF8
 }
 
@@ -119,14 +128,14 @@ $projectPath = Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\revit-mcp-
 if (-not (Test-Path -LiteralPath $projectPath)) {
     throw "Revit plugin project was not found: $projectPath"
 }
-$viewCommandSetProjectPath = Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\RevitMCPViewCommandSet.csproj"
-if (-not (Test-Path -LiteralPath $viewCommandSetProjectPath)) {
-    throw "Revit view command set project was not found: $viewCommandSetProjectPath"
+$commandSetProjectPath = Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\RevitMCPCommandSet.csproj"
+if (-not (Test-Path -LiteralPath $commandSetProjectPath)) {
+    throw "Revit bridge command set project was not found: $commandSetProjectPath"
 }
 
 $dotnet = Resolve-DotnetSdk -RequestedPath $DotnetPath
 $configuration = Get-Configuration -Version $RevitVersion
-$viewCommandSetConfiguration = "Release $RevitVersion"
+$commandSetConfiguration = $configuration
 
 Write-Host "Building Revit plugin"
 Write-Host "Project      : $projectPath"
@@ -138,22 +147,22 @@ if ($LASTEXITCODE -ne 0) {
     throw "Revit plugin build failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "Building Revit view command set"
-Write-Host "Project      : $viewCommandSetProjectPath"
-Write-Host "Configuration: $viewCommandSetConfiguration"
+Write-Host "Building Revit bridge command set"
+Write-Host "Project      : $commandSetProjectPath"
+Write-Host "Configuration: $commandSetConfiguration"
 
-& $dotnet build $viewCommandSetProjectPath -c $viewCommandSetConfiguration -p:Platform=x64
+& $dotnet build $commandSetProjectPath -c $commandSetConfiguration -p:Platform=x64 -p:RevitMcpDeployCommandSet=false
 if ($LASTEXITCODE -ne 0) {
-    throw "Revit view command set build failed with exit code $LASTEXITCODE"
+    throw "Revit bridge command set build failed with exit code $LASTEXITCODE"
 }
 
 $builtDll = Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\bin\Release\$RevitVersion\revit-mcp-plugin.dll"
 if (-not (Test-Path -LiteralPath $builtDll -PathType Leaf)) {
     throw "Build completed but output DLL was not found: $builtDll"
 }
-$builtViewCommandSetDll = Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\bin\Release\$RevitVersion\RevitMCPViewCommandSet.dll"
-if (-not (Test-Path -LiteralPath $builtViewCommandSetDll -PathType Leaf)) {
-    throw "Build completed but output DLL was not found: $builtViewCommandSetDll"
+$builtCommandSetDll = Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\bin\Release\$RevitVersion\RevitMCPCommandSet.dll"
+if (-not (Test-Path -LiteralPath $builtCommandSetDll -PathType Leaf)) {
+    throw "Build completed but output DLL was not found: $builtCommandSetDll"
 }
 
 if (-not $SkipPayloadCopy) {
@@ -178,19 +187,59 @@ if (-not $SkipPayloadCopy) {
         Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $payloadDir $entry.Value) -Force
     }
 
-    $viewCommandSetRoot = Join-Path $payloadDir "Commands\RevitMCPViewCommandSet"
-    $viewCommandSetVersionRoot = Join-Path $viewCommandSetRoot $RevitVersion
-    New-Item -ItemType Directory -Path $viewCommandSetVersionRoot -Force | Out-Null
-    Copy-Item -LiteralPath $builtViewCommandSetDll -Destination (Join-Path $viewCommandSetRoot "RevitMCPViewCommandSet.dll") -Force
-    Copy-Item -LiteralPath $builtViewCommandSetDll -Destination (Join-Path $viewCommandSetVersionRoot "RevitMCPViewCommandSet.dll") -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\command.json") -Destination (Join-Path $viewCommandSetRoot "command.json") -Force
-    Update-ViewCommandRegistry `
+    $commandJsonSource = Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\command.json"
+    $commandPayloadDir = Join-Path $RepoRoot "installer\command-payload"
+    $commandPayloadRuntimeDir = Join-Path $commandPayloadDir "runtime\$RevitVersion"
+    New-Item -ItemType Directory -Path $commandPayloadRuntimeDir -Force | Out-Null
+    Copy-Item -LiteralPath $builtCommandSetDll -Destination (Join-Path $commandPayloadDir "RevitMCPCommandSet.dll") -Force
+    Copy-Item -LiteralPath $commandJsonSource -Destination (Join-Path $commandPayloadDir "command.json") -Force
+
+    $runtimeAssemblies = @(
+        "Microsoft.CodeAnalysis.dll",
+        "Microsoft.CodeAnalysis.CSharp.dll",
+        "System.Buffers.dll",
+        "System.Collections.Immutable.dll",
+        "System.Memory.dll",
+        "System.Numerics.Vectors.dll",
+        "System.Reflection.Metadata.dll",
+        "System.Runtime.CompilerServices.Unsafe.dll",
+        "System.Text.Encoding.CodePages.dll",
+        "System.Threading.Tasks.Extensions.dll"
+    )
+    $commandSetOutputDir = Split-Path -Parent $builtCommandSetDll
+    foreach ($assemblyName in $runtimeAssemblies) {
+        $sourceFile = Join-Path $commandSetOutputDir $assemblyName
+        if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) {
+            throw "Command set runtime dependency was not found: $sourceFile"
+        }
+        Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $commandPayloadRuntimeDir $assemblyName) -Force
+    }
+
+    $commandSetRoot = Join-Path $payloadDir "Commands\RevitMCPCommandSet"
+    $commandSetVersionRoot = Join-Path $commandSetRoot $RevitVersion
+    $legacyViewCommandSetRoot = Join-Path $payloadDir "Commands\RevitMCPViewCommandSet"
+    if (Test-Path -LiteralPath $legacyViewCommandSetRoot) {
+        $commandsRootFullPath = [System.IO.Path]::GetFullPath((Join-Path $payloadDir "Commands"))
+        $legacyViewCommandSetRootFullPath = [System.IO.Path]::GetFullPath($legacyViewCommandSetRoot)
+        if (-not $legacyViewCommandSetRootFullPath.StartsWith($commandsRootFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove legacy command set outside installer Commands payload: $legacyViewCommandSetRootFullPath"
+        }
+        Remove-Item -LiteralPath $legacyViewCommandSetRoot -Recurse -Force
+    }
+    $legacyRootCommandSetDll = Join-Path $commandSetRoot "RevitMCPCommandSet.dll"
+    if (Test-Path -LiteralPath $legacyRootCommandSetDll) {
+        Remove-Item -LiteralPath $legacyRootCommandSetDll -Force
+    }
+    New-Item -ItemType Directory -Path $commandSetVersionRoot -Force | Out-Null
+    Copy-Item -LiteralPath $builtCommandSetDll -Destination (Join-Path $commandSetVersionRoot "RevitMCPCommandSet.dll") -Force
+    Copy-Item -LiteralPath $commandJsonSource -Destination (Join-Path $commandSetRoot "command.json") -Force
+    Update-BridgeCommandRegistry `
         -RegistryPath (Join-Path $payloadDir "Commands\commandRegistry.json") `
-        -ViewCommandJsonPath (Join-Path $viewCommandSetRoot "command.json") `
+        -CommandJsonPath (Join-Path $commandSetRoot "command.json") `
         -Version $RevitVersion
 
     Write-Host "Installer payload refreshed: $payloadDir" -ForegroundColor Green
 }
 
 Write-Host "Built DLL: $builtDll" -ForegroundColor Green
-Write-Host "Built view command set DLL: $builtViewCommandSetDll" -ForegroundColor Green
+Write-Host "Built bridge command set DLL: $builtCommandSetDll" -ForegroundColor Green

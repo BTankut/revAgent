@@ -1,11 +1,11 @@
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
-using RevitMCPViewCommandSet.Extensions;
+using RevitMCPCommandSet.Extensions;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace RevitMCPViewCommandSet.Commands.View
+namespace RevitMCPCommandSet.Commands.View
 {
     public class ElementSummary
     {

@@ -14,14 +14,14 @@ server, package, assembly, manifest, or installed path is being named.
   socket service, command registry, status window, and command execution bridge.
 - `installer/revit-plugin/`: bundled Revit add-in payload copied to
   `C:\ProgramData\DPE\RevitMCP\revit-plugin`.
-- `installer/command-payload/`: bundled dynamic command set and Roslyn runtime
-  assemblies used by `send_code_to_revit`.
-- `installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPViewCommandSet/`:
-  bundled UI view commands for listing, activating, and closing Revit view
-  tabs, finding/focusing elements, opening existing same-level plans, creating
-  focused 3D review views, and applying 3D section boxes. Focus/view activation
-  commands avoid the dynamic code transaction wrapper; section box and 3D view
-  changes use normal Revit transactions against project view data.
+- `installer/command-payload/`: bundled shared bridge command set and Roslyn
+  runtime assemblies used by `send_code_to_revit`.
+- `installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPCommandSet/`:
+  bundled shared Revit bridge command set for dynamic execution, lightweight
+  model context, UI view state, selection, focus, view navigation, focused 3D
+  review views, and 3D section boxes. Focus/view activation commands avoid the
+  dynamic code transaction wrapper; section box and 3D view changes use normal
+  Revit transactions against project view data.
 - `installer/runtime-mcp-server/src/`: TypeScript source for the live Revit MCP
   runtime server. `npm run build` emits `build/`, which remains the installer
   and Codex registration contract.
@@ -38,15 +38,13 @@ live in the local Node server and may call one bridge command, run a dynamic C#
 snippet through `send_code_to_revit`, read socket status, or orchestrate several
 bridge commands into a workflow.
 
-The current shared Revit bridge has 13 installed commands:
-
-- `RevitMCPCommandSet`: 4 core bridge commands for dynamic execution and
-  lightweight context (`send_code_to_revit`, `get_current_view_elements`,
-  `get_current_view_info`, `get_selected_elements`).
-- `RevitMCPViewCommandSet`: 9 view/navigation bridge commands
-  (`list_open_views`, `activate_view`, `close_view`, `get_ui_state`,
-  `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`,
-  `section_box_elements`, `create_3d_view_for_elements`).
+The current shared Revit bridge is a single installed command set,
+`RevitMCPCommandSet`, with 13 bridge commands: `send_code_to_revit`,
+`get_current_view_elements`, `get_current_view_info`,
+`get_selected_elements`, `list_open_views`, `activate_view`, `close_view`,
+`get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`,
+`focus_elements`, `section_box_elements`, and
+`create_3d_view_for_elements`.
 
 The runtime MCP surface is intentionally larger than the bridge. It exposes
 agent-friendly tools such as `send_code_to_revit_safe`,

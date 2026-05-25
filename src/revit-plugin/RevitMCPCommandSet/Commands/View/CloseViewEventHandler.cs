@@ -2,13 +2,13 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Events;
 using RevitMCPSDK.API.Interfaces;
-using RevitMCPViewCommandSet.Extensions;
+using RevitMCPCommandSet.Extensions;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 
-namespace RevitMCPViewCommandSet.Commands.View
+namespace RevitMCPCommandSet.Commands.View
 {
     public class CloseViewEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
     {

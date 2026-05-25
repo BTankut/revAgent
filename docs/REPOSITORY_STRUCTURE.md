@@ -35,7 +35,6 @@ for servers, assemblies, manifests, and installed paths.
 |       |-- revit-mcp-plugin.sln
 |       |-- revit-mcp-plugin/
 |       |-- RevitMCPCommandSet/
-|       |-- RevitMCPViewCommandSet/
 `-- installer/
     |-- INSTALLATION.md
     |-- install-self-contained.ps1
@@ -50,29 +49,30 @@ for servers, assemblies, manifests, and installed paths.
 ## Source vs Install Payload
 
 `src/revit-plugin` is source code. It is where Revit add-in development happens.
-The main add-in host is `src/revit-plugin/revit-mcp-plugin`. UI view tools are
-implemented as the separate
-`src/revit-plugin/RevitMCPViewCommandSet` project so the dynamic
-`send_code_to_revit` command payload stays isolated. This command set owns view
-activation/close, element focus, and 3D section box behavior.
+The main add-in host is `src/revit-plugin/revit-mcp-plugin`.
 
-The dynamic execution and low-level context command source lives in
+The shared bridge command source lives in
 `src/revit-plugin/RevitMCPCommandSet`. Keep this project limited to the
-registered production commands: `send_code_to_revit`,
-`get_current_view_elements`, `get_current_view_info`, and
-`get_selected_elements`.
+registered production bridge commands: `send_code_to_revit`,
+`get_current_view_elements`, `get_current_view_info`,
+`get_selected_elements`, `list_open_views`, `activate_view`, `close_view`,
+`get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`,
+`focus_elements`, `section_box_elements`, and
+`create_3d_view_for_elements`. This command set owns dynamic execution behavior
+such as `transactionMode`, guarded manual-transaction handling, dynamic compile
+metadata reference selection, view activation/close, element focus, and 3D
+section box behavior.
 
 `SampleCommandSet` and the old unregistered create/edit/filter/tag/data
 extraction command sources are intentionally not kept in this repository
 because they are not used by the installed production payload, make command
 assembly scanning noisier, and have historically carried localized or mojibake
-strings into developer-facing source. This command set owns dynamic execution
-behavior such as `transactionMode`, guarded manual-transaction handling, and
-dynamic compile metadata reference selection.
+strings into developer-facing source.
 
 `installer/revit-plugin` is install payload. Production installers copy from this
 folder into `C:\ProgramData\DPE\RevitMCP`. Do not edit the binary payload by
-hand. Build the host/view source and refresh those payload binaries with:
+hand. Build the host and shared bridge source, then refresh those payload
+binaries with:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -RevitVersion 2022
@@ -86,18 +86,18 @@ When `src/revit-plugin/RevitMCPCommandSet` changes, validate it explicitly:
 dotnet build .\src\revit-plugin\RevitMCPCommandSet\RevitMCPCommandSet.csproj -c "Release R22" /p:RevitMcpDeployCommandSet=false
 ```
 
-The stable dynamic command payload under `installer/command-payload` is not
-refreshed by default; replacing it is an explicit release task. When the command
-set changes, refresh both the stable `installer/command-payload` copy and the
-installed Revit command-set payload copy before commit/release validation.
+The stable shared bridge payload under `installer/command-payload` is refreshed
+by `scripts/build-revit-plugin.ps1`. When the command set changes, commit both
+the refreshed `installer/command-payload` copy and the installed Revit
+command-set payload copy before release validation.
 The smoke tests also assert that the Revit plug-in source remains English-only
-and that the dynamic command-set source surface does not grow beyond the
-registered production commands.
+and that the command-set source surface does not grow beyond the registered
+production bridge commands.
 
-The Revit add-in Settings window lists installed bridge command sets. That
-screen is expected to show fewer entries than the runtime MCP server because it
-does not list Node-side MCP wrappers, dynamic-snippet tools, status tools, image
-export tools, or workflow orchestration tools. Treat the bridge command sets as
+The Revit add-in Settings window lists the installed shared bridge command set.
+That screen is expected to show fewer entries than the runtime MCP server
+because it does not list Node-side MCP wrappers, dynamic-snippet tools, status
+tools, image export tools, or workflow orchestration tools. Treat the bridge as
 the shared base for all future discipline modules; add architectural,
 structural, electrical, and MEP-specific capabilities in the runtime MCP tool
 layer unless they require a reusable native Revit bridge primitive.
@@ -108,7 +108,7 @@ payload contract consumed by installer and Codex MCP registrations.
 
 `scripts/test-commandset-live.ps1` is the optional live Revit commandset gate.
 It is not part of `test-all` because it requires a running Revit session, but it
-should be used when dynamic command payload behavior changes.
+should be used when shared bridge command payload behavior changes.
 
 `installer/lib` contains shared PowerShell helper modules for updater/installer
 behavior. `config/revit-versions.json` is the central Revit version matrix.

@@ -2,7 +2,7 @@ using Autodesk.Revit.DB;
 using System;
 using System.Reflection;
 
-namespace RevitMCPViewCommandSet.Extensions
+namespace RevitMCPCommandSet.Extensions
 {
     public static class RevitApiCompatibilityExtensions
     {

@@ -11,19 +11,16 @@ Production source projects:
 
 - `revit-mcp-plugin/`: main Revit add-in host, socket service, command registry,
   and revAgent status window.
-- `RevitMCPCommandSet/`: core bridge commands used
-  by `send_code_to_revit`, `get_current_view_elements`,
-  `get_current_view_info`, and `get_selected_elements`. This project owns
-  `transactionMode`, guarded manual-transaction behavior, and dynamic compile
-  reference selection for snippets. Keep this source limited to the registered
-  production commands; old unregistered create/edit/filter/data-extraction
-  command code was intentionally removed.
-- `RevitMCPViewCommandSet/`: view/navigation bridge commands exposed as
-  `list_open_views`, `activate_view`, `close_view`, and element-focused view
-  workflows.
+- `RevitMCPCommandSet/`: the shared Revit bridge command set used by
+  `send_code_to_revit`, low-level context commands, UI state, selection, focus,
+  and view navigation workflows. This project owns `transactionMode`, guarded
+  manual-transaction behavior, dynamic compile reference selection, and the
+  reusable native bridge commands that runtime MCP tools call. Keep this source
+  limited to the registered production bridge commands; old unregistered
+  create/edit/filter/data-extraction command code was intentionally removed.
 
-The Settings window displays these C# command sets as installed **bridge
-commands**. They are not the same thing as the 21 Codex-facing MCP tools.
+The Settings window displays this C# command set as the installed shared
+**bridge**. It is not the same thing as the 21 Codex-facing MCP tools.
 Runtime MCP tools live in `installer/runtime-mcp-server`; some call a bridge
 command directly, while others wrap dynamic C# execution, socket status, image
 export, or multi-step workflows. Keep future discipline modules separated at
@@ -36,37 +33,31 @@ The canonical production payload is still kept under:
 installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll
 ```
 
-The dynamic command payload is kept under:
+The shared bridge command payload is kept under:
 
 ```text
 installer\command-payload
 installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet
 ```
 
-The UI view command payload is kept under:
-
-```text
-installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPViewCommandSet
-```
-
 Do not edit those binaries by hand. Change the source here, then refresh the
-host/view payload when needed:
+host/shared-bridge payload when needed:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ..\..\scripts\build-revit-plugin.ps1 -RevitVersion 2022
 ```
 
-The script builds the main add-in host and the UI view command set. Validate the
-dynamic command source separately when it changes:
+The script builds the main add-in host, the shared bridge command set, and the
+matching install payload. Validate the command source separately when it
+changes:
 
 ```powershell
 dotnet build .\RevitMCPCommandSet\RevitMCPCommandSet.csproj -c "Release R22" /p:RevitMcpDeployCommandSet=false
 ```
 
-The stable dynamic command payload under `installer\command-payload` is not
-refreshed by default. Replace it only as an explicit release task, and keep it
-aligned with the installed Revit command payload copy when command-set behavior
-changes.
+The shared bridge payload under `installer\command-payload` is refreshed by the
+build script and must stay aligned with the installed Revit command payload copy
+when command-set behavior changes.
 
 For commandset behavior changes, run the optional live Revit gate after the
 payload is installed into the active Revit session:

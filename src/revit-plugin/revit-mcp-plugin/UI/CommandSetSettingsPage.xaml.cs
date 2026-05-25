@@ -30,8 +30,14 @@ namespace revit_mcp_plugin.UI
             FeaturesListView.ItemsSource = currentCommands;
             // Load command sets
             LoadCommandSets();
-            // Initial state
-            NoSelectionTextBlock.Visibility = Visibility.Visible;
+            if (commandSets.Count > 0)
+            {
+                CommandSetListBox.SelectedIndex = 0;
+            }
+            else
+            {
+                NoSelectionTextBlock.Visibility = Visibility.Visible;
+            }
         }
 
         private void LoadCommandSets()
@@ -150,6 +156,15 @@ namespace revit_mcp_plugin.UI
                         }
                     }
                 }
+
+                // When the unified bridge is installed, do not surface a stale
+                // legacy view command set folder as a second bridge.
+                if (availableCommandSets.TryGetValue("RevitMCPCommandSet", out var unifiedBridge) &&
+                    unifiedBridge.Commands.Any(c => string.Equals(c.CommandName, "list_open_views", StringComparison.OrdinalIgnoreCase)))
+                {
+                    availableCommandSets.Remove("RevitMCPViewCommandSet");
+                }
+
                 // 2. Load registry, update command enabled status, and clean up non-existent commands
                 if (File.Exists(registryFilePath))
                 {
@@ -384,11 +399,11 @@ namespace revit_mcp_plugin.UI
         {
             if (string.Equals(commandSetName, "RevitMCPCommandSet", StringComparison.OrdinalIgnoreCase))
             {
-                return "Core Revit Bridge";
+                return "Shared Revit Bridge";
             }
             if (string.Equals(commandSetName, "RevitMCPViewCommandSet", StringComparison.OrdinalIgnoreCase))
             {
-                return "View and Navigation Bridge";
+                return "Legacy View Bridge";
             }
             return commandSetName;
         }
@@ -402,11 +417,11 @@ namespace revit_mcp_plugin.UI
         {
             if (string.Equals(commandSetName, "RevitMCPCommandSet", StringComparison.OrdinalIgnoreCase))
             {
-                return "Shared base bridge for dynamic execution and lightweight context commands used by runtime MCP tools.";
+                return "Single shared base bridge for dynamic execution, context, UI state, selection, focus, and view navigation commands.";
             }
             if (string.Equals(commandSetName, "RevitMCPViewCommandSet", StringComparison.OrdinalIgnoreCase))
             {
-                return "Shared base bridge for live Revit view, selection, focus, and navigation commands.";
+                return "Legacy view/navigation bridge. A current install should use the single Shared Revit Bridge instead.";
             }
             return fallbackDescription ?? "Revit bridge command set.";
         }

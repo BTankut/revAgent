@@ -405,7 +405,7 @@ npm run test
 
 Use `scripts\test-all.ps1` to run the non-Revit checks in one command.
 
-When the dynamic command payload changes and Revit 2022 is available, run the
+When the shared bridge command payload changes and Revit 2022 is available, run the
 optional live commandset gate separately:
 
 ```powershell
@@ -655,7 +655,7 @@ That is why `send_code_to_revit` should remain the first-class runtime tool in b
 
 ## Installer note
 
-The self-contained installer also copies the `command-payload` payload so dynamic code execution works after a clean install without manual DLL repair steps.
+The self-contained installer also copies the `command-payload` payload so the shared bridge command set works after a clean install without manual DLL repair steps.
 
 It now also mirrors the required Roslyn runtime assemblies from the local Revit 2022 installation into the deployed command folders, and it fails early if those files are missing.
 

@@ -4,22 +4,22 @@ using RevitMCPSDK.API.Base;
 using System;
 using System.Collections.Generic;
 
-namespace RevitMCPViewCommandSet.Commands.View
+namespace RevitMCPCommandSet.Commands.View
 {
-    public class SectionBoxElementsCommand : ExternalEventCommandBase
+    public class FocusElementsCommand : ExternalEventCommandBase
     {
-        private SectionBoxElementsEventHandler _handler
+        private FocusElementsEventHandler _handler
         {
-            get { return (SectionBoxElementsEventHandler)Handler; }
+            get { return (FocusElementsEventHandler)Handler; }
         }
 
         public override string CommandName
         {
-            get { return "section_box_elements"; }
+            get { return "focus_elements"; }
         }
 
-        public SectionBoxElementsCommand(UIApplication uiApp)
-            : base(new SectionBoxElementsEventHandler(), uiApp)
+        public FocusElementsCommand(UIApplication uiApp)
+            : base(new FocusElementsEventHandler(), uiApp)
         {
         }
 
@@ -32,19 +32,20 @@ namespace RevitMCPViewCommandSet.Commands.View
             bool exactName = parameters == null || parameters["exactName"] == null || parameters["exactName"].Value<bool>();
             bool select = parameters == null || parameters["select"] == null || parameters["select"].Value<bool>();
             bool zoom = parameters == null || parameters["zoom"] == null || parameters["zoom"].Value<bool>();
+            bool fitToScreen = parameters != null && parameters["fitToScreen"] != null && parameters["fitToScreen"].Value<bool>();
+            bool allowClosedViewSearch = parameters != null && parameters["allowClosedViewSearch"] != null && parameters["allowClosedViewSearch"].Value<bool>();
             bool allowPartial = parameters != null && parameters["allowPartial"] != null && parameters["allowPartial"].Value<bool>();
-            double paddingMm = parameters != null && parameters["paddingMm"] != null ? parameters["paddingMm"].Value<double>() : 500.0;
-            int timeoutMs = parameters != null && parameters["timeoutMs"] != null ? parameters["timeoutMs"].Value<int>() : 15000;
+            int timeoutMs = parameters != null && parameters["timeoutMs"] != null ? parameters["timeoutMs"].Value<int>() : 5000;
             if (timeoutMs < 1000) timeoutMs = 1000;
             if (timeoutMs > 120000) timeoutMs = 120000;
 
-            _handler.SetRequest(elementIds, viewId, viewName, viewType, exactName, select, zoom, allowPartial, paddingMm);
+            _handler.SetRequest(elementIds, viewId, viewName, viewType, exactName, select, zoom, fitToScreen, allowClosedViewSearch, allowPartial);
             if (RaiseAndWaitForCompletion(timeoutMs))
             {
                 return _handler.ResultInfo;
             }
 
-            throw new TimeoutException("Timed out while applying Revit section box.");
+            throw new TimeoutException("Timed out while focusing Revit elements.");
         }
 
         private static List<int> ParseElementIds(JObject parameters)

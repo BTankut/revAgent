@@ -88,7 +88,7 @@ Important source vs payload rule:
 
 - `src/revit-plugin/` is the Revit add-in source.
 - `installer/revit-plugin/` is the bundled install payload.
-- `installer/command-payload/` is the bundled dynamic command payload.
+- `installer/command-payload/` is the bundled shared bridge command payload.
 - `installer/runtime-mcp-server/src/` is the runtime MCP TypeScript source;
   `installer/runtime-mcp-server/build/` is the built runtime payload.
 - `installer/revit-api-docs-mcp/src/` is the docs MCP TypeScript source;
@@ -329,12 +329,15 @@ manual transaction blocking, manual rollback in `none`, and
 `Newtonsoft.Json.JsonConvert` compilation.
 
 Keep `src/revit-plugin/RevitMCPCommandSet` limited to the registered production
-commands: `send_code_to_revit`, `get_current_view_elements`,
-`get_current_view_info`, and `get_selected_elements`. Do not reintroduce old
-unregistered create/edit/filter/tag/data-extraction command sources unless they
-are deliberately promoted into the production registry and fully reviewed. The
-smoke gate rejects localized or mojibake source text instead of hiding it with a
-status-message sanitizer.
+bridge commands: `send_code_to_revit`, `get_current_view_elements`,
+`get_current_view_info`, `get_selected_elements`, `list_open_views`,
+`activate_view`, `close_view`, `get_ui_state`, `find_elements`,
+`open_existing_plan_for_element_level`, `focus_elements`,
+`section_box_elements`, and `create_3d_view_for_elements`. Do not reintroduce
+old unregistered create/edit/filter/tag/data-extraction command sources unless
+they are deliberately promoted into the production registry and fully reviewed.
+The smoke gate rejects localized or mojibake source text instead of hiding it
+with a status-message sanitizer.
 
 This local flow does not run `publish-nas-release.ps1` and does not touch
 `channels\stable.json`.

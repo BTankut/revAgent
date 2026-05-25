@@ -5,7 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 
-namespace RevitMCPViewCommandSet.Commands.View
+namespace RevitMCPCommandSet.Commands.View
 {
     public class ListOpenViewsEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
     {

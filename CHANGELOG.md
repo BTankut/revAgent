@@ -4,6 +4,9 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Unified the Revit add-in bridge command surface into one
+  `RevitMCPCommandSet` payload so Settings shows a single shared revAgent
+  bridge while preserving the existing runtime MCP command names.
 - Added an optional live Revit commandset integration gate,
   `scripts/test-commandset-live.ps1`, for real Revit 2022 validation of
   `transactionMode: "auto"`, `transactionMode: "none"`, guarded manual

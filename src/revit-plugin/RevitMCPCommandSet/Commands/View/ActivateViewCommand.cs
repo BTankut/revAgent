@@ -3,7 +3,7 @@ using Newtonsoft.Json.Linq;
 using RevitMCPSDK.API.Base;
 using System;
 
-namespace RevitMCPViewCommandSet.Commands.View
+namespace RevitMCPCommandSet.Commands.View
 {
     public class ActivateViewCommand : ExternalEventCommandBase
     {

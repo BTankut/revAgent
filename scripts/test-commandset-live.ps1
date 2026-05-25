@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     This script connects directly to the Revit MCP socket and validates the
-    dynamic command payload in a real Revit session. It is intentionally not
+    shared bridge command payload in a real Revit session. It is intentionally not
     part of scripts/test-all.ps1 because it requires Revit 2022 with revAgent
     loaded and an active document.
 

@@ -207,6 +207,28 @@ try {
         "src\revit-plugin\RevitMCPCommandSet\Commands\Access\GetSelectedElementsCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementDiscoveryHelpers.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementFocusHelpers.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\FocusElementsCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\FocusElementsEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\GetUiStateCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\GetUiStateEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ListOpenViewsCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ListOpenViewsEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\OpenExistingPlanForElementLevelCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\OpenExistingPlanForElementLevelEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\SectionBoxElementsCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\SectionBoxElementsEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ViewCommandHelpers.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Extensions\RevitApiCompatibilityExtensions.cs",
         "src\revit-plugin\RevitMCPCommandSet\Models\Common\ElementInfo.cs",
         "src\revit-plugin\RevitMCPCommandSet\Models\Common\ViewElementsResult.cs",
         "src\revit-plugin\RevitMCPCommandSet\Models\Common\ViewInfo.cs",
@@ -214,15 +236,19 @@ try {
         "src\revit-plugin\RevitMCPCommandSet\Services\GetCurrentViewInfoEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Services\GetSelectedElementsEventHandler.cs"
     )
-    Assert-Equal ($commandSetSourceFiles -join "|") ($expectedCommandSetSourceFiles -join "|") "RevitMCPCommandSet must contain only the production command source surface."
+    Assert-Equal ($commandSetSourceFiles -join "|") ($expectedCommandSetSourceFiles -join "|") "RevitMCPCommandSet must contain the complete production bridge command source surface."
 
-    Write-Host "Test Revit command registry includes view command set tools"
-    $viewCommandJson = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPViewCommandSet\command.json") | ConvertFrom-Json
+    Write-Host "Test Revit command registry includes the unified bridge command tools"
+    $bridgeCommandJson = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet\command.json") | ConvertFrom-Json
     $commandRegistry = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\commandRegistry.json") | ConvertFrom-Json
     $registeredCommandNames = @($commandRegistry.Commands | ForEach-Object { [string]$_.commandName })
-    foreach ($name in @($viewCommandJson.commands | ForEach-Object { [string]$_.commandName })) {
-        Assert-True ($registeredCommandNames -contains $name) "commandRegistry.json is missing Revit view command '$name'."
+    foreach ($name in @($bridgeCommandJson.commands | ForEach-Object { [string]$_.commandName })) {
+        Assert-True ($registeredCommandNames -contains $name) "commandRegistry.json is missing Revit bridge command '$name'."
     }
+    foreach ($path in @($commandRegistry.Commands | ForEach-Object { [string]$_.assemblyPath })) {
+        Assert-Equal $path "RevitMCPCommandSet\\2022\\RevitMCPCommandSet.dll" "Bridge command registry must load every command from the unified bridge DLL."
+    }
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPViewCommandSet"))) "Legacy RevitMCPViewCommandSet payload folder must not be packaged."
 
     Write-Host "Test installer public parameters"
     $installerParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\install-self-contained.ps1")
@@ -335,17 +361,17 @@ try {
     Assert-True ($taskStatusCode -match 'return "\\u2715"') "Failed task history must keep a distinct failure symbol."
 
     Write-Host "Test Revit view focus visibility guard"
-    $focusHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\ElementFocusHelpers.cs")
-    $focusHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\FocusElementsEventHandler.cs")
-    $openPlanCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\OpenExistingPlanForElementLevelEventHandler.cs")
-    $openPlanCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\OpenExistingPlanForElementLevelCommand.cs")
+    $focusHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementFocusHelpers.cs")
+    $focusHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\FocusElementsEventHandler.cs")
+    $openPlanCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\OpenExistingPlanForElementLevelEventHandler.cs")
+    $openPlanCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\OpenExistingPlanForElementLevelCommand.cs")
     $openPlanToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\open_existing_plan_for_element_level.ts")
     $smartFocusToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\smart_focus_elements.ts")
     $sendCodeToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit.ts")
-    $closeViewCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\CloseViewEventHandler.cs")
-    $viewHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\ViewCommandHelpers.cs")
-    $discoveryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\ElementDiscoveryHelpers.cs")
-    $findCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPViewCommandSet\Commands\View\FindElementsCommand.cs")
+    $closeViewCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewEventHandler.cs")
+    $viewHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ViewCommandHelpers.cs")
+    $discoveryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementDiscoveryHelpers.cs")
+    $findCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsCommand.cs")
     $findToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\find_elements.ts")
     $showPlan3dToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\show_element_in_plan_and_3d.ts")
     $sessionContextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_revit_session_context.ts")
