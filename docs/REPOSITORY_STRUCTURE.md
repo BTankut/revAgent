@@ -57,11 +57,18 @@ implemented as the separate
 activation/close, element focus, and 3D section box behavior.
 
 The dynamic execution and low-level context command source lives in
-`src/revit-plugin/RevitMCPCommandSet`. `SampleCommandSet` is intentionally not
-kept in this repository because it is not used by the installed production
-payload and causes source-layout confusion. This command set owns dynamic
-execution behavior such as `transactionMode`, guarded manual-transaction
-handling, and dynamic compile metadata reference selection.
+`src/revit-plugin/RevitMCPCommandSet`. Keep this project limited to the
+registered production commands: `send_code_to_revit`,
+`get_current_view_elements`, `get_current_view_info`, and
+`get_selected_elements`.
+
+`SampleCommandSet` and the old unregistered create/edit/filter/tag/data
+extraction command sources are intentionally not kept in this repository
+because they are not used by the installed production payload, make command
+assembly scanning noisier, and have historically carried localized or mojibake
+strings into developer-facing source. This command set owns dynamic execution
+behavior such as `transactionMode`, guarded manual-transaction handling, and
+dynamic compile metadata reference selection.
 
 `installer/revit-plugin` is install payload. Production installers copy from this
 folder into `C:\ProgramData\DPE\RevitMCP`. Do not edit the binary payload by
@@ -83,6 +90,9 @@ The stable dynamic command payload under `installer/command-payload` is not
 refreshed by default; replacing it is an explicit release task. When the command
 set changes, refresh both the stable `installer/command-payload` copy and the
 installed Revit command-set payload copy before commit/release validation.
+The smoke tests also assert that the Revit plug-in source remains English-only
+and that the dynamic command-set source surface does not grow beyond the
+registered production commands.
 
 `installer/runtime-mcp-server/src` and `installer/revit-api-docs-mcp/src` are
 the TypeScript MCP source trees. Their `build/` folders remain the runtime

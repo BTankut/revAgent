@@ -65,6 +65,24 @@ function Get-ScriptParamNames {
     return @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
 }
 
+function Assert-NoLocalizedRevitPluginSourceText {
+    param([string]$Root)
+
+    $sourceFiles = Get-ChildItem -LiteralPath (Join-Path $Root "src\revit-plugin") -Recurse -File |
+        Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' -and @(".cs", ".xaml", ".json") -contains $_.Extension }
+    $localizedPattern = '[\u4E00-\u9FFF]|[\u3000-\u303F]|[\uFF00-\uFFEF]|[\u00C0-\u00FF]|\uFFFD'
+    $offenders = @()
+
+    foreach ($file in $sourceFiles) {
+        $content = Get-Content -Raw -LiteralPath $file.FullName
+        if ($content -match $localizedPattern) {
+            $offenders += $file.FullName.Substring($Root.Length + 1)
+        }
+    }
+
+    Assert-Equal $offenders.Count 0 ("Revit plugin source must stay English-only. Offending files: " + ($offenders -join ", "))
+}
+
 $tempRoot = Join-Path $env:TEMP ("revit-mcp-smoke-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
@@ -178,6 +196,25 @@ try {
     Assert-True ($liveCommandsetTest -match 'transactionMode none') "Live commandset integration gate must cover transactionMode none."
     Assert-True ($liveCommandsetTest -match 'manual_transaction_requires_transactionMode_none') "Live commandset integration gate must assert the manual transaction guard reason."
     Assert-True ($liveCommandsetTest -match 'Newtonsoft\.Json\.JsonConvert') "Live commandset integration gate must cover Newtonsoft dynamic compilation."
+    Assert-NoLocalizedRevitPluginSourceText -Root $RepoRoot
+    $commandSetSourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet") -Recurse -File -Filter *.cs |
+        Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } |
+        ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1).Replace('/', '\') } |
+        Sort-Object)
+    $expectedCommandSetSourceFiles = @(
+        "src\revit-plugin\RevitMCPCommandSet\Commands\Access\GetCurrentViewElementsCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\Access\GetCurrentViewInfoCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\Access\GetSelectedElementsCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Models\Common\ElementInfo.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Models\Common\ViewElementsResult.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Models\Common\ViewInfo.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Services\GetCurrentViewElementsEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Services\GetCurrentViewInfoEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Services\GetSelectedElementsEventHandler.cs"
+    )
+    Assert-Equal ($commandSetSourceFiles -join "|") ($expectedCommandSetSourceFiles -join "|") "RevitMCPCommandSet must contain only the production command source surface."
 
     Write-Host "Test Revit command registry includes view command set tools"
     $viewCommandJson = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPViewCommandSet\command.json") | ConvertFrom-Json
@@ -291,6 +328,7 @@ try {
     Assert-True ($taskStatusCode -match 'ShowGuarded') "Task status window must display safety-guarded tasks separately from failures."
     Assert-True ($taskStatusController -match 'ShowGuarded') "Task status controller must route guarded task state to the UI."
     Assert-True ($taskStatusService -match 'GuardTask') "Task status service must support a guarded task state."
+    Assert-True ($taskStatusService -notmatch 'NormalizeErrorMessage|ContainsCjk') "Task status service must not hide localized source text with a sanitizer."
     Assert-True ($socketServiceCode -match 'IsCommandResultGuarded') "Socket service must classify expected safety blocks as guarded tasks."
     Assert-True ($taskStatusCode -match 'Guarded / blocked by safety') "Task status window must describe guarded tasks as a safety block, not a failure."
     Assert-True ($taskStatusCode -match 'return "!"') "Task status history must render guarded tasks with the warning-style exclamation symbol."

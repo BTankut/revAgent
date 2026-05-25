@@ -15,7 +15,9 @@ Production source projects:
   by `send_code_to_revit`, `get_current_view_elements`,
   `get_current_view_info`, and `get_selected_elements`. This project owns
   `transactionMode`, guarded manual-transaction behavior, and dynamic compile
-  reference selection for snippets.
+  reference selection for snippets. Keep this source limited to the registered
+  production commands; old unregistered create/edit/filter/data-extraction
+  command code was intentionally removed.
 - `RevitMCPViewCommandSet/`: transactionless UI view commands exposed as
   `list_open_views`, `activate_view`, `close_view`, and element-focused view
   workflows.

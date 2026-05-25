@@ -150,12 +150,12 @@ namespace revit_mcp_plugin.Core
 
         public McpTaskInfo FailTask(McpTaskInfo startedTask, string error, long? executeMs = null, long? responseBytes = null)
         {
-            return FinishTask(startedTask, "failed", Trim(NormalizeErrorMessage(error), 600), executeMs, responseBytes);
+            return FinishTask(startedTask, "failed", Trim(error?.Trim(), 600), executeMs, responseBytes);
         }
 
         public McpTaskInfo GuardTask(McpTaskInfo startedTask, string reason, long? executeMs = null, long? responseBytes = null)
         {
-            return FinishTask(startedTask, "guarded", Trim(NormalizeErrorMessage(reason), 600), executeMs, responseBytes);
+            return FinishTask(startedTask, "guarded", Trim(reason?.Trim(), 600), executeMs, responseBytes);
         }
 
         public object GetSnapshot(bool isRunning, int port)
@@ -248,41 +248,5 @@ namespace revit_mcp_plugin.Core
             return value.Substring(0, maxLength) + "...";
         }
 
-        private static string NormalizeErrorMessage(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
-
-            string text = value.Trim();
-            int prefixEnd = text.IndexOf(':');
-            int fullWidthPrefixEnd = text.IndexOf('\uFF1A');
-            if (prefixEnd < 0 || (fullWidthPrefixEnd >= 0 && fullWidthPrefixEnd < prefixEnd))
-            {
-                prefixEnd = fullWidthPrefixEnd;
-            }
-
-            if (prefixEnd > 0 && prefixEnd <= 32 && ContainsCjk(text.Substring(0, prefixEnd)))
-            {
-                string remainder = text.Substring(prefixEnd + 1).Trim();
-                return string.IsNullOrWhiteSpace(remainder) ? "Execution failed" : remainder;
-            }
-
-            return text;
-        }
-
-        private static bool ContainsCjk(string value)
-        {
-            foreach (char character in value)
-            {
-                if (character >= 0x4E00 && character <= 0x9FFF)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
     }
 }

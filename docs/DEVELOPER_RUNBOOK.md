@@ -328,6 +328,14 @@ behavior for `transactionMode: "auto"`, `transactionMode: "none"`, guarded
 manual transaction blocking, manual rollback in `none`, and
 `Newtonsoft.Json.JsonConvert` compilation.
 
+Keep `src/revit-plugin/RevitMCPCommandSet` limited to the registered production
+commands: `send_code_to_revit`, `get_current_view_elements`,
+`get_current_view_info`, and `get_selected_elements`. Do not reintroduce old
+unregistered create/edit/filter/tag/data-extraction command sources unless they
+are deliberately promoted into the production registry and fully reviewed. The
+smoke gate rejects localized or mojibake source text instead of hiding it with a
+status-message sanitizer.
+
 This local flow does not run `publish-nas-release.ps1` and does not touch
 `channels\stable.json`.
 

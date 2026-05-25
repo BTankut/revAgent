@@ -29,25 +29,25 @@ namespace RevitMCPCommandSet.Commands.Access
             {
                 try
                 {
-                    // 解析参数
+                    // Parse query parameters.
                     int? limit = parameters?["limit"]?.Value<int>();
 
-                    // 设置数量限制
+                    // Pass the result limit to the Revit external event handler.
                     _handler.Limit = limit;
 
-                    // 触发外部事件并等待完成
+                    // Raise the external event and wait for completion.
                     if (RaiseAndWaitForCompletion(15000))
                     {
                         return _handler.ResultElements;
                     }
                     else
                     {
-                        throw new TimeoutException("获取选中元素超时");
+                        throw new TimeoutException("Timed out while reading selected elements.");
                     }
                 }
                 catch (Exception ex)
                 {
-                    throw new Exception($"获取选中元素失败: {ex.Message}");
+                    throw new Exception($"Failed to read selected elements: {ex.Message}", ex);
                 }
             }
         }
