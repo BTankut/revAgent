@@ -103,7 +103,7 @@ The GUI requests admin rights as soon as it opens. The updater then registers a
 per-user Scheduled Task that checks silently once per day at 12:00 local time.
 Scheduled background checks are launched through a hidden single-line WScript
 wrapper so PowerShell does not flash a terminal window or steal focus, and the
-wrapper returns the child PowerShell exit code. Manual update and repair remain
+wrapper returns the child PowerShell exit code. Manual update and install/repair remain
 available from the GUI and command launchers.
 The Scheduled Task does not use Windows `StartWhenAvailable`: GUI update runs
 already execute an immediate `RunNow` check, so missed daily checks must not
@@ -156,6 +156,21 @@ C:\ProgramData\DPE\RevitMCP\updater\logs\
 
 Updater log retention is automatic. Install and update runs keep the latest
 10 `.log` files in the managed log folder and remove older logs.
+
+Each workstation also publishes its latest install/update state and copied
+operation logs to the NAS report bridge:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports\machines\<computer>\
+  latest.json
+  install-latest.json
+  update-latest.json
+  logs\
+```
+
+The NAS machine folder keeps the latest two copied operation logs. The JSON
+records include `operationMethod`, so support can distinguish GUI install,
+GUI update, scheduled update, manual update, and install/repair runs.
 
 ## Update Behavior
 
@@ -274,7 +289,7 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   notification instead of failing silently in the background. Status output
   reports these as `Pending update`, not as completed version transitions.
 - Normal GUI updates run `update-from-nas.ps1` directly after the updater is
-  already installed. `Repair/Reinstall` remains the explicit path that refreshes
+  already installed. `Install/Repair` remains the explicit path that refreshes
   the updater wrapper, task registration, permissions, and the full package.
 - Already-current update checks return before proxy, scheduled-task,
   Node/Codex Desktop, and npm preparation work after the lightweight Codex
@@ -283,8 +298,8 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
 - Cleanup is limited to known revAgent/RevitMCP-owned install paths.
 - The managed package target is refused if it is a Git working tree unless
   `-AllowReplaceGitPackageTarget` is explicitly passed.
-- Release ZIPs include a generated legacy `kurulum/` alias so older installed
-  updaters can install the renamed `installer/` layout safely.
+- Release ZIPs use the canonical `installer/` layout only; removed compatibility
+  aliases are not regenerated in new releases.
 - Revit version metadata is centralized in `config\revit-versions.json`. The
   current office deployment payload supports Revit 2022 only. Revit
   2023/2024/2025 are modeled for future expansion and must remain blocked until

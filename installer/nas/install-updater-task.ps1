@@ -35,6 +35,7 @@ param(
     [ValidateRange(15, 10080)]
     [int]$NotificationThrottleMinutes = 240,
     [string]$LogPath = "",
+    [string]$OperationMethod = "",
     [switch]$SkipNpmInstall,
     [switch]$SkipCodexMcpRegistration,
     [switch]$SkipCodexUserIntegration,
@@ -58,11 +59,16 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.RevitVersions.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Permissions.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Proxy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
 
 $script:RevitMcpTranscriptStarted = $false
 $script:RevitMcpLogPath = ""
 $script:PreviousTranscriptActive = $env:REVIT_MCP_TRANSCRIPT_ACTIVE
 $script:PreviousLogPath = $env:REVIT_MCP_LOG_PATH
+$script:RevitMcpRemoteReportsRoot = ""
+$script:RevitMcpLatestReport = $null
+$script:RevitMcpOperation = "install"
+$script:RevitMcpOperationMethod = ""
 
 function Initialize-RevitMcpTranscript {
     param(
@@ -137,6 +143,22 @@ function Complete-RevitMcpTranscript {
         catch {
         }
     }
+
+    if ($script:RevitMcpTranscriptStarted -and $null -ne $script:RevitMcpLatestReport -and -not [string]::IsNullOrWhiteSpace($script:RevitMcpRemoteReportsRoot)) {
+        try {
+            Publish-RevitMcpMachineRunReport `
+                -ReportsRoot $script:RevitMcpRemoteReportsRoot `
+                -Report $script:RevitMcpLatestReport `
+                -Operation $script:RevitMcpOperation `
+                -OperationMethod $script:RevitMcpOperationMethod `
+                -LogPath $logPath `
+                -KeepLastLogs 2 `
+                -WriteCompatibilityReport | Out-Null
+        }
+        catch {
+            Write-Warning "Could not publish remote install report/log: $($_.Exception.Message)"
+        }
+    }
 }
 
 function Write-JsonFile {
@@ -153,24 +175,87 @@ function Write-JsonFile {
     $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
+function Read-OptionalJsonFile {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-EffectiveInstallOperationMethod {
+    if (-not [string]::IsNullOrWhiteSpace($OperationMethod)) {
+        return $OperationMethod
+    }
+    if ($ForceUpdate) {
+        return "install-repair"
+    }
+    return "install"
+}
+
+function Set-RevitMcpInstallRunReport {
+    param(
+        [string]$Status,
+        [string]$Message
+    )
+
+    $channel = Read-OptionalJsonFile -Path $ChannelManifestPath
+    $installedState = Read-OptionalJsonFile -Path (Join-Path $WorkRoot "installed.json")
+    $targetVersion = if ($channel -and $channel.version) { [string]$channel.version } else { $null }
+    $installedVersion = if ($installedState -and $installedState.version) { [string]$installedState.version } else { $null }
+
+    $script:RevitMcpLatestReport = [ordered]@{
+        schemaVersion = 1
+        app = "revit-mcp-skill"
+        operation = $script:RevitMcpOperation
+        operationMethod = $script:RevitMcpOperationMethod
+        status = $Status
+        message = $Message
+        computerName = $env:COMPUTERNAME
+        userName = $env:USERNAME
+        atUtc = (Get-Date).ToUniversalTime().ToString("o")
+        channel = if ($channel) { $channel.channel } else { $null }
+        previousVersion = $installedVersion
+        targetVersion = $targetVersion
+        installedVersion = $installedVersion
+        paths = [ordered]@{
+            installRoot = $InstallRoot
+            packageTarget = $PackageTarget
+            serverTarget = $ServerTarget
+            workRoot = $WorkRoot
+            revitInstallRoot = $RevitInstallRoot
+            channelManifestPath = $ChannelManifestPath
+            logPath = $script:RevitMcpLogPath
+        }
+    }
+}
+
 function Invoke-InitialUpdateCheck {
     param(
         [string]$UpdaterPath,
         [string]$UpdaterConfigPath,
-        [switch]$ForceUpdate
+        [switch]$ForceUpdate,
+        [string]$OperationMethod = "initial-update"
     )
 
     if ($env:REVIT_MCP_AUDIT_ONLY) {
-        & $UpdaterPath -ConfigPath $UpdaterConfigPath -AuditOnly -NoNotifyUser
+        & $UpdaterPath -ConfigPath $UpdaterConfigPath -AuditOnly -NoNotifyUser -OperationMethod "initial-audit"
         return
     }
 
     if ($ForceUpdate) {
-        & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup -Force
+        & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup -Force -OperationMethod $OperationMethod
         return
     }
 
-    & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup
+    & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup -OperationMethod $OperationMethod
 }
 
 function Test-CurrentProcessElevated {
@@ -744,7 +829,7 @@ function Write-UpdaterCommandFiles {
     $manualCommandPath = Join-Path $UpdaterWorkRoot "Update-Revit-MCP-Now.cmd"
     $manualCommandLines = @(
         "@echo off",
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -NoNotifyUser -AllowManualCodexSetup",
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -NoNotifyUser -AllowManualCodexSetup -OperationMethod manual-update",
         "pause"
     )
     $manualCommandLines | Set-Content -LiteralPath $manualCommandPath -Encoding ASCII
@@ -795,7 +880,7 @@ function Write-UpdaterCommandFiles {
             "    `$sleepSeconds = [Math]::Max(60, [int][Math]::Ceiling((`$nextRun - (Get-Date)).TotalSeconds))",
             "    Start-Sleep -Seconds `$sleepSeconds",
             "    try {",
-            "        & `$UpdaterPath -ConfigPath `$ConfigPath -NotifyUser",
+            "        & `$UpdaterPath -ConfigPath `$ConfigPath -NotifyUser -OperationMethod startup-fallback-update",
             "    }",
             "    catch {",
             "    }",
@@ -845,7 +930,15 @@ if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
     $ServerTarget = Join-Path $InstallRoot "runtime"
 }
 
+$script:RevitMcpOperationMethod = Get-EffectiveInstallOperationMethod
 Initialize-RevitMcpTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $LogPath -Prefix "install"
+Write-Host "Operation method : $script:RevitMcpOperationMethod"
+if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
+    $channelDir = Split-Path -Parent $ChannelManifestPath
+    $releaseRootGuess = Split-Path -Parent $channelDir
+    $ReportsRoot = Join-Path $releaseRootGuess "reports"
+}
+$script:RevitMcpRemoteReportsRoot = $ReportsRoot
 
 try {
 $ProxyUrl = ConvertTo-RevitMcpProxyUrl -Value $ProxyUrl
@@ -879,11 +972,7 @@ if (-not [string]::IsNullOrWhiteSpace($nasConfigRoot)) {
     Copy-Item -LiteralPath $nasConfigRoot -Destination $localConfigRoot -Recurse -Force
 }
 
-if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
-    $channelDir = Split-Path -Parent $ChannelManifestPath
-    $releaseRootGuess = Split-Path -Parent $channelDir
-    $ReportsRoot = Join-Path $releaseRootGuess "reports"
-}
+$script:RevitMcpRemoteReportsRoot = $ReportsRoot
 
 $config = [ordered]@{
     schemaVersion = 1
@@ -912,6 +1001,7 @@ $config = [ordered]@{
     notificationThrottleMinutes = $NotificationThrottleMinutes
     logsRoot = (Join-Path $WorkRoot "logs")
     installLogPath = $script:RevitMcpLogPath
+    installOperationMethod = $script:RevitMcpOperationMethod
     installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
 }
 Write-JsonFile -Path $configPath -Value $config
@@ -926,13 +1016,14 @@ if ($NoScheduledTask) {
     if ($RunNow) {
         Write-Host ""
         Write-Host "Running initial update check..."
-        Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate
+        Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -OperationMethod ("{0}-initial-update" -f $script:RevitMcpOperationMethod)
     }
+    Set-RevitMcpInstallRunReport -Status "completed" -Message ("Updater install completed by {0}." -f $script:RevitMcpOperationMethod)
     return
 }
 
 $hiddenLauncherPath = Get-HiddenUpdaterLauncherPath -UpdaterConfigPath $configPath
-Write-HiddenPowerShellLauncher -LauncherPath $hiddenLauncherPath -ScriptPath $localUpdater -ScriptArguments @("-ConfigPath", $configPath, "-NotifyUser") -WaitForExit
+Write-HiddenPowerShellLauncher -LauncherPath $hiddenLauncherPath -ScriptPath $localUpdater -ScriptArguments @("-ConfigPath", $configPath, "-NotifyUser", "-OperationMethod", "scheduled-update") -WaitForExit
 $action = New-HiddenUpdaterScheduledTaskAction -LauncherPath $hiddenLauncherPath
 $dailyTrigger = New-RevitMcpDailyUpdateTrigger -DailyAt $DailyAt
 $triggers = @($dailyTrigger)
@@ -973,8 +1064,9 @@ Write-Host "Show version    : $versionCommandPath" -ForegroundColor Green
 if ($RunNow) {
     Write-Host ""
     Write-Host "Running initial update check..."
-    Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate
+    Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -OperationMethod ("{0}-initial-update" -f $script:RevitMcpOperationMethod)
 }
+Set-RevitMcpInstallRunReport -Status "completed" -Message ("Updater install completed by {0}." -f $script:RevitMcpOperationMethod)
 }
 catch {
     Write-Host ""
@@ -982,6 +1074,7 @@ catch {
     if (-not [string]::IsNullOrWhiteSpace($script:RevitMcpLogPath)) {
         Write-Host "Install log: $script:RevitMcpLogPath" -ForegroundColor Yellow
     }
+    Set-RevitMcpInstallRunReport -Status "failed" -Message $_.Exception.Message
     throw
 }
 finally {

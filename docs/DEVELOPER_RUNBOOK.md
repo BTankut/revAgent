@@ -460,6 +460,12 @@ releases\
     revit-mcp-skill-<version>.zip
     manifest.json
 reports\
+  machines\
+    <computer>\
+      latest.json
+      install-latest.json
+      update-latest.json
+      logs\
 tools\
 ```
 
@@ -491,11 +497,10 @@ The local dependency folder is ignored by Git. Keep it populated on the
 development workstation before publishing. `publish-nas-release.ps1` copies it
 to NAS `tools\dependencies\`, while excluding it from the versioned release ZIP.
 
-Release ZIP compatibility:
+Release ZIP layout:
 
 - canonical package folder: `installer/`
-- generated legacy alias inside the ZIP: `kurulum/`
-- purpose: older workstation updaters can still install renamed layouts
+- removed compatibility aliases are not regenerated in new releases
 
 Dependency restore note:
 
@@ -536,6 +541,19 @@ C:\ProgramData\DPE\RevitMCP\updater\logs\
 
 The updater keeps only the latest 10 `.log` files in the managed log folder.
 Install and update runs prune older logs automatically.
+Each install/update also publishes a per-machine support record to NAS:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports\machines\<computer>\
+  latest.json
+  install-latest.json
+  update-latest.json
+  logs\
+```
+
+The NAS machine folder keeps the latest two copied operation logs. The JSON
+records include the operation method, such as GUI install, GUI update,
+scheduled update, or install/repair.
 
 The workstation install root is:
 
@@ -566,7 +584,7 @@ per day at 12:00 local time. If Scheduled Task registration is blocked, the
 Startup fallback launches a hidden `auto-update-loop.ps1` process for the user
 session and follows the same daily 12:00 schedule. New installs remove legacy
 `Revit MCP Auto Update.cmd` / `.vbs` fallback launchers. Manual update and
-repair/reinstall remain available from the updater GUI and command launchers.
+install/repair remain available from the updater GUI and command launchers.
 
 The GUI requests admin rights immediately at startup. If Windows opens the GUI
 with different admin credentials, user-profile Codex integration may be written

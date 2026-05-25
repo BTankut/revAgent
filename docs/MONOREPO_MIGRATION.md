@@ -27,6 +27,6 @@ DLL built from a different source revision.
 
 ## Layout Update
 
-The Turkish `kurulum/` folder was replaced by the canonical English
-`installer/` folder. NAS packages still include a generated `kurulum/`
-compatibility alias for older workstation updaters.
+The old localized installer folder name was replaced by the canonical
+`installer/` folder. New NAS packages do not generate compatibility aliases for
+that removed layout.

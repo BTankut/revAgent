@@ -125,7 +125,7 @@ elseif (-not [string]::IsNullOrWhiteSpace($channelVersion)) {
         $status = "update available: {0} -> {1}" -f $installedVersion, $channelVersion
     }
     else {
-        $status = "repair/reinstall available: {0} -> {1}" -f $installedVersion, $channelVersion
+        $status = "install/repair available: {0} -> {1}" -f $installedVersion, $channelVersion
     }
 }
 else {
@@ -169,7 +169,7 @@ if ($Technical) {
 if ($status -like "update available:*") {
     Write-Host "Next step       : close Revit and run Update."
 }
-elseif ($status -like "repair/reinstall available:*") {
-    Write-Host "Next step       : use Repair/Reinstall if you want to install the available release."
+elseif ($status -like "install/repair available:*") {
+    Write-Host "Next step       : use Install/Repair if you want to install the available release."
 }
 Write-Host ""

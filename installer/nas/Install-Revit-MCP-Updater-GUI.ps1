@@ -172,7 +172,7 @@ function Get-ChannelStatus {
             UpdateEnabled = $false
             RestoreEnabled = $true
             UpdateButtonText = "Update"
-            StatusText = "Current: $installedVersion. Restore/repair is available."
+            StatusText = "Current: $installedVersion. Install/repair is available."
         }
     }
 
@@ -196,7 +196,7 @@ function Get-ChannelStatus {
         UpdateEnabled = $false
         RestoreEnabled = $true
         UpdateButtonText = "Update"
-        StatusText = "Installed version differs from or is newer than the release target. Repair/reinstall is available: $installedVersion -> $channelVersion"
+        StatusText = "Installed version differs from or is newer than the release target. Install/repair is available: $installedVersion -> $channelVersion"
     }
 }
 
@@ -344,14 +344,14 @@ $buttonPanel.Margin = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
 $root.Controls.Add($buttonPanel, 0, 5)
 
 $runButton = New-Object System.Windows.Forms.Button
-$runButton.Text = "Update"
+$runButton.Text = "Install/Update"
 $runButton.Width = 110
 $runButton.Height = 32
 $buttonPanel.Controls.Add($runButton)
 
 $restoreButton = New-Object System.Windows.Forms.Button
-$restoreButton.Text = "Repair/Reinstall"
-$restoreButton.Width = 125
+$restoreButton.Text = "Install/Repair"
+$restoreButton.Width = 120
 $restoreButton.Height = 32
 $buttonPanel.Controls.Add($restoreButton)
 
@@ -423,10 +423,10 @@ function Start-InstallerOperation {
     }
 
     if ($Operation -eq "restore") {
-        $message = "Repair/Reinstall installs the release target package with force.`r`n`r`nInstalled: $($status.InstalledVersion)`r`nRelease: $($status.ChannelVersion)`r`n`r`nContinue?"
+        $message = "Install/Repair installs the release target package with force.`r`n`r`nInstalled: $($status.InstalledVersion)`r`nRelease: $($status.ChannelVersion)`r`n`r`nContinue?"
         $choice = [System.Windows.Forms.MessageBox]::Show(
             $message,
-            "revAgent Repair",
+            "revAgent Install/Repair",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Warning)
         if ($choice -ne [System.Windows.Forms.DialogResult]::Yes) {
@@ -436,7 +436,16 @@ function Start-InstallerOperation {
 
     $script:ActiveLogPath = New-RunLogPath
     $script:LastLogLength = -1
-    $operationLabel = if ($Operation -eq "restore") { "Repair/reinstall" } else { "Install/update" }
+    $operationMethod = if ($Operation -eq "restore") {
+        if ([string]::IsNullOrWhiteSpace($status.InstalledVersion)) { "gui-install" } else { "gui-install-repair" }
+    }
+    elseif ([string]::IsNullOrWhiteSpace($status.InstalledVersion)) {
+        "gui-install"
+    }
+    else {
+        "gui-update"
+    }
+    $operationLabel = if ($operationMethod -eq "gui-install-repair") { "Install/repair" } elseif ($operationMethod -eq "gui-install") { "Install" } else { "Update" }
     $logBox.Text = "$operationLabel starting...`r`n"
     $statusLabel.Text = "Running."
     $progress.Style = "Marquee"
@@ -459,6 +468,7 @@ function Start-InstallerOperation {
             "-ServerTarget", $serverTarget,
             "-NoNotifyUser",
             "-AllowManualCodexSetup",
+            "-OperationMethod", $operationMethod,
             "-LogPath", $script:ActiveLogPath
         )
     }
@@ -473,6 +483,7 @@ function Start-InstallerOperation {
             "-PackageTarget", $packageTarget,
             "-ServerTarget", $serverTarget,
             "-RunNow",
+            "-OperationMethod", $operationMethod,
             "-LogPath", $script:ActiveLogPath
         )
     }

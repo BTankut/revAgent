@@ -35,6 +35,7 @@ param(
     [string]$CodexWorkspaceRoot = "C:\Projects",
     [string]$TaskName = "revAgent Auto Update",
     [string]$LogPath = "",
+    [string]$OperationMethod = "",
     [switch]$NotifyUser,
     [switch]$NoNotifyUser,
     [ValidateRange(15, 10080)]
@@ -59,6 +60,7 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.UpdatePolicy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Proxy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
 
 $updaterVersion = "0.1.0"
 $script:RevitMcpTranscriptStarted = $false
@@ -67,6 +69,21 @@ $script:PreviousTranscriptActive = $env:REVIT_MCP_TRANSCRIPT_ACTIVE
 $script:PreviousLogPath = $env:REVIT_MCP_LOG_PATH
 $script:RevitMcpProxyUrl = ""
 $script:RevitMcpProxyBypass = "<local>"
+$script:RevitMcpRemoteReportsRoot = ""
+$script:RevitMcpLatestReport = $null
+$script:RevitMcpOperation = if ($AuditOnly) { "audit" } else { "update" }
+$script:RevitMcpOperationMethod = if (-not [string]::IsNullOrWhiteSpace($OperationMethod)) {
+    $OperationMethod
+}
+elseif ($AuditOnly) {
+    "audit"
+}
+elseif ($Force) {
+    "force-update"
+}
+else {
+    "update"
+}
 
 function Initialize-RevitMcpTranscript {
     param(
@@ -139,6 +156,22 @@ function Complete-RevitMcpTranscript {
             Invoke-RevitMcpLogRetention -LogsRoot (Split-Path -Parent $logPath) -KeepLast 10 -ActiveLogPath $logPath
         }
         catch {
+        }
+    }
+
+    if ($script:RevitMcpTranscriptStarted -and $null -ne $script:RevitMcpLatestReport -and -not [string]::IsNullOrWhiteSpace($script:RevitMcpRemoteReportsRoot)) {
+        try {
+            Publish-RevitMcpMachineRunReport `
+                -ReportsRoot $script:RevitMcpRemoteReportsRoot `
+                -Report $script:RevitMcpLatestReport `
+                -Operation $script:RevitMcpOperation `
+                -OperationMethod $script:RevitMcpOperationMethod `
+                -LogPath $logPath `
+                -KeepLastLogs 2 `
+                -WriteCompatibilityReport | Out-Null
+        }
+        catch {
+            Write-Warning "Could not publish remote update report/log: $($_.Exception.Message)"
         }
     }
 }
@@ -1737,16 +1770,6 @@ function Get-InstalledComponentSha256 {
         return $installedSha
     }
 
-    if ($relativePath.StartsWith("installer\", [System.StringComparison]::OrdinalIgnoreCase)) {
-        $legacyRelativePath = "kurulum\" + $relativePath.Substring("installer\".Length)
-        return Get-RelativeFileSha256OrNull -Root $PackageTarget -RelativePath $legacyRelativePath
-    }
-
-    if ($relativePath.StartsWith("kurulum\", [System.StringComparison]::OrdinalIgnoreCase)) {
-        $canonicalRelativePath = "installer\" + $relativePath.Substring("kurulum\".Length)
-        return Get-RelativeFileSha256OrNull -Root $PackageTarget -RelativePath $canonicalRelativePath
-    }
-
     return ""
 }
 
@@ -1766,9 +1789,6 @@ function Get-ActualRevitPayloadPathMapping {
     }
 
     $normalizedPath = $RelativePath.Replace("/", "\")
-    if ($normalizedPath.StartsWith("kurulum\", [System.StringComparison]::OrdinalIgnoreCase)) {
-        $normalizedPath = "installer\" + $normalizedPath.Substring("kurulum\".Length)
-    }
 
     if ([string]::Equals($normalizedPath, "installer\revit-plugin\mcp-servers-for-revit.addin", [System.StringComparison]::OrdinalIgnoreCase)) {
         return [pscustomobject][ordered]@{
@@ -1829,9 +1849,7 @@ function Test-RevitPayloadComponentPath {
 
     foreach ($prefix in @(
             "installer\revit-plugin\",
-            "installer\command-payload\",
-            "kurulum\revit-plugin\",
-            "kurulum\command-payload\"
+            "installer\command-payload\"
         )) {
         if ($RelativePath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
             return $true
@@ -2006,6 +2024,8 @@ function Write-UpdateReport {
         schemaVersion = 1
         app = "revit-mcp-skill"
         updaterVersion = $updaterVersion
+        operation = $script:RevitMcpOperation
+        operationMethod = $script:RevitMcpOperationMethod
         status = $Status
         message = $Message
         computerName = $env:COMPUTERNAME
@@ -2029,6 +2049,8 @@ function Write-UpdateReport {
     }
 
     Write-JsonFile -Path $LocalReportPath -Value $report
+    $script:RevitMcpLatestReport = $report
+    $script:RevitMcpRemoteReportsRoot = $RemoteReportsRoot
 
     if (-not [string]::IsNullOrWhiteSpace($RemoteReportsRoot)) {
         try {
@@ -2261,7 +2283,7 @@ function Install-UpdaterToolsFromPackage {
     if (Test-Path -LiteralPath $updaterPath -PathType Leaf) {
         @(
             "@echo off",
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -NoNotifyUser -AllowManualCodexSetup",
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -NoNotifyUser -AllowManualCodexSetup -OperationMethod manual-update",
             "pause"
         ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Update-Revit-MCP-Now.cmd") -Encoding ASCII
     }
@@ -2353,6 +2375,7 @@ if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
     $releaseRootGuess = Split-Path -Parent $channelDir
     $ReportsRoot = Join-Path $releaseRootGuess "reports"
 }
+$script:RevitMcpRemoteReportsRoot = $ReportsRoot
 
 $installedState = Get-InstalledState -Path $statePath
 $channel = $null
@@ -2390,10 +2413,29 @@ try {
     $installedSha = if ($installedState) { [string]$installedState.packageSha256 } else { "" }
     $installedVersionLabel = Get-VersionLabel $installedVersion
     $isFirstInstall = [string]::IsNullOrWhiteSpace($installedVersion)
+    $script:RevitMcpOperation = if ($AuditOnly) { "audit" } elseif ($isFirstInstall) { "install" } else { "update" }
+    if ([string]::IsNullOrWhiteSpace($OperationMethod)) {
+        $script:RevitMcpOperationMethod = if ($AuditOnly) {
+            "audit"
+        }
+        elseif ($Force) {
+            "force-update"
+        }
+        elseif ($isFirstInstall) {
+            "install"
+        }
+        elseif ($NotifyUser) {
+            "scheduled-update"
+        }
+        else {
+            "update"
+        }
+    }
 
     Write-Host "Channel version  : $targetVersion"
     Write-Host "Installed version: $installedVersionLabel"
     Write-Host "Version change   : $installedVersionLabel -> $targetVersion"
+    Write-Host "Operation method : $script:RevitMcpOperationMethod"
     Write-Host "Package          : $packagePath"
 
     $installedManifest = Get-InstalledReleaseManifest -InstalledState $installedState -PackageTarget $PackageTarget

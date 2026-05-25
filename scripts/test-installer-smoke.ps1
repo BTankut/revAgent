@@ -278,8 +278,9 @@ try {
 
     Write-Host "Test GUI updater exposes update and restore actions"
     $guiText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Install-Revit-MCP-Updater-GUI.ps1")
-    Assert-True ($guiText -match 'Repair/Reinstall') "GUI must expose a separate repair/reinstall button."
+    Assert-True ($guiText -match 'Install/Repair') "GUI must expose a separate install/repair button."
     Assert-True ($guiText -match '-ForceUpdate') "GUI restore action must force the channel package install."
+    Assert-True ($guiText -match '-OperationMethod", \$operationMethod') "GUI operations must pass the visible install/update method to child logs."
     Assert-True ($guiText -match 'UpdateEnabled') "GUI must gate the update button from channel status."
     Assert-True ($guiText -match '\$directUpdaterPath = Join-Path \$PSScriptRoot "update-from-nas\.ps1"') "GUI update action must use the direct updater instead of reinstalling the updater wrapper."
     Assert-True ($guiText -match '\$useDirectUpdate = \$Operation -eq "update"') "GUI must reserve direct updater execution for normal updates."
@@ -313,14 +314,23 @@ try {
     Assert-True ($updateText -match 'Fast update path failed; falling back to the full repair/install path') "Fast update failures must warn and fall back to the full repair/install path."
     Assert-True ($updateText -match '\$runSelfContainedInstaller = \$true') "Fast update failure must enable the self-contained installer fallback."
     Assert-True ($updateText -match 'fastUpdateFallbackUsed') "Updater reports must record whether the fast path fell back."
+    Assert-True ($updateText -match 'operationMethod = \$script:RevitMcpOperationMethod') "Updater reports must record the install/update method used."
+    Assert-True ($updateText -match 'Publish-RevitMcpMachineRunReport') "Updater must publish per-machine NAS reports and logs."
     Assert-True ($updateText -match '\.revagent-npm-dependencies\.json') "Updater payload fingerprints must ignore npm dependency marker files."
     Assert-True ($updateText -notmatch 'Repair-RevitMcpScheduledTaskAction -Name \$TaskName') "Normal updates must not run an extra scheduled-task repair before the package installer."
+    $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
+    Assert-True ($installTaskText -match 'installOperationMethod = \$script:RevitMcpOperationMethod') "Updater installer config must record the install/repair method."
+    Assert-True ($installTaskText -match 'Publish-RevitMcpMachineRunReport') "Updater installer must publish per-machine NAS reports and logs."
+    Assert-True ($installTaskText -match '-OperationMethod", "scheduled-update"') "Scheduled updater launcher must tag background runs in logs."
     $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
     Assert-True ($publishText -match '\$components\["runtimePayload"\] = Get-DirectoryTreeHash') "Release manifest must include a runtime payload fingerprint."
     Assert-True ($publishText -match '\$components\["docsServerPayload"\] = Get-DirectoryTreeHash') "Release manifest must include a docs payload fingerprint."
     Assert-True ($publishText -match 'foreach \(\$payloadRoot in @\("installer\\revit-plugin", "installer\\command-payload"\)\)') "Release manifest must classify Revit add-in and command payload trees as Revit-close-required."
     Assert-True ($publishText -match 'revitClosedRequiredPaths = @\(\s+"installer\\revit-plugin"\s+"installer\\command-payload"\s+\)') "Release manifest must advertise Revit-close-required payload paths."
     Assert-True ($publishText -match '\.revagent-npm-dependencies\.json') "Release payload fingerprints must ignore npm dependency marker files."
+    Assert-True ($publishText -notmatch 'kurulum|legacyEntryPoint|legacyInstaller') "Release publishing must not create the removed legacy kurulum package alias."
+    $packageLibText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.Package.psm1")
+    Assert-True ($packageLibText -notmatch 'kurulum') "Package layout resolution must not keep the removed legacy kurulum path."
     Assert-True ($guiText -notmatch 'Guncelle|Surum|Kapat|Kurulum|Kanal|Hazir|Islem|Calisiyor|Baslatilamadi|bulunamadi|hata') "GUI product strings must remain English."
     Assert-True ($guiText -notmatch 'Revit MCP Installer|Revit MCP install and update|Stable Restore|Stable channel|Stable version') "GUI product labels must not expose internal MCP wording or legacy channel wording."
 
@@ -525,7 +535,7 @@ try {
             version = "2026.05.15.1259-b397869c"
         })
     $versionOutput = & (Join-Path $RepoRoot "installer\nas\show-installed-version.ps1") -ConfigPath $configPath 2>&1 6>&1 | Out-String
-    Assert-True ($versionOutput -match 'repair/reinstall available') "Newer local/dev install should be reported as repair/reinstall available against an older release target."
+    Assert-True ($versionOutput -match 'install/repair available') "Newer local/dev install should be reported as install/repair available against an older release target."
     Assert-True ($versionOutput -match 'revAgent status') "Version status window must use the revAgent product name."
     Assert-True ($versionOutput -notmatch 'Revit MCP version status|Install root|Manual update|Config\s+:|Stable|Channel\s+:|Channel version') "Default version status must not expose internal product, path details, or legacy channel wording."
 
@@ -626,6 +636,17 @@ try {
     Write-RevitMcpJsonFile -Path $reportPath -Value $report
     $reportJson = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
     Assert-Equal $reportJson.status "current" "Report JSON status was not written."
+    $remoteReportsRoot = Join-Path $tempRoot "reports"
+    $operationLog = Join-Path $tempRoot "install.log"
+    Set-Content -LiteralPath $operationLog -Value "Operation method : gui-install" -Encoding ASCII
+    Publish-RevitMcpMachineRunReport -ReportsRoot $remoteReportsRoot -Report $report -Operation "install" -OperationMethod "gui-install" -LogPath $operationLog -KeepLastLogs 2 -WriteCompatibilityReport | Out-Null
+    $safeComputer = ConvertTo-RevitMcpSafePathSegment -Value $env:COMPUTERNAME -Fallback "unknown-computer"
+    $machineLatest = Join-Path $remoteReportsRoot ("machines\{0}\latest.json" -f $safeComputer)
+    Assert-True (Test-Path -LiteralPath $machineLatest -PathType Leaf) "Machine latest report must be written under reports\\machines\\<computer>."
+    $machineReport = Get-Content -Raw -LiteralPath $machineLatest | ConvertFrom-Json
+    Assert-Equal $machineReport.operationMethod "gui-install" "Machine report must record operationMethod."
+    $machineLogsRoot = Join-Path $remoteReportsRoot ("machines\{0}\logs" -f $safeComputer)
+    Assert-Equal (@(Get-ChildItem -LiteralPath $machineLogsRoot -File -Filter "*.log").Count) 1 "Machine report log must be copied to NAS report storage."
 
     Write-Host "Test updater log retention"
     $logsRoot = Join-Path $tempRoot "logs-retention"

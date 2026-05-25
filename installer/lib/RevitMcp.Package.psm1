@@ -30,8 +30,7 @@ function Resolve-RevitMcpPackageLayout {
         $installerCandidates.Add([string]$ReleaseManifest.installer.entryPoint)
     }
     foreach ($candidate in @(
-            "installer\install-self-contained.ps1",
-            "kurulum\install-self-contained.ps1"
+            "installer\install-self-contained.ps1"
         )) {
         if (-not $installerCandidates.Contains($candidate)) {
             $installerCandidates.Add($candidate)
@@ -53,7 +52,7 @@ function Resolve-RevitMcpPackageLayout {
         if (-not $docsCandidates.Contains($defaultDocs)) {
             $docsCandidates.Add($defaultDocs)
         }
-        foreach ($legacyDocs in @("installer\revit-api-docs-mcp", "kurulum\revit-api-docs-mcp")) {
+        foreach ($legacyDocs in @("installer\revit-api-docs-mcp")) {
             if (-not $docsCandidates.Contains($legacyDocs)) {
                 $docsCandidates.Add($legacyDocs)
             }

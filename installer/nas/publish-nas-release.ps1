@@ -220,22 +220,6 @@ function ConvertTo-ComponentKey {
     return "{0}{1}" -f $Prefix, $normalized
 }
 
-function Add-LegacyPackageCompatibility {
-    param([string]$PackageRoot)
-
-    $canonicalInstallerRoot = Join-Path $PackageRoot "installer"
-    $legacyInstallerRoot = Join-Path $PackageRoot "kurulum"
-    if (-not (Test-Path -LiteralPath $canonicalInstallerRoot -PathType Container)) {
-        throw "Canonical installer folder was not staged: $canonicalInstallerRoot"
-    }
-    if (Test-Path -LiteralPath $legacyInstallerRoot) {
-        Remove-Item -LiteralPath $legacyInstallerRoot -Recurse -Force
-    }
-
-    Copy-DirectoryFiltered -Source $canonicalInstallerRoot -Destination $legacyInstallerRoot
-    Write-Host "Added legacy package alias: kurulum -> installer" -ForegroundColor Yellow
-}
-
 function Write-JsonFile {
     param(
         [Parameter(Mandatory = $true)]
@@ -312,7 +296,6 @@ New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 try {
     Write-Section "Stage package"
     Copy-DirectoryFiltered -Source $RepoRoot -Destination $packageRoot
-    Add-LegacyPackageCompatibility -PackageRoot $packageRoot
 
     $releaseInfo = [ordered]@{
         schemaVersion = 1
@@ -361,7 +344,6 @@ try {
         commandSet = "installer\command-payload\RevitMCPCommandSet.dll"
         runtimePackageLock = "installer\runtime-mcp-server\package-lock.json"
         docsPackageLock = "installer\revit-api-docs-mcp\package-lock.json"
-        legacyInstaller = "kurulum\install-self-contained.ps1"
     }
 
     $revitClosedRequiredComponentKeys = [System.Collections.Generic.List[string]]::new()
@@ -423,7 +405,6 @@ try {
         installer = [ordered]@{
             entryPoint = "installer\install-self-contained.ps1"
             docsServerPath = "installer\revit-api-docs-mcp"
-            legacyEntryPoint = "kurulum\install-self-contained.ps1"
             updaterMinimumVersion = "0.1.0"
         }
         updatePolicy = [ordered]@{

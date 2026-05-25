@@ -47,7 +47,7 @@ function Repair-RevitMcpHiddenScheduledTaskAction {
         Write-RevitMcpHiddenPowerShellLauncher `
             -LauncherPath $launcherPath `
             -ScriptPath $UpdaterPath `
-            -ScriptArguments @("-ConfigPath", $UpdaterConfigPath, "-NotifyUser") `
+            -ScriptArguments @("-ConfigPath", $UpdaterConfigPath, "-NotifyUser", "-OperationMethod", "scheduled-update") `
             -WaitForExit
         $action = New-RevitMcpHiddenUpdaterScheduledTaskAction -LauncherPath $launcherPath
         $trigger = New-RevitMcpDailyUpdateTrigger -DailyAt $DailyAt

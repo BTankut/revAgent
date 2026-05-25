@@ -137,6 +137,6 @@ powershell -ExecutionPolicy Bypass -File .\installer\nas\publish-nas-release.ps1
   -Channel stable
 ```
 
-The generated release ZIP remains self-contained for office workstations. During
-packaging, `publish-nas-release.ps1` also adds a legacy `kurulum/` alias inside
-the ZIP so older workstation updaters can install the renamed layout safely.
+The generated release ZIP remains self-contained for office workstations. The
+package uses the canonical `installer/` layout only; removed compatibility
+aliases are not regenerated in new releases.

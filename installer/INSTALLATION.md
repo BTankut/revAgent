@@ -45,8 +45,10 @@ C:\ProgramData\DPE\RevitMCP\updater\logs
 ```
 
 Automatic update checks run once daily at 12:00 local time. Manual update and
-repair/reinstall remain available from the NAS GUI and command launchers. The
+install/repair remain available from the NAS GUI and command launchers. The
 managed log folder is pruned automatically to keep the latest 10 `.log` files.
+The NAS deployment report bridge also keeps per-machine latest status JSON and
+the latest two copied operation logs under `reports\machines\<computer>`.
 
 ## Manual Repo-Root Install
 
