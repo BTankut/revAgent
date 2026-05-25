@@ -385,10 +385,13 @@ try {
     $smartFocusToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\smart_focus_elements.ts")
     $sendCodeToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit.ts")
     $closeViewCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewEventHandler.cs")
+    $create3dHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsEventHandler.cs")
+    $sectionBoxHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\SectionBoxElementsEventHandler.cs")
     $viewHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ViewCommandHelpers.cs")
     $discoveryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementDiscoveryHelpers.cs")
     $findCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsCommand.cs")
     $findToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\find_elements.ts")
+    $inspectElementsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_elements.ts")
     $showPlan3dToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\show_element_in_plan_and_3d.ts")
     $sessionContextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_revit_session_context.ts")
     $instanceListToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\list_revit_instances.ts")
@@ -450,6 +453,18 @@ try {
     Assert-True ($parameterSchemaToolCode -match 'duplicateDisplayNameWarnings') "Parameter schema inspection must report duplicate display-name warnings for write preflight."
     Assert-True ($parameterSchemaToolCode -match 'write_preflight_warning') "Duplicate parameter display names must be labeled as write-preflight risk."
     Assert-True ($viewHelpersCode -match 'ActiveViewChanged') "View operation results must include active-view change state."
+    Assert-True ($viewHelpersCode -match 'BeforeView') "View operation results must expose a stable before-view summary."
+    Assert-True ($viewHelpersCode -match 'AfterView') "View operation results must expose a stable after-view summary."
+    Assert-True ($viewHelpersCode -match 'PopulateViewTransition\(ElementFocusResult') "Element focus results must use the shared before/after active-view transition helper."
+    Assert-True ($focusHandlerCode -match 'PopulateViewTransition\(result, _activeViewBefore, result\.ActiveView\)') "focus_elements must populate before/after active-view diagnostics on every response."
+    Assert-True ($openPlanCode -match 'PopulateViewTransition\(result, _activeViewBefore, result\.ActiveView\)') "open_existing_plan_for_element_level must populate before/after active-view diagnostics on every response."
+    Assert-True ($create3dHandlerCode -match 'PopulateViewTransition\(result, _activeViewBefore, result\.ActiveView\)') "create_3d_view_for_elements must populate before/after active-view diagnostics on every response."
+    Assert-True ($sectionBoxHandlerCode -match 'PopulateViewTransition\(result, _activeViewBefore, result\.ActiveView\)') "section_box_elements must populate before/after active-view diagnostics on every response."
+    Assert-True ($sectionBoxHandlerCode -match 'SectionBoxState = sectionBoxActive \? "active" : "inactive"') "section_box_elements must report the resulting section-box state."
+    Assert-True ($sectionBoxHandlerCode -match 'SectionBoxNote = ElementFocusHelpers\.BuildSectionBoxNote\(true, sectionBoxActive, false\)') "section_box_elements must report the same section-box note semantics as 3D view creation."
+    Assert-True ($inspectElementsToolCode -match 'connectorsIncluded = includeConnectors') "inspect_elements must report whether connector counting was requested."
+    Assert-True ($inspectElementsToolCode -match 'int\? connectorCount = null') "inspect_elements must leave connectorCount null when connector counting is disabled."
+    Assert-True ($inspectElementsToolCode -match 'int\? openConnectorCount = null') "inspect_elements must leave openConnectorCount null when connector counting is disabled."
     $activateViewHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewEventHandler.cs")
     Assert-True ($activateViewHandlerCode -match 'Changed = true,\s+ActiveViewChanged = true') "activate_view must mark ActiveViewChanged when it successfully changes the active view."
     Assert-True ($closeViewCode -match 'Changed = closed \|\| activeViewChanged') "close_view must mark Changed when a view is closed or active view changes."

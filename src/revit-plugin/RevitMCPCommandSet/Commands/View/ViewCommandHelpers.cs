@@ -34,6 +34,9 @@ namespace RevitMCPCommandSet.Commands.View
         public bool Deferred { get; set; }
         public bool Changed { get; set; }
         public bool Closed { get; set; }
+        public ViewSummary ActiveViewBefore { get; set; }
+        public ViewSummary BeforeView { get; set; }
+        public ViewSummary AfterView { get; set; }
         public bool ActiveViewChanged { get; set; }
         public ViewSummary TargetView { get; set; }
         public ViewSummary ActiveView { get; set; }
@@ -125,6 +128,44 @@ namespace RevitMCPCommandSet.Commands.View
                 IsSectionBoxActive = isSectionBoxActive,
                 SectionBoxBoundaryVisible = sectionBoxBoundaryVisible
             };
+        }
+
+        public static bool DidActiveViewChange(ViewSummary beforeView, ViewSummary afterView)
+        {
+            if (beforeView == null || afterView == null)
+            {
+                return false;
+            }
+
+            return beforeView.Id != afterView.Id;
+        }
+
+        public static void PopulateViewTransition(ViewOperationResult result, ViewSummary beforeView, ViewSummary afterView)
+        {
+            if (result == null)
+            {
+                return;
+            }
+
+            result.ActiveViewBefore = beforeView;
+            result.BeforeView = beforeView;
+            result.AfterView = afterView;
+            result.ActiveView = afterView;
+            result.ActiveViewChanged = DidActiveViewChange(beforeView, afterView);
+        }
+
+        public static void PopulateViewTransition(ElementFocusResult result, ViewSummary beforeView, ViewSummary afterView)
+        {
+            if (result == null)
+            {
+                return;
+            }
+
+            result.ActiveViewBefore = beforeView;
+            result.BeforeView = beforeView;
+            result.AfterView = afterView;
+            result.ActiveView = afterView;
+            result.ActiveViewChanged = DidActiveViewChange(beforeView, afterView);
         }
 
         public static List<ViewSummary> GetOpenViewSummaries(UIDocument uiDocument)

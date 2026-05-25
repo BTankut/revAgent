@@ -150,19 +150,23 @@ try
             if (fi.Symbol.Family != null) familyName = fi.Symbol.Family.Name;
         }
 
-        int connectorCount = 0;
-        int openConnectorCount = 0;
+        int? connectorCount = null;
+        int? openConnectorCount = null;
         if (includeConnectors)
         {
+            int countedConnectors = 0;
+            int countedOpenConnectors = 0;
             ConnectorSet connectors = ConnectorSetFor(elem);
             if (connectors != null)
             {
                 foreach (Connector c in connectors)
                 {
-                    connectorCount++;
-                    if (!c.IsConnected) openConnectorCount++;
+                    countedConnectors++;
+                    if (!c.IsConnected) countedOpenConnectors++;
                 }
             }
+            connectorCount = countedConnectors;
+            openConnectorCount = countedOpenConnectors;
         }
 
         System.Collections.Generic.List<object> parameterSummaries = new System.Collections.Generic.List<object>();
@@ -192,6 +196,7 @@ try
             familyName = familyName,
             typeName = typeName,
             levelName = LevelName(elem),
+            connectorsIncluded = includeConnectors,
             connectorCount = connectorCount,
             openConnectorCount = openConnectorCount,
             parameters = parameterSummaries.ToArray()
@@ -219,7 +224,7 @@ export function registerInspectElementsTool(server) {
         limit: z.number().int().positive().max(100).optional().describe("Maximum elements to inspect. Defaults 20."),
         includeParameters: z.boolean().optional().describe("Include key or requested parameter summaries. Defaults true."),
         includeTypeParameters: z.boolean().optional().describe("Also inspect matching type parameters. Defaults false."),
-        includeConnectors: z.boolean().optional().describe("Include connector counts when available. Defaults true."),
+        includeConnectors: z.boolean().optional().describe("Include connector counts when available. Defaults true. When false, connectorCount/openConnectorCount are null and connectorsIncluded=false."),
         parameterNames: z.array(z.string()).optional().describe("Optional targeted parameter names."),
     }, async (args) => {
         const connectionOptions = connectionOptionsFromArgs(args);

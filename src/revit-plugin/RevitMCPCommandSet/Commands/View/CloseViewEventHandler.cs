@@ -21,6 +21,7 @@ namespace RevitMCPCommandSet.Commands.View
         private ElementId _pendingCloseViewId;
         private ElementId _pendingFallbackViewId;
         private ElementId _activeViewBeforeCloseId;
+        private ViewSummary _activeViewBefore;
         private int _idlingAttempts;
 
         public ViewOperationResult ResultInfo { get; private set; }
@@ -36,6 +37,7 @@ namespace RevitMCPCommandSet.Commands.View
             _pendingCloseViewId = ElementId.InvalidElementId;
             _pendingFallbackViewId = ElementId.InvalidElementId;
             _activeViewBeforeCloseId = ElementId.InvalidElementId;
+            _activeViewBefore = null;
             _idlingAttempts = 0;
             TaskCompleted = false;
             ResultInfo = null;
@@ -53,6 +55,7 @@ namespace RevitMCPCommandSet.Commands.View
             {
                 UIDocument uiDocument = app.ActiveUIDocument;
                 Document document = uiDocument.Document;
+                _activeViewBefore = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true);
                 Autodesk.Revit.DB.View targetView;
                 List<ViewSummary> candidates;
                 string error;
@@ -321,6 +324,10 @@ namespace RevitMCPCommandSet.Commands.View
 
         private void Complete(ViewOperationResult result)
         {
+            if (result != null)
+            {
+                ViewCommandHelpers.PopulateViewTransition(result, _activeViewBefore, result.ActiveView);
+            }
             ResultInfo = result;
             TaskCompleted = true;
             _resetEvent.Set();

@@ -43,6 +43,7 @@ namespace RevitMCPCommandSet.Commands.View
         private string _viewNameResolution;
         private bool _pendingCameraApplied;
         private string _pendingCameraWarning;
+        private ViewSummary _activeViewBefore;
 
         public ElementFocusResult ResultInfo { get; private set; }
         public bool TaskCompleted { get; private set; }
@@ -92,6 +93,7 @@ namespace RevitMCPCommandSet.Commands.View
             _viewNameResolution = "";
             _pendingCameraApplied = false;
             _pendingCameraWarning = "";
+            _activeViewBefore = null;
             TaskCompleted = false;
             ResultInfo = null;
             _resetEvent.Reset();
@@ -106,7 +108,10 @@ namespace RevitMCPCommandSet.Commands.View
         {
             try
             {
-                if (app.ActiveUIDocument.Document.IsModifiable)
+                UIDocument uiDocument = app.ActiveUIDocument;
+                Document document = uiDocument.Document;
+                _activeViewBefore = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true);
+                if (document.IsModifiable)
                 {
                     DeferUntilReady(app);
                     return;
@@ -829,6 +834,10 @@ namespace RevitMCPCommandSet.Commands.View
 
         private void Complete(ElementFocusResult result)
         {
+            if (result != null)
+            {
+                ViewCommandHelpers.PopulateViewTransition(result, _activeViewBefore, result.ActiveView);
+            }
             ResultInfo = result;
             TaskCompleted = true;
             _resetEvent.Set();

@@ -604,6 +604,10 @@ namespace RevitMCPCommandSet.Commands.View
 
         private void Complete(ElementFocusResult result)
         {
+            if (result != null)
+            {
+                ViewCommandHelpers.PopulateViewTransition(result, _activeViewBefore, result.ActiveView);
+            }
             ResultInfo = result;
             TaskCompleted = true;
             _resetEvent.Set();

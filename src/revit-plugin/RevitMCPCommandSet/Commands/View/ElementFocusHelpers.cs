@@ -65,6 +65,8 @@ namespace RevitMCPCommandSet.Commands.View
         public bool ViewNameChanged { get; set; }
         public string ViewNameResolution { get; set; }
         public ViewSummary ActiveViewBefore { get; set; }
+        public ViewSummary BeforeView { get; set; }
+        public ViewSummary AfterView { get; set; }
         public bool ActiveViewChanged { get; set; }
         public string PlanMode { get; set; }
         public string PlanCandidateMode { get; set; }

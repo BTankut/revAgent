@@ -24,6 +24,7 @@ namespace RevitMCPCommandSet.Commands.View
         private UIApplication _pendingApp;
         private ElementId _pendingViewId;
         private bool _hasTargetView;
+        private ViewSummary _activeViewBefore;
         private int _idlingAttempts;
 
         public ElementFocusResult ResultInfo { get; private set; }
@@ -52,6 +53,7 @@ namespace RevitMCPCommandSet.Commands.View
             _pendingApp = null;
             _pendingViewId = ElementId.InvalidElementId;
             _hasTargetView = viewId.HasValue || !string.IsNullOrWhiteSpace(viewName);
+            _activeViewBefore = null;
             _idlingAttempts = 0;
             TaskCompleted = false;
             ResultInfo = null;
@@ -69,6 +71,7 @@ namespace RevitMCPCommandSet.Commands.View
             {
                 UIDocument uiDocument = app.ActiveUIDocument;
                 Document document = uiDocument.Document;
+                _activeViewBefore = ViewCommandHelpers.BuildViewSummary(document, document.ActiveView, true, true);
 
                 List<ElementId> elementIds;
                 List<ElementSummary> elements;
@@ -275,6 +278,15 @@ namespace RevitMCPCommandSet.Commands.View
 
                 string zoomMethod = ElementFocusHelpers.SelectAndZoom(uiDocument, elementIds, _select, _zoom);
                 string focusNote = ElementFocusHelpers.BuildFocusNote(_zoom, zoomMethod, elements);
+                bool sectionBoxActive = false;
+                try
+                {
+                    sectionBoxActive = targetView.IsSectionBoxActive;
+                }
+                catch
+                {
+                    sectionBoxActive = false;
+                }
 
                 return new ElementFocusResult
                 {
@@ -293,6 +305,8 @@ namespace RevitMCPCommandSet.Commands.View
                     SectionBoxApplied = true,
                     SectionBoxBoundaryShown = boundaryShown,
                     SectionBoxBoundaryWarning = boundaryWarning,
+                    SectionBoxState = sectionBoxActive ? "active" : "inactive",
+                    SectionBoxNote = ElementFocusHelpers.BuildSectionBoxNote(true, sectionBoxActive, false),
                     PaddingMm = _paddingMm,
                     BoundingBoxSource = "sectionBox",
                     BoundingBoxNote = ElementFocusHelpers.BuildBoundingBoxNote("sectionBox"),
@@ -366,6 +380,10 @@ namespace RevitMCPCommandSet.Commands.View
 
         private void Complete(ElementFocusResult result)
         {
+            if (result != null)
+            {
+                ViewCommandHelpers.PopulateViewTransition(result, _activeViewBefore, result.ActiveView);
+            }
             ResultInfo = result;
             TaskCompleted = true;
             _resetEvent.Set();
