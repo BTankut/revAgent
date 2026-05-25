@@ -56,10 +56,17 @@ explicit:
 
 - `send_code_to_revit` expects code for `Execute(Document document, object[] parameters)`
 - the bundled Revit payload is built from the source under `src/revit-plugin`
-- the bundled Node wrapper forwards `transactionMode`, but the tested plugin
-  build still manages write transactions itself; snippets should not open
-  their own `Transaction.Start()` unless that exact installed build has been
-  verified
+- the bundled Node wrapper and command payload support `transactionMode`:
+  `auto` opens a wrapper-managed transaction, while `none` executes without an
+  outer transaction so read-only probes and explicitly controlled snippets can
+  avoid nested Revit transactions
+- manual Revit `Transaction` snippets submitted with `transactionMode: "auto"`
+  are treated as guarded safety blocks, not failed model operations; use
+  `transactionMode: "none"` only for explicitly confirmed snippets that manage
+  their own transaction
+- dynamic C# compilation de-duplicates loaded assembly references by assembly
+  name so common libraries such as `Newtonsoft.Json` do not fail when multiple
+  versions are loaded in the Revit AppDomain
 - the runtime MCP server exposes raw dynamic execution plus read-only context
   primitives for session, active view, elements, and parameter schema
 - the runtime MCP server also exposes Revit image export tools for visual QA:
@@ -562,7 +569,7 @@ small production surface instead of many narrow one-off commands.
 | Area | Tools | Write behavior and use |
 | --- | --- | --- |
 | Instance and status | `list_revit_instances`, `get_revit_mcp_status` | Read-only. `get_revit_mcp_status` is the only runtime tool intended to run while another Revit task is active. |
-| Dynamic execution | `send_code_to_revit`, `send_code_to_revit_safe` | Raw `send_code_to_revit` can write if the supplied C# writes. `send_code_to_revit_safe` is for read/preview work and rejects write-looking snippets. |
+| Dynamic execution | `send_code_to_revit`, `send_code_to_revit_safe` | Raw `send_code_to_revit` can write if the supplied C# writes. `transactionMode: "auto"` opens a wrapper-managed transaction and guards manual transaction snippets; `transactionMode: "none"` executes without an outer transaction. `send_code_to_revit_safe` is for read/preview work, rejects write-looking snippets, and uses `none`. |
 | Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_parameter_schema` | Read-only model/session/parameter inspection before engineering decisions or writes. |
 | Live view navigation | `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. |
 | View-data writes | `section_box_elements`, `create_3d_view_for_elements` | Can modify project view data by applying section boxes or creating/reusing 3D review views. Use explicit intent and verify afterward. |

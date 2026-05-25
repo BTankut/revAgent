@@ -12,7 +12,7 @@ description: >
   critical path, or system flow. Localized Turkish requests for the same
   mechanical MEP tasks are also in scope.
 license: UNLICENSED
-version: 0.4.4
+version: 0.4.5
 ---
 
 # Revit MCP - MEP Automation Expert
@@ -438,19 +438,27 @@ filters), see `references/collectors.md`.
 ## 5. Transactions
 
 The wrapper calls `send_code_to_revit` with `transactionMode: "auto"` by
-default. In the currently tested plugin build, writes such as
-`Parameter.Set(...)` work through the wrapper-managed transaction, but
-opening your own `Transaction.Start()` inside the snippet fails with
-`Starting a new transaction is not permitted`.
+default. In `auto`, writes such as `Parameter.Set(...)` work through the
+wrapper-managed transaction and snippets must not open their own
+`Transaction.Start()`.
+
+The command payload also supports `transactionMode: "none"`. In `none`, the
+snippet runs without an outer wrapper transaction. Use this for read-only
+probes, export-style calls, and rare explicitly controlled snippets that manage
+their own Revit transaction after user confirmation.
 
 - Read-only work: keep the default call shape.
 - Write work: usually keep the default call shape and let the wrapper
   manage the transaction.
-- Do not open a manual `Transaction` inside the snippet unless you have
-  verified that the installed plugin build allows it.
-- Do not assume `transactionMode: "none"` permits manual
-  `Transaction.Start()`; live testing showed it still rejects nested/manual
-  transactions in this package version.
+- Do not open a manual `Transaction` inside an `auto` snippet; the payload
+  guards that as an intentional safety block rather than a model-operation
+  failure.
+- Use raw `send_code_to_revit` with `transactionMode: "none"` for manual
+  transaction snippets only after explicit write confirmation; never use the
+  safe wrapper for committing writes.
+- Dynamic compilation de-duplicates loaded assembly references by assembly
+  name, so `Newtonsoft.Json.JsonConvert` can be used even when Revit has more
+  than one Newtonsoft version loaded.
 
 Preferred write pattern:
 
@@ -534,8 +542,9 @@ Universal rules - check every snippet against this list:
 - [ ] `UnitTypeId.*` (not `DisplayUnitType`) used for conversions.
 - [ ] `try/catch` block in place.
 - [ ] All code paths return a value.
-- [ ] Write snippets rely on wrapper-managed transactions and do not open
-      manual `Transaction.Start()` unless this plugin build was verified.
+- [ ] Write snippets normally rely on wrapper-managed transactions and do not
+      open manual `Transaction.Start()` unless raw `send_code_to_revit` is
+      explicitly called with `transactionMode: "none"` after confirmation.
 
 ### Conditional rules
 
