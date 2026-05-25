@@ -2,6 +2,22 @@
 
 All notable revAgent workstation deployment changes are tracked here.
 
+## 2026.05.25.175-71319629
+
+- Added command-payload `transactionMode` handling in the Revit C# execution
+  bridge: `auto` uses a wrapper-managed transaction, while `none` runs without
+  an outer transaction for read-only probes and explicitly controlled snippets.
+- Guarded manual Revit `Transaction` snippets submitted under `auto` before
+  execution, returning `guarded` instead of treating the expected safety block
+  as a failed model operation in revAgent status.
+- De-duplicated dynamic compile metadata references by assembly name, fixing
+  intermittent duplicate-reference failures such as direct
+  `Newtonsoft.Json.JsonConvert` use when Revit has multiple Newtonsoft versions
+  loaded.
+- Validated the hotfix with command-payload build checks, installer smoke tests,
+  full repo tests, and live Revit 2022 probes for `auto`, `none`, guarded manual
+  transactions, and Newtonsoft compilation.
+
 ## 2026-05-22 - main, next release candidate
 
 - Rewrote `main` back to the deployed `75128349` baseline and reapplied only

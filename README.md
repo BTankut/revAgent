@@ -188,9 +188,12 @@ If present, it also reads `%TEMP%\revit-mcp-instances.json` or the path in
 `REVIT_MCP_INSTANCE_REGISTRY`.
 
 The runtime also exposes `get_revit_mcp_status`. It reports the active task,
-elapsed time, recent completed/failed tasks, and service port. Routine status
-responses stay compact by default: recent task records are limited to the latest
-few items and transport diagnostics are hidden unless explicitly requested.
+elapsed time, recent completed/guarded/failed tasks, and service port. Routine
+status responses stay compact by default: recent task records are limited to the
+latest few items and transport diagnostics are hidden unless explicitly
+requested. `guarded` is an expected safety state for blocked operations such as
+manual Revit transactions submitted inside the wrapper-managed `auto` mode; it
+is not a failed model operation.
 Status calls bypass the per-port command lock so Codex can query progress during
 a long Revit operation. Every response also includes `runtimeIdentity` with the
 active `runtimeVersion`, status `schemaVersion`, `toolSurfaceVersion`,

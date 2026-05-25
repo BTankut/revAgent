@@ -120,6 +120,19 @@ inspection, image export, and safe custom-code workflows. It is intended for
 model querying, visual QA, view navigation, parameter inspection, and
 controlled Revit API operations.
 
+## Dynamic Execution Transaction Discipline
+
+- `send_code_to_revit` normally runs with `transactionMode: "auto"`, where the
+  Revit command payload owns the outer transaction.
+- Snippets submitted with `auto` must not open their own Revit
+  `Transaction.Start()`. The payload should guard those snippets before
+  execution; this is an expected safety block, not a failed model operation.
+- Use `transactionMode: "none"` only for read-only/export-style snippets or for
+  explicitly confirmed snippets that intentionally manage their own Revit
+  transaction.
+- `send_code_to_revit_safe` remains for read-only probes and previews; it must
+  not be used as a write-commit path.
+
 ## File And Deployment Discipline
 
 - Do not revert main application files or model files unless the user asks for

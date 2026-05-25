@@ -58,7 +58,9 @@ activation/close, element focus, and 3D section box behavior.
 The dynamic execution and low-level context command source lives in
 `src/revit-plugin/RevitMCPCommandSet`. `SampleCommandSet` is intentionally not
 kept in this repository because it is not used by the installed production
-payload and causes source-layout confusion.
+payload and causes source-layout confusion. This command set owns dynamic
+execution behavior such as `transactionMode`, guarded manual-transaction
+handling, and dynamic compile metadata reference selection.
 
 `installer/revit-plugin` is install payload. Production installers copy from this
 folder into `C:\ProgramData\DPE\RevitMCP`. Do not edit the binary payload by
@@ -77,7 +79,9 @@ dotnet build .\src\revit-plugin\RevitMCPCommandSet\RevitMCPCommandSet.csproj -c 
 ```
 
 The stable dynamic command payload under `installer/command-payload` is not
-refreshed by default; replacing it is an explicit release task.
+refreshed by default; replacing it is an explicit release task. When the command
+set changes, refresh both the stable `installer/command-payload` copy and the
+installed Revit command-set payload copy before commit/release validation.
 
 `installer/runtime-mcp-server/src` and `installer/revit-api-docs-mcp/src` are
 the TypeScript MCP source trees. Their `build/` folders remain the runtime

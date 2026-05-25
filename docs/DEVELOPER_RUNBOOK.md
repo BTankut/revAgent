@@ -364,18 +364,25 @@ Live smoke test after install:
 5. Call `get_revit_session_context`.
 6. Run one small read-only count task.
 7. Confirm `get_revit_mcp_status` shows the task as `completed`.
-8. Confirm `revit-api-docs` responds to a small search such as
+8. For command-payload transaction changes, confirm `transactionMode: "auto"`
+   uses a wrapper-managed transaction, `transactionMode: "none"` runs without
+   that wrapper, and a manual Revit `Transaction` inside `auto` returns
+   `guarded` rather than `failed`.
+9. Confirm `revit-api-docs` responds to a small search such as
    `FilteredElementCollector`.
-9. For transport-sensitive changes, run a large read-only marker/checksum probe
-   and confirm the returned marker matches the end of the payload. Do not rely
-   only on the status window duration for transport validation.
+10. For transport-sensitive changes, run a large read-only marker/checksum probe
+    and confirm the returned marker matches the end of the payload. Do not rely
+    only on the status window duration for transport validation.
 
 The current production status window behavior:
 
 - running task: visible warning and elapsed time
-- completed or failed task: stays visible until user clicks `OK`
+- completed, guarded, or failed task: stays visible until user clicks `OK`
 - close button after completion acts as acknowledge/hide
 - status window should not steal foreground focus from other apps
+- guarded task: expected safety block, such as rejecting a manual Revit
+  transaction inside `transactionMode: "auto"`; it should read as guarded/warning
+  behavior, not as a red model-operation failure
 - recent task history is selectable and resizable
 - recent history uses compact state labels and shows total Revit-side duration
   plus request size, for example:

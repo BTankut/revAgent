@@ -13,7 +13,9 @@ Production source projects:
   and revAgent status window.
 - `RevitMCPCommandSet/`: dynamic execution and read-only context commands used
   by `send_code_to_revit`, `get_current_view_elements`,
-  `get_current_view_info`, and `get_selected_elements`.
+  `get_current_view_info`, and `get_selected_elements`. This project owns
+  `transactionMode`, guarded manual-transaction behavior, and dynamic compile
+  reference selection for snippets.
 - `RevitMCPViewCommandSet/`: transactionless UI view commands exposed as
   `list_open_views`, `activate_view`, `close_view`, and element-focused view
   workflows.
@@ -52,7 +54,9 @@ dotnet build .\RevitMCPCommandSet\RevitMCPCommandSet.csproj -c "Release R22" /p:
 ```
 
 The stable dynamic command payload under `installer\command-payload` is not
-refreshed by default. Replace it only as an explicit release task.
+refreshed by default. Replace it only as an explicit release task, and keep it
+aligned with the installed Revit command payload copy when command-set behavior
+changes.
 
 Commit the source changes and the refreshed payload binaries in the same commit.
 

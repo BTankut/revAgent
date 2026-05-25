@@ -47,6 +47,20 @@ The companion docs server registers 5 lookup tools: `search_api`,
 `get_type_details`, `get_member_details`, `list_namespace`, and
 `resolve_api_symbols_bulk`.
 
+Dynamic execution is split between the Node wrapper and the bundled C# command
+payload:
+
+- `send_code_to_revit` supports `transactionMode: "auto"` and
+  `transactionMode: "none"`.
+- `auto` opens a wrapper-managed transaction for ordinary write snippets.
+- `none` executes without an outer transaction and is reserved for read-only
+  probes, export-style calls, and explicitly confirmed snippets that manage
+  their own transaction.
+- manual Revit `Transaction` snippets submitted with `auto` are returned as
+  `guarded` safety blocks, not failed model operations.
+- dynamic compilation de-duplicates loaded assembly references by assembly name
+  so multiple loaded Newtonsoft versions do not break `JsonConvert` snippets.
+
 ## Runtime Transport And Status
 
 The Node runtime and Revit add-in communicate over the local Revit MCP socket.
@@ -69,8 +83,9 @@ Every completed task records transport metrics in the status model:
 - `responseBytes`
 
 The Revit status window intentionally shows only the state symbol, task name,
-total Revit-side duration, and request size. Detailed metrics are written to
-the add-in log under the installed payload `Logs\` folder.
+total Revit-side duration, and request size. Guarded safety blocks are displayed
+as guarded/warning states rather than red failures. Detailed metrics are written
+to the add-in log under the installed payload `Logs\` folder.
 
 ## Deployment Components
 
