@@ -94,6 +94,14 @@ The smoke tests also assert that the Revit plug-in source remains English-only
 and that the dynamic command-set source surface does not grow beyond the
 registered production commands.
 
+The Revit add-in Settings window lists installed bridge command sets. That
+screen is expected to show fewer entries than the runtime MCP server because it
+does not list Node-side MCP wrappers, dynamic-snippet tools, status tools, image
+export tools, or workflow orchestration tools. Treat the bridge command sets as
+the shared base for all future discipline modules; add architectural,
+structural, electrical, and MEP-specific capabilities in the runtime MCP tool
+layer unless they require a reusable native Revit bridge primitive.
+
 `installer/runtime-mcp-server/src` and `installer/revit-api-docs-mcp/src` are
 the TypeScript MCP source trees. Their `build/` folders remain the runtime
 payload contract consumed by installer and Codex MCP registrations.

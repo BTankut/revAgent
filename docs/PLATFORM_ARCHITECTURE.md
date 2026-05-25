@@ -29,6 +29,34 @@ server, package, assembly, manifest, or installed path is being named.
   MCP server. It indexes local Revit API DLL/XML files and serves API lookup
   tools from `build/index.js`.
 
+## Bridge Commands vs MCP Tools
+
+The Revit Settings window shows installed **bridge command sets**, not the
+Codex-facing MCP tool surface. Bridge commands are low-level C# commands loaded
+inside Revit by the add-in and invoked over the local socket. Runtime MCP tools
+live in the local Node server and may call one bridge command, run a dynamic C#
+snippet through `send_code_to_revit`, read socket status, or orchestrate several
+bridge commands into a workflow.
+
+The current shared Revit bridge has 13 installed commands:
+
+- `RevitMCPCommandSet`: 4 core bridge commands for dynamic execution and
+  lightweight context (`send_code_to_revit`, `get_current_view_elements`,
+  `get_current_view_info`, `get_selected_elements`).
+- `RevitMCPViewCommandSet`: 9 view/navigation bridge commands
+  (`list_open_views`, `activate_view`, `close_view`, `get_ui_state`,
+  `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`,
+  `section_box_elements`, `create_3d_view_for_elements`).
+
+The runtime MCP surface is intentionally larger than the bridge. It exposes
+agent-friendly tools such as `send_code_to_revit_safe`,
+`get_revit_session_context`, `inspect_elements`,
+`export_revit_coordination_image`, `show_element_in_plan_and_3d`, and
+`smart_focus_elements` on top of the shared bridge. Future architectural,
+structural, and electrical modules should add module-specific MCP tools in the
+runtime layer while reusing this shared Revit bridge for common execution,
+context, selection, view, and navigation operations.
+
 The current runtime server registers 21 tools:
 
 - status and targeting: `list_revit_instances`, `get_revit_mcp_status`

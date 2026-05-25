@@ -1,6 +1,6 @@
 {
   "name": "RevitMCPViewCommandSet",
-  "description": "UI view command collection for Revit AI assistance",
+  "description": "Shared Revit bridge commands for UI view, selection, focus, and navigation operations",
   "developer": {
     "name": "revit-mcp",
     "email": "",

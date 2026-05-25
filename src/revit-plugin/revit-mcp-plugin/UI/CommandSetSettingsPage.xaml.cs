@@ -62,6 +62,9 @@ namespace revit_mcp_plugin.UI
                             var newCommandSet = new CommandSet
                             {
                                 Name = commandSetData.Name,
+                                DisplayName = GetBridgeDisplayName(commandSetData.Name),
+                                TechnicalName = GetBridgeTechnicalName(commandSetData.Name),
+                                BridgeRole = GetBridgeRole(commandSetData.Name, commandSetData.Description),
                                 Description = commandSetData.Description,
                                 Commands = new List<CommandConfig>()
                             };
@@ -207,7 +210,7 @@ namespace revit_mcp_plugin.UI
             if (selectedCommandSet != null)
             {
                 NoSelectionTextBlock.Visibility = Visibility.Collapsed;
-                FeaturesHeaderTextBlock.Text = $"{selectedCommandSet.Name} - Command List";
+                FeaturesHeaderTextBlock.Text = $"{selectedCommandSet.DisplayName} - Bridge Commands";
                 // Load commands from selected command set
                 foreach (var command in selectedCommandSet.Commands)
                 {
@@ -217,7 +220,7 @@ namespace revit_mcp_plugin.UI
             else
             {
                 NoSelectionTextBlock.Visibility = Visibility.Visible;
-                FeaturesHeaderTextBlock.Text = "Command List";
+                FeaturesHeaderTextBlock.Text = "Bridge Command List";
             }
         }
 
@@ -354,7 +357,7 @@ namespace revit_mcp_plugin.UI
                 // Serialize and save to disk.
                 string json = JsonConvert.SerializeObject(registry, Formatting.Indented);
                 File.WriteAllText(registryFilePath, json);
-                MessageBox.Show($"Command set settings successfully saved!\n\nEnabled {enabledCount} commands:\n{enabledFeaturesText}",
+                MessageBox.Show($"Bridge command settings successfully saved!\n\nEnabled {enabledCount} bridge commands:\n{enabledFeaturesText}",
                               "Settings Saved", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
@@ -372,9 +375,40 @@ namespace revit_mcp_plugin.UI
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error opening Commands folder: {ex.Message}", "Error",
+                MessageBox.Show($"Error opening bridge command folder: {ex.Message}", "Error",
                               MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        private static string GetBridgeDisplayName(string commandSetName)
+        {
+            if (string.Equals(commandSetName, "RevitMCPCommandSet", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Core Revit Bridge";
+            }
+            if (string.Equals(commandSetName, "RevitMCPViewCommandSet", StringComparison.OrdinalIgnoreCase))
+            {
+                return "View and Navigation Bridge";
+            }
+            return commandSetName;
+        }
+
+        private static string GetBridgeTechnicalName(string commandSetName)
+        {
+            return $"Technical id: {commandSetName}";
+        }
+
+        private static string GetBridgeRole(string commandSetName, string fallbackDescription)
+        {
+            if (string.Equals(commandSetName, "RevitMCPCommandSet", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Shared base bridge for dynamic execution and lightweight context commands used by runtime MCP tools.";
+            }
+            if (string.Equals(commandSetName, "RevitMCPViewCommandSet", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Shared base bridge for live Revit view, selection, focus, and navigation commands.";
+            }
+            return fallbackDescription ?? "Revit bridge command set.";
         }
     }
 
@@ -382,6 +416,9 @@ namespace revit_mcp_plugin.UI
     public class CommandSet
     {
         public string Name { get; set; }
+        public string DisplayName { get; set; }
+        public string TechnicalName { get; set; }
+        public string BridgeRole { get; set; }
         public string Description { get; set; }
         public List<CommandConfig> Commands { get; set; } = new List<CommandConfig>();
     }

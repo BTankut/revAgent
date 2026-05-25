@@ -14,9 +14,9 @@
         </Grid.RowDefinitions>
         <!-- Title -->
         <StackPanel Grid.Row="0" Margin="0,0,0,15">
-            <TextBlock Text="Command Set Settings" FontSize="22" FontWeight="SemiBold"/>
-            <TextBlock Text="Select the commands you want to enable"
-                       Foreground="#666666" Margin="0,5,0,0"/>
+            <TextBlock Text="Bridge Command Settings" FontSize="22" FontWeight="SemiBold"/>
+            <TextBlock Text="These are low-level Revit bridge commands loaded by the add-in. Codex-facing MCP tools are provided by the local runtime server on top of this bridge."
+                       Foreground="#666666" Margin="0,5,0,0" TextWrapping="Wrap"/>
         </StackPanel>
         <!-- Main Content Area -->
         <Grid Grid.Row="1">
@@ -31,7 +31,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0" Text="Available Command Sets" Padding="10,8"
+                    <TextBlock Grid.Row="0" Text="Installed Bridge Command Sets" Padding="10,8"
                                Background="#f0f0f0" FontWeight="SemiBold"/>
                     <ListBox Grid.Row="1" x:Name="CommandSetListBox"
                              SelectionChanged="CommandSetListBox_SelectionChanged"
@@ -39,8 +39,11 @@
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel Margin="5">
-                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
-                                    <TextBlock Text="{Binding Description}"
+                                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding TechnicalName}"
+                                               TextWrapping="Wrap" Margin="0,2,0,0"
+                                               Foreground="#777" FontSize="11"/>
+                                    <TextBlock Text="{Binding BridgeRole}"
                                                TextWrapping="Wrap" Margin="0,3,0,0"
                                                Foreground="#666"/>
                                 </StackPanel>
@@ -58,7 +61,7 @@
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0" x:Name="FeaturesHeaderTextBlock"
-                               Text="Feature List" Padding="10,8"
+                               Text="Bridge Command List" Padding="10,8"
                                Background="#f0f0f0" FontWeight="SemiBold"/>
                     <ListView Grid.Row="1" x:Name="FeaturesListView" BorderThickness="0">
                         <ListView.View>
@@ -71,16 +74,16 @@
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
                                 </GridViewColumn>
-                                <GridViewColumn Header="Name" Width="150"
+                                <GridViewColumn Header="Command" Width="170"
                                                DisplayMemberBinding="{Binding CommandName}"/>
-                                <GridViewColumn Header="Description" Width="280"
+                                <GridViewColumn Header="Bridge role" Width="330"
                                                DisplayMemberBinding="{Binding Description}"/>
                             </GridView>
                         </ListView.View>
                     </ListView>
                     <!-- Displayed when no command set is selected -->
                     <TextBlock Grid.Row="1" x:Name="NoSelectionTextBlock"
-                              Text="Please select a command set from the left to view its commands"
+                              Text="Select a bridge command set from the left to view its low-level Revit commands"
                               HorizontalAlignment="Center" VerticalAlignment="Center"
                               Foreground="#999" FontSize="14" TextWrapping="Wrap"
                               Visibility="Collapsed"/>
@@ -89,7 +92,7 @@
         </Grid>
         <!-- Bottom Buttons -->
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
-            <Button Content="Open CommandSet Folder" Width="150" Height="30" Margin="0,0,10,0" Click="OpenFolderButton_Click"/>
+            <Button Content="Open Bridge Folder" Width="150" Height="30" Margin="0,0,10,0" Click="OpenFolderButton_Click"/>
             <Button Content="Refresh" Width="80" Height="30" Margin="0,0,10,0" Click="RefreshButton_Click"/>
             <Button Content="Select All" Width="80" Height="30" Margin="0,0,10,0" Click="SelectAllButton_Click"/>
             <Button Content="Deselect All" Width="80" Height="30" Margin="0,0,10,0" Click="UnselectAllButton_Click"/>

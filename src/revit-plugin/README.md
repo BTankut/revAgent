@@ -11,16 +11,24 @@ Production source projects:
 
 - `revit-mcp-plugin/`: main Revit add-in host, socket service, command registry,
   and revAgent status window.
-- `RevitMCPCommandSet/`: dynamic execution and read-only context commands used
+- `RevitMCPCommandSet/`: core bridge commands used
   by `send_code_to_revit`, `get_current_view_elements`,
   `get_current_view_info`, and `get_selected_elements`. This project owns
   `transactionMode`, guarded manual-transaction behavior, and dynamic compile
   reference selection for snippets. Keep this source limited to the registered
   production commands; old unregistered create/edit/filter/data-extraction
   command code was intentionally removed.
-- `RevitMCPViewCommandSet/`: transactionless UI view commands exposed as
+- `RevitMCPViewCommandSet/`: view/navigation bridge commands exposed as
   `list_open_views`, `activate_view`, `close_view`, and element-focused view
   workflows.
+
+The Settings window displays these C# command sets as installed **bridge
+commands**. They are not the same thing as the 21 Codex-facing MCP tools.
+Runtime MCP tools live in `installer/runtime-mcp-server`; some call a bridge
+command directly, while others wrap dynamic C# execution, socket status, image
+export, or multi-step workflows. Keep future discipline modules separated at
+the MCP tool layer and reuse the shared Revit bridge for common execution,
+context, selection, view, and navigation commands.
 
 The canonical production payload is still kept under:
 

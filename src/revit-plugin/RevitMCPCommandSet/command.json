@@ -1,6 +1,6 @@
 {
   "name": "RevitMCPCommandSet",
-  "description": "Minimal command collection for Revit AI assistance",
+  "description": "Shared core Revit bridge commands for dynamic execution and lightweight context",
   "developer": {
     "name": "mcp-servers-for-revit",
     "email": "",
