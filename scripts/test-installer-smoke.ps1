@@ -315,11 +315,17 @@ try {
     Assert-True ($updateText -match '\$runSelfContainedInstaller = \$true') "Fast update failure must enable the self-contained installer fallback."
     Assert-True ($updateText -match 'fastUpdateFallbackUsed') "Updater reports must record whether the fast path fell back."
     Assert-True ($updateText -match 'operationMethod = \$script:RevitMcpOperationMethod') "Updater reports must record the install/update method used."
+    Assert-True ($updateText -match 'release = \[ordered\]@') "Updater reports must include release version, commit, and package SHA metadata."
+    Assert-True ($updateText -match 'localInstall = if \(\$InstalledState\)') "Updater reports must include a local install state summary."
+    Assert-True ($updateText -match 'diagnostics = \$Diagnostics') "Updater reports must include dashboard-ready update diagnostics."
+    Assert-True ($updateText -match 'elseif \(\$Force\) \{ "reinstall" \}') "Forced updater runs must be reported as reinstall operations."
     Assert-True ($updateText -match 'Publish-RevitMcpMachineRunReport') "Updater must publish per-machine NAS reports and logs."
     Assert-True ($updateText -match '\.revagent-npm-dependencies\.json') "Updater payload fingerprints must ignore npm dependency marker files."
     Assert-True ($updateText -notmatch 'Repair-RevitMcpScheduledTaskAction -Name \$TaskName') "Normal updates must not run an extra scheduled-task repair before the package installer."
     $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
     Assert-True ($installTaskText -match 'installOperationMethod = \$script:RevitMcpOperationMethod') "Updater installer config must record the install/repair method."
+    Assert-True ($installTaskText -match 'function Get-EffectiveInstallOperation') "Updater installer must classify install versus reinstall operation type."
+    Assert-True ($installTaskText -match 'diagnostics = \[ordered\]@') "Updater installer reports must include dashboard-ready diagnostics."
     Assert-True ($installTaskText -match 'Publish-RevitMcpMachineRunReport') "Updater installer must publish per-machine NAS reports and logs."
     Assert-True ($installTaskText -match '-OperationMethod", "scheduled-update"') "Scheduled updater launcher must tag background runs in logs."
     $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")

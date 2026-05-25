@@ -200,6 +200,14 @@ function Get-EffectiveInstallOperationMethod {
     return "install"
 }
 
+function Get-EffectiveInstallOperation {
+    if ($ForceUpdate) {
+        return "reinstall"
+    }
+
+    return "install"
+}
+
 function Set-RevitMcpInstallRunReport {
     param(
         [string]$Status,
@@ -210,6 +218,12 @@ function Set-RevitMcpInstallRunReport {
     $installedState = Read-OptionalJsonFile -Path (Join-Path $WorkRoot "installed.json")
     $targetVersion = if ($channel -and $channel.version) { [string]$channel.version } else { $null }
     $installedVersion = if ($installedState -and $installedState.version) { [string]$installedState.version } else { $null }
+    $channelGit = if ($channel) { $channel.git } else { $null }
+    $installedComponents = if ($installedState -and $installedState.components) { $installedState.components } else { $null }
+    $installedComponentCount = 0
+    if ($installedComponents -and $installedComponents.PSObject) {
+        $installedComponentCount = @($installedComponents.PSObject.Properties).Count
+    }
 
     $script:RevitMcpLatestReport = [ordered]@{
         schemaVersion = 1
@@ -225,6 +239,38 @@ function Set-RevitMcpInstallRunReport {
         previousVersion = $installedVersion
         targetVersion = $targetVersion
         installedVersion = $installedVersion
+        release = [ordered]@{
+            channel = if ($channel) { $channel.channel } else { $null }
+            version = $targetVersion
+            packageSha256 = if ($channel) { $channel.sha256 } else { $null }
+            packagePath = if ($channel) { $channel.packagePath } else { $null }
+            manifestPath = if ($channel) { $channel.manifestPath } else { $null }
+            publishedAtUtc = if ($channel) { $channel.publishedAtUtc } else { $null }
+            commit = if ($channelGit) { $channelGit.commit } else { $null }
+            isDirty = if ($channelGit) { $channelGit.isDirty } else { $null }
+        }
+        localInstall = if ($installedState) {
+            [ordered]@{
+                version = $installedState.version
+                installedAtUtc = $installedState.installedAtUtc
+                packageSha256 = $installedState.packageSha256
+                packagePath = $installedState.packagePath
+                manifestPath = $installedState.manifestPath
+                componentCount = $installedComponentCount
+                updatePolicy = if ($installedState.updatePolicy) { $installedState.updatePolicy } else { $null }
+            }
+        }
+        else {
+            $null
+        }
+        diagnostics = [ordered]@{
+            isFirstInstall = [string]::IsNullOrWhiteSpace($installedVersion)
+            revitRunning = $false
+            deferredForRevitClose = $false
+            revitPayloadChanged = $null
+            fastPackageOnlyUpdate = $false
+            runSelfContainedInstaller = $true
+        }
         paths = [ordered]@{
             installRoot = $InstallRoot
             packageTarget = $PackageTarget
@@ -931,6 +977,7 @@ if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
 }
 
 $script:RevitMcpOperationMethod = Get-EffectiveInstallOperationMethod
+$script:RevitMcpOperation = Get-EffectiveInstallOperation
 Initialize-RevitMcpTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $LogPath -Prefix "install"
 Write-Host "Operation method : $script:RevitMcpOperationMethod"
 if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {

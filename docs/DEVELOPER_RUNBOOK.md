@@ -553,7 +553,10 @@ Each install/update also publishes a per-machine support record to NAS:
 
 The NAS machine folder keeps the latest two copied operation logs. The JSON
 records include the operation method, such as GUI install, GUI update,
-scheduled update, or install/repair.
+scheduled update, or install/repair. `latest.json` is dashboard-ready: it
+contains machine/user/time, operation type, release version/commit/package SHA,
+previous and installed versions, status, update diagnostics, the NAS log path,
+and a local install-state summary.
 
 The workstation install root is:
 

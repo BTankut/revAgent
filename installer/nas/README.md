@@ -170,7 +170,10 @@ operation logs to the NAS report bridge:
 
 The NAS machine folder keeps the latest two copied operation logs. The JSON
 records include `operationMethod`, so support can distinguish GUI install,
-GUI update, scheduled update, manual update, and install/repair runs.
+GUI update, scheduled update, manual update, and install/repair runs. The
+`latest.json` file also includes release version/commit/package SHA, status,
+update diagnostics, NAS log path, and a local install-state summary for future
+dashboard use.
 
 ## Update Behavior
 

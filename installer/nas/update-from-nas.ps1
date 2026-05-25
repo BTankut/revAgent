@@ -71,7 +71,7 @@ $script:RevitMcpProxyUrl = ""
 $script:RevitMcpProxyBypass = "<local>"
 $script:RevitMcpRemoteReportsRoot = ""
 $script:RevitMcpLatestReport = $null
-$script:RevitMcpOperation = if ($AuditOnly) { "audit" } else { "update" }
+$script:RevitMcpOperation = if ($AuditOnly) { "audit" } elseif ($Force) { "reinstall" } else { "update" }
 $script:RevitMcpOperationMethod = if (-not [string]::IsNullOrWhiteSpace($OperationMethod)) {
     $OperationMethod
 }
@@ -1982,6 +1982,7 @@ function Write-UpdateReport {
         [string]$Message,
         [object]$Channel,
         [object]$InstalledState,
+        [object]$Diagnostics = $null,
         [string]$PreviousVersion = "",
         [string]$InstalledVersion = "",
         [string]$LocalReportPath,
@@ -2019,6 +2020,13 @@ function Write-UpdateReport {
     else {
         $null
     }
+    $channelGit = if ($Channel) { Get-JsonPropertyValue -Object $Channel -Name "git" } else { $null }
+    $installedComponents = if ($InstalledState) { Get-JsonPropertyValue -Object $InstalledState -Name "components" } else { $null }
+    $installedComponentCount = 0
+    if ($installedComponents -and $installedComponents.PSObject) {
+        $installedComponentCount = @($installedComponents.PSObject.Properties).Count
+    }
+    $installedUpdatePolicy = if ($InstalledState) { Get-JsonPropertyValue -Object $InstalledState -Name "updatePolicy" } else { $null }
 
     $report = [ordered]@{
         schemaVersion = 1
@@ -2037,6 +2045,31 @@ function Write-UpdateReport {
         installedVersion = $installedReportVersion
         versionTransition = $transition
         pendingVersionTransition = $pendingTransition
+        release = [ordered]@{
+            channel = if ($Channel) { $Channel.channel } else { $null }
+            version = $targetReportVersion
+            packageSha256 = if ($Channel) { Get-JsonPropertyValue -Object $Channel -Name "sha256" } else { $null }
+            packagePath = if ($Channel) { Get-JsonPropertyValue -Object $Channel -Name "packagePath" } else { $null }
+            manifestPath = if ($Channel) { Get-JsonPropertyValue -Object $Channel -Name "manifestPath" } else { $null }
+            publishedAtUtc = if ($Channel) { Get-JsonPropertyValue -Object $Channel -Name "publishedAtUtc" } else { $null }
+            commit = if ($channelGit) { Get-JsonPropertyValue -Object $channelGit -Name "commit" } else { $null }
+            isDirty = if ($channelGit) { Get-JsonPropertyValue -Object $channelGit -Name "isDirty" } else { $null }
+        }
+        localInstall = if ($InstalledState) {
+            [ordered]@{
+                version = Get-JsonPropertyValue -Object $InstalledState -Name "version"
+                installedAtUtc = Get-JsonPropertyValue -Object $InstalledState -Name "installedAtUtc"
+                packageSha256 = Get-JsonPropertyValue -Object $InstalledState -Name "packageSha256"
+                packagePath = Get-JsonPropertyValue -Object $InstalledState -Name "packagePath"
+                manifestPath = Get-JsonPropertyValue -Object $InstalledState -Name "manifestPath"
+                componentCount = $installedComponentCount
+                updatePolicy = $installedUpdatePolicy
+            }
+        }
+        else {
+            $null
+        }
+        diagnostics = $Diagnostics
         paths = [ordered]@{
             installRoot = $InstallRoot
             packageTarget = $PackageTarget
@@ -2063,6 +2096,26 @@ function Write-UpdateReport {
         catch {
             Write-Warning "Could not write remote report: $($_.Exception.Message)"
         }
+    }
+}
+
+function New-CurrentUpdateDiagnostics {
+    $running = @($runningRevit)
+    return [ordered]@{
+        isFirstInstall = [bool]$isFirstInstall
+        revitRunning = ($running.Count -gt 0)
+        deferredForRevitClose = if ($runningDecision) { [bool]$runningDecision.DeferForRevitClose } else { $false }
+        revitPayloadChanged = [bool]$requiresRevitClosed
+        revitPayloadSkipped = [bool]$skipRevitPayloadInstall
+        runtimePayloadSkipped = [bool]$skipRuntimePayloadInstall
+        docsPayloadWorkSkipped = [bool]$skipDocsPayloadWork
+        codexSkillInstallSkipped = [bool]$skipCodexSkillInstallForThisUpdate
+        codexMcpRegistrationSkipped = [bool]$skipCodexMcpRegistrationForThisUpdate
+        fastPackageOnlyUpdate = [bool]$fastPackageOnlyUpdate
+        runSelfContainedInstaller = [bool]$runSelfContainedInstaller
+        fastUpdateFallbackUsed = [bool]$fastUpdateFallbackUsed
+        fastUpdateFallbackMessage = $fastUpdateFallbackMessage
+        revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
     }
 }
 
@@ -2413,7 +2466,7 @@ try {
     $installedSha = if ($installedState) { [string]$installedState.packageSha256 } else { "" }
     $installedVersionLabel = Get-VersionLabel $installedVersion
     $isFirstInstall = [string]::IsNullOrWhiteSpace($installedVersion)
-    $script:RevitMcpOperation = if ($AuditOnly) { "audit" } elseif ($isFirstInstall) { "install" } else { "update" }
+    $script:RevitMcpOperation = if ($AuditOnly) { "audit" } elseif ($isFirstInstall) { "install" } elseif ($Force) { "reinstall" } else { "update" }
     if ([string]::IsNullOrWhiteSpace($OperationMethod)) {
         $script:RevitMcpOperationMethod = if ($AuditOnly) {
             "audit"
@@ -2470,7 +2523,7 @@ try {
     if (-not $Force -and $isPackageCurrent -and -not $requiresRevitClosed) {
         $message = "Already up to date."
         Write-Host $message -ForegroundColor Green
-        Write-UpdateReport -Status "current" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        Write-UpdateReport -Status "current" -Message $message -Channel $channel -InstalledState $installedState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
         return
     }
     elseif ($isPackageCurrent -and $revitPayloadChanges.Count -gt 0) {
@@ -2485,7 +2538,7 @@ try {
             "Update available: $installedVersionLabel -> $targetVersion"
         }
         Write-Host $message -ForegroundColor Yellow
-        Write-UpdateReport -Status "update-available" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        Write-UpdateReport -Status "update-available" -Message $message -Channel $channel -InstalledState $installedState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
         Show-UserNotification -Title "revAgent update available" -Message $message -Key ("update-available|{0}" -f $targetVersion) -Icon "Information"
         return
     }
@@ -2521,7 +2574,7 @@ try {
             }
         }
         Write-Warning $message
-        Write-UpdateReport -Status "deferred-revit-close-required" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        Write-UpdateReport -Status "deferred-revit-close-required" -Message $message -Channel $channel -InstalledState $installedState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
         Show-UserNotification -Title "revAgent update requires Revit to close" -Message $message -Key ("deferred-revit-close-required|{0}" -f $targetVersion) -Icon "Warning"
         return
     }
@@ -2749,14 +2802,14 @@ try {
         $updateMessage += " Fast update path failed; full repair/install path completed."
     }
     Write-JsonFile -Path $statePath -Value $newState
-    Write-UpdateReport -Status "updated" -Message $updateMessage -Channel $channel -InstalledState $newState -PreviousVersion $installedVersion -InstalledVersion $targetVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+    Write-UpdateReport -Status "updated" -Message $updateMessage -Channel $channel -InstalledState $newState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $targetVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
     Write-Host $updateMessage -ForegroundColor Green
     Show-UserNotification -Title "revAgent updated" -Message ($updateMessage + "`r`n`r`nInstalled version: " + $targetVersion) -Key ("updated|{0}" -f $targetVersion) -Icon "Information"
 }
 catch {
     $message = $_.Exception.Message
     $failedVersion = if ($installedState) { [string]$installedState.version } else { "" }
-    Write-UpdateReport -Status "failed" -Message $message -Channel $channel -InstalledState $installedState -PreviousVersion $failedVersion -InstalledVersion $failedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+    Write-UpdateReport -Status "failed" -Message $message -Channel $channel -InstalledState $installedState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $failedVersion -InstalledVersion $failedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
     Write-Host ""
     Write-Host "revAgent update failed: $message" -ForegroundColor Red
     if (-not [string]::IsNullOrWhiteSpace($script:RevitMcpLogPath)) {
