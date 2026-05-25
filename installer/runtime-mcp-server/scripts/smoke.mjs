@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { registerTools } from "../build/tools/register.js";
 import { resolveAutoTargetVisualStyle } from "../build/tools/export_revit_coordination_image.js";
@@ -21,6 +24,35 @@ const server = {
 };
 
 await registerTools(server);
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const runtimeRoot = path.resolve(__dirname, "..");
+const srcToolsDir = path.join(runtimeRoot, "src", "tools");
+const registerSource = fs.readFileSync(path.join(srcToolsDir, "register.ts"), "utf8");
+const registeredToolModules = new Set(
+  [...registerSource.matchAll(/from\s+["']\.\/([^"']+)\.js["']/g)]
+    .map((match) => match[1])
+    .sort(),
+);
+const sourceToolModules = fs
+  .readdirSync(srcToolsDir)
+  .filter((fileName) =>
+    fileName.endsWith(".ts") &&
+    fileName !== "register.ts" &&
+    !fileName.endsWith(".guard-test.ts")
+  )
+  .map((fileName) => fileName.replace(/\.ts$/, ""))
+  .sort();
+const unregisteredServerToolModules = sourceToolModules.filter((moduleName) => {
+  const source = fs.readFileSync(path.join(srcToolsDir, `${moduleName}.ts`), "utf8");
+  return /server\.tool\s*\(/.test(source) && !registeredToolModules.has(moduleName);
+});
+assert.deepEqual(
+  unregisteredServerToolModules,
+  [],
+  "Every source module that defines server.tool(...) must be imported by src/tools/register.ts.",
+);
 
 const expectedTools = [
   "list_revit_instances",
