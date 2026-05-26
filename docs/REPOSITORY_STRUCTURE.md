@@ -22,6 +22,7 @@ for servers, assemblies, manifests, and installed paths.
 |   |-- PLATFORM_ARCHITECTURE.md
 |   |-- PLATFORM_MODERNIZATION_SUMMARY.md
 |   |-- REPOSITORY_STRUCTURE.md
+|   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
 |-- references/
 |-- scripts/

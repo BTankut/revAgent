@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
 import { connectionOptionsFromArgs, connectionTargetSchema, normalizeRevitExecutionResponse, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
+import { recordRevitCommandTelemetry } from "../utils/telemetry.js";
 function findErrorLikeResult(value) {
     const normalized = normalizeRevitExecutionResponse(value);
     const candidate = normalized && typeof normalized === "object" && "result" in normalized
@@ -53,14 +54,24 @@ export function registerSendCodeToRevitTool(server) {
         if (args.taskId) {
             params.taskId = args.taskId;
         }
+        const options = connectionOptionsFromArgs(args);
+        const startedAtMs = Date.now();
         try {
-            const options = connectionOptionsFromArgs(args);
             const response = await withRevitConnection(async (revitClient) => {
                 return await revitClient.sendCommand("send_code_to_revit", params, options);
             }, options);
             const normalizedResponse = args.parseJsonResult === false
                 ? response
                 : normalizeRevitExecutionResponse(response);
+            recordRevitCommandTelemetry({
+                commandName: "send_code_to_revit",
+                logicalToolName: "send_code_to_revit",
+                executionKind: "dynamicCode",
+                params,
+                options,
+                response: normalizedResponse,
+                startedAtMs,
+            });
             const errorLikeResult = args.reportErrorResultAsFailure === false
                 ? null
                 : findErrorLikeResult(normalizedResponse);
@@ -84,6 +95,15 @@ export function registerSendCodeToRevitTool(server) {
             };
         }
         catch (error) {
+            recordRevitCommandTelemetry({
+                commandName: "send_code_to_revit",
+                logicalToolName: "send_code_to_revit",
+                executionKind: "dynamicCode",
+                params,
+                options,
+                error,
+                startedAtMs,
+            });
             return {
                 content: [
                     {

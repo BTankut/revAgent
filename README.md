@@ -622,6 +622,26 @@ Together, these tools define the current production runtime surface: live Revit
 execution, session/context discovery, view navigation, focused visual QA,
 parameter inspection, and safe custom-code workflows.
 
+## revAgent usage intelligence
+
+The runtime MCP server records silent, compact telemetry events so real office
+usage can drive product decisions. The first layer records runtime session
+starts, top-level MCP tool calls, Revit bridge command calls, dynamic C#
+execution summaries, timing, success/guarded/failure state, and parameter/code
+shapes. High-frequency `get_revit_mcp_status` polling is skipped by default.
+
+Telemetry is intentionally quiet and privacy-conscious: it does not store full
+C# snippets, full Revit responses, model geometry dumps, exported images, or
+full project paths. Code is grouped by hash, size, line count, and write-pattern
+signals so repeated `send_code_to_revit` work can be identified as future native
+tool candidates.
+
+Local events are written under
+`C:\ProgramData\DPE\RevitMCP\state\telemetry\events`. When workstation updater
+configuration contains `reportsRoot`, best-effort NAS copies are also written
+under `reports\events`. Telemetry failures are swallowed and must not affect
+Revit work. See `docs/REVAGENT_USAGE_INTELLIGENCE.md` for schema and controls.
+
 ## Why `send_code_to_revit` stays primary
 
 Real Revit tasks usually need:

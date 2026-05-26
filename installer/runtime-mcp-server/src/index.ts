@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerTools } from "./tools/register.js";
+import { recordRuntimeSessionStart } from "./utils/telemetry.js";
 
 const server = new McpServer({
     name: "revit-mcp",
@@ -12,6 +13,7 @@ async function main() {
     await registerTools(server);
     const transport = new StdioServerTransport();
     await server.connect(transport);
+    recordRuntimeSessionStart();
     console.error("Revit MCP Server start success");
 }
 main().catch((error) => {

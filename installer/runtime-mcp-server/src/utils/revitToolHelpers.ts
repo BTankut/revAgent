@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { withRevitConnection } from "./ConnectionManager.js";
+import { recordRevitCommandTelemetry } from "./telemetry.js";
 
 export function connectionTargetSchema(z) {
     return {
@@ -230,10 +231,35 @@ export async function executeRevitCode(code, options = {}) {
     if (options.taskId) {
         params.taskId = options.taskId;
     }
-    const response = await withRevitConnection(async (revitClient) => {
-        return await revitClient.sendCommand("send_code_to_revit", params, options);
-    }, options);
-    return normalizeRevitExecutionResponse(response);
+    const startedAtMs = Date.now();
+    try {
+        const response = await withRevitConnection(async (revitClient) => {
+            return await revitClient.sendCommand("send_code_to_revit", params, options);
+        }, options);
+        const normalizedResponse = normalizeRevitExecutionResponse(response);
+        recordRevitCommandTelemetry({
+            commandName: "send_code_to_revit",
+            logicalToolName: options.toolName || params.taskName,
+            executionKind: "dynamicCode",
+            params,
+            options,
+            response: normalizedResponse,
+            startedAtMs,
+        });
+        return normalizedResponse;
+    }
+    catch (error) {
+        recordRevitCommandTelemetry({
+            commandName: "send_code_to_revit",
+            logicalToolName: options.toolName || params.taskName,
+            executionKind: "dynamicCode",
+            params,
+            options,
+            error,
+            startedAtMs,
+        });
+        throw error;
+    }
 }
 
 export async function sendRevitCommand(command, params = {}, options = {}) {
@@ -246,10 +272,35 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
     if (options.taskId && !commandParams.taskId) {
         commandParams.taskId = options.taskId;
     }
-    const response = await withRevitConnection(async (revitClient) => {
-        return await revitClient.sendCommand(command, commandParams, options);
-    }, options);
-    return normalizeRevitExecutionResponse(response);
+    const startedAtMs = Date.now();
+    try {
+        const response = await withRevitConnection(async (revitClient) => {
+            return await revitClient.sendCommand(command, commandParams, options);
+        }, options);
+        const normalizedResponse = normalizeRevitExecutionResponse(response);
+        recordRevitCommandTelemetry({
+            commandName: command,
+            logicalToolName: options.toolName || command,
+            executionKind: "bridgeCommand",
+            params: commandParams,
+            options,
+            response: normalizedResponse,
+            startedAtMs,
+        });
+        return normalizedResponse;
+    }
+    catch (error) {
+        recordRevitCommandTelemetry({
+            commandName: command,
+            logicalToolName: options.toolName || command,
+            executionKind: "bridgeCommand",
+            params: commandParams,
+            options,
+            error,
+            startedAtMs,
+        });
+        throw error;
+    }
 }
 
 export function csharpString(value) {

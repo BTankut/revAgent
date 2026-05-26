@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +11,13 @@ import {
   normalizeRevitExecutionResponse,
   truncateText,
 } from "../build/utils/revitToolHelpers.js";
+import {
+  recordTelemetryEvent,
+  resolveTelemetryTargets,
+  sanitizeTelemetryPathSegment,
+  summarizeTelemetryParams,
+  summarizeTelemetryResponse,
+} from "../build/utils/telemetry.js";
 
 const tools = new Map();
 const server = {
@@ -152,6 +160,53 @@ const trimmed = truncateText("abcdef", 3);
 assert.equal(trimmed.truncated, true);
 assert.match(trimmed.text, /truncated 3 chars/);
 
+assert.equal(sanitizeTelemetryPathSegment("HAFIZE"), "HAFIZE");
+assert.equal(sanitizeTelemetryPathSegment("MARINA"), "MARINA");
+assert.equal(sanitizeTelemetryPathSegment("office machine/name"), "office_machine_name");
+
+const telemetryParamSummary = summarizeTelemetryParams({
+  code: "using (var t = new Transaction(document, \"x\")) { t.Start(); t.Commit(); }",
+  elementIds: [1, 2, 3],
+  transactionMode: "none",
+  query: "sensitive search text",
+});
+assert.equal(telemetryParamSummary.code.lineCount, 1);
+assert.equal(telemetryParamSummary.code.hasManualTransaction, true);
+assert.equal(telemetryParamSummary.elementIds.count, 3);
+assert.equal(telemetryParamSummary.transactionMode, "none");
+assert.equal(typeof telemetryParamSummary.query.hash, "string");
+assert.equal("text" in telemetryParamSummary.query, false);
+
+const telemetryResponseSummary = summarizeTelemetryResponse({
+  result: {
+    success: false,
+    state: "guarded",
+    error: "C:\\Projects\\Secret\\model.rvt blocked by safety",
+  },
+});
+assert.equal(telemetryResponseSummary.success, false);
+assert.equal(telemetryResponseSummary.guarded, true);
+assert.doesNotMatch(telemetryResponseSummary.errorMessage, /Secret/);
+
+const telemetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "revagent-telemetry-"));
+process.env.REVAGENT_TELEMETRY_ROOT = telemetryRoot;
+process.env.REVAGENT_TELEMETRY_LOCAL_ONLY = "1";
+await recordTelemetryEvent({
+  eventType: "runtime.test",
+  timestampUtc: "2026-05-27T00:00:00.000Z",
+});
+const telemetryTargets = resolveTelemetryTargets({
+  timestampUtc: "2026-05-27T00:00:00.000Z",
+  machineName: "HAFIZE",
+  sessionId: "session",
+});
+assert.equal(telemetryTargets.length, 1);
+assert.match(telemetryTargets[0].path, /2026-05-27\.ndjson$/);
+const telemetryFile = path.join(telemetryRoot, "events", "2026-05-27.ndjson");
+assert.equal(fs.existsSync(telemetryFile), true);
+const telemetryLine = fs.readFileSync(telemetryFile, "utf8").trim();
+assert.equal(JSON.parse(telemetryLine).eventType, "runtime.test");
+
 const safeTool = tools.get("send_code_to_revit_safe");
 const rejection = await safeTool.handler({
   code: "document.Delete(new ElementId(1));",
@@ -160,5 +215,17 @@ const rejection = await safeTool.handler({
 const rejectionPayload = JSON.parse(rejection.content[0].text);
 assert.equal(rejectionPayload.success, false);
 assert.match(rejectionPayload.error, /does not support writeCommit/);
+await new Promise((resolve) => setTimeout(resolve, 50));
+const telemetryFiles = fs.readdirSync(path.join(telemetryRoot, "events"))
+  .filter((fileName) => fileName.endsWith(".ndjson"))
+  .map((fileName) => path.join(telemetryRoot, "events", fileName));
+const telemetryLines = telemetryFiles.flatMap((fileName) =>
+  fs.readFileSync(fileName, "utf8").trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
+);
+const toolTelemetry = telemetryLines.find((line) => line.eventType === "mcp.tool" && line.toolName === "send_code_to_revit_safe");
+assert.equal(toolTelemetry.result.success, false);
+assert.equal(toolTelemetry.params.code.writePatternCount > 0, true);
+delete process.env.REVAGENT_TELEMETRY_ROOT;
+delete process.env.REVAGENT_TELEMETRY_LOCAL_ONLY;
 
 console.error("runtime MCP smoke passed");
