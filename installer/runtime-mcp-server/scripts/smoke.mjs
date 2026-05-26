@@ -172,10 +172,11 @@ const telemetryParamSummary = summarizeTelemetryParams({
 });
 assert.equal(telemetryParamSummary.code.lineCount, 1);
 assert.equal(telemetryParamSummary.code.hasManualTransaction, true);
+assert.match(telemetryParamSummary.code.preview, /Transaction/);
 assert.equal(telemetryParamSummary.elementIds.count, 3);
 assert.equal(telemetryParamSummary.transactionMode, "none");
 assert.equal(typeof telemetryParamSummary.query.hash, "string");
-assert.equal("text" in telemetryParamSummary.query, false);
+assert.equal(telemetryParamSummary.query.text, "sensitive search text");
 
 const telemetryResponseSummary = summarizeTelemetryResponse({
   result: {
@@ -186,7 +187,13 @@ const telemetryResponseSummary = summarizeTelemetryResponse({
 });
 assert.equal(telemetryResponseSummary.success, false);
 assert.equal(telemetryResponseSummary.guarded, true);
-assert.doesNotMatch(telemetryResponseSummary.errorMessage, /Secret/);
+assert.match(telemetryResponseSummary.errorMessage, /Secret/);
+
+const safeRejectionSummary = summarizeTelemetryResponse({
+  success: false,
+  error: "Rejected write-looking code for intent 'writePreview'.",
+});
+assert.equal(safeRejectionSummary.guarded, true);
 
 const telemetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "revagent-telemetry-"));
 process.env.REVAGENT_TELEMETRY_ROOT = telemetryRoot;
@@ -206,6 +213,14 @@ const telemetryFile = path.join(telemetryRoot, "events", "2026-05-27.ndjson");
 assert.equal(fs.existsSync(telemetryFile), true);
 const telemetryLine = fs.readFileSync(telemetryFile, "utf8").trim();
 assert.equal(JSON.parse(telemetryLine).eventType, "runtime.test");
+delete process.env.REVAGENT_TELEMETRY_LOCAL_ONLY;
+process.env.REVAGENT_REPORTS_ROOT = path.join(telemetryRoot, "reports");
+const remoteTargets = resolveTelemetryTargets({
+  timestampUtc: "2026-05-27T00:00:00.000Z",
+  machineName: "hafize",
+  sessionId: "session",
+});
+assert.equal(remoteTargets.some((target) => target.kind === "remote" && target.path.includes(`${path.sep}HAFIZE${path.sep}`)), true);
 
 const safeTool = tools.get("send_code_to_revit_safe");
 const rejection = await safeTool.handler({
@@ -214,6 +229,7 @@ const rejection = await safeTool.handler({
 });
 const rejectionPayload = JSON.parse(rejection.content[0].text);
 assert.equal(rejectionPayload.success, false);
+assert.equal(rejectionPayload.guarded, true);
 assert.match(rejectionPayload.error, /does not support writeCommit/);
 await new Promise((resolve) => setTimeout(resolve, 50));
 const telemetryFiles = fs.readdirSync(path.join(telemetryRoot, "events"))
@@ -224,8 +240,9 @@ const telemetryLines = telemetryFiles.flatMap((fileName) =>
 );
 const toolTelemetry = telemetryLines.find((line) => line.eventType === "mcp.tool" && line.toolName === "send_code_to_revit_safe");
 assert.equal(toolTelemetry.result.success, false);
+assert.equal(toolTelemetry.result.guarded, true);
 assert.equal(toolTelemetry.params.code.writePatternCount > 0, true);
 delete process.env.REVAGENT_TELEMETRY_ROOT;
-delete process.env.REVAGENT_TELEMETRY_LOCAL_ONLY;
+delete process.env.REVAGENT_REPORTS_ROOT;
 
 console.error("runtime MCP smoke passed");

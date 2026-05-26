@@ -116,13 +116,13 @@ metrics are written to the add-in log under the installed payload `Logs\` folder
 ## Usage Intelligence
 
 The runtime MCP server also emits silent usage-intelligence events for product
-feedback. These events are compact NDJSON records, not raw model logs. They
-capture runtime session starts, top-level MCP tool calls, bridge command calls,
-dynamic C# execution summaries, timing, success/guarded/failure state,
-parameter shapes, and dynamic code hashes. Noisy `get_revit_mcp_status`
-polling is skipped by default. They intentionally do not store full C# code
-text, full Revit responses, model geometry dumps, exported images, or full
-project paths.
+feedback and production analysis. These events are structured NDJSON records,
+not raw model dumps. They capture runtime session starts, top-level MCP tool
+calls, bridge command calls, dynamic C# execution summaries, timing,
+success/guarded/failure state, parameter shapes, bounded text values, and
+dynamic-code hashes/previews. Noisy `get_revit_mcp_status` polling is skipped
+by default. They still avoid full Revit responses, model geometry dumps, and
+exported images.
 
 Local spool files live under
 `C:\ProgramData\DPE\RevitMCP\state\telemetry\events`. When the updater config
@@ -131,7 +131,7 @@ provides `reportsRoot`, the runtime also writes best-effort NAS copies under
 failures are swallowed; a NAS outage must not fail a Revit operation or show UI
 noise.
 
-See `docs/REVAGENT_USAGE_INTELLIGENCE.md` for the event schema, privacy
+See `docs/REVAGENT_USAGE_INTELLIGENCE.md` for the event schema, signal
 boundaries, and environment controls.
 
 ## Deployment Components

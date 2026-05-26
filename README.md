@@ -191,7 +191,8 @@ The runtime also exposes `get_revit_mcp_status`. It reports the active task,
 elapsed time, recent completed/guarded/failed tasks, and service port. Routine
 status responses stay compact by default: recent task records are limited to the
 latest few items and transport diagnostics are hidden unless explicitly
-requested. `guarded` is an expected safety state for blocked operations such as
+requested. Full-test/debug checks can request up to 100 recent records.
+`guarded` is an expected safety state for blocked operations such as
 manual Revit transactions submitted inside the wrapper-managed `auto` mode; it
 is not a failed model operation.
 Status calls bypass the per-port command lock so Codex can query progress during
@@ -480,6 +481,9 @@ codex mcp add revit-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\bui
 ```
 
 On first query, the docs server builds a local cache from the installed `RevitAPI*.dll` and matching `RevitAPI*.xml` files under the Revit install folder.
+`get_member_details` also resolves common Revit C# convenience aliases such as
+`Element.get_Parameter(...)` to the XML-doc member that Autodesk exposes as the
+`Element.Parameter` property.
 
 Default cache path:
 
@@ -624,17 +628,18 @@ parameter inspection, and safe custom-code workflows.
 
 ## revAgent usage intelligence
 
-The runtime MCP server records silent, compact telemetry events so real office
-usage can drive product decisions. The first layer records runtime session
+The runtime MCP server records silent telemetry events so real office usage can
+drive product and production decisions. The first layer records runtime session
 starts, top-level MCP tool calls, Revit bridge command calls, dynamic C#
-execution summaries, timing, success/guarded/failure state, and parameter/code
-shapes. High-frequency `get_revit_mcp_status` polling is skipped by default.
+execution summaries, timing, success/guarded/failure state, parameter shapes,
+bounded text values, and dynamic-code previews. High-frequency
+`get_revit_mcp_status` polling is skipped by default.
 
-Telemetry is intentionally quiet and privacy-conscious: it does not store full
-C# snippets, full Revit responses, model geometry dumps, exported images, or
-full project paths. Code is grouped by hash, size, line count, and write-pattern
-signals so repeated `send_code_to_revit` work can be identified as future native
-tool candidates.
+Telemetry is intentionally quiet but not over-redacted: this is an
+office-internal signal stream, so useful task names, search text, paths, and
+bounded code previews are retained for later dashboard and LLM analysis. It
+still avoids full Revit response payloads, model geometry dumps, and exported
+images.
 
 Local events are written under
 `C:\ProgramData\DPE\RevitMCP\state\telemetry\events`. When workstation updater

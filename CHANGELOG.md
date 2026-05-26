@@ -4,6 +4,17 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Classified `send_code_to_revit_safe` write-looking rejections as guarded
+  safety blocks in telemetry and tool responses.
+- Increased Revit-side recent task history and status-query limits to 100
+  records for full-test/debug runs.
+- Added `files[].finalPixelSizeMatchesRequest` to `export_revit_view_image`
+  output so "already correct size" is distinct from "resizer changed file".
+- Added Revit API docs alias resolution for common
+  `Element.get_Parameter(...)` lookups, mapping them to the XML-doc
+  `Element.Parameter` property.
+- Expanded office-internal telemetry signal with normalized machine names,
+  useful bounded text values, and dynamic-code previews for later LLM analysis.
 - Unified the Revit add-in bridge command surface into one
   `RevitMCPCommandSet` payload so Settings shows a single shared revAgent
   bridge while preserving the existing runtime MCP command names.

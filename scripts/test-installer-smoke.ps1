@@ -370,6 +370,8 @@ try {
     Assert-True ($taskStatusCode -match 'ShowGuarded') "Task status window must display safety-guarded tasks separately from failures."
     Assert-True ($taskStatusController -match 'ShowGuarded') "Task status controller must route guarded task state to the UI."
     Assert-True ($taskStatusService -match 'GuardTask') "Task status service must support a guarded task state."
+    Assert-True ($taskStatusService -match 'MaxRecentTasks = 100') "Task status service must retain enough recent tasks for full-test/debug runs."
+    Assert-True ($taskStatusCode -match 'MaxHistoryItems = 100') "Task status window must keep enough visible history for full-test/debug runs."
     Assert-True ($taskStatusService -notmatch 'NormalizeErrorMessage|ContainsCjk') "Task status service must not hide localized source text with a sanitizer."
     Assert-True ($socketServiceCode -match 'IsCommandResultGuarded') "Socket service must classify expected safety blocks as guarded tasks."
     Assert-True ($taskStatusCode -match 'Guarded / blocked by safety') "Task status window must describe guarded tasks as a safety block, not a failure."
@@ -401,6 +403,9 @@ try {
     $statusToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_revit_mcp_status.ts")
     $toolHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\revitToolHelpers.ts")
     $parameterSchemaToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_parameter_schema.ts")
+    $telemetryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\telemetry.ts")
+    $safeCodeToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit_safe.ts")
+    $apiDocsIndexCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\src\utils\docIndex.ts")
     Assert-True ($focusHelpersCode -match 'new FilteredElementCollector\(document, view\.Id\)') "View visibility helper must use a view-specific collector."
     Assert-True ($focusHelpersCode -match 'ElementIdSetFilter') "View visibility helper must filter directly by target element id instead of materializing all visible ids."
     Assert-True ($focusHelpersCode -match 'elementNotVisibleInTargetView') "View visibility helper must report non-visible target elements."
@@ -444,7 +449,9 @@ try {
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
     Assert-True ($statusToolCode -match 'replace\(/\^\\uFEFF/') "Status identity must tolerate PowerShell-written UTF-8 BOM JSON files."
     Assert-True ($statusToolCode -match 'revit-mcp-status\.v3') "Status schema must be bumped when status field names change."
+    Assert-True ($statusToolCode -match '\.max\(100\)') "Status tool must allow a longer recent history limit for full-test/debug runs."
     Assert-True ($toolHelpersCode -match 'recentHistoryCount') "Status compact payload must report recent history count instead of a misleading total."
+    Assert-True ($toolHelpersCode -match 'recentLimit, 3, 0, 100') "Status compact payload must preserve up to 100 recent tasks when requested."
     Assert-True ($toolHelpersCode -notmatch 'clone\.recentTasksTotal =') "Status compact payload must not emit the legacy recentTasksTotal name."
     Assert-True ($toolHelpersCode -match 'normalizeSuccessCasing') "Runtime formatter must normalize response success casing."
     Assert-True ($toolHelpersCode -match 'delete clone\.Success') "Runtime formatter must emit canonical lowercase success instead of success/Success duplicates."
@@ -470,6 +477,14 @@ try {
     Assert-True ($closeViewCode -match 'Changed = closed \|\| activeViewChanged') "close_view must mark Changed when a view is closed or active view changes."
     Assert-True ($viewImageToolCode -match 'enforcePixelSize') "View image export must expose enforcePixelSize."
     Assert-True ($viewImageToolCode -match 'resizeImageToRequestedPixelSize') "View image export must normalize exported image dimensions after Revit export."
+    Assert-True ($viewImageToolCode -match 'finalPixelSizeMatchesRequest') "View image export must explicitly report whether the final image dimension matches the request."
+    Assert-True ($safeCodeToolCode -match 'formatSafetyBlock') "Safe dynamic execution wrapper must classify expected write rejections as guarded safety blocks."
+    Assert-True ($safeCodeToolCode -match 'safe_wrapper_rejected_write_looking_code') "Safe dynamic execution wrapper must expose a stable safety reason for write-looking snippets."
+    Assert-True ($telemetryCode -match 'normalizeMachineName') "Telemetry must normalize machine names before building NAS event paths."
+    Assert-True ($telemetryCode -match 'REVAGENT_TELEMETRY_CODE_CHARS') "Telemetry must capture bounded code previews for semantic usage analysis."
+    Assert-True ($telemetryCode -match 'rejected write-looking code') "Telemetry must classify safe-wrapper write rejections as guarded outcomes."
+    Assert-True ($apiDocsIndexCode -match 'getMemberNameAliases') "API docs resolver must support common Revit member aliases."
+    Assert-True ($apiDocsIndexCode -match 'revit_xml_docs_parameter_indexer_property') "API docs resolver must alias get_Parameter(...) to the Element.Parameter XML docs property."
     Assert-True ($create3dToolCode -match 'LIVE_VIEW_NAVIGATION_PRIMITIVE') "create_3d_view_for_elements must identify itself as the live 3D navigation primitive."
     Assert-True ($showPlan3dToolCode -match 'LIVE_VIEW_WORKFLOW_WRAPPER') "show_element_in_plan_and_3d must identify itself as the live plan+3D workflow wrapper."
     Assert-True ($coordinationImageToolCode -match 'VISUAL_ARTIFACT_EXPORT_ONLY') "Coordination image export must identify itself as an image artifact export tool."

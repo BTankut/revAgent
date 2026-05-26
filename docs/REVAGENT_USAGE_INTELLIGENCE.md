@@ -1,9 +1,9 @@
 # revAgent Usage Intelligence
 
-revAgent usage intelligence is the product feedback pipeline for learning from
-real office usage without interrupting production work. It records compact,
-structured runtime events that can later be aggregated for dashboards and LLM
-analysis.
+revAgent usage intelligence is the office feedback and production-analysis
+pipeline for learning from real usage without interrupting production work. It
+records structured runtime events that can later be aggregated for dashboards
+and LLM analysis.
 
 The goal is not raw log collection. The goal is to answer product questions
 from real usage evidence:
@@ -13,6 +13,8 @@ from real usage evidence:
 - Which repeated `send_code_to_revit` patterns should become native tools?
 - Which workflows need better UI, documentation, or safer defaults?
 - Which issues deserve hotfix priority because they repeat across machines?
+- Which project/session/floor/work-area patterns show production friction or
+  staffing bottlenecks?
 
 ## Event Sources
 
@@ -59,27 +61,28 @@ Runtime command events use schema `revagent.telemetry.v1` and include:
 - task metadata: `taskName`, whether a `taskId` was present
 - timing: `durationMs`
 - result summary: success, guarded state, action/state, compact error summary
-- parameter summary: key names, counts, booleans/enums, code hash/size
+- parameter summary: key names, counts, booleans/enums, bounded text values,
+  and code hash/size/preview data
 
 Top-level `mcp.tool` events use the same schema and add `toolName`, duration,
 parameter shape, and compact result status. `get_revit_mcp_status` is skipped
 unless `REVAGENT_TELEMETRY_INCLUDE_STATUS=1` is set because agents poll it
 frequently during safe Revit coordination.
 
-## Privacy And Noise Boundaries
+## Signal And Noise Boundaries
 
-Telemetry intentionally does not collect:
+Telemetry is office-internal signal, not a public analytics stream. It now keeps
+bounded text where that text helps later semantic analysis, including task
+names, search text, useful paths, and dynamic-code previews. Dynamic code is
+stored with a hash, character count, line count, write-pattern names, and a
+bounded preview. The default preview limits are intentionally large enough for
+LLM clustering while still preventing accidental multi-megabyte event records.
 
-- full C# code text
+Telemetry still does not collect:
+
 - full Revit command response payloads
 - full model geometry or element dumps
-- full project paths
 - exported images
-
-Dynamic code is summarized with a hash, character count, line count, and write
-pattern names. Search text and other free-form strings are hashed and length
-counted instead of stored verbatim. Error text is truncated and obvious local or
-UNC paths are redacted.
 
 The pipeline is silent by default. Telemetry failures are swallowed. Operators
 should not see dialogs, status noise, or failed Revit commands because telemetry
@@ -90,6 +93,10 @@ could not write.
 - `REVAGENT_TELEMETRY_DISABLED=1`: disable runtime telemetry.
 - `REVAGENT_TELEMETRY_LOCAL_ONLY=1`: write local spool only, no NAS event store.
 - `REVAGENT_TELEMETRY_INCLUDE_STATUS=1`: include status-polling tool calls.
+- `REVAGENT_TELEMETRY_TEXT_CHARS=<n>`: limit stored free-form text per
+  parameter. Defaults to 1000, max 10000, `0` disables text copies.
+- `REVAGENT_TELEMETRY_CODE_CHARS=<n>`: limit stored dynamic-code preview text.
+  Defaults to 4000, max 100000, `0` disables code previews.
 - `REVAGENT_TELEMETRY_ROOT=<path>`: override the local spool root.
 - `REVAGENT_REPORTS_ROOT=<path>`: override the remote reports/event root.
 - `REVAGENT_UPDATER_CONFIG=<path>`: override updater config discovery.

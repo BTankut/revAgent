@@ -87,6 +87,11 @@ function defaultLocalTelemetryRoot() {
     return path.join(getProgramDataRoot(), "DPE", "RevitMCP", "state", "telemetry");
 }
 
+function normalizeMachineName(value) {
+    const text = String(value || "").trim();
+    return (text || "unknown-machine").toUpperCase();
+}
+
 export function sanitizeTelemetryPathSegment(value, fallback = "unknown") {
     const text = String(value || "").trim();
     if (!text) {
@@ -107,28 +112,58 @@ function shortHash(value) {
     return hashText(value).slice(0, 16);
 }
 
-function redactPotentialSensitiveText(value) {
-    return String(value || "")
-        .replace(/\\\\[^\\\s]+\\[^\r\n\t"]+/g, "[unc-path]")
-        .replace(/[A-Za-z]:\\[^\r\n\t"]+/g, "[local-path]")
-        .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]");
-}
-
 function truncateText(value, maxChars = 400) {
-    const text = redactPotentialSensitiveText(value);
+    const text = String(value || "");
     if (text.length <= maxChars) {
-        return text;
+        return {
+            text,
+            truncated: false,
+        };
     }
-    return `${text.slice(0, maxChars)}...[truncated ${text.length - maxChars} chars]`;
+    return {
+        text: `${text.slice(0, maxChars)}...[truncated ${text.length - maxChars} chars]`,
+        truncated: true,
+    };
 }
 
 function countLines(value) {
     return String(value || "").split(/\r\n|\r|\n/).length;
 }
 
+function clampTelemetryInt(value, fallback, min, max) {
+    const parsed = Number.parseInt(String(value ?? ""), 10);
+    if (!Number.isFinite(parsed)) {
+        return fallback;
+    }
+    return Math.max(min, Math.min(max, parsed));
+}
+
+function telemetryTextLimit() {
+    return clampTelemetryInt(process.env.REVAGENT_TELEMETRY_TEXT_CHARS, 1000, 0, 10000);
+}
+
+function telemetryCodeLimit() {
+    return clampTelemetryInt(process.env.REVAGENT_TELEMETRY_CODE_CHARS, 4000, 0, 100000);
+}
+
+function summarizeText(value, maxChars) {
+    const text = String(value || "");
+    const summary = {
+        hash: shortHash(text),
+        length: text.length,
+        present: text.length > 0,
+    };
+    if (maxChars > 0) {
+        const truncated = truncateText(text, maxChars);
+        summary.text = truncated.text;
+        summary.textTruncated = truncated.truncated;
+    }
+    return summary;
+}
+
 function summarizeCode(code) {
     const text = String(code || "");
-    return {
+    const summary = {
         hash: shortHash(text),
         length: text.length,
         lineCount: countLines(text),
@@ -136,6 +171,13 @@ function summarizeCode(code) {
         writePatterns: findWritePatterns(text).slice(0, 12),
         hasManualTransaction: /new\s+(Transaction|SubTransaction|TransactionGroup)\s*\(|\b(Transaction|SubTransaction|TransactionGroup)\s*\(/i.test(text),
     };
+    const maxChars = telemetryCodeLimit();
+    if (maxChars > 0) {
+        const preview = truncateText(text, maxChars);
+        summary.preview = preview.text;
+        summary.previewTruncated = preview.truncated;
+    }
+    return summary;
 }
 
 function summarizeScalarParam(key, value) {
@@ -162,11 +204,7 @@ function summarizeScalarParam(key, value) {
         if (safeStringKeys.has(key)) {
             return value;
         }
-        return {
-            hash: shortHash(value),
-            length: value.length,
-            present: value.length > 0,
-        };
+        return summarizeText(value, telemetryTextLimit());
     }
 
     return undefined;
@@ -247,7 +285,7 @@ export function summarizeTelemetryResponse(response, error = null) {
     if (error) {
         return {
             success: false,
-            errorMessage: truncateText(error instanceof Error ? error.message : String(error)),
+            errorMessage: truncateText(error instanceof Error ? error.message : String(error)).text,
             errorType: error instanceof Error ? error.name : "Error",
         };
     }
@@ -262,7 +300,8 @@ export function summarizeTelemetryResponse(response, error = null) {
     const responseText = typeof target === "string" ? target : "";
     const errorLikeText = /^\s*ERROR\s*:/i.test(responseText) ? responseText : "";
     const guarded = String(state || "").toLowerCase() === "guarded" ||
-        /blocked by safety|guarded/i.test(String(errorValue || messageValue || responseText || ""));
+        getValueCaseInsensitive(target, ["guarded", "blocked", "focusBlocked"]) === true ||
+        /blocked by safety|guarded|rejected write-looking code|does not support writeCommit|only executes with transactionMode 'none'/i.test(String(errorValue || messageValue || responseText || ""));
 
     return {
         success: typeof successValue === "boolean" ? successValue : !errorValue && !errorLikeText,
@@ -271,7 +310,7 @@ export function summarizeTelemetryResponse(response, error = null) {
         action: action || null,
         responseKind: Array.isArray(target) ? "array" : target === null ? "null" : typeof target,
         responseKeys: isObject ? Object.keys(target).sort().slice(0, 40) : [],
-        errorMessage: errorValue || errorLikeText ? truncateText(errorValue || errorLikeText) : null,
+        errorMessage: errorValue || errorLikeText ? truncateText(errorValue || errorLikeText).text : null,
         messageHash: messageValue ? shortHash(messageValue) : null,
     };
 }
@@ -323,7 +362,7 @@ export function resolveTelemetryTargets(event) {
 
     const timestamp = new Date(event.timestampUtc || Date.now());
     const parts = dateParts(timestamp);
-    const machine = sanitizeTelemetryPathSegment(event.machineName, "unknown-machine");
+    const machine = sanitizeTelemetryPathSegment(normalizeMachineName(event.machineName), "unknown-machine");
     const localPath = path.join(config.localRoot, "events", `${parts.ymd}.ndjson`);
     const targets = [{ kind: "local", path: localPath }];
 
@@ -353,7 +392,7 @@ export function buildTelemetryEvent(partial = {}) {
             nodeVersion: process.version,
             startedAtUtc: TELEMETRY_PROCESS_STARTED_AT_UTC,
         },
-        machineName: process.env.COMPUTERNAME || os.hostname(),
+        machineName: normalizeMachineName(process.env.COMPUTERNAME || os.hostname()),
         userName: process.env.USERNAME || process.env.USER || "",
         runtime: {
             version: runtimeVersion,

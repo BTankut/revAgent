@@ -90,7 +90,7 @@ namespace revit_mcp_plugin.Core
 
     public sealed class McpTaskStatusService
     {
-        private const int MaxRecentTasks = 20;
+        private const int MaxRecentTasks = 100;
         private static readonly Lazy<McpTaskStatusService> LazyInstance =
             new Lazy<McpTaskStatusService>(() => new McpTaskStatusService());
 

@@ -12,6 +12,17 @@ import {
 } from "../utils/revitToolHelpers.js";
 import { findWritePatterns } from "./send_code_to_revit_safe_guards.js";
 
+function formatSafetyBlock(error, writePatterns, safetyReason) {
+    return formatJsonContent({
+        success: false,
+        guarded: true,
+        state: "guarded",
+        error,
+        safetyReason,
+        writePatterns,
+    });
+}
+
 export function registerSendCodeToRevitSafeTool(server) {
     server.tool("send_code_to_revit_safe", "Run Revit C# through the existing dynamic execution command with read/preview safety checks, JSON result parsing, and output trimming. This MVP does not commit writes.", {
         ...connectionTargetSchema(z),
@@ -27,25 +38,25 @@ export function registerSendCodeToRevitSafeTool(server) {
         const intent = args.intent || "read";
         const writePatterns = findWritePatterns(args.code);
         if (intent === "writeCommit") {
-            return formatJsonContent({
-                success: false,
-                error: "send_code_to_revit_safe does not support writeCommit in this MVP. Use raw send_code_to_revit only after explicit user confirmation.",
+            return formatSafetyBlock(
+                "send_code_to_revit_safe does not support writeCommit in this MVP. Use raw send_code_to_revit only after explicit user confirmation.",
                 writePatterns,
-            });
+                "safe_wrapper_write_commit_not_supported",
+            );
         }
         if (args.transactionMode === "auto") {
-            return formatJsonContent({
-                success: false,
-                error: "send_code_to_revit_safe only executes with transactionMode 'none'. Use raw send_code_to_revit for an explicitly confirmed write.",
+            return formatSafetyBlock(
+                "send_code_to_revit_safe only executes with transactionMode 'none'. Use raw send_code_to_revit for an explicitly confirmed write.",
                 writePatterns,
-            });
+                "safe_wrapper_requires_transactionMode_none",
+            );
         }
         if (writePatterns.length > 0) {
-            return formatJsonContent({
-                success: false,
-                error: `Rejected write-looking code for intent '${intent}'.`,
+            return formatSafetyBlock(
+                `Rejected write-looking code for intent '${intent}'.`,
                 writePatterns,
-            });
+                "safe_wrapper_rejected_write_looking_code",
+            );
         }
         try {
             const response = await executeRevitCode(args.code, {

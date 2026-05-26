@@ -187,7 +187,7 @@ function compactTaskInfo(task, includeDiagnostics) {
 export function compactMcpStatusPayload(payload, options = {}) {
     const includeRecentTasks = options.includeRecentTasks !== false;
     const includeDiagnostics = options.includeDiagnostics === true;
-    const recentLimit = clampInt(options.recentLimit, 3, 0, 20);
+    const recentLimit = clampInt(options.recentLimit, 3, 0, 100);
 
     const target = payload && typeof payload === "object" && payload.result && typeof payload.result === "object"
         ? payload.result
@@ -201,7 +201,7 @@ export function compactMcpStatusPayload(payload, options = {}) {
 
     if (Array.isArray(target.recentTasks)) {
         clone.recentHistoryCount = target.recentHistoryCount ?? target.recentTasks.length;
-        clone.recentHistoryCapacity = target.recentHistoryCapacity ?? 20;
+        clone.recentHistoryCapacity = target.recentHistoryCapacity ?? 100;
         delete clone.recentTasksTotal;
         if (includeRecentTasks) {
             clone.recentTasks = target.recentTasks

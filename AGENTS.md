@@ -62,7 +62,10 @@ Available runtime tools:
 - `export_revit_view_image`: exports the active view, the active view's visible
   region, or a selected Revit view to PNG/JPEG/TIFF/BMP/TARGA. It does not
   write model elements or view settings. PNG/JPEG/BMP/TIFF exports are
-  normalized to the requested `pixelSize` by default.
+  normalized to the requested `pixelSize` by default. Use
+  `files[].finalPixelSizeMatchesRequest` to verify the final image dimension;
+  `files[].resizedToRequestedPixelSize` only reports whether post-processing
+  changed the file.
 - `export_revit_coordination_image`: creates or updates a reusable 3D QA view,
   applies a section box and selectable target visual style around target
   elements, then exports an image. It does not create or modify physical MEP

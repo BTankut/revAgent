@@ -305,6 +305,49 @@ function filterByKind(items, kind) {
     }
     return items.filter((item) => item.kind === kind);
 }
+function getMemberNameAliases(memberName, kind) {
+    const text = String(memberName || "").trim();
+    if (!text) {
+        return [];
+    }
+    const argsMatch = text.match(/\(([^)]*)\)\s*$/);
+    const parameterType = resolveGetParameterArgumentType(argsMatch?.[1]);
+    const withoutArgs = text.replace(/\s*\([^)]*\)\s*$/, "");
+    const aliases = [];
+    if (/(^|\.)get_parameter$/i.test(withoutArgs)) {
+        aliases.push({
+            memberName: withoutArgs.replace(/get_parameter$/i, "Parameter"),
+            kind: "property",
+            parameterType,
+            reason: "revit_xml_docs_parameter_indexer_property",
+        });
+    }
+    if (/^get_parameter$/i.test(withoutArgs)) {
+        aliases.push({
+            memberName: "Parameter",
+            kind: "property",
+            parameterType,
+            reason: "revit_xml_docs_parameter_indexer_property",
+        });
+    }
+    return uniqueBy(aliases, (alias) => `${normalize(alias.memberName)}|${alias.kind || kind || ""}`);
+}
+function resolveGetParameterArgumentType(value) {
+    const text = normalize(value);
+    if (!text) {
+        return null;
+    }
+    if (text.includes("builtinparameter")) {
+        return "Autodesk.Revit.DB.BuiltInParameter";
+    }
+    if (text.includes("definition")) {
+        return "Autodesk.Revit.DB.Definition";
+    }
+    if (text.includes("guid")) {
+        return "System.Guid";
+    }
+    return null;
+}
 function findTypeMatches(index, typeName) {
     const query = normalize(typeName);
     if (!query) {
@@ -325,7 +368,7 @@ function findTypeMatches(index, typeName) {
     const fuzzy = index.types.filter((type) => normalize(type.fullName).includes(query) || normalize(type.name).includes(query));
     return fuzzy.slice(0, 20);
 }
-function findMemberMatches(index, memberName, typeName, kind) {
+function findDirectMemberMatches(index, memberName, typeName, kind) {
     const query = normalize(memberName);
     let matches = [];
     if (!query) {
@@ -340,6 +383,17 @@ function findMemberMatches(index, memberName, typeName, kind) {
             ...(index.membersByFullName.get(query) || []),
             ...(index.membersByName.get(query) || []),
         ];
+        if (matches.length === 0 && query.includes(".")) {
+            const lastDot = query.lastIndexOf(".");
+            const declaringTypeTail = query.slice(0, lastDot);
+            const memberTail = query.slice(lastDot + 1);
+            const declaringTypeSuffix = `.${declaringTypeTail}`;
+            matches = (index.membersByName.get(memberTail) || [])
+                .filter((member) => {
+                const declaringType = normalize(member.declaringType);
+                return declaringType === declaringTypeTail || declaringType.endsWith(declaringTypeSuffix);
+            });
+        }
         if (matches.length === 0) {
             matches = index.members.filter((member) => normalize(member.fullName).includes(query) ||
                 normalize(member.name).includes(query) ||
@@ -355,6 +409,39 @@ function findMemberMatches(index, memberName, typeName, kind) {
         matches = matches.filter((member) => member.kind === kind);
     }
     return uniqueBy(matches, (member) => member.id);
+}
+function findMemberMatches(index, memberName, typeName, kind) {
+    const directMatches = findDirectMemberMatches(index, memberName, typeName, kind);
+    if (directMatches.length > 0) {
+        return {
+            matches: directMatches,
+            alias: null,
+        };
+    }
+    for (const alias of getMemberNameAliases(memberName, kind)) {
+        let aliasMatches = findDirectMemberMatches(index, alias.memberName, typeName, alias.kind || kind);
+        if (alias.parameterType) {
+            const parameterTypeNeedle = `(${normalize(alias.parameterType)})`;
+            aliasMatches = aliasMatches.filter((member) => normalize(member.id).includes(parameterTypeNeedle));
+        }
+        if (aliasMatches.length > 0) {
+            return {
+                matches: aliasMatches,
+                alias: {
+                    requestedMemberName: memberName,
+                    resolvedMemberName: alias.memberName,
+                    requestedKind: kind || null,
+                    resolvedKind: alias.kind || kind || null,
+                    resolvedParameterType: alias.parameterType,
+                    reason: alias.reason,
+                },
+            };
+        }
+    }
+    return {
+        matches: [],
+        alias: null,
+    };
 }
 function groupMembers(members) {
     const groups = {
@@ -470,7 +557,8 @@ export async function getTypeDetails(options) {
 }
 export async function getMemberDetails(options) {
     const index = await loadIndex({ revitVersion: options.revitVersion });
-    const matches = findMemberMatches(index, options.memberName, options.typeName, options.kind);
+    const resolution = findMemberMatches(index, options.memberName, options.typeName, options.kind);
+    const matches = resolution.matches;
     if (matches.length === 0) {
         throw new Error(`No member matched '${options.memberName}'.`);
     }
@@ -479,11 +567,13 @@ export async function getMemberDetails(options) {
             memberName: options.memberName,
             typeName: options.typeName || null,
             ambiguous: true,
+            resolvedAlias: resolution.alias,
             matches: matches.slice(0, 25).map(toSummaryRecord),
         };
     }
     const member = matches[0];
     return {
+        resolvedAlias: resolution.alias,
         member: {
             id: member.id,
             kind: member.kind,

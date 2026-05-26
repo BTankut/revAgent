@@ -13,7 +13,7 @@ namespace revit_mcp_plugin.UI
 {
     public partial class McpTaskStatusWindow : Window
     {
-        private const int MaxHistoryItems = 50;
+        private const int MaxHistoryItems = 100;
         private static readonly object PlacementSync = new object();
         private static bool _hasSessionPlacement;
         private static double _sessionLeft;

@@ -85,7 +85,9 @@ custom-code workflows.
   selected view to PNG/JPEG/TIFF/BMP/TARGA through `Document.ExportImage`.
   This is read-only, reports actual generated image dimensions, and by default
   normalizes PNG/JPEG/BMP/TIFF output so the requested `pixelSize` is the final
-  fit-direction dimension.
+  fit-direction dimension. Check `files[].finalPixelSizeMatchesRequest` for the
+  final dimension match; `files[].resizedToRequestedPixelSize` only means the
+  post-export resizer actually changed the file.
 - `export_revit_coordination_image` - visual artifact export only: create or reuse a dedicated visual QA 3D
   view, optionally section-box target elements, apply the selected target
   visual style/review graphics, and export an image. Single-element exports use a tighter default
@@ -127,6 +129,9 @@ For field symbols such as `BuiltInParameter.RBS_START_LEVEL_PARAM`, use
 `resolve_api_symbols_bulk` with `mode: "search"` and `kind: "field"`.
 Do not use `mode: "field"`; valid modes are `search`, `type`, `member`,
 and `namespace`.
+For Revit parameter access, `get_member_details` accepts the common C# alias
+`Element.get_Parameter(...)` and resolves it to the XML-doc `Element.Parameter`
+property. `LookupParameter` remains a normal method lookup.
 
 The two servers are designed to work together: `revit-api-docs`
 resolves the exact API surface against the locally installed Revit DLLs

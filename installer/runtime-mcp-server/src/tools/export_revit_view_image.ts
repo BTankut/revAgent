@@ -298,6 +298,7 @@ Func<string, object> buildFileSummary = (f) => {
   int? width = null;
   int? height = null;
   bool resizedToRequestedPixelSize = false;
+  bool finalPixelSizeMatchesRequest = false;
   try {
     int[] size = readImageSize(f);
     resizedToRequestedPixelSize = resizeImageToRequestedPixelSize(f, size);
@@ -305,6 +306,10 @@ Func<string, object> buildFileSummary = (f) => {
     if (size != null && size.Length == 2) {
       width = size[0];
       height = size[1];
+      int finalFitDirectionPixels = String.Equals(requestedFitDirection, "vertical", System.StringComparison.OrdinalIgnoreCase)
+        ? height.Value
+        : width.Value;
+      finalPixelSizeMatchesRequest = requestedPixelSize > 0 && finalFitDirectionPixels == requestedPixelSize;
     }
   }
   catch (Exception ex) {
@@ -318,7 +323,8 @@ Func<string, object> buildFileSummary = (f) => {
     width = width,
     height = height,
     requestedPixelSize = requestedPixelSize,
-    resizedToRequestedPixelSize = resizedToRequestedPixelSize
+    resizedToRequestedPixelSize = resizedToRequestedPixelSize,
+    finalPixelSizeMatchesRequest = finalPixelSizeMatchesRequest
   };
 };
 

@@ -14,7 +14,9 @@ status preflight and single-command rule.
   - Output: each generated file reports `bytes`, `width`, and `height`. Treat
     `pixelSize` as the requested final size. By default, PNG/JPEG/BMP/TIFF
     exports are normalized after Revit export so the requested fit-direction
-    dimension equals `pixelSize`. TARGA reports Revit's actual output size.
+    dimension equals `pixelSize`. Use `files[].finalPixelSizeMatchesRequest`
+    for the final match check; `files[].resizedToRequestedPixelSize` only means
+    post-processing changed the file. TARGA reports Revit's actual output size.
 
 - `export_revit_coordination_image`
   - Purpose: create or reuse a dedicated visual QA 3D view, optionally focus a
@@ -126,8 +128,11 @@ and return dimensions larger or taller than the requested `pixelSize`. With the
 default `enforcePixelSize=true`, the tool post-processes PNG/JPEG/BMP/TIFF
 files so `files[].width == pixelSize` for `fitDirection="horizontal"` or
 `files[].height == pixelSize` for `fitDirection="vertical"`. Verify
-`files[].width`, `files[].height`, and `files[].resizedToRequestedPixelSize`
-before judging whether an export is useful for technical review.
+`files[].width`, `files[].height`, and `files[].finalPixelSizeMatchesRequest`
+before judging whether an export is useful for technical review. The
+`files[].resizedToRequestedPixelSize` flag reports only whether the resizer had
+to modify the file; it can be `false` when Revit already produced the requested
+final dimension.
 Use JPEG only when smaller files matter more than exact line fidelity. BMP and
 TARGA are available because Revit supports them, but they are much larger and
 are not the preferred coordination format.
