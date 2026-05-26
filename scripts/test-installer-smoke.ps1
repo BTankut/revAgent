@@ -659,6 +659,16 @@ try {
     Write-RevitMcpJsonFile -Path $reportPath -Value $report
     $reportJson = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
     Assert-Equal $reportJson.status "current" "Report JSON status was not written."
+    $safePathCases = @(
+        @{ input = "HAFIZE"; expected = "HAFIZE" },
+        @{ input = "MARINA"; expected = "MARINA" },
+        @{ input = "HAFİZE"; expected = "HAFİZE" },
+        @{ input = "MARİNA"; expected = "MARİNA" },
+        @{ input = "office machine/name"; expected = "office_machine_name" }
+    )
+    foreach ($case in $safePathCases) {
+        Assert-Equal (ConvertTo-RevitMcpSafePathSegment -Value $case.input -Fallback "fallback") $case.expected "Safe path segment conversion must preserve machine names across Turkish culture-sensitive letters."
+    }
     $remoteReportsRoot = Join-Path $tempRoot "reports"
     $operationLog = Join-Path $tempRoot "install.log"
     Set-Content -LiteralPath $operationLog -Value "Operation method : gui-install" -Encoding ASCII

@@ -54,7 +54,18 @@ function ConvertTo-RevitMcpSafePathSegment {
         return $Fallback
     }
 
-    $safe = ($Value -replace '[\\/:*?"<>|\s]+', "_" -replace '[^A-Za-z0-9._-]+', "_").Trim("._-")
+    $invalidCharacters = [System.IO.Path]::GetInvalidFileNameChars()
+    $builder = [System.Text.StringBuilder]::new()
+    foreach ($character in $Value.Trim().ToCharArray()) {
+        if ([char]::IsControl($character) -or [char]::IsWhiteSpace($character) -or [Array]::IndexOf($invalidCharacters, $character) -ge 0) {
+            [void]$builder.Append("_")
+            continue
+        }
+
+        [void]$builder.Append($character)
+    }
+
+    $safe = [System.Text.RegularExpressions.Regex]::Replace($builder.ToString(), "_{2,}", "_").Trim("._-")
     if ([string]::IsNullOrWhiteSpace($safe)) {
         return $Fallback
     }
