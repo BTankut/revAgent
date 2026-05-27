@@ -8,6 +8,7 @@ const TELEMETRY_SCHEMA_VERSION = "revagent.telemetry.v1";
 const TELEMETRY_SESSION_ID = crypto.randomUUID();
 const TELEMETRY_PROCESS_STARTED_AT_UTC = new Date().toISOString();
 let telemetrySequence = 0;
+const telemetryWriteQueues = new Map();
 function isTruthy(value) {
     return /^(1|true|yes|on)$/i.test(String(value || "").trim());
 }
@@ -761,13 +762,28 @@ async function appendJsonLine(filePath, event) {
     await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
     await fs.promises.appendFile(filePath, `${JSON.stringify(event)}\n`, "utf8");
 }
+function enqueueAppendJsonLine(filePath, event) {
+    const previous = telemetryWriteQueues.get(filePath) || Promise.resolve();
+    const write = previous
+        .catch(() => undefined)
+        .then(() => appendJsonLine(filePath, event));
+    telemetryWriteQueues.set(filePath, write);
+    write
+        .finally(() => {
+        if (telemetryWriteQueues.get(filePath) === write) {
+            telemetryWriteQueues.delete(filePath);
+        }
+    })
+        .catch(() => undefined);
+    return write;
+}
 export async function recordTelemetryEvent(partial = {}) {
     if (telemetryDisabled()) {
         return;
     }
     const event = buildTelemetryEvent(partial);
     const targets = resolveTelemetryTargets(event);
-    await Promise.allSettled(targets.map((target) => appendJsonLine(target.path, event)));
+    await Promise.allSettled(targets.map((target) => enqueueAppendJsonLine(target.path, event)));
 }
 export function recordRuntimeSessionStart() {
     void recordTelemetryEvent({

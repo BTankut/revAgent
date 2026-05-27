@@ -317,6 +317,7 @@ try {
     Assert-True ($updateText -match 'operationMethod = \$script:RevitMcpOperationMethod') "Updater reports must record the install/update method used."
     Assert-True ($updateText -match 'release = \[ordered\]@') "Updater reports must include release version, commit, and package SHA metadata."
     Assert-True ($updateText -match 'localInstall = if \(\$InstalledState\)') "Updater reports must include a local install state summary."
+    Assert-True ($updateText -match 'System\.Collections\.IDictionary' -and $updateText -match '\$Object\.Contains\(\$Name\)') "Updater report JSON helper must read ordered dictionary installed state after successful updates."
     Assert-True ($updateText -match 'diagnostics = \$Diagnostics') "Updater reports must include dashboard-ready update diagnostics."
     Assert-True ($updateText -match 'elseif \(\$Force\) \{ "reinstall" \}') "Forced updater runs must be reported as reinstall operations."
     Assert-True ($updateText -match 'Publish-RevitMcpMachineRunReport') "Updater must publish per-machine NAS reports and logs."

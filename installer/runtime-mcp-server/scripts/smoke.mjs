@@ -262,6 +262,35 @@ const remoteTargets = resolveTelemetryTargets({
 });
 assert.equal(remoteTargets.some((target) => target.kind === "remote" && target.path.includes(`${path.sep}HAFIZE${path.sep}`)), true);
 
+const orderedIndexes = Array.from({ length: 20 }, (_, index) => index);
+await Promise.all(orderedIndexes.map((index) => recordTelemetryEvent({
+  eventType: "ordered.test",
+  timestampUtc: "2026-05-28T00:00:00.000Z",
+  order: index,
+})));
+const orderedLocalFile = path.join(telemetryRoot, "events", "2026-05-28.ndjson");
+const orderedLocalLines = fs.readFileSync(orderedLocalFile, "utf8")
+  .trim()
+  .split(/\r?\n/)
+  .filter(Boolean)
+  .map((line) => JSON.parse(line))
+  .filter((line) => line.eventType === "ordered.test");
+assert.deepEqual(orderedLocalLines.map((line) => line.order), orderedIndexes);
+assert.deepEqual(
+  orderedLocalLines.map((line) => line.sequence),
+  [...orderedLocalLines].sort((a, b) => a.sequence - b.sequence).map((line) => line.sequence),
+);
+const orderedRemoteDayRoot = path.join(telemetryRoot, "reports", "events", "2026", "05", "28");
+const orderedRemoteFiles = fs.readdirSync(orderedRemoteDayRoot)
+  .flatMap((machineName) => fs.readdirSync(path.join(orderedRemoteDayRoot, machineName))
+    .filter((fileName) => fileName.endsWith(".ndjson"))
+    .map((fileName) => path.join(orderedRemoteDayRoot, machineName, fileName)));
+assert.equal(orderedRemoteFiles.length > 0, true);
+const orderedRemoteLines = orderedRemoteFiles.flatMap((fileName) =>
+  fs.readFileSync(fileName, "utf8").trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
+).filter((line) => line.eventType === "ordered.test");
+assert.deepEqual(orderedRemoteLines.map((line) => line.order), orderedIndexes);
+
 const safeTool = tools.get("send_code_to_revit_safe");
 const rejection = await safeTool.handler({
   code: "document.Delete(new ElementId(1));",
