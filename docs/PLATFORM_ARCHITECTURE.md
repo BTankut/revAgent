@@ -124,6 +124,12 @@ dynamic-code hashes/previews. Noisy `get_revit_mcp_status` polling is skipped
 by default. They still avoid full Revit responses, model geometry dumps, and
 exported images.
 
+The runtime also derives `production.context` events from already available
+tool parameters and Revit command responses. These events do not perform an
+extra Revit query. They provide a dashboard/LLM-oriented work timeline with the
+assistant task name, project/view/location hints, target and selected elements,
+category/discipline hints, output files, duration, and result state.
+
 Local spool files live under
 `C:\ProgramData\DPE\RevitMCP\state\telemetry\events`. When the updater config
 provides `reportsRoot`, the runtime also writes best-effort NAS copies under

@@ -13,6 +13,7 @@ import {
 } from "../build/utils/revitToolHelpers.js";
 import {
   recordTelemetryEvent,
+  extractProductionContext,
   resolveTelemetryTargets,
   sanitizeTelemetryPathSegment,
   summarizeTelemetryParams,
@@ -195,6 +196,45 @@ const safeRejectionSummary = summarizeTelemetryResponse({
 });
 assert.equal(safeRejectionSummary.guarded, true);
 
+const productionContext = extractProductionContext({
+  sourceEventType: "revit.command",
+  commandName: "find_elements",
+  logicalToolName: "find_elements",
+  executionKind: "bridgeCommand",
+  taskName: "Find ducts on Level 02 Room 204",
+  taskId: "run-204",
+  durationMs: 42,
+  params: {
+    taskName: "Find ducts on Level 02 Room 204",
+    query: "supply duct room 204",
+    categoryNames: ["Ducts"],
+    elementIds: [101, 102],
+  },
+  response: {
+    success: true,
+    Action: "find_elements",
+    DocumentTitle: "Office Tower",
+    DocumentPath: "C:\\Projects\\Office Tower\\MEP.rvt",
+    ActiveView: { Id: 7, Name: "Level 02 - Mechanical", ViewType: "FloorPlan" },
+    LevelName: "Level 02",
+    SelectionIds: [101],
+    Elements: [
+      { Id: 101, Name: "Supply Duct", Category: "Ducts", LevelName: "Level 02", RoomNumber: "204" },
+    ],
+  },
+});
+assert.equal(productionContext.eventType, "production.context");
+assert.equal(productionContext.runId, "run-204");
+assert.equal(productionContext.operation.taskName, "Find ducts on Level 02 Room 204");
+assert.equal(productionContext.project.documentTitle, "Office Tower");
+assert.match(productionContext.project.documentPath, /Office Tower/);
+assert.equal(productionContext.view.active.name, "Level 02 - Mechanical");
+assert.equal(productionContext.location.levelName, "Level 02");
+assert.deepEqual(productionContext.elements.targetElementIds, [101, 102]);
+assert.deepEqual(productionContext.elements.selectionIds, [101]);
+assert.equal(productionContext.elements.disciplineHint, "mechanical_hvac");
+assert.equal(productionContext.elements.samples[0].roomNumber, "204");
+
 const telemetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "revagent-telemetry-"));
 process.env.REVAGENT_TELEMETRY_ROOT = telemetryRoot;
 process.env.REVAGENT_TELEMETRY_LOCAL_ONLY = "1";
@@ -226,12 +266,13 @@ const safeTool = tools.get("send_code_to_revit_safe");
 const rejection = await safeTool.handler({
   code: "document.Delete(new ElementId(1));",
   intent: "writeCommit",
+  taskName: "Write preview for Level 02 Room 204",
 });
 const rejectionPayload = JSON.parse(rejection.content[0].text);
 assert.equal(rejectionPayload.success, false);
 assert.equal(rejectionPayload.guarded, true);
 assert.match(rejectionPayload.error, /does not support writeCommit/);
-await new Promise((resolve) => setTimeout(resolve, 50));
+await new Promise((resolve) => setTimeout(resolve, 150));
 const telemetryFiles = fs.readdirSync(path.join(telemetryRoot, "events"))
   .filter((fileName) => fileName.endsWith(".ndjson"))
   .map((fileName) => path.join(telemetryRoot, "events", fileName));
@@ -241,7 +282,11 @@ const telemetryLines = telemetryFiles.flatMap((fileName) =>
 const toolTelemetry = telemetryLines.find((line) => line.eventType === "mcp.tool" && line.toolName === "send_code_to_revit_safe");
 assert.equal(toolTelemetry.result.success, false);
 assert.equal(toolTelemetry.result.guarded, true);
+assert.equal(toolTelemetry.taskName, "Write preview for Level 02 Room 204");
 assert.equal(toolTelemetry.params.code.writePatternCount > 0, true);
+const productionTelemetry = telemetryLines.find((line) => line.eventType === "production.context" && line.related?.toolName === "send_code_to_revit_safe");
+assert.equal(productionTelemetry.operation.taskName, "Write preview for Level 02 Room 204");
+assert.equal(productionTelemetry.operation.guarded, true);
 delete process.env.REVAGENT_TELEMETRY_ROOT;
 delete process.env.REVAGENT_REPORTS_ROOT;
 

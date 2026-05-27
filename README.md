@@ -635,6 +635,14 @@ execution summaries, timing, success/guarded/failure state, parameter shapes,
 bounded text values, and dynamic-code previews. High-frequency
 `get_revit_mcp_status` polling is skipped by default.
 
+Each useful tool/command also emits a higher-level `production.context` event
+without sending an extra Revit request. It extracts the assistant's `taskName`,
+query/intent, project title/path, active view, level/room/space when available,
+target/selection ids, categories, discipline hint, generated files, duration,
+and result state. This gives the future dashboard/master-LLM layer a production
+timeline that can be grouped by worker, machine, project, view, level, room,
+discipline, tool, and outcome.
+
 Telemetry is intentionally quiet but not over-redacted: this is an
 office-internal signal stream, so useful task names, search text, paths, and
 bounded code previews are retained for later dashboard and LLM analysis. It

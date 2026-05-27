@@ -25,6 +25,7 @@ The first implemented source is the Node runtime MCP server. It records:
 - bridge command calls sent through `sendRevitCommand`
 - dynamic C# calls sent through `executeRevitCode`
 - raw `send_code_to_revit` calls
+- production-context events inferred from each useful tool/command response
 
 Installer and updater status reports continue to use the existing
 `reports/machines/<machine>/latest.json` and per-machine log retention flow.
@@ -65,9 +66,29 @@ Runtime command events use schema `revagent.telemetry.v1` and include:
   and code hash/size/preview data
 
 Top-level `mcp.tool` events use the same schema and add `toolName`, duration,
-parameter shape, and compact result status. `get_revit_mcp_status` is skipped
-unless `REVAGENT_TELEMETRY_INCLUDE_STATUS=1` is set because agents poll it
-frequently during safe Revit coordination.
+top-level `taskName`, parameter shape, and compact result status.
+`get_revit_mcp_status` is skipped unless `REVAGENT_TELEMETRY_INCLUDE_STATUS=1`
+is set because agents poll it frequently during safe Revit coordination.
+
+Production-context events use `eventType: "production.context"` and
+`contextSchemaVersion: "revagent.production.context.v1"`. They are generated
+without sending an extra Revit request; the runtime infers them from the
+already available tool parameters and command responses. They include:
+
+- related operation: source event type, tool/command/logical tool name, run id
+- operation intent: `taskName`, query text, action, duration, result state
+- project identity: title, model path when available, project id hash
+- view identity: active/before/after views and active-view change state
+- work location: level, room, and space fields when available
+- element context: target ids, selection ids, category names, discipline hint,
+  and a bounded sample of element summaries
+- output context: export directory, file prefix, and generated file summaries
+
+This is the bridge toward the future master LLM/dashboard layer: the raw
+tool/command events remain useful for technical debugging, while
+`production.context` gives a higher-level project-production timeline that can
+be grouped by user, machine, project, view, level, room/space, discipline,
+tool, and outcome.
 
 ## Signal And Noise Boundaries
 
@@ -97,6 +118,8 @@ could not write.
   parameter. Defaults to 1000, max 10000, `0` disables text copies.
 - `REVAGENT_TELEMETRY_CODE_CHARS=<n>`: limit stored dynamic-code preview text.
   Defaults to 4000, max 100000, `0` disables code previews.
+- `REVAGENT_TELEMETRY_CONTEXT_ELEMENTS=<n>`: limit element samples in
+  `production.context`. Defaults to 12, max 100, `0` disables element samples.
 - `REVAGENT_TELEMETRY_ROOT=<path>`: override the local spool root.
 - `REVAGENT_REPORTS_ROOT=<path>`: override the remote reports/event root.
 - `REVAGENT_UPDATER_CONFIG=<path>`: override updater config discovery.

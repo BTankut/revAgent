@@ -4,6 +4,12 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added `production.context` telemetry events that derive project, view,
+  level/room/space, target element, category/discipline, output, task intent,
+  duration, and result-state context from existing tool/command calls without
+  sending extra Revit requests.
+- Added top-level `taskName` to `mcp.tool` telemetry so the short purpose text
+  shown in revAgent status is available directly in usage analysis.
 - Classified `send_code_to_revit_safe` write-looking rejections as guarded
   safety blocks in telemetry and tool responses.
 - Increased Revit-side recent task history and status-query limits to 100
