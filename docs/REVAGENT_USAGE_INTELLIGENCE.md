@@ -51,6 +51,37 @@ Remote NAS event store, when `reportsRoot` is available from updater config:
 Remote writes are best effort and silent. A NAS outage must never fail or slow a
 Revit operation from the user's point of view.
 
+## Daily Summary
+
+The first deterministic reader layer is
+`scripts/summarize-usage-intelligence.ps1`. It reads the machine health reports
+and runtime event store for one UTC day and produces compact JSON for dashboards
+and LLM review.
+
+Example:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\summarize-usage-intelligence.ps1 `
+  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports" `
+  -DateUtc "2026-05-27" `
+  -OutputPath "C:\ProgramData\DPE\RevitMCP\debug\usage-summary-2026-05-27.json"
+```
+
+The summary schema is `revagent.usage.summary.v1`. It includes:
+
+- latest machine install/update status from `reports\machines`
+- event totals by type, machine, user, and session
+- MCP tool and Revit command usage with duration and result counts
+- production-context rollups by machine/user, project, discipline, level, and
+  category
+- guarded, failed, and slow operation samples
+- `send_code_to_revit` / `send_code_to_revit_safe` code-preview summaries,
+  write-pattern counts, and manual transaction counts
+
+This layer intentionally does not call an LLM. It prepares a bounded,
+dashboard-ready and LLM-ready evidence packet from the office-internal event
+store.
+
 ## Event Shape
 
 Runtime command events use schema `revagent.telemetry.v1` and include:
@@ -130,8 +161,8 @@ The next useful layers are:
 
 1. A lightweight uploader or repair task that backfills local spool files when
    NAS was offline.
-2. A daily aggregator that reads `reports/events/**.ndjson` and produces
-   compact JSON summaries for dashboards and LLM review.
+2. Scheduled daily summary generation from `reports/events/**.ndjson` and
+   `reports/machines/*/latest.json`.
 3. A web dashboard over machine health, tool usage, failures, guarded states,
    latency, and repeated dynamic-code patterns.
 4. An LLM product analyst prompt over the aggregated summaries, not raw logs.

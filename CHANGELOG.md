@@ -4,6 +4,14 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added `scripts/summarize-usage-intelligence.ps1`, the first deterministic
+  reader layer for NAS usage intelligence. It summarizes machine latest reports
+  and daily runtime telemetry into `revagent.usage.summary.v1` JSON for
+  dashboards and later LLM review.
+- Fixed runtime telemetry writes so concurrent local/NAS appends to the same
+  `.ndjson` file preserve event order.
+- Fixed updater report generation so `localInstall` summaries are populated
+  when the successful update path passes a freshly created installed-state map.
 - Added `production.context` telemetry events that derive project, view,
   level/room/space, target element, category/discipline, output, task intent,
   duration, and result-state context from existing tool/command calls without

@@ -655,6 +655,12 @@ configuration contains `reportsRoot`, best-effort NAS copies are also written
 under `reports\events`. Telemetry failures are swallowed and must not affect
 Revit work. See `docs/REVAGENT_USAGE_INTELLIGENCE.md` for schema and controls.
 
+The first reader layer is `scripts/summarize-usage-intelligence.ps1`. It reads
+`reports\machines` plus one UTC day of `reports\events` and emits
+`revagent.usage.summary.v1` JSON with machine health, tool usage, project and
+discipline rollups, guarded/failed/slow operation samples, generated-output
+counts, and dynamic-code pattern summaries for dashboard and master-LLM review.
+
 ## Why `send_code_to_revit` stays primary
 
 Real Revit tasks usually need:

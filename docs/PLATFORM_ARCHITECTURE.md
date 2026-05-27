@@ -140,6 +140,12 @@ noise.
 See `docs/REVAGENT_USAGE_INTELLIGENCE.md` for the event schema, signal
 boundaries, and environment controls.
 
+The deterministic daily reader is
+`scripts/summarize-usage-intelligence.ps1`. It combines
+`reports\machines\<machine>\latest.json` with one UTC day of
+`reports\events` into `revagent.usage.summary.v1` JSON for dashboards and
+future master-LLM review.
+
 ## Deployment Components
 
 - `installer/install-self-contained.ps1`: repo/package installer. Public

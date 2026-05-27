@@ -16,6 +16,7 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
 & (Join-Path $RepoRoot "scripts\test-installer-smoke.ps1") -RepoRoot $RepoRoot
+& (Join-Path $RepoRoot "scripts\test-usage-intelligence.ps1") -RepoRoot $RepoRoot
 
 Push-Location (Join-Path $RepoRoot "installer\runtime-mcp-server")
 try {
