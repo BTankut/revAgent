@@ -229,6 +229,8 @@ try {
     Assert-True (Test-Path -LiteralPath $publishLatest -PathType Leaf) "Publish report was not written."
     Assert-Equal $publishReport.schemaVersion "revagent.usage.publish.v1" "Publish schema version mismatch."
     Assert-Equal $publishReport.latestDateUtc "2026-05-27" "Publish latest date mismatch."
+    Assert-True (Test-Path -LiteralPath $publishReport.logPath -PathType Leaf) "Publish log was not written."
+    Assert-True (-not (Test-Path -LiteralPath $publishReport.lockPath -PathType Leaf)) "Publish lock was not released."
 
     $latestSummary = Get-Content -Raw -LiteralPath $latestJson | ConvertFrom-Json
     Assert-Equal $latestSummary.schemaVersion "revagent.usage.summary.v1" "Latest summary schema mismatch."
@@ -236,6 +238,17 @@ try {
     $markdownText = Get-Content -Raw -LiteralPath $latestMarkdown
     Assert-True ($markdownText -match 'revAgent Usage Summary') "Markdown summary title missing."
     Assert-True ($markdownText -match 'Guarded write preview Level 02 Room 204') "Markdown guarded operation sample missing."
+
+    $publishScriptText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-usage-summary.ps1")
+    Assert-True ($publishScriptText -match 'publish\.lock') "Publish script must use a lock file."
+    Assert-True ($publishScriptText -match 'usage-summary-\{0\}\.log') "Publish script must write per-run logs."
+    Assert-True ($publishScriptText -match 'StaleLockMinutes') "Publish script must have stale lock handling."
+
+    $taskScriptText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-usage-summary-task.ps1")
+    Assert-True ($taskScriptText -match 'revAgent Usage Summary Publish') "Usage summary task must use the revAgent task name."
+    Assert-True ($taskScriptText -match '\[string\]\$DailyAt = "20:30"') "Usage summary task must default to an after-hours schedule."
+    Assert-True ($taskScriptText -match 'New-RevitMcpDailyUpdateTrigger -DailyAt \$DailyAt') "Usage summary task must use the shared daily trigger helper."
+    Assert-True ($taskScriptText -match 'Write-RevitMcpHiddenPowerShellLauncher') "Usage summary task must run hidden through the shared launcher."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

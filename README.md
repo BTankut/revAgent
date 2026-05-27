@@ -663,6 +663,9 @@ counts, and dynamic-code pattern summaries for dashboard and master-LLM review.
 `scripts/publish-usage-summary.ps1` publishes that summary under
 `reports\summaries\daily` and refreshes `reports\summaries\latest.json` plus a
 short Markdown support view.
+Install `scripts/install-usage-summary-task.ps1` on exactly one coordinator
+workstation to run the publisher daily. The scheduled publisher uses
+`reports\summaries\publish.lock` and writes logs under `reports\summaries\logs`.
 
 ## Why `send_code_to_revit` stays primary
 

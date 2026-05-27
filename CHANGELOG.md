@@ -11,6 +11,9 @@ All notable revAgent workstation deployment changes are tracked here.
 - Added `scripts/publish-usage-summary.ps1` to publish daily summaries under
   `reports\summaries\daily` and refresh `reports\summaries\latest.json` plus
   a compact Markdown support view.
+- Added `scripts/install-usage-summary-task.ps1` for the single coordinator
+  workstation, with hidden daily scheduled execution, publish locking, and
+  NAS summary logs.
 - Fixed runtime telemetry writes so concurrent local/NAS appends to the same
   `.ndjson` file preserve event order.
 - Fixed updater report generation so `localInstall` summaries are populated

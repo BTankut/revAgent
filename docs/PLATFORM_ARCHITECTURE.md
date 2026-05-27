@@ -147,6 +147,9 @@ The deterministic daily reader is
 future master-LLM review.
 `scripts/publish-usage-summary.ps1` is the publishing wrapper that writes the
 daily JSON/Markdown files and refreshes `reports\summaries\latest.json`.
+`scripts/install-usage-summary-task.ps1` installs the single-machine scheduled
+publisher, using a hidden launcher, a daily trigger, a publish lock, and NAS
+summary logs.
 
 ## Deployment Components
 

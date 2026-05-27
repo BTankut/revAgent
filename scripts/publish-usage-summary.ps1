@@ -20,12 +20,19 @@ param(
     [string[]]$DateUtc = @((Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")),
     [switch]$IncludeYesterday,
     [string]$OutputRoot = "",
+    [string]$LockPath = "",
+    [string]$LogsRoot = "",
+    [int]$StaleLockMinutes = 120,
+    [int]$KeepLastLogs = 30,
     [int]$Top = 20,
     [int]$TaskSampleLimit = 40,
     [switch]$SkipMarkdown
 )
 
 $ErrorActionPreference = "Stop"
+$script:UsageSummaryLogPath = $null
+$script:UsageSummaryLockPath = $null
+$script:UsageSummaryLockAcquired = $false
 
 function ConvertTo-UtcDateString {
     param([string]$Value)
@@ -167,8 +174,130 @@ function Copy-UsageSummaryFile {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
+function Write-UsageSummaryLog {
+    param([string]$Message)
+
+    $line = "{0} {1}" -f (Get-Date).ToUniversalTime().ToString("o"), $Message
+    if (-not [string]::IsNullOrWhiteSpace($script:UsageSummaryLogPath)) {
+        Add-Content -LiteralPath $script:UsageSummaryLogPath -Value $line -Encoding UTF8
+    }
+}
+
+function Invoke-UsageSummaryLogRetention {
+    param(
+        [string]$Root,
+        [int]$KeepLast = 30
+    )
+
+    if ($KeepLast -lt 1 -or [string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
+        return
+    }
+
+    $logs = @(Get-ChildItem -LiteralPath $Root -File -Filter "*.log" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTimeUtc, Name -Descending)
+    if ($logs.Count -le $KeepLast) {
+        return
+    }
+
+    $logs | Select-Object -Skip $KeepLast | ForEach-Object {
+        try {
+            Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+        }
+        catch {
+            Write-Warning "Could not remove old usage summary log '$($_.FullName)': $($_.Exception.Message)"
+        }
+    }
+}
+
+function Initialize-UsageSummaryLog {
+    param([string]$Root)
+
+    if ([string]::IsNullOrWhiteSpace($Root)) {
+        return
+    }
+
+    New-Item -ItemType Directory -Path $Root -Force | Out-Null
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $script:UsageSummaryLogPath = Join-Path $Root ("usage-summary-{0}.log" -f $stamp)
+    Set-Content -LiteralPath $script:UsageSummaryLogPath -Value "" -Encoding UTF8
+    Invoke-UsageSummaryLogRetention -Root $Root -KeepLast $KeepLastLogs
+}
+
+function Acquire-UsageSummaryLock {
+    param(
+        [string]$Path,
+        [int]$StaleMinutes = 120
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return
+    }
+
+    $lockDir = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($lockDir)) {
+        New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+    }
+
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $lock = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+        if ($lock -and $lock.LastWriteTimeUtc -lt (Get-Date).ToUniversalTime().AddMinutes(-1 * [Math]::Max(1, $StaleMinutes))) {
+            Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+            Write-UsageSummaryLog "Removed stale lock: $Path"
+        }
+    }
+
+    $payload = [ordered]@{
+        schemaVersion = "revagent.usage.publish.lock.v1"
+        pid = $PID
+        computerName = $env:COMPUTERNAME
+        userName = $env:USERNAME
+        startedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    } | ConvertTo-Json -Depth 6
+
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $script:UsageSummaryLockPath = $Path
+        $script:UsageSummaryLockAcquired = $true
+        Write-UsageSummaryLog "Acquired lock: $Path"
+    }
+    catch {
+        throw "Usage summary publish is already running or lock could not be acquired: $Path"
+    }
+    finally {
+        if ($stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
+function Release-UsageSummaryLock {
+    if (-not $script:UsageSummaryLockAcquired -or [string]::IsNullOrWhiteSpace($script:UsageSummaryLockPath)) {
+        return
+    }
+
+    try {
+        Remove-Item -LiteralPath $script:UsageSummaryLockPath -Force -ErrorAction Stop
+        Write-UsageSummaryLog "Released lock: $script:UsageSummaryLockPath"
+    }
+    catch {
+        Write-Warning "Could not release usage summary lock '$script:UsageSummaryLockPath': $($_.Exception.Message)"
+    }
+    finally {
+        $script:UsageSummaryLockAcquired = $false
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $ReportsRoot "summaries"
+}
+if ([string]::IsNullOrWhiteSpace($LockPath)) {
+    $LockPath = Join-Path $OutputRoot "publish.lock"
+}
+if ([string]::IsNullOrWhiteSpace($LogsRoot)) {
+    $LogsRoot = Join-Path $OutputRoot "logs"
 }
 
 $summaryScript = Join-Path $PSScriptRoot "summarize-usage-intelligence.ps1"
@@ -176,74 +305,89 @@ if (-not (Test-Path -LiteralPath $summaryScript -PathType Leaf)) {
     throw "Summary script not found: $summaryScript"
 }
 
-$dateList = New-Object System.Collections.Generic.List[string]
-foreach ($dateValue in $DateUtc) {
-    $dateList.Add((ConvertTo-UtcDateString $dateValue))
-}
-if ($IncludeYesterday) {
-    $dateList.Add((Get-Date).ToUniversalTime().AddDays(-1).ToString("yyyy-MM-dd"))
-}
+Initialize-UsageSummaryLog -Root $LogsRoot
+Acquire-UsageSummaryLock -Path $LockPath -StaleMinutes $StaleLockMinutes
 
-$dateList = @($dateList | Sort-Object -Unique)
-if ($dateList.Count -eq 0) {
-    throw "No summary dates were requested."
-}
+try {
+    Write-UsageSummaryLog "Publishing usage summaries from reports root: $ReportsRoot"
 
-$dailyRoot = Join-Path $OutputRoot "daily"
-New-Item -ItemType Directory -Path $dailyRoot -Force | Out-Null
-
-$published = @()
-foreach ($dateValue in $dateList) {
-    $dailyJson = Join-Path $dailyRoot ("{0}.json" -f $dateValue)
-    & $summaryScript `
-        -ReportsRoot $ReportsRoot `
-        -DateUtc $dateValue `
-        -OutputPath $dailyJson `
-        -Top $Top `
-        -TaskSampleLimit $TaskSampleLimit
-
-    $summary = Get-Content -Raw -LiteralPath $dailyJson | ConvertFrom-Json
-    $dailyMarkdown = $null
-    if (-not $SkipMarkdown) {
-        $dailyMarkdown = Join-Path $dailyRoot ("{0}.md" -f $dateValue)
-        New-UsageSummaryMarkdown -Summary $summary | Set-Content -LiteralPath $dailyMarkdown -Encoding UTF8
+    $dateList = New-Object System.Collections.Generic.List[string]
+    foreach ($dateValue in $DateUtc) {
+        $dateList.Add((ConvertTo-UtcDateString $dateValue))
+    }
+    if ($IncludeYesterday) {
+        $dateList.Add((Get-Date).ToUniversalTime().AddDays(-1).ToString("yyyy-MM-dd"))
     }
 
-    $published += [ordered]@{
-        dateUtc = $dateValue
-        jsonPath = $dailyJson
-        markdownPath = $dailyMarkdown
-        eventCount = $summary.source.eventCount
-        productionOperationCount = $summary.production.operationCount
-        sendCodeCount = $summary.sendCode.count
-        guardedCount = $summary.friction.guarded.Count
-        failedCount = $summary.friction.failed.Count
-        generatedFileCount = $summary.production.generatedFileCount
+    $dateList = @($dateList | Sort-Object -Unique)
+    if ($dateList.Count -eq 0) {
+        throw "No summary dates were requested."
     }
+
+    $dailyRoot = Join-Path $OutputRoot "daily"
+    New-Item -ItemType Directory -Path $dailyRoot -Force | Out-Null
+
+    $published = @()
+    foreach ($dateValue in $dateList) {
+        Write-UsageSummaryLog "Summarizing date: $dateValue"
+        $dailyJson = Join-Path $dailyRoot ("{0}.json" -f $dateValue)
+        & $summaryScript `
+            -ReportsRoot $ReportsRoot `
+            -DateUtc $dateValue `
+            -OutputPath $dailyJson `
+            -Top $Top `
+            -TaskSampleLimit $TaskSampleLimit
+
+        $summary = Get-Content -Raw -LiteralPath $dailyJson | ConvertFrom-Json
+        $dailyMarkdown = $null
+        if (-not $SkipMarkdown) {
+            $dailyMarkdown = Join-Path $dailyRoot ("{0}.md" -f $dateValue)
+            New-UsageSummaryMarkdown -Summary $summary | Set-Content -LiteralPath $dailyMarkdown -Encoding UTF8
+        }
+
+        $published += [ordered]@{
+            dateUtc = $dateValue
+            jsonPath = $dailyJson
+            markdownPath = $dailyMarkdown
+            eventCount = $summary.source.eventCount
+            productionOperationCount = $summary.production.operationCount
+            sendCodeCount = $summary.sendCode.count
+            guardedCount = $summary.friction.guarded.Count
+            failedCount = $summary.friction.failed.Count
+            generatedFileCount = $summary.production.generatedFileCount
+        }
+    }
+
+    $latest = $published | Sort-Object dateUtc | Select-Object -Last 1
+    $latestJson = Join-Path $OutputRoot "latest.json"
+    Copy-UsageSummaryFile -Source $latest.jsonPath -Destination $latestJson
+
+    $latestMarkdown = $null
+    if (-not $SkipMarkdown -and $latest.markdownPath) {
+        $latestMarkdown = Join-Path $OutputRoot "latest.md"
+        Copy-UsageSummaryFile -Source $latest.markdownPath -Destination $latestMarkdown
+    }
+
+    $publishReport = [ordered]@{
+        schemaVersion = "revagent.usage.publish.v1"
+        generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        reportsRoot = $ReportsRoot
+        outputRoot = $OutputRoot
+        latestDateUtc = $latest.dateUtc
+        latestJsonPath = $latestJson
+        latestMarkdownPath = $latestMarkdown
+        publishReportPath = (Join-Path $OutputRoot "publish-latest.json")
+        logPath = $script:UsageSummaryLogPath
+        lockPath = $LockPath
+        published = $published
+    }
+
+    $publishReportPath = $publishReport.publishReportPath
+    $publishReport | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $publishReportPath -Encoding UTF8
+    Write-UsageSummaryLog "Publish complete. Latest JSON: $latestJson"
+
+    $publishReport | ConvertTo-Json -Depth 20
 }
-
-$latest = $published | Sort-Object dateUtc | Select-Object -Last 1
-$latestJson = Join-Path $OutputRoot "latest.json"
-Copy-UsageSummaryFile -Source $latest.jsonPath -Destination $latestJson
-
-$latestMarkdown = $null
-if (-not $SkipMarkdown -and $latest.markdownPath) {
-    $latestMarkdown = Join-Path $OutputRoot "latest.md"
-    Copy-UsageSummaryFile -Source $latest.markdownPath -Destination $latestMarkdown
+finally {
+    Release-UsageSummaryLock
 }
-
-$publishReport = [ordered]@{
-    schemaVersion = "revagent.usage.publish.v1"
-    generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-    reportsRoot = $ReportsRoot
-    outputRoot = $OutputRoot
-    latestDateUtc = $latest.dateUtc
-    latestJsonPath = $latestJson
-    latestMarkdownPath = $latestMarkdown
-    published = $published
-}
-
-$publishReportPath = Join-Path $OutputRoot "publish-latest.json"
-$publishReport | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $publishReportPath -Encoding UTF8
-
-$publishReport | ConvertTo-Json -Depth 20

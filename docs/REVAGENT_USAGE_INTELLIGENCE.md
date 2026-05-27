@@ -104,6 +104,19 @@ powershell -ExecutionPolicy Bypass -File .\scripts\publish-usage-summary.ps1 `
 `latest.json` is the stable machine-readable input for the next dashboard or
 master-LLM layer. Markdown files are only a compact human support view.
 
+On the single coordinator workstation, install the daily scheduled publisher:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-usage-summary-task.ps1 `
+  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports" `
+  -DailyAt "20:30" `
+  -RunNow
+```
+
+The task name is `revAgent Usage Summary Publish`. It should be installed on
+one machine only. The publisher uses `reports\summaries\publish.lock` to avoid
+overlapping runs and writes logs under `reports\summaries\logs`.
+
 ## Event Shape
 
 Runtime command events use schema `revagent.telemetry.v1` and include:
@@ -183,7 +196,7 @@ The next useful layers are:
 
 1. A lightweight uploader or repair task that backfills local spool files when
    NAS was offline.
-2. Scheduled daily execution of `scripts/publish-usage-summary.ps1`.
+2. Master-LLM analysis over `reports\summaries\latest.json`.
 3. A web dashboard over machine health, tool usage, failures, guarded states,
    latency, and repeated dynamic-code patterns.
 4. An LLM product analyst prompt over the aggregated summaries, not raw logs.
