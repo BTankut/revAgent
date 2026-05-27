@@ -660,6 +660,9 @@ The first reader layer is `scripts/summarize-usage-intelligence.ps1`. It reads
 `revagent.usage.summary.v1` JSON with machine health, tool usage, project and
 discipline rollups, guarded/failed/slow operation samples, generated-output
 counts, and dynamic-code pattern summaries for dashboard and master-LLM review.
+`scripts/publish-usage-summary.ps1` publishes that summary under
+`reports\summaries\daily` and refreshes `reports\summaries\latest.json` plus a
+short Markdown support view.
 
 ## Why `send_code_to_revit` stays primary
 

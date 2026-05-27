@@ -207,6 +207,35 @@ try {
     Assert-True (($summary.production.byCategory | Where-Object { $_.name -eq "Ducts" }).count -eq 2) "Category rollup mismatch."
     Assert-Equal $summary.production.generatedFileCount 1 "Generated file count mismatch."
     Assert-Equal $summary.friction.guarded.Count 1 "Guarded operation count mismatch."
+
+    $summaryRoot = Join-Path $reportsRoot "summaries"
+    $publishOutput = & (Join-Path $RepoRoot "scripts\publish-usage-summary.ps1") `
+        -ReportsRoot $reportsRoot `
+        -DateUtc "2026-05-27" `
+        -OutputRoot $summaryRoot `
+        -Top 10
+
+    $publishReport = $publishOutput | ConvertFrom-Json
+    $dailyJson = Join-Path $summaryRoot "daily\2026-05-27.json"
+    $dailyMarkdown = Join-Path $summaryRoot "daily\2026-05-27.md"
+    $latestJson = Join-Path $summaryRoot "latest.json"
+    $latestMarkdown = Join-Path $summaryRoot "latest.md"
+    $publishLatest = Join-Path $summaryRoot "publish-latest.json"
+
+    Assert-True (Test-Path -LiteralPath $dailyJson -PathType Leaf) "Daily JSON summary was not written."
+    Assert-True (Test-Path -LiteralPath $dailyMarkdown -PathType Leaf) "Daily Markdown summary was not written."
+    Assert-True (Test-Path -LiteralPath $latestJson -PathType Leaf) "Latest JSON summary was not written."
+    Assert-True (Test-Path -LiteralPath $latestMarkdown -PathType Leaf) "Latest Markdown summary was not written."
+    Assert-True (Test-Path -LiteralPath $publishLatest -PathType Leaf) "Publish report was not written."
+    Assert-Equal $publishReport.schemaVersion "revagent.usage.publish.v1" "Publish schema version mismatch."
+    Assert-Equal $publishReport.latestDateUtc "2026-05-27" "Publish latest date mismatch."
+
+    $latestSummary = Get-Content -Raw -LiteralPath $latestJson | ConvertFrom-Json
+    Assert-Equal $latestSummary.schemaVersion "revagent.usage.summary.v1" "Latest summary schema mismatch."
+    Assert-Equal $latestSummary.source.eventCount 5 "Latest summary event count mismatch."
+    $markdownText = Get-Content -Raw -LiteralPath $latestMarkdown
+    Assert-True ($markdownText -match 'revAgent Usage Summary') "Markdown summary title missing."
+    Assert-True ($markdownText -match 'Guarded write preview Level 02 Room 204') "Markdown guarded operation sample missing."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

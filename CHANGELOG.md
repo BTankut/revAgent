@@ -8,6 +8,9 @@ All notable revAgent workstation deployment changes are tracked here.
   reader layer for NAS usage intelligence. It summarizes machine latest reports
   and daily runtime telemetry into `revagent.usage.summary.v1` JSON for
   dashboards and later LLM review.
+- Added `scripts/publish-usage-summary.ps1` to publish daily summaries under
+  `reports\summaries\daily` and refresh `reports\summaries\latest.json` plus
+  a compact Markdown support view.
 - Fixed runtime telemetry writes so concurrent local/NAS appends to the same
   `.ndjson` file preserve event order.
 - Fixed updater report generation so `localInstall` summaries are populated

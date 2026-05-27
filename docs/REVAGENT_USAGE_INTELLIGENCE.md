@@ -82,6 +82,28 @@ This layer intentionally does not call an LLM. It prepares a bounded,
 dashboard-ready and LLM-ready evidence packet from the office-internal event
 store.
 
+The publish wrapper is `scripts/publish-usage-summary.ps1`. It runs the
+summarizer and writes stable NAS outputs:
+
+```text
+<reportsRoot>\summaries\daily\YYYY-MM-DD.json
+<reportsRoot>\summaries\daily\YYYY-MM-DD.md
+<reportsRoot>\summaries\latest.json
+<reportsRoot>\summaries\latest.md
+<reportsRoot>\summaries\publish-latest.json
+```
+
+Example:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-usage-summary.ps1 `
+  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports" `
+  -DateUtc "2026-05-27"
+```
+
+`latest.json` is the stable machine-readable input for the next dashboard or
+master-LLM layer. Markdown files are only a compact human support view.
+
 ## Event Shape
 
 Runtime command events use schema `revagent.telemetry.v1` and include:
@@ -161,8 +183,7 @@ The next useful layers are:
 
 1. A lightweight uploader or repair task that backfills local spool files when
    NAS was offline.
-2. Scheduled daily summary generation from `reports/events/**.ndjson` and
-   `reports/machines/*/latest.json`.
+2. Scheduled daily execution of `scripts/publish-usage-summary.ps1`.
 3. A web dashboard over machine health, tool usage, failures, guarded states,
    latency, and repeated dynamic-code patterns.
 4. An LLM product analyst prompt over the aggregated summaries, not raw logs.

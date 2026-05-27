@@ -145,6 +145,8 @@ The deterministic daily reader is
 `reports\machines\<machine>\latest.json` with one UTC day of
 `reports\events` into `revagent.usage.summary.v1` JSON for dashboards and
 future master-LLM review.
+`scripts/publish-usage-summary.ps1` is the publishing wrapper that writes the
+daily JSON/Markdown files and refreshes `reports\summaries\latest.json`.
 
 ## Deployment Components
 
