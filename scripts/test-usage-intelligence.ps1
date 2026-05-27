@@ -41,8 +41,10 @@ function Assert-Equal {
 $tempRoot = Join-Path $env:TEMP ("revagent-usage-smoke-" + [Guid]::NewGuid().ToString("N"))
 $reportsRoot = Join-Path $tempRoot "reports"
 $machineRoot = Join-Path $reportsRoot "machines\TEST-PC"
+$rawOnlyEventRoot = Join-Path $reportsRoot "events\2026\05\26\TEST-PC"
 $eventRoot = Join-Path $reportsRoot "events\2026\05\27\TEST-PC"
 New-Item -ItemType Directory -Path $machineRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $rawOnlyEventRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $eventRoot -Force | Out-Null
 
 try {
@@ -71,6 +73,53 @@ try {
         }
     }
     $latest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $machineRoot "latest.json") -Encoding UTF8
+
+    $rawOnlyEvents = @(
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-raw-1"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-26T08:01:00.000Z"
+            sessionId = "session-raw"
+            sequence = 1
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.27.191-test"; buildHash = "test" }
+            toolName = "send_code_to_revit_safe"
+            taskName = "Raw-only failed safe code"
+            durationMs = 620
+            result = [ordered]@{ success = $false; guarded = $false; state = "failed"; errorMessage = "compile failed"; responseKeys = @("success", "error") }
+            params = [ordered]@{
+                code = [ordered]@{
+                    hash = "raw"
+                    length = 55
+                    lineCount = 2
+                    hasManualTransaction = $false
+                    writePatterns = @()
+                    preview = "bad code"
+                }
+            }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-raw-2"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-26T08:02:00.000Z"
+            sessionId = "session-raw"
+            sequence = 2
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.27.191-test"; buildHash = "test" }
+            toolName = "get_revit_session_context"
+            taskName = "Raw-only slow session context"
+            durationMs = 3665
+            result = [ordered]@{ success = $true; guarded = $false; responseKeys = @("document", "activeView") }
+            params = [ordered]@{}
+        }
+    )
+
+    $rawOnlyEventPath = Join-Path $rawOnlyEventRoot "session-raw.ndjson"
+    $rawOnlyEvents | ForEach-Object { ($_ | ConvertTo-Json -Depth 20 -Compress) } | Set-Content -LiteralPath $rawOnlyEventPath -Encoding UTF8
 
     $events = @(
         [ordered]@{
@@ -249,6 +298,20 @@ try {
     Assert-Equal $multiDateReport.latestDateUtc "2026-05-27" "Publish latest date must be the newest requested day."
     $multiLatest = Get-Content -Raw -LiteralPath (Join-Path $multiDateRoot "latest.json") | ConvertFrom-Json
     Assert-Equal $multiLatest.dateUtc "2026-05-27" "Latest JSON must point to the newest requested day."
+
+    $rawOnlySummary = Get-Content -Raw -LiteralPath (Join-Path $multiDateRoot "daily\2026-05-26.json") | ConvertFrom-Json
+    Assert-Equal $rawOnlySummary.source.eventCount 2 "Raw-only summary event count mismatch."
+    Assert-Equal $rawOnlySummary.production.operationCount 0 "Raw-only day must not invent production context operations."
+    Assert-Equal $rawOnlySummary.production.byProject.Count 0 "Raw-only project rollup must be an empty array."
+    Assert-Equal $rawOnlySummary.production.byMachineUser.Count 0 "Raw-only machine-user rollup must be an empty array."
+    Assert-Equal @($rawOnlySummary.friction.failed).Count 1 "Raw-only failed tool event must appear in failed samples."
+    Assert-True (@(@($rawOnlySummary.friction.failed) | Where-Object { $_.taskName -eq "Raw-only failed safe code" }).Count -eq 1) "Raw-only failed sample task missing."
+    Assert-True (@(@($rawOnlySummary.friction.slow) | Where-Object { $_.taskName -eq "Raw-only slow session context" }).Count -eq 1) "Raw-only slow sample task missing."
+    $rawOnlyMarkdown = Get-Content -Raw -LiteralPath (Join-Path $multiDateRoot "daily\2026-05-26.md")
+    Assert-True ($rawOnlyMarkdown -match 'Raw-only failed safe code') "Raw-only failed sample missing from Markdown."
+    Assert-True ($rawOnlyMarkdown -match '## Failed Operations') "Markdown failed operation section missing."
+    Assert-True ($rawOnlyMarkdown -match 'No data.') "Raw-only empty rollups must render as No data."
+    Assert-True ($rawOnlyMarkdown -notmatch '\| \s*\| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \|') "Markdown must not render blank zero metric rows."
 
     $publishScriptText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-usage-summary.ps1")
     Assert-True ($publishScriptText -match 'publish\.lock') "Publish script must use a lock file."

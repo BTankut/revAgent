@@ -24,6 +24,10 @@ All notable revAgent workstation deployment changes are tracked here.
   sending extra Revit requests.
 - Added top-level `taskName` to `mcp.tool` telemetry so the short purpose text
   shown in revAgent status is available directly in usage analysis.
+- Fixed usage-summary friction samples so failed/slow raw tool or command
+  events are still reported when no derived `production.context` event exists,
+  empty production rollups stay as empty arrays instead of blank zero rows, and
+  Markdown summaries show failed operation samples explicitly.
 - Classified `send_code_to_revit_safe` write-looking rejections as guarded
   safety blocks in telemetry and tool responses.
 - Increased Revit-side recent task history and status-query limits to 100

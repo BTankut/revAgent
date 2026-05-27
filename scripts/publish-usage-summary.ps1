@@ -74,7 +74,34 @@ function Select-TopRows {
         return @()
     }
 
-    return @($Rows | Select-Object -First $Limit)
+    return @($Rows |
+        Where-Object { $null -ne $_ } |
+        Select-Object -First $Limit)
+}
+
+function Test-UsageSummaryTableRow {
+    param([object]$Row)
+
+    if ($null -eq $Row) {
+        return $false
+    }
+
+    $properties = @($Row.PSObject.Properties)
+    if ($properties.Count -eq 0) {
+        return $false
+    }
+
+    $nameProperty = $Row.PSObject.Properties["name"]
+    $countProperty = $Row.PSObject.Properties["count"]
+    if ($nameProperty -or $countProperty) {
+        $name = if ($nameProperty) { [string]$nameProperty.Value } else { "" }
+        $count = if ($countProperty) { Get-ValueOrZero $countProperty.Value } else { 0 }
+        if ([string]::IsNullOrWhiteSpace($name) -and [string]$count -eq "0") {
+            return $false
+        }
+    }
+
+    return $true
 }
 
 function Add-TableSection {
@@ -87,6 +114,8 @@ function Add-TableSection {
 
     $Lines.Add("")
     $Lines.Add("## $Title")
+
+    $Rows = @($Rows | Where-Object { Test-UsageSummaryTableRow -Row $_ })
 
     if (-not $Rows -or $Rows.Count -eq 0) {
         $Lines.Add("")
@@ -142,6 +171,28 @@ function New-UsageSummaryMarkdown {
         $lines.Add("")
         foreach ($item in (Select-TopRows $Summary.friction.guarded 10)) {
             $lines.Add("- $($item.timestampUtc) | $($item.machineName)\$($item.userName) | $($item.tool) | $($item.taskName)")
+        }
+    }
+
+    $lines.Add("")
+    $lines.Add("## Failed Operations")
+    if ($Summary.friction.failed.Count -eq 0) {
+        $lines.Add("")
+        $lines.Add("No failed operations.")
+    }
+    else {
+        $lines.Add("")
+        foreach ($item in (Select-TopRows $Summary.friction.failed 10)) {
+            $detail = [string]$item.errorMessage
+            if ([string]::IsNullOrWhiteSpace($detail)) {
+                $detail = [string]$item.state
+            }
+            if ([string]::IsNullOrWhiteSpace($detail)) {
+                $lines.Add("- $($item.timestampUtc) | $($item.machineName)\$($item.userName) | $($item.tool) | $($item.taskName)")
+            }
+            else {
+                $lines.Add("- $($item.timestampUtc) | $($item.machineName)\$($item.userName) | $($item.tool) | $($item.taskName) | $detail")
+            }
         }
     }
 

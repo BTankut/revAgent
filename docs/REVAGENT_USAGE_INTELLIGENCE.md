@@ -82,6 +82,12 @@ This layer intentionally does not call an LLM. It prepares a bounded,
 dashboard-ready and LLM-ready evidence packet from the office-internal event
 store.
 
+Friction samples prefer `production.context` because it carries project, view,
+level, room, category, and output context. When a raw `mcp.tool` or
+`revit.command` event has no matching production context, the summarizer still
+uses that raw event for guarded, failed, and slow samples so counts and sample
+lists stay consistent.
+
 The publish wrapper is `scripts/publish-usage-summary.ps1`. It runs the
 summarizer and writes stable NAS outputs:
 

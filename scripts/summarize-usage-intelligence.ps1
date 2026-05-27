@@ -259,8 +259,126 @@ function Read-JsonFileOrNull {
     }
 }
 
+function Get-EventToolName {
+    param([object]$Event)
+
+    $eventType = [string](Get-ReportValue -Object $Event -Name "eventType")
+    if ($eventType -eq "mcp.tool") {
+        return Get-ReportValue -Object $Event -Name "toolName"
+    }
+    if ($eventType -eq "revit.command") {
+        $toolName = Get-ReportValue -Object $Event -Name "commandName"
+        if ([string]::IsNullOrWhiteSpace($toolName)) {
+            $toolName = Get-ReportValue -Object $Event -Name "logicalToolName"
+        }
+        return $toolName
+    }
+
+    $related = Get-ReportValue -Object $Event -Name "related"
+    $toolName = Get-ReportValue -Object $related -Name "toolName"
+    if ([string]::IsNullOrWhiteSpace($toolName)) {
+        $toolName = Get-ReportValue -Object $related -Name "commandName"
+    }
+    if ([string]::IsNullOrWhiteSpace($toolName)) {
+        $toolName = Get-ReportValue -Object $related -Name "logicalToolName"
+    }
+    return $toolName
+}
+
+function Get-EventOperationObject {
+    param([object]$Event)
+
+    if ((Get-ReportValue -Object $Event -Name "eventType") -eq "production.context") {
+        return Get-ReportValue -Object $Event -Name "operation"
+    }
+
+    return Get-ReportValue -Object $Event -Name "result"
+}
+
+function Get-EventDurationMs {
+    param([object]$Event)
+
+    if ((Get-ReportValue -Object $Event -Name "eventType") -eq "production.context") {
+        return Get-NestedReportValue -Object $Event -Path @("operation", "durationMs")
+    }
+
+    return Get-ReportValue -Object $Event -Name "durationMs"
+}
+
+function Get-EventTimestampOrNull {
+    param([object]$Event)
+
+    $timestamp = [string](Get-ReportValue -Object $Event -Name "timestampUtc")
+    if ([string]::IsNullOrWhiteSpace($timestamp)) {
+        return $null
+    }
+
+    try {
+        return ([datetime]::Parse(
+            $timestamp,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal
+        )).ToUniversalTime()
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-EventGuarded {
+    param([object]$Event)
+
+    $operation = Get-EventOperationObject -Event $Event
+    return (
+        (Get-BooleanOrNull (Get-ReportValue -Object $operation -Name "guarded")) -eq $true -or
+        ([string](Get-ReportValue -Object $operation -Name "state")) -eq "guarded"
+    )
+}
+
+function Test-EventFailed {
+    param([object]$Event)
+
+    $operation = Get-EventOperationObject -Event $Event
+    return (
+        (Get-BooleanOrNull (Get-ReportValue -Object $operation -Name "success")) -eq $false -and
+        (Test-EventGuarded -Event $Event) -ne $true
+    )
+}
+
+function New-RawOperationBrief {
+    param([object]$Event)
+
+    $operation = Get-EventOperationObject -Event $Event
+    $eventType = [string](Get-ReportValue -Object $Event -Name "eventType")
+
+    [ordered]@{
+        timestampUtc = Get-ReportValue -Object $Event -Name "timestampUtc"
+        machineName = Get-ReportValue -Object $Event -Name "machineName"
+        userName = Get-ReportValue -Object $Event -Name "userName"
+        sessionId = Get-ReportValue -Object $Event -Name "sessionId"
+        runId = Get-ReportValue -Object $Event -Name "eventId"
+        tool = Get-EventToolName -Event $Event
+        sourceEventType = $eventType
+        taskName = Get-ReportValue -Object $Event -Name "taskName"
+        project = $null
+        view = $null
+        level = $null
+        room = $null
+        discipline = $null
+        durationMs = Get-EventDurationMs -Event $Event
+        success = Get-ReportValue -Object $operation -Name "success"
+        guarded = Get-ReportValue -Object $operation -Name "guarded"
+        state = Get-ReportValue -Object $operation -Name "state"
+        errorMessage = Get-ReportValue -Object $operation -Name "errorMessage"
+    }
+}
+
 function New-OperationBrief {
     param([object]$Event)
+
+    if ((Get-ReportValue -Object $Event -Name "eventType") -ne "production.context") {
+        return New-RawOperationBrief -Event $Event
+    }
 
     $operation = Get-ReportValue -Object $Event -Name "operation"
     $related = Get-ReportValue -Object $Event -Name "related"
@@ -328,6 +446,97 @@ function Select-ProductionContextEvents {
 
     return @($buckets.Values |
         ForEach-Object { $_.event } |
+        Sort-Object @{ Expression = { [string](Get-ReportValue -Object $_ -Name "timestampUtc") } })
+}
+
+function Test-ProductionContextCoversRawEvent {
+    param(
+        [object]$RawEvent,
+        [object]$ProductionEvent
+    )
+
+    $rawEventType = [string](Get-ReportValue -Object $RawEvent -Name "eventType")
+    if ($rawEventType -ne "mcp.tool" -and $rawEventType -ne "revit.command") {
+        return $false
+    }
+
+    $related = Get-ReportValue -Object $ProductionEvent -Name "related"
+    $sourceEventType = [string](Get-ReportValue -Object $related -Name "sourceEventType")
+    if ($sourceEventType -ne $rawEventType) {
+        return $false
+    }
+
+    $rawSession = [string](Get-ReportValue -Object $RawEvent -Name "sessionId")
+    $productionSession = [string](Get-ReportValue -Object $ProductionEvent -Name "sessionId")
+    if (-not [string]::IsNullOrWhiteSpace($rawSession) -and
+        -not [string]::IsNullOrWhiteSpace($productionSession) -and
+        $rawSession -ne $productionSession) {
+        return $false
+    }
+
+    $rawTool = [string](Get-EventToolName -Event $RawEvent)
+    $productionTool = [string](Get-EventToolName -Event $ProductionEvent)
+    if (-not [string]::IsNullOrWhiteSpace($rawTool) -and
+        -not [string]::IsNullOrWhiteSpace($productionTool) -and
+        $rawTool -ne $productionTool) {
+        return $false
+    }
+
+    $rawTaskName = [string](Get-ReportValue -Object $RawEvent -Name "taskName")
+    $productionTaskName = [string](Get-NestedReportValue -Object $ProductionEvent -Path @("operation", "taskName"))
+    if (-not [string]::IsNullOrWhiteSpace($rawTaskName) -and
+        -not [string]::IsNullOrWhiteSpace($productionTaskName) -and
+        $rawTaskName -ne $productionTaskName) {
+        return $false
+    }
+
+    $rawDuration = Get-IntOrNull (Get-EventDurationMs -Event $RawEvent)
+    $productionDuration = Get-IntOrNull (Get-EventDurationMs -Event $ProductionEvent)
+    if ($null -ne $rawDuration -and $null -ne $productionDuration -and $rawDuration -ne $productionDuration) {
+        return $false
+    }
+
+    $rawSequence = Get-IntOrNull (Get-ReportValue -Object $RawEvent -Name "sequence")
+    $productionSequence = Get-IntOrNull (Get-ReportValue -Object $ProductionEvent -Name "sequence")
+    if ($null -ne $rawSequence -and $null -ne $productionSequence -and
+        [Math]::Abs($productionSequence - $rawSequence) -le 2) {
+        return $true
+    }
+
+    $rawTime = Get-EventTimestampOrNull -Event $RawEvent
+    $productionTime = Get-EventTimestampOrNull -Event $ProductionEvent
+    if ($null -ne $rawTime -and $null -ne $productionTime -and
+        [Math]::Abs(($productionTime - $rawTime).TotalSeconds) -le 30) {
+        return $true
+    }
+
+    return $false
+}
+
+function Select-OperationSampleEvents {
+    param(
+        [object[]]$Events,
+        [object[]]$ProductionEvents
+    )
+
+    $rawOperationEvents = @($Events | Where-Object {
+        $eventType = [string](Get-ReportValue -Object $_ -Name "eventType")
+        $eventType -eq "mcp.tool" -or $eventType -eq "revit.command"
+    })
+
+    $uncoveredRawEvents = @($rawOperationEvents | Where-Object {
+        $rawEvent = $_
+        $covered = $false
+        foreach ($productionEvent in $ProductionEvents) {
+            if (Test-ProductionContextCoversRawEvent -RawEvent $rawEvent -ProductionEvent $productionEvent) {
+                $covered = $true
+                break
+            }
+        }
+        -not $covered
+    })
+
+    return @(@($ProductionEvents) + @($uncoveredRawEvents) |
         Sort-Object @{ Expression = { [string](Get-ReportValue -Object $_ -Name "timestampUtc") } })
 }
 
@@ -450,6 +659,7 @@ foreach ($event in $eventArray) {
 }
 
 $productionEvents = Select-ProductionContextEvents -Events $eventArray
+$operationSampleEvents = Select-OperationSampleEvents -Events $eventArray -ProductionEvents $productionEvents
 $projectMetrics = @{}
 $disciplineMetrics = @{}
 $levelMetrics = @{}
@@ -487,28 +697,21 @@ foreach ($event in $productionEvents) {
     $outputFileCount += $files.Count
 }
 
-$guardedOperations = @($productionEvents |
-    Where-Object {
-        $operation = Get-ReportValue -Object $_ -Name "operation"
-        (Get-BooleanOrNull (Get-ReportValue -Object $operation -Name "guarded")) -eq $true -or
-        ([string](Get-ReportValue -Object $operation -Name "state")) -eq "guarded"
-    } |
+$guardedOperations = @($operationSampleEvents |
+    Where-Object { Test-EventGuarded -Event $_ } |
     Sort-Object @{ Expression = { [string](Get-ReportValue -Object $_ -Name "timestampUtc") }; Descending = $true } |
     Select-Object -First $Top |
     ForEach-Object { New-OperationBrief -Event $_ })
 
-$failedOperations = @($productionEvents |
-    Where-Object {
-        $operation = Get-ReportValue -Object $_ -Name "operation"
-        (Get-BooleanOrNull (Get-ReportValue -Object $operation -Name "success")) -eq $false -and
-        (Get-BooleanOrNull (Get-ReportValue -Object $operation -Name "guarded")) -ne $true
-    } |
+$failedOperations = @($operationSampleEvents |
+    Where-Object { Test-EventFailed -Event $_ } |
     Sort-Object @{ Expression = { [string](Get-ReportValue -Object $_ -Name "timestampUtc") }; Descending = $true } |
     Select-Object -First $Top |
     ForEach-Object { New-OperationBrief -Event $_ })
 
-$slowOperations = @($productionEvents |
-    Sort-Object @{ Expression = { Get-IntOrNull (Get-NestedReportValue -Object $_ -Path @("operation", "durationMs")) }; Descending = $true } |
+$slowOperations = @($operationSampleEvents |
+    Where-Object { $null -ne (Get-IntOrNull (Get-EventDurationMs -Event $_)) } |
+    Sort-Object @{ Expression = { Get-IntOrNull (Get-EventDurationMs -Event $_) }; Descending = $true } |
     Select-Object -First $Top |
     ForEach-Object { New-OperationBrief -Event $_ })
 
@@ -561,37 +764,37 @@ $summary = [ordered]@{
         eventCount = $eventArray.Count
         badEventLineCount = $badLines
     }
-    machines = $machineReports
+    machines = @($machineReports)
     totals = [ordered]@{
-        byEventType = Convert-CountMapToRows -Map $eventTypeCounts -Limit $Top
-        byMachine = Convert-CountMapToRows -Map $machineCounts -Limit $Top
-        byUser = Convert-CountMapToRows -Map $userCounts -Limit $Top
+        byEventType = @(Convert-CountMapToRows -Map $eventTypeCounts -Limit $Top)
+        byMachine = @(Convert-CountMapToRows -Map $machineCounts -Limit $Top)
+        byUser = @(Convert-CountMapToRows -Map $userCounts -Limit $Top)
         sessionCount = $sessionCounts.Count
     }
-    toolUsage = Convert-MetricMapToRows -Map $toolMetrics -Limit $Top
-    commandUsage = Convert-MetricMapToRows -Map $commandMetrics -Limit $Top
+    toolUsage = @(Convert-MetricMapToRows -Map $toolMetrics -Limit $Top)
+    commandUsage = @(Convert-MetricMapToRows -Map $commandMetrics -Limit $Top)
     production = [ordered]@{
         operationCount = $productionEvents.Count
-        byMachineUser = Convert-MetricMapToRows -Map $machineUserMetrics -Limit $Top
-        byProject = Convert-MetricMapToRows -Map $projectMetrics -Limit $Top
-        byDiscipline = Convert-MetricMapToRows -Map $disciplineMetrics -Limit $Top
-        byLevel = Convert-MetricMapToRows -Map $levelMetrics -Limit $Top
-        byCategory = Convert-MetricMapToRows -Map $categoryMetrics -Limit $Top
+        byMachineUser = @(Convert-MetricMapToRows -Map $machineUserMetrics -Limit $Top)
+        byProject = @(Convert-MetricMapToRows -Map $projectMetrics -Limit $Top)
+        byDiscipline = @(Convert-MetricMapToRows -Map $disciplineMetrics -Limit $Top)
+        byLevel = @(Convert-MetricMapToRows -Map $levelMetrics -Limit $Top)
+        byCategory = @(Convert-MetricMapToRows -Map $categoryMetrics -Limit $Top)
         generatedFileCount = $outputFileCount
-        taskNameSamples = $taskNameSamples
+        taskNameSamples = @($taskNameSamples)
     }
     friction = [ordered]@{
-        guarded = $guardedOperations
-        failed = $failedOperations
-        slow = $slowOperations
+        guarded = @($guardedOperations)
+        failed = @($failedOperations)
+        slow = @($slowOperations)
     }
     sendCode = [ordered]@{
         count = $sendCodeEvents.Count
         safeCount = @($sendCodeEvents | Where-Object { (Get-ReportValue -Object $_ -Name "toolName") -eq "send_code_to_revit_safe" }).Count
         rawCount = @($sendCodeEvents | Where-Object { (Get-ReportValue -Object $_ -Name "toolName") -eq "send_code_to_revit" }).Count
         manualTransactionCount = @($sendCodeEvents | Where-Object { (Get-NestedReportValue -Object $_ -Path @("params", "code", "hasManualTransaction")) -eq $true }).Count
-        writePatterns = Convert-CountMapToRows -Map $sendCodeWritePatterns -Limit $Top
-        samples = $sendCodeSamples
+        writePatterns = @(Convert-CountMapToRows -Map $sendCodeWritePatterns -Limit $Top)
+        samples = @($sendCodeSamples)
     }
 }
 
