@@ -249,6 +249,7 @@ try {
     Assert-True ($taskScriptText -match '\[string\]\$DailyAt = "20:30"') "Usage summary task must default to an after-hours schedule."
     Assert-True ($taskScriptText -match 'New-RevitMcpDailyUpdateTrigger -DailyAt \$DailyAt') "Usage summary task must use the shared daily trigger helper."
     Assert-True ($taskScriptText -match 'Write-RevitMcpHiddenPowerShellLauncher') "Usage summary task must run hidden through the shared launcher."
+    Assert-True ($taskScriptText -match '\$publishParameters = @\{' -and $taskScriptText -match '& \$PublishScriptPath @publishParameters') "Usage summary task RunNow must use named splatting."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

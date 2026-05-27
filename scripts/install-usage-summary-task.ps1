@@ -114,5 +114,14 @@ Write-Host "Config          : $configPath" -ForegroundColor Green
 
 if ($RunNow) {
     Write-Host "Running summary publisher now..." -ForegroundColor Yellow
-    & $PublishScriptPath @scriptArguments | Out-Host
+    $publishParameters = @{
+        ReportsRoot = $ReportsRoot
+        Top = $Top
+        TaskSampleLimit = $TaskSampleLimit
+    }
+    if ($IncludeYesterday) {
+        $publishParameters["IncludeYesterday"] = $true
+    }
+
+    & $PublishScriptPath @publishParameters | Out-Host
 }
