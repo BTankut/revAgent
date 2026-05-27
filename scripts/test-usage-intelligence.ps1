@@ -239,6 +239,17 @@ try {
     Assert-True ($markdownText -match 'revAgent Usage Summary') "Markdown summary title missing."
     Assert-True ($markdownText -match 'Guarded write preview Level 02 Room 204') "Markdown guarded operation sample missing."
 
+    $multiDateRoot = Join-Path $reportsRoot "summaries-multi"
+    $multiDateOutput = & (Join-Path $RepoRoot "scripts\publish-usage-summary.ps1") `
+        -ReportsRoot $reportsRoot `
+        -DateUtc @("2026-05-26", "2026-05-27") `
+        -OutputRoot $multiDateRoot `
+        -Top 10
+    $multiDateReport = $multiDateOutput | ConvertFrom-Json
+    Assert-Equal $multiDateReport.latestDateUtc "2026-05-27" "Publish latest date must be the newest requested day."
+    $multiLatest = Get-Content -Raw -LiteralPath (Join-Path $multiDateRoot "latest.json") | ConvertFrom-Json
+    Assert-Equal $multiLatest.dateUtc "2026-05-27" "Latest JSON must point to the newest requested day."
+
     $publishScriptText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-usage-summary.ps1")
     Assert-True ($publishScriptText -match 'publish\.lock') "Publish script must use a lock file."
     Assert-True ($publishScriptText -match 'usage-summary-\{0\}\.log') "Publish script must write per-run logs."

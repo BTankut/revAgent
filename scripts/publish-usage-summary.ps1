@@ -358,14 +358,16 @@ try {
         }
     }
 
-    $latest = $published | Sort-Object dateUtc | Select-Object -Last 1
+    $latest = @($published |
+        Sort-Object { [string]$_["dateUtc"] } |
+        Select-Object -Last 1)[0]
     $latestJson = Join-Path $OutputRoot "latest.json"
-    Copy-UsageSummaryFile -Source $latest.jsonPath -Destination $latestJson
+    Copy-UsageSummaryFile -Source ([string]$latest["jsonPath"]) -Destination $latestJson
 
     $latestMarkdown = $null
-    if (-not $SkipMarkdown -and $latest.markdownPath) {
+    if (-not $SkipMarkdown -and $latest["markdownPath"]) {
         $latestMarkdown = Join-Path $OutputRoot "latest.md"
-        Copy-UsageSummaryFile -Source $latest.markdownPath -Destination $latestMarkdown
+        Copy-UsageSummaryFile -Source ([string]$latest["markdownPath"]) -Destination $latestMarkdown
     }
 
     $publishReport = [ordered]@{
@@ -373,7 +375,7 @@ try {
         generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
         reportsRoot = $ReportsRoot
         outputRoot = $OutputRoot
-        latestDateUtc = $latest.dateUtc
+        latestDateUtc = $latest["dateUtc"]
         latestJsonPath = $latestJson
         latestMarkdownPath = $latestMarkdown
         publishReportPath = (Join-Path $OutputRoot "publish-latest.json")
