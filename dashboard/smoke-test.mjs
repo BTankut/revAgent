@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadDashboardData } from "./server.mjs";
+import { buildDashboardBrief, loadDashboardData } from "./server.mjs";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "revagent-dashboard-smoke-"));
 const releaseRoot = path.join(tempRoot, "release");
@@ -149,6 +149,10 @@ try {
   assert.equal(data.activity.length, 2);
   assert.equal(data.activity[0].phase, "completed");
   assert.equal(data.summary.toolUsage[0].name, "inspect_elements");
+  const brief = buildDashboardBrief(data);
+  assert.equal(brief.schemaVersion, "revagent.dashboard.brief.v1");
+  assert.equal(brief.machines[0].machine, "TESTPC");
+  assert.equal(brief.machines[0].latestActivity.taskName, "smoke inspect");
 
   console.log("Dashboard smoke test passed.");
 } finally {

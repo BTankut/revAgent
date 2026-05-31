@@ -14,13 +14,10 @@
           <div class="meta-row">
             <span id="stableVersion">Waiting for stable channel</span>
             <span id="lastRefresh">-</span>
+            <span id="focusLabel" hidden></span>
           </div>
         </div>
-        <div class="toolbar" role="group" aria-label="Filters">
-          <button class="segmented is-active" data-filter="all">All</button>
-          <button class="segmented" data-filter="active">Active</button>
-          <button class="segmented" data-filter="attention">Attention</button>
-        </div>
+        <button id="clearFocusButton" class="header-button" type="button" hidden>Show All</button>
       </header>
 
       <main>
@@ -51,21 +48,21 @@
           </div>
         </section>
 
-        <section class="main-grid">
+        <section id="terminalLayout" class="terminal-layout">
           <div class="panel machines-panel">
             <div class="panel-header">
-              <h2>Machines</h2>
+              <h2>Machine Streams</h2>
               <span id="machineCountLabel">0 records</span>
             </div>
             <div id="machinesGrid" class="machines-grid"></div>
           </div>
 
-          <div class="panel activity-panel">
+          <div class="panel global-stream-panel">
             <div class="panel-header">
-              <h2>Live Activity</h2>
+              <h2>All Activity</h2>
               <span id="activityCountLabel">0 records</span>
             </div>
-            <div id="activityList" class="activity-list"></div>
+            <div id="activityList" class="terminal-window global-terminal"></div>
           </div>
         </section>
 
@@ -83,7 +80,7 @@
               <h2>Friction</h2>
               <span id="frictionLabel">-</span>
             </div>
-            <div id="frictionList" class="activity-list compact"></div>
+            <div id="frictionList" class="terminal-window compact-terminal"></div>
           </div>
         </section>
       </main>

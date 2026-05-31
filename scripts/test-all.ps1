@@ -17,14 +17,7 @@ $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
 & (Join-Path $RepoRoot "scripts\test-installer-smoke.ps1") -RepoRoot $RepoRoot
 & (Join-Path $RepoRoot "scripts\test-usage-intelligence.ps1") -RepoRoot $RepoRoot
-
-Push-Location $RepoRoot
-try {
-    node .\dashboard\smoke-test.mjs
-}
-finally {
-    Pop-Location
-}
+& (Join-Path $RepoRoot "scripts\test-live-dashboard.ps1") -RepoRoot $RepoRoot
 
 Push-Location (Join-Path $RepoRoot "installer\runtime-mcp-server")
 try {

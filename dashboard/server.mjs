@@ -274,6 +274,60 @@ export function loadDashboardData(config = {}) {
   };
 }
 
+function compactTask(task) {
+  if (!task) {
+    return null;
+  }
+  return {
+    taskName: task.taskName || task.toolName || task.commandName || task.logicalToolName || "",
+    toolName: task.toolName || "",
+    commandName: task.commandName || "",
+    scope: task.scope || "",
+    state: task.state || task.phase || "",
+    timestampUtc: task.timestampUtc || task.finishedAtUtc || task.startedAtUtc || "",
+    durationMs: task.durationMs ?? null,
+    guarded: task.result?.guarded === true,
+    success: task.result?.success ?? null,
+  };
+}
+
+function latestMachineActivity(machine) {
+  const recent = Array.isArray(machine.live?.recentActivity) ? machine.live.recentActivity : [];
+  return sortActivities(recent)[0] || null;
+}
+
+export function buildDashboardBrief(data) {
+  const snapshot = data || loadDashboardData();
+  const friction = snapshot.summary?.friction || {};
+  return {
+    schemaVersion: "revagent.dashboard.brief.v1",
+    generatedAtUtc: snapshot.generatedAtUtc,
+    stableVersion: snapshot.stable?.version || "",
+    summaryDateUtc: snapshot.summary?.dateUtc || "",
+    overview: snapshot.overview,
+    machines: (snapshot.machines || []).map((machine) => ({
+      machine: machine.machine,
+      userName: machine.userName,
+      state: machine.state,
+      installedVersion: machine.installedVersion,
+      targetVersion: machine.targetVersion,
+      versionCurrent: machine.versionCurrent,
+      heartbeatAgeSeconds: machine.live?.heartbeatAgeSeconds ?? null,
+      activeTask: compactTask(machine.live?.activeTask),
+      latestActivity: compactTask(latestMachineActivity(machine)),
+      updateStatus: machine.updateStatus,
+      deferredForRevitClose: machine.deferredForRevitClose,
+    })),
+    recentActivity: (snapshot.activity || []).slice(0, 80).map(compactTask),
+    toolUsage: Array.isArray(snapshot.summary?.toolUsage) ? snapshot.summary.toolUsage.slice(0, 20) : [],
+    friction: {
+      failed: Array.isArray(friction.failed) ? friction.failed.slice(0, 20) : [],
+      guarded: Array.isArray(friction.guarded) ? friction.guarded.slice(0, 20) : [],
+      slow: Array.isArray(friction.slow) ? friction.slow.slice(0, 20) : [],
+    },
+  };
+}
+
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
@@ -325,6 +379,10 @@ export function createDashboardServer(config) {
     const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
     if (url.pathname === "/api/overview") {
       sendJson(response, 200, loadDashboardData(config));
+      return;
+    }
+    if (url.pathname === "/api/brief") {
+      sendJson(response, 200, buildDashboardBrief(loadDashboardData(config)));
       return;
     }
     if (url.pathname === "/api/health") {

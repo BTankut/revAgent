@@ -208,19 +208,21 @@ could not write.
 - `REVAGENT_LIVE_STATUS_MAX_IN_FLIGHT=<n>`: maximum concurrent live feed writes
   before new live writes are dropped. Defaults to 32.
 
-## Next Layers
+## Implemented Layers
 
-The next useful layers are:
+The current usage-intelligence stack includes:
 
 1. A live dashboard feed under `reports\live\machines\<machine>` with
    non-blocking `status.json` snapshots and daily activity NDJSON for 2-5
    second dashboard polling.
-2. A lightweight uploader or repair task that backfills local spool files when
-   NAS was offline.
-3. Master-LLM analysis over `reports\summaries\latest.json`.
-4. A web dashboard over machine health, tool usage, failures, guarded states,
-   latency, and repeated dynamic-code patterns.
-5. An LLM product analyst prompt over the aggregated summaries, not raw logs.
+2. A read-only web dashboard in `dashboard/` with terminal-style per-machine
+   streams, an all-machine stream, deployment health, tool usage, and friction
+   samples.
+3. A compact `/api/brief` dashboard export for separate analyst/LLM sessions.
+4. `scripts\publish-live-backfill.ps1`, a repair task that backfills local live
+   spool files when NAS was offline.
+5. Master-LLM/product analysis over `reports\summaries\latest.json` and the
+   bounded dashboard brief, not full raw logs by default.
 
 ## Live Dashboard Feed
 

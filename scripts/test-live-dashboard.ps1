@@ -1,0 +1,113 @@
+<#
+.SYNOPSIS
+    Test read-only dashboard helpers that do not require Revit.
+#>
+
+[CmdletBinding()]
+param(
+    [string]$RepoRoot = ""
+)
+
+$ErrorActionPreference = "Stop"
+
+function Assert-True {
+    param(
+        [bool]$Condition,
+        [string]$Message
+    )
+    if (-not $Condition) {
+        throw $Message
+    }
+}
+
+function Assert-Equal {
+    param(
+        $Actual,
+        $Expected,
+        [string]$Message
+    )
+    if ($Actual -ne $Expected) {
+        throw ("{0} Expected '{1}', got '{2}'." -f $Message, $Expected, $Actual)
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
+$RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
+
+Push-Location $RepoRoot
+try {
+    node .\dashboard\smoke-test.mjs
+}
+finally {
+    Pop-Location
+}
+
+$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-live-backfill-test-" + [Guid]::NewGuid().ToString("N"))
+$localLiveRoot = Join-Path $tempRoot "local\live"
+$reportsRoot = Join-Path $tempRoot "reports"
+$machine = "TESTPC"
+$date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
+$localMachineRoot = Join-Path $localLiveRoot "machines\$machine"
+$localActivityRoot = Join-Path $localMachineRoot "activity"
+$remoteMachineRoot = Join-Path $reportsRoot "live\machines\$machine"
+$remoteActivityRoot = Join-Path $remoteMachineRoot "activity"
+
+try {
+    New-Item -ItemType Directory -Path $localActivityRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $remoteActivityRoot -Force | Out-Null
+
+    $olderStatus = [ordered]@{
+        schemaVersion = "revagent.live.status.v1"
+        machineName = $machine
+        lastHeartbeatUtc = (Get-Date).ToUniversalTime().AddMinutes(-5).ToString("o")
+    }
+    $newerStatus = [ordered]@{
+        schemaVersion = "revagent.live.status.v1"
+        machineName = $machine
+        lastHeartbeatUtc = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $olderStatus | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $remoteMachineRoot "status.json") -Encoding UTF8
+    $newerStatus | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $localMachineRoot "status.json") -Encoding UTF8
+
+    $event1 = '{"eventId":"1","phase":"started","taskName":"one"}'
+    $event2 = '{"eventId":"2","phase":"completed","taskName":"two"}'
+    $event1 | Set-Content -LiteralPath (Join-Path $remoteActivityRoot "$date.ndjson") -Encoding UTF8
+    @($event1, $event2) | Set-Content -LiteralPath (Join-Path $localActivityRoot "$date.ndjson") -Encoding UTF8
+
+    $first = & (Join-Path $RepoRoot "scripts\publish-live-backfill.ps1") `
+        -ReportsRoot $reportsRoot `
+        -LocalLiveRoot $localLiveRoot `
+        -MachineName $machine `
+        -Days 1 | ConvertFrom-Json
+
+    Assert-True $first.statusCopied "Backfill should copy newer local status."
+    Assert-Equal $first.activity[0].added 1 "Backfill should append only one missing activity line."
+
+    $second = & (Join-Path $RepoRoot "scripts\publish-live-backfill.ps1") `
+        -ReportsRoot $reportsRoot `
+        -LocalLiveRoot $localLiveRoot `
+        -MachineName $machine `
+        -Days 1 | ConvertFrom-Json
+
+    Assert-Equal $second.activity[0].added 0 "Backfill must not duplicate activity lines."
+    $remoteLines = @(Get-Content -LiteralPath (Join-Path $remoteActivityRoot "$date.ndjson") | Where-Object { $_.Trim() })
+    Assert-Equal $remoteLines.Count 2 "Remote activity line count mismatch."
+
+    Push-Location $RepoRoot
+    try {
+        $brief = node -e "import('./dashboard/server.mjs').then(({buildDashboardBrief}) => { const brief = buildDashboardBrief({generatedAtUtc:'x', stable:{version:'v'}, summary:{dateUtc:'d', toolUsage:[], friction:{}}, overview:{machineCount:0}, machines:[], activity:[]}); console.log(JSON.stringify(brief)); })" | ConvertFrom-Json
+    }
+    finally {
+        Pop-Location
+    }
+    Assert-Equal $brief.schemaVersion "revagent.dashboard.brief.v1" "Brief schema mismatch."
+}
+finally {
+    if (Test-Path -LiteralPath $tempRoot) {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+    }
+}
+
+Write-Host "Live dashboard helper tests passed." -ForegroundColor Green

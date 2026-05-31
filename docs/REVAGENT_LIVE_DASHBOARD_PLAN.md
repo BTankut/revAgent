@@ -138,8 +138,10 @@ A machine is stale when:
 
 ## MVP Dashboard Panels
 
-- Machine tiles: online/stale, version, user, active task.
-- Activity stream: recent activity per machine.
+- Machine terminal windows: online/stale, version, user, active task, and a
+  bounded live activity stream per machine.
+- All-machine terminal stream: recent activity from every machine.
+- Focus mode: one selected machine stream fills the dashboard surface.
 - Guarded/failed strip: safety blocks and failures in the last N minutes.
 - Summary strip: today/latest sessions, production operations, tool usage.
 - Deployment health: installed vs stable version and latest update status.
@@ -163,21 +165,32 @@ A machine is stale when:
 - Uses 3 second browser refresh against `/api/overview`; the server reads
   `reports\live`, `reports\machines`, `reports\summaries`, and
   `channels\stable.json`.
-- Shows machine cards, active task, recent activity, deployment state, latest
-  summary metrics, tool usage, and guarded/failed/slow friction samples.
+- Shows terminal-style per-machine streams, an all-machine stream, active task,
+  deployment state, latest summary metrics, tool usage, and
+  guarded/failed/slow friction samples.
+- Provides single-machine focus mode for detailed live monitoring.
 - Does not write to Revit, NAS release state, or telemetry.
-- Covered by `dashboard/smoke-test.mjs` and `scripts/test-all.ps1`.
+- Covered by `dashboard/smoke-test.mjs`, `scripts/test-live-dashboard.ps1`,
+  and `scripts/test-all.ps1`.
 
 ### Phase 3 - Analyst Integration
 
-- Add a read-only "LLM brief" export from the dashboard data.
-- Keep actual LLM analysis in a separate analyst workflow/session.
-- Use daily summaries first, raw activity only for explicit drill-down.
+- Implemented by `/api/brief` in `dashboard/server.mjs`.
+- Exports compact read-only JSON with machine state, active/latest activity,
+  latest usage summary, tool usage, and friction samples.
+- Keeps actual LLM analysis in a separate analyst workflow/session.
+- Uses daily summaries first, with live activity included only as a bounded
+  current-state signal.
 
 ### Phase 4 - Backfill And Repair
 
-- Add a local-spool backfill task for cases where NAS was offline.
-- Keep backfill separate from live dashboard publishing.
+- Implemented by `scripts\publish-live-backfill.ps1`.
+- Merges a workstation's local live status/activity spool back into
+  `reports\live\machines\<machine>` when NAS writes were unavailable.
+- Copies `status.json` only when local status is newer unless `-Force` is used.
+- Merges daily activity NDJSON without duplicating identical lines.
+- Kept separate from live dashboard publishing and covered by
+  `scripts/test-live-dashboard.ps1`.
 
 ## Release Guidance
 
