@@ -37,6 +37,11 @@ All notable revAgent workstation deployment changes are tracked here.
   one task history window per machine, one all-machine activity window, and a
   single-machine focus mode.
 - Added System/Light/Dark theme selection to the live dashboard.
+- Changed the live dashboard layout so the left two-thirds column contains
+  All Status Activity followed by Tool Usage and Friction, while the right
+  one-third column is reserved for stacked Machine Status Windows.
+- Limited All Status Activity to the latest 50 live records by default, with
+  an explicit expand/collapse control for up to 200 records.
 - Added `/api/brief` as a compact read-only dashboard export for analyst/LLM
   handoff.
 - Added `scripts\publish-live-backfill.ps1` to merge local live-feed spool

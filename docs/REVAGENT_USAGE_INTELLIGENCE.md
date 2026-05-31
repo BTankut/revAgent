@@ -217,7 +217,10 @@ The current usage-intelligence stack includes:
    second dashboard polling.
 2. A read-only web dashboard in `dashboard/` with revAgent-status-style
    per-machine task history windows, an all-machine activity window, deployment
-   health, tool usage, and friction samples.
+   health, tool usage, and friction samples. The dashboard keeps activity,
+   tool usage, and friction in the left analysis column, stacks machine status
+   windows in the right column, and limits All Status Activity to 50 visible
+   records by default with expansion to 200.
 3. A compact `/api/brief` dashboard export for separate analyst/LLM sessions.
 4. `scripts\publish-live-backfill.ps1`, a repair task that backfills local live
    spool files when NAS was offline.

@@ -140,7 +140,11 @@ A machine is stale when:
 
 - Machine status windows: online/stale, version, user, active task, and a
   bounded status-history style activity list per machine.
-- All-machine status activity: recent activity from every machine.
+- All-machine status activity: recent activity from every machine, limited to
+  50 visible records by default and expandable to 200 records.
+- Desktop layout: the left two-thirds column contains All Status Activity,
+  Tool Usage, and Friction stacked vertically; the right one-third column is
+  reserved for stacked Machine Status Windows.
 - Focus mode: one selected machine stream fills the dashboard surface.
 - Theme mode: System, Light, and Dark.
 - Guarded/failed strip: safety blocks and failures in the last N minutes.
@@ -167,8 +171,13 @@ A machine is stale when:
   `reports\live`, `reports\machines`, `reports\summaries`, and
   `channels\stable.json`.
 - Shows revAgent-status-style per-machine history windows, an all-machine
-  activity window, active task, deployment state, latest summary metrics, tool usage, and
-  guarded/failed/slow friction samples.
+  activity window, active task, deployment state, latest summary metrics,
+  tool usage, and guarded/failed/slow friction samples.
+- Uses a 2/1 desktop layout: All Status Activity, Tool Usage, and Friction
+  stay in the left column; Machine Status Windows stay stacked in the right
+  column.
+- Keeps the all-machine activity window bounded by showing 50 live records by
+  default, with an explicit expansion path to 200 records.
 - Provides single-machine focus mode for detailed live monitoring.
 - Provides System/Light/Dark theme selection.
 - Does not write to Revit, NAS release state, or telemetry.
