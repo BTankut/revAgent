@@ -5,10 +5,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { findWritePatterns } from "../tools/send_code_to_revit_safe_guards.js";
 const TELEMETRY_SCHEMA_VERSION = "revagent.telemetry.v1";
+const LIVE_STATUS_SCHEMA_VERSION = "revagent.live.status.v1";
+const LIVE_ACTIVITY_SCHEMA_VERSION = "revagent.live.activity.v1";
 const TELEMETRY_SESSION_ID = crypto.randomUUID();
 const TELEMETRY_PROCESS_STARTED_AT_UTC = new Date().toISOString();
 let telemetrySequence = 0;
 const telemetryWriteQueues = new Map();
+const liveWriteQueues = new Map();
+const liveActiveTasks = new Map();
+const liveRecentActivity = [];
+let liveWritesInFlight = 0;
+let liveWritesDropped = 0;
+let liveHeartbeatTimer = null;
+let liveLastHeartbeatUtc = null;
 function isTruthy(value) {
     return /^(1|true|yes|on)$/i.test(String(value || "").trim());
 }
@@ -123,6 +132,18 @@ function telemetryTextLimit() {
 }
 function telemetryCodeLimit() {
     return clampTelemetryInt(process.env.REVAGENT_TELEMETRY_CODE_CHARS, 4000, 0, 100000);
+}
+function liveStatusDisabled() {
+    return telemetryDisabled() || isTruthy(process.env.REVAGENT_LIVE_STATUS_DISABLED);
+}
+function liveRecentActivityLimit() {
+    return clampTelemetryInt(process.env.REVAGENT_LIVE_STATUS_RECENT, 50, 5, 200);
+}
+function liveMaxWriteInFlight() {
+    return clampTelemetryInt(process.env.REVAGENT_LIVE_STATUS_MAX_IN_FLIGHT, 32, 1, 64);
+}
+function liveHeartbeatIntervalMs() {
+    return clampTelemetryInt(process.env.REVAGENT_LIVE_STATUS_HEARTBEAT_MS, 5000, 0, 60000);
 }
 function summarizeText(value, maxChars) {
     const text = String(value || "");
@@ -733,6 +754,292 @@ export function resolveTelemetryTargets(event) {
     }
     return targets;
 }
+function resolveLiveConfig() {
+    const telemetryConfig = resolveTelemetryConfig();
+    return {
+        disabled: liveStatusDisabled(),
+        localOnly: telemetryConfig.localOnly || isTruthy(process.env.REVAGENT_LIVE_STATUS_LOCAL_ONLY),
+        localRoot: process.env.REVAGENT_LIVE_STATUS_LOCAL_ROOT || path.join(telemetryConfig.localRoot, "live"),
+        reportsRoot: process.env.REVAGENT_LIVE_STATUS_ROOT || (telemetryConfig.reportsRoot ? path.join(telemetryConfig.reportsRoot, "live") : ""),
+    };
+}
+function resolveLiveMachineTargets(relativeParts = []) {
+    const config = resolveLiveConfig();
+    if (config.disabled) {
+        return [];
+    }
+    const machine = sanitizeTelemetryPathSegment(normalizeMachineName(process.env.COMPUTERNAME || os.hostname()), "unknown-machine");
+    const parts = ["machines", machine, ...relativeParts];
+    const targets = [
+        {
+            kind: "local",
+            path: path.join(config.localRoot, ...parts),
+        },
+    ];
+    if (!config.localOnly && config.reportsRoot) {
+        targets.push({
+            kind: "remote",
+            path: path.join(config.reportsRoot, ...parts),
+        });
+    }
+    return targets;
+}
+async function writeJsonFile(filePath, value) {
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+function enqueueLiveWrite(filePath, writer) {
+    if (liveStatusDisabled()) {
+        return false;
+    }
+    if (liveWritesInFlight >= liveMaxWriteInFlight()) {
+        liveWritesDropped++;
+        return false;
+    }
+    liveWritesInFlight++;
+    const previous = liveWriteQueues.get(filePath) || Promise.resolve();
+    const write = previous
+        .catch(() => undefined)
+        .then(() => writer(filePath));
+    liveWriteQueues.set(filePath, write);
+    write
+        .catch(() => {
+        liveWritesDropped++;
+    })
+        .finally(() => {
+        if (liveWriteQueues.get(filePath) === write) {
+            liveWriteQueues.delete(filePath);
+        }
+        liveWritesInFlight = Math.max(0, liveWritesInFlight - 1);
+    });
+    return true;
+}
+function publicLiveTask(task) {
+    if (!task) {
+        return null;
+    }
+    return {
+        liveTaskId: task.liveTaskId,
+        scope: task.scope,
+        toolName: task.toolName || null,
+        commandName: task.commandName || null,
+        logicalToolName: task.logicalToolName || null,
+        executionKind: task.executionKind || null,
+        taskName: task.taskName || null,
+        taskIdPresent: Boolean(task.taskId),
+        state: task.state,
+        startedAtUtc: task.startedAtUtc,
+        finishedAtUtc: task.finishedAtUtc || null,
+        durationMs: task.durationMs ?? null,
+        result: task.result || null,
+    };
+}
+function chooseBestActiveTask() {
+    const active = [...liveActiveTasks.values()];
+    if (active.length === 0) {
+        return null;
+    }
+    return active
+        .sort((a, b) => {
+        const scopePriority = (task) => task.scope === "revit.command" ? 2 : 1;
+        const priorityDelta = scopePriority(b) - scopePriority(a);
+        if (priorityDelta !== 0) {
+            return priorityDelta;
+        }
+        return String(b.startedAtUtc || "").localeCompare(String(a.startedAtUtc || ""));
+    })[0];
+}
+function buildLiveStatusSnapshot(reason = "activity") {
+    const installedState = readInstalledState();
+    const runtimeVersion = installedState?.version || null;
+    const nowUtc = new Date().toISOString();
+    liveLastHeartbeatUtc = nowUtc;
+    return {
+        schemaVersion: LIVE_STATUS_SCHEMA_VERSION,
+        generatedAtUtc: nowUtc,
+        lastHeartbeatUtc: liveLastHeartbeatUtc,
+        reason,
+        machineName: normalizeMachineName(process.env.COMPUTERNAME || os.hostname()),
+        userName: process.env.USERNAME || process.env.USER || "",
+        sessionId: TELEMETRY_SESSION_ID,
+        runtime: {
+            version: runtimeVersion,
+            buildHash: parseBuildHash(runtimeVersion),
+        },
+        process: {
+            pid: process.pid,
+            nodeVersion: process.version,
+            startedAtUtc: TELEMETRY_PROCESS_STARTED_AT_UTC,
+        },
+        activeTask: publicLiveTask(chooseBestActiveTask()),
+        activeTasks: [...liveActiveTasks.values()].map(publicLiveTask),
+        recentActivity: liveRecentActivity.slice(0, liveRecentActivityLimit()),
+        writeHealth: {
+            inFlight: liveWritesInFlight,
+            dropped: liveWritesDropped,
+            maxInFlight: liveMaxWriteInFlight(),
+        },
+    };
+}
+function writeLiveStatusSnapshot(reason = "activity") {
+    const snapshot = buildLiveStatusSnapshot(reason);
+    for (const target of resolveLiveMachineTargets(["status.json"])) {
+        enqueueLiveWrite(target.path, (filePath) => writeJsonFile(filePath, snapshot));
+    }
+}
+function rememberLiveActivity(event) {
+    const task = {
+        liveTaskId: event.liveTaskId,
+        scope: event.scope,
+        toolName: event.toolName,
+        commandName: event.commandName,
+        logicalToolName: event.logicalToolName,
+        executionKind: event.executionKind,
+        taskName: event.taskName,
+        taskId: event.taskId,
+        state: event.state,
+        startedAtUtc: event.startedAtUtc,
+        finishedAtUtc: event.finishedAtUtc,
+        durationMs: event.durationMs,
+        result: event.result,
+    };
+    if (event.phase === "started") {
+        liveActiveTasks.set(event.liveTaskId, task);
+    }
+    else {
+        liveActiveTasks.delete(event.liveTaskId);
+    }
+    liveRecentActivity.unshift({
+        timestampUtc: event.timestampUtc,
+        phase: event.phase,
+        state: event.state,
+        scope: event.scope,
+        toolName: event.toolName || null,
+        commandName: event.commandName || null,
+        logicalToolName: event.logicalToolName || null,
+        executionKind: event.executionKind || null,
+        taskName: event.taskName || null,
+        startedAtUtc: event.startedAtUtc,
+        finishedAtUtc: event.finishedAtUtc || null,
+        durationMs: event.durationMs ?? null,
+        result: event.result || null,
+    });
+    const limit = liveRecentActivityLimit();
+    if (liveRecentActivity.length > limit) {
+        liveRecentActivity.splice(limit);
+    }
+}
+function writeLiveActivity(event) {
+    rememberLiveActivity(event);
+    const parts = dateParts(new Date(event.timestampUtc || Date.now()));
+    for (const target of resolveLiveMachineTargets(["activity", `${parts.ymd}.ndjson`])) {
+        enqueueLiveWrite(target.path, (filePath) => appendJsonLine(filePath, event));
+    }
+    writeLiveStatusSnapshot(event.phase);
+}
+function buildLiveTaskId(details = {}, startedAtMs) {
+    if (details.taskId) {
+        return String(details.taskId);
+    }
+    return shortHash([
+        TELEMETRY_SESSION_ID,
+        details.scope || "",
+        details.toolName || "",
+        details.commandName || "",
+        details.logicalToolName || "",
+        startedAtMs || Date.now(),
+        details.taskName || "",
+    ].join("|"));
+}
+export function recordLiveActivityStarted(details = {}) {
+    if (liveStatusDisabled()) {
+        return null;
+    }
+    const startedAtMs = details.startedAtMs || Date.now();
+    const startedAtUtc = new Date(startedAtMs).toISOString();
+    const liveTaskId = buildLiveTaskId(details, startedAtMs);
+    const event = buildTelemetryEvent({
+        schemaVersion: LIVE_ACTIVITY_SCHEMA_VERSION,
+        eventType: "live.activity",
+        phase: "started",
+        state: "running",
+        liveTaskId,
+        scope: details.scope || "runtime",
+        toolName: details.toolName || null,
+        commandName: details.commandName || null,
+        logicalToolName: details.logicalToolName || null,
+        executionKind: details.executionKind || null,
+        taskName: details.taskName || null,
+        taskId: details.taskId || null,
+        taskIdPresent: Boolean(details.taskId),
+        startedAtUtc,
+        params: summarizeTelemetryParams(details.params),
+    });
+    writeLiveActivity(event);
+    return {
+        liveTaskId,
+        scope: event.scope,
+        toolName: event.toolName,
+        commandName: event.commandName,
+        logicalToolName: event.logicalToolName,
+        executionKind: event.executionKind,
+        taskName: event.taskName,
+        taskId: event.taskId,
+        startedAtMs,
+        startedAtUtc,
+    };
+}
+export function recordLiveActivityFinished(task, details = {}) {
+    if (!task || liveStatusDisabled()) {
+        return;
+    }
+    const finishedAtMs = Date.now();
+    const durationMs = details.durationMs ?? Math.max(0, finishedAtMs - (task.startedAtMs || finishedAtMs));
+    const result = details.responseSummary || summarizeTelemetryResponse(details.response, details.error);
+    const state = result.guarded ? "guarded" : result.success === false ? "failed" : "completed";
+    const event = buildTelemetryEvent({
+        schemaVersion: LIVE_ACTIVITY_SCHEMA_VERSION,
+        eventType: "live.activity",
+        phase: state,
+        state,
+        liveTaskId: task.liveTaskId,
+        scope: task.scope || details.scope || "runtime",
+        toolName: task.toolName || details.toolName || null,
+        commandName: task.commandName || details.commandName || null,
+        logicalToolName: task.logicalToolName || details.logicalToolName || null,
+        executionKind: task.executionKind || details.executionKind || null,
+        taskName: task.taskName || details.taskName || null,
+        taskId: task.taskId || details.taskId || null,
+        taskIdPresent: Boolean(task.taskId || details.taskId),
+        startedAtUtc: task.startedAtUtc || null,
+        finishedAtUtc: new Date(finishedAtMs).toISOString(),
+        durationMs,
+        result,
+    });
+    writeLiveActivity(event);
+}
+function startLiveStatusHeartbeat() {
+    if (liveHeartbeatTimer || liveStatusDisabled()) {
+        return;
+    }
+    const intervalMs = liveHeartbeatIntervalMs();
+    if (intervalMs <= 0) {
+        return;
+    }
+    writeLiveStatusSnapshot("session.start");
+    liveHeartbeatTimer = setInterval(() => {
+        writeLiveStatusSnapshot("heartbeat");
+    }, intervalMs);
+    if (typeof liveHeartbeatTimer.unref === "function") {
+        liveHeartbeatTimer.unref();
+    }
+}
+export async function flushLiveWritesForTests(timeoutMs = 2000) {
+    const deadline = Date.now() + timeoutMs;
+    while (liveWritesInFlight > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+}
 export function buildTelemetryEvent(partial = {}) {
     const installedState = readInstalledState();
     const runtimeVersion = installedState?.version || null;
@@ -786,6 +1093,7 @@ export async function recordTelemetryEvent(partial = {}) {
     await Promise.allSettled(targets.map((target) => enqueueAppendJsonLine(target.path, event)));
 }
 export function recordRuntimeSessionStart() {
+    startLiveStatusHeartbeat();
     void recordTelemetryEvent({
         eventType: "runtime.session.start",
     });
@@ -839,9 +1147,20 @@ export function wrapServerWithTelemetry(server) {
             }
             const wrappedHandler = async (args, extra) => {
                 const startedAtMs = Date.now();
+                const shouldRecord = shouldRecordMcpTool(name);
+                const liveTask = shouldRecord
+                    ? recordLiveActivityStarted({
+                        scope: "mcp.tool",
+                        toolName: name,
+                        taskName: args?.taskName || null,
+                        taskId: args?.taskId || null,
+                        params: args,
+                        startedAtMs,
+                    })
+                    : null;
                 try {
                     const result = await actualHandler(args, extra);
-                    if (shouldRecordMcpTool(name)) {
+                    if (shouldRecord) {
                         const durationMs = Math.max(0, Date.now() - startedAtMs);
                         const responseSummary = summarizeMcpToolResult(result);
                         void recordTelemetryEvent({
@@ -864,11 +1183,16 @@ export function wrapServerWithTelemetry(server) {
                             startedAtMs,
                             responseSummary,
                         });
+                        recordLiveActivityFinished(liveTask, {
+                            response: result,
+                            responseSummary,
+                            durationMs,
+                        });
                     }
                     return result;
                 }
                 catch (error) {
-                    if (shouldRecordMcpTool(name)) {
+                    if (shouldRecord) {
                         const durationMs = Math.max(0, Date.now() - startedAtMs);
                         const responseSummary = summarizeMcpToolResult(null, error);
                         void recordTelemetryEvent({
@@ -890,6 +1214,11 @@ export function wrapServerWithTelemetry(server) {
                             durationMs,
                             startedAtMs,
                             responseSummary,
+                        });
+                        recordLiveActivityFinished(liveTask, {
+                            error,
+                            responseSummary,
+                            durationMs,
                         });
                     }
                     throw error;

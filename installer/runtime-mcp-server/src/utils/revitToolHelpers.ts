@@ -1,6 +1,10 @@
 // @ts-nocheck
 import { withRevitConnection } from "./ConnectionManager.js";
-import { recordRevitCommandTelemetry } from "./telemetry.js";
+import {
+    recordLiveActivityFinished,
+    recordLiveActivityStarted,
+    recordRevitCommandTelemetry,
+} from "./telemetry.js";
 
 export function connectionTargetSchema(z) {
     return {
@@ -232,11 +236,22 @@ export async function executeRevitCode(code, options = {}) {
         params.taskId = options.taskId;
     }
     const startedAtMs = Date.now();
+    const liveTask = recordLiveActivityStarted({
+        scope: "revit.command",
+        commandName: "send_code_to_revit",
+        logicalToolName: options.toolName || params.taskName,
+        executionKind: "dynamicCode",
+        taskName: params.taskName,
+        taskId: params.taskId,
+        params,
+        startedAtMs,
+    });
     try {
         const response = await withRevitConnection(async (revitClient) => {
             return await revitClient.sendCommand("send_code_to_revit", params, options);
         }, options);
         const normalizedResponse = normalizeRevitExecutionResponse(response);
+        const durationMs = Math.max(0, Date.now() - startedAtMs);
         recordRevitCommandTelemetry({
             commandName: "send_code_to_revit",
             logicalToolName: options.toolName || params.taskName,
@@ -246,9 +261,14 @@ export async function executeRevitCode(code, options = {}) {
             response: normalizedResponse,
             startedAtMs,
         });
+        recordLiveActivityFinished(liveTask, {
+            response: normalizedResponse,
+            durationMs,
+        });
         return normalizedResponse;
     }
     catch (error) {
+        const durationMs = Math.max(0, Date.now() - startedAtMs);
         recordRevitCommandTelemetry({
             commandName: "send_code_to_revit",
             logicalToolName: options.toolName || params.taskName,
@@ -257,6 +277,10 @@ export async function executeRevitCode(code, options = {}) {
             options,
             error,
             startedAtMs,
+        });
+        recordLiveActivityFinished(liveTask, {
+            error,
+            durationMs,
         });
         throw error;
     }
@@ -273,11 +297,22 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
         commandParams.taskId = options.taskId;
     }
     const startedAtMs = Date.now();
+    const liveTask = recordLiveActivityStarted({
+        scope: "revit.command",
+        commandName: command,
+        logicalToolName: options.toolName || command,
+        executionKind: "bridgeCommand",
+        taskName: commandParams.taskName,
+        taskId: commandParams.taskId,
+        params: commandParams,
+        startedAtMs,
+    });
     try {
         const response = await withRevitConnection(async (revitClient) => {
             return await revitClient.sendCommand(command, commandParams, options);
         }, options);
         const normalizedResponse = normalizeRevitExecutionResponse(response);
+        const durationMs = Math.max(0, Date.now() - startedAtMs);
         recordRevitCommandTelemetry({
             commandName: command,
             logicalToolName: options.toolName || command,
@@ -287,9 +322,14 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
             response: normalizedResponse,
             startedAtMs,
         });
+        recordLiveActivityFinished(liveTask, {
+            response: normalizedResponse,
+            durationMs,
+        });
         return normalizedResponse;
     }
     catch (error) {
+        const durationMs = Math.max(0, Date.now() - startedAtMs);
         recordRevitCommandTelemetry({
             commandName: command,
             logicalToolName: options.toolName || command,
@@ -298,6 +338,10 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
             options,
             error,
             startedAtMs,
+        });
+        recordLiveActivityFinished(liveTask, {
+            error,
+            durationMs,
         });
         throw error;
     }

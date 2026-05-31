@@ -7,7 +7,11 @@ import {
     normalizeRevitExecutionResponse,
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
-import { recordRevitCommandTelemetry } from "../utils/telemetry.js";
+import {
+    recordLiveActivityFinished,
+    recordLiveActivityStarted,
+    recordRevitCommandTelemetry,
+} from "../utils/telemetry.js";
 
 function findErrorLikeResult(value) {
     const normalized = normalizeRevitExecutionResponse(value);
@@ -67,6 +71,16 @@ export function registerSendCodeToRevitTool(server) {
         }
         const options = connectionOptionsFromArgs(args);
         const startedAtMs = Date.now();
+        const liveTask = recordLiveActivityStarted({
+            scope: "revit.command",
+            commandName: "send_code_to_revit",
+            logicalToolName: "send_code_to_revit",
+            executionKind: "dynamicCode",
+            taskName: params.taskName,
+            taskId: params.taskId,
+            params,
+            startedAtMs,
+        });
         try {
             const response = await withRevitConnection(async (revitClient) => {
                 return await revitClient.sendCommand("send_code_to_revit", params, options);
@@ -74,6 +88,7 @@ export function registerSendCodeToRevitTool(server) {
             const normalizedResponse = args.parseJsonResult === false
                 ? response
                 : normalizeRevitExecutionResponse(response);
+            const durationMs = Math.max(0, Date.now() - startedAtMs);
             recordRevitCommandTelemetry({
                 commandName: "send_code_to_revit",
                 logicalToolName: "send_code_to_revit",
@@ -82,6 +97,10 @@ export function registerSendCodeToRevitTool(server) {
                 options,
                 response: normalizedResponse,
                 startedAtMs,
+            });
+            recordLiveActivityFinished(liveTask, {
+                response: normalizedResponse,
+                durationMs,
             });
             const errorLikeResult = args.reportErrorResultAsFailure === false
                 ? null
@@ -106,6 +125,7 @@ export function registerSendCodeToRevitTool(server) {
             };
         }
         catch (error) {
+            const durationMs = Math.max(0, Date.now() - startedAtMs);
             recordRevitCommandTelemetry({
                 commandName: "send_code_to_revit",
                 logicalToolName: "send_code_to_revit",
@@ -114,6 +134,10 @@ export function registerSendCodeToRevitTool(server) {
                 options,
                 error,
                 startedAtMs,
+            });
+            recordLiveActivityFinished(liveTask, {
+                error,
+                durationMs,
             });
             return {
                 content: [

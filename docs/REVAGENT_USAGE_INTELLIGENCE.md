@@ -195,14 +195,57 @@ could not write.
 - `REVAGENT_TELEMETRY_ROOT=<path>`: override the local spool root.
 - `REVAGENT_REPORTS_ROOT=<path>`: override the remote reports/event root.
 - `REVAGENT_UPDATER_CONFIG=<path>`: override updater config discovery.
+- `REVAGENT_LIVE_STATUS_DISABLED=1`: disable the live dashboard feed.
+- `REVAGENT_LIVE_STATUS_LOCAL_ONLY=1`: write live files locally only.
+- `REVAGENT_LIVE_STATUS_ROOT=<path>`: override the remote live root. Defaults
+  to `<reportsRoot>\live`.
+- `REVAGENT_LIVE_STATUS_LOCAL_ROOT=<path>`: override the local live root.
+  Defaults to `<telemetryRoot>\live`.
+- `REVAGENT_LIVE_STATUS_HEARTBEAT_MS=<n>`: heartbeat interval for `status.json`.
+  Defaults to 5000 ms; `0` disables heartbeat-only writes.
+- `REVAGENT_LIVE_STATUS_RECENT=<n>`: number of recent activity rows kept in
+  `status.json`. Defaults to 50, max 200.
+- `REVAGENT_LIVE_STATUS_MAX_IN_FLIGHT=<n>`: maximum concurrent live feed writes
+  before new live writes are dropped. Defaults to 32.
 
 ## Next Layers
 
 The next useful layers are:
 
-1. A lightweight uploader or repair task that backfills local spool files when
+1. A live dashboard feed under `reports\live\machines\<machine>` with
+   non-blocking `status.json` snapshots and daily activity NDJSON for 2-5
+   second dashboard polling.
+2. A lightweight uploader or repair task that backfills local spool files when
    NAS was offline.
-2. Master-LLM analysis over `reports\summaries\latest.json`.
-3. A web dashboard over machine health, tool usage, failures, guarded states,
+3. Master-LLM analysis over `reports\summaries\latest.json`.
+4. A web dashboard over machine health, tool usage, failures, guarded states,
    latency, and repeated dynamic-code patterns.
-4. An LLM product analyst prompt over the aggregated summaries, not raw logs.
+5. An LLM product analyst prompt over the aggregated summaries, not raw logs.
+
+## Live Dashboard Feed
+
+The runtime writes a best-effort live feed for dashboard polling:
+
+```text
+<reportsRoot>\live\machines\<machine>\status.json
+<reportsRoot>\live\machines\<machine>\activity\YYYY-MM-DD.ndjson
+```
+
+Local fallback uses:
+
+```text
+C:\ProgramData\DPE\RevitMCP\state\telemetry\live\machines\<machine>\
+```
+
+`status.json` uses schema `revagent.live.status.v1` and is the dashboard fast
+path. It includes the current active task, active task list, recent activity,
+runtime identity, process identity, heartbeat time, and live-write health.
+
+Activity lines use schema `revagent.live.activity.v1` and record `started`,
+`completed`, `guarded`, and `failed` phases for top-level MCP tools and Revit
+bridge/dynamic commands.
+
+The live feed is intentionally not the durable audit record. It is a UI feed.
+Writes are fire-and-forget, bounded by `REVAGENT_LIVE_STATUS_MAX_IN_FLIGHT`,
+and failure-silent. Slow or unavailable NAS writes must be dropped instead of
+blocking a Revit operation.
