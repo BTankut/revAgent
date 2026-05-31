@@ -151,6 +151,8 @@ try {
     Assert-True ($dashboardServer -match 'compactActivity') "Dashboard overview must strip raw live activity payloads."
     Assert-True ($dashboardServer -match 'buildStatusActivities') "Dashboard must collapse raw live activity into status-window style task rows."
     Assert-True ($dashboardServer -match 'connectionStateFor') "Dashboard server must calculate connection state independently."
+    Assert-True ($dashboardServer -match 'offlineSeconds') "Dashboard server must use a separate offline threshold instead of treating old heartbeat files as stale forever."
+    Assert-True ($dashboardServer -match 'REVAGENT_DASHBOARD_OFFLINE_SECONDS') "Dashboard offline threshold must be configurable."
     Assert-True ($dashboardServer -match 'versionStateFor') "Dashboard server must calculate version state independently."
     Assert-True ($dashboardServer -match 'taskStateFor') "Dashboard server must calculate task state independently."
     Assert-True ($dashboardServer -match 'buildRevitStatusActivities') "Dashboard must prefer Revit status history when available."

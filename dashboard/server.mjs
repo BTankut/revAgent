@@ -9,6 +9,8 @@ const __dirname = path.dirname(__filename);
 const DEFAULT_REPORTS_ROOT = "\\\\DPE-NAS\\Dpe-Ortak\\Baris Tankut\\revit-mcp-deploy\\reports";
 const DEFAULT_PORT = 8765;
 const DEFAULT_ACTIVITY_READ_BYTES = 4 * 1024 * 1024;
+const DEFAULT_STALE_SECONDS = 60;
+const DEFAULT_OFFLINE_SECONDS = 300;
 
 function parseArgs(argv = process.argv.slice(2)) {
   const args = {};
@@ -38,12 +40,15 @@ function resolveConfig(argv) {
     path.dirname(reportsRoot),
   );
   const port = Number.parseInt(String(args.port || process.env.REVAGENT_DASHBOARD_PORT || DEFAULT_PORT), 10);
+  const staleSeconds = clampInt(args.staleSeconds || process.env.REVAGENT_DASHBOARD_STALE_SECONDS, DEFAULT_STALE_SECONDS, 10, 3600);
+  const offlineSeconds = clampInt(args.offlineSeconds || process.env.REVAGENT_DASHBOARD_OFFLINE_SECONDS, DEFAULT_OFFLINE_SECONDS, staleSeconds + 10, 86400);
   return {
     host: args.host || process.env.REVAGENT_DASHBOARD_HOST || "127.0.0.1",
     port: Number.isFinite(port) ? port : DEFAULT_PORT,
     reportsRoot,
     releaseRoot,
-    staleSeconds: clampInt(args.staleSeconds || process.env.REVAGENT_DASHBOARD_STALE_SECONDS, 60, 10, 3600),
+    staleSeconds,
+    offlineSeconds,
     activityLimit: clampInt(args.activityLimit || process.env.REVAGENT_DASHBOARD_ACTIVITY_LIMIT, 200, 20, 1000),
     activityReadBytes: clampInt(args.activityReadBytes || process.env.REVAGENT_DASHBOARD_ACTIVITY_READ_BYTES, DEFAULT_ACTIVITY_READ_BYTES, 256 * 1024, 32 * 1024 * 1024),
   };
@@ -130,11 +135,11 @@ function normalizeMachineName(value) {
   return String(value || "").trim().toUpperCase();
 }
 
-function chooseState(machine, live, stableVersion, now, staleSeconds) {
+function chooseState(machine, live, stableVersion, now, staleSeconds, offlineSeconds) {
   const installed = machine?.installedVersion || machine?.localInstall?.version || "";
   const target = stableVersion || machine?.targetVersion || "";
   const reportStatus = String(machine?.status || "").toLowerCase();
-  const liveState = connectionStateFor(live, now, staleSeconds);
+  const liveState = connectionStateFor(live, now, staleSeconds, offlineSeconds);
 
   if (reportStatus === "failed") {
     return "failed";
@@ -151,12 +156,15 @@ function chooseState(machine, live, stableVersion, now, staleSeconds) {
   return liveState === "online" ? "online" : "current";
 }
 
-function connectionStateFor(live, now, staleSeconds) {
+function connectionStateFor(live, now, staleSeconds, offlineSeconds) {
   const liveAgeSeconds = secondsSince(live?.lastHeartbeatUtc, now);
-  if (!live) {
+  if (!live || liveAgeSeconds === null) {
     return "offline";
   }
-  return liveAgeSeconds !== null && liveAgeSeconds <= staleSeconds ? "online" : "stale";
+  if (liveAgeSeconds <= staleSeconds) {
+    return "online";
+  }
+  return liveAgeSeconds <= offlineSeconds ? "stale" : "offline";
 }
 
 function versionStateFor(machine, stableVersion) {
@@ -168,8 +176,8 @@ function versionStateFor(machine, stableVersion) {
   return installed === target ? "upToDate" : "outdated";
 }
 
-function taskStateFor(live, now, staleSeconds) {
-  return connectionStateFor(live, now, staleSeconds) === "online" && live?.activeTask ? "running" : "idle";
+function taskStateFor(live, now, staleSeconds, offlineSeconds) {
+  return connectionStateFor(live, now, staleSeconds, offlineSeconds) === "online" && live?.activeTask ? "running" : "idle";
 }
 
 function updateStateFor(machine) {
@@ -183,7 +191,7 @@ function updateStateFor(machine) {
   return "ok";
 }
 
-function summarizeMachine(machineName, machineReport, liveStatus, stableVersion, now, staleSeconds) {
+function summarizeMachine(machineName, machineReport, liveStatus, stableVersion, now, staleSeconds, offlineSeconds) {
   const installedVersion = machineReport?.installedVersion || machineReport?.localInstall?.version || "";
   const reportedTargetVersion = machineReport?.targetVersion || "";
   const targetVersion = stableVersion || reportedTargetVersion || "";
@@ -192,10 +200,10 @@ function summarizeMachine(machineName, machineReport, liveStatus, stableVersion,
     machine: machineName,
     computerName: machineReport?.computerName || liveStatus?.machineName || machineName,
     userName: machineReport?.userName || liveStatus?.userName || "",
-    state: chooseState(machineReport, liveStatus, stableVersion, now, staleSeconds),
-    connectionState: connectionStateFor(liveStatus, now, staleSeconds),
+    state: chooseState(machineReport, liveStatus, stableVersion, now, staleSeconds, offlineSeconds),
+    connectionState: connectionStateFor(liveStatus, now, staleSeconds, offlineSeconds),
     versionState: versionStateFor(machineReport, stableVersion),
-    taskState: taskStateFor(liveStatus, now, staleSeconds),
+    taskState: taskStateFor(liveStatus, now, staleSeconds, offlineSeconds),
     updateState: updateStateFor(machineReport),
     updateStatus: machineReport?.status || "",
     operation: machineReport?.operation || "",
@@ -519,7 +527,7 @@ function summarizeLiveOperations(events) {
 
 function summarizeOverview(data) {
   const machines = data.machines || [];
-  const liveMachines = machines.filter((machine) => machine.live && machine.live.heartbeatAgeSeconds !== null && machine.live.heartbeatAgeSeconds <= data.staleSeconds);
+  const liveMachines = machines.filter((machine) => machine.connectionState === "online");
   const liveOperations = summarizeLiveOperations(data.activity);
   const summaryGuardedCount = Array.isArray(data.summary?.friction?.guarded) ? data.summary.friction.guarded.length : 0;
   const summaryFailedCount = Array.isArray(data.summary?.friction?.failed) ? data.summary.friction.failed.length : 0;
@@ -527,9 +535,10 @@ function summarizeOverview(data) {
     machineCount: machines.length,
     currentVersionCount: machines.filter((machine) => machine.versionCurrent).length,
     liveMachineCount: liveMachines.length,
-    activeMachineCount: liveMachines.filter((machine) => machine.live?.activeTask).length,
+    activeMachineCount: machines.filter((machine) => machine.taskState === "running").length,
     failedMachineCount: machines.filter((machine) => machine.state === "failed").length,
-    staleMachineCount: machines.filter((machine) => machine.live && machine.live.heartbeatAgeSeconds !== null && machine.live.heartbeatAgeSeconds > data.staleSeconds).length,
+    staleMachineCount: machines.filter((machine) => machine.connectionState === "stale").length,
+    offlineMachineCount: machines.filter((machine) => machine.connectionState === "offline").length,
     summaryDateUtc: data.summary?.dateUtc || "",
     eventCount: data.summary?.source?.eventCount || 0,
     sessionCount: data.summary?.totals?.sessionCount || 0,
@@ -654,7 +663,8 @@ export function loadDashboardData(config = {}) {
   const now = Date.now();
   const reportsRoot = config.reportsRoot || DEFAULT_REPORTS_ROOT;
   const releaseRoot = config.releaseRoot || path.dirname(reportsRoot);
-  const staleSeconds = clampInt(config.staleSeconds, 60, 10, 3600);
+  const staleSeconds = clampInt(config.staleSeconds, DEFAULT_STALE_SECONDS, 10, 3600);
+  const offlineSeconds = clampInt(config.offlineSeconds, DEFAULT_OFFLINE_SECONDS, staleSeconds + 10, 86400);
   const activityLimit = clampInt(config.activityLimit, 200, 20, 1000);
   const activityReadBytes = clampInt(config.activityReadBytes, DEFAULT_ACTIVITY_READ_BYTES, 256 * 1024, 32 * 1024 * 1024);
   const summariesRoot = path.join(reportsRoot, "summaries");
@@ -679,7 +689,7 @@ export function loadDashboardData(config = {}) {
   const machines = machineNames.map((machineName) => {
     const machineReport = readJsonFile(path.join(machinesRoot, machineName, "latest.json"));
     const liveStatus = readJsonFile(path.join(liveRoot, machineName, "status.json"));
-    const machine = summarizeMachine(machineName, machineReport, liveStatus, stable?.version || "", now, staleSeconds);
+    const machine = summarizeMachine(machineName, machineReport, liveStatus, stable?.version || "", now, staleSeconds, offlineSeconds);
     const fallbackActivities = chooseRecentActivities(machine.live, machineName, activityByMachine.get(machineName));
     const displayMachine = machine.live
       ? {
@@ -710,6 +720,7 @@ export function loadDashboardData(config = {}) {
     reportsRoot,
     releaseRoot,
     staleSeconds,
+    offlineSeconds,
     stable,
     summary,
     publish,

@@ -69,6 +69,23 @@ try {
     },
   });
 
+  writeJson(path.join(reportsRoot, "machines", "CLOSEDPC", "latest.json"), {
+    schemaVersion: "revagent.machine-report.v1",
+    computerName: "CLOSEDPC",
+    userName: "Closed",
+    atUtc: now.toISOString(),
+    status: "updated",
+    operation: "update",
+    operationMethod: "old-channel",
+    installedVersion: "2026.05.31.100-oldbuild",
+    targetVersion: "2026.05.31.100-oldbuild",
+    diagnostics: {
+      fastPackageOnlyUpdate: true,
+      revitPayloadChanged: false,
+      deferredForRevitClose: false,
+    },
+  });
+
   writeJson(path.join(reportsRoot, "live", "machines", "TESTPC", "status.json"), {
     schemaVersion: "revagent.live.status.v1",
     machineName: "TESTPC",
@@ -130,6 +147,32 @@ try {
     writeHealth: {
       droppedCount: 0,
     },
+  });
+
+  writeJson(path.join(reportsRoot, "live", "machines", "OLDPC", "status.json"), {
+    schemaVersion: "revagent.live.status.v1",
+    machineName: "OLDPC",
+    userName: "Old",
+    lastHeartbeatUtc: new Date(now.getTime() - 120000).toISOString(),
+    runtime: {
+      version: "2026.05.31.100-oldbuild",
+    },
+    activeTask: null,
+    activeTasks: [],
+    recentActivity: [],
+  });
+
+  writeJson(path.join(reportsRoot, "live", "machines", "CLOSEDPC", "status.json"), {
+    schemaVersion: "revagent.live.status.v1",
+    machineName: "CLOSEDPC",
+    userName: "Closed",
+    lastHeartbeatUtc: new Date(now.getTime() - 600000).toISOString(),
+    runtime: {
+      version: "2026.05.31.100-oldbuild",
+    },
+    activeTask: null,
+    activeTasks: [],
+    recentActivity: [],
   });
 
   appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
@@ -332,15 +375,18 @@ try {
     reportsRoot,
     releaseRoot,
     staleSeconds: 60,
+    offlineSeconds: 300,
     activityLimit: 20,
   });
 
   assert.equal(data.schemaVersion, "revagent.dashboard.snapshot.v1");
   assert.equal(data.stable.version, version);
-  assert.equal(data.overview.machineCount, 2);
+  assert.equal(data.overview.machineCount, 3);
   assert.equal(data.overview.liveMachineCount, 1);
   assert.equal(data.overview.activeMachineCount, 1);
   assert.equal(data.overview.currentVersionCount, 1);
+  assert.equal(data.overview.staleMachineCount, 1);
+  assert.equal(data.overview.offlineMachineCount, 1);
   assert.equal(data.overview.productionOperationCount, 7);
   assert.equal(data.overview.liveOperationCount, 7);
   assert.equal(data.overview.liveCompletedCount, 5);
@@ -350,15 +396,21 @@ try {
   assert.equal(data.overview.metricSource, "liveActivity");
   const testMachine = data.machines.find((machine) => machine.machine === "TESTPC");
   const oldMachine = data.machines.find((machine) => machine.machine === "OLDPC");
+  const closedMachine = data.machines.find((machine) => machine.machine === "CLOSEDPC");
   assert.equal(testMachine.state, "active");
+  assert.equal(testMachine.connectionState, "online");
+  assert.equal(testMachine.versionState, "upToDate");
+  assert.equal(testMachine.taskState, "running");
   assert.equal(testMachine.versionCurrent, true);
   assert.equal(testMachine.live.activeTask.taskName, "smoke inspect");
   assert.equal(testMachine.live.recentActivity[0].taskName, "smoke status cleanup");
   assert.equal(testMachine.live.recentActivity[0].phase, "completed");
   assert.equal(oldMachine.state, "outdated");
+  assert.equal(oldMachine.connectionState, "stale");
   assert.equal(oldMachine.versionCurrent, false);
   assert.equal(oldMachine.targetVersion, version);
   assert.equal(oldMachine.reportedTargetVersion, "2026.05.31.100-oldbuild");
+  assert.equal(closedMachine.connectionState, "offline");
   assert.equal(data.activity.length, 7);
   assert.equal(data.activity[0].taskName, "smoke status cleanup");
   assert.equal(data.activity[0].phase, "completed");
@@ -375,7 +427,7 @@ try {
   assert.equal("params" in data.activity[0], false);
   assert.equal(JSON.stringify(data).includes("\"preview\""), false);
   assert.equal(JSON.stringify(data).includes("yyyyyyyy"), false);
-  assert.ok(JSON.stringify(data).length < 14000);
+  assert.ok(JSON.stringify(data).length < 16000);
   assert.equal(data.summary.toolUsage[0].name, "inspect_elements");
   const brief = buildDashboardBrief(data);
   assert.equal(brief.schemaVersion, "revagent.dashboard.brief.v1");
