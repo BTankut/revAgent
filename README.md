@@ -662,6 +662,18 @@ surface with the active task and recent activity, while
 activity lines. Live writes are fire-and-forget with a bounded in-flight limit;
 slow or unavailable NAS writes are dropped instead of delaying Revit work.
 
+The read-only live dashboard can be started on the coordinator workstation with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-live-dashboard.ps1
+```
+
+It serves `http://127.0.0.1:8765`, reads only `reports\machines`,
+`reports\live`, `reports\summaries`, and the stable channel manifest, and
+refreshes the browser every 3 seconds. It never sends Revit commands, writes
+telemetry, or changes NAS release state. Use
+`dashboard\smoke-test.mjs` for the non-Revit dashboard regression check.
+
 The first reader layer is `scripts/summarize-usage-intelligence.ps1`. It reads
 `reports\machines` plus one UTC day of `reports\events` and emits
 `revagent.usage.summary.v1` JSON with machine health, tool usage, project and

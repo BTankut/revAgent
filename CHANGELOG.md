@@ -27,6 +27,9 @@ All notable revAgent workstation deployment changes are tracked here.
 - Added a non-blocking live dashboard feed under `reports\live\machines` with
   per-machine `status.json` snapshots and daily activity NDJSON for 2-5 second
   dashboard polling.
+- Added the read-only revAgent live dashboard MVP with machine cards, active
+  task stream, deployment health, latest usage metrics, and a dashboard smoke
+  test.
 - Fixed usage-summary friction samples so failed/slow raw tool or command
   events are still reported when no derived `production.context` event exists,
   empty production rollups stay as empty arrays instead of blank zero rows, and

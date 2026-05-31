@@ -15,6 +15,10 @@ for servers, assemblies, manifests, and installed paths.
 |-- README.md
 |-- config/
 |   `-- revit-versions.json
+|-- dashboard/
+|   |-- server.mjs
+|   |-- smoke-test.mjs
+|   `-- public/
 |-- docs/
 |   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
 |   |-- DEVELOPER_RUNBOOK.md
@@ -27,6 +31,7 @@ for servers, assemblies, manifests, and installed paths.
 |-- references/
 |-- scripts/
 |   |-- build-revit-plugin.ps1
+|   |-- start-live-dashboard.ps1
 |   |-- test-all.ps1
 |   |-- test-commandset-live.ps1
 |   `-- test-installer-smoke.ps1

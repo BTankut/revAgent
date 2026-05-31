@@ -157,10 +157,16 @@ A machine is stale when:
 
 ### Phase 2 - Read-Only Dashboard MVP
 
-- Build a local web dashboard that reads only NAS JSON/NDJSON files.
-- Use 2-5 second refresh for `status.json`.
-- Show machine cards and recent activity.
-- Do not write to Revit, NAS release state, or telemetry.
+- Implemented by `dashboard/server.mjs`, `dashboard/public/*`, and
+  `scripts/start-live-dashboard.ps1`.
+- Builds a local web dashboard that reads only NAS JSON/NDJSON files.
+- Uses 3 second browser refresh against `/api/overview`; the server reads
+  `reports\live`, `reports\machines`, `reports\summaries`, and
+  `channels\stable.json`.
+- Shows machine cards, active task, recent activity, deployment state, latest
+  summary metrics, tool usage, and guarded/failed/slow friction samples.
+- Does not write to Revit, NAS release state, or telemetry.
+- Covered by `dashboard/smoke-test.mjs` and `scripts/test-all.ps1`.
 
 ### Phase 3 - Analyst Integration
 
@@ -182,4 +188,3 @@ Before deployment:
 - Run installer smoke tests.
 - Confirm Revit payload hash is unchanged in the release manifest.
 - Deploy through the normal NAS stable release flow.
-
