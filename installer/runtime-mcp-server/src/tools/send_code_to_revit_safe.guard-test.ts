@@ -4,6 +4,8 @@ import { findWritePatterns } from "./send_code_to_revit_safe_guards.js";
 
 const cases = [
     ["Parameter.Set", "p.Set(\"x\")"],
+    ["Parameter.Set", "element.LookupParameter(\"Comments\").Set(\"x\")"],
+    ["Parameter.Set", "element.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS).Set(\"x\")"],
     ["Parameter.SetValueString", "p.SetValueString(\"10\")"],
     ["Parameter.ClearValue", "p.ClearValue()"],
     ["Document.Delete", "doc.Delete(id)"],

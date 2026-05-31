@@ -60,12 +60,12 @@ with visual evidence whenever the visible result matters.
 Available runtime tools:
 
 - `export_revit_view_image`: exports the active view, the active view's visible
-  region, a DrawingSheet, or a selected Revit view/sheet to
-  PNG/JPEG/TIFF/BMP/TARGA. It does not write model elements or view settings.
-  Schedule views cannot be exported directly; export the DrawingSheet that
-  contains the schedule and use `get_active_view_context` to inspect
-  `scheduleSheetInstances`. PNG/JPEG/BMP/TIFF exports are normalized to the
-  requested `pixelSize` by default. Use
+  region, a DrawingSheet, a Schedule view, or a selected Revit view/sheet to
+  PNG/JPEG/TIFF/BMP/TARGA. Ordinary model/sheet exports do not write model
+  elements or view settings. Direct Schedule export uses a temporary sheet that
+  is deleted before the wrapper transaction commits, and reports
+  `scheduleExport.temporaryScheduleSheetDeletedBeforeCommit`. PNG/JPEG/BMP/TIFF
+  exports are normalized to the requested `pixelSize` by default. Use
   `files[].finalPixelSizeMatchesRequest` to verify the final image dimension;
   `files[].resizedToRequestedPixelSize` only reports whether post-processing
   changed the file.
@@ -83,6 +83,9 @@ Available runtime tools:
   use softer styles only for report, presentation, or native technical output.
   The `auto` style is report-friendly and never selects `qa_high_contrast`;
   request `qa_high_contrast` explicitly when strong QA marking is required.
+  Pass `cleanupAfterExport=true` when a newly created review view should be
+  removed after the image file is produced. Existing reused review views are
+  kept to avoid deleting operator-owned project data.
 
 Practical use:
 
@@ -109,8 +112,9 @@ Live Revit navigation is a different intent from image export:
 - For "PNG", "JPEG", "export", "report image", "evidence image", or
   "görsel çıktı", use `export_revit_view_image` or
   `export_revit_coordination_image`.
-- For schedule evidence, export a DrawingSheet that contains the schedule; do
-  not expect a standalone schedule view to export as an image.
+- For schedule evidence, use `export_revit_view_image` on the Schedule view for
+  a direct standalone schedule image, or export a DrawingSheet when sheet layout
+  context is required.
 - Do not use `export_revit_coordination_image` as the primary tool for live
   selected-element zoom or opening an element in a Revit view. Use live view
   navigation first, then optionally export the active view.

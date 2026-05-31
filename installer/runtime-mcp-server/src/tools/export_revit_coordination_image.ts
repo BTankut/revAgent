@@ -66,7 +66,7 @@ export function resolveAutoTargetVisualStyle(intent) {
 export function registerExportRevitCoordinationImageTool(server) {
   server.tool(
     "export_revit_coordination_image",
-    "[VISUAL_ARTIFACT_EXPORT_ONLY] Create or reuse a visual QA 3D view, optionally section-box target elements, apply a selectable target visual style, and export an image artifact. Auto style is report-friendly and never selects qa_high_contrast by itself. Use qa_high_contrast explicitly for debug/LLM evidence, technical_report or outline_only for report-style evidence, and raw when the target must keep native appearance. Use this when the user asks for PNG/JPEG/report/LLM visual evidence. Do not use this as the primary tool for live view navigation, selected-element zoom, or opening an element in a Revit view; for that workflow use create_3d_view_for_elements or show_element_in_plan_and_3d, then optionally export the active view with export_revit_view_image. It only writes review view settings; it does not create or modify MEP model elements.",
+    "[VISUAL_ARTIFACT_EXPORT_ONLY] Create or reuse a visual QA 3D view, optionally section-box target elements, apply a selectable target visual style, and export an image artifact. Auto style is report-friendly and never selects qa_high_contrast by itself. Use qa_high_contrast explicitly for debug/LLM evidence, technical_report or outline_only for report-style evidence, and raw when the target must keep native appearance. Use this when the user asks for PNG/JPEG/report/LLM visual evidence. Do not use this as the primary tool for live view navigation, selected-element zoom, or opening an element in a Revit view; for that workflow use create_3d_view_for_elements or show_element_in_plan_and_3d, then optionally export the active view with export_revit_view_image. It only writes review view settings; it does not create or modify MEP model elements. Set cleanupAfterExport=true when a newly created review view should be deleted after the image file is produced.",
     {
       ...connectionTargetSchema(z),
       intent: intentSchema.optional().default("coordination_overlay"),
@@ -89,6 +89,7 @@ export function registerExportRevitCoordinationImageTool(server) {
       format: formatSchema.optional().default("png"),
       outputDir: z.string().optional(),
       filePrefix: z.string().optional(),
+      cleanupAfterExport: z.boolean().optional().default(false).describe("When true, a review view created by this call is deleted after export. Existing reused review views are never deleted automatically."),
       ...taskMetadataSchema(z),
       timeoutMs: z.number().int().positive().optional(),
     },
@@ -114,6 +115,7 @@ export function registerExportRevitCoordinationImageTool(server) {
       const targetMinFillRatio = Number.isFinite(Number(args.targetMinFillRatio)) ? Math.max(0.1, Math.min(0.9, Number(args.targetMinFillRatio))) : 0.4;
       const highlightCropPaddingPx = Number.isFinite(Number(args.highlightCropPaddingPx)) ? Math.trunc(args.highlightCropPaddingPx) : 24;
       const transparency = Math.trunc(args.contextTransparency ?? 65);
+      const cleanupAfterExport = args.cleanupAfterExport === true;
 
       const code = `
 var warnings = new List<string>();
@@ -139,6 +141,7 @@ bool cropToTargetHighlight = ${cropToTargetHighlight ? "true" : "false"};
 bool allowFinalUpscale = ${allowFinalUpscale ? "true" : "false"};
 double targetMinFillRatio = ${targetMinFillRatio};
 int highlightCropPaddingPx = ${highlightCropPaddingPx};
+bool cleanupAfterExport = ${cleanupAfterExport ? "true" : "false"};
 
 System.IO.Directory.CreateDirectory(outputDir);
 
@@ -881,25 +884,56 @@ var files = System.IO.Directory.GetFiles(outputDir)
   .ToList();
 
 double effectiveMarginMm = targetElements.Count == 1 ? Math.Min(${marginMm}, ${singleElementMarginMm}) : ${marginMm};
+int reviewViewIdForReport = reviewView.Id.IntegerValue;
+string reviewViewNameForReport = reviewView.Name;
+bool reviewViewSectionBoxActiveForReport = reviewView.IsSectionBoxActive;
+bool cleanupAfterExportApplied = false;
+bool cleanupDeletedCreatedView = false;
+string cleanupNote = createdView
+  ? "A reusable review view was created and kept for audit/reuse. Delete it manually only if this QA view is no longer needed."
+  : "Existing reusable review view was updated and kept.";
+
+if (cleanupAfterExport) {
+  if (createdView) {
+    try {
+      document.Delete(reviewView.Id);
+      document.Regenerate();
+      cleanupAfterExportApplied = document.GetElement(new ElementId(reviewViewIdForReport)) == null;
+      cleanupDeletedCreatedView = cleanupAfterExportApplied;
+      cleanupNote = cleanupAfterExportApplied
+        ? "The review view created by this export was deleted after the image file was produced."
+        : "cleanupAfterExport was requested, but the created review view still appears to exist. Check warnings.";
+      if (!cleanupAfterExportApplied) warnings.Add("coordination_cleanup_created_view_not_confirmed");
+    }
+    catch (Exception ex) {
+      cleanupNote = "cleanupAfterExport was requested, but deleting the created review view failed.";
+      warnings.Add("coordination_cleanup_created_view_failed:" + ex.Message);
+    }
+  }
+  else {
+    cleanupNote = "cleanupAfterExport was requested, but the review view already existed and was kept to avoid deleting operator-owned project data.";
+    notices.Add("coordination_cleanup_skipped_existing_review_view");
+  }
+}
 
 return new {
   success = files.Count > 0,
   tool = "export_revit_coordination_image",
-  revitWriteAction = "review_view_only",
+  revitWriteAction = cleanupDeletedCreatedView ? "temporary_review_view_export" : "review_view_only",
   intent = intent,
   targetVisualStyle = targetVisualStyle,
   targetOverrideApplied = targetOverrideApplied,
   targetOverrideMode = targetOverrideMode,
   targetOverrideResetCount = targetOverrideResetCount,
-  view = new { id = reviewView.Id.IntegerValue, name = reviewView.Name, created = createdView, sectionBoxActive = reviewView.IsSectionBoxActive },
+  view = new { id = reviewViewIdForReport, name = reviewViewNameForReport, created = createdView, sectionBoxActive = reviewViewSectionBoxActiveForReport, deletedAfterExport = cleanupDeletedCreatedView },
   createdViews = createdView
-    ? new object[] { new { id = reviewView.Id.IntegerValue, name = reviewView.Name, purpose = "coordination_image_review_view" } }
+    ? new object[] { new { id = reviewViewIdForReport, name = reviewViewNameForReport, purpose = "coordination_image_review_view", deletedAfterExport = cleanupDeletedCreatedView } }
     : new object[] {},
   cleanup = new {
-    cleanupAfterExportApplied = false,
-    note = createdView
-      ? "A reusable review view was created and kept for audit/reuse. Delete it manually only if this QA view is no longer needed."
-      : "Existing reusable review view was updated and kept."
+    cleanupAfterExportRequested = cleanupAfterExport,
+    cleanupAfterExportApplied = cleanupAfterExportApplied,
+    deletedCreatedView = cleanupDeletedCreatedView,
+    note = cleanupNote
   },
   framing = new {
     mode = framingMode,

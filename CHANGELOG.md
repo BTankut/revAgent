@@ -4,6 +4,14 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added direct standalone Schedule image export to `export_revit_view_image`
+  through a temporary sheet that is deleted before the wrapper transaction
+  commits, while keeping existing containing-sheet hints in the response.
+- Added `cleanupAfterExport` to `export_revit_coordination_image` so newly
+  created review views can be deleted after the image file is produced; reused
+  project review views are preserved.
+- Bumped the runtime tool surface version to
+  `revit-mcp-runtime-tools.23` for the export schema/behavior change.
 - Changed live dashboard activity rendering to match the revAgent status
   window semantics: started/completed lifecycle pairs and nested
   `mcp.tool`/`send_code_to_revit` events are collapsed into one user-facing

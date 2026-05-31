@@ -83,14 +83,16 @@ custom-code workflows.
   enforce section box on/off, activate it, and focus/select the elements with
   rollback inside its own view update transactions
 - `export_revit_view_image` - export the active view, visible region,
-  DrawingSheet, or a selected view/sheet to PNG/JPEG/TIFF/BMP/TARGA through
-  `Document.ExportImage`. Schedule views are not directly exportable; export a
-  sheet that contains the schedule.
-  This is read-only, reports actual generated image dimensions, and by default
-  normalizes PNG/JPEG/BMP/TIFF output so the requested `pixelSize` is the final
-  fit-direction dimension. Check `files[].finalPixelSizeMatchesRequest` for the
-  final dimension match; `files[].resizedToRequestedPixelSize` only means the
-  post-export resizer actually changed the file.
+  DrawingSheet, Schedule view, or a selected view/sheet to PNG/JPEG/TIFF/BMP/TARGA
+  through `Document.ExportImage`. Ordinary view/sheet exports do not write Revit
+  data. Direct Schedule export creates a temporary sheet, exports it, and deletes
+  that sheet before the wrapper transaction commits; check
+  `scheduleExport.temporaryScheduleSheetDeletedBeforeCommit`.
+  It reports actual generated image dimensions and by default normalizes
+  PNG/JPEG/BMP/TIFF output so the requested `pixelSize` is the final fit-direction
+  dimension. Check `files[].finalPixelSizeMatchesRequest` for the final dimension
+  match; `files[].resizedToRequestedPixelSize` only means the post-export resizer
+  actually changed the file.
 - `export_revit_coordination_image` - visual artifact export only: create or reuse a dedicated visual QA 3D
   view, optionally section-box target elements, apply the selected target
   visual style/review graphics, and export an image. Single-element exports use a tighter default
@@ -104,7 +106,10 @@ custom-code workflows.
   Do not use it as the primary tool for live view navigation,
   selected-element zoom, or opening an element in a Revit view. It writes only
   review view settings; it does not create or modify ducts, pipes, terminals,
-  fittings, or other physical MEP model elements.
+  fittings, or other physical MEP model elements. Pass
+  `cleanupAfterExport=true` when a review view newly created by the export should
+  be deleted after the image file is produced; existing reused review views are
+  kept.
 - `show_element_in_plan_and_3d` - live view workflow wrapper that safely finds or uses one
   element, shows it in an existing plan, then optionally opens a focused 3D
   view. Successful routine calls return a compact summary by default; use
@@ -209,10 +214,10 @@ tool.
 - If the user says "export", "PNG", "JPEG", "image file", "report image",
   "evidence image", "LLM visual evidence", "görsel çıktı", or "rapora görsel",
   use export tools:
-  - Existing active/requested view or DrawingSheet image:
+  - Existing active/requested view, DrawingSheet, or standalone Schedule image:
     `export_revit_view_image`.
-  - Schedule evidence: export the DrawingSheet that contains the schedule; use
-    `get_active_view_context` on the sheet to inspect
+  - Sheet layout context for schedules: export the DrawingSheet that contains
+    the schedule; use `get_active_view_context` on the sheet to inspect
     `scheduleSheetInstances`.
   - Element-specific coordination/review image artifact around target ids:
     `export_revit_coordination_image`.

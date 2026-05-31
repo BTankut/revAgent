@@ -71,10 +71,11 @@ explicit:
 - the runtime MCP server exposes raw dynamic execution plus read-only context
   primitives for session, active view, elements, and parameter schema
 - the runtime MCP server also exposes Revit image export tools for visual QA:
-  `export_revit_view_image` is read-only, while
-  `export_revit_coordination_image` writes only a reusable review view and
-  image export settings, never physical model elements; it is an image-artifact
-  tool, not the primary tool for live Revit zoom/open/show workflows
+  `export_revit_view_image` is read-only for ordinary view/sheet exports and
+  uses a temporary sheet for standalone Schedule exports, while
+  `export_revit_coordination_image` writes only review view and image export
+  settings, never physical model elements; it is an image-artifact tool, not
+  the primary tool for live Revit zoom/open/show workflows
 - the required docs server resolves class/member signatures before non-trivial snippets are generated, including bulk symbol resolution
 
 ## Requirements
@@ -596,7 +597,7 @@ small production surface instead of many narrow one-off commands.
 | Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_parameter_schema` | Read-only model/session/parameter inspection before engineering decisions or writes. `get_active_view_context` reports both sheet `viewports` and `scheduleSheetInstances`. |
 | Live view navigation | `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. |
 | View-data writes | `section_box_elements`, `create_3d_view_for_elements` | Can modify project view data by applying section boxes or creating/reusing 3D review views. Use explicit intent and verify afterward. |
-| Image artifacts | `export_revit_view_image`, `export_revit_coordination_image` | `export_revit_view_image` is read-only and supports active/requested views plus DrawingSheet export. Schedule views cannot be exported directly; export the sheet that contains the schedule. `export_revit_coordination_image` writes only review view settings and image export settings, never ducts, pipes, fittings, terminals, or other physical model elements. |
+| Image artifacts | `export_revit_view_image`, `export_revit_coordination_image` | `export_revit_view_image` supports active/requested views, DrawingSheet export, and direct Schedule export through a temporary sheet that is deleted before the wrapper transaction commits. Ordinary view/sheet exports are read-only. `export_revit_coordination_image` writes only review view settings and image export settings, never ducts, pipes, fittings, terminals, or other physical model elements; `cleanupAfterExport=true` deletes a review view created by that export after the image file is produced. |
 
 The Revit add-in command payload still provides the low-level dynamic execution
 bridge internally. Common discovery, UI focus, plan/3D view workflow, parameter

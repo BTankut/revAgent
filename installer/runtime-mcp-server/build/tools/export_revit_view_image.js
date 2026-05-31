@@ -40,7 +40,7 @@ function csharpNullableInt(value) {
     return String(Math.trunc(parsed));
 }
 export function registerExportRevitViewImageTool(server) {
-    server.tool("export_revit_view_image", "[VISUAL_ARTIFACT_EXPORT] Export the active Revit view, DrawingSheet, or a selected view/sheet to PNG/JPEG/TIFF/BMP/TARGA using Document.ExportImage. Use this when the user asks for a raw image file, report/evidence screenshot, sheet export, or LLM visual artifact from an existing view. Schedule views cannot be exported directly; export a sheet containing the schedule instead. Read-only: it does not create or modify Revit elements or views.", {
+    server.tool("export_revit_view_image", "[VISUAL_ARTIFACT_EXPORT] Export the active Revit view, DrawingSheet, Schedule view, or a selected view/sheet to PNG/JPEG/TIFF/BMP/TARGA using Document.ExportImage. Use this when the user asks for a raw image file, report/evidence screenshot, schedule/sheet export, or LLM visual artifact from an existing view. Ordinary view/sheet exports do not modify Revit. Direct schedule export creates a temporary sheet, exports it, and deletes that sheet before the wrapper transaction commits.", {
         ...connectionTargetSchema(z),
         viewId: z.union([z.number(), z.string()]).optional().describe("Optional Revit view id. When supplied, export uses set_of_views because Revit cannot export a non-active visible region."),
         viewName: z.string().optional().describe("Optional exact or partial view name. When supplied, export uses set_of_views unless range is explicitly current/visible."),
@@ -54,6 +54,7 @@ export function registerExportRevitViewImageTool(server) {
         fitDirection: fitDirectionSchema.optional().default("horizontal"),
         outputDir: z.string().optional(),
         filePrefix: z.string().optional(),
+        allowTemporaryScheduleSheet: z.boolean().optional().default(true).describe("When true, standalone Schedule views are exported through a temporary sheet that is deleted before the wrapper transaction commits. When false, schedule views return guidance with containing sheet candidates."),
         ...taskMetadataSchema(z),
         timeoutMs: z.number().int().positive().optional(),
     }, async (args) => {
@@ -67,8 +68,10 @@ export function registerExportRevitViewImageTool(server) {
         const pixelSize = Math.trunc(args.pixelSize || 6000);
         const enforcePixelSize = args.enforcePixelSize !== false;
         const zoom = Math.trunc(args.zoom || 100);
+        const allowTemporaryScheduleSheet = args.allowTemporaryScheduleSheet !== false;
         const code = `
 var warnings = new List<string>();
+var notices = new List<string>();
 string requestedRange = ${csharpString(range)};
 string outputDir = ${csharpString(outputDir)};
 string filePrefix = ${csharpString(filePrefix)};
@@ -79,6 +82,7 @@ bool selectorProvided = viewIdInput.HasValue || !String.IsNullOrWhiteSpace(viewN
 int requestedPixelSize = ${pixelSize};
 string requestedFitDirection = ${csharpString(args.fitDirection || "horizontal")};
 bool enforcePixelSize = ${enforcePixelSize ? "true" : "false"};
+bool allowTemporaryScheduleSheet = ${allowTemporaryScheduleSheet ? "true" : "false"};
 
 System.IO.Directory.CreateDirectory(outputDir);
 
@@ -91,6 +95,12 @@ Func<string, string> sanitize = (value) => {
 
 View activeView = document.ActiveView;
 View selectedView = activeView;
+View sourceView = null;
+View exportView = null;
+bool scheduleExportUsedTemporarySheet = false;
+bool temporaryScheduleSheetDeletedBeforeCommit = false;
+object temporaryScheduleSheetReport = null;
+var placedOnSheets = new List<object>();
 
 if (requestedRange == "set_of_views" && viewIdInput.HasValue) {
   selectedView = document.GetElement(new ElementId(viewIdInput.Value)) as View;
@@ -115,10 +125,11 @@ else if (selectorProvided) {
 if (selectedView == null) {
   return new { success = false, error = "view_not_found", viewId = viewIdInput, viewName = viewNameInput };
 }
+sourceView = selectedView;
+exportView = selectedView;
 if (selectedView is ViewSchedule) {
-  var placedOnSheets = new List<object>();
+  var selectedSchedule = selectedView as ViewSchedule;
   try {
-    var selectedSchedule = selectedView as ViewSchedule;
     var scheduleInstances = new FilteredElementCollector(document)
       .OfClass(typeof(ScheduleSheetInstance))
       .WhereElementIsNotElementType()
@@ -138,17 +149,50 @@ if (selectedView is ViewSchedule) {
   catch (Exception ex) {
     warnings.Add("schedule_sheet_instance_lookup_failed:" + ex.Message);
   }
-  return new {
-    success = false,
-    error = "unsupported_view_type_for_image_export",
-    reason = "schedule_views_cannot_be_exported_directly_with_document_export_image",
-    guidance = "Export a DrawingSheet that contains this schedule. Use get_active_view_context on the sheet to inspect scheduleSheetInstances before choosing the sheet.",
-    viewId = selectedView.Id.IntegerValue,
-    viewName = selectedView.Name,
-    viewType = selectedView.ViewType.ToString(),
-    placedOnSheets = placedOnSheets.ToArray(),
-    warnings = warnings
+  if (!allowTemporaryScheduleSheet) {
+    return new {
+      success = false,
+      error = "unsupported_view_type_for_image_export",
+      reason = "schedule_views_cannot_be_exported_directly_with_document_export_image_without_temporary_sheet",
+      guidance = "Enable allowTemporaryScheduleSheet, or export a DrawingSheet that contains this schedule. Use get_active_view_context on the sheet to inspect scheduleSheetInstances before choosing the sheet.",
+      viewId = selectedView.Id.IntegerValue,
+      viewName = selectedView.Name,
+      viewType = selectedView.ViewType.ToString(),
+      placedOnSheets = placedOnSheets.ToArray(),
+      warnings = warnings,
+      notices = notices
+    };
+  }
+
+  var existingNumbers = new HashSet<string>(
+    new FilteredElementCollector(document)
+      .OfClass(typeof(ViewSheet))
+      .Cast<ViewSheet>()
+      .Select(sheet => sheet.SheetNumber),
+    System.StringComparer.OrdinalIgnoreCase);
+  string baseSheetNumber = "REVAGENT-SCH-" + selectedSchedule.Id.IntegerValue.ToString();
+  string temporarySheetNumber = baseSheetNumber;
+  int suffix = 1;
+  while (existingNumbers.Contains(temporarySheetNumber)) {
+    temporarySheetNumber = baseSheetNumber + "-" + (suffix++).ToString();
+  }
+
+  ViewSheet temporarySheet = ViewSheet.Create(document, ElementId.InvalidElementId);
+  temporarySheet.SheetNumber = temporarySheetNumber;
+  temporarySheet.Name = "revAgent Temporary Schedule Export " + selectedSchedule.Id.IntegerValue.ToString();
+  ScheduleSheetInstance temporaryScheduleInstance = ScheduleSheetInstance.Create(document, temporarySheet.Id, selectedSchedule.Id, new XYZ(0, 0, 0));
+  document.Regenerate();
+
+  exportView = temporarySheet;
+  scheduleExportUsedTemporarySheet = true;
+  temporaryScheduleSheetReport = new {
+    sheetId = temporarySheet.Id.IntegerValue,
+    sheetName = temporarySheet.Name,
+    sheetNumber = temporarySheet.SheetNumber,
+    scheduleInstanceId = temporaryScheduleInstance.Id.IntegerValue,
+    deletedBeforeCommit = false
   };
+  notices.Add("schedule_export_used_temporary_sheet");
 }
 if ((requestedRange == "current_view" || requestedRange == "visible_region") && activeView == null) {
   return new { success = false, error = "active_view_not_available" };
@@ -166,14 +210,20 @@ options.Zoom = ${zoom};
 options.FitDirection = FitDirectionType.${fitDirection};
 options.ShouldCreateWebSite = false;
 
-if (requestedRange == "visible_region") {
+if (scheduleExportUsedTemporarySheet) {
+  options.ExportRange = ExportRange.SetOfViews;
+  options.ZoomType = ZoomFitType.FitToPage;
+  var ids = new List<ElementId> { exportView.Id };
+  options.SetViewsAndSheets(ids);
+}
+else if (requestedRange == "visible_region") {
   options.ExportRange = ExportRange.VisibleRegionOfCurrentView;
   options.ZoomType = ZoomFitType.Zoom;
 }
 else if (requestedRange == "set_of_views") {
   options.ExportRange = ExportRange.SetOfViews;
   options.ZoomType = ZoomFitType.FitToPage;
-  var ids = new List<ElementId> { selectedView.Id };
+  var ids = new List<ElementId> { exportView.Id };
   options.SetViewsAndSheets(ids);
 }
 else {
@@ -182,6 +232,44 @@ else {
 }
 
 document.ExportImage(options);
+
+if (scheduleExportUsedTemporarySheet && exportView != null) {
+  int tempSheetIdForReport = exportView.Id.IntegerValue;
+  string tempSheetNameForReport = exportView.Name;
+  string tempSheetNumberForReport = (exportView as ViewSheet) != null ? (exportView as ViewSheet).SheetNumber : "";
+  int? tempScheduleInstanceIdForReport = null;
+  try {
+    var tempScheduleInstance = new FilteredElementCollector(document, exportView.Id)
+      .OfClass(typeof(ScheduleSheetInstance))
+      .WhereElementIsNotElementType()
+      .Cast<ScheduleSheetInstance>()
+      .FirstOrDefault();
+    if (tempScheduleInstance != null) tempScheduleInstanceIdForReport = tempScheduleInstance.Id.IntegerValue;
+  }
+  catch {}
+  try {
+    document.Delete(exportView.Id);
+    document.Regenerate();
+    temporaryScheduleSheetDeletedBeforeCommit = document.GetElement(new ElementId(tempSheetIdForReport)) == null;
+    temporaryScheduleSheetReport = new {
+      sheetId = tempSheetIdForReport,
+      sheetName = tempSheetNameForReport,
+      sheetNumber = tempSheetNumberForReport,
+      scheduleInstanceId = tempScheduleInstanceIdForReport,
+      deletedBeforeCommit = temporaryScheduleSheetDeletedBeforeCommit
+    };
+  }
+  catch (Exception ex) {
+    warnings.Add("temporary_schedule_sheet_cleanup_failed:" + ex.Message);
+    temporaryScheduleSheetReport = new {
+      sheetId = tempSheetIdForReport,
+      sheetName = tempSheetNameForReport,
+      sheetNumber = tempSheetNumberForReport,
+      scheduleInstanceId = tempScheduleInstanceIdForReport,
+      deletedBeforeCommit = false
+    };
+  }
+}
 
 Func<byte[], int, int> readInt32BigEndian = (bytes, offset) =>
   (bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3];
@@ -351,8 +439,8 @@ var files = System.IO.Directory.GetFiles(outputDir)
 return new {
   success = files.Count > 0,
   tool = "export_revit_view_image",
-  revitWriteAction = "none",
-  exportRange = requestedRange,
+  revitWriteAction = scheduleExportUsedTemporarySheet ? "temporary_schedule_sheet_export" : "none",
+  exportRange = scheduleExportUsedTemporarySheet ? "set_of_views" : requestedRange,
   format = ${csharpString(args.format || "png")},
   pixelSize = ${pixelSize},
   requestedPixelSize = ${pixelSize},
@@ -362,17 +450,34 @@ return new {
     : "pixelSize is the Revit export request. Check files[].width and files[].height for actual output dimensions.",
   dpi = ${csharpString(String(args.dpi || "300"))},
   fitDirection = ${csharpString(args.fitDirection || "horizontal")},
-  view = new { id = selectedView.Id.IntegerValue, name = selectedView.Name, type = selectedView.ViewType.ToString() },
+  view = new {
+    id = scheduleExportUsedTemporarySheet ? sourceView.Id.IntegerValue : selectedView.Id.IntegerValue,
+    name = scheduleExportUsedTemporarySheet ? sourceView.Name : selectedView.Name,
+    type = scheduleExportUsedTemporarySheet ? sourceView.ViewType.ToString() : selectedView.ViewType.ToString()
+  },
+  sourceView = sourceView == null ? null : new { id = sourceView.Id.IntegerValue, name = sourceView.Name, type = sourceView.ViewType.ToString() },
   activeView = activeView == null ? null : new { id = activeView.Id.IntegerValue, name = activeView.Name, type = activeView.ViewType.ToString() },
+  scheduleExport = scheduleExportUsedTemporarySheet
+    ? new {
+        mode = "temporary_sheet",
+        temporarySheet = temporaryScheduleSheetReport,
+        temporaryScheduleSheetDeletedBeforeCommit = temporaryScheduleSheetDeletedBeforeCommit,
+        placedOnSheets = placedOnSheets.ToArray(),
+        note = temporaryScheduleSheetDeletedBeforeCommit
+          ? "The Schedule view was exported through a temporary sheet that was deleted before the wrapper transaction committed."
+          : "The Schedule view was exported through a temporary sheet, but cleanup did not fully confirm deletion. Check warnings."
+      }
+    : null,
   outputDir = outputDir,
   filePrefix = filePrefix,
   files = files,
-  warnings = warnings
+  warnings = warnings,
+  notices = notices
 };`;
         const response = await executeRevitCode(code, {
             ...executionOptionsFromArgs(args),
             taskType: "export_revit_view_image",
-            transactionMode: "none",
+            transactionMode: allowTemporaryScheduleSheet ? "auto" : "none",
         });
         return formatJsonContent(response?.result ?? response);
     });

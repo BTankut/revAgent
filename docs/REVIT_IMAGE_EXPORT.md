@@ -7,15 +7,19 @@ status preflight and single-command rule.
 ## Tools
 
 - `export_revit_view_image`
-  - Purpose: export the active view, a selected view, or a DrawingSheet as
-    evidence.
-  - Revit write action: none.
+  - Purpose: export the active view, a selected view, a DrawingSheet, or a
+    standalone Schedule view as evidence.
+  - Revit write action: none for ordinary view/sheet exports. Direct Schedule
+    export creates a temporary sheet, exports it, and deletes that sheet before
+    the wrapper transaction commits.
   - Best for: raw screenshots, active plan evidence, sheet evidence, exported
-    visible region, high-resolution PNG/JPEG/TIFF/BMP/TARGA output.
-  - Schedule note: standalone schedule views cannot be exported directly with
-    `Document.ExportImage`; export a DrawingSheet that contains the schedule.
-    Use `get_active_view_context` on the sheet to list
-    `scheduleSheetInstances`.
+    visible region, standalone schedule evidence, high-resolution
+    PNG/JPEG/TIFF/BMP/TARGA output.
+  - Schedule note: Revit `Document.ExportImage` does not export `ViewSchedule`
+    directly, so the tool uses a temporary sheet when
+    `allowTemporaryScheduleSheet=true` (default). The response reports
+    `scheduleExport.temporaryScheduleSheetDeletedBeforeCommit` and also lists
+    existing containing sheets in `scheduleExport.placedOnSheets` when available.
   - Output: each generated file reports `bytes`, `width`, and `height`. Treat
     `pixelSize` as the requested final size. By default, PNG/JPEG/BMP/TIFF
     exports are normalized after Revit export so the requested fit-direction
@@ -39,9 +43,12 @@ status preflight and single-command rule.
     warnings for surface-highlight styles and as notices for `raw` /
     `outline_only`.
   - Cleanup/audit: the response reports `view.created`, `createdViews`, and
+    `cleanup.cleanupAfterExportRequested` /
     `cleanup.cleanupAfterExportApplied` so temporary review views are visible
-    to the operator. The current safe default keeps the reusable review view
-    for audit/reuse instead of deleting it after export.
+    to the operator. The safe default keeps the reusable review view for
+    audit/reuse. Pass `cleanupAfterExport=true` to delete a review view created
+    by that export after the image file is produced. Existing reused review
+    views are never deleted automatically.
 
 Neither tool creates ducts, pipes, fittings, terminals, sprinklers, or other
 physical MEP model elements.
@@ -98,6 +105,19 @@ For a sheet, including sheet-placed schedules:
 }
 ```
 
+For a standalone Schedule image:
+
+```json
+{
+  "viewName": "Level 2 WSHP Schedule",
+  "range": "set_of_views",
+  "format": "png",
+  "pixelSize": 2400,
+  "dpi": "300",
+  "allowTemporaryScheduleSheet": true
+}
+```
+
 For coordination review around known element ids:
 
 ```json
@@ -118,6 +138,7 @@ For coordination review around known element ids:
   "cropToTargetHighlight": true,
   "targetMinFillRatio": 0.4,
   "highlightCropPaddingPx": 24,
+  "cleanupAfterExport": false,
   "dpi": "300"
 }
 ```
@@ -127,8 +148,9 @@ For coordination review around known element ids:
 The smoke-tested export matrix covers:
 
 - Export ranges: `current_view`, `visible_region`, `set_of_views`
-- View kinds: model views and DrawingSheet views; standalone schedule views
-  return explicit guidance to export a containing sheet.
+- View kinds: model views, DrawingSheet views, and standalone Schedule views
+  exported through a temporary sheet. Set `allowTemporaryScheduleSheet=false`
+  to return containing-sheet guidance instead.
 - Fit directions: `horizontal`, `vertical`
 - Pixel sizes: 1600 and 2400
 - DPI: 150 and 300
