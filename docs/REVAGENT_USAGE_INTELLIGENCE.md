@@ -233,6 +233,12 @@ raw dynamic-code payload details, params, and long previews out of
 telemetry blobs. Those richer details remain available in durable telemetry and
 daily summaries for offline analysis.
 
+The dashboard's top activity metrics use the current live feed. Live
+Operations, Guarded, and Failed count terminal `mcp.tool` events from today's
+live activity tail, so they reflect what is happening on the dashboard now.
+Scheduled daily summaries remain the slower analytic layer for trend and LLM
+review.
+
 ## Live Dashboard Feed
 
 The runtime writes a best-effort live feed for dashboard polling:

@@ -49,6 +49,9 @@ All notable revAgent workstation deployment changes are tracked here.
 - Fixed live dashboard version health so machines are compared against the
   current stable channel version instead of an older target version recorded in
   each machine's last update report.
+- Fixed top dashboard metrics so Live Operations, Guarded, and Failed are
+  calculated from current live activity instead of the latest daily summary,
+  which may lag behind production.
 - Added `/api/brief` as a compact read-only dashboard export for analyst/LLM
   handoff.
 - Added `scripts\publish-live-backfill.ps1` to merge local live-feed spool

@@ -92,6 +92,7 @@ try {
   appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
     schemaVersion: "revagent.live.activity.v1",
     phase: "started",
+    scope: "mcp.tool",
     machineName: "TESTPC",
     toolName: "inspect_elements",
     taskName: "smoke inspect",
@@ -105,7 +106,41 @@ try {
 
   appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
     schemaVersion: "revagent.live.activity.v1",
+    phase: "failed",
+    state: "failed",
+    scope: "mcp.tool",
+    machineName: "TESTPC",
+    toolName: "send_code_to_revit_safe",
+    taskName: "smoke guarded-looking failure",
+    timestampUtc: new Date(now.getTime() + 2000).toISOString(),
+    durationMs: 1,
+    result: {
+      success: false,
+      guarded: false,
+      errorMessage: "smoke failure",
+    },
+  });
+
+  appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
+    schemaVersion: "revagent.live.activity.v1",
+    phase: "guarded",
+    state: "guarded",
+    scope: "mcp.tool",
+    machineName: "TESTPC",
+    toolName: "send_code_to_revit_safe",
+    taskName: "smoke guarded write",
+    timestampUtc: new Date(now.getTime() + 3000).toISOString(),
+    durationMs: 1,
+    result: {
+      success: false,
+      guarded: true,
+    },
+  });
+
+  appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
+    schemaVersion: "revagent.live.activity.v1",
     phase: "completed",
+    scope: "mcp.tool",
     machineName: "TESTPC",
     toolName: "inspect_elements",
     taskName: "smoke inspect",
@@ -168,19 +203,25 @@ try {
   assert.equal(data.overview.liveMachineCount, 1);
   assert.equal(data.overview.activeMachineCount, 1);
   assert.equal(data.overview.currentVersionCount, 1);
-  assert.equal(data.overview.productionOperationCount, 2);
+  assert.equal(data.overview.productionOperationCount, 3);
+  assert.equal(data.overview.liveOperationCount, 3);
+  assert.equal(data.overview.liveCompletedCount, 1);
+  assert.equal(data.overview.guardedCount, 1);
+  assert.equal(data.overview.failedCount, 1);
+  assert.equal(data.overview.summaryProductionOperationCount, 2);
+  assert.equal(data.overview.metricSource, "liveActivity");
   const testMachine = data.machines.find((machine) => machine.machine === "TESTPC");
   const oldMachine = data.machines.find((machine) => machine.machine === "OLDPC");
   assert.equal(testMachine.state, "active");
   assert.equal(testMachine.versionCurrent, true);
   assert.equal(testMachine.live.activeTask.taskName, "smoke inspect");
-  assert.equal(testMachine.live.recentActivity[0].taskName, "smoke inspect");
+  assert.equal(testMachine.live.recentActivity[0].taskName, "smoke guarded write");
   assert.equal(oldMachine.state, "outdated");
   assert.equal(oldMachine.versionCurrent, false);
   assert.equal(oldMachine.targetVersion, version);
   assert.equal(oldMachine.reportedTargetVersion, "2026.05.31.100-oldbuild");
-  assert.equal(data.activity.length, 2);
-  assert.equal(data.activity[0].phase, "completed");
+  assert.equal(data.activity.length, 4);
+  assert.equal(data.activity[0].phase, "guarded");
   assert.equal("params" in data.activity[0], false);
   assert.equal(JSON.stringify(data).includes("\"preview\""), false);
   assert.equal(JSON.stringify(data).includes("yyyyyyyy"), false);
@@ -188,7 +229,7 @@ try {
   assert.equal(data.summary.toolUsage[0].name, "inspect_elements");
   const brief = buildDashboardBrief(data);
   assert.equal(brief.schemaVersion, "revagent.dashboard.brief.v1");
-  assert.equal(brief.machines.find((machine) => machine.machine === "TESTPC").latestActivity.taskName, "smoke inspect");
+  assert.equal(brief.machines.find((machine) => machine.machine === "TESTPC").latestActivity.taskName, "smoke guarded write");
 
   console.log("Dashboard smoke test passed.");
 } finally {

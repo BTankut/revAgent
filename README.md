@@ -684,6 +684,10 @@ only the compact fields needed by the UI, daily live activity reads are tail
 limited, browser refreshes do not overlap and time out, and raw dynamic-code
 payload details stay in durable telemetry/summary artifacts instead of being
 sent to the dashboard every few seconds.
+Top-line activity metrics are live metrics: Live Operations, Guarded, and
+Failed are calculated from terminal `mcp.tool` activity in the current live
+feed rather than from the latest daily usage summary, which may be generated
+on a schedule.
 
 The dashboard also exposes a read-only LLM handoff at `/api/brief`. If a
 workstation was offline from NAS while still writing local live files, run

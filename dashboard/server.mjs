@@ -206,23 +206,46 @@ function withActivityFallback(machine, machineActivity) {
   };
 }
 
+function summarizeLiveOperations(events) {
+  const terminalToolEvents = (Array.isArray(events) ? events : [])
+    .filter((event) => event?.scope === "mcp.tool")
+    .filter((event) => ["completed", "guarded", "failed"].includes(event.phase || event.state || ""));
+  return {
+    operationCount: terminalToolEvents.length,
+    completedCount: terminalToolEvents.filter((event) => (event.phase || event.state) === "completed").length,
+    guardedCount: terminalToolEvents.filter((event) => (event.phase || event.state) === "guarded").length,
+    failedCount: terminalToolEvents.filter((event) => (event.phase || event.state) === "failed").length,
+  };
+}
+
 function summarizeOverview(data) {
   const machines = data.machines || [];
   const liveMachines = machines.filter((machine) => machine.live && machine.live.heartbeatAgeSeconds !== null && machine.live.heartbeatAgeSeconds <= data.staleSeconds);
+  const liveOperations = summarizeLiveOperations(data.activity);
+  const summaryGuardedCount = Array.isArray(data.summary?.friction?.guarded) ? data.summary.friction.guarded.length : 0;
+  const summaryFailedCount = Array.isArray(data.summary?.friction?.failed) ? data.summary.friction.failed.length : 0;
   return {
     machineCount: machines.length,
     currentVersionCount: machines.filter((machine) => machine.versionCurrent).length,
     liveMachineCount: liveMachines.length,
-    activeMachineCount: machines.filter((machine) => machine.state === "active").length,
+    activeMachineCount: liveMachines.filter((machine) => machine.live?.activeTask).length,
     failedMachineCount: machines.filter((machine) => machine.state === "failed").length,
     staleMachineCount: machines.filter((machine) => machine.live && machine.live.heartbeatAgeSeconds !== null && machine.live.heartbeatAgeSeconds > data.staleSeconds).length,
     summaryDateUtc: data.summary?.dateUtc || "",
     eventCount: data.summary?.source?.eventCount || 0,
     sessionCount: data.summary?.totals?.sessionCount || 0,
-    productionOperationCount: data.summary?.production?.operationCount || 0,
-    guardedCount: Array.isArray(data.summary?.friction?.guarded) ? data.summary.friction.guarded.length : 0,
-    failedCount: Array.isArray(data.summary?.friction?.failed) ? data.summary.friction.failed.length : 0,
+    productionOperationCount: liveOperations.operationCount,
+    guardedCount: liveOperations.guardedCount,
+    failedCount: liveOperations.failedCount,
+    liveOperationCount: liveOperations.operationCount,
+    liveCompletedCount: liveOperations.completedCount,
+    liveGuardedCount: liveOperations.guardedCount,
+    liveFailedCount: liveOperations.failedCount,
+    summaryProductionOperationCount: data.summary?.production?.operationCount || 0,
+    summaryGuardedCount,
+    summaryFailedCount,
     sendCodeCount: data.summary?.sendCode?.count || 0,
+    metricSource: "liveActivity",
   };
 }
 

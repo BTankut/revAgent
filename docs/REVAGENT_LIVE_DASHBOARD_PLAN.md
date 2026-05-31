@@ -149,6 +149,9 @@ A machine is stale when:
 - Theme mode: System, Light, and Dark.
 - Guarded/failed strip: safety blocks and failures in the last N minutes.
 - Summary strip: today/latest sessions, production operations, tool usage.
+- Top activity metrics: Live Operations, Guarded, and Failed are derived from
+  terminal `mcp.tool` events in the current live feed, not from the scheduled
+  daily summary.
 - Deployment health: installed vs stable version and latest update status.
 
 ## Implementation Phases
