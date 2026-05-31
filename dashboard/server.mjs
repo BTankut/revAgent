@@ -360,6 +360,8 @@ function mergeNestedActivityGroup(group) {
     startedAtUtc: stateBase.startedAtUtc || displayBase.startedAtUtc || "",
     finishedAtUtc: stateBase.finishedAtUtc || displayBase.finishedAtUtc || "",
     durationMs: stateBase.durationMs ?? displayBase.durationMs ?? null,
+    requestBytes: stateBase.requestBytes ?? displayBase.requestBytes ?? null,
+    responseBytes: stateBase.responseBytes ?? displayBase.responseBytes ?? null,
     result: stateBase.result || displayBase.result || null,
     groupedEventCount: events.length,
     groupedScopes: [...new Set(events.map((event) => event.scope).filter(Boolean))],
@@ -425,6 +427,8 @@ function revitStatusTaskToActivity(task, machineName) {
     startedAtUtc: task.startedAtUtc || "",
     finishedAtUtc: task.finishedAtUtc || "",
     durationMs: task.elapsedMs ?? null,
+    requestBytes: task.requestBytes ?? null,
+    responseBytes: task.responseBytes ?? null,
     result: {
       success: phase !== "failed",
       guarded: phase === "guarded",
@@ -459,31 +463,12 @@ function isCoveredByRevitStatus(event, revitStatusActivities) {
   });
 }
 
-function isSameStatusWindowTask(left, right) {
-  if (!sameTaskName(left, right)) {
-    return false;
-  }
-  const leftMs = activityStartMs(left);
-  const rightMs = activityStartMs(right);
-  return Math.abs(leftMs - rightMs) <= 5000;
-}
-
-function shouldPreferTelemetryState(event, statusEvent) {
-  const eventPhase = event?.phase || event?.state || "";
-  const statusPhase = statusEvent?.phase || statusEvent?.state || "";
-  return ["guarded", "failed"].includes(eventPhase) && statusPhase === "completed";
-}
-
 function chooseRecentActivities(liveStatus, machineName, telemetryActivities) {
   const revitStatusActivities = buildRevitStatusActivities(liveStatus, machineName);
   const statusActivities = buildStatusActivities(telemetryActivities);
   if (revitStatusActivities.length > 0) {
-    const telemetryPreferred = statusActivities.filter((event) =>
-      revitStatusActivities.some((statusEvent) => isSameStatusWindowTask(event, statusEvent) && shouldPreferTelemetryState(event, statusEvent)));
-    const filteredRevitStatus = revitStatusActivities.filter((statusEvent) =>
-      !telemetryPreferred.some((event) => isSameStatusWindowTask(event, statusEvent)));
-    const telemetryOnly = statusActivities.filter((event) => !isCoveredByRevitStatus(event, filteredRevitStatus));
-    return sortActivities([...filteredRevitStatus, ...telemetryOnly]);
+    const telemetryOnly = statusActivities.filter((event) => !isCoveredByRevitStatus(event, revitStatusActivities));
+    return sortActivities([...revitStatusActivities, ...telemetryOnly]);
   }
   return statusActivities.length > 0
     ? statusActivities
@@ -571,6 +556,8 @@ function compactActivity(event) {
     startedAtUtc: event.startedAtUtc || "",
     finishedAtUtc: event.finishedAtUtc || "",
     durationMs: event.durationMs ?? null,
+    requestBytes: event.requestBytes ?? null,
+    responseBytes: event.responseBytes ?? null,
     result,
     groupedEventCount: event.groupedEventCount || null,
     groupedScopes: Array.isArray(event.groupedScopes) ? event.groupedScopes : [],
@@ -801,7 +788,7 @@ function serveStatic(response, requestPath) {
   }
   response.writeHead(200, {
     "content-type": contentTypeFor(filePath),
-    "cache-control": filePath.endsWith("index.html") ? "no-store" : "public, max-age=60",
+    "cache-control": "no-store",
     "x-content-type-options": "nosniff",
   });
   fs.createReadStream(filePath).pipe(response);

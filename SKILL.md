@@ -125,10 +125,13 @@ visual QA exports, and safe custom-code workflows.
   Use `parameterNameMatchMode: "contains"` for broad discovery and
   `parameterNameMatchMode: "exact"` for write-preflight.
 - `set_element_parameter` - production-safe single-parameter write tool. It
-  defaults to `mode: "dryRun"`, resolves the exact parameter with
-  `inspect_parameter_schema`-style preflight, blocks duplicate display names,
-  read-only parameters, identity mismatches, and type writes unless explicitly
-  allowed, then verifies the value after `mode: "commit"`.
+  defaults to `mode: "dryRun"` and `operation: "set"`, resolves the exact
+  parameter with `inspect_parameter_schema`-style preflight, blocks duplicate
+  display names, read-only parameters, identity mismatches, unsupported
+  `operation: "clear"` no-value attempts, and type writes unless explicitly
+  allowed, then verifies the value or `HasValue=false` state after
+  `mode: "commit"`. Empty string writes are not treated as true no-value
+  clears; use `operation: "clear"` when that distinction matters.
 
 **API docs server (`revit-api-docs`)** - required companion:
 

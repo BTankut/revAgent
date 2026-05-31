@@ -595,7 +595,7 @@ small production surface instead of many narrow one-off commands.
 | Instance and status | `list_revit_instances`, `get_revit_mcp_status` | Read-only. `get_revit_mcp_status` is the only runtime tool intended to run while another Revit task is active. |
 | Dynamic execution | `send_code_to_revit`, `send_code_to_revit_safe` | Raw `send_code_to_revit` can write if the supplied C# writes. `transactionMode: "auto"` opens a wrapper-managed transaction and guards manual transaction snippets; `transactionMode: "none"` executes without an outer transaction. `send_code_to_revit_safe` is for read/preview work, rejects write-looking snippets, and uses `none`. |
 | Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_parameter_schema` | Read-only model/session/parameter inspection before engineering decisions or writes. `get_active_view_context` reports both sheet `viewports` and `scheduleSheetInstances`. |
-| Controlled data writes | `set_element_parameter` | Production-safe single-parameter write path. It defaults to `mode="dryRun"`, performs exact `inspect_parameter_schema`-style identity resolution, blocks duplicate display names/read-only parameters/type writes without explicit approval, commits only with `mode="commit"`, and verifies the value by reading it back. |
+| Controlled data writes | `set_element_parameter` | Production-safe single-parameter set/clear path. It defaults to `mode="dryRun"` and `operation="set"`, performs exact `inspect_parameter_schema`-style identity resolution, blocks duplicate display names/read-only parameters/type writes without explicit approval, commits only with `mode="commit"`, and verifies the value by reading it back. `operation="clear"` attempts Revit `Parameter.ClearValue` for a true no-value state and reports `clear_value_not_supported` instead of faking clear with an empty string when Revit does not support it. |
 | Live view navigation | `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. |
 | View-data writes | `section_box_elements`, `create_3d_view_for_elements` | Can modify project view data by applying section boxes or creating/reusing 3D review views. Use explicit intent and verify afterward. |
 | Image artifacts | `export_revit_view_image`, `export_revit_coordination_image` | `export_revit_view_image` supports active/requested views, DrawingSheet export, and direct Schedule export through a temporary sheet that is deleted before the wrapper transaction commits. Ordinary view/sheet exports are read-only. `export_revit_coordination_image` writes only review view settings and image export settings, never ducts, pipes, fittings, terminals, or other physical model elements; `cleanupAfterExport=true` deletes a review view created by that export after the image file is produced. It can still leave Revit's document dirty flag set because temporary review view data was created/deleted inside a transaction. |
@@ -623,7 +623,9 @@ confirmed the exact element and stable parameter identity. Use
 parameter name as the user's target, but it enumerates the schema first and
 will not write through a direct display-name shortcut; duplicate display names
 are blocked. Use `builtInParameterId` when available and `expectedCurrentRaw`
-for compare-and-set safety.
+for compare-and-set safety. When the intent is to restore a true no-value
+state, use `operation="clear"`; writing `value=""` only makes the visible value
+empty and may leave Revit `HasValue=true`.
 
 This runtime set is reflected in the Node MCP wrapper. The installer still copies the bundled Revit command payload required by the wrapper.
 
@@ -684,26 +686,23 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-live-dashboard.ps1
 
 It serves `http://127.0.0.1:8765`, reads only `reports\machines`,
 `reports\live`, `reports\summaries`, and the stable channel manifest, and
-refreshes the browser every 3 seconds. It shows revAgent-status-style task
-history windows per machine, a separate all-machine activity window, a focus
-mode that enlarges one machine, and System/Light/Dark theme selection. The
-Recent Tasks rows prefer the Revit add-in status history when available, so
-result state, duration, and ordering match the local revAgent status window.
-default desktop layout keeps All Status Activity, Tool Usage, and Friction in
-the left two-thirds column and stacked Machine Status Windows in the right
-one-third column. All Status Activity shows the latest 50 live records by
-default and can be expanded to 200 records from the page. It never sends Revit
-commands, writes telemetry, or changes NAS release state.
+refreshes the browser every 3 seconds. It shows a left-side Machine Status
+Windows list, a right-side All Status Activity stream with multi-machine
+filters, and System/Light/Dark theme selection. Recent task rows prefer the
+Revit add-in status history when available, so result state, duration, payload
+size, and ordering match the local revAgent status window. All Status Activity
+shows the latest 50 selected live records by default and can be expanded to 200
+records from the page. It never sends Revit commands, writes telemetry, or
+changes NAS release state.
 
 The dashboard polling surface is production-bounded: `/api/overview` returns
 only the compact fields needed by the UI, daily live activity reads are tail
 limited, browser refreshes do not overlap and time out, and raw dynamic-code
 payload details stay in durable telemetry/summary artifacts instead of being
 sent to the dashboard every few seconds.
-Top-line activity metrics are live metrics: Live Operations, Guarded, and
-Failed are calculated from terminal `mcp.tool` activity in the current live
-feed rather than from the latest daily usage summary, which may be generated
-on a schedule.
+The dashboard API still exposes compact live metrics for LLM handoff and
+diagnostics, but the browser UI intentionally keeps the main monitoring page
+focused on machine state and status activity.
 
 The dashboard also exposes a read-only LLM handoff at `/api/brief`. If a
 workstation was offline from NAS while still writing local live files, run

@@ -61,7 +61,8 @@ The current runtime server registers 22 tools:
 - dynamic execution: `send_code_to_revit`, `send_code_to_revit_safe`
 - model/session context: `get_revit_session_context`,
   `get_active_view_context`, `inspect_elements`, `inspect_parameter_schema`
-- controlled data writes: `set_element_parameter`
+- controlled data writes: `set_element_parameter` for exact-schema
+  parameter set/clear operations
 - live view workflows: `list_open_views`, `activate_view`, `close_view`,
   `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`,
   `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements`

@@ -14,7 +14,6 @@
           <div class="meta-row">
             <span id="stableVersion">Waiting for stable channel</span>
             <span id="lastRefresh">-</span>
-            <span id="focusLabel" hidden></span>
           </div>
         </div>
         <div class="header-actions">
@@ -24,73 +23,28 @@
             <button class="theme-button" type="button" data-theme-choice="light">Light</button>
             <button class="theme-button" type="button" data-theme-choice="dark">Dark</button>
           </div>
-          <button id="clearFocusButton" class="header-button" type="button" hidden>Show All</button>
         </div>
       </header>
 
       <main>
-        <section class="summary-grid" aria-label="Summary">
-          <div class="metric">
-            <span>Machines</span>
-            <strong id="metricMachines">0</strong>
-          </div>
-          <div class="metric">
-            <span>Live</span>
-            <strong id="metricLive">0</strong>
-          </div>
-          <div class="metric">
-            <span>Active</span>
-            <strong id="metricActive">0</strong>
-          </div>
-          <div class="metric">
-            <span>Live Operations</span>
-            <strong id="metricOperations">0</strong>
-          </div>
-          <div class="metric">
-            <span>Guarded</span>
-            <strong id="metricGuarded">0</strong>
-          </div>
-          <div class="metric">
-            <span>Failed</span>
-            <strong id="metricFailed">0</strong>
-          </div>
-        </section>
-
         <section id="statusLayout" class="status-layout">
-          <div class="activity-column">
-            <div class="panel global-stream-panel">
-              <div class="panel-header">
-                <h2>All Status Activity</h2>
-                <span id="activityCountLabel">0 records</span>
-              </div>
-              <div id="activityList" class="status-window global-status-window"></div>
-            </div>
-
-            <section class="bottom-grid">
-              <div class="panel">
-                <div class="panel-header">
-                  <h2>Tool Usage</h2>
-                  <span id="summaryDateLabel">-</span>
-                </div>
-                <div id="toolsTable" class="table-view"></div>
-              </div>
-
-              <div class="panel">
-                <div class="panel-header">
-                  <h2>Friction</h2>
-                  <span id="frictionLabel">-</span>
-                </div>
-                <div id="frictionList" class="status-window compact-status-window"></div>
-              </div>
-            </section>
-          </div>
-
           <div class="panel machines-panel">
             <div class="panel-header">
               <h2>Machine Status Windows</h2>
               <span id="machineCountLabel">0 records</span>
             </div>
             <div id="machinesGrid" class="machines-grid"></div>
+          </div>
+
+          <div class="activity-column">
+            <div class="panel global-stream-panel">
+              <div class="panel-header">
+                <h2>All Status Activity</h2>
+                <span id="activityCountLabel">0 records</span>
+              </div>
+              <div id="activityFilters" class="activity-filters" aria-label="Machine filters"></div>
+              <div id="activityList" class="status-window global-status-window"></div>
+            </div>
           </div>
         </section>
       </main>

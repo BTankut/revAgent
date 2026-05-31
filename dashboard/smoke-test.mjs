@@ -95,6 +95,8 @@ try {
           startedAtUtc: new Date(now.getTime() + 7000).toISOString(),
           finishedAtUtc: new Date(now.getTime() + 7200).toISOString(),
           elapsedMs: 200,
+          requestBytes: 1700,
+          responseBytes: 2600,
           error: null,
         },
         {
@@ -105,6 +107,8 @@ try {
           startedAtUtc: new Date(now.getTime() + 5010).toISOString(),
           finishedAtUtc: new Date(now.getTime() + 5580).toISOString(),
           elapsedMs: 570,
+          requestBytes: 1900,
+          responseBytes: 4200,
           error: null,
         },
         {
@@ -115,6 +119,8 @@ try {
           startedAtUtc: new Date(now.getTime() + 6010).toISOString(),
           finishedAtUtc: new Date(now.getTime() + 6080).toISOString(),
           elapsedMs: 70,
+          requestBytes: 800,
+          responseBytes: 1200,
           error: null,
         },
       ],
@@ -337,8 +343,8 @@ try {
   assert.equal(data.overview.currentVersionCount, 1);
   assert.equal(data.overview.productionOperationCount, 7);
   assert.equal(data.overview.liveOperationCount, 7);
-  assert.equal(data.overview.liveCompletedCount, 4);
-  assert.equal(data.overview.guardedCount, 2);
+  assert.equal(data.overview.liveCompletedCount, 5);
+  assert.equal(data.overview.guardedCount, 1);
   assert.equal(data.overview.failedCount, 1);
   assert.equal(data.overview.summaryProductionOperationCount, 2);
   assert.equal(data.overview.metricSource, "liveActivity");
@@ -357,13 +363,15 @@ try {
   assert.equal(data.activity[0].taskName, "smoke status cleanup");
   assert.equal(data.activity[0].phase, "completed");
   assert.equal(data.activity[0].toolName, "send_code_to_revit");
+  assert.equal(data.activity[0].requestBytes, 1700);
+  assert.equal(data.activity[0].responseBytes, 2600);
   assert.equal(data.activity.filter((event) => event.taskName === "smoke sheet export").length, 1);
   assert.equal(data.activity.find((event) => event.taskName === "smoke sheet export").toolName, "export_revit_view_image");
   assert.equal(data.activity.filter((event) => event.taskName === "smoke schedule guidance").length, 1);
   assert.equal(data.activity.find((event) => event.taskName === "smoke schedule guidance").source, "revit.status");
   assert.equal(data.activity.filter((event) => event.taskName === "smoke semantic guard").length, 1);
-  assert.equal(data.activity.find((event) => event.taskName === "smoke semantic guard").phase, "guarded");
-  assert.equal(data.activity.find((event) => event.taskName === "smoke semantic guard").toolName, "set_element_parameter");
+  assert.equal(data.activity.find((event) => event.taskName === "smoke semantic guard").phase, "completed");
+  assert.equal(data.activity.find((event) => event.taskName === "smoke semantic guard").toolName, "send_code_to_revit");
   assert.equal("params" in data.activity[0], false);
   assert.equal(JSON.stringify(data).includes("\"preview\""), false);
   assert.equal(JSON.stringify(data).includes("yyyyyyyy"), false);

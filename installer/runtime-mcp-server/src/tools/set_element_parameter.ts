@@ -48,6 +48,8 @@ function buildSetElementParameterCode(args, elementId) {
     const valueText = csharpString(valueToText(args.value));
     const valueMode = csharpString(args.valueMode || "raw");
     const mode = csharpString(args.mode === "commit" ? "commit" : "dryRun");
+    const operation = csharpString(args.operation === "clear" ? "clear" : "set");
+    const hasRequestedValue = args.value === undefined || args.value === null ? "false" : "true";
     const builtInParameterId = Number.isInteger(args.builtInParameterId)
         ? String(args.builtInParameterId)
         : "null";
@@ -62,12 +64,15 @@ string parameterSource = ${parameterSource};
 string requestedValueText = ${valueText};
 string valueMode = ${valueMode};
 string mode = ${mode};
+string operation = ${operation};
 int? expectedBuiltInParameterId = ${builtInParameterId};
 string expectedStorageType = ${expectedStorageType};
 bool hasExpectedCurrentRaw = ${hasExpectedCurrentRaw};
 string expectedCurrentRaw = ${expectedCurrentRaw};
 bool allowTypeParameterWrite = ${allowTypeParameterWrite};
+bool hasRequestedValue = ${hasRequestedValue};
 bool dryRun = !string.Equals(mode, "commit", StringComparison.OrdinalIgnoreCase);
+bool clearOperation = string.Equals(operation, "clear", StringComparison.OrdinalIgnoreCase);
 
 string RawValue(Parameter p)
 {
@@ -245,6 +250,41 @@ bool SetParameterValue(Parameter p)
     throw new Exception("Unsupported parameter storage type: " + p.StorageType.ToString());
 }
 
+bool TryClearParameterValue(Parameter p, out string clearError)
+{
+    clearError = "";
+    try
+    {
+        System.Reflection.MethodInfo method = p.GetType().GetMethod("ClearValue", System.Type.EmptyTypes);
+        if (method == null)
+        {
+            method = typeof(Parameter).GetMethod("ClearValue", System.Type.EmptyTypes);
+        }
+        if (method == null)
+        {
+            clearError = "Parameter.ClearValue is not available in this Revit API version.";
+            return false;
+        }
+
+        object result = method.Invoke(p, null);
+        if (result is bool)
+        {
+            return (bool)result;
+        }
+        return true;
+    }
+    catch (System.Reflection.TargetInvocationException ex)
+    {
+        clearError = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
+        return false;
+    }
+    catch (Exception ex)
+    {
+        clearError = ex.Message;
+        return false;
+    }
+}
+
 object Blocked(string reason, string message, object extra = null)
 {
     return new {
@@ -255,6 +295,7 @@ object Blocked(string reason, string message, object extra = null)
         error = message,
         tool = "set_element_parameter",
         mode = mode,
+        operation = operation,
         preflight = new {
             requiredPreflight = "inspect_parameter_schema exact identity resolution",
             blockedBeforeWrite = true
@@ -268,6 +309,10 @@ try
     if (string.IsNullOrWhiteSpace(parameterName))
     {
         return Blocked("parameter_name_required", "parameterName is required for exact schema preflight.");
+    }
+    if (!clearOperation && !hasRequestedValue)
+    {
+        return Blocked("value_required", "value is required when operation=set. Use operation=clear only when you intentionally want to restore a no-value state.");
     }
     if (expectedBuiltInParameterId.HasValue && expectedBuiltInParameterId.Value == -1)
     {
@@ -338,6 +383,7 @@ try
     object before = ParameterIdentity(target, normalizedSource);
     string beforeRaw = RawValue(target);
     string beforeValueString = ValueString(target);
+    bool beforeHasValue = target.HasValue;
 
     if (hasExpectedCurrentRaw && !string.Equals(beforeRaw, expectedCurrentRaw, StringComparison.Ordinal))
     {
@@ -355,10 +401,24 @@ try
             new { parameter = before });
     }
 
-    string expectedRaw = ExpectedRawAfterSet(target);
-    string valueSetApi = target.StorageType == StorageType.Double && string.Equals(valueMode, "valueString", StringComparison.OrdinalIgnoreCase)
-        ? "SetValueString"
-        : "Set";
+    if (clearOperation && !target.IsShared)
+    {
+        return Blocked(
+            "clear_value_not_supported",
+            "Revit can restore a true no-value state only for parameters that support Parameter.ClearValue. This resolved parameter is not shared, so the tool will not fake clear by writing an empty string.",
+            new {
+                parameter = before,
+                clearApi = "Parameter.ClearValue",
+                visibleEmptyFallback = "Use operation=set with value=\"\" only if a visible empty value is acceptable. Revit may keep HasValue=true."
+            });
+    }
+
+    string expectedRaw = clearOperation ? null : ExpectedRawAfterSet(target);
+    string valueSetApi = clearOperation
+        ? "ClearValue"
+        : target.StorageType == StorageType.Double && string.Equals(valueMode, "valueString", StringComparison.OrdinalIgnoreCase)
+            ? "SetValueString"
+            : "Set";
 
     if (dryRun)
     {
@@ -369,6 +429,7 @@ try
             tool = "set_element_parameter",
             revitWriteAction = "element_parameter",
             mode = mode,
+            operation = operation,
             element = new {
                 id = elem.Id.IntegerValue,
                 uniqueId = elem.UniqueId,
@@ -388,37 +449,68 @@ try
             },
             parameter = before,
             requested = new {
-                value = requestedValueText,
+                value = clearOperation ? null : requestedValueText,
                 valueMode = valueMode,
                 expectedRawAfterSet = expectedRaw,
-                valueSetApi = valueSetApi
+                expectedHasValueAfterClear = clearOperation ? false : (bool?)null,
+                valueSetApi = valueSetApi,
+                clearValueSupport = clearOperation ? "will_attempt_clear_value_on_commit" : null
             },
             before = before,
             verification = new {
                 wouldVerifyAfterWrite = true,
-                verificationMode = expectedRaw == null ? "SetValueString readback" : "raw readback"
+                verificationMode = clearOperation ? "hasValue false after ClearValue" : expectedRaw == null ? "SetValueString readback" : "raw readback"
             },
-            warnings = new string[] {}
+            warnings = clearOperation
+                ? new string[] { "clear_value_support_depends_on_revit_parameter_kind" }
+                : new string[] {}
         };
     }
 
-    bool setSucceeded = SetParameterValue(target);
+    bool setSucceeded = false;
+    string clearError = "";
+    if (clearOperation)
+    {
+        setSucceeded = TryClearParameterValue(target, out clearError);
+        if (!setSucceeded)
+        {
+            return Blocked(
+                "clear_value_not_supported",
+                "Revit rejected Parameter.ClearValue for this parameter. The tool did not write an empty string fallback because that would leave a different internal parameter state.",
+                new {
+                    parameter = before,
+                    clearApi = "Parameter.ClearValue",
+                    clearError = clearError,
+                    visibleEmptyFallback = "Use operation=set with value=\"\" only if a visible empty value is acceptable. Revit may keep HasValue=true."
+                });
+        }
+    }
+    else
+    {
+        setSucceeded = SetParameterValue(target);
+    }
     document.Regenerate();
     string afterRaw = RawValue(target);
     string afterValueString = ValueString(target);
     object after = ParameterIdentity(target, normalizedSource);
-    bool rawVerified = expectedRaw == null
+    bool rawVerified = clearOperation
+        ? setSucceeded && target.HasValue == false
+        : expectedRaw == null
         ? setSucceeded && (!string.Equals(beforeRaw, afterRaw, StringComparison.Ordinal) || string.Equals(beforeValueString, afterValueString, StringComparison.OrdinalIgnoreCase))
         : string.Equals(afterRaw, expectedRaw, StringComparison.Ordinal);
     if (!rawVerified)
     {
+        if (clearOperation)
+        {
+            throw new Exception("Parameter clear verification failed. Expected HasValue=false after ClearValue but read back HasValue=" + (target.HasValue ? "true" : "false") + ".");
+        }
         throw new Exception("Parameter write verification failed. Expected raw value '" + (expectedRaw ?? requestedValueText) + "' but read back raw value '" + afterRaw + "'.");
     }
 
     System.Collections.Generic.List<string> warnings = new System.Collections.Generic.List<string>();
-    if (target.StorageType == StorageType.String && beforeRaw.Length == 0 && requestedValueText.Length == 0)
+    if (!clearOperation && target.StorageType == StorageType.String && requestedValueText.Length == 0)
     {
-        warnings.Add("empty_string_write_may_leave_revit_has_value_true");
+        warnings.Add("empty_string_set_does_not_guarantee_revit_has_value_false_use_operation_clear_when_supported");
     }
 
     return new {
@@ -428,6 +520,7 @@ try
         tool = "set_element_parameter",
         revitWriteAction = "element_parameter",
         mode = mode,
+        operation = operation,
         element = new {
             id = elem.Id.IntegerValue,
             uniqueId = elem.UniqueId,
@@ -446,17 +539,20 @@ try
             readOnlyBlocked = false
         },
         requested = new {
-            value = requestedValueText,
+            value = clearOperation ? null : requestedValueText,
             valueMode = valueMode,
             expectedRawAfterSet = expectedRaw,
+            expectedHasValueAfterClear = clearOperation ? false : (bool?)null,
             valueSetApi = valueSetApi
         },
         before = before,
         after = after,
-        changed = !string.Equals(beforeRaw, afterRaw, StringComparison.Ordinal) || !string.Equals(beforeValueString, afterValueString, StringComparison.Ordinal),
+        changed = clearOperation
+            ? beforeHasValue != target.HasValue || !string.Equals(beforeRaw, afterRaw, StringComparison.Ordinal) || !string.Equals(beforeValueString, afterValueString, StringComparison.Ordinal)
+            : !string.Equals(beforeRaw, afterRaw, StringComparison.Ordinal) || !string.Equals(beforeValueString, afterValueString, StringComparison.Ordinal),
         verification = new {
             verified = rawVerified,
-            verificationMode = expectedRaw == null ? "SetValueString readback" : "raw readback",
+            verificationMode = clearOperation ? "hasValue false after ClearValue" : expectedRaw == null ? "SetValueString readback" : "raw readback",
             setApiReturned = setSucceeded
         },
         warnings = warnings.ToArray()
@@ -470,13 +566,14 @@ catch (Exception ex)
         guarded = false,
         tool = "set_element_parameter",
         mode = mode,
+        operation = operation,
         error = ex.Message
     };
 }`;
 }
 
 export function registerSetElementParameterTool(server) {
-    server.tool("set_element_parameter", "[PRODUCTION_PARAMETER_WRITE] Safely write one Revit element parameter after exact inspect_parameter_schema-style identity resolution. Never writes by visible display name alone: duplicate display names, read-only parameters, identity mismatch, and unapproved type-parameter writes are blocked before commit. Defaults to dryRun; use mode=commit only for an explicitly confirmed write, then the tool reads the parameter back for verification.", {
+    server.tool("set_element_parameter", "[PRODUCTION_PARAMETER_WRITE] Safely set or clear one Revit element parameter after exact inspect_parameter_schema-style identity resolution. Never writes by visible display name alone: duplicate display names, read-only parameters, identity mismatch, unsupported clear/no-value attempts, and unapproved type-parameter writes are blocked before commit. Defaults to dryRun; use mode=commit only for an explicitly confirmed write, then the tool reads the parameter back for verification.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         elementId: z.union([z.number(), z.string()]).optional().describe("Target Revit ElementId. Preferred for production writes."),
@@ -486,7 +583,8 @@ export function registerSetElementParameterTool(server) {
         builtInParameterId: z.number().int().optional().describe("Optional stable BuiltInParameter integer from inspect_parameter_schema. If supplied, it must match the exact display-name result."),
         expectedStorageType: z.enum(["String", "Integer", "Double", "ElementId"]).optional().describe("Optional storage-type guard from inspect_parameter_schema."),
         expectedCurrentRaw: z.union([z.string(), z.number(), z.boolean()]).optional().describe("Optional compare-and-set guard. Commit is blocked if the current raw value differs."),
-        value: z.union([z.string(), z.number(), z.boolean()]).describe("Requested value. String writes use the text as-is; Integer accepts number/true/false; Double defaults to raw Revit internal units; ElementId accepts an integer id."),
+        operation: z.enum(["set", "clear"]).optional().default("set").describe("set writes the supplied value. clear attempts Revit Parameter.ClearValue to restore a true no-value state and never falls back to writing an empty string."),
+        value: z.union([z.string(), z.number(), z.boolean()]).optional().describe("Requested value for operation=set. String writes use the text as-is; Integer accepts number/true/false; Double defaults to raw Revit internal units; ElementId accepts an integer id."),
         valueMode: z.enum(["raw", "valueString"]).optional().default("raw").describe("For Double parameters, raw writes internal Revit units. valueString uses Parameter.SetValueString with project units."),
         mode: z.enum(["dryRun", "commit"]).optional().default("dryRun").describe("dryRun performs schema/convertibility checks only. commit writes inside the wrapper transaction and verifies readback."),
         allowTypeParameterWrite: z.boolean().optional().default(false).describe("Required to commit a type-parameter write because it can affect all instances of that type."),
@@ -506,9 +604,24 @@ export function registerSetElementParameterTool(server) {
                 });
             }
             const mode = args.mode === "commit" ? "commit" : "dryRun";
+            const operation = args.operation === "clear" ? "clear" : "set";
+            if (operation === "set" && (args.value === undefined || args.value === null)) {
+                return formatJsonContent({
+                    success: false,
+                    state: "guarded",
+                    guarded: true,
+                    guardReason: "value_required",
+                    error: "value is required when operation=set. Use operation=clear only when you intentionally want to restore a no-value state.",
+                    tool: "set_element_parameter",
+                    mode,
+                    operation,
+                });
+            }
             const response = await executeRevitCode(buildSetElementParameterCode(args, resolvedElementId), {
                 ...connectionOptions,
-                ...taskOptionsFromArgs(args, mode === "commit" ? "Set Revit element parameter" : "Dry-run Revit element parameter write"),
+                ...taskOptionsFromArgs(args, mode === "commit"
+                    ? operation === "clear" ? "Clear Revit element parameter" : "Set Revit element parameter"
+                    : operation === "clear" ? "Dry-run Revit element parameter clear" : "Dry-run Revit element parameter write"),
                 transactionMode: mode === "commit" ? "auto" : "none",
             });
             return formatJsonContent(response && response.result ? response.result : response);

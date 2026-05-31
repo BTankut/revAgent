@@ -953,6 +953,8 @@ function publicRevitStatusTask(task) {
         startedAtUtc: task.startedAtUtc || null,
         finishedAtUtc: task.finishedAtUtc || null,
         elapsedMs: task.elapsedMs ?? null,
+        requestBytes: task.requestBytes ?? null,
+        responseBytes: task.responseBytes ?? null,
         port: task.port || null,
         error: task.error || null,
     };

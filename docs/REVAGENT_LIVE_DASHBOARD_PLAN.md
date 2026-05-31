@@ -138,24 +138,19 @@ A machine is stale when:
 
 ## MVP Dashboard Panels
 
-- Machine status windows: online/stale, version, user, active task, and a
-  bounded status-history style activity list per machine.
-- All-machine status activity: recent activity from every machine, limited to
-  50 visible records by default and expandable to 200 records.
+- Machine status windows: online/stale, version, user, active task, heartbeat,
+  update state, and monitor-selection controls per machine.
+- All-machine status activity: recent activity from selected machines, limited
+  to 50 visible records by default and expandable to 200 records.
 - Status-window semantics: dashboard activity is a user-facing task projection,
   not a raw event log. It collapses `started`/terminal lifecycle pairs and
   wrapper-level `mcp.tool` plus nested `send_code_to_revit` events into one
   task row while keeping raw telemetry intact for analysis.
-- Desktop layout: the left two-thirds column contains All Status Activity,
-  Tool Usage, and Friction stacked vertically; the right one-third column is
-  reserved for stacked Machine Status Windows.
-- Focus mode: one selected machine stream fills the dashboard surface.
+- Desktop layout: the left one-third column contains Machine Status Windows;
+  the right two-thirds column contains the filtered All Status Activity stream.
+- Machine filters: All Status Activity can monitor all machines or a selected
+  one/multiple-machine subset without changing the underlying live feed.
 - Theme mode: System, Light, and Dark.
-- Guarded/failed strip: safety blocks and failures in the last N minutes.
-- Summary strip: today/latest sessions, production operations, tool usage.
-- Top activity metrics: Live Operations, Guarded, and Failed are derived from
-  terminal user-facing task rows in the current live feed, not from the
-  scheduled daily summary or raw duplicate event rows.
 - Deployment health: installed vs stable version and latest update status.
 
 ## Implementation Phases
@@ -178,9 +173,8 @@ A machine is stale when:
 - Uses 3 second browser refresh against `/api/overview`; the server reads
   `reports\live`, `reports\machines`, `reports\summaries`, and
   `channels\stable.json`.
-- Shows revAgent-status-style per-machine history windows, an all-machine
-  activity window, active task, deployment state, latest summary metrics,
-  tool usage, and guarded/failed/slow friction samples.
+- Shows revAgent-status-style all-machine activity, machine status cards,
+  active task, and deployment state.
 - The dashboard server projects raw live activity into status-window style rows
   before sending `/api/overview`; grouped rows carry `groupedEventCount` and
   `groupedScopes` for diagnostics.
@@ -188,12 +182,11 @@ A machine is stale when:
   snapshot, the dashboard uses that status history as the authoritative Recent
   Tasks projection and hides matching telemetry duplicates. Raw live telemetry
   stays available as fallback and diagnostics.
-- Uses a 2/1 desktop layout: All Status Activity, Tool Usage, and Friction
-  stay in the left column; Machine Status Windows stay stacked in the right
-  column.
+- Uses a 1/2 desktop layout: Machine Status Windows stay in the left column;
+  All Status Activity stays in the wider right column.
 - Keeps the all-machine activity window bounded by showing 50 live records by
   default, with an explicit expansion path to 200 records.
-- Provides single-machine focus mode for detailed live monitoring.
+- Provides machine filters for one or multiple selected monitoring targets.
 - Provides System/Light/Dark theme selection.
 - Does not write to Revit, NAS release state, or telemetry.
 - Covered by `dashboard/smoke-test.mjs`, `scripts/test-live-dashboard.ps1`,

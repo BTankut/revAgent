@@ -4,34 +4,22 @@ const ACTIVITY_EXPANDED_LIMIT = 200;
 const REFRESH_TIMEOUT_MS = 8000;
 
 const state = {
-  focusMachine: null,
   data: null,
   themeChoice: localStorage.getItem(THEME_STORAGE_KEY) || "system",
   activityExpanded: false,
   refreshInFlight: false,
+  selectedMachines: null,
 };
 
 const elements = {
   stableVersion: document.querySelector("#stableVersion"),
   lastRefresh: document.querySelector("#lastRefresh"),
-  focusLabel: document.querySelector("#focusLabel"),
-  clearFocusButton: document.querySelector("#clearFocusButton"),
   themeButtons: document.querySelectorAll("[data-theme-choice]"),
-  metricMachines: document.querySelector("#metricMachines"),
-  metricLive: document.querySelector("#metricLive"),
-  metricActive: document.querySelector("#metricActive"),
-  metricOperations: document.querySelector("#metricOperations"),
-  metricGuarded: document.querySelector("#metricGuarded"),
-  metricFailed: document.querySelector("#metricFailed"),
-  statusLayout: document.querySelector("#statusLayout"),
   machineCountLabel: document.querySelector("#machineCountLabel"),
   machinesGrid: document.querySelector("#machinesGrid"),
   activityCountLabel: document.querySelector("#activityCountLabel"),
+  activityFilters: document.querySelector("#activityFilters"),
   activityList: document.querySelector("#activityList"),
-  summaryDateLabel: document.querySelector("#summaryDateLabel"),
-  toolsTable: document.querySelector("#toolsTable"),
-  frictionLabel: document.querySelector("#frictionLabel"),
-  frictionList: document.querySelector("#frictionList"),
 };
 
 const stateLabels = {
@@ -47,7 +35,7 @@ const stateLabels = {
 
 const statusMarks = {
   started: "...",
-  completed: "✓",
+  completed: "\u2713",
   guarded: "!",
   failed: "X",
 };
@@ -97,6 +85,35 @@ function secondsText(seconds) {
   return `${Math.floor(minutes / 60)}h`;
 }
 
+function formatDurationMs(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms)) return "";
+  const seconds = ms / 1000;
+  const decimals = seconds < 1 ? 2 : seconds < 10 ? 1 : 0;
+  const text = seconds.toFixed(decimals).replace(/\.?0+$/, "");
+  return `${text || "0"} s`;
+}
+
+function formatBytes(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const kb = bytes / 1024;
+  const decimals = kb < 10 ? 1 : 0;
+  return `${kb.toFixed(decimals).replace(/\.?0+$/, "")} KB`;
+}
+
+function eventPayloadBytes(event) {
+  if (event.responseBytes !== undefined && event.responseBytes !== null) {
+    return event.responseBytes;
+  }
+  if (event.requestBytes !== undefined && event.requestBytes !== null) {
+    return event.requestBytes;
+  }
+  return null;
+}
+
 function taskTitle(task) {
   if (!task) return "";
   return task.taskName || task.toolName || task.commandName || task.logicalToolName || "revAgent task";
@@ -117,22 +134,23 @@ function statusEvents(events, limit) {
     .slice(0, limit);
 }
 
-function durationLabel(event) {
-  if (event.durationMs !== undefined && event.durationMs !== null) {
-    const ms = Number(event.durationMs);
-    if (Number.isFinite(ms) && ms >= 1000) {
-      return `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s`;
-    }
-    return `${event.durationMs} ms`;
-  }
-  return event.state || event.phase || "";
-}
-
 function phaseOf(event) {
   const phase = event.phase || event.state || "completed";
   if (phase === "running") return "started";
   if (phase === "blocked") return "guarded";
   return phase;
+}
+
+function durationLabel(event) {
+  const bytes = formatBytes(eventPayloadBytes(event));
+  const suffix = bytes ? ` [${bytes}]` : "";
+  if (event.durationMs !== undefined && event.durationMs !== null) {
+    return `${formatDurationMs(event.durationMs)}${suffix}`;
+  }
+  if (phaseOf(event) === "started") {
+    return `running${suffix}`;
+  }
+  return `${event.state || event.phase || ""}${suffix}`;
 }
 
 function renderStatusLine(event, options = {}) {
@@ -151,16 +169,37 @@ function renderStatusLine(event, options = {}) {
   `;
 }
 
-function machineEvents(machine) {
-  return statusEvents(machine.live?.recentActivity || [], state.focusMachine ? 120 : 24);
+function normalizeMachineName(value) {
+  return String(value || "").trim().toUpperCase();
 }
 
-function visibleMachines(data) {
-  const machines = data.machines || [];
-  if (!state.focusMachine) {
-    return machines;
+function allMachineNames(data) {
+  return (data.machines || [])
+    .map((machine) => normalizeMachineName(machine.machine))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function selectedMachineSet(data) {
+  if (state.selectedMachines === null) {
+    return null;
   }
-  return machines.filter((machine) => machine.machine === state.focusMachine);
+  const valid = new Set(allMachineNames(data));
+  return new Set([...state.selectedMachines].filter((name) => valid.has(name)));
+}
+
+function isMachineSelected(machineName, data) {
+  const selected = selectedMachineSet(data);
+  return selected === null || selected.has(normalizeMachineName(machineName));
+}
+
+function filteredActivity(data) {
+  const selected = selectedMachineSet(data);
+  const activity = statusEvents(data.activity || [], ACTIVITY_EXPANDED_LIMIT);
+  if (selected === null) {
+    return activity;
+  }
+  return activity.filter((event) => selected.has(normalizeMachineName(event.machineName)));
 }
 
 function resolveTheme(choice) {
@@ -182,48 +221,50 @@ function applyTheme() {
   });
 }
 
-function renderMetrics(data) {
-  const overview = data.overview || {};
-  elements.metricMachines.textContent = overview.machineCount || 0;
-  elements.metricLive.textContent = overview.liveMachineCount || 0;
-  elements.metricActive.textContent = overview.activeMachineCount || 0;
-  elements.metricOperations.textContent = overview.productionOperationCount || 0;
-  elements.metricGuarded.textContent = overview.guardedCount || 0;
-  elements.metricFailed.textContent = overview.failedCount || 0;
+function renderHeader(data) {
   elements.stableVersion.textContent = `Stable ${data.stable?.version || "-"}`;
   elements.lastRefresh.textContent = `Refresh ${formatTime(data.generatedAtUtc)}`;
 }
 
-function renderFocusState() {
-  const focused = Boolean(state.focusMachine);
-  document.body.classList.toggle("focus-mode", focused);
-  elements.statusLayout.classList.toggle("focus-mode", focused);
-  elements.clearFocusButton.hidden = !focused;
-  elements.focusLabel.hidden = !focused;
-  elements.focusLabel.textContent = focused ? `Focus ${state.focusMachine}` : "";
+function renderMachineFilters(data) {
+  const machines = allMachineNames(data);
+  const selected = selectedMachineSet(data);
+  const allSelected = selected === null;
+  const selectedCount = allSelected ? machines.length : selected.size;
+  const machineButtons = machines.map((machineName) => {
+    const active = allSelected || selected.has(machineName);
+    return `
+      <button class="filter-chip${active ? " is-active" : ""}" type="button" data-filter-machine="${escapeHtml(machineName)}" aria-pressed="${active ? "true" : "false"}">
+        ${escapeHtml(machineName)}
+      </button>
+    `;
+  }).join("");
+
+  elements.activityFilters.innerHTML = `
+    <button class="filter-chip filter-all${allSelected ? " is-active" : ""}" type="button" data-filter-all aria-pressed="${allSelected ? "true" : "false"}">
+      All machines
+    </button>
+    ${machineButtons}
+    <span class="filter-count">${escapeHtml(selectedCount)} selected</span>
+  `;
 }
 
 function renderMachines(data) {
-  renderFocusState();
   const machines = data.machines || [];
-  const visible = visibleMachines(data);
-  elements.machineCountLabel.textContent = `${visible.length}/${machines.length} machines`;
-  if (visible.length === 0) {
+  elements.machineCountLabel.textContent = `${machines.length} machines`;
+  if (machines.length === 0) {
     elements.machinesGrid.innerHTML = `<div class="empty">No machine records.</div>`;
     return;
   }
 
-  elements.machinesGrid.innerHTML = visible.map((machine) => {
+  elements.machinesGrid.innerHTML = machines.map((machine) => {
     const active = machine.live?.activeTask;
     const activeTask = active
       ? `<strong>${escapeHtml(taskTitle(active))}</strong>`
       : `<span class="muted">${machine.live ? "Idle" : "Waiting for live feed"}</span>`;
-    const events = machineEvents(machine);
-    const statusHistory = events.length > 0
-      ? events.map((event) => renderStatusLine({ ...event, machineName: event.machineName || machine.machine })).join("")
-      : `<div class="status-empty">No recent tasks yet.</div>`;
+    const selected = isMachineSelected(machine.machine, data);
     return `
-      <article class="machine-card" data-state="${escapeHtml(machine.state)}" data-machine="${escapeHtml(machine.machine)}">
+      <article class="machine-card${selected ? " is-selected" : ""}" data-state="${escapeHtml(machine.state)}" data-machine="${escapeHtml(machine.machine)}">
         <div class="machine-top">
           <div class="machine-name">
             <strong>${escapeHtml(machine.machine)}</strong>
@@ -231,7 +272,7 @@ function renderMachines(data) {
           </div>
           <div class="machine-actions">
             <span class="state-pill state-${escapeHtml(machine.state)}">${escapeHtml(stateLabels[machine.state] || machine.state)}</span>
-            <button class="focus-button" type="button" data-focus-machine="${escapeHtml(machine.machine)}">${state.focusMachine ? "All" : "Focus"}</button>
+            <button class="monitor-button${selected ? " is-active" : ""}" type="button" data-monitor-machine="${escapeHtml(machine.machine)}">${selected ? "Selected" : "Monitor"}</button>
           </div>
         </div>
         <div class="active-task">${activeTask}</div>
@@ -241,29 +282,23 @@ function renderMachines(data) {
           <div class="fact"><span>Update</span><strong>${escapeHtml(machine.updateStatus || "-")}</strong></div>
           <div class="fact"><span>Last Report</span><strong>${escapeHtml(formatDateTime(machine.atUtc || machine.live?.lastHeartbeatUtc))}</strong></div>
         </div>
-        <div class="status-window machine-status-window">
-          <div class="status-title">Recent tasks</div>
-          <div class="status-list">${statusHistory}</div>
-        </div>
       </article>
     `;
   }).join("");
 }
 
 function renderActivity(data) {
-  const sourceCount = (data.activity || []).length;
-  const activity = statusEvents(data.activity || [], ACTIVITY_EXPANDED_LIMIT);
+  renderMachineFilters(data);
+  const activity = filteredActivity(data);
   const visibleActivity = state.activityExpanded ? activity : activity.slice(0, ACTIVITY_DEFAULT_LIMIT);
-  const cappedCount = activity.length;
-  elements.activityCountLabel.textContent = `${visibleActivity.length} of ${cappedCount} live records`;
+  elements.activityCountLabel.textContent = `${visibleActivity.length} of ${activity.length} selected records`;
   if (activity.length === 0) {
-    elements.activityList.innerHTML = `<div class="status-empty">Waiting for live activity.</div>`;
+    elements.activityList.innerHTML = `<div class="status-empty">No activity for the selected machines.</div>`;
     return;
   }
 
   const canExpand = activity.length > ACTIVITY_DEFAULT_LIMIT;
   const hiddenCount = Math.max(activity.length - ACTIVITY_DEFAULT_LIMIT, 0);
-  const sourceNote = sourceCount > ACTIVITY_EXPANDED_LIMIT ? ` Latest ${ACTIVITY_EXPANDED_LIMIT} records are available.` : "";
   const toggleButton = canExpand
     ? `
       <button class="activity-expand-button" type="button" data-activity-toggle aria-expanded="${state.activityExpanded ? "true" : "false"}">
@@ -274,69 +309,27 @@ function renderActivity(data) {
     : "";
 
   elements.activityList.innerHTML = `
-    <div class="status-title">Recent tasks${sourceNote}</div>
+    <div class="status-title">Recent tasks</div>
     <div class="status-list">${visibleActivity.map((event) => renderStatusLine(event, { showMachine: true })).join("")}</div>
     ${toggleButton}
   `;
 }
 
-function renderTools(data) {
-  const summary = data.summary || {};
-  const tools = Array.isArray(summary.toolUsage) ? summary.toolUsage.slice(0, 12) : [];
-  elements.summaryDateLabel.textContent = summary.dateUtc || "-";
-  if (tools.length === 0) {
-    elements.toolsTable.innerHTML = `<div class="empty">No tool usage.</div>`;
-    return;
+function setMachineFilter(machineName) {
+  const normalized = normalizeMachineName(machineName);
+  if (!normalized || !state.data) return;
+  const machines = allMachineNames(state.data);
+  if (state.selectedMachines === null) {
+    state.selectedMachines = new Set([normalized]);
+  } else if (state.selectedMachines.has(normalized)) {
+    state.selectedMachines.delete(normalized);
+  } else {
+    state.selectedMachines.add(normalized);
   }
-
-  elements.toolsTable.innerHTML = `
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th>Tool</th>
-          <th>Count</th>
-          <th>OK</th>
-          <th>Guarded</th>
-          <th>Failed</th>
-          <th>Avg ms</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${tools.map((tool) => `
-          <tr>
-            <td>${escapeHtml(tool.name || "-")}</td>
-            <td>${escapeHtml(tool.count || 0)}</td>
-            <td>${escapeHtml(tool.successCount || 0)}</td>
-            <td>${escapeHtml(tool.guardedCount || 0)}</td>
-            <td>${escapeHtml(tool.failedCount || 0)}</td>
-            <td>${escapeHtml(tool.averageDurationMs || 0)}</td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
-  `;
-}
-
-function frictionEvents(summary) {
-  const friction = summary?.friction || {};
-  return [
-    ...(Array.isArray(friction.failed) ? friction.failed.map((item) => ({ ...item, phase: "failed" })) : []),
-    ...(Array.isArray(friction.guarded) ? friction.guarded.map((item) => ({ ...item, phase: "guarded" })) : []),
-    ...(Array.isArray(friction.slow) ? friction.slow.slice(0, 10).map((item) => ({ ...item, phase: "started" })) : []),
-  ];
-}
-
-function renderFriction(data) {
-  const events = statusEvents(frictionEvents(data.summary), 32);
-  elements.frictionLabel.textContent = `${events.length} records`;
-  if (events.length === 0) {
-    elements.frictionList.innerHTML = `<div class="status-empty">No friction records.</div>`;
-    return;
+  if (state.selectedMachines.size === machines.length) {
+    state.selectedMachines = null;
   }
-  elements.frictionList.innerHTML = `
-    <div class="status-title">Recent tasks</div>
-    <div class="status-list">${events.map((event) => renderStatusLine(event, { showMachine: true })).join("")}</div>
-  `;
+  state.activityExpanded = false;
 }
 
 function scrollStatusWindowsToTop() {
@@ -347,11 +340,9 @@ function scrollStatusWindowsToTop() {
 
 function render(data) {
   state.data = data;
-  renderMetrics(data);
+  renderHeader(data);
   renderMachines(data);
   renderActivity(data);
-  renderTools(data);
-  renderFriction(data);
   scrollStatusWindowsToTop();
 }
 
@@ -368,7 +359,7 @@ async function refresh() {
       throw new Error(`HTTP ${response.status}`);
     }
     render(await response.json());
-  } catch (error) {
+  } catch {
     elements.lastRefresh.textContent = `Connection error ${formatTime(new Date().toISOString())}`;
   } finally {
     window.clearTimeout(timeout);
@@ -391,15 +382,37 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () 
 });
 
 elements.machinesGrid.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-focus-machine]");
+  const button = event.target.closest("[data-monitor-machine]");
   if (!button) {
     return;
   }
-
-  const machine = button.getAttribute("data-focus-machine");
-  state.focusMachine = state.focusMachine === machine ? null : machine;
+  setMachineFilter(button.getAttribute("data-monitor-machine"));
   if (state.data) {
-    render(state.data);
+    renderMachines(state.data);
+    renderActivity(state.data);
+  }
+});
+
+elements.activityFilters.addEventListener("click", (event) => {
+  const allButton = event.target.closest("[data-filter-all]");
+  if (allButton) {
+    state.selectedMachines = null;
+    state.activityExpanded = false;
+    if (state.data) {
+      renderMachines(state.data);
+      renderActivity(state.data);
+    }
+    return;
+  }
+
+  const machineButton = event.target.closest("[data-filter-machine]");
+  if (!machineButton) {
+    return;
+  }
+  setMachineFilter(machineButton.getAttribute("data-filter-machine"));
+  if (state.data) {
+    renderMachines(state.data);
+    renderActivity(state.data);
   }
 });
 
@@ -412,13 +425,6 @@ elements.activityList.addEventListener("click", (event) => {
   if (state.data) {
     renderActivity(state.data);
     elements.activityList.scrollTop = 0;
-  }
-});
-
-elements.clearFocusButton.addEventListener("click", () => {
-  state.focusMachine = null;
-  if (state.data) {
-    render(state.data);
   }
 });
 
