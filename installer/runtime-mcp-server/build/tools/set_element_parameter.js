@@ -396,7 +396,7 @@ try
             new {
                 parameter = before,
                 clearApi = "Parameter.ClearValue",
-                visibleEmptyFallback = "Use operation=set with value=\"\" only if a visible empty value is acceptable. Revit may keep HasValue=true."
+                visibleEmptyFallback = "Use operation=set with an empty string only if a visible empty value is acceptable. Revit may keep HasValue=true."
             });
     }
 
@@ -468,7 +468,7 @@ try
                     parameter = before,
                     clearApi = "Parameter.ClearValue",
                     clearError = clearError,
-                    visibleEmptyFallback = "Use operation=set with value=\"\" only if a visible empty value is acceptable. Revit may keep HasValue=true."
+                    visibleEmptyFallback = "Use operation=set with an empty string only if a visible empty value is acceptable. Revit may keep HasValue=true."
                 });
         }
     }
