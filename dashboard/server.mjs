@@ -132,7 +132,7 @@ function normalizeMachineName(value) {
 
 function chooseState(machine, live, stableVersion, now, staleSeconds) {
   const installed = machine?.installedVersion || machine?.localInstall?.version || "";
-  const target = machine?.targetVersion || stableVersion || "";
+  const target = stableVersion || machine?.targetVersion || "";
   const reportStatus = String(machine?.status || "").toLowerCase();
   const liveAgeSeconds = secondsSince(live?.lastHeartbeatUtc, now);
   const liveState = !live
@@ -158,7 +158,8 @@ function chooseState(machine, live, stableVersion, now, staleSeconds) {
 
 function summarizeMachine(machineName, machineReport, liveStatus, stableVersion, now, staleSeconds) {
   const installedVersion = machineReport?.installedVersion || machineReport?.localInstall?.version || "";
-  const targetVersion = machineReport?.targetVersion || stableVersion || "";
+  const reportedTargetVersion = machineReport?.targetVersion || "";
+  const targetVersion = stableVersion || reportedTargetVersion || "";
   const liveAgeSeconds = secondsSince(liveStatus?.lastHeartbeatUtc, now);
   return {
     machine: machineName,
@@ -170,6 +171,8 @@ function summarizeMachine(machineName, machineReport, liveStatus, stableVersion,
     operationMethod: machineReport?.operationMethod || "",
     installedVersion,
     targetVersion,
+    reportedTargetVersion,
+    stableVersion: stableVersion || "",
     versionCurrent: Boolean(installedVersion && targetVersion && installedVersion === targetVersion),
     atUtc: machineReport?.atUtc || "",
     deferredForRevitClose: machineReport?.diagnostics?.deferredForRevitClose === true,

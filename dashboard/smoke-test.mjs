@@ -52,6 +52,23 @@ try {
     },
   });
 
+  writeJson(path.join(reportsRoot, "machines", "OLDPC", "latest.json"), {
+    schemaVersion: "revagent.machine-report.v1",
+    computerName: "OLDPC",
+    userName: "Old",
+    atUtc: now.toISOString(),
+    status: "updated",
+    operation: "update",
+    operationMethod: "old-channel",
+    installedVersion: "2026.05.31.100-oldbuild",
+    targetVersion: "2026.05.31.100-oldbuild",
+    diagnostics: {
+      fastPackageOnlyUpdate: true,
+      revitPayloadChanged: false,
+      deferredForRevitClose: false,
+    },
+  });
+
   writeJson(path.join(reportsRoot, "live", "machines", "TESTPC", "status.json"), {
     schemaVersion: "revagent.live.status.v1",
     machineName: "TESTPC",
@@ -147,15 +164,21 @@ try {
 
   assert.equal(data.schemaVersion, "revagent.dashboard.snapshot.v1");
   assert.equal(data.stable.version, version);
-  assert.equal(data.overview.machineCount, 1);
+  assert.equal(data.overview.machineCount, 2);
   assert.equal(data.overview.liveMachineCount, 1);
   assert.equal(data.overview.activeMachineCount, 1);
+  assert.equal(data.overview.currentVersionCount, 1);
   assert.equal(data.overview.productionOperationCount, 2);
-  assert.equal(data.machines[0].machine, "TESTPC");
-  assert.equal(data.machines[0].state, "active");
-  assert.equal(data.machines[0].versionCurrent, true);
-  assert.equal(data.machines[0].live.activeTask.taskName, "smoke inspect");
-  assert.equal(data.machines[0].live.recentActivity[0].taskName, "smoke inspect");
+  const testMachine = data.machines.find((machine) => machine.machine === "TESTPC");
+  const oldMachine = data.machines.find((machine) => machine.machine === "OLDPC");
+  assert.equal(testMachine.state, "active");
+  assert.equal(testMachine.versionCurrent, true);
+  assert.equal(testMachine.live.activeTask.taskName, "smoke inspect");
+  assert.equal(testMachine.live.recentActivity[0].taskName, "smoke inspect");
+  assert.equal(oldMachine.state, "outdated");
+  assert.equal(oldMachine.versionCurrent, false);
+  assert.equal(oldMachine.targetVersion, version);
+  assert.equal(oldMachine.reportedTargetVersion, "2026.05.31.100-oldbuild");
   assert.equal(data.activity.length, 2);
   assert.equal(data.activity[0].phase, "completed");
   assert.equal("params" in data.activity[0], false);
@@ -165,8 +188,7 @@ try {
   assert.equal(data.summary.toolUsage[0].name, "inspect_elements");
   const brief = buildDashboardBrief(data);
   assert.equal(brief.schemaVersion, "revagent.dashboard.brief.v1");
-  assert.equal(brief.machines[0].machine, "TESTPC");
-  assert.equal(brief.machines[0].latestActivity.taskName, "smoke inspect");
+  assert.equal(brief.machines.find((machine) => machine.machine === "TESTPC").latestActivity.taskName, "smoke inspect");
 
   console.log("Dashboard smoke test passed.");
 } finally {

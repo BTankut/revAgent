@@ -46,6 +46,9 @@ All notable revAgent workstation deployment changes are tracked here.
   `/api/overview`, stripping raw live payload details from the UI response,
   bounding daily activity tail reads, adding non-overlapping refreshes with a
   timeout, and returning compact JSON with `nosniff` headers.
+- Fixed live dashboard version health so machines are compared against the
+  current stable channel version instead of an older target version recorded in
+  each machine's last update report.
 - Added `/api/brief` as a compact read-only dashboard export for analyst/LLM
   handoff.
 - Added `scripts\publish-live-backfill.ps1` to merge local live-feed spool
