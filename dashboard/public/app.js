@@ -77,14 +77,6 @@ function shortVersion(value) {
   return text.replace(/^20/, "").replace(/-([0-9a-f]{8}).*$/i, "-$1");
 }
 
-function secondsText(seconds) {
-  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return "-";
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}min`;
-  return `${Math.floor(minutes / 60)}h`;
-}
-
 function formatDurationMs(value) {
   const ms = Number(value);
   if (!Number.isFinite(ms)) return "";
@@ -260,9 +252,11 @@ function renderMachines(data) {
   elements.machinesGrid.innerHTML = machines.map((machine) => {
     const active = machine.live?.activeTask;
     const activeTask = active
-      ? `<strong>${escapeHtml(taskTitle(active))}</strong>`
-      : `<span class="muted">${machine.live ? "Idle" : "Waiting for live feed"}</span>`;
-    const selected = isMachineSelected(machine.machine, data);
+      ? escapeHtml(taskTitle(active))
+      : escapeHtml(machine.live ? "Idle" : "Waiting for live feed");
+    const selectedSet = selectedMachineSet(data);
+    const selected = selectedSet !== null && selectedSet.has(normalizeMachineName(machine.machine));
+    const lastSeen = formatDateTime(machine.live?.lastHeartbeatUtc || machine.atUtc);
     return `
       <article class="machine-card${selected ? " is-selected" : ""}" data-state="${escapeHtml(machine.state)}" data-machine="${escapeHtml(machine.machine)}">
         <div class="machine-top">
@@ -275,12 +269,13 @@ function renderMachines(data) {
             <button class="monitor-button${selected ? " is-active" : ""}" type="button" data-monitor-machine="${escapeHtml(machine.machine)}">${selected ? "Selected" : "Monitor"}</button>
           </div>
         </div>
-        <div class="active-task">${activeTask}</div>
-        <div class="machine-facts">
-          <div class="fact"><span>Version</span><strong>${escapeHtml(shortVersion(machine.installedVersion || "-"))}</strong></div>
-          <div class="fact"><span>Heartbeat</span><strong>${escapeHtml(secondsText(machine.live?.heartbeatAgeSeconds))}</strong></div>
-          <div class="fact"><span>Update</span><strong>${escapeHtml(machine.updateStatus || "-")}</strong></div>
-          <div class="fact"><span>Last Report</span><strong>${escapeHtml(formatDateTime(machine.atUtc || machine.live?.lastHeartbeatUtc))}</strong></div>
+        <div class="machine-meta">
+          <span><strong>Version</strong> ${escapeHtml(shortVersion(machine.installedVersion || "-"))}</span>
+          <span><strong>Last seen</strong> ${escapeHtml(lastSeen)}</span>
+        </div>
+        <div class="active-task">
+          <span>Current task</span>
+          <strong class="${active ? "" : "muted"}">${activeTask}</strong>
         </div>
       </article>
     `;

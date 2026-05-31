@@ -223,12 +223,12 @@ main {
 }
 
 .machine-card {
-  min-height: 156px;
-  padding: 12px;
+  min-height: 136px;
+  padding: 14px;
   box-shadow: none;
   display: grid;
   grid-template-rows: auto auto auto;
-  gap: 9px;
+  gap: 10px;
 }
 
 .machine-card.is-selected {
@@ -248,7 +248,7 @@ main {
 
 .machine-name strong {
   display: block;
-  font-size: 15px;
+  font-size: 16px;
   overflow-wrap: anywhere;
 }
 
@@ -303,8 +303,8 @@ main {
 }
 
 .active-task {
-  min-height: 39px;
-  padding: 8px 10px;
+  min-height: 52px;
+  padding: 9px 10px;
   background: var(--surface-2);
   border-radius: 6px;
   font-size: 13px;
@@ -312,37 +312,42 @@ main {
   overflow-wrap: anywhere;
 }
 
+.active-task span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+
+.active-task strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .active-task .muted {
   color: var(--muted);
-}
-
-.machine-facts {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
-  font-size: 12px;
-}
-
-.fact {
-  min-height: 34px;
-  padding: 7px 8px;
-  background: var(--surface-3);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.fact span {
-  display: block;
-  color: var(--muted);
-  margin-bottom: 2px;
-}
-
-.fact strong {
-  display: block;
-  font-size: 12px;
   font-weight: 600;
+}
+
+.machine-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.machine-meta span {
+  min-width: min(100%, 138px);
   overflow-wrap: anywhere;
+}
+
+.machine-meta strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .status-window {
@@ -571,10 +576,6 @@ main {
 
   .machines-grid {
     grid-template-columns: 1fr;
-  }
-
-  .machine-facts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .status-line {
