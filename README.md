@@ -679,6 +679,12 @@ one-third column. All Status Activity shows the latest 50 live records by
 default and can be expanded to 200 records from the page. It never sends Revit
 commands, writes telemetry, or changes NAS release state.
 
+The dashboard polling surface is production-bounded: `/api/overview` returns
+only the compact fields needed by the UI, daily live activity reads are tail
+limited, browser refreshes do not overlap and time out, and raw dynamic-code
+payload details stay in durable telemetry/summary artifacts instead of being
+sent to the dashboard every few seconds.
+
 The dashboard also exposes a read-only LLM handoff at `/api/brief`. If a
 workstation was offline from NAS while still writing local live files, run
 `scripts\publish-live-backfill.ps1` on that workstation to merge its local

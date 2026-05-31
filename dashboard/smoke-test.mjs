@@ -79,6 +79,11 @@ try {
     toolName: "inspect_elements",
     taskName: "smoke inspect",
     timestampUtc: now.toISOString(),
+    params: {
+      code: {
+        preview: "x".repeat(12000),
+      },
+    },
   });
 
   appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
@@ -89,6 +94,11 @@ try {
     taskName: "smoke inspect",
     timestampUtc: new Date(now.getTime() + 1000).toISOString(),
     durationMs: 1000,
+    params: {
+      code: {
+        preview: "y".repeat(12000),
+      },
+    },
   });
 
   writeJson(path.join(reportsRoot, "summaries", "latest.json"), {
@@ -148,6 +158,10 @@ try {
   assert.equal(data.machines[0].live.recentActivity[0].taskName, "smoke inspect");
   assert.equal(data.activity.length, 2);
   assert.equal(data.activity[0].phase, "completed");
+  assert.equal("params" in data.activity[0], false);
+  assert.equal(JSON.stringify(data).includes("\"preview\""), false);
+  assert.equal(JSON.stringify(data).includes("yyyyyyyy"), false);
+  assert.ok(JSON.stringify(data).length < 12000);
   assert.equal(data.summary.toolUsage[0].name, "inspect_elements");
   const brief = buildDashboardBrief(data);
   assert.equal(brief.schemaVersion, "revagent.dashboard.brief.v1");

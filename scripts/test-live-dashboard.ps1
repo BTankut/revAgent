@@ -107,12 +107,18 @@ try {
     $dashboardApp = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "dashboard\public\app.js")
     $dashboardHtml = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "dashboard\public\index.html")
     $dashboardCss = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "dashboard\public\styles.css")
+    $dashboardServer = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "dashboard\server.mjs")
     Assert-True ($dashboardApp -match 'ACTIVITY_DEFAULT_LIMIT = 50') "Dashboard must default all activity to 50 records."
     Assert-True ($dashboardApp -match 'ACTIVITY_EXPANDED_LIMIT = 200') "Dashboard expanded activity must cap at 200 records."
+    Assert-True ($dashboardApp -match 'REFRESH_TIMEOUT_MS') "Dashboard refreshes must have a timeout."
+    Assert-True ($dashboardApp -match 'refreshInFlight') "Dashboard refreshes must not overlap."
     Assert-True ($dashboardApp -match 'data-activity-toggle') "Dashboard must expose an activity expand/collapse control."
     Assert-True ($dashboardHtml -match '(?s)activity-column.*All Status Activity.*Tool Usage.*Friction.*Machine Status Windows') "Dashboard layout must keep activity/tools/friction before machine status windows."
     Assert-True ($dashboardCss -match 'grid-template-columns:\s*minmax\(0,\s*2fr\)\s*minmax\(340px,\s*1fr\)') "Dashboard must use a 2/1 activity-to-machine status layout."
     Assert-True ($dashboardCss -match '(?s)\.bottom-grid\s*\{.*?grid-template-columns:\s*1fr;') "Dashboard must stack Tool Usage and Friction vertically."
+    Assert-True ($dashboardServer -match 'DEFAULT_ACTIVITY_READ_BYTES') "Dashboard must bound activity NDJSON tail reads."
+    Assert-True ($dashboardServer -match 'compactActivity') "Dashboard overview must strip raw live activity payloads."
+    Assert-True ($dashboardServer -match 'x-content-type-options') "Dashboard responses must include nosniff headers."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

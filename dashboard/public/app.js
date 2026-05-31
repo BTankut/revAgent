@@ -1,12 +1,14 @@
 const THEME_STORAGE_KEY = "revagent.dashboard.theme";
 const ACTIVITY_DEFAULT_LIMIT = 50;
 const ACTIVITY_EXPANDED_LIMIT = 200;
+const REFRESH_TIMEOUT_MS = 8000;
 
 const state = {
   focusMachine: null,
   data: null,
   themeChoice: localStorage.getItem(THEME_STORAGE_KEY) || "system",
   activityExpanded: false,
+  refreshInFlight: false,
 };
 
 const elements = {
@@ -354,14 +356,23 @@ function render(data) {
 }
 
 async function refresh() {
+  if (state.refreshInFlight) {
+    return;
+  }
+  state.refreshInFlight = true;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
   try {
-    const response = await fetch("/api/overview", { cache: "no-store" });
+    const response = await fetch("/api/overview", { cache: "no-store", signal: controller.signal });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
     render(await response.json());
   } catch (error) {
     elements.lastRefresh.textContent = `Connection error ${formatTime(new Date().toISOString())}`;
+  } finally {
+    window.clearTimeout(timeout);
+    state.refreshInFlight = false;
   }
 }
 

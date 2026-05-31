@@ -227,6 +227,12 @@ The current usage-intelligence stack includes:
 5. Master-LLM/product analysis over `reports\summaries\latest.json` and the
    bounded dashboard brief, not full raw logs by default.
 
+The live dashboard UI polling endpoint is intentionally compact. It keeps
+raw dynamic-code payload details, params, and long previews out of
+`/api/overview` so the browser can poll every few seconds without moving large
+telemetry blobs. Those richer details remain available in durable telemetry and
+daily summaries for offline analysis.
+
 ## Live Dashboard Feed
 
 The runtime writes a best-effort live feed for dashboard polling:

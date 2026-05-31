@@ -42,6 +42,10 @@ All notable revAgent workstation deployment changes are tracked here.
   one-third column is reserved for stacked Machine Status Windows.
 - Limited All Status Activity to the latest 50 live records by default, with
   an explicit expand/collapse control for up to 200 records.
+- Hardened the live dashboard polling path for production use by compacting
+  `/api/overview`, stripping raw live payload details from the UI response,
+  bounding daily activity tail reads, adding non-overlapping refreshes with a
+  timeout, and returning compact JSON with `nosniff` headers.
 - Added `/api/brief` as a compact read-only dashboard export for analyst/LLM
   handoff.
 - Added `scripts\publish-live-backfill.ps1` to merge local live-feed spool

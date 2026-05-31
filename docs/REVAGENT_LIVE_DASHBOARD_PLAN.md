@@ -155,11 +155,12 @@ A machine is stale when:
 
 ### Phase 1 - Live Feed Publisher
 
-- Add live activity started/completed writes to the runtime telemetry layer.
-- Record wrapper-level `mcp.tool` tasks.
-- Record bridge/dynamic `revit.command` tasks.
-- Write `status.json` snapshots and daily activity ndjson.
-- Add tests proving the write path is non-awaited and produces the expected
+- Implemented live activity started/completed writes in the runtime telemetry
+  layer.
+- Records wrapper-level `mcp.tool` tasks.
+- Records bridge/dynamic `revit.command` tasks.
+- Writes `status.json` snapshots and daily activity ndjson.
+- Tests prove the write path is non-awaited and produces the expected
   files.
 
 ### Phase 2 - Read-Only Dashboard MVP
@@ -183,6 +184,21 @@ A machine is stale when:
 - Does not write to Revit, NAS release state, or telemetry.
 - Covered by `dashboard/smoke-test.mjs`, `scripts/test-live-dashboard.ps1`,
   and `scripts/test-all.ps1`.
+
+### Phase 2B - Production Hardening
+
+- Implemented compact `/api/overview` responses for 3 second polling; raw
+  live activity payloads such as params and dynamic-code previews are not sent
+  to the browser.
+- Keeps durable telemetry and daily summaries as the source for deeper LLM
+  analysis; the dashboard response is a bounded UI surface.
+- Bounds daily activity NDJSON reads to the tail of the file before applying
+  the activity count limit.
+- Uses compact JSON responses and `x-content-type-options: nosniff` headers.
+- Browser refreshes are single-flight and use a timeout so slow NAS reads or
+  network issues do not build up overlapping refreshes.
+- Production layout and polling contracts are guarded by
+  `scripts/test-live-dashboard.ps1`.
 
 ### Phase 3 - Analyst Integration
 

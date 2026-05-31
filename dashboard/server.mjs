@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 
 const DEFAULT_REPORTS_ROOT = "\\\\DPE-NAS\\Dpe-Ortak\\Baris Tankut\\revit-mcp-deploy\\reports";
 const DEFAULT_PORT = 8765;
+const DEFAULT_ACTIVITY_READ_BYTES = 4 * 1024 * 1024;
 
 function parseArgs(argv = process.argv.slice(2)) {
   const args = {};
@@ -44,6 +45,7 @@ function resolveConfig(argv) {
     releaseRoot,
     staleSeconds: clampInt(args.staleSeconds || process.env.REVAGENT_DASHBOARD_STALE_SECONDS, 60, 10, 3600),
     activityLimit: clampInt(args.activityLimit || process.env.REVAGENT_DASHBOARD_ACTIVITY_LIMIT, 200, 20, 1000),
+    activityReadBytes: clampInt(args.activityReadBytes || process.env.REVAGENT_DASHBOARD_ACTIVITY_READ_BYTES, DEFAULT_ACTIVITY_READ_BYTES, 256 * 1024, 32 * 1024 * 1024),
   };
 }
 
@@ -83,14 +85,24 @@ function listDirectories(root) {
   }
 }
 
-function readNdjsonTail(filePath, limit) {
+function readNdjsonTail(filePath, limit, maxBytes = DEFAULT_ACTIVITY_READ_BYTES) {
   try {
     if (!fs.existsSync(filePath)) {
       return [];
     }
-    const lines = fs.readFileSync(filePath, "utf8")
+    const stat = fs.statSync(filePath);
+    const readSize = Math.min(stat.size, Math.max(1024, maxBytes));
+    const buffer = Buffer.alloc(readSize);
+    const fd = fs.openSync(filePath, "r");
+    try {
+      fs.readSync(fd, buffer, 0, readSize, stat.size - readSize);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const lines = buffer.toString("utf8")
       .split(/\r?\n/)
       .filter((line) => line.trim())
+      .slice(readSize < stat.size ? 1 : 0)
       .slice(-limit);
     return lines.map((line) => {
       try {
@@ -169,9 +181,9 @@ function summarizeMachine(machineName, machineReport, liveStatus, stableVersion,
       runtimeVersion: liveStatus.runtime?.version || "",
       lastHeartbeatUtc: liveStatus.lastHeartbeatUtc || "",
       heartbeatAgeSeconds: liveAgeSeconds,
-      activeTask: liveStatus.activeTask || null,
-      activeTasks: Array.isArray(liveStatus.activeTasks) ? liveStatus.activeTasks : [],
-      recentActivity: Array.isArray(liveStatus.recentActivity) ? liveStatus.recentActivity.slice(0, 20) : [],
+      activeTask: compactActivity(liveStatus.activeTask),
+      activeTasks: compactActivityList(liveStatus.activeTasks, 10),
+      recentActivity: compactActivityList(liveStatus.recentActivity, 20),
       writeHealth: liveStatus.writeHealth || {},
     } : null,
   };
@@ -217,17 +229,109 @@ function sortActivities(events) {
     .sort((a, b) => String(b.timestampUtc || b.finishedAtUtc || b.startedAtUtc || "").localeCompare(String(a.timestampUtc || a.finishedAtUtc || a.startedAtUtc || "")));
 }
 
+function compactActivity(event) {
+  if (!event) {
+    return null;
+  }
+  const result = event.result && typeof event.result === "object"
+    ? {
+        success: event.result.success ?? null,
+        guarded: event.result.guarded === true,
+        state: event.result.state || null,
+        action: event.result.action || null,
+        errorMessage: event.result.errorMessage || null,
+      }
+    : null;
+  return {
+    schemaVersion: event.schemaVersion || "",
+    eventType: event.eventType || "",
+    eventId: event.eventId || "",
+    timestampUtc: event.timestampUtc || event.finishedAtUtc || event.startedAtUtc || "",
+    machineName: event.machineName || "",
+    userName: event.userName || "",
+    phase: event.phase || event.state || "",
+    state: event.state || event.phase || "",
+    scope: event.scope || "",
+    toolName: event.toolName || "",
+    commandName: event.commandName || "",
+    logicalToolName: event.logicalToolName || "",
+    executionKind: event.executionKind || "",
+    taskName: event.taskName || "",
+    taskIdPresent: event.taskIdPresent === true,
+    startedAtUtc: event.startedAtUtc || "",
+    finishedAtUtc: event.finishedAtUtc || "",
+    durationMs: event.durationMs ?? null,
+    result,
+  };
+}
+
+function compactActivityList(events, limit) {
+  return (Array.isArray(events) ? events : [])
+    .slice(0, limit)
+    .map(compactActivity)
+    .filter(Boolean);
+}
+
+function compactFrictionList(items, phase, limit = 50) {
+  return (Array.isArray(items) ? items : [])
+    .slice(0, limit)
+    .map((item) => compactActivity({ ...item, phase: item.phase || phase, state: item.state || phase }))
+    .filter(Boolean);
+}
+
+function compactSendCode(sendCode) {
+  if (!sendCode || typeof sendCode !== "object") {
+    return {};
+  }
+  return {
+    count: sendCode.count || 0,
+    rawCount: sendCode.rawCount || 0,
+    safeCount: sendCode.safeCount || 0,
+    guardedCount: sendCode.guardedCount || 0,
+    failedCount: sendCode.failedCount || 0,
+    manualTransactionCount: sendCode.manualTransactionCount || 0,
+    writePatternCount: sendCode.writePatternCount || 0,
+  };
+}
+
+function compactSummary(summary) {
+  if (!summary || typeof summary !== "object") {
+    return summary || null;
+  }
+  if (summary.readError) {
+    return summary;
+  }
+  const friction = summary.friction || {};
+  return {
+    schemaVersion: summary.schemaVersion || "",
+    dateUtc: summary.dateUtc || "",
+    generatedAtUtc: summary.generatedAtUtc || "",
+    source: summary.source || {},
+    totals: summary.totals || {},
+    production: summary.production || {},
+    sendCode: compactSendCode(summary.sendCode),
+    toolUsage: Array.isArray(summary.toolUsage) ? summary.toolUsage.slice(0, 50) : [],
+    commandUsage: Array.isArray(summary.commandUsage) ? summary.commandUsage.slice(0, 50) : [],
+    friction: {
+      failed: compactFrictionList(friction.failed, "failed"),
+      guarded: compactFrictionList(friction.guarded, "guarded"),
+      slow: compactFrictionList(friction.slow, "started"),
+    },
+  };
+}
+
 export function loadDashboardData(config = {}) {
   const now = Date.now();
   const reportsRoot = config.reportsRoot || DEFAULT_REPORTS_ROOT;
   const releaseRoot = config.releaseRoot || path.dirname(reportsRoot);
   const staleSeconds = clampInt(config.staleSeconds, 60, 10, 3600);
   const activityLimit = clampInt(config.activityLimit, 200, 20, 1000);
+  const activityReadBytes = clampInt(config.activityReadBytes, DEFAULT_ACTIVITY_READ_BYTES, 256 * 1024, 32 * 1024 * 1024);
   const summariesRoot = path.join(reportsRoot, "summaries");
   const machinesRoot = path.join(reportsRoot, "machines");
   const liveRoot = path.join(reportsRoot, "live", "machines");
   const stable = readJsonFile(path.join(releaseRoot, "channels", "stable.json"));
-  const summary = readJsonFile(path.join(summariesRoot, "latest.json"));
+  const summary = compactSummary(readJsonFile(path.join(summariesRoot, "latest.json")));
   const publish = readJsonFile(path.join(summariesRoot, "publish-latest.json"));
   const todayUtc = new Date(now).toISOString().slice(0, 10);
 
@@ -239,7 +343,7 @@ export function loadDashboardData(config = {}) {
 
   const activityByMachine = new Map(machineNames.map((machineName) => {
     const activityPath = path.join(liveRoot, machineName, "activity", `${todayUtc}.ndjson`);
-    return [machineName, readNdjsonTail(activityPath, activityLimit)];
+    return [machineName, readNdjsonTail(activityPath, activityLimit, activityReadBytes).map(compactActivity).filter(Boolean)];
   }));
 
   const machines = machineNames.map((machineName) => {
@@ -332,14 +436,16 @@ function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
   });
-  response.end(JSON.stringify(payload, null, 2));
+  response.end(JSON.stringify(payload));
 }
 
 function sendText(response, statusCode, text) {
   response.writeHead(statusCode, {
     "content-type": "text/plain; charset=utf-8",
     "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
   });
   response.end(text);
 }
@@ -370,6 +476,7 @@ function serveStatic(response, requestPath) {
   response.writeHead(200, {
     "content-type": contentTypeFor(filePath),
     "cache-control": filePath.endsWith("index.html") ? "no-store" : "public, max-age=60",
+    "x-content-type-options": "nosniff",
   });
   fs.createReadStream(filePath).pipe(response);
 }
