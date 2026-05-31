@@ -103,6 +103,15 @@ try {
         Pop-Location
     }
     Assert-Equal $brief.schemaVersion "revagent.dashboard.brief.v1" "Brief schema mismatch."
+
+    $dashboardApp = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "dashboard\public\app.js")
+    $dashboardHtml = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "dashboard\public\index.html")
+    $dashboardCss = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "dashboard\public\styles.css")
+    Assert-True ($dashboardApp -match 'ACTIVITY_DEFAULT_LIMIT = 50') "Dashboard must default all activity to 50 records."
+    Assert-True ($dashboardApp -match 'ACTIVITY_EXPANDED_LIMIT = 200') "Dashboard expanded activity must cap at 200 records."
+    Assert-True ($dashboardApp -match 'data-activity-toggle') "Dashboard must expose an activity expand/collapse control."
+    Assert-True ($dashboardHtml -match '(?s)activity-column.*All Status Activity.*Tool Usage.*Friction.*Machine Status Windows') "Dashboard layout must keep activity/tools/friction before machine status windows."
+    Assert-True ($dashboardCss -match 'grid-template-columns:\s*minmax\(0,\s*2fr\)\s*minmax\(340px,\s*1fr\)') "Dashboard must use a 2/1 activity-to-machine status layout."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

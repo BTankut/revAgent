@@ -1,9 +1,12 @@
 const THEME_STORAGE_KEY = "revagent.dashboard.theme";
+const ACTIVITY_DEFAULT_LIMIT = 50;
+const ACTIVITY_EXPANDED_LIMIT = 200;
 
 const state = {
   focusMachine: null,
   data: null,
   themeChoice: localStorage.getItem(THEME_STORAGE_KEY) || "system",
+  activityExpanded: false,
 };
 
 const elements = {
@@ -246,16 +249,32 @@ function renderMachines(data) {
 }
 
 function renderActivity(data) {
-  const activity = statusEvents(data.activity || [], 220);
-  elements.activityCountLabel.textContent = `${(data.activity || []).length} records`;
+  const sourceCount = (data.activity || []).length;
+  const activity = statusEvents(data.activity || [], ACTIVITY_EXPANDED_LIMIT);
+  const visibleActivity = state.activityExpanded ? activity : activity.slice(0, ACTIVITY_DEFAULT_LIMIT);
+  const cappedCount = activity.length;
+  elements.activityCountLabel.textContent = `${visibleActivity.length} of ${cappedCount} live records`;
   if (activity.length === 0) {
     elements.activityList.innerHTML = `<div class="status-empty">Waiting for live activity.</div>`;
     return;
   }
 
+  const canExpand = activity.length > ACTIVITY_DEFAULT_LIMIT;
+  const hiddenCount = Math.max(activity.length - ACTIVITY_DEFAULT_LIMIT, 0);
+  const sourceNote = sourceCount > ACTIVITY_EXPANDED_LIMIT ? ` Latest ${ACTIVITY_EXPANDED_LIMIT} records are available.` : "";
+  const toggleButton = canExpand
+    ? `
+      <button class="activity-expand-button" type="button" data-activity-toggle aria-expanded="${state.activityExpanded ? "true" : "false"}">
+        <span class="expand-chevron${state.activityExpanded ? " is-open" : ""}" aria-hidden="true"></span>
+        <span>${state.activityExpanded ? `Show latest ${ACTIVITY_DEFAULT_LIMIT} records` : `Show ${hiddenCount} older records`}</span>
+      </button>
+    `
+    : "";
+
   elements.activityList.innerHTML = `
-    <div class="status-title">Recent tasks</div>
-    <div class="status-list">${activity.map((event) => renderStatusLine(event, { showMachine: true })).join("")}</div>
+    <div class="status-title">Recent tasks${sourceNote}</div>
+    <div class="status-list">${visibleActivity.map((event) => renderStatusLine(event, { showMachine: true })).join("")}</div>
+    ${toggleButton}
   `;
 }
 
@@ -370,6 +389,18 @@ elements.machinesGrid.addEventListener("click", (event) => {
   state.focusMachine = state.focusMachine === machine ? null : machine;
   if (state.data) {
     render(state.data);
+  }
+});
+
+elements.activityList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-activity-toggle]");
+  if (!button) {
+    return;
+  }
+  state.activityExpanded = !state.activityExpanded;
+  if (state.data) {
+    renderActivity(state.data);
+    elements.activityList.scrollTop = 0;
   }
 });
 

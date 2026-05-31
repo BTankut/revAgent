@@ -57,12 +57,32 @@
         </section>
 
         <section id="statusLayout" class="status-layout">
-          <div class="panel global-stream-panel">
-            <div class="panel-header">
-              <h2>All Status Activity</h2>
-              <span id="activityCountLabel">0 records</span>
+          <div class="activity-column">
+            <div class="panel global-stream-panel">
+              <div class="panel-header">
+                <h2>All Status Activity</h2>
+                <span id="activityCountLabel">0 records</span>
+              </div>
+              <div id="activityList" class="status-window global-status-window"></div>
             </div>
-            <div id="activityList" class="status-window global-status-window"></div>
+
+            <section class="bottom-grid">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2>Tool Usage</h2>
+                  <span id="summaryDateLabel">-</span>
+                </div>
+                <div id="toolsTable" class="table-view"></div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-header">
+                  <h2>Friction</h2>
+                  <span id="frictionLabel">-</span>
+                </div>
+                <div id="frictionList" class="status-window compact-status-window"></div>
+              </div>
+            </section>
           </div>
 
           <div class="panel machines-panel">
@@ -71,24 +91,6 @@
               <span id="machineCountLabel">0 records</span>
             </div>
             <div id="machinesGrid" class="machines-grid"></div>
-          </div>
-        </section>
-
-        <section class="bottom-grid">
-          <div class="panel">
-            <div class="panel-header">
-              <h2>Tool Usage</h2>
-              <span id="summaryDateLabel">-</span>
-            </div>
-            <div id="toolsTable" class="table-view"></div>
-          </div>
-
-          <div class="panel">
-            <div class="panel-header">
-              <h2>Friction</h2>
-              <span id="frictionLabel">-</span>
-            </div>
-            <div id="frictionList" class="status-window compact-status-window"></div>
           </div>
         </section>
       </main>

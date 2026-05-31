@@ -219,16 +219,19 @@ main {
 }
 
 body.focus-mode .summary-grid,
-body.focus-mode .global-stream-panel,
-body.focus-mode .bottom-grid {
+body.focus-mode .activity-column {
   display: none;
+}
+
+.activity-column {
+  display: grid;
+  gap: 12px;
 }
 
 .bottom-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(420px, 0.72fr);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.72fr);
   gap: 12px;
-  margin-top: 12px;
 }
 
 .panel {
@@ -427,6 +430,39 @@ body.focus-mode .machine-status-window {
 .status-list {
   display: grid;
   gap: 5px;
+}
+
+.activity-expand-button {
+  width: 100%;
+  min-height: 36px;
+  margin-top: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.activity-expand-button:hover {
+  border-color: var(--accent);
+}
+
+.expand-chevron {
+  width: 9px;
+  height: 9px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
+}
+
+.expand-chevron.is-open {
+  transform: rotate(225deg) translateY(-2px);
 }
 
 .status-line {
