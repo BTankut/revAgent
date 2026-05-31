@@ -409,6 +409,16 @@ try
 
     if (dryRun)
     {
+        System.Collections.Generic.List<string> dryRunWarnings = new System.Collections.Generic.List<string>();
+        if (clearOperation)
+        {
+            dryRunWarnings.Add("clear_value_support_depends_on_revit_parameter_kind");
+        }
+        if (!clearOperation && target.StorageType == StorageType.String && requestedValueText.Length == 0)
+        {
+            dryRunWarnings.Add("empty_string_set_does_not_guarantee_revit_has_value_false_use_operation_clear_when_supported");
+        }
+
         return new {
             success = true,
             state = "dry_run",
@@ -448,9 +458,7 @@ try
                 wouldVerifyAfterWrite = true,
                 verificationMode = clearOperation ? "hasValue false after ClearValue" : expectedRaw == null ? "SetValueString readback" : "raw readback"
             },
-            warnings = clearOperation
-                ? new string[] { "clear_value_support_depends_on_revit_parameter_kind" }
-                : new string[] {}
+            warnings = dryRunWarnings.ToArray()
         };
     }
 

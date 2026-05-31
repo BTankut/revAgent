@@ -476,6 +476,7 @@ try {
     Assert-True ($setParameterToolCode -match 'ClearValue') "set_element_parameter clear operation must use the Revit ClearValue API when supported."
     Assert-True ($setParameterToolCode -match 'clear_value_not_supported') "set_element_parameter must report unsupported no-value clear attempts explicitly."
     Assert-True ($setParameterToolCode -notmatch 'visibleEmptyFallback\s*=\s*"[^"\r\n]*value=\\?"\\?"') "set_element_parameter generated C# strings must not embed unescaped value=\"\" text."
+    Assert-True ($setParameterToolCode -match 'dryRunWarnings\.Add\("empty_string_set_does_not_guarantee_revit_has_value_false_use_operation_clear_when_supported"\)') "set_element_parameter dry-runs must warn when an empty string set may leave HasValue=true."
     Assert-True ($setParameterToolCode -match 'transactionMode: mode === "commit" \? "auto" : "none"') "set_element_parameter dry-runs must execute without a transaction and commits must use the wrapper transaction."
     Assert-True ($setParameterToolCode -match 'ExpectedRawAfterSet') "set_element_parameter must calculate the expected readback value before commit."
     Assert-True ($setParameterToolCode -match 'verification') "set_element_parameter must report after-write verification."
