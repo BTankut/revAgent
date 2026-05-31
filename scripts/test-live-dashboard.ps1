@@ -122,6 +122,7 @@ try {
     Assert-True ($dashboardServer -match 'buildStatusActivities') "Dashboard must collapse raw live activity into status-window style task rows."
     Assert-True ($dashboardServer -match 'buildRevitStatusActivities') "Dashboard must prefer Revit status history when available."
     Assert-True ($dashboardServer -match 'revagent\.dashboard\.revit-status-task\.v1') "Dashboard must normalize Revit status tasks into status-window rows."
+    Assert-True ($dashboardServer -match 'shouldPreferTelemetryState') "Dashboard must preserve guarded/failed MCP semantics when the inner Revit status row is only technically completed."
     Assert-True ($dashboardServer -match 'groupedEventCount') "Dashboard activity rows must report grouped raw event counts for diagnostics."
     Assert-True ($dashboardServer -match 'summarizeLiveOperations') "Dashboard top activity metrics must be calculated from live activity."
     Assert-True ($dashboardServer -match 'metricSource: \"liveActivity\"') "Dashboard overview must expose the metric source."

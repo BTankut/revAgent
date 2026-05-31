@@ -459,12 +459,31 @@ function isCoveredByRevitStatus(event, revitStatusActivities) {
   });
 }
 
+function isSameStatusWindowTask(left, right) {
+  if (!sameTaskName(left, right)) {
+    return false;
+  }
+  const leftMs = activityStartMs(left);
+  const rightMs = activityStartMs(right);
+  return Math.abs(leftMs - rightMs) <= 5000;
+}
+
+function shouldPreferTelemetryState(event, statusEvent) {
+  const eventPhase = event?.phase || event?.state || "";
+  const statusPhase = statusEvent?.phase || statusEvent?.state || "";
+  return ["guarded", "failed"].includes(eventPhase) && statusPhase === "completed";
+}
+
 function chooseRecentActivities(liveStatus, machineName, telemetryActivities) {
   const revitStatusActivities = buildRevitStatusActivities(liveStatus, machineName);
   const statusActivities = buildStatusActivities(telemetryActivities);
   if (revitStatusActivities.length > 0) {
-    const telemetryOnly = statusActivities.filter((event) => !isCoveredByRevitStatus(event, revitStatusActivities));
-    return sortActivities([...revitStatusActivities, ...telemetryOnly]);
+    const telemetryPreferred = statusActivities.filter((event) =>
+      revitStatusActivities.some((statusEvent) => isSameStatusWindowTask(event, statusEvent) && shouldPreferTelemetryState(event, statusEvent)));
+    const filteredRevitStatus = revitStatusActivities.filter((statusEvent) =>
+      !telemetryPreferred.some((event) => isSameStatusWindowTask(event, statusEvent)));
+    const telemetryOnly = statusActivities.filter((event) => !isCoveredByRevitStatus(event, filteredRevitStatus));
+    return sortActivities([...filteredRevitStatus, ...telemetryOnly]);
   }
   return statusActivities.length > 0
     ? statusActivities

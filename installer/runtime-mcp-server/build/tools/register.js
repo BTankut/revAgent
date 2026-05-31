@@ -17,6 +17,7 @@ import { registerShowElementInPlanAnd3DTool } from "./show_element_in_plan_and_3
 import { registerSmartFocusElementsTool } from "./smart_focus_elements.js";
 import { registerInspectElementsTool } from "./inspect_elements.js";
 import { registerInspectParameterSchemaTool } from "./inspect_parameter_schema.js";
+import { registerSetElementParameterTool } from "./set_element_parameter.js";
 import { registerListRevitInstancesTool } from "./list_revit_instances.js";
 import { registerGetRevitMcpStatusTool } from "./get_revit_mcp_status.js";
 import { wrapServerWithTelemetry } from "../utils/telemetry.js";
@@ -43,5 +44,6 @@ export async function registerTools(server) {
     registerSmartFocusElementsTool(telemetryServer);
     registerInspectElementsTool(telemetryServer);
     registerInspectParameterSchemaTool(telemetryServer);
-    console.error("Registered 21 Revit MCP tools");
+    registerSetElementParameterTool(telemetryServer);
+    console.error("Registered 22 Revit MCP tools");
 }

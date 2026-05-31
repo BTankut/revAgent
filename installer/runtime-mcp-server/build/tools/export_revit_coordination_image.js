@@ -898,6 +898,11 @@ if (cleanupAfterExport) {
   }
 }
 
+bool documentIsModifiedAtReturn = document.IsModified;
+string modelStateNote = cleanupDeletedCreatedView
+  ? "cleanupAfterExport deleted the review view created by this export, but Revit may still mark the document modified because temporary view data was created/deleted inside a transaction."
+  : "The export can leave Revit view data modified because it creates, reuses, or updates a coordination review view. It never modifies physical MEP model elements.";
+
 return new {
   success = files.Count > 0,
   tool = "export_revit_coordination_image",
@@ -915,7 +920,15 @@ return new {
     cleanupAfterExportRequested = cleanupAfterExport,
     cleanupAfterExportApplied = cleanupAfterExportApplied,
     deletedCreatedView = cleanupDeletedCreatedView,
+    documentMayRemainModified = true,
+    documentIsModifiedAtReturn = documentIsModifiedAtReturn,
     note = cleanupNote
+  },
+  modelState = new {
+    persistentPhysicalElementChanges = false,
+    documentMayRemainModified = true,
+    documentIsModifiedAtReturn = documentIsModifiedAtReturn,
+    dirtyFlagNote = modelStateNote
   },
   framing = new {
     mode = framingMode,

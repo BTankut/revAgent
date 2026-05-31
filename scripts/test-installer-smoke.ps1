@@ -405,6 +405,7 @@ try {
     $statusToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_revit_mcp_status.ts")
     $toolHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\revitToolHelpers.ts")
     $parameterSchemaToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_parameter_schema.ts")
+    $setParameterToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_element_parameter.ts")
     $telemetryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\telemetry.ts")
     $safeCodeToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit_safe.ts")
     $apiDocsIndexCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\src\utils\docIndex.ts")
@@ -451,7 +452,7 @@ try {
     Assert-True ($statusToolCode -match 'runtimeVersion') "Status output must include the active runtime version."
     Assert-True ($statusToolCode -match 'schemaVersion') "Status output must include the status/schema version."
     Assert-True ($statusToolCode -match 'toolSurfaceVersion') "Status output must include the registered tool surface version."
-    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.24') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
+    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.25') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
     Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
     Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
@@ -467,6 +468,15 @@ try {
     Assert-True ($sendCodeToolCode -match 'normalizeRevitExecutionResponse\(response\)') "Raw send_code_to_revit must parse double-encoded JSON-looking results by default."
     Assert-True ($parameterSchemaToolCode -match 'duplicateDisplayNameWarnings') "Parameter schema inspection must report duplicate display-name warnings for write preflight."
     Assert-True ($parameterSchemaToolCode -match 'write_preflight_warning') "Duplicate parameter display names must be labeled as write-preflight risk."
+    Assert-True ($setParameterToolCode -match 'PRODUCTION_PARAMETER_WRITE') "set_element_parameter must identify itself as a production parameter write tool."
+    Assert-True ($setParameterToolCode -match 'duplicate_display_name_blocked') "set_element_parameter must block duplicate display-name matches."
+    Assert-True ($setParameterToolCode -match 'read_only_parameter_blocked') "set_element_parameter must block read-only parameters."
+    Assert-True ($setParameterToolCode -match 'mode: z\.enum\(\["dryRun", "commit"\]\)') "set_element_parameter must expose explicit dryRun/commit modes."
+    Assert-True ($setParameterToolCode -match 'transactionMode: mode === "commit" \? "auto" : "none"') "set_element_parameter dry-runs must execute without a transaction and commits must use the wrapper transaction."
+    Assert-True ($setParameterToolCode -match 'ExpectedRawAfterSet') "set_element_parameter must calculate the expected readback value before commit."
+    Assert-True ($setParameterToolCode -match 'verification') "set_element_parameter must report after-write verification."
+    Assert-True ($setParameterToolCode -match 'expectedCurrentRaw') "set_element_parameter must support compare-and-set current-value guards."
+    Assert-True ($setParameterToolCode -match 'type_parameter_write_requires_allowTypeParameterWrite') "set_element_parameter must require explicit approval for type parameter writes."
     Assert-True ($viewHelpersCode -match 'ActiveViewChanged') "View operation results must include active-view change state."
     Assert-True ($viewHelpersCode -match 'BeforeView') "View operation results must expose a stable before-view summary."
     Assert-True ($viewHelpersCode -match 'AfterView') "View operation results must expose a stable after-view summary."
@@ -517,6 +527,8 @@ try {
     Assert-True ($coordinationImageToolCode -match 'cleanupAfterExportRequested') "Coordination image export must report whether cleanupAfterExport was requested."
     Assert-True ($coordinationImageToolCode -match 'cleanupAfterExportApplied') "Coordination image export must report cleanup behavior explicitly."
     Assert-True ($coordinationImageToolCode -match 'deletedAfterExport') "Coordination image export must report whether a created review view was deleted after export."
+    Assert-True ($coordinationImageToolCode -match 'documentMayRemainModified') "Coordination image export must report that cleanup is not a fully trace-free Revit dirty-flag mode."
+    Assert-True ($coordinationImageToolCode -match 'persistentPhysicalElementChanges = false') "Coordination image export must report that it does not change physical MEP elements."
     Assert-True ($coordinationImageToolCode -match 'Do not use this as the primary tool for live view navigation') "Coordination image export must warn against live view navigation use."
     Assert-True ($coordinationImageToolCode -match 'targetVisualStyle') "Coordination image export must expose target visual style profiles."
     Assert-True ($coordinationImageToolCode -match 'resolveAutoTargetVisualStyle') "Coordination image export must resolve auto target visual style explicitly."

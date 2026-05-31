@@ -586,7 +586,7 @@ Host-specific notes:
 
 ## Bundled runtime tool surface
 
-The runtime MCP server registers 21 tools in
+The runtime MCP server registers 22 tools in
 `installer/runtime-mcp-server/src/tools/register.ts`. They intentionally cover a
 small production surface instead of many narrow one-off commands.
 
@@ -595,9 +595,10 @@ small production surface instead of many narrow one-off commands.
 | Instance and status | `list_revit_instances`, `get_revit_mcp_status` | Read-only. `get_revit_mcp_status` is the only runtime tool intended to run while another Revit task is active. |
 | Dynamic execution | `send_code_to_revit`, `send_code_to_revit_safe` | Raw `send_code_to_revit` can write if the supplied C# writes. `transactionMode: "auto"` opens a wrapper-managed transaction and guards manual transaction snippets; `transactionMode: "none"` executes without an outer transaction. `send_code_to_revit_safe` is for read/preview work, rejects write-looking snippets, and uses `none`. |
 | Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_parameter_schema` | Read-only model/session/parameter inspection before engineering decisions or writes. `get_active_view_context` reports both sheet `viewports` and `scheduleSheetInstances`. |
+| Controlled data writes | `set_element_parameter` | Production-safe single-parameter write path. It defaults to `mode="dryRun"`, performs exact `inspect_parameter_schema`-style identity resolution, blocks duplicate display names/read-only parameters/type writes without explicit approval, commits only with `mode="commit"`, and verifies the value by reading it back. |
 | Live view navigation | `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. |
 | View-data writes | `section_box_elements`, `create_3d_view_for_elements` | Can modify project view data by applying section boxes or creating/reusing 3D review views. Use explicit intent and verify afterward. |
-| Image artifacts | `export_revit_view_image`, `export_revit_coordination_image` | `export_revit_view_image` supports active/requested views, DrawingSheet export, and direct Schedule export through a temporary sheet that is deleted before the wrapper transaction commits. Ordinary view/sheet exports are read-only. `export_revit_coordination_image` writes only review view settings and image export settings, never ducts, pipes, fittings, terminals, or other physical model elements; `cleanupAfterExport=true` deletes a review view created by that export after the image file is produced. |
+| Image artifacts | `export_revit_view_image`, `export_revit_coordination_image` | `export_revit_view_image` supports active/requested views, DrawingSheet export, and direct Schedule export through a temporary sheet that is deleted before the wrapper transaction commits. Ordinary view/sheet exports are read-only. `export_revit_coordination_image` writes only review view settings and image export settings, never ducts, pipes, fittings, terminals, or other physical model elements; `cleanupAfterExport=true` deletes a review view created by that export after the image file is produced. It can still leave Revit's document dirty flag set because temporary review view data was created/deleted inside a transaction. |
 
 The Revit add-in command payload still provides the low-level dynamic execution
 bridge internally. Common discovery, UI focus, plan/3D view workflow, parameter
@@ -618,8 +619,11 @@ navigation; navigate/focus first, then optionally export the active view.
 `find_elements` is discovery-only. Treat its compact response as insufficient
 for writes until `inspect_elements` and `inspect_parameter_schema` have
 confirmed the exact element and stable parameter identity. Use
-`builtInParameterId` when available; never write from a display parameter name
-alone.
+`set_element_parameter` for ordinary parameter writes. It may accept a visible
+parameter name as the user's target, but it enumerates the schema first and
+will not write through a direct display-name shortcut; duplicate display names
+are blocked. Use `builtInParameterId` when available and `expectedCurrentRaw`
+for compare-and-set safety.
 
 This runtime set is reflected in the Node MCP wrapper. The installer still copies the bundled Revit command payload required by the wrapper.
 

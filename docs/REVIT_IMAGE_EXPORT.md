@@ -48,7 +48,12 @@ status preflight and single-command rule.
     to the operator. The safe default keeps the reusable review view for
     audit/reuse. Pass `cleanupAfterExport=true` to delete a review view created
     by that export after the image file is produced. Existing reused review
-    views are never deleted automatically.
+    views are never deleted automatically. This cleanup prevents a new persistent
+    review view from being left behind, but it is not a fully trace-free mode:
+    Revit may still mark the document modified because temporary view data was
+    created/deleted inside a transaction. Check
+    `cleanup.documentMayRemainModified` and `modelState.dirtyFlagNote` before
+    deciding whether the model should be saved.
 
 Neither tool creates ducts, pipes, fittings, terminals, sprinklers, or other
 physical MEP model elements.

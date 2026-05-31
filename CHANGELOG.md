@@ -10,10 +10,20 @@ All notable revAgent workstation deployment changes are tracked here.
 - Added `cleanupAfterExport` to `export_revit_coordination_image` so newly
   created review views can be deleted after the image file is produced; reused
   project review views are preserved.
+- Clarified `export_revit_coordination_image` cleanup reporting with
+  `cleanup.documentMayRemainModified` and `modelState.dirtyFlagNote`, because
+  deleting a temporary review view does not guarantee Revit clears the document
+  dirty flag.
+- Added `set_element_parameter`, a production-safe single-parameter write tool
+  with dry-run/commit modes, exact schema preflight, duplicate display-name and
+  read-only guards, type-write approval, compare-and-set support, and readback
+  verification.
 - Bumped the runtime tool surface version to
   `revit-mcp-runtime-tools.23` for the export schema/behavior change.
 - Bumped the runtime tool surface version to
   `revit-mcp-runtime-tools.24` for the live status/dashboard alignment change.
+- Bumped the runtime tool surface version to
+  `revit-mcp-runtime-tools.25` for the controlled parameter-write tool.
 - Changed live dashboard activity rendering to match the revAgent status
   window semantics: started/completed lifecycle pairs and nested
   `mcp.tool`/`send_code_to_revit` events are collapsed into one user-facing
@@ -24,6 +34,9 @@ All notable revAgent workstation deployment changes are tracked here.
   `mcp_status.recentTasks` history when available. This keeps task result,
   duration, and ordering aligned with the revAgent status window, while raw
   runtime telemetry remains available only as a fallback and diagnostic source.
+- Preserved guarded/failed MCP tool semantics on the dashboard when an inner
+  generic Revit `send_code_to_revit` status row is technically completed but
+  the production tool blocked the operation before write.
 - Added DrawingSheet support to `export_revit_view_image`, with clearer
   guidance for unsupported standalone schedule views and sheet placement hints
   when available.

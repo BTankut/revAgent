@@ -107,8 +107,18 @@ try {
           elapsedMs: 570,
           error: null,
         },
+        {
+          id: "status-semantic-guard",
+          method: "send_code_to_revit",
+          taskName: "smoke semantic guard",
+          state: "completed",
+          startedAtUtc: new Date(now.getTime() + 6010).toISOString(),
+          finishedAtUtc: new Date(now.getTime() + 6080).toISOString(),
+          elapsedMs: 70,
+          error: null,
+        },
       ],
-      recentHistoryCount: 2,
+      recentHistoryCount: 3,
       recentHistoryCapacity: 100,
     },
     writeHealth: {
@@ -256,6 +266,25 @@ try {
     },
   });
 
+  appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
+    schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-semantic-guard-tool",
+    phase: "guarded",
+    state: "guarded",
+    scope: "mcp.tool",
+    machineName: "TESTPC",
+    toolName: "set_element_parameter",
+    taskName: "smoke semantic guard",
+    startedAtUtc: new Date(now.getTime() + 6000).toISOString(),
+    timestampUtc: new Date(now.getTime() + 6090).toISOString(),
+    durationMs: 90,
+    result: {
+      success: false,
+      guarded: true,
+      errorMessage: "read_only_parameter_blocked",
+    },
+  });
+
   writeJson(path.join(reportsRoot, "summaries", "latest.json"), {
     schemaVersion: "revagent.usage.summary.v1",
     dateUtc: todayUtc,
@@ -306,10 +335,10 @@ try {
   assert.equal(data.overview.liveMachineCount, 1);
   assert.equal(data.overview.activeMachineCount, 1);
   assert.equal(data.overview.currentVersionCount, 1);
-  assert.equal(data.overview.productionOperationCount, 6);
-  assert.equal(data.overview.liveOperationCount, 6);
+  assert.equal(data.overview.productionOperationCount, 7);
+  assert.equal(data.overview.liveOperationCount, 7);
   assert.equal(data.overview.liveCompletedCount, 4);
-  assert.equal(data.overview.guardedCount, 1);
+  assert.equal(data.overview.guardedCount, 2);
   assert.equal(data.overview.failedCount, 1);
   assert.equal(data.overview.summaryProductionOperationCount, 2);
   assert.equal(data.overview.metricSource, "liveActivity");
@@ -324,7 +353,7 @@ try {
   assert.equal(oldMachine.versionCurrent, false);
   assert.equal(oldMachine.targetVersion, version);
   assert.equal(oldMachine.reportedTargetVersion, "2026.05.31.100-oldbuild");
-  assert.equal(data.activity.length, 6);
+  assert.equal(data.activity.length, 7);
   assert.equal(data.activity[0].taskName, "smoke status cleanup");
   assert.equal(data.activity[0].phase, "completed");
   assert.equal(data.activity[0].toolName, "send_code_to_revit");
@@ -332,10 +361,13 @@ try {
   assert.equal(data.activity.find((event) => event.taskName === "smoke sheet export").toolName, "export_revit_view_image");
   assert.equal(data.activity.filter((event) => event.taskName === "smoke schedule guidance").length, 1);
   assert.equal(data.activity.find((event) => event.taskName === "smoke schedule guidance").source, "revit.status");
+  assert.equal(data.activity.filter((event) => event.taskName === "smoke semantic guard").length, 1);
+  assert.equal(data.activity.find((event) => event.taskName === "smoke semantic guard").phase, "guarded");
+  assert.equal(data.activity.find((event) => event.taskName === "smoke semantic guard").toolName, "set_element_parameter");
   assert.equal("params" in data.activity[0], false);
   assert.equal(JSON.stringify(data).includes("\"preview\""), false);
   assert.equal(JSON.stringify(data).includes("yyyyyyyy"), false);
-  assert.ok(JSON.stringify(data).length < 12000);
+  assert.ok(JSON.stringify(data).length < 14000);
   assert.equal(data.summary.toolUsage[0].name, "inspect_elements");
   const brief = buildDashboardBrief(data);
   assert.equal(brief.schemaVersion, "revagent.dashboard.brief.v1");

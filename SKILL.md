@@ -38,8 +38,8 @@ backup artifacts during normal operation.
 **Runtime server (`revit-mcp`)** - dynamic execution plus read-only context:
 
 This runtime surface is intentionally reusable: live Revit execution, model
-context, view/focus helpers, parameter inspection, visual QA exports, and safe
-custom-code workflows.
+context, view/focus helpers, parameter inspection, controlled parameter writes,
+visual QA exports, and safe custom-code workflows.
 
 - `list_revit_instances` - discover reachable Revit MCP instances and ports
 - `get_revit_mcp_status` - read active/recent task status without waiting
@@ -124,6 +124,11 @@ custom-code workflows.
   data, alias note, storage type, unit, shared/read-only, raw/display values.
   Use `parameterNameMatchMode: "contains"` for broad discovery and
   `parameterNameMatchMode: "exact"` for write-preflight.
+- `set_element_parameter` - production-safe single-parameter write tool. It
+  defaults to `mode: "dryRun"`, resolves the exact parameter with
+  `inspect_parameter_schema`-style preflight, blocks duplicate display names,
+  read-only parameters, identity mismatches, and type writes unless explicitly
+  allowed, then verifies the value after `mode: "commit"`.
 
 **API docs server (`revit-api-docs`)** - required companion:
 
@@ -168,9 +173,11 @@ Default workflow for every Revit runtime task:
    `get_active_view_context` before making view-level assumptions.
 4. Resolve API symbols with `resolve_api_symbols_bulk` and pass the active
    `revit_version`. Use the single-symbol docs tools only for follow-up detail.
-5. Before writes or localized/shared parameter work, call
-   `inspect_parameter_schema` with `parameterNameMatchMode: "exact"`; for
-   element-specific tasks call `inspect_elements`.
+5. Before localized/shared parameter work, call `inspect_parameter_schema` with
+   `parameterNameMatchMode: "exact"`; for element-specific tasks call
+   `inspect_elements`. For ordinary parameter writes, prefer
+   `set_element_parameter` over raw dynamic C# because it performs the exact
+   schema preflight and readback verification itself.
 6. Use `send_code_to_revit_safe` for read-only probes and write previews. It
    rejects `transactionMode: "auto"` and always executes with
    `transactionMode: "none"`. Use raw `send_code_to_revit` only when the user

@@ -85,6 +85,7 @@ const expectedTools = [
   "smart_focus_elements",
   "inspect_elements",
   "inspect_parameter_schema",
+  "set_element_parameter",
 ];
 
 assert.deepEqual([...tools.keys()], expectedTools);
@@ -97,6 +98,10 @@ assert.match(showPlan3dDescription, /LIVE_VIEW_WORKFLOW_WRAPPER/);
 assert.match(coordinationDescription, /VISUAL_ARTIFACT_EXPORT_ONLY/);
 assert.match(coordinationDescription, /Do not use this as the primary tool for live view navigation/);
 assert.match(coordinationDescription, /Use qa_high_contrast explicitly/);
+const setParameterDescription = tools.get("set_element_parameter").description;
+assert.match(setParameterDescription, /PRODUCTION_PARAMETER_WRITE/);
+assert.match(setParameterDescription, /Never writes by visible display name alone/);
+assert.match(setParameterDescription, /Defaults to dryRun/);
 
 const autoStyleExpectations = {
   raw_evidence: "raw",
