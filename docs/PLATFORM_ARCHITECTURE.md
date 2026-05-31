@@ -142,6 +142,48 @@ noise.
 See `docs/REVAGENT_USAGE_INTELLIGENCE.md` for the event schema, signal
 boundaries, and environment controls.
 
+## Live Dashboard
+
+The live dashboard is a read-only monitoring layer on top of the NAS reports
+tree. It does not call Revit, does not send MCP commands, and does not write
+telemetry or release state.
+
+- Runtime live feed:
+  `reports\live\machines\<machine>\status.json` and
+  `reports\live\machines\<machine>\activity\YYYY-MM-DD.ndjson`
+- Machine install/update health:
+  `reports\machines\<machine>\latest.json`
+- Summary/LLM handoff inputs:
+  `reports\summaries\latest.json` and `/api/brief`
+- Stable version comparison:
+  `channels\stable.json`
+
+The coordinator starts the local dashboard with
+`scripts\start-live-dashboard.ps1`, normally on `http://127.0.0.1:8765`.
+The browser polls `/api/overview` every 3 seconds with bounded responses and
+single-flight refreshes. The main UI is intentionally limited to compact
+Machine Status Windows and All Status Activity; deeper usage, friction, and
+tool metrics stay available through summaries and `/api/brief`.
+
+Machine state is split into independent dimensions so operational state is not
+confused with version state:
+
+- connection: `Online`, `Stale`, `Offline`
+- version: `Up to date`, `Outdated`, `Unknown`
+- task: `Running`, `Idle`
+- update exception: `Update failed`, `Pending restart`
+
+Connection thresholds are configurable by dashboard server settings:
+`staleSeconds` defaults to 60 seconds and `offlineSeconds` defaults to 300
+seconds. A heartbeat older than `offlineSeconds`, a missing `status.json`, or a
+missing heartbeat is `Offline`.
+
+The coordinator can optionally expose the same read-only local dashboard through
+the Cloudflare Tunnel hostname `https://dashboard.revagent.app`. This is an
+access path only; it must not change the no-Revit-command/no-writes safety
+contract. Protect the hostname with Cloudflare Access or an equivalent office
+policy before broader external sharing.
+
 The deterministic daily reader is
 `scripts/summarize-usage-intelligence.ps1`. It combines
 `reports\machines\<machine>\latest.json` with one UTC day of

@@ -8,15 +8,17 @@ non-blocking live feed that a dashboard can poll every 2-5 seconds.
 
 - Show each workstation's current revAgent activity.
 - Show the same kind of task names users see in the revAgent status window.
-- Keep machine health, version state, usage summaries, and live activity in one
-  dashboard surface.
+- Keep machine health, version state, task state, and live activity in one
+  monitoring surface, with usage summaries available through compact API/LLM
+  handoff endpoints instead of crowding the main status board.
 - Keep all live publishing best effort and invisible to production users.
 - Never let live dashboard publishing block, slow, or fail a Revit/MCP task.
 
 ## Non-Goals For The First Pass
 
 - No database service.
-- No internet service.
+- No central database service. The coordinator can optionally expose the
+  read-only local dashboard through a Cloudflare Tunnel.
 - No Revit-side binary refactor.
 - No direct polling from the dashboard into each workstation's Revit process.
 - No requirement that every live activity event is durable; daily telemetry
@@ -130,16 +132,22 @@ The dashboard can poll:
 - `reports\machines\*\latest.json` every 30-60 seconds.
 - `reports\summaries\latest.json` every 30-60 seconds or on demand.
 
-A machine is stale when:
+A machine connection state is calculated from the live heartbeat:
 
-- `status.json` is missing, or
-- `lastHeartbeatUtc` is older than a configurable threshold, initially 60
-  seconds.
+- `Online`: `lastHeartbeatUtc` is within `staleSeconds`, default 60 seconds.
+- `Stale`: heartbeat is older than `staleSeconds` but within `offlineSeconds`,
+  default 300 seconds.
+- `Offline`: `status.json` is missing, unreadable, has no heartbeat, or the
+  heartbeat is older than `offlineSeconds`.
 
 ## MVP Dashboard Panels
 
-- Machine status windows: online/stale, version, user, active task, heartbeat,
-  update state, and monitor-selection controls per machine.
+- Machine status windows: compact machine cards with user, installed version,
+  last seen time, monitor-selection controls, and separate badges for
+  connection, version, task, and update-exception state.
+- Machine status labels: connection uses `Online`, `Stale`, `Offline`; version
+  uses `Up to date`, `Outdated`, `Unknown`; task uses `Running`, `Idle`; update
+  exceptions use `Update failed` or `Pending restart`.
 - All-machine status activity: recent activity from selected machines, limited
   to 50 visible records by default and expandable to 200 records.
 - Status-window semantics: dashboard activity is a user-facing task projection,
@@ -151,7 +159,9 @@ A machine is stale when:
 - Machine filters: All Status Activity can monitor all machines or a selected
   one/multiple-machine subset without changing the underlying live feed.
 - Theme mode: System, Light, and Dark.
-- Deployment health: installed vs stable version and latest update status.
+- Deployment health: installed vs stable version is shown as a version badge;
+  update failures and Revit-close deferrals are shown only when they need
+  attention.
 
 ## Implementation Phases
 
@@ -173,8 +183,8 @@ A machine is stale when:
 - Uses 3 second browser refresh against `/api/overview`; the server reads
   `reports\live`, `reports\machines`, `reports\summaries`, and
   `channels\stable.json`.
-- Shows revAgent-status-style all-machine activity, machine status cards,
-  active task, and deployment state.
+- Shows revAgent-status-style all-machine activity, machine status cards, and
+  separate connection/version/task/update-exception states.
 - The dashboard server projects raw live activity into status-window style rows
   before sending `/api/overview`; grouped rows carry `groupedEventCount` and
   `groupedScopes` for diagnostics.
@@ -182,12 +192,16 @@ A machine is stale when:
   snapshot, the dashboard uses that status history as the authoritative Recent
   Tasks projection and hides matching telemetry duplicates. Raw live telemetry
   stays available as fallback and diagnostics.
-- Uses a 1/2 desktop layout: Machine Status Windows stay in the left column;
-  All Status Activity stays in the wider right column.
+- Uses a 1/3 plus 2/3 desktop layout: Machine Status Windows stay in the left
+  column; All Status Activity stays in the wider right column.
 - Keeps the all-machine activity window bounded by showing 50 live records by
   default, with an explicit expansion path to 200 records.
 - Provides machine filters for one or multiple selected monitoring targets.
 - Provides System/Light/Dark theme selection.
+- Preserves the All Status Activity scroll position during refresh when the
+  operator is reading older rows.
+- Supports iPhone Safari/Chrome with a single-column responsive layout and
+  horizontally scrollable machine filters.
 - Does not write to Revit, NAS release state, or telemetry.
 - Covered by `dashboard/smoke-test.mjs`, `scripts/test-live-dashboard.ps1`,
   and `scripts/test-all.ps1`.
@@ -226,12 +240,32 @@ A machine is stale when:
 - Kept separate from live dashboard publishing and covered by
   `scripts/test-live-dashboard.ps1`.
 
+### Phase 5 - Coordinator Web Exposure
+
+- Implemented outside the runtime with a Cloudflare Tunnel on the coordinator
+  workstation.
+- Public URL: `https://dashboard.revagent.app`.
+- Tunnel target: the local read-only dashboard at `http://127.0.0.1:8765`.
+- The tunnel must not change the dashboard safety contract: it still reads only
+  NAS reports/live files and never sends Revit commands or writes release state.
+- Before broader sharing, protect the hostname with Cloudflare Access or an
+  equivalent office access policy.
+
 ## Release Guidance
 
-Phase 1 is runtime-only. It should not require a Revit add-in payload rebuild.
+Dashboard/feed changes should be classified by changed surface before release:
+
+- Runtime live-feed changes are runtime-only unless a Revit add-in status
+  payload field changes.
+- Dashboard server/UI changes are coordinator package changes and do not require
+  Revit to close.
+- Revit status-window or add-in payload changes still follow the Revit-close
+  policy.
+
 Before deployment:
 
 - Run runtime build/tests.
+- Run `scripts\test-live-dashboard.ps1`.
 - Run installer smoke tests.
 - Confirm Revit payload hash is unchanged in the release manifest.
 - Deploy through the normal NAS stable release flow.

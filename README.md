@@ -21,6 +21,9 @@ remain exact implementation, tool, package, manifest, and path identifiers.
 - `installer/revit-plugin/`: bundled Revit add-in payload
 - `installer/command-payload/`: command set DLL and manifest backup
 - `installer/runtime-mcp-server/`: TypeScript source and bundled local runtime MCP server build for live Revit execution
+- `dashboard/`: read-only live dashboard server and browser UI for office monitoring
+- `docs/REVAGENT_LIVE_DASHBOARD_PLAN.md`: live dashboard feed, UI, polling, and public exposure plan
+- `docs/REVAGENT_USAGE_INTELLIGENCE.md`: usage-intelligence event, summary, and analyst pipeline
 - `docs/REVIT_IMAGE_EXPORT.md`: visual QA export workflow for active views,
   selected views, and coordination-focused 3D review images
 - `installer/revit-api-docs-mcp/`: TypeScript source and required companion local MCP server for Revit API DLL + XML documentation search
@@ -436,7 +439,7 @@ Expected MCP servers:
 
 11. If the installer stops with a Roslyn runtime error, repair the Revit 2022 installation first. Do not try to fix a normal end-user install by adding NuGet packages into the deployed bundle.
 
-Expected bundled runtime commands: 21 tools registered by the runtime server.
+Expected bundled runtime commands: 22 tools registered by the runtime server.
 
 - `list_revit_instances`
 - `get_revit_mcp_status`
@@ -459,6 +462,7 @@ Expected bundled runtime commands: 21 tools registered by the runtime server.
 - `smart_focus_elements`
 - `inspect_elements`
 - `inspect_parameter_schema`
+- `set_element_parameter`
 
 Expected bundled docs commands:
 
@@ -516,7 +520,13 @@ revit-mcp-skill/
 |   |-- PLATFORM_ARCHITECTURE.md
 |   |-- PLATFORM_MODERNIZATION_SUMMARY.md
 |   |-- REPOSITORY_STRUCTURE.md
+|   |-- REVAGENT_LIVE_DASHBOARD_PLAN.md
+|   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
+|-- dashboard/
+|   |-- server.mjs
+|   |-- smoke-test.mjs
+|   `-- public/
 |-- references/
 |   |-- parameters.md
 |   |-- units.md
@@ -686,14 +696,30 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-live-dashboard.ps1
 
 It serves `http://127.0.0.1:8765`, reads only `reports\machines`,
 `reports\live`, `reports\summaries`, and the stable channel manifest, and
-refreshes the browser every 3 seconds. It shows a left-side Machine Status
-Windows list, a right-side All Status Activity stream with multi-machine
-filters, and System/Light/Dark theme selection. Recent task rows prefer the
-Revit add-in status history when available, so result state, duration, payload
-size, and ordering match the local revAgent status window. All Status Activity
-shows the latest 50 selected live records by default and can be expanded to 200
-records from the page. It never sends Revit commands, writes telemetry, or
-changes NAS release state.
+refreshes the browser every 3 seconds. The coordinator dashboard may also be
+published through the office Cloudflare Tunnel as
+`https://dashboard.revagent.app`, forwarding only this read-only local HTTP
+surface. Put Cloudflare Access or an equivalent access policy in front of it
+before sharing it beyond trusted office users.
+
+The browser UI is designed for desktop and iPhone Safari/Chrome. It shows a
+left-side Machine Status Windows list, a right-side All Status Activity stream
+with all/one/multiple-machine filters, and System/Light/Dark theme selection.
+Machine cards keep independent state badges instead of one combined label:
+connection is `Online`, `Stale`, or `Offline`; version is `Up to date`,
+`Outdated`, or `Unknown`; task state is `Running` or `Idle`; update exceptions
+are shown only as `Update failed` or `Pending restart`.
+
+Connection freshness is calculated from the live heartbeat: `Online` is within
+`staleSeconds` (default 60 seconds), `Stale` is older but still within
+`offlineSeconds` (default 300 seconds), and `Offline` means no live file or an
+older heartbeat. Recent task rows prefer the Revit add-in status history when
+available, so result state, duration, payload size, and ordering match the
+local revAgent status window. All Status Activity shows the latest 50 selected
+live records by default and can be expanded to 200 records from the page. The
+activity scroll position is preserved during refresh while the user is reading
+older rows. It never sends Revit commands, writes telemetry, or changes NAS
+release state.
 
 The dashboard polling surface is production-bounded: `/api/overview` returns
 only the compact fields needed by the UI, daily live activity reads are tail

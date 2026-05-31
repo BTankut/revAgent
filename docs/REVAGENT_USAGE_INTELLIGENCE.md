@@ -217,11 +217,13 @@ The current usage-intelligence stack includes:
    second dashboard polling.
 2. A read-only web dashboard in `dashboard/` with a Machine Status Windows list,
    deployment health per machine, and a revAgent-status-style All Status
-   Activity stream. The dashboard keeps machine status cards in the left
-   column, the filtered activity stream in the wider right column, and limits
-   All Status Activity to 50 visible records by default with expansion to 200.
-   Users can monitor all machines or select one/multiple machines without
-   changing the live feed.
+   Activity stream. The browser UI intentionally stays simple: machine status
+   cards in the left column and the filtered activity stream in the wider right
+   column. Machine cards show separate connection, version, task, and
+   update-exception badges instead of one combined state. All Status Activity
+   is limited to 50 visible records by default with expansion to 200, preserves
+   manual scroll position during refresh, and supports all/one/multiple-machine
+   monitoring filters without changing the live feed.
 3. A compact `/api/brief` dashboard export for separate analyst/LLM sessions.
 4. `scripts\publish-live-backfill.ps1`, a repair task that backfills local live
    spool files when NAS was offline.
@@ -234,11 +236,10 @@ raw dynamic-code payload details, params, and long previews out of
 telemetry blobs. Those richer details remain available in durable telemetry and
 daily summaries for offline analysis.
 
-The dashboard's top activity metrics use the current live feed. Live
-Operations, Guarded, and Failed count terminal `mcp.tool` events from today's
-live activity tail, so they reflect what is happening on the dashboard now.
-Scheduled daily summaries remain the slower analytic layer for trend and LLM
-review.
+The dashboard API still exposes compact current-state metrics for `/api/brief`
+and diagnostics, but the browser's main monitoring page no longer displays top
+metric cards, tool usage, or friction panels. Scheduled daily summaries remain
+the slower analytic layer for trend and LLM review.
 
 ## Live Dashboard Feed
 
@@ -267,6 +268,18 @@ bridge/dynamic commands.
 The dashboard Recent Tasks projection prefers the Revit add-in status snapshot
 when available, because that is the same source shown in the local revAgent
 status window. Runtime live activity remains the fallback and diagnostic layer.
+
+Connection state is derived from the live heartbeat, not from version/update
+status: `Online` is within the stale threshold, `Stale` is older but still
+inside the offline threshold, and `Offline` means no live heartbeat or a
+heartbeat older than the offline threshold. Version state is independent
+(`Up to date`, `Outdated`, `Unknown`), and task state is independent
+(`Running`, `Idle`).
+
+The coordinator dashboard can be exposed as
+`https://dashboard.revagent.app` through a Cloudflare Tunnel to the local
+read-only server. This changes only access to the dashboard; it does not add a
+new writer or direct Revit polling path.
 
 The live feed is intentionally not the durable audit record. It is a UI feed.
 Writes are fire-and-forget, bounded by `REVAGENT_LIVE_STATUS_MAX_IN_FLIGHT`,
