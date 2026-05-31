@@ -60,9 +60,12 @@ with visual evidence whenever the visible result matters.
 Available runtime tools:
 
 - `export_revit_view_image`: exports the active view, the active view's visible
-  region, or a selected Revit view to PNG/JPEG/TIFF/BMP/TARGA. It does not
-  write model elements or view settings. PNG/JPEG/BMP/TIFF exports are
-  normalized to the requested `pixelSize` by default. Use
+  region, a DrawingSheet, or a selected Revit view/sheet to
+  PNG/JPEG/TIFF/BMP/TARGA. It does not write model elements or view settings.
+  Schedule views cannot be exported directly; export the DrawingSheet that
+  contains the schedule and use `get_active_view_context` to inspect
+  `scheduleSheetInstances`. PNG/JPEG/BMP/TIFF exports are normalized to the
+  requested `pixelSize` by default. Use
   `files[].finalPixelSizeMatchesRequest` to verify the final image dimension;
   `files[].resizedToRequestedPixelSize` only reports whether post-processing
   changed the file.
@@ -83,13 +86,14 @@ Available runtime tools:
 
 Practical use:
 
-1. Use `export_revit_view_image` when raw screen/view evidence is enough.
+1. Use `export_revit_view_image` when raw screen/view/sheet evidence is enough.
 2. Do not rely on one low-resolution full-plan export for technical plan
    reading. Use 6000-8000 px / 300 DPI for full plans, and use a zoomed
    `visible_region` export for detail review. Leave `enforcePixelSize` enabled
    unless debugging raw Revit export dimensions.
-3. If the image is dense or unreadable, use `export_revit_coordination_image`
-   around target element ids for focused 3D evidence.
+3. If the image is dense, unreadable, or the task needs element-specific
+   evidence, use `export_revit_coordination_image` around target element ids
+   for focused 3D evidence.
    For single-target exports, prefer the normal model-first result:
    `cropBasis: "model_bbox_projection"` and `postProcessedCropApplied=false`.
 4. Record the exported file path in the user response or review note.
@@ -105,6 +109,8 @@ Live Revit navigation is a different intent from image export:
 - For "PNG", "JPEG", "export", "report image", "evidence image", or
   "görsel çıktı", use `export_revit_view_image` or
   `export_revit_coordination_image`.
+- For schedule evidence, export a DrawingSheet that contains the schedule; do
+  not expect a standalone schedule view to export as an image.
 - Do not use `export_revit_coordination_image` as the primary tool for live
   selected-element zoom or opening an element in a Revit view. Use live view
   navigation first, then optionally export the active view.
@@ -135,6 +141,9 @@ controlled Revit API operations.
   transaction.
 - `send_code_to_revit_safe` remains for read-only probes and previews; it must
   not be used as a write-commit path.
+- Dynamic snippets are injected into `Execute(Document document, object[]
+  parameters)`. `document` and `parameters` are guaranteed; `uidoc` is not
+  automatically in scope.
 
 ## File And Deployment Discipline
 

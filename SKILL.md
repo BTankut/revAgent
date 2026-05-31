@@ -55,7 +55,8 @@ custom-code workflows.
 - `get_revit_session_context` - first-call context for version/build/culture,
   document state, active view, selection, MEP counts, and link counts
 - `get_active_view_context` - model-view vs sheet-view context; sheets return
-  placed viewports instead of direct model-category assumptions
+  placed viewports and `scheduleSheetInstances` instead of direct
+  model-category assumptions
 - `list_open_views` - list currently open Revit UI view tabs
 - `activate_view` - activate an existing plan, 3D, sheet, schedule, section,
   elevation, drafting, or legend view without opening a transaction
@@ -81,8 +82,10 @@ custom-code workflows.
 - `create_3d_view_for_elements` - live view navigation primitive: create or reuse a named 3D view for elements,
   enforce section box on/off, activate it, and focus/select the elements with
   rollback inside its own view update transactions
-- `export_revit_view_image` - export the active view, visible region, or a
-  selected view to PNG/JPEG/TIFF/BMP/TARGA through `Document.ExportImage`.
+- `export_revit_view_image` - export the active view, visible region,
+  DrawingSheet, or a selected view/sheet to PNG/JPEG/TIFF/BMP/TARGA through
+  `Document.ExportImage`. Schedule views are not directly exportable; export a
+  sheet that contains the schedule.
   This is read-only, reports actual generated image dimensions, and by default
   normalizes PNG/JPEG/BMP/TIFF output so the requested `pixelSize` is the final
   fit-direction dimension. Check `files[].finalPixelSizeMatchesRequest` for the
@@ -206,8 +209,12 @@ tool.
 - If the user says "export", "PNG", "JPEG", "image file", "report image",
   "evidence image", "LLM visual evidence", "görsel çıktı", or "rapora görsel",
   use export tools:
-  - Existing active/requested view image: `export_revit_view_image`.
-  - Coordination/review image artifact around target ids:
+  - Existing active/requested view or DrawingSheet image:
+    `export_revit_view_image`.
+  - Schedule evidence: export the DrawingSheet that contains the schedule; use
+    `get_active_view_context` on the sheet to inspect
+    `scheduleSheetInstances`.
+  - Element-specific coordination/review image artifact around target ids:
     `export_revit_coordination_image`.
 - Do not use `export_revit_coordination_image` as the primary tool for live
   view navigation, selected-element zoom, or opening an element in a new Revit
@@ -220,8 +227,9 @@ tool.
 ## Visual QA Playbook
 
 For visual QA after any Revit MCP operation, use `export_revit_view_image` for
-raw plan/view evidence and `export_revit_coordination_image` when dense MEP
-systems need a focused 3D review image. Prefer PNG at 300 DPI. For full plans,
+raw plan/view/sheet evidence and `export_revit_coordination_image` as the
+default element-evidence export when dense MEP systems need a focused 3D review
+image. Prefer PNG at 300 DPI. For full plans,
 use `pixelSize` 6000-8000; for technical text reading, zoom/focus the active
 view and export `visible_region` instead of relying on one low-resolution full
 plan. Keep `enforcePixelSize` on unless the raw Revit export dimensions are
@@ -369,6 +377,10 @@ public static object Execute(Document document, object[] parameters)
 - `document` and `parameters` are already in scope. Do not redeclare them.
 - `document` is `Autodesk.Revit.DB.Document`.
 - `parameters` is `object[]` inside the Revit execution template.
+- `uidoc` is not automatically in scope. If UI state is needed, use dedicated
+  runtime tools such as `get_ui_state`, `get_active_view_context`,
+  `list_open_views`, or the focus/navigation tools instead of assuming a
+  `uidoc` variable exists inside the snippet.
 - Some hosts expose the MCP tool schema as `parameters?: string[]` even
   though the wrapper passes an object array internally. For portable tool
   calls, pass simple strings and parse them inside the snippet when needed.
@@ -577,8 +589,11 @@ Apply these only when the task triggers them.
 - [ ] `inspect_parameter_schema` run before generating any write snippet.
 - [ ] Any write targeting localized, shared, or user-visible parameters first
       uses `parameterNameMatchMode: "exact"` or explicitly selects exactly one
-      returned parameter by `name` + `source` + `builtInParameter` +
-      `storageType`.
+      returned parameter by `name` + `source` + `builtInParameterId` when
+      available + `storageType`.
+- [ ] Never use a visible/display parameter name alone as a write target.
+      `find_elements` output is discovery-only; parameter writes require
+      `inspect_parameter_schema` preflight and stable parameter identity.
 - [ ] `send_code_to_revit_safe` used for read-only probes and previews; it must
       not be used with `transactionMode: "auto"`.
 - [ ] Raw `send_code_to_revit` write used only after explicit user commit
@@ -587,7 +602,8 @@ Apply these only when the task triggers them.
 **Active view / sheet-sensitive work:**
 
 - [ ] `get_active_view_context` called before assuming visible model elements
-      when the active view may be a sheet.
+      when the active view may be a sheet. On sheets, inspect both `viewports`
+      and `scheduleSheetInstances`.
 
 **Linked model / room matching:**
 

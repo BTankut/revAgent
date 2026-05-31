@@ -892,6 +892,15 @@ return new {
   targetOverrideMode = targetOverrideMode,
   targetOverrideResetCount = targetOverrideResetCount,
   view = new { id = reviewView.Id.IntegerValue, name = reviewView.Name, created = createdView, sectionBoxActive = reviewView.IsSectionBoxActive },
+  createdViews = createdView
+    ? new object[] { new { id = reviewView.Id.IntegerValue, name = reviewView.Name, purpose = "coordination_image_review_view" } }
+    : new object[] {},
+  cleanup = new {
+    cleanupAfterExportApplied = false,
+    note = createdView
+      ? "A reusable review view was created and kept for audit/reuse. Delete it manually only if this QA view is no longer needed."
+      : "Existing reusable review view was updated and kept."
+  },
   framing = new {
     mode = framingMode,
     sectionBoxApplied = sectionBoxApplied,

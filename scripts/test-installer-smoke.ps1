@@ -397,6 +397,7 @@ try {
     $inspectElementsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_elements.ts")
     $showPlan3dToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\show_element_in_plan_and_3d.ts")
     $sessionContextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_revit_session_context.ts")
+    $activeViewContextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_active_view_context.ts")
     $instanceListToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\list_revit_instances.ts")
     $viewImageToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\export_revit_view_image.ts")
     $coordinationImageToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\export_revit_coordination_image.ts")
@@ -424,6 +425,8 @@ try {
     Assert-True ($openPlanToolCode -match 'planCandidateMode: z\.enum\(\["metadataFirst", "verified"\]\)') "open_existing_plan_for_element_level tool must expose metadataFirst/verified plan selection."
     Assert-True ($openPlanToolCode -match 'maxMetadataVerifyCandidates: z\.number\(\)\.int\(\)\.min\(1\)\.max\(25\)') "open_existing_plan_for_element_level tool must expose a bounded metadata verification cap."
     Assert-True ($findToolCode -match 'planCandidateMode: z\.enum\(\["none", "metadata", "verified"\]\)') "find_elements must expose explicit plan candidate modes."
+    Assert-True ($findToolCode -match 'writeSafetyWarning') "find_elements compact output must make discovery-only write risk visible."
+    Assert-True ($findToolCode -match 'builtInParameterId') "find_elements write guidance must require stable parameter identity before writes."
     Assert-True ($findCommandCode -match 'planCandidateMode != "none"') "find_elements command must keep plan candidate scans opt-in."
     Assert-True ($discoveryCode -match 'verifyVisibility \? element : null') "metadata plan candidates must avoid expensive per-view element visibility checks."
     Assert-True ($showPlan3dToolCode -match 'responseMode: z\.enum\(\["compact", "full"\]\)') "show_element_in_plan_and_3d must expose compact/full response modes."
@@ -439,6 +442,9 @@ try {
     Assert-True ($sessionContextToolCode -match 'apiProbeState') "Session context must move tool-probe modifiable state out of the document summary."
     Assert-True ($sessionContextToolCode -match 'documentIsModifiableDuringProbe') "Session context must label probe-time modifiable state clearly."
     Assert-True ($sessionContextToolCode -notmatch 'apiProbeState\s*=\s*new\s*\{\s*isModifiable\s*=') "Session context must not expose apiProbeState.isModifiable."
+    Assert-True ($activeViewContextToolCode -match 'ScheduleSheetInstance') "Active sheet context must inspect placed schedule instances."
+    Assert-True ($activeViewContextToolCode -match 'scheduleSheetInstances') "Active sheet context must expose scheduleSheetInstances."
+    Assert-True ($activeViewContextToolCode -match 'includeSheetScheduleInstances') "Active sheet context must allow schedule instance collection to be disabled."
     Assert-True ($instanceListToolCode -match 'documentIsModifiableDuringProbe') "Instance list must label probe-time modifiable state clearly."
     Assert-True ($instanceListToolCode -notmatch 'apiProbeState\s*=\s*new\s*\{\s*isModifiable\s*=') "Instance list must not expose apiProbeState.isModifiable."
     Assert-True ($statusToolCode -match 'runtimeIdentity') "Status output must include runtime identity metadata."
@@ -479,6 +485,9 @@ try {
     Assert-True ($viewImageToolCode -match 'enforcePixelSize') "View image export must expose enforcePixelSize."
     Assert-True ($viewImageToolCode -match 'resizeImageToRequestedPixelSize') "View image export must normalize exported image dimensions after Revit export."
     Assert-True ($viewImageToolCode -match 'finalPixelSizeMatchesRequest') "View image export must explicitly report whether the final image dimension matches the request."
+    Assert-True ($viewImageToolCode -notmatch 'selectedView is ViewSheet') "View image export must allow DrawingSheet exports."
+    Assert-True ($viewImageToolCode -match 'schedule_views_cannot_be_exported_directly') "View image export must return explicit schedule export guidance."
+    Assert-True ($viewImageToolCode -match 'placedOnSheets') "Schedule export failure should include sheets that contain the schedule when available."
     Assert-True ($safeCodeToolCode -match 'formatSafetyBlock') "Safe dynamic execution wrapper must classify expected write rejections as guarded safety blocks."
     Assert-True ($safeCodeToolCode -match 'safe_wrapper_rejected_write_looking_code') "Safe dynamic execution wrapper must expose a stable safety reason for write-looking snippets."
     Assert-True ($telemetryCode -match 'normalizeMachineName') "Telemetry must normalize machine names before building NAS event paths."
@@ -499,6 +508,8 @@ try {
     Assert-True ($create3dToolCode -match 'LIVE_VIEW_NAVIGATION_PRIMITIVE') "create_3d_view_for_elements must identify itself as the live 3D navigation primitive."
     Assert-True ($showPlan3dToolCode -match 'LIVE_VIEW_WORKFLOW_WRAPPER') "show_element_in_plan_and_3d must identify itself as the live plan+3D workflow wrapper."
     Assert-True ($coordinationImageToolCode -match 'VISUAL_ARTIFACT_EXPORT_ONLY') "Coordination image export must identify itself as an image artifact export tool."
+    Assert-True ($coordinationImageToolCode -match 'createdViews') "Coordination image export must report created review views for cleanup/audit."
+    Assert-True ($coordinationImageToolCode -match 'cleanupAfterExportApplied') "Coordination image export must report cleanup behavior explicitly."
     Assert-True ($coordinationImageToolCode -match 'Do not use this as the primary tool for live view navigation') "Coordination image export must warn against live view navigation use."
     Assert-True ($coordinationImageToolCode -match 'targetVisualStyle') "Coordination image export must expose target visual style profiles."
     Assert-True ($coordinationImageToolCode -match 'resolveAutoTargetVisualStyle') "Coordination image export must resolve auto target visual style explicitly."

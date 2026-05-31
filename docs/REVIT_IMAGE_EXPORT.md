@@ -7,10 +7,15 @@ status preflight and single-command rule.
 ## Tools
 
 - `export_revit_view_image`
-  - Purpose: export the active view or a selected view as evidence.
+  - Purpose: export the active view, a selected view, or a DrawingSheet as
+    evidence.
   - Revit write action: none.
-  - Best for: raw screenshots, active plan evidence, exported visible region,
-    high-resolution PNG/JPEG/TIFF/BMP/TARGA output.
+  - Best for: raw screenshots, active plan evidence, sheet evidence, exported
+    visible region, high-resolution PNG/JPEG/TIFF/BMP/TARGA output.
+  - Schedule note: standalone schedule views cannot be exported directly with
+    `Document.ExportImage`; export a DrawingSheet that contains the schedule.
+    Use `get_active_view_context` on the sheet to list
+    `scheduleSheetInstances`.
   - Output: each generated file reports `bytes`, `width`, and `height`. Treat
     `pixelSize` as the requested final size. By default, PNG/JPEG/BMP/TIFF
     exports are normalized after Revit export so the requested fit-direction
@@ -33,6 +38,10 @@ status preflight and single-command rule.
     Target-pixel detection is QA-only. Missing highlight pixels are reported as
     warnings for surface-highlight styles and as notices for `raw` /
     `outline_only`.
+  - Cleanup/audit: the response reports `view.created`, `createdViews`, and
+    `cleanup.cleanupAfterExportApplied` so temporary review views are visible
+    to the operator. The current safe default keeps the reusable review view
+    for audit/reuse instead of deleting it after export.
 
 Neither tool creates ducts, pipes, fittings, terminals, sprinklers, or other
 physical MEP model elements.
@@ -77,6 +86,18 @@ For a selected view without changing the active UI tab:
 }
 ```
 
+For a sheet, including sheet-placed schedules:
+
+```json
+{
+  "viewName": "M701 - Mechanical Schedules",
+  "range": "set_of_views",
+  "format": "png",
+  "pixelSize": 6000,
+  "dpi": "300"
+}
+```
+
 For coordination review around known element ids:
 
 ```json
@@ -106,6 +127,8 @@ For coordination review around known element ids:
 The smoke-tested export matrix covers:
 
 - Export ranges: `current_view`, `visible_region`, `set_of_views`
+- View kinds: model views and DrawingSheet views; standalone schedule views
+  return explicit guidance to export a containing sheet.
 - Fit directions: `horizontal`, `vertical`
 - Pixel sizes: 1600 and 2400
 - DPI: 150 and 300

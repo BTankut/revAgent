@@ -40,7 +40,7 @@ function csharpNullableInt(value) {
     return String(Math.trunc(parsed));
 }
 export function registerExportRevitViewImageTool(server) {
-    server.tool("export_revit_view_image", "[VISUAL_ARTIFACT_EXPORT] Export the active Revit view or a selected Revit view to PNG/JPEG/TIFF/BMP/TARGA using Document.ExportImage. Use this when the user asks for an image file, report/evidence screenshot, or LLM visual artifact from an existing view. Read-only: it does not create or modify Revit elements or views.", {
+    server.tool("export_revit_view_image", "[VISUAL_ARTIFACT_EXPORT] Export the active Revit view, DrawingSheet, or a selected view/sheet to PNG/JPEG/TIFF/BMP/TARGA using Document.ExportImage. Use this when the user asks for a raw image file, report/evidence screenshot, sheet export, or LLM visual artifact from an existing view. Schedule views cannot be exported directly; export a sheet containing the schedule instead. Read-only: it does not create or modify Revit elements or views.", {
         ...connectionTargetSchema(z),
         viewId: z.union([z.number(), z.string()]).optional().describe("Optional Revit view id. When supplied, export uses set_of_views because Revit cannot export a non-active visible region."),
         viewName: z.string().optional().describe("Optional exact or partial view name. When supplied, export uses set_of_views unless range is explicitly current/visible."),
@@ -115,8 +115,40 @@ else if (selectorProvided) {
 if (selectedView == null) {
   return new { success = false, error = "view_not_found", viewId = viewIdInput, viewName = viewNameInput };
 }
-if (selectedView is ViewSchedule || selectedView is ViewSheet) {
-  return new { success = false, error = "unsupported_view_type_for_image_export", viewId = selectedView.Id.IntegerValue, viewName = selectedView.Name, viewType = selectedView.ViewType.ToString() };
+if (selectedView is ViewSchedule) {
+  var placedOnSheets = new List<object>();
+  try {
+    var selectedSchedule = selectedView as ViewSchedule;
+    var scheduleInstances = new FilteredElementCollector(document)
+      .OfClass(typeof(ScheduleSheetInstance))
+      .WhereElementIsNotElementType()
+      .Cast<ScheduleSheetInstance>()
+      .Where(instance => instance.ScheduleId.IntegerValue == selectedSchedule.Id.IntegerValue)
+      .ToList();
+    foreach (var instance in scheduleInstances) {
+      var ownerSheet = document.GetElement(instance.OwnerViewId) as ViewSheet;
+      placedOnSheets.Add(new {
+        instanceId = instance.Id.IntegerValue,
+        sheetId = ownerSheet != null ? (int?)ownerSheet.Id.IntegerValue : null,
+        sheetName = ownerSheet != null ? ownerSheet.Name : "",
+        sheetNumber = ownerSheet != null ? ownerSheet.SheetNumber : ""
+      });
+    }
+  }
+  catch (Exception ex) {
+    warnings.Add("schedule_sheet_instance_lookup_failed:" + ex.Message);
+  }
+  return new {
+    success = false,
+    error = "unsupported_view_type_for_image_export",
+    reason = "schedule_views_cannot_be_exported_directly_with_document_export_image",
+    guidance = "Export a DrawingSheet that contains this schedule. Use get_active_view_context on the sheet to inspect scheduleSheetInstances before choosing the sheet.",
+    viewId = selectedView.Id.IntegerValue,
+    viewName = selectedView.Name,
+    viewType = selectedView.ViewType.ToString(),
+    placedOnSheets = placedOnSheets.ToArray(),
+    warnings = warnings
+  };
 }
 if ((requestedRange == "current_view" || requestedRange == "visible_region") && activeView == null) {
   return new { success = false, error = "active_view_not_available" };

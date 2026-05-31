@@ -8,6 +8,43 @@ import {
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
 
+function addWriteSafetyGuidance(payload) {
+    if (!payload || typeof payload !== "object") return payload;
+    const success = payload.success ?? payload.Success;
+    if (success === false) return payload;
+
+    const count = Number(payload.count ?? payload.Count ?? 0);
+    const truncated = Boolean(payload.truncated ?? payload.Truncated);
+    const ambiguous = Boolean(payload.ambiguous ?? payload.Ambiguous);
+    const topConfidence = String(payload.topConfidence ?? payload.TopConfidence ?? "");
+    const warning =
+        "find_elements is discovery-only and is not sufficient evidence for parameter writes. Before writing, inspect the target with inspect_elements and inspect_parameter_schema using exact matching, then choose a stable element id and parameter identity. Do not write from a visible/display parameter name alone.";
+
+    payload.writeSafetyWarning = warning;
+    payload.writeSafety = {
+        sufficientForWrite: false,
+        requiresExactElementIdentity: true,
+        requiresParameterSchemaPreflight: true,
+        requiredPreflightTools: ["inspect_elements", "inspect_parameter_schema"],
+        parameterIdentityRule: "Use builtInParameterId when available; otherwise confirm source/shared/storage/readOnly identity. Display name alone is not a write target.",
+        resultRisk: {
+            count,
+            truncated,
+            ambiguous,
+            topConfidence,
+        },
+    };
+
+    if (typeof payload.SelectionHint === "string" && !payload.SelectionHint.includes("find_elements is discovery-only")) {
+        payload.SelectionHint = `${payload.SelectionHint} ${warning}`;
+    }
+    if (typeof payload.selectionHint === "string" && !payload.selectionHint.includes("find_elements is discovery-only")) {
+        payload.selectionHint = `${payload.selectionHint} ${warning}`;
+    }
+
+    return payload;
+}
+
 export function registerFindElementsTool(server) {
     server.tool("find_elements", "Find Revit elements by category and text across element name, family, type, mark, comments, and id. Returns match score/confidence/reason fields so ambiguous large-project results can be disambiguated before writes.", {
         ...connectionTargetSchema(z),
@@ -34,7 +71,7 @@ export function registerFindElementsTool(server) {
             }, {
                 ...executionOptionsFromArgs(args, "Find Revit elements"),
             });
-            return formatJsonContent(response && response.result ? response.result : response);
+            return formatJsonContent(addWriteSafetyGuidance(response && response.result ? response.result : response));
         }
         catch (error) {
             return formatJsonContent({

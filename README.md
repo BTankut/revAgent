@@ -54,7 +54,8 @@ Commit the source change and refreshed payload binaries together. See
 This repo stays self-contained and keeps the live Revit execution contract
 explicit:
 
-- `send_code_to_revit` expects code for `Execute(Document document, object[] parameters)`
+- `send_code_to_revit` expects code for `Execute(Document document, object[] parameters)`;
+  only `document` and `parameters` are guaranteed snippet-scope variables
 - the bundled Revit payload is built from the source under `src/revit-plugin`
 - the bundled Node wrapper and command payload support `transactionMode`:
   `auto` opens a wrapper-managed transaction, while `none` executes without an
@@ -592,10 +593,10 @@ small production surface instead of many narrow one-off commands.
 | --- | --- | --- |
 | Instance and status | `list_revit_instances`, `get_revit_mcp_status` | Read-only. `get_revit_mcp_status` is the only runtime tool intended to run while another Revit task is active. |
 | Dynamic execution | `send_code_to_revit`, `send_code_to_revit_safe` | Raw `send_code_to_revit` can write if the supplied C# writes. `transactionMode: "auto"` opens a wrapper-managed transaction and guards manual transaction snippets; `transactionMode: "none"` executes without an outer transaction. `send_code_to_revit_safe` is for read/preview work, rejects write-looking snippets, and uses `none`. |
-| Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_parameter_schema` | Read-only model/session/parameter inspection before engineering decisions or writes. |
+| Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_parameter_schema` | Read-only model/session/parameter inspection before engineering decisions or writes. `get_active_view_context` reports both sheet `viewports` and `scheduleSheetInstances`. |
 | Live view navigation | `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. |
 | View-data writes | `section_box_elements`, `create_3d_view_for_elements` | Can modify project view data by applying section boxes or creating/reusing 3D review views. Use explicit intent and verify afterward. |
-| Image artifacts | `export_revit_view_image`, `export_revit_coordination_image` | `export_revit_view_image` is read-only. `export_revit_coordination_image` writes only review view settings and image export settings, never ducts, pipes, fittings, terminals, or other physical model elements. |
+| Image artifacts | `export_revit_view_image`, `export_revit_coordination_image` | `export_revit_view_image` is read-only and supports active/requested views plus DrawingSheet export. Schedule views cannot be exported directly; export the sheet that contains the schedule. `export_revit_coordination_image` writes only review view settings and image export settings, never ducts, pipes, fittings, terminals, or other physical model elements. |
 
 The Revit add-in command payload still provides the low-level dynamic execution
 bridge internally. Common discovery, UI focus, plan/3D view workflow, parameter
@@ -608,9 +609,16 @@ Tool intent is intentionally split. Live "show/open/zoom/select in Revit"
 requests should use `focus_elements`, `smart_focus_elements`,
 `create_3d_view_for_elements`, or `show_element_in_plan_and_3d`. Image
 artifact requests such as PNG/JPEG/report/LLM evidence should use
-`export_revit_view_image` or `export_revit_coordination_image`. Do not use
+`export_revit_view_image` for raw view/sheet evidence or
+`export_revit_coordination_image` for element-specific evidence. Do not use
 `export_revit_coordination_image` as the primary tool for live Revit view
 navigation; navigate/focus first, then optionally export the active view.
+
+`find_elements` is discovery-only. Treat its compact response as insufficient
+for writes until `inspect_elements` and `inspect_parameter_schema` have
+confirmed the exact element and stable parameter identity. Use
+`builtInParameterId` when available; never write from a display parameter name
+alone.
 
 This runtime set is reflected in the Node MCP wrapper. The installer still copies the bundled Revit command payload required by the wrapper.
 

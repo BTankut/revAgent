@@ -4,6 +4,13 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added DrawingSheet support to `export_revit_view_image`, with clearer
+  guidance for unsupported standalone schedule views and sheet placement hints
+  when available.
+- Added `scheduleSheetInstances` to `get_active_view_context` for active sheet
+  inspection, including instance id, schedule id/name, point, and box data.
+- Made `find_elements` write-safety guidance explicit in compact responses and
+  documented that display parameter names alone are not valid write targets.
 - Added `scripts/summarize-usage-intelligence.ps1`, the first deterministic
   reader layer for NAS usage intelligence. It summarizes machine latest reports
   and daily runtime telemetry into `revagent.usage.summary.v1` JSON for
