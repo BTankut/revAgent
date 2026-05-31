@@ -142,6 +142,10 @@ A machine is stale when:
   bounded status-history style activity list per machine.
 - All-machine status activity: recent activity from every machine, limited to
   50 visible records by default and expandable to 200 records.
+- Status-window semantics: dashboard activity is a user-facing task projection,
+  not a raw event log. It collapses `started`/terminal lifecycle pairs and
+  wrapper-level `mcp.tool` plus nested `send_code_to_revit` events into one
+  task row while keeping raw telemetry intact for analysis.
 - Desktop layout: the left two-thirds column contains All Status Activity,
   Tool Usage, and Friction stacked vertically; the right one-third column is
   reserved for stacked Machine Status Windows.
@@ -150,8 +154,8 @@ A machine is stale when:
 - Guarded/failed strip: safety blocks and failures in the last N minutes.
 - Summary strip: today/latest sessions, production operations, tool usage.
 - Top activity metrics: Live Operations, Guarded, and Failed are derived from
-  terminal `mcp.tool` events in the current live feed, not from the scheduled
-  daily summary.
+  terminal user-facing task rows in the current live feed, not from the
+  scheduled daily summary or raw duplicate event rows.
 - Deployment health: installed vs stable version and latest update status.
 
 ## Implementation Phases
@@ -177,6 +181,9 @@ A machine is stale when:
 - Shows revAgent-status-style per-machine history windows, an all-machine
   activity window, active task, deployment state, latest summary metrics,
   tool usage, and guarded/failed/slow friction samples.
+- The dashboard server projects raw live activity into status-window style rows
+  before sending `/api/overview`; grouped rows carry `groupedEventCount` and
+  `groupedScopes` for diagnostics.
 - Uses a 2/1 desktop layout: All Status Activity, Tool Usage, and Friction
   stay in the left column; Machine Status Windows stay stacked in the right
   column.

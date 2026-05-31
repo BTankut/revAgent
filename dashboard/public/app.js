@@ -47,7 +47,7 @@ const stateLabels = {
 
 const statusMarks = {
   started: "...",
-  completed: "OK",
+  completed: "✓",
   guarded: "!",
   failed: "X",
 };

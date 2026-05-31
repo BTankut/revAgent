@@ -206,9 +206,196 @@ function withActivityFallback(machine, machineActivity) {
   };
 }
 
+function activityTimestamp(event) {
+  return event?.timestampUtc || event?.finishedAtUtc || event?.startedAtUtc || "";
+}
+
+function activityTimeMs(event) {
+  const ms = Date.parse(String(activityTimestamp(event) || ""));
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function activityStartMs(event) {
+  const ms = Date.parse(String(event?.startedAtUtc || event?.timestampUtc || event?.finishedAtUtc || ""));
+  return Number.isFinite(ms) ? ms : activityTimeMs(event);
+}
+
+function isTerminalPhase(phase) {
+  return ["completed", "guarded", "failed"].includes(phase);
+}
+
+function displayPhaseForEvent(event) {
+  const phase = event?.phase || event?.state || "completed";
+  const normalizedPhase = phase === "running" ? "started" : phase === "blocked" ? "guarded" : phase;
+  const errorMessage = String(event?.result?.errorMessage || "").toLowerCase();
+  const action = String(event?.result?.action || "").toLowerCase();
+  const guidedUnsupportedResult =
+    errorMessage.includes("unsupported_view_type_for_image_export") ||
+    errorMessage.includes("schedule_views_cannot_be_exported_directly") ||
+    action.includes("unsupported_view_type_for_image_export");
+
+  // A controlled "unsupported, here is the sheet to use" response is not an
+  // operational failure in the live status board. Keep raw telemetry as-is;
+  // only normalize the dashboard presentation to match the Revit status window.
+  if (normalizedPhase === "failed" && guidedUnsupportedResult) {
+    return "completed";
+  }
+
+  return normalizedPhase;
+}
+
+function phasePriority(phase) {
+  if (phase === "failed") return 4;
+  if (phase === "guarded") return 3;
+  if (phase === "completed") return 2;
+  if (phase === "started") return 1;
+  return 0;
+}
+
+function normalizeDisplayPhase(event) {
+  if (!event) {
+    return null;
+  }
+  const phase = displayPhaseForEvent(event);
+  return {
+    ...event,
+    rawPhase: event.phase || "",
+    rawState: event.state || "",
+    phase,
+    state: phase,
+  };
+}
+
+function collapseLifecycleEvents(events) {
+  const keyed = new Map();
+  const unkeyed = [];
+
+  for (const event of Array.isArray(events) ? events : []) {
+    if (!event) continue;
+    const key = event.liveTaskId || "";
+    const normalized = normalizeDisplayPhase(event);
+    if (!key) {
+      unkeyed.push(normalized);
+      continue;
+    }
+
+    const existing = keyed.get(key);
+    if (!existing) {
+      keyed.set(key, normalized);
+      continue;
+    }
+
+    const existingTerminal = isTerminalPhase(existing.phase);
+    const candidateTerminal = isTerminalPhase(normalized.phase);
+    if ((candidateTerminal && !existingTerminal) ||
+      (candidateTerminal === existingTerminal && activityTimeMs(normalized) >= activityTimeMs(existing))) {
+      keyed.set(key, normalized);
+    }
+  }
+
+  return [...keyed.values(), ...unkeyed];
+}
+
+function taskGroupingName(event) {
+  return String(event?.taskName || event?.toolName || event?.commandName || event?.logicalToolName || "").trim().toLowerCase();
+}
+
+function canGroupNestedEvent(group, event) {
+  const hasSameScope = group.events.some((item) => item.scope === event.scope);
+  if (hasSameScope) {
+    return false;
+  }
+  const scopes = new Set([...group.events.map((item) => item.scope), event.scope]);
+  return scopes.has("mcp.tool") && scopes.has("revit.command");
+}
+
+function chooseNestedGroup(groups, event) {
+  const machine = normalizeMachineName(event.machineName || "");
+  const name = taskGroupingName(event);
+  if (!name) {
+    return null;
+  }
+  const startMs = activityStartMs(event);
+  let best = null;
+  let bestDelta = Number.POSITIVE_INFINITY;
+
+  for (const group of groups) {
+    if (group.machine !== machine || group.name !== name || !canGroupNestedEvent(group, event)) {
+      continue;
+    }
+    const delta = Math.abs(group.startMs - startMs);
+    if (delta <= 2000 && delta < bestDelta) {
+      best = group;
+      bestDelta = delta;
+    }
+  }
+
+  return best;
+}
+
+function mergeNestedActivityGroup(group) {
+  const events = group.events;
+  const displayBase =
+    events.find((event) => event.scope === "mcp.tool") ||
+    events.find((event) => event.scope === "revit.command") ||
+    events[0];
+  const terminalEvents = events.filter((event) => isTerminalPhase(event.phase));
+  const stateBase = terminalEvents
+    .slice()
+    .sort((a, b) => {
+      const priorityDelta = phasePriority(b.phase) - phasePriority(a.phase);
+      if (priorityDelta !== 0) return priorityDelta;
+      if (a.scope === "mcp.tool" && b.scope !== "mcp.tool") return -1;
+      if (b.scope === "mcp.tool" && a.scope !== "mcp.tool") return 1;
+      return activityTimeMs(b) - activityTimeMs(a);
+    })[0] || displayBase;
+  const phase = stateBase.phase || displayBase.phase || "completed";
+
+  return {
+    ...displayBase,
+    timestampUtc: activityTimestamp(stateBase) || activityTimestamp(displayBase),
+    phase,
+    state: phase,
+    startedAtUtc: stateBase.startedAtUtc || displayBase.startedAtUtc || "",
+    finishedAtUtc: stateBase.finishedAtUtc || displayBase.finishedAtUtc || "",
+    durationMs: stateBase.durationMs ?? displayBase.durationMs ?? null,
+    result: stateBase.result || displayBase.result || null,
+    groupedEventCount: events.length,
+    groupedScopes: [...new Set(events.map((event) => event.scope).filter(Boolean))],
+  };
+}
+
+function collapseNestedActivities(events) {
+  const groups = [];
+  const sorted = [...(Array.isArray(events) ? events : [])]
+    .filter(Boolean)
+    .sort((a, b) => activityStartMs(a) - activityStartMs(b));
+
+  for (const event of sorted) {
+    const group = chooseNestedGroup(groups, event);
+    if (group) {
+      group.events.push(event);
+      group.startMs = Math.min(group.startMs, activityStartMs(event));
+      continue;
+    }
+
+    groups.push({
+      machine: normalizeMachineName(event.machineName || ""),
+      name: taskGroupingName(event),
+      startMs: activityStartMs(event),
+      events: [event],
+    });
+  }
+
+  return groups.map(mergeNestedActivityGroup);
+}
+
+function buildStatusActivities(events) {
+  return sortActivities(collapseNestedActivities(collapseLifecycleEvents(events)));
+}
+
 function summarizeLiveOperations(events) {
   const terminalToolEvents = (Array.isArray(events) ? events : [])
-    .filter((event) => event?.scope === "mcp.tool")
     .filter((event) => ["completed", "guarded", "failed"].includes(event.phase || event.state || ""));
   return {
     operationCount: terminalToolEvents.length,
@@ -272,6 +459,7 @@ function compactActivity(event) {
     schemaVersion: event.schemaVersion || "",
     eventType: event.eventType || "",
     eventId: event.eventId || "",
+    liveTaskId: event.liveTaskId || "",
     timestampUtc: event.timestampUtc || event.finishedAtUtc || event.startedAtUtc || "",
     machineName: event.machineName || "",
     userName: event.userName || "",
@@ -288,6 +476,8 @@ function compactActivity(event) {
     finishedAtUtc: event.finishedAtUtc || "",
     durationMs: event.durationMs ?? null,
     result,
+    groupedEventCount: event.groupedEventCount || null,
+    groupedScopes: Array.isArray(event.groupedScopes) ? event.groupedScopes : [],
   };
 }
 
@@ -376,11 +566,26 @@ export function loadDashboardData(config = {}) {
     const machineReport = readJsonFile(path.join(machinesRoot, machineName, "latest.json"));
     const liveStatus = readJsonFile(path.join(liveRoot, machineName, "status.json"));
     const machine = summarizeMachine(machineName, machineReport, liveStatus, stable?.version || "", now, staleSeconds);
-    return withActivityFallback(machine, activityByMachine.get(machineName));
+    const statusActivities = buildStatusActivities(activityByMachine.get(machineName));
+    const fallbackActivities = statusActivities.length > 0
+      ? statusActivities
+      : buildStatusActivities(machine.live?.recentActivity || []);
+    const displayMachine = machine.live
+      ? {
+          ...machine,
+          live: {
+            ...machine.live,
+            activeTasks: buildStatusActivities(machine.live.activeTasks || []),
+            activeTask: buildStatusActivities(machine.live.activeTasks || [machine.live.activeTask]).find(Boolean) || machine.live.activeTask,
+            recentActivity: fallbackActivities.slice(0, 20),
+          },
+        }
+      : machine;
+    return withActivityFallback(displayMachine, fallbackActivities);
   });
 
   const activity = sortActivities(machines.flatMap((machine) => {
-    return (activityByMachine.get(machine.machine) || []).map((event) => ({
+    return buildStatusActivities(activityByMachine.get(machine.machine) || []).map((event) => ({
       ...event,
       machineName: event.machineName || machine.machine,
     }));

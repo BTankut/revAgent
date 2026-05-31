@@ -119,6 +119,8 @@ try {
     Assert-True ($dashboardCss -match '(?s)\.bottom-grid\s*\{.*?grid-template-columns:\s*1fr;') "Dashboard must stack Tool Usage and Friction vertically."
     Assert-True ($dashboardServer -match 'DEFAULT_ACTIVITY_READ_BYTES') "Dashboard must bound activity NDJSON tail reads."
     Assert-True ($dashboardServer -match 'compactActivity') "Dashboard overview must strip raw live activity payloads."
+    Assert-True ($dashboardServer -match 'buildStatusActivities') "Dashboard must collapse raw live activity into status-window style task rows."
+    Assert-True ($dashboardServer -match 'groupedEventCount') "Dashboard activity rows must report grouped raw event counts for diagnostics."
     Assert-True ($dashboardServer -match 'summarizeLiveOperations') "Dashboard top activity metrics must be calculated from live activity."
     Assert-True ($dashboardServer -match 'metricSource: \"liveActivity\"') "Dashboard overview must expose the metric source."
     Assert-True ($dashboardServer -match 'x-content-type-options') "Dashboard responses must include nosniff headers."

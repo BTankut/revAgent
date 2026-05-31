@@ -91,6 +91,7 @@ try {
 
   appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
     schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-inspect",
     phase: "started",
     scope: "mcp.tool",
     machineName: "TESTPC",
@@ -106,6 +107,7 @@ try {
 
   appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
     schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-failure",
     phase: "failed",
     state: "failed",
     scope: "mcp.tool",
@@ -123,6 +125,7 @@ try {
 
   appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
     schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-guarded",
     phase: "guarded",
     state: "guarded",
     scope: "mcp.tool",
@@ -139,6 +142,7 @@ try {
 
   appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
     schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-inspect",
     phase: "completed",
     scope: "mcp.tool",
     machineName: "TESTPC",
@@ -150,6 +154,78 @@ try {
       code: {
         preview: "y".repeat(12000),
       },
+    },
+  });
+
+  appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
+    schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-sheet-export-tool",
+    phase: "completed",
+    scope: "mcp.tool",
+    machineName: "TESTPC",
+    toolName: "export_revit_view_image",
+    taskName: "smoke sheet export",
+    startedAtUtc: new Date(now.getTime() + 4000).toISOString(),
+    timestampUtc: new Date(now.getTime() + 4500).toISOString(),
+    durationMs: 500,
+    result: {
+      success: true,
+      guarded: false,
+    },
+  });
+
+  appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
+    schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-sheet-export-inner",
+    phase: "completed",
+    scope: "revit.command",
+    machineName: "TESTPC",
+    commandName: "send_code_to_revit",
+    taskName: "smoke sheet export",
+    startedAtUtc: new Date(now.getTime() + 4010).toISOString(),
+    timestampUtc: new Date(now.getTime() + 4490).toISOString(),
+    durationMs: 480,
+    result: {
+      success: true,
+      guarded: false,
+    },
+  });
+
+  appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
+    schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-schedule-guidance-tool",
+    phase: "failed",
+    state: "failed",
+    scope: "mcp.tool",
+    machineName: "TESTPC",
+    toolName: "export_revit_view_image",
+    taskName: "smoke schedule guidance",
+    startedAtUtc: new Date(now.getTime() + 5000).toISOString(),
+    timestampUtc: new Date(now.getTime() + 5600).toISOString(),
+    durationMs: 600,
+    result: {
+      success: false,
+      guarded: false,
+      errorMessage: "unsupported_view_type_for_image_export",
+    },
+  });
+
+  appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
+    schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-schedule-guidance-inner",
+    phase: "failed",
+    state: "failed",
+    scope: "revit.command",
+    machineName: "TESTPC",
+    commandName: "send_code_to_revit",
+    taskName: "smoke schedule guidance",
+    startedAtUtc: new Date(now.getTime() + 5010).toISOString(),
+    timestampUtc: new Date(now.getTime() + 5580).toISOString(),
+    durationMs: 570,
+    result: {
+      success: false,
+      guarded: false,
+      errorMessage: "unsupported_view_type_for_image_export",
     },
   });
 
@@ -203,9 +279,9 @@ try {
   assert.equal(data.overview.liveMachineCount, 1);
   assert.equal(data.overview.activeMachineCount, 1);
   assert.equal(data.overview.currentVersionCount, 1);
-  assert.equal(data.overview.productionOperationCount, 3);
-  assert.equal(data.overview.liveOperationCount, 3);
-  assert.equal(data.overview.liveCompletedCount, 1);
+  assert.equal(data.overview.productionOperationCount, 5);
+  assert.equal(data.overview.liveOperationCount, 5);
+  assert.equal(data.overview.liveCompletedCount, 3);
   assert.equal(data.overview.guardedCount, 1);
   assert.equal(data.overview.failedCount, 1);
   assert.equal(data.overview.summaryProductionOperationCount, 2);
@@ -215,13 +291,19 @@ try {
   assert.equal(testMachine.state, "active");
   assert.equal(testMachine.versionCurrent, true);
   assert.equal(testMachine.live.activeTask.taskName, "smoke inspect");
-  assert.equal(testMachine.live.recentActivity[0].taskName, "smoke guarded write");
+  assert.equal(testMachine.live.recentActivity[0].taskName, "smoke schedule guidance");
+  assert.equal(testMachine.live.recentActivity[0].phase, "completed");
   assert.equal(oldMachine.state, "outdated");
   assert.equal(oldMachine.versionCurrent, false);
   assert.equal(oldMachine.targetVersion, version);
   assert.equal(oldMachine.reportedTargetVersion, "2026.05.31.100-oldbuild");
-  assert.equal(data.activity.length, 4);
-  assert.equal(data.activity[0].phase, "guarded");
+  assert.equal(data.activity.length, 5);
+  assert.equal(data.activity[0].taskName, "smoke schedule guidance");
+  assert.equal(data.activity[0].phase, "completed");
+  assert.equal(data.activity[0].toolName, "export_revit_view_image");
+  assert.equal(data.activity[0].groupedEventCount, 2);
+  assert.equal(data.activity.filter((event) => event.taskName === "smoke sheet export").length, 1);
+  assert.equal(data.activity.find((event) => event.taskName === "smoke sheet export").toolName, "export_revit_view_image");
   assert.equal("params" in data.activity[0], false);
   assert.equal(JSON.stringify(data).includes("\"preview\""), false);
   assert.equal(JSON.stringify(data).includes("yyyyyyyy"), false);
@@ -229,7 +311,7 @@ try {
   assert.equal(data.summary.toolUsage[0].name, "inspect_elements");
   const brief = buildDashboardBrief(data);
   assert.equal(brief.schemaVersion, "revagent.dashboard.brief.v1");
-  assert.equal(brief.machines.find((machine) => machine.machine === "TESTPC").latestActivity.taskName, "smoke guarded write");
+  assert.equal(brief.machines.find((machine) => machine.machine === "TESTPC").latestActivity.taskName, "smoke schedule guidance");
 
   console.log("Dashboard smoke test passed.");
 } finally {

@@ -4,6 +4,12 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Changed live dashboard activity rendering to match the revAgent status
+  window semantics: started/completed lifecycle pairs and nested
+  `mcp.tool`/`send_code_to_revit` events are collapsed into one user-facing
+  task row, while controlled schedule-export guidance is not shown as a red
+  operational failure. Completed rows now use the same check mark convention as
+  the status window.
 - Added DrawingSheet support to `export_revit_view_image`, with clearer
   guidance for unsupported standalone schedule views and sheet placement hints
   when available.
