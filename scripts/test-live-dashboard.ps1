@@ -117,6 +117,7 @@ try {
     Assert-True ($dashboardApp -match 'formatDurationMs') "Dashboard durations must be formatted consistently in seconds."
     Assert-True ($dashboardApp -match 'formatBytes') "Dashboard task rows must be able to show payload size."
     Assert-True ($dashboardApp -match 'Last seen') "Machine cards must show user-facing last-seen wording."
+    Assert-True ($dashboardApp -notmatch 'Current task|active-task') "Machine cards must not duplicate live task text."
     Assert-True ($dashboardApp -notmatch '>Heartbeat<|machine\.updateStatus') "Machine cards must not expose heartbeat age or update status fields."
     Assert-True ($dashboardHtml -match '(?s)Machine Status Windows.*All Status Activity') "Dashboard layout must put machine status windows before all status activity."
     Assert-True ($dashboardHtml -match 'activityFilters') "Dashboard must expose machine filters for All Status Activity."

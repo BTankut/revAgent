@@ -250,10 +250,6 @@ function renderMachines(data) {
   }
 
   elements.machinesGrid.innerHTML = machines.map((machine) => {
-    const active = machine.live?.activeTask;
-    const activeTask = active
-      ? escapeHtml(taskTitle(active))
-      : escapeHtml(machine.live ? "Idle" : "Waiting for live feed");
     const selectedSet = selectedMachineSet(data);
     const selected = selectedSet !== null && selectedSet.has(normalizeMachineName(machine.machine));
     const lastSeen = formatDateTime(machine.live?.lastHeartbeatUtc || machine.atUtc);
@@ -272,10 +268,6 @@ function renderMachines(data) {
         <div class="machine-meta">
           <span><strong>Version</strong> ${escapeHtml(shortVersion(machine.installedVersion || "-"))}</span>
           <span><strong>Last seen</strong> ${escapeHtml(lastSeen)}</span>
-        </div>
-        <div class="active-task">
-          <span>Current task</span>
-          <strong class="${active ? "" : "muted"}">${activeTask}</strong>
         </div>
       </article>
     `;
