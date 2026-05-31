@@ -184,6 +184,10 @@ A machine is stale when:
 - The dashboard server projects raw live activity into status-window style rows
   before sending `/api/overview`; grouped rows carry `groupedEventCount` and
   `groupedScopes` for diagnostics.
+- When `status.json` contains the Revit add-in `mcp_status.recentTasks`
+  snapshot, the dashboard uses that status history as the authoritative Recent
+  Tasks projection and hides matching telemetry duplicates. Raw live telemetry
+  stays available as fallback and diagnostics.
 - Uses a 2/1 desktop layout: All Status Activity, Tool Usage, and Friction
   stay in the left column; Machine Status Windows stay stacked in the right
   column.

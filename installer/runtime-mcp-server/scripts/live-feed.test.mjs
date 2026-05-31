@@ -40,6 +40,26 @@ try {
 
   await telemetry.flushLiveWritesForTests();
 
+  telemetry.recordLiveRevitStatus({
+    activeTask: null,
+    recentTasks: [
+      {
+        id: "status-1",
+        method: "send_code_to_revit",
+        taskName: "Status window aligned task",
+        state: "failed",
+        startedAtUtc: "2026-05-31T12:00:00.000Z",
+        finishedAtUtc: "2026-05-31T12:00:01.000Z",
+        elapsedMs: 1000,
+        error: "status failure",
+      },
+    ],
+    recentHistoryCount: 1,
+    recentHistoryCapacity: 100,
+  });
+
+  await telemetry.flushLiveWritesForTests();
+
   const statusPath = path.join(reportsRoot, "live", "machines", "LIVE-TEST", "status.json");
   const activityPath = path.join(reportsRoot, "live", "machines", "LIVE-TEST", "activity", new Date().toISOString().slice(0, 10) + ".ndjson");
   assert.ok(fs.existsSync(statusPath), "Remote live status.json was not written.");
@@ -54,6 +74,8 @@ try {
   assert.equal(status.activeTasks.length, 0);
   assert.ok(Array.isArray(status.recentActivity));
   assert.ok(status.recentActivity.some((item) => item.taskName === "Find live dashboard ducts" && item.phase === "completed"));
+  assert.equal(status.revitStatus.recentTasks[0].taskName, "Status window aligned task");
+  assert.equal(status.revitStatus.recentTasks[0].state, "failed");
   assert.equal(status.writeHealth.dropped, 0);
 
   const lines = fs.readFileSync(activityPath, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));

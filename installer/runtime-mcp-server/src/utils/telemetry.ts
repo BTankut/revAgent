@@ -16,6 +16,7 @@ const telemetryWriteQueues = new Map();
 const liveWriteQueues = new Map();
 const liveActiveTasks = new Map();
 const liveRecentActivity = [];
+let liveRevitStatus = null;
 let liveWritesInFlight = 0;
 let liveWritesDropped = 0;
 let liveHeartbeatTimer = null;
@@ -283,6 +284,18 @@ export function summarizeTelemetryParams(params = {}) {
 }
 
 function unwrapResponse(response) {
+    if (response && typeof response === "object") {
+        const topLevelSuccess = getValueCaseInsensitive(response, ["success", "Success"]);
+        if (topLevelSuccess === false) {
+            return response;
+        }
+        if ("result" in response && response.result !== null && response.result !== undefined) {
+            return response.result;
+        }
+        if ("result" in response) {
+            return response;
+        }
+    }
     if (response && typeof response === "object" && "result" in response) {
         return response.result;
     }
@@ -321,7 +334,7 @@ export function summarizeTelemetryResponse(response, error = null) {
     const successValue = isObject ? getValueCaseInsensitive(target, ["success", "Success"]) : undefined;
     const state = isObject ? getValueCaseInsensitive(target, ["state", "State"]) : undefined;
     const action = isObject ? getValueCaseInsensitive(target, ["action", "Action"]) : undefined;
-    const errorValue = isObject ? getValueCaseInsensitive(target, ["error", "Error"]) : undefined;
+    const errorValue = isObject ? getValueCaseInsensitive(target, ["error", "Error", "errorMessage", "ErrorMessage"]) : undefined;
     const messageValue = isObject ? getValueCaseInsensitive(target, ["message", "Message"]) : undefined;
     const responseText = typeof target === "string" ? target : "";
     const errorLikeText = /^\s*ERROR\s*:/i.test(responseText) ? responseText : "";
@@ -926,6 +939,54 @@ function publicLiveTask(task) {
     };
 }
 
+function publicRevitStatusTask(task) {
+    if (!task || typeof task !== "object") {
+        return null;
+    }
+
+    return {
+        id: task.id || null,
+        requestId: task.requestId || null,
+        method: task.method || null,
+        taskName: task.taskName || null,
+        state: task.state || null,
+        startedAtUtc: task.startedAtUtc || null,
+        finishedAtUtc: task.finishedAtUtc || null,
+        elapsedMs: task.elapsedMs ?? null,
+        port: task.port || null,
+        error: task.error || null,
+    };
+}
+
+function normalizeRevitStatusPayload(status) {
+    if (!status || typeof status !== "object") {
+        return null;
+    }
+    const target = status.result && typeof status.result === "object" ? status.result : status;
+    return {
+        capturedAtUtc: new Date().toISOString(),
+        activeTask: publicRevitStatusTask(target.activeTask),
+        recentTasks: (Array.isArray(target.recentTasks) ? target.recentTasks : [])
+            .map(publicRevitStatusTask)
+            .filter(Boolean)
+            .slice(0, 100),
+        recentHistoryCount: target.recentHistoryCount ?? null,
+        recentHistoryCapacity: target.recentHistoryCapacity ?? null,
+    };
+}
+
+export function recordLiveRevitStatus(status) {
+    if (liveStatusDisabled()) {
+        return;
+    }
+    const normalized = normalizeRevitStatusPayload(status);
+    if (!normalized) {
+        return;
+    }
+    liveRevitStatus = normalized;
+    writeLiveStatusSnapshot("revit.status");
+}
+
 function chooseBestActiveTask() {
     const active = [...liveActiveTasks.values()];
     if (active.length === 0) {
@@ -969,6 +1030,7 @@ function buildLiveStatusSnapshot(reason = "activity") {
         activeTask: publicLiveTask(chooseBestActiveTask()),
         activeTasks: [...liveActiveTasks.values()].map(publicLiveTask),
         recentActivity: liveRecentActivity.slice(0, liveRecentActivityLimit()),
+        revitStatus: liveRevitStatus,
         writeHealth: {
             inFlight: liveWritesInFlight,
             dropped: liveWritesDropped,

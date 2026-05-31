@@ -1,9 +1,12 @@
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
-import { connectionOptionsFromArgs, connectionTargetSchema, normalizeRevitExecutionResponse, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
+import { connectionOptionsFromArgs, connectionTargetSchema, normalizeRevitExecutionResponse, refreshLiveRevitStatus, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
 import { recordLiveActivityFinished, recordLiveActivityStarted, recordRevitCommandTelemetry, } from "../utils/telemetry.js";
 function findErrorLikeResult(value) {
     const normalized = normalizeRevitExecutionResponse(value);
+    if (normalized && typeof normalized === "object" && normalized.success === false) {
+        return normalized.error || normalized.errorMessage || normalized.message || "Revit code returned success=false.";
+    }
     const candidate = normalized && typeof normalized === "object" && "result" in normalized
         ? normalized.result
         : normalized;
@@ -87,6 +90,7 @@ export function registerSendCodeToRevitTool(server) {
                 response: normalizedResponse,
                 durationMs,
             });
+            void refreshLiveRevitStatus(options);
             const errorLikeResult = args.reportErrorResultAsFailure === false
                 ? null
                 : findErrorLikeResult(normalizedResponse);
@@ -124,6 +128,7 @@ export function registerSendCodeToRevitTool(server) {
                 error,
                 durationMs,
             });
+            void refreshLiveRevitStatus(options);
             return {
                 content: [
                     {

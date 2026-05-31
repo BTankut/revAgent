@@ -256,11 +256,16 @@ C:\ProgramData\DPE\RevitMCP\state\telemetry\live\machines\<machine>\
 
 `status.json` uses schema `revagent.live.status.v1` and is the dashboard fast
 path. It includes the current active task, active task list, recent activity,
-runtime identity, process identity, heartbeat time, and live-write health.
+the latest Revit add-in `mcp_status.recentTasks` snapshot, runtime identity,
+process identity, heartbeat time, and live-write health.
 
 Activity lines use schema `revagent.live.activity.v1` and record `started`,
 `completed`, `guarded`, and `failed` phases for top-level MCP tools and Revit
 bridge/dynamic commands.
+
+The dashboard Recent Tasks projection prefers the Revit add-in status snapshot
+when available, because that is the same source shown in the local revAgent
+status window. Runtime live activity remains the fallback and diagnostic layer.
 
 The live feed is intentionally not the durable audit record. It is a UI feed.
 Writes are fire-and-forget, bounded by `REVAGENT_LIVE_STATUS_MAX_IN_FLIGHT`,

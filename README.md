@@ -666,10 +666,11 @@ Revit work. See `docs/REVAGENT_USAGE_INTELLIGENCE.md` for schema and controls.
 
 For the live dashboard, the runtime also writes a non-blocking UI feed under
 `reports\live\machines\<machine>`. `status.json` is the fast 2-5 second polling
-surface with the active task and recent activity, while
-`activity\YYYY-MM-DD.ndjson` records started/completed/guarded/failed live
-activity lines. Live writes are fire-and-forget with a bounded in-flight limit;
-slow or unavailable NAS writes are dropped instead of delaying Revit work.
+surface with the active task, recent activity, and the latest Revit add-in
+`mcp_status.recentTasks` snapshot, while `activity\YYYY-MM-DD.ndjson` records
+started/completed/guarded/failed live activity lines. Live writes are
+fire-and-forget with a bounded in-flight limit; slow or unavailable NAS writes
+are dropped instead of delaying Revit work.
 
 The read-only live dashboard can be started on the coordinator workstation with:
 
@@ -682,6 +683,8 @@ It serves `http://127.0.0.1:8765`, reads only `reports\machines`,
 refreshes the browser every 3 seconds. It shows revAgent-status-style task
 history windows per machine, a separate all-machine activity window, a focus
 mode that enlarges one machine, and System/Light/Dark theme selection. The
+Recent Tasks rows prefer the Revit add-in status history when available, so
+result state, duration, and ordering match the local revAgent status window.
 default desktop layout keeps All Status Activity, Tool Usage, and Friction in
 the left two-thirds column and stacked Machine Status Windows in the right
 one-third column. All Status Activity shows the latest 50 live records by

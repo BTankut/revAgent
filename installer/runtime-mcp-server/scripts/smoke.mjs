@@ -190,6 +190,14 @@ assert.equal(telemetryResponseSummary.success, false);
 assert.equal(telemetryResponseSummary.guarded, true);
 assert.match(telemetryResponseSummary.errorMessage, /Secret/);
 
+const wrapperFailureSummary = summarizeTelemetryResponse({
+  success: false,
+  result: null,
+  errorMessage: "Execution failed inside Revit wrapper",
+});
+assert.equal(wrapperFailureSummary.success, false);
+assert.equal(wrapperFailureSummary.errorMessage, "Execution failed inside Revit wrapper");
+
 const safeRejectionSummary = summarizeTelemetryResponse({
   success: false,
   error: "Rejected write-looking code for intent 'writePreview'.",

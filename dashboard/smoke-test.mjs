@@ -84,6 +84,33 @@ try {
     },
     activeTasks: [],
     recentActivity: [],
+    revitStatus: {
+      activeTask: null,
+      recentTasks: [
+        {
+          id: "status-cleanup",
+          method: "send_code_to_revit",
+          taskName: "smoke status cleanup",
+          state: "completed",
+          startedAtUtc: new Date(now.getTime() + 7000).toISOString(),
+          finishedAtUtc: new Date(now.getTime() + 7200).toISOString(),
+          elapsedMs: 200,
+          error: null,
+        },
+        {
+          id: "status-schedule-guidance",
+          method: "export_revit_view_image",
+          taskName: "smoke schedule guidance",
+          state: "completed",
+          startedAtUtc: new Date(now.getTime() + 5010).toISOString(),
+          finishedAtUtc: new Date(now.getTime() + 5580).toISOString(),
+          elapsedMs: 570,
+          error: null,
+        },
+      ],
+      recentHistoryCount: 2,
+      recentHistoryCapacity: 100,
+    },
     writeHealth: {
       droppedCount: 0,
     },
@@ -279,9 +306,9 @@ try {
   assert.equal(data.overview.liveMachineCount, 1);
   assert.equal(data.overview.activeMachineCount, 1);
   assert.equal(data.overview.currentVersionCount, 1);
-  assert.equal(data.overview.productionOperationCount, 5);
-  assert.equal(data.overview.liveOperationCount, 5);
-  assert.equal(data.overview.liveCompletedCount, 3);
+  assert.equal(data.overview.productionOperationCount, 6);
+  assert.equal(data.overview.liveOperationCount, 6);
+  assert.equal(data.overview.liveCompletedCount, 4);
   assert.equal(data.overview.guardedCount, 1);
   assert.equal(data.overview.failedCount, 1);
   assert.equal(data.overview.summaryProductionOperationCount, 2);
@@ -291,19 +318,20 @@ try {
   assert.equal(testMachine.state, "active");
   assert.equal(testMachine.versionCurrent, true);
   assert.equal(testMachine.live.activeTask.taskName, "smoke inspect");
-  assert.equal(testMachine.live.recentActivity[0].taskName, "smoke schedule guidance");
+  assert.equal(testMachine.live.recentActivity[0].taskName, "smoke status cleanup");
   assert.equal(testMachine.live.recentActivity[0].phase, "completed");
   assert.equal(oldMachine.state, "outdated");
   assert.equal(oldMachine.versionCurrent, false);
   assert.equal(oldMachine.targetVersion, version);
   assert.equal(oldMachine.reportedTargetVersion, "2026.05.31.100-oldbuild");
-  assert.equal(data.activity.length, 5);
-  assert.equal(data.activity[0].taskName, "smoke schedule guidance");
+  assert.equal(data.activity.length, 6);
+  assert.equal(data.activity[0].taskName, "smoke status cleanup");
   assert.equal(data.activity[0].phase, "completed");
-  assert.equal(data.activity[0].toolName, "export_revit_view_image");
-  assert.equal(data.activity[0].groupedEventCount, 2);
+  assert.equal(data.activity[0].toolName, "send_code_to_revit");
   assert.equal(data.activity.filter((event) => event.taskName === "smoke sheet export").length, 1);
   assert.equal(data.activity.find((event) => event.taskName === "smoke sheet export").toolName, "export_revit_view_image");
+  assert.equal(data.activity.filter((event) => event.taskName === "smoke schedule guidance").length, 1);
+  assert.equal(data.activity.find((event) => event.taskName === "smoke schedule guidance").source, "revit.status");
   assert.equal("params" in data.activity[0], false);
   assert.equal(JSON.stringify(data).includes("\"preview\""), false);
   assert.equal(JSON.stringify(data).includes("yyyyyyyy"), false);
@@ -311,7 +339,7 @@ try {
   assert.equal(data.summary.toolUsage[0].name, "inspect_elements");
   const brief = buildDashboardBrief(data);
   assert.equal(brief.schemaVersion, "revagent.dashboard.brief.v1");
-  assert.equal(brief.machines.find((machine) => machine.machine === "TESTPC").latestActivity.taskName, "smoke schedule guidance");
+  assert.equal(brief.machines.find((machine) => machine.machine === "TESTPC").latestActivity.taskName, "smoke status cleanup");
 
   console.log("Dashboard smoke test passed.");
 } finally {

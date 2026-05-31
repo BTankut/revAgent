@@ -3,6 +3,7 @@ import { withRevitConnection } from "./ConnectionManager.js";
 import {
     recordLiveActivityFinished,
     recordLiveActivityStarted,
+    recordLiveRevitStatus,
     recordRevitCommandTelemetry,
 } from "./telemetry.js";
 
@@ -265,6 +266,7 @@ export async function executeRevitCode(code, options = {}) {
             response: normalizedResponse,
             durationMs,
         });
+        void refreshLiveRevitStatus(options);
         return normalizedResponse;
     }
     catch (error) {
@@ -282,7 +284,28 @@ export async function executeRevitCode(code, options = {}) {
             error,
             durationMs,
         });
+        void refreshLiveRevitStatus(options);
         throw error;
+    }
+}
+
+export async function refreshLiveRevitStatus(options = {}) {
+    const timeoutMs = Math.max(250, Math.min(5000, Number(options.statusRefreshTimeoutMs || 1500)));
+    try {
+        const status = await withRevitConnection(async (revitClient) => {
+            return await revitClient.sendCommand("mcp_status", {}, { timeoutMs });
+        }, {
+            ...options,
+            skipLock: true,
+            connectTimeoutMs: timeoutMs,
+            timeoutMs,
+            logSocketErrors: false,
+        });
+        recordLiveRevitStatus(status);
+        return status;
+    }
+    catch {
+        return null;
     }
 }
 
@@ -326,6 +349,7 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
             response: normalizedResponse,
             durationMs,
         });
+        void refreshLiveRevitStatus(options);
         return normalizedResponse;
     }
     catch (error) {
@@ -343,6 +367,7 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
             error,
             durationMs,
         });
+        void refreshLiveRevitStatus(options);
         throw error;
     }
 }

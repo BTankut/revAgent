@@ -187,6 +187,7 @@ function summarizeMachine(machineName, machineReport, liveStatus, stableVersion,
       activeTask: compactActivity(liveStatus.activeTask),
       activeTasks: compactActivityList(liveStatus.activeTasks, 10),
       recentActivity: compactActivityList(liveStatus.recentActivity, 20),
+      revitStatus: liveStatus.revitStatus || null,
       writeHealth: liveStatus.writeHealth || {},
     } : null,
   };
@@ -394,6 +395,82 @@ function buildStatusActivities(events) {
   return sortActivities(collapseNestedActivities(collapseLifecycleEvents(events)));
 }
 
+function revitStatusPhase(task) {
+  const state = String(task?.state || "").toLowerCase();
+  if (state === "running") return "started";
+  if (state === "blocked" || state === "guarded") return "guarded";
+  if (state === "failed") return "failed";
+  return "completed";
+}
+
+function revitStatusTaskToActivity(task, machineName) {
+  if (!task) {
+    return null;
+  }
+  const phase = revitStatusPhase(task);
+  return {
+    schemaVersion: "revagent.dashboard.revit-status-task.v1",
+    eventType: "revit.status.task",
+    eventId: task.id || task.requestId || "",
+    liveTaskId: task.id || task.requestId || "",
+    timestampUtc: task.finishedAtUtc || task.startedAtUtc || "",
+    machineName,
+    phase,
+    state: phase,
+    scope: "revit.status",
+    toolName: task.method || "",
+    commandName: task.method || "",
+    logicalToolName: task.method || "",
+    taskName: task.taskName || task.method || "revAgent task",
+    startedAtUtc: task.startedAtUtc || "",
+    finishedAtUtc: task.finishedAtUtc || "",
+    durationMs: task.elapsedMs ?? null,
+    result: {
+      success: phase !== "failed",
+      guarded: phase === "guarded",
+      errorMessage: task.error || null,
+    },
+    source: "revit.status",
+  };
+}
+
+function buildRevitStatusActivities(liveStatus, machineName) {
+  const tasks = Array.isArray(liveStatus?.revitStatus?.recentTasks)
+    ? liveStatus.revitStatus.recentTasks
+    : [];
+  return sortActivities(tasks.map((task) => revitStatusTaskToActivity(task, machineName)).filter(Boolean));
+}
+
+function sameTaskName(left, right) {
+  return taskGroupingName(left) && taskGroupingName(left) === taskGroupingName(right);
+}
+
+function isCoveredByRevitStatus(event, revitStatusActivities) {
+  if (!taskGroupingName(event)) {
+    return false;
+  }
+  const eventMs = activityStartMs(event);
+  return revitStatusActivities.some((statusEvent) => {
+    if (!sameTaskName(event, statusEvent)) {
+      return false;
+    }
+    const statusMs = activityStartMs(statusEvent);
+    return Math.abs(statusMs - eventMs) <= 5000;
+  });
+}
+
+function chooseRecentActivities(liveStatus, machineName, telemetryActivities) {
+  const revitStatusActivities = buildRevitStatusActivities(liveStatus, machineName);
+  const statusActivities = buildStatusActivities(telemetryActivities);
+  if (revitStatusActivities.length > 0) {
+    const telemetryOnly = statusActivities.filter((event) => !isCoveredByRevitStatus(event, revitStatusActivities));
+    return sortActivities([...revitStatusActivities, ...telemetryOnly]);
+  }
+  return statusActivities.length > 0
+    ? statusActivities
+    : buildStatusActivities(liveStatus?.recentActivity || []);
+}
+
 function summarizeLiveOperations(events) {
   const terminalToolEvents = (Array.isArray(events) ? events : [])
     .filter((event) => ["completed", "guarded", "failed"].includes(event.phase || event.state || ""));
@@ -566,17 +643,16 @@ export function loadDashboardData(config = {}) {
     const machineReport = readJsonFile(path.join(machinesRoot, machineName, "latest.json"));
     const liveStatus = readJsonFile(path.join(liveRoot, machineName, "status.json"));
     const machine = summarizeMachine(machineName, machineReport, liveStatus, stable?.version || "", now, staleSeconds);
-    const statusActivities = buildStatusActivities(activityByMachine.get(machineName));
-    const fallbackActivities = statusActivities.length > 0
-      ? statusActivities
-      : buildStatusActivities(machine.live?.recentActivity || []);
+    const fallbackActivities = chooseRecentActivities(machine.live, machineName, activityByMachine.get(machineName));
     const displayMachine = machine.live
       ? {
           ...machine,
           live: {
             ...machine.live,
             activeTasks: buildStatusActivities(machine.live.activeTasks || []),
-            activeTask: buildStatusActivities(machine.live.activeTasks || [machine.live.activeTask]).find(Boolean) || machine.live.activeTask,
+            activeTask: revitStatusTaskToActivity(machine.live.revitStatus?.activeTask, machineName) ||
+              buildStatusActivities(machine.live.activeTasks || [machine.live.activeTask]).find(Boolean) ||
+              machine.live.activeTask,
             recentActivity: fallbackActivities.slice(0, 20),
           },
         }
@@ -585,7 +661,7 @@ export function loadDashboardData(config = {}) {
   });
 
   const activity = sortActivities(machines.flatMap((machine) => {
-    return buildStatusActivities(activityByMachine.get(machine.machine) || []).map((event) => ({
+    return chooseRecentActivities(machine.live, machine.machine, activityByMachine.get(machine.machine) || []).map((event) => ({
       ...event,
       machineName: event.machineName || machine.machine,
     }));
