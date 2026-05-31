@@ -66,14 +66,7 @@ try {
       startedAtUtc: now.toISOString(),
     },
     activeTasks: [],
-    recentActivity: [
-      {
-        phase: "started",
-        toolName: "inspect_elements",
-        taskName: "smoke inspect",
-        timestampUtc: now.toISOString(),
-      },
-    ],
+    recentActivity: [],
     writeHealth: {
       droppedCount: 0,
     },
@@ -152,6 +145,7 @@ try {
   assert.equal(data.machines[0].state, "active");
   assert.equal(data.machines[0].versionCurrent, true);
   assert.equal(data.machines[0].live.activeTask.taskName, "smoke inspect");
+  assert.equal(data.machines[0].live.recentActivity[0].taskName, "smoke inspect");
   assert.equal(data.activity.length, 2);
   assert.equal(data.activity[0].phase, "completed");
   assert.equal(data.summary.toolUsage[0].name, "inspect_elements");

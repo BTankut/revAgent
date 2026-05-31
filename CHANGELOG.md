@@ -30,6 +30,9 @@ All notable revAgent workstation deployment changes are tracked here.
 - Added the read-only revAgent live dashboard MVP with machine cards, active
   task stream, deployment health, latest usage metrics, and a dashboard smoke
   test.
+- Fixed live dashboard machine cards so the latest activity line falls back to
+  the per-machine activity stream when the fast status snapshot has no recent
+  activity list.
 - Fixed usage-summary friction samples so failed/slow raw tool or command
   events are still reported when no derived `production.context` event exists,
   empty production rollups stay as empty arrays instead of blank zero rows, and

@@ -177,6 +177,20 @@ function summarizeMachine(machineName, machineReport, liveStatus, stableVersion,
   };
 }
 
+function withActivityFallback(machine, machineActivity) {
+  if (!machine.live || machine.live.recentActivity.length > 0 || !Array.isArray(machineActivity) || machineActivity.length === 0) {
+    return machine;
+  }
+
+  return {
+    ...machine,
+    live: {
+      ...machine.live,
+      recentActivity: sortActivities(machineActivity).slice(0, 20),
+    },
+  };
+}
+
 function summarizeOverview(data) {
   const machines = data.machines || [];
   const liveMachines = machines.filter((machine) => machine.live && machine.live.heartbeatAgeSeconds !== null && machine.live.heartbeatAgeSeconds <= data.staleSeconds);
@@ -215,22 +229,28 @@ export function loadDashboardData(config = {}) {
   const stable = readJsonFile(path.join(releaseRoot, "channels", "stable.json"));
   const summary = readJsonFile(path.join(summariesRoot, "latest.json"));
   const publish = readJsonFile(path.join(summariesRoot, "publish-latest.json"));
+  const todayUtc = new Date(now).toISOString().slice(0, 10);
 
-  const machineNames = new Set([
+  const machineNames = [...new Set([
     ...listDirectories(machinesRoot),
     ...listDirectories(liveRoot),
-  ].map(normalizeMachineName).filter(Boolean));
+  ].map(normalizeMachineName).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
 
-  const machines = [...machineNames].sort((a, b) => a.localeCompare(b)).map((machineName) => {
+  const activityByMachine = new Map(machineNames.map((machineName) => {
+    const activityPath = path.join(liveRoot, machineName, "activity", `${todayUtc}.ndjson`);
+    return [machineName, readNdjsonTail(activityPath, activityLimit)];
+  }));
+
+  const machines = machineNames.map((machineName) => {
     const machineReport = readJsonFile(path.join(machinesRoot, machineName, "latest.json"));
     const liveStatus = readJsonFile(path.join(liveRoot, machineName, "status.json"));
-    return summarizeMachine(machineName, machineReport, liveStatus, stable?.version || "", now, staleSeconds);
+    const machine = summarizeMachine(machineName, machineReport, liveStatus, stable?.version || "", now, staleSeconds);
+    return withActivityFallback(machine, activityByMachine.get(machineName));
   });
 
-  const todayUtc = new Date(now).toISOString().slice(0, 10);
   const activity = sortActivities(machines.flatMap((machine) => {
-    const activityPath = path.join(liveRoot, machine.machine, "activity", `${todayUtc}.ndjson`);
-    return readNdjsonTail(activityPath, activityLimit).map((event) => ({
+    return (activityByMachine.get(machine.machine) || []).map((event) => ({
       ...event,
       machineName: event.machineName || machine.machine,
     }));
