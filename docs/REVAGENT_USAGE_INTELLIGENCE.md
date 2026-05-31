@@ -215,9 +215,9 @@ The current usage-intelligence stack includes:
 1. A live dashboard feed under `reports\live\machines\<machine>` with
    non-blocking `status.json` snapshots and daily activity NDJSON for 2-5
    second dashboard polling.
-2. A read-only web dashboard in `dashboard/` with terminal-style per-machine
-   streams, an all-machine stream, deployment health, tool usage, and friction
-   samples.
+2. A read-only web dashboard in `dashboard/` with revAgent-status-style
+   per-machine task history windows, an all-machine activity window, deployment
+   health, tool usage, and friction samples.
 3. A compact `/api/brief` dashboard export for separate analyst/LLM sessions.
 4. `scripts\publish-live-backfill.ps1`, a repair task that backfills local live
    spool files when NAS was offline.

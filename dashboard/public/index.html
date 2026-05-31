@@ -17,7 +17,15 @@
             <span id="focusLabel" hidden></span>
           </div>
         </div>
-        <button id="clearFocusButton" class="header-button" type="button" hidden>Show All</button>
+        <div class="header-actions">
+          <div class="theme-switch" role="group" aria-label="Theme">
+            <span>Theme</span>
+            <button class="theme-button" type="button" data-theme-choice="system">System</button>
+            <button class="theme-button" type="button" data-theme-choice="light">Light</button>
+            <button class="theme-button" type="button" data-theme-choice="dark">Dark</button>
+          </div>
+          <button id="clearFocusButton" class="header-button" type="button" hidden>Show All</button>
+        </div>
       </header>
 
       <main>
@@ -48,10 +56,10 @@
           </div>
         </section>
 
-        <section id="terminalLayout" class="terminal-layout">
+        <section id="statusLayout" class="status-layout">
           <div class="panel machines-panel">
             <div class="panel-header">
-              <h2>Machine Streams</h2>
+              <h2>Machine Status Windows</h2>
               <span id="machineCountLabel">0 records</span>
             </div>
             <div id="machinesGrid" class="machines-grid"></div>
@@ -59,10 +67,10 @@
 
           <div class="panel global-stream-panel">
             <div class="panel-header">
-              <h2>All Activity</h2>
+              <h2>All Status Activity</h2>
               <span id="activityCountLabel">0 records</span>
             </div>
-            <div id="activityList" class="terminal-window global-terminal"></div>
+            <div id="activityList" class="status-window global-status-window"></div>
           </div>
         </section>
 
@@ -80,7 +88,7 @@
               <h2>Friction</h2>
               <span id="frictionLabel">-</span>
             </div>
-            <div id="frictionList" class="terminal-window compact-terminal"></div>
+            <div id="frictionList" class="status-window compact-status-window"></div>
           </div>
         </section>
       </main>

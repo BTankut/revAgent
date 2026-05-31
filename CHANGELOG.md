@@ -33,8 +33,10 @@ All notable revAgent workstation deployment changes are tracked here.
 - Fixed live dashboard machine cards so the latest activity line falls back to
   the per-machine activity stream when the fast status snapshot has no recent
   activity list.
-- Changed the live dashboard into a terminal-style operations board with one
-  stream per machine, one all-machine stream, and a single-machine focus mode.
+- Changed the live dashboard into a revAgent-status-style operations board with
+  one task history window per machine, one all-machine activity window, and a
+  single-machine focus mode.
+- Added System/Light/Dark theme selection to the live dashboard.
 - Added `/api/brief` as a compact read-only dashboard export for analyst/LLM
   handoff.
 - Added `scripts\publish-live-backfill.ps1` to merge local live-feed spool

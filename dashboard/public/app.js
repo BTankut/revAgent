@@ -1,6 +1,9 @@
+const THEME_STORAGE_KEY = "revagent.dashboard.theme";
+
 const state = {
   focusMachine: null,
   data: null,
+  themeChoice: localStorage.getItem(THEME_STORAGE_KEY) || "system",
 };
 
 const elements = {
@@ -8,13 +11,14 @@ const elements = {
   lastRefresh: document.querySelector("#lastRefresh"),
   focusLabel: document.querySelector("#focusLabel"),
   clearFocusButton: document.querySelector("#clearFocusButton"),
+  themeButtons: document.querySelectorAll("[data-theme-choice]"),
   metricMachines: document.querySelector("#metricMachines"),
   metricLive: document.querySelector("#metricLive"),
   metricActive: document.querySelector("#metricActive"),
   metricOperations: document.querySelector("#metricOperations"),
   metricGuarded: document.querySelector("#metricGuarded"),
   metricFailed: document.querySelector("#metricFailed"),
-  terminalLayout: document.querySelector("#terminalLayout"),
+  statusLayout: document.querySelector("#statusLayout"),
   machineCountLabel: document.querySelector("#machineCountLabel"),
   machinesGrid: document.querySelector("#machinesGrid"),
   activityCountLabel: document.querySelector("#activityCountLabel"),
@@ -36,8 +40,8 @@ const stateLabels = {
   outdated: "Outdated",
 };
 
-const phaseSymbols = {
-  started: ">",
+const statusMarks = {
+  started: "...",
   completed: "OK",
   guarded: "!",
   failed: "X",
@@ -101,42 +105,49 @@ function eventTimestamp(event) {
   return event.timestampUtc || event.finishedAtUtc || event.startedAtUtc || "";
 }
 
-function terminalEvents(events, limit) {
+function statusEvents(events, limit) {
   return [...(events || [])]
     .filter(Boolean)
-    .sort((a, b) => String(eventTimestamp(a)).localeCompare(String(eventTimestamp(b))))
-    .slice(-limit);
+    .sort((a, b) => String(eventTimestamp(b)).localeCompare(String(eventTimestamp(a))))
+    .slice(0, limit);
 }
 
-function resultLabel(event) {
+function durationLabel(event) {
   if (event.durationMs !== undefined && event.durationMs !== null) {
+    const ms = Number(event.durationMs);
+    if (Number.isFinite(ms) && ms >= 1000) {
+      return `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s`;
+    }
     return `${event.durationMs} ms`;
   }
-  if (event.state) {
-    return event.state;
-  }
-  return event.phase || "";
+  return event.state || event.phase || "";
 }
 
-function renderTerminalLine(event, options = {}) {
+function phaseOf(event) {
   const phase = event.phase || event.state || "completed";
-  const symbolClass = phase === "started" ? "started" : phase === "guarded" ? "guarded" : phase === "failed" ? "failed" : "completed";
+  if (phase === "running") return "started";
+  if (phase === "blocked") return "guarded";
+  return phase;
+}
+
+function renderStatusLine(event, options = {}) {
+  const phase = phaseOf(event);
   const scope = event.toolName || event.commandName || event.tool || event.scope || "-";
-  const machine = options.showMachine ? `<span class="terminal-machine">${escapeHtml(event.machineName || "-")}</span>` : "";
+  const machine = options.showMachine ? `<span class="status-machine">${escapeHtml(event.machineName || "-")}</span>` : "";
   return `
-    <div class="terminal-line terminal-${symbolClass}">
-      <span class="terminal-time">${escapeHtml(formatTime(eventTimestamp(event)))}</span>
-      <span class="terminal-symbol">${escapeHtml(phaseSymbols[phase] || "OK")}</span>
+    <div class="status-line status-${escapeHtml(phase)}">
+      <span class="status-time">${escapeHtml(formatTime(eventTimestamp(event)))}</span>
+      <span class="status-mark">${escapeHtml(statusMarks[phase] || "?")}</span>
       ${machine}
-      <span class="terminal-scope">${escapeHtml(scope)}</span>
-      <span class="terminal-title">${escapeHtml(activityTitle(event))}</span>
-      <span class="terminal-result">${escapeHtml(resultLabel(event))}</span>
+      <span class="status-task">${escapeHtml(activityTitle(event))}</span>
+      <span class="status-scope">${escapeHtml(scope)}</span>
+      <span class="status-duration">${escapeHtml(durationLabel(event))}</span>
     </div>
   `;
 }
 
 function machineEvents(machine) {
-  return terminalEvents(machine.live?.recentActivity || [], state.focusMachine ? 120 : 24);
+  return statusEvents(machine.live?.recentActivity || [], state.focusMachine ? 120 : 24);
 }
 
 function visibleMachines(data) {
@@ -145,6 +156,25 @@ function visibleMachines(data) {
     return machines;
   }
   return machines.filter((machine) => machine.machine === state.focusMachine);
+}
+
+function resolveTheme(choice) {
+  if (choice === "light" || choice === "dark") {
+    return choice;
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme() {
+  const choice = ["system", "light", "dark"].includes(state.themeChoice) ? state.themeChoice : "system";
+  const resolved = resolveTheme(choice);
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.dataset.themeChoice = choice;
+  elements.themeButtons.forEach((button) => {
+    const active = button.dataset.themeChoice === choice;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
 }
 
 function renderMetrics(data) {
@@ -162,7 +192,7 @@ function renderMetrics(data) {
 function renderFocusState() {
   const focused = Boolean(state.focusMachine);
   document.body.classList.toggle("focus-mode", focused);
-  elements.terminalLayout.classList.toggle("focus-mode", focused);
+  elements.statusLayout.classList.toggle("focus-mode", focused);
   elements.clearFocusButton.hidden = !focused;
   elements.focusLabel.hidden = !focused;
   elements.focusLabel.textContent = focused ? `Focus ${state.focusMachine}` : "";
@@ -184,11 +214,11 @@ function renderMachines(data) {
       ? `<strong>${escapeHtml(taskTitle(active))}</strong>`
       : `<span class="muted">${machine.live ? "Idle" : "Waiting for live feed"}</span>`;
     const events = machineEvents(machine);
-    const terminal = events.length > 0
-      ? events.map((event) => renderTerminalLine({ ...event, machineName: event.machineName || machine.machine })).join("")
-      : `<div class="terminal-empty">No activity yet.</div>`;
+    const statusHistory = events.length > 0
+      ? events.map((event) => renderStatusLine({ ...event, machineName: event.machineName || machine.machine })).join("")
+      : `<div class="status-empty">No recent tasks yet.</div>`;
     return `
-      <article class="machine-card terminal-card" data-state="${escapeHtml(machine.state)}" data-machine="${escapeHtml(machine.machine)}">
+      <article class="machine-card" data-state="${escapeHtml(machine.state)}" data-machine="${escapeHtml(machine.machine)}">
         <div class="machine-top">
           <div class="machine-name">
             <strong>${escapeHtml(machine.machine)}</strong>
@@ -206,21 +236,27 @@ function renderMachines(data) {
           <div class="fact"><span>Update</span><strong>${escapeHtml(machine.updateStatus || "-")}</strong></div>
           <div class="fact"><span>Last Report</span><strong>${escapeHtml(formatDateTime(machine.atUtc || machine.live?.lastHeartbeatUtc))}</strong></div>
         </div>
-        <div class="terminal-window machine-terminal">${terminal}</div>
+        <div class="status-window machine-status-window">
+          <div class="status-title">Recent tasks</div>
+          <div class="status-list">${statusHistory}</div>
+        </div>
       </article>
     `;
   }).join("");
 }
 
 function renderActivity(data) {
-  const activity = terminalEvents(data.activity || [], 220);
+  const activity = statusEvents(data.activity || [], 220);
   elements.activityCountLabel.textContent = `${(data.activity || []).length} records`;
   if (activity.length === 0) {
-    elements.activityList.innerHTML = `<div class="terminal-empty">Waiting for live activity.</div>`;
+    elements.activityList.innerHTML = `<div class="status-empty">Waiting for live activity.</div>`;
     return;
   }
 
-  elements.activityList.innerHTML = activity.map((event) => renderTerminalLine(event, { showMachine: true })).join("");
+  elements.activityList.innerHTML = `
+    <div class="status-title">Recent tasks</div>
+    <div class="status-list">${activity.map((event) => renderStatusLine(event, { showMachine: true })).join("")}</div>
+  `;
 }
 
 function renderTools(data) {
@@ -270,18 +306,21 @@ function frictionEvents(summary) {
 }
 
 function renderFriction(data) {
-  const events = terminalEvents(frictionEvents(data.summary), 32);
+  const events = statusEvents(frictionEvents(data.summary), 32);
   elements.frictionLabel.textContent = `${events.length} records`;
   if (events.length === 0) {
-    elements.frictionList.innerHTML = `<div class="terminal-empty">No friction records.</div>`;
+    elements.frictionList.innerHTML = `<div class="status-empty">No friction records.</div>`;
     return;
   }
-  elements.frictionList.innerHTML = events.map((event) => renderTerminalLine(event, { showMachine: true })).join("");
+  elements.frictionList.innerHTML = `
+    <div class="status-title">Recent tasks</div>
+    <div class="status-list">${events.map((event) => renderStatusLine(event, { showMachine: true })).join("")}</div>
+  `;
 }
 
-function scrollTerminalsToBottom() {
-  document.querySelectorAll(".terminal-window").forEach((terminal) => {
-    terminal.scrollTop = terminal.scrollHeight;
+function scrollStatusWindowsToTop() {
+  document.querySelectorAll(".status-window").forEach((windowElement) => {
+    windowElement.scrollTop = 0;
   });
 }
 
@@ -292,7 +331,7 @@ function render(data) {
   renderActivity(data);
   renderTools(data);
   renderFriction(data);
-  scrollTerminalsToBottom();
+  scrollStatusWindowsToTop();
 }
 
 async function refresh() {
@@ -306,6 +345,20 @@ async function refresh() {
     elements.lastRefresh.textContent = `Connection error ${formatTime(new Date().toISOString())}`;
   }
 }
+
+elements.themeButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    state.themeChoice = button.dataset.themeChoice || "system";
+    localStorage.setItem(THEME_STORAGE_KEY, state.themeChoice);
+    applyTheme();
+  });
+});
+
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  if (state.themeChoice === "system") {
+    applyTheme();
+  }
+});
 
 elements.machinesGrid.addEventListener("click", (event) => {
   const button = event.target.closest("[data-focus-machine]");
@@ -327,5 +380,6 @@ elements.clearFocusButton.addEventListener("click", () => {
   }
 });
 
+applyTheme();
 await refresh();
 setInterval(refresh, 3000);

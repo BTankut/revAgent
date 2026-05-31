@@ -138,10 +138,11 @@ A machine is stale when:
 
 ## MVP Dashboard Panels
 
-- Machine terminal windows: online/stale, version, user, active task, and a
-  bounded live activity stream per machine.
-- All-machine terminal stream: recent activity from every machine.
+- Machine status windows: online/stale, version, user, active task, and a
+  bounded status-history style activity list per machine.
+- All-machine status activity: recent activity from every machine.
 - Focus mode: one selected machine stream fills the dashboard surface.
+- Theme mode: System, Light, and Dark.
 - Guarded/failed strip: safety blocks and failures in the last N minutes.
 - Summary strip: today/latest sessions, production operations, tool usage.
 - Deployment health: installed vs stable version and latest update status.
@@ -165,10 +166,11 @@ A machine is stale when:
 - Uses 3 second browser refresh against `/api/overview`; the server reads
   `reports\live`, `reports\machines`, `reports\summaries`, and
   `channels\stable.json`.
-- Shows terminal-style per-machine streams, an all-machine stream, active task,
-  deployment state, latest summary metrics, tool usage, and
+- Shows revAgent-status-style per-machine history windows, an all-machine
+  activity window, active task, deployment state, latest summary metrics, tool usage, and
   guarded/failed/slow friction samples.
 - Provides single-machine focus mode for detailed live monitoring.
+- Provides System/Light/Dark theme selection.
 - Does not write to Revit, NAS release state, or telemetry.
 - Covered by `dashboard/smoke-test.mjs`, `scripts/test-live-dashboard.ps1`,
   and `scripts/test-all.ps1`.

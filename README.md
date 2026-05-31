@@ -670,10 +670,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-live-dashboard.ps1
 
 It serves `http://127.0.0.1:8765`, reads only `reports\machines`,
 `reports\live`, `reports\summaries`, and the stable channel manifest, and
-refreshes the browser every 3 seconds. It shows a terminal-style stream per
-machine, a separate all-machine stream, and a focus mode that enlarges one
-machine stream. It never sends Revit commands, writes telemetry, or changes NAS
-release state.
+refreshes the browser every 3 seconds. It shows revAgent-status-style task
+history windows per machine, a separate all-machine activity window, a focus
+mode that enlarges one machine, and System/Light/Dark theme selection. It never
+sends Revit commands, writes telemetry, or changes NAS release state.
 
 The dashboard also exposes a read-only LLM handoff at `/api/brief`. If a
 workstation was offline from NAS while still writing local live files, run
