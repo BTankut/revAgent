@@ -28,15 +28,26 @@ const elements = {
   activityList: document.querySelector("#activityList"),
 };
 
-const stateLabels = {
-  active: "Active",
-  online: "Live",
-  current: "Current",
+const connectionLabels = {
+  online: "Online",
   stale: "Stale",
   offline: "Offline",
-  failed: "Failed",
-  deferred: "Deferred",
+};
+
+const versionLabels = {
+  upToDate: "Up to date",
   outdated: "Outdated",
+  unknown: "Unknown",
+};
+
+const taskLabels = {
+  running: "Running",
+  idle: "Idle",
+};
+
+const updateLabels = {
+  failed: "Update failed",
+  deferred: "Pending restart",
 };
 
 const statusMarks = {
@@ -259,6 +270,13 @@ function renderMachines(data) {
     const selectedSet = selectedMachineSet(data);
     const selected = selectedSet !== null && selectedSet.has(normalizeMachineName(machine.machine));
     const lastSeen = formatDateTime(machine.live?.lastHeartbeatUtc || machine.atUtc);
+    const connectionState = machine.connectionState || (machine.live ? "online" : "offline");
+    const versionState = machine.versionState || (machine.versionCurrent ? "upToDate" : "unknown");
+    const taskState = machine.taskState || "idle";
+    const updateState = machine.updateState || "ok";
+    const updateBadge = updateState !== "ok"
+      ? `<span class="machine-pill update-${escapeHtml(updateState)}">${escapeHtml(updateLabels[updateState] || updateState)}</span>`
+      : "";
     return `
       <article class="machine-card${selected ? " is-selected" : ""}" data-state="${escapeHtml(machine.state)}" data-machine="${escapeHtml(machine.machine)}">
         <div class="machine-top">
@@ -267,9 +285,14 @@ function renderMachines(data) {
             <span>${escapeHtml(machine.userName || "-")}</span>
           </div>
           <div class="machine-actions">
-            <span class="state-pill state-${escapeHtml(machine.state)}">${escapeHtml(stateLabels[machine.state] || machine.state)}</span>
             <button class="monitor-button${selected ? " is-active" : ""}" type="button" data-monitor-machine="${escapeHtml(machine.machine)}">${selected ? "Selected" : "Monitor"}</button>
           </div>
+        </div>
+        <div class="machine-badges">
+          <span class="machine-pill connection-${escapeHtml(connectionState)}">${escapeHtml(connectionLabels[connectionState] || connectionState)}</span>
+          <span class="machine-pill version-${escapeHtml(versionState)}">${escapeHtml(versionLabels[versionState] || versionState)}</span>
+          <span class="machine-pill task-${escapeHtml(taskState)}">${escapeHtml(taskLabels[taskState] || taskState)}</span>
+          ${updateBadge}
         </div>
         <div class="machine-meta">
           <span><strong>Version</strong> ${escapeHtml(shortVersion(machine.installedVersion || "-"))}</span>

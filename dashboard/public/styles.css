@@ -226,6 +226,8 @@ main {
 .machines-grid {
   display: grid;
   grid-template-columns: 1fr;
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 4px;
   padding: 6px;
   -webkit-overflow-scrolling: touch;
@@ -237,8 +239,8 @@ main {
   border-radius: 6px;
   box-shadow: none;
   display: grid;
-  grid-template-rows: auto auto;
-  gap: 4px;
+  grid-template-rows: auto auto auto;
+  gap: 5px;
 }
 
 .machine-card.is-selected {
@@ -281,38 +283,48 @@ main {
   justify-content: flex-end;
 }
 
-.state-pill {
-  min-width: 58px;
+.machine-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.machine-pill {
+  min-width: 54px;
+  min-height: 21px;
   text-align: center;
   border-radius: 999px;
   padding: 2px 6px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.25;
   color: #fff;
 }
 
-:root[data-theme="dark"] .state-pill {
+:root[data-theme="dark"] .machine-pill {
   color: #101417;
 }
 
-.state-current,
-.state-online {
+.connection-online,
+.version-upToDate {
   background: var(--green);
 }
 
-.state-active {
+.task-running {
   background: var(--blue);
 }
 
-.state-stale,
-.state-deferred,
-.state-outdated {
+.connection-stale,
+.version-outdated,
+.version-unknown,
+.task-idle,
+.update-deferred {
   background: var(--amber);
 }
 
-.state-failed,
-.state-offline {
+.connection-offline,
+.update-failed {
   background: var(--red);
 }
 
@@ -658,11 +670,12 @@ main {
   }
 
   .machines-panel {
-    max-height: 32svh;
+    max-height: 36svh;
   }
 
   .machine-card {
     padding: 8px;
+    gap: 5px;
   }
 
   .machine-top {
@@ -677,7 +690,7 @@ main {
     min-height: 28px;
   }
 
-  .state-pill {
+  .machine-pill {
     min-height: 22px;
   }
 

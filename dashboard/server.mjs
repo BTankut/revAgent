@@ -134,12 +134,7 @@ function chooseState(machine, live, stableVersion, now, staleSeconds) {
   const installed = machine?.installedVersion || machine?.localInstall?.version || "";
   const target = stableVersion || machine?.targetVersion || "";
   const reportStatus = String(machine?.status || "").toLowerCase();
-  const liveAgeSeconds = secondsSince(live?.lastHeartbeatUtc, now);
-  const liveState = !live
-    ? "offline"
-    : liveAgeSeconds !== null && liveAgeSeconds <= staleSeconds
-      ? "online"
-      : "stale";
+  const liveState = connectionStateFor(live, now, staleSeconds);
 
   if (reportStatus === "failed") {
     return "failed";
@@ -156,6 +151,38 @@ function chooseState(machine, live, stableVersion, now, staleSeconds) {
   return liveState === "online" ? "online" : "current";
 }
 
+function connectionStateFor(live, now, staleSeconds) {
+  const liveAgeSeconds = secondsSince(live?.lastHeartbeatUtc, now);
+  if (!live) {
+    return "offline";
+  }
+  return liveAgeSeconds !== null && liveAgeSeconds <= staleSeconds ? "online" : "stale";
+}
+
+function versionStateFor(machine, stableVersion) {
+  const installed = machine?.installedVersion || machine?.localInstall?.version || "";
+  const target = stableVersion || machine?.targetVersion || "";
+  if (!installed || !target) {
+    return "unknown";
+  }
+  return installed === target ? "upToDate" : "outdated";
+}
+
+function taskStateFor(live, now, staleSeconds) {
+  return connectionStateFor(live, now, staleSeconds) === "online" && live?.activeTask ? "running" : "idle";
+}
+
+function updateStateFor(machine) {
+  const reportStatus = String(machine?.status || "").toLowerCase();
+  if (reportStatus === "failed") {
+    return "failed";
+  }
+  if (machine?.diagnostics?.deferredForRevitClose === true) {
+    return "deferred";
+  }
+  return "ok";
+}
+
 function summarizeMachine(machineName, machineReport, liveStatus, stableVersion, now, staleSeconds) {
   const installedVersion = machineReport?.installedVersion || machineReport?.localInstall?.version || "";
   const reportedTargetVersion = machineReport?.targetVersion || "";
@@ -166,6 +193,10 @@ function summarizeMachine(machineName, machineReport, liveStatus, stableVersion,
     computerName: machineReport?.computerName || liveStatus?.machineName || machineName,
     userName: machineReport?.userName || liveStatus?.userName || "",
     state: chooseState(machineReport, liveStatus, stableVersion, now, staleSeconds),
+    connectionState: connectionStateFor(liveStatus, now, staleSeconds),
+    versionState: versionStateFor(machineReport, stableVersion),
+    taskState: taskStateFor(liveStatus, now, staleSeconds),
+    updateState: updateStateFor(machineReport),
     updateStatus: machineReport?.status || "",
     operation: machineReport?.operation || "",
     operationMethod: machineReport?.operationMethod || "",
