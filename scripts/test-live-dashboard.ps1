@@ -112,6 +112,7 @@ try {
     Assert-True ($dashboardApp -match 'data-activity-toggle') "Dashboard must expose an activity expand/collapse control."
     Assert-True ($dashboardHtml -match '(?s)activity-column.*All Status Activity.*Tool Usage.*Friction.*Machine Status Windows') "Dashboard layout must keep activity/tools/friction before machine status windows."
     Assert-True ($dashboardCss -match 'grid-template-columns:\s*minmax\(0,\s*2fr\)\s*minmax\(340px,\s*1fr\)') "Dashboard must use a 2/1 activity-to-machine status layout."
+    Assert-True ($dashboardCss -match '(?s)\.bottom-grid\s*\{.*?grid-template-columns:\s*1fr;') "Dashboard must stack Tool Usage and Friction vertically."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

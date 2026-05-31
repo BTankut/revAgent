@@ -230,7 +230,7 @@ body.focus-mode .activity-column {
 
 .bottom-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.72fr);
+  grid-template-columns: 1fr;
   gap: 12px;
 }
 
