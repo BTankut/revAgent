@@ -2,6 +2,7 @@ const THEME_STORAGE_KEY = "revagent.dashboard.theme";
 const ACTIVITY_DEFAULT_LIMIT = 50;
 const ACTIVITY_EXPANDED_LIMIT = 200;
 const REFRESH_TIMEOUT_MS = 8000;
+const SCROLL_TOP_THRESHOLD_PX = 4;
 
 const state = {
   data: null,
@@ -9,6 +10,11 @@ const state = {
   activityExpanded: false,
   refreshInFlight: false,
   selectedMachines: null,
+  hasRendered: false,
+  activityScrollTop: 0,
+  activityScrollHeight: 0,
+  activityScrollAwayFromTop: false,
+  suppressActivityScrollTracking: false,
 };
 
 const elements = {
@@ -319,18 +325,62 @@ function setMachineFilter(machineName) {
   state.activityExpanded = false;
 }
 
-function scrollStatusWindowsToTop() {
-  document.querySelectorAll(".status-window").forEach((windowElement) => {
-    windowElement.scrollTop = 0;
-  });
+function captureActivityScroll() {
+  const element = elements.activityList;
+  const trackedTop = state.activityScrollAwayFromTop ? state.activityScrollTop : element.scrollTop;
+  const trackedHeight = state.activityScrollAwayFromTop ? state.activityScrollHeight : element.scrollHeight;
+  return {
+    scrollTop: trackedTop,
+    scrollHeight: trackedHeight,
+    isAtTop: trackedTop <= SCROLL_TOP_THRESHOLD_PX,
+  };
 }
 
-function render(data) {
+function restoreActivityScroll(snapshot, options = {}) {
+  const element = elements.activityList;
+  state.suppressActivityScrollTracking = true;
+  if (options.reset || !snapshot || snapshot.isAtTop) {
+    element.scrollTop = 0;
+    state.activityScrollTop = 0;
+    state.activityScrollHeight = element.scrollHeight;
+    state.activityScrollAwayFromTop = false;
+    window.setTimeout(() => {
+      state.suppressActivityScrollTracking = false;
+    }, 0);
+    return;
+  }
+
+  const heightDelta = Math.max(0, element.scrollHeight - snapshot.scrollHeight);
+  element.scrollTop = snapshot.scrollTop + heightDelta;
+  state.activityScrollTop = element.scrollTop;
+  state.activityScrollHeight = element.scrollHeight;
+  state.activityScrollAwayFromTop = element.scrollTop > SCROLL_TOP_THRESHOLD_PX;
+  window.setTimeout(() => {
+    state.suppressActivityScrollTracking = false;
+  }, 0);
+}
+
+function resetActivityScroll() {
+  state.suppressActivityScrollTracking = true;
+  elements.activityList.scrollTop = 0;
+  state.activityScrollTop = 0;
+  state.activityScrollHeight = elements.activityList.scrollHeight;
+  state.activityScrollAwayFromTop = false;
+  window.setTimeout(() => {
+    state.suppressActivityScrollTracking = false;
+  }, 0);
+}
+
+function render(data, options = {}) {
+  const scrollSnapshot = captureActivityScroll();
   state.data = data;
   renderHeader(data);
   renderMachines(data);
   renderActivity(data);
-  scrollStatusWindowsToTop();
+  restoreActivityScroll(scrollSnapshot, {
+    reset: options.resetActivityScroll || !state.hasRendered,
+  });
+  state.hasRendered = true;
 }
 
 async function refresh() {
@@ -377,6 +427,7 @@ elements.machinesGrid.addEventListener("click", (event) => {
   if (state.data) {
     renderMachines(state.data);
     renderActivity(state.data);
+    resetActivityScroll();
   }
 });
 
@@ -388,6 +439,7 @@ elements.activityFilters.addEventListener("click", (event) => {
     if (state.data) {
       renderMachines(state.data);
       renderActivity(state.data);
+      resetActivityScroll();
     }
     return;
   }
@@ -400,6 +452,7 @@ elements.activityFilters.addEventListener("click", (event) => {
   if (state.data) {
     renderMachines(state.data);
     renderActivity(state.data);
+    resetActivityScroll();
   }
 });
 
@@ -411,8 +464,17 @@ elements.activityList.addEventListener("click", (event) => {
   state.activityExpanded = !state.activityExpanded;
   if (state.data) {
     renderActivity(state.data);
-    elements.activityList.scrollTop = 0;
+    resetActivityScroll();
   }
+});
+
+elements.activityList.addEventListener("scroll", () => {
+  if (state.suppressActivityScrollTracking) {
+    return;
+  }
+  state.activityScrollTop = elements.activityList.scrollTop;
+  state.activityScrollHeight = elements.activityList.scrollHeight;
+  state.activityScrollAwayFromTop = elements.activityList.scrollTop > SCROLL_TOP_THRESHOLD_PX;
 });
 
 applyTheme();

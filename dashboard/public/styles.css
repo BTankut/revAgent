@@ -157,8 +157,9 @@ h2 {
 }
 
 .monitor-button {
-  min-width: 76px;
-  padding: 0 8px;
+  min-width: 62px;
+  min-height: 24px;
+  padding: 0 7px;
   font-size: 12px;
   font-weight: 700;
 }
@@ -209,6 +210,11 @@ main {
   gap: 12px;
 }
 
+.machines-panel .panel-header {
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
 .panel-header span {
   color: var(--muted);
   font-size: 12px;
@@ -218,17 +224,18 @@ main {
 .machines-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 10px;
-  padding: 10px;
+  gap: 4px;
+  padding: 6px;
 }
 
 .machine-card {
-  min-height: 136px;
-  padding: 14px;
+  min-height: 0;
+  padding: 7px 9px;
+  border-radius: 6px;
   box-shadow: none;
   display: grid;
-  grid-template-rows: auto auto auto;
-  gap: 10px;
+  grid-template-rows: auto auto;
+  gap: 4px;
 }
 
 .machine-card.is-selected {
@@ -238,43 +245,47 @@ main {
 .machine-top {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
-  align-items: flex-start;
+  gap: 6px;
+  align-items: center;
 }
 
 .machine-name {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 6px;
   min-width: 0;
 }
 
 .machine-name strong {
-  display: block;
-  font-size: 16px;
+  font-size: 14px;
+  line-height: 1.2;
   overflow-wrap: anywhere;
 }
 
 .machine-name span {
-  display: block;
   color: var(--muted);
-  font-size: 12px;
-  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.2;
   overflow-wrap: anywhere;
 }
 
 .machine-actions {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 4px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
 .state-pill {
-  min-width: 72px;
+  min-width: 58px;
   text-align: center;
   border-radius: 999px;
-  padding: 4px 8px;
+  padding: 2px 6px;
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.25;
   color: #fff;
 }
 
@@ -305,13 +316,14 @@ main {
 .machine-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 12px;
+  gap: 2px 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.2;
 }
 
 .machine-meta span {
-  min-width: min(100%, 138px);
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
@@ -422,10 +434,10 @@ main {
 .status-line {
   display: grid;
   grid-template-columns: 56px 32px minmax(88px, 0.42fr) minmax(180px, 1fr) minmax(96px, 0.54fr) 100px;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  min-height: 32px;
-  padding: 6px 8px;
+  min-height: 28px;
+  padding: 4px 6px;
   border: 1px solid var(--line);
   border-left-width: 4px;
   border-radius: 6px;
@@ -444,8 +456,8 @@ main {
 }
 
 .status-mark {
-  width: 24px;
-  min-height: 22px;
+  width: 22px;
+  min-height: 20px;
   display: grid;
   place-items: center;
   border-radius: 5px;
