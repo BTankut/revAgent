@@ -129,11 +129,15 @@ trust-affecting warnings.
 
 The current `revit-mcp` runtime surface is a reusable production access layer
 for live Revit execution, model context, view/focus workflows, parameter
-inspection, schedule inspection, controlled parameter and schedule-cell writes,
-image export, and safe custom-code workflows. It is intended for model
-querying, visual QA, view navigation, schedule and parameter inspection, and
+inspection, sheet/schedule inspection, controlled parameter and schedule-cell
+writes, image export, and safe custom-code workflows. It is intended for model
+querying, visual QA, view navigation, sheet/schedule/parameter inspection, and
 controlled Revit API operations.
 
+For DrawingSheet text lookup in large projects, use `inspect_sheet_text` before
+raw dynamic C# sheet loops. Start with `sheetQuery` or exact `sheetIds`, keep
+limits bounded, and enable `scanScheduleCells` only when the target text may be
+inside placed schedules.
 For schedule lookup or schedule cell reading in large projects, use
 `inspect_schedules` before raw dynamic C# loops. Start with `nameQuery` or
 exact `scheduleIds`, keep row/column limits bounded, and avoid scanning all

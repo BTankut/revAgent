@@ -461,6 +461,7 @@ Expected bundled runtime commands: 24 tools registered by the runtime server.
 - `show_element_in_plan_and_3d`
 - `smart_focus_elements`
 - `inspect_elements`
+- `inspect_sheet_text`
 - `inspect_schedules`
 - `inspect_parameter_schema`
 - `set_element_parameter`
@@ -598,7 +599,7 @@ Host-specific notes:
 
 ## Bundled runtime tool surface
 
-The runtime MCP server registers 24 tools in
+The runtime MCP server registers 25 tools in
 `installer/runtime-mcp-server/src/tools/register.ts`. They intentionally cover a
 small production surface instead of many narrow one-off commands.
 
@@ -606,7 +607,7 @@ small production surface instead of many narrow one-off commands.
 | --- | --- | --- |
 | Instance and status | `list_revit_instances`, `get_revit_mcp_status` | Read-only. `get_revit_mcp_status` is the only runtime tool intended to run while another Revit task is active. |
 | Dynamic execution | `send_code_to_revit`, `send_code_to_revit_safe` | Raw `send_code_to_revit` can write if the supplied C# writes. `transactionMode: "auto"` opens a wrapper-managed transaction and guards manual transaction snippets; `transactionMode: "none"` executes without an outer transaction. `send_code_to_revit_safe` is for read/preview work, rejects write-looking snippets, and uses `none`. |
-| Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_schedules`, `inspect_parameter_schema` | Read-only model/session/element/schedule/parameter inspection before engineering decisions or writes. `get_active_view_context` reports both sheet `viewports` and `scheduleSheetInstances`. `inspect_schedules` is the bounded schedule name/cell inspection path for large projects and should be used instead of broad custom C# schedule scans. |
+| Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_sheet_text`, `inspect_schedules`, `inspect_parameter_schema` | Read-only model/session/element/sheet/schedule/parameter inspection before engineering decisions or writes. `get_active_view_context` reports both sheet `viewports` and `scheduleSheetInstances`. `inspect_sheet_text` is the bounded DrawingSheet text-note and placed-schedule inventory path for large projects and should be used instead of broad custom C# sheet scans. `inspect_schedules` is the bounded schedule name/cell inspection path for large projects and should be used instead of broad custom C# schedule scans. |
 | Controlled data writes | `set_element_parameter`, `set_schedule_cells` | `set_element_parameter` is the production-safe single-parameter set/clear path. It defaults to `mode="dryRun"` and `operation="set"`, performs exact `inspect_parameter_schema`-style identity resolution, blocks duplicate display names/read-only parameters/type writes without explicit approval, commits only with `mode="commit"`, and verifies the value by reading it back. `operation="clear"` attempts Revit `Parameter.ClearValue` for a true no-value state and reports `clear_value_not_supported` instead of faking clear with an empty string when Revit does not support it. `set_schedule_cells` writes exact schedule cells only by `scheduleId`, `section`, `row`, and `column`; it defaults to dry-run, can require `expectedCurrentText`, commits through the wrapper transaction, and verifies committed cell text. |
 | Live view navigation | `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. |
 | View-data writes | `section_box_elements`, `create_3d_view_for_elements` | Can modify project view data by applying section boxes or creating/reusing 3D review views. Use explicit intent and verify afterward. |
@@ -638,6 +639,11 @@ are blocked. Use `builtInParameterId` when available and `expectedCurrentRaw`
 for compare-and-set safety. When the intent is to restore a true no-value
 state, use `operation="clear"`; writing `value=""` only makes the visible value
 empty and may leave Revit `HasValue=true`.
+
+For sheet text work, use `inspect_sheet_text` before raw dynamic code. It
+performs read-only bounded DrawingSheet text-note search and placed schedule
+inventory. Start with `sheetQuery` or exact `sheetIds`; enable
+`scanScheduleCells` only when the target text may be inside placed schedules.
 
 For schedule work, use `inspect_schedules` before raw dynamic code. It performs
 read-only bounded schedule discovery and cell inspection with `nameQuery`,

@@ -240,6 +240,24 @@ try {
 
   appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
     schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-command-only-selection",
+    phase: "completed",
+    state: "completed",
+    scope: "revit.command",
+    machineName: "TESTPC",
+    commandName: "get_selected_elements",
+    logicalToolName: "get_selected_elements",
+    taskName: "smoke command-only selection",
+    timestampUtc: new Date(now.getTime() + 3500).toISOString(),
+    durationMs: 50,
+    result: {
+      success: true,
+      guarded: false,
+    },
+  });
+
+  appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
+    schemaVersion: "revagent.live.activity.v1",
     liveTaskId: "smoke-inspect",
     phase: "completed",
     scope: "mcp.tool",
@@ -436,9 +454,9 @@ try {
   assert.equal(data.overview.currentVersionCount, 1);
   assert.equal(data.overview.staleMachineCount, 1);
   assert.equal(data.overview.offlineMachineCount, 1);
-  assert.equal(data.overview.productionOperationCount, 8);
-  assert.equal(data.overview.liveOperationCount, 8);
-  assert.equal(data.overview.liveCompletedCount, 6);
+  assert.equal(data.overview.productionOperationCount, 9);
+  assert.equal(data.overview.liveOperationCount, 9);
+  assert.equal(data.overview.liveCompletedCount, 7);
   assert.equal(data.overview.guardedCount, 1);
   assert.equal(data.overview.failedCount, 1);
   assert.equal(data.overview.summaryProductionOperationCount, 2);
@@ -460,7 +478,7 @@ try {
   assert.equal(oldMachine.targetVersion, version);
   assert.equal(oldMachine.reportedTargetVersion, "2026.05.31.100-oldbuild");
   assert.equal(closedMachine.connectionState, "offline");
-  assert.equal(data.activity.length, 8);
+  assert.equal(data.activity.length, 9);
   assert.equal(data.activity[0].taskName, "smoke status cleanup");
   assert.equal(data.activity[0].phase, "completed");
   assert.equal(data.activity[0].toolName, "send_code_to_revit");
@@ -477,6 +495,7 @@ try {
   assert.equal(data.activity.find((event) => event.taskName === "smoke inspect schedules").toolName, "inspect_schedules");
   assert.equal(data.activity.find((event) => event.taskName === "smoke inspect schedules").source, "revit.status+telemetry");
   assert.equal(data.activity.find((event) => event.taskName === "smoke inspect schedules").requestBytes, 900);
+  assert.equal(data.activity.find((event) => event.taskName === "smoke command-only selection").toolName, "get_selected_elements");
 
   writeJson(path.join(reportsRoot, "live", "machines", "TESTPC", "status.json"), {
     schemaVersion: "revagent.live.status.v1",
@@ -508,7 +527,7 @@ try {
   assert.equal("params" in data.activity[0], false);
   assert.equal(JSON.stringify(data).includes("\"preview\""), false);
   assert.equal(JSON.stringify(data).includes("yyyyyyyy"), false);
-  assert.ok(JSON.stringify(data).length < 18000);
+  assert.ok(JSON.stringify(data).length < 20000);
   assert.equal(data.summary.toolUsage[0].name, "inspect_elements");
   const brief = buildDashboardBrief(data);
   assert.equal(brief.schemaVersion, "revagent.dashboard.brief.v1");

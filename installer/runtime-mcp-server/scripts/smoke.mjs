@@ -84,6 +84,7 @@ const expectedTools = [
   "show_element_in_plan_and_3d",
   "smart_focus_elements",
   "inspect_elements",
+  "inspect_sheet_text",
   "inspect_schedules",
   "inspect_parameter_schema",
   "set_element_parameter",
@@ -108,6 +109,10 @@ const inspectSchedulesDescription = tools.get("inspect_schedules").description;
 assert.match(inspectSchedulesDescription, /SCHEDULE_INSPECTION_READ_ONLY/);
 assert.match(inspectSchedulesDescription, /large models/);
 assert.match(inspectSchedulesDescription, /generic send_code_to_revit/);
+const inspectSheetTextDescription = tools.get("inspect_sheet_text").description;
+assert.match(inspectSheetTextDescription, /SHEET_TEXT_INSPECTION_READ_ONLY/);
+assert.match(inspectSheetTextDescription, /DrawingSheet/);
+assert.match(inspectSheetTextDescription, /generic send_code_to_revit/);
 const setScheduleCellsDescription = tools.get("set_schedule_cells").description;
 assert.match(setScheduleCellsDescription, /PRODUCTION_SCHEDULE_CELL_WRITE/);
 assert.match(setScheduleCellsDescription, /scheduleId/);

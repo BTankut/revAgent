@@ -120,6 +120,10 @@ custom-code workflows.
   same-level plan and 3D view
 - `inspect_elements` - targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
+- `inspect_sheet_text` - read-only DrawingSheet text search and placed
+  schedule inventory. Use `sheetQuery` or exact `sheetIds` first in large
+  projects; enable `scanScheduleCells` only when target text may be inside
+  placed schedules. Prefer this over broad custom C# sheet loops.
 - `inspect_schedules` - read-only schedule discovery and bounded cell
   inspection. Use `nameQuery` or exact `scheduleIds` first in large projects,
   then add `cellQuery`, `includeCells`, row/column limits, and section selection
@@ -191,14 +195,18 @@ Default workflow for every Revit runtime task:
    `inspect_elements`. For ordinary parameter writes, prefer
    `set_element_parameter` over raw dynamic C# because it performs the exact
    schema preflight and readback verification itself.
-6. For schedule lookup, schedule evidence planning, or schedule cell reading,
+6. For DrawingSheet text lookup, call `inspect_sheet_text` before writing raw
+   C# sheet loops. Use `sheetQuery` or exact `sheetIds` and bounded limits;
+   enable `scanScheduleCells` only when schedule cells on the sheet must be
+   searched.
+7. For schedule lookup, schedule evidence planning, or schedule cell reading,
    call `inspect_schedules` before writing raw C# schedule loops. In large
    models, do not scan all schedule cells without a `nameQuery` or exact
    `scheduleIds`; keep `maxRowsPerSection` and `maxColumnsPerSection` bounded.
    For exact schedule text edits after row/column discovery, use
    `set_schedule_cells` with `expectedCurrentText` instead of ad hoc
    `send_code_to_revit` write snippets.
-7. Use `send_code_to_revit_safe` for read-only probes and write previews. It
+8. Use `send_code_to_revit_safe` for read-only probes and write previews. It
    rejects `transactionMode: "auto"` and always executes with
    `transactionMode: "none"`. Use raw `send_code_to_revit` only when the user
    explicitly asks for broad dynamic execution or a confirmed write.

@@ -55,13 +55,13 @@ structural, and electrical modules should add module-specific MCP tools in the
 runtime layer while reusing this shared Revit bridge for common execution,
 context, selection, view, and navigation operations.
 
-The current runtime server registers 24 tools:
+The current runtime server registers 25 tools:
 
 - status and targeting: `list_revit_instances`, `get_revit_mcp_status`
 - dynamic execution: `send_code_to_revit`, `send_code_to_revit_safe`
 - model/session context: `get_revit_session_context`,
-  `get_active_view_context`, `inspect_elements`, `inspect_schedules`,
-  `inspect_parameter_schema`
+  `get_active_view_context`, `inspect_elements`, `inspect_sheet_text`,
+  `inspect_schedules`, `inspect_parameter_schema`
 - controlled data writes: `set_element_parameter` for exact-schema
   parameter set/clear operations, and `set_schedule_cells` for exact schedule
   cell text writes by schedule id/section/row/column
@@ -73,12 +73,15 @@ The current runtime server registers 24 tools:
 - image evidence: `export_revit_view_image`,
   `export_revit_coordination_image`
 
-`inspect_schedules` is a read-only runtime tool for large-project schedule
-work. It provides bounded schedule-name discovery and bounded header/body/footer
-cell reads/scans so agents do not have to generate broad ad hoc C# loops over
-every schedule and every cell. `set_schedule_cells` is the paired write path for
-known schedule cells: it never resolves by schedule name, defaults to dry-run,
-blocks stale cells with `expectedCurrentText` unless explicitly allowed, commits
+`inspect_sheet_text` is a read-only runtime tool for large-project DrawingSheet
+text work. It provides bounded sheet text-note search and placed schedule
+inventory so agents do not have to generate broad ad hoc C# sheet scans.
+`inspect_schedules` is a read-only runtime tool for large-project schedule work.
+It provides bounded schedule-name discovery and bounded header/body/footer cell
+reads/scans so agents do not have to generate broad ad hoc C# loops over every
+schedule and every cell. `set_schedule_cells` is the paired write path for known
+schedule cells: it never resolves by schedule name, defaults to dry-run, blocks
+stale cells with `expectedCurrentText` unless explicitly allowed, commits
 through the wrapper transaction, and verifies the final cell text.
 
 The companion docs server registers 5 lookup tools: `search_api`,

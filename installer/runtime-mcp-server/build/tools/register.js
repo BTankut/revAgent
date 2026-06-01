@@ -16,6 +16,7 @@ import { registerExportRevitViewImageTool } from "./export_revit_view_image.js";
 import { registerShowElementInPlanAnd3DTool } from "./show_element_in_plan_and_3d.js";
 import { registerSmartFocusElementsTool } from "./smart_focus_elements.js";
 import { registerInspectElementsTool } from "./inspect_elements.js";
+import { registerInspectSheetTextTool } from "./inspect_sheet_text.js";
 import { registerInspectSchedulesTool } from "./inspect_schedules.js";
 import { registerInspectParameterSchemaTool } from "./inspect_parameter_schema.js";
 import { registerSetElementParameterTool } from "./set_element_parameter.js";
@@ -45,9 +46,10 @@ export async function registerTools(server) {
     registerShowElementInPlanAnd3DTool(telemetryServer);
     registerSmartFocusElementsTool(telemetryServer);
     registerInspectElementsTool(telemetryServer);
+    registerInspectSheetTextTool(telemetryServer);
     registerInspectSchedulesTool(telemetryServer);
     registerInspectParameterSchemaTool(telemetryServer);
     registerSetElementParameterTool(telemetryServer);
     registerSetScheduleCellsTool(telemetryServer);
-    console.error("Registered 24 Revit MCP tools");
+    console.error("Registered 25 Revit MCP tools");
 }

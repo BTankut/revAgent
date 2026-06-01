@@ -188,15 +188,21 @@ namespace AIGeneratedCode
         private static List<MetadataReference> GetMetadataReferences()
         {
             Dictionary<string, Assembly> chosen = new Dictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase);
-            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            List<Assembly> assemblies = AppDomain.CurrentDomain.GetAssemblies()
+                .Where(assembly => !assembly.IsDynamic && !string.IsNullOrEmpty(assembly.Location))
+                .ToList();
+            bool hasOfficialNewtonsoftJson = assemblies.Any(assembly =>
+                string.Equals(assembly.GetName().Name, "Newtonsoft.Json", StringComparison.OrdinalIgnoreCase));
+
+            foreach (Assembly assembly in assemblies)
             {
-                if (assembly.IsDynamic || string.IsNullOrEmpty(assembly.Location))
+                AssemblyName name = assembly.GetName();
+                if (string.IsNullOrWhiteSpace(name.Name))
                 {
                     continue;
                 }
 
-                AssemblyName name = assembly.GetName();
-                if (string.IsNullOrWhiteSpace(name.Name))
+                if (hasOfficialNewtonsoftJson && IsShadowNewtonsoftJsonProvider(assembly))
                 {
                     continue;
                 }
@@ -213,6 +219,18 @@ namespace AIGeneratedCode
                 .Select(a => MetadataReference.CreateFromFile(a.Location))
                 .Cast<MetadataReference>()
                 .ToList();
+        }
+
+        private static bool IsShadowNewtonsoftJsonProvider(Assembly assembly)
+        {
+            string assemblyName = assembly.GetName().Name;
+            if (string.Equals(assemblyName, "Newtonsoft.Json", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return assembly.GetType("Newtonsoft.Json.JsonConvert", false) != null ||
+                assembly.GetType("Newtonsoft.Json.Linq.JObject", false) != null;
         }
 
         private static int CompareAssemblyReference(Assembly candidate, Assembly existing)

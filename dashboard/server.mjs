@@ -697,6 +697,7 @@ function compactActivity(event) {
   if (!event) {
     return null;
   }
+  const displayToolName = event.toolName || event.logicalToolName || event.commandName || "";
   const result = event.result && typeof event.result === "object"
     ? {
         success: event.result.success ?? null,
@@ -717,7 +718,7 @@ function compactActivity(event) {
     phase: event.phase || event.state || "",
     state: event.state || event.phase || "",
     scope: event.scope || "",
-    toolName: event.toolName || "",
+    toolName: displayToolName,
     commandName: event.commandName || "",
     logicalToolName: event.logicalToolName || "",
     executionKind: event.executionKind || "",
