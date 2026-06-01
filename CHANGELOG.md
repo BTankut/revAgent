@@ -4,6 +4,14 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added `set_schedule_cells_by_text`, a production-safe schedule row-text write
+  workflow for bounded sheet/schedule searches, dry-run match review,
+  ambiguous-row guards, compare-and-set checks, commit mode, and readback
+  verification.
+- Fixed usage-summary text handling so daily JSON/Markdown explicitly reads
+  telemetry as UTF-8, de-duplicates matching raw MCP/Revit friction samples,
+  and recognizes schedule `SetCellText` write patterns in dynamic-code
+  promotion analysis.
 - Added the revAgent architecture hardening plan and enforcement pass:
   TypeScript `@ts-nocheck` policy, shared runtime result helpers, write/export
   contract checks, telemetry helper split, dynamic C# promotion reporting, and
@@ -30,6 +38,9 @@ All notable revAgent workstation deployment changes are tracked here.
   `revit-mcp-runtime-tools.24` for the live status/dashboard alignment change.
 - Bumped the runtime tool surface version to
   `revit-mcp-runtime-tools.25` for the controlled parameter-write tool.
+- Bumped the runtime tool surface version to
+  `revit-mcp-runtime-tools.30` for the schedule row-text write workflow and
+  usage-intelligence write-pattern update.
 - Changed live dashboard activity rendering to match the revAgent status
   window semantics: started/completed lifecycle pairs and nested
   `mcp.tool`/`send_code_to_revit` events are collapsed into one user-facing

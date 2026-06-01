@@ -68,7 +68,8 @@ with code or test enforcement. Documentation alone is not enough.
   `success`, `guarded`, `state`, `action`, `error`, `warnings`, and `notices`.
 - Use it first in guard-heavy and write-adjacent tools:
   `send_code_to_revit_safe`, `set_element_parameter`, `set_schedule_cells`,
-  `export_revit_view_image`, and `export_revit_coordination_image`.
+  `set_schedule_cells_by_text`, `export_revit_view_image`, and
+  `export_revit_coordination_image`.
 - Add response-shape smoke assertions for guarded, dry-run, failed, and
   successful result paths where they can run without Revit.
 
@@ -139,6 +140,7 @@ with code or test enforcement. Documentation alone is not enough.
   `send_code_to_revit_safe` write rejection,
   `set_element_parameter` dry-run/guard preflight,
   `set_schedule_cells` dry-run/expected-current guard,
+  `set_schedule_cells_by_text` bounded row-text and ambiguity guards,
   dynamic manual transaction guard behavior.
 - Keep Revit-required tests in `scripts/test-commandset-live.ps1`.
 - Keep non-Revit tests in `test-all.ps1`.
@@ -216,7 +218,8 @@ Status: implemented as a single hardening pass.
 - Added `installer/runtime-mcp-server/src/utils/runtimeResult.ts`.
 - Applied the shared success/guarded/failure contract to
   `send_code_to_revit_safe`, `set_element_parameter`, `set_schedule_cells`,
-  `export_revit_view_image`, and `export_revit_coordination_image`.
+  `set_schedule_cells_by_text`, `export_revit_view_image`, and
+  `export_revit_coordination_image`.
 - Added `runtime-result-test` and write/export response-shape assertions.
 
 ### Phase 3 - Dynamic-To-Native Promotion Rule

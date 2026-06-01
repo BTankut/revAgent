@@ -89,6 +89,7 @@ const expectedTools = [
   "inspect_parameter_schema",
   "set_element_parameter",
   "set_schedule_cells",
+  "set_schedule_cells_by_text",
 ];
 
 assert.deepEqual([...tools.keys()], expectedTools);
@@ -117,6 +118,10 @@ const setScheduleCellsDescription = tools.get("set_schedule_cells").description;
 assert.match(setScheduleCellsDescription, /PRODUCTION_SCHEDULE_CELL_WRITE/);
 assert.match(setScheduleCellsDescription, /scheduleId/);
 assert.match(setScheduleCellsDescription, /Defaults to dryRun/);
+const setScheduleCellsByTextDescription = tools.get("set_schedule_cells_by_text").description;
+assert.match(setScheduleCellsByTextDescription, /PRODUCTION_SCHEDULE_CELL_WRITE_BY_TEXT/);
+assert.match(setScheduleCellsByTextDescription, /row text/);
+assert.match(setScheduleCellsByTextDescription, /generic send_code_to_revit/);
 
 const autoStyleExpectations = {
   raw_evidence: "raw",
@@ -199,6 +204,11 @@ assert.equal(telemetryParamSummary.transactionMode, "none");
 assert.equal(typeof telemetryParamSummary.query.hash, "string");
 assert.equal(telemetryParamSummary.query.text, "sensitive search text");
 
+const scheduleWriteParamSummary = summarizeTelemetryParams({
+  code: "TableSectionData sectionData = schedule.GetTableData().GetSectionData(SectionType.Body); sectionData.SetCellText(1, 2, \"R914X023\");",
+});
+assert.equal(scheduleWriteParamSummary.code.writePatterns.includes("Schedule.SetCellText"), true);
+
 const telemetryResponseSummary = summarizeTelemetryResponse({
   result: {
     success: false,
@@ -262,6 +272,33 @@ assert.deepEqual(productionContext.elements.targetElementIds, [101, 102]);
 assert.deepEqual(productionContext.elements.selectionIds, [101]);
 assert.equal(productionContext.elements.disciplineHint, "mechanical_hvac");
 assert.equal(productionContext.elements.samples[0].roomNumber, "204");
+
+const scheduleContext = extractProductionContext({
+  sourceEventType: "mcp.tool",
+  toolName: "inspect_schedules",
+  taskName: "M701 sheet schedule scan Level 02",
+  taskId: "run-schedule",
+  durationMs: 88,
+  params: {
+    sheetQuery: "M701",
+    nameQuery: "Mechanical Schedules",
+    cellQuery: "R914",
+  },
+  response: {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        success: true,
+        action: "inspect_schedules",
+        ActiveView: { Id: 17, Name: "Level 02 HVAC", ViewType: "DrawingSheet" },
+        schedules: [{ id: 501, name: "Mechanical Schedules" }],
+      }),
+    }],
+  },
+});
+assert.equal(scheduleContext.elements.disciplineHint, "mechanical_hvac");
+assert.equal(scheduleContext.location.levelName, "Level 02");
+assert.equal(scheduleContext.operation.query, "Mechanical Schedules");
 
 const telemetryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "revagent-telemetry-"));
 process.env.REVAGENT_TELEMETRY_ROOT = telemetryRoot;

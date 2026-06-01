@@ -35,6 +35,15 @@ assertContains(setScheduleCells, "allowCurrentMismatch", "set_schedule_cells mus
 assertContains(setScheduleCells, "current_value_mismatch", "set_schedule_cells must guard stale cells by default.");
 assertContains(setScheduleCells, "Schedule cell verification failed", "set_schedule_cells must verify committed cell text.");
 
+const setScheduleCellsByText = readSource("src/tools/set_schedule_cells_by_text.ts");
+assertContains(setScheduleCellsByText, "[PRODUCTION_SCHEDULE_CELL_WRITE_BY_TEXT]", "set_schedule_cells_by_text must stay marked as a production row-text schedule write tool.");
+assertContains(setScheduleCellsByText, "missing_bounded_scope", "set_schedule_cells_by_text must require bounded schedule/sheet scope.");
+assertContains(setScheduleCellsByText, "missing_row_text_query", "set_schedule_cells_by_text must require row text evidence before matching rows.");
+assertContains(setScheduleCellsByText, "multiple_matching_rows", "set_schedule_cells_by_text must guard ambiguous row matches by default.");
+assertContains(setScheduleCellsByText, "expectedCurrentText", "set_schedule_cells_by_text must keep compare-and-set current text protection.");
+assertContains(setScheduleCellsByText, 'transactionMode: mode === "commit" ? "auto" : "none"', "set_schedule_cells_by_text must only use auto transaction mode for commit.");
+assertContains(setScheduleCellsByText, "Schedule cell verification failed", "set_schedule_cells_by_text must verify committed cell text.");
+
 const sendCodeSafe = readSource("src/tools/send_code_to_revit_safe.ts");
 assertContains(sendCodeSafe, "runtimeGuarded", "send_code_to_revit_safe must report protected paths through the shared guarded result contract.");
 assertContains(sendCodeSafe, "runtimeSuccess", "send_code_to_revit_safe must report successful safe execution through the shared result contract.");

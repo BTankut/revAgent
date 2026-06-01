@@ -334,12 +334,120 @@ function Read-JsonFileOrNull {
         if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
             return $null
         }
-        return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+        return Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Json
     }
     catch {
         Write-Warning "Could not read JSON '$Path': $($_.Exception.Message)"
         return $null
     }
+}
+
+function Add-UniqueString {
+    param(
+        [System.Collections.Generic.List[string]]$List,
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return
+    }
+    if (-not $List.Contains($Value)) {
+        [void]$List.Add($Value)
+    }
+}
+
+function Get-CodeWritePatterns {
+    param([object]$Code)
+
+    $patterns = [System.Collections.Generic.List[string]]::new()
+    foreach ($pattern in ConvertTo-StringArray (Get-ReportValue -Object $Code -Name "writePatterns")) {
+        Add-UniqueString -List $patterns -Value $pattern
+    }
+
+    $preview = [string](Get-ReportValue -Object $Code -Name "preview")
+    if ($preview -match '(?i)\.\s*SetCellText\s*\(') {
+        Add-UniqueString -List $patterns -Value "Schedule.SetCellText"
+    }
+    if ($preview -match '(?i)\.\s*(InsertRow|RemoveRow|InsertColumn|RemoveColumn|SetCellStyle|SetMergedCell)\s*\(') {
+        Add-UniqueString -List $patterns -Value "Schedule table edit"
+    }
+
+    return $patterns.ToArray()
+}
+
+function Get-SummaryContextText {
+    param(
+        [object]$Operation,
+        [object]$Related,
+        [object]$View,
+        [object]$Elements
+    )
+
+    $activeView = Get-ReportValue -Object $View -Name "active"
+    $parts = @(
+        [string](Get-ReportValue -Object $Operation -Name "taskName"),
+        [string](Get-ReportValue -Object $Operation -Name "query"),
+        [string](Get-ReportValue -Object $Operation -Name "action"),
+        [string](Get-ReportValue -Object $Related -Name "toolName"),
+        [string](Get-ReportValue -Object $Related -Name "commandName"),
+        [string](Get-ReportValue -Object $Related -Name "logicalToolName"),
+        [string](Get-ReportValue -Object $activeView -Name "name")
+    )
+    $categories = ConvertTo-StringArray (Get-ReportValue -Object $Elements -Name "categories")
+    return @($parts + $categories | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join " "
+}
+
+function Get-InferredDiscipline {
+    param(
+        [string]$Current,
+        [string]$ContextText
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Current)) {
+        return $Current
+    }
+
+    $text = [string]$ContextText
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+
+    if ($text -match '\bM\d{2,}[A-Za-z]?\b') { return "mechanical_hvac" }
+    if ($text -match '\bP\d{2,}[A-Za-z]?\b') { return "mechanical_piping" }
+    if ($text -match '\bE\d{2,}[A-Za-z]?\b') { return "electrical" }
+    if ($text -match '\bS\d{2,}[A-Za-z]?\b') { return "structural" }
+    if ($text -match '\bA\d{2,}[A-Za-z]?\b') { return "architectural" }
+    if ($text -match '(duct|air terminal|mechanical equipment|diffuser|damper|hvac|fan coil|ahu|havaland|mekanik)') { return "mechanical_hvac" }
+    if ($text -match '(pipe|plumbing|sanitary|domestic|hydronic|sprinkler|fire|piping|boru|yangın|yangin|temiz su|pis su)') { return "mechanical_piping" }
+    if ($text -match '(electrical|cable|lighting|elektrik)') { return "electrical" }
+    if ($text -match '(structural|beam|column|framing|statik|kiris|kolon)') { return "structural" }
+    if ($text -match '(wall|door|window|room|space|architect|mimari)') { return "architectural" }
+    if ($text -match '(schedule|sheet|drawing|revision|pafta|metraj|mahal listesi)') { return "schedule_documentation" }
+    return $null
+}
+
+function Get-InferredLevelName {
+    param(
+        [string]$Current,
+        [string]$ContextText
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Current)) {
+        return $Current
+    }
+
+    $text = [string]$ContextText
+    if ($text -match '\b(?:level|lvl|l)\s*[-_ ]?(\d{1,2})\b') {
+        return "Level {0:D2}" -f [int]$Matches[1]
+    }
+    if ($text -match '\b(?:kat|floor)\s*[-_ ]?(\d{1,2})\b') {
+        return "Level {0:D2}" -f [int]$Matches[1]
+    }
+    if ($text -match '\b(?:basement|bodrum|b)\s*[-_ ]?(\d{1,2})\b') {
+        return "Basement {0:D2}" -f [int]$Matches[1]
+    }
+
+    return $null
 }
 
 function Get-EventToolName {
@@ -470,6 +578,9 @@ function New-OperationBrief {
     $location = Get-ReportValue -Object $Event -Name "location"
     $elements = Get-ReportValue -Object $Event -Name "elements"
     $activeView = Get-ReportValue -Object $view -Name "active"
+    $contextText = Get-SummaryContextText -Operation $operation -Related $related -View $view -Elements $elements
+    $levelName = Get-InferredLevelName -Current ([string](Get-ReportValue -Object $location -Name "levelName")) -ContextText $contextText
+    $disciplineName = Get-InferredDiscipline -Current ([string](Get-ReportValue -Object $elements -Name "disciplineHint")) -ContextText $contextText
 
     $toolName = Get-ReportValue -Object $related -Name "toolName"
     if ([string]::IsNullOrWhiteSpace($toolName)) {
@@ -490,9 +601,9 @@ function New-OperationBrief {
         taskName = Get-ReportValue -Object $operation -Name "taskName"
         project = Get-ReportValue -Object $project -Name "documentTitle"
         view = Get-ReportValue -Object $activeView -Name "name"
-        level = Get-ReportValue -Object $location -Name "levelName"
+        level = $levelName
         room = Get-ReportValue -Object $location -Name "roomName"
-        discipline = Get-ReportValue -Object $elements -Name "disciplineHint"
+        discipline = $disciplineName
         durationMs = Get-ReportValue -Object $operation -Name "durationMs"
         success = Get-ReportValue -Object $operation -Name "success"
         guarded = Get-ReportValue -Object $operation -Name "guarded"
@@ -619,7 +730,90 @@ function Select-OperationSampleEvents {
         -not $covered
     })
 
-    return @(@($ProductionEvents) + @($uncoveredRawEvents) |
+    $combined = @(@($ProductionEvents) + @($uncoveredRawEvents) |
+        Sort-Object @{ Expression = { [string](Get-ReportValue -Object $_ -Name "timestampUtc") } })
+
+    return Select-UniqueOperationSampleEvents -Events $combined
+}
+
+function Get-OperationSamplePriority {
+    param([object]$Event)
+
+    $eventType = [string](Get-ReportValue -Object $Event -Name "eventType")
+    if ($eventType -eq "production.context") {
+        return 3
+    }
+    if ($eventType -eq "mcp.tool") {
+        return 2
+    }
+    return 1
+}
+
+function Get-OperationSampleGroupingKey {
+    param([object]$Event)
+
+    $eventType = [string](Get-ReportValue -Object $Event -Name "eventType")
+    if ($eventType -eq "production.context") {
+        $runId = [string](Get-ReportValue -Object $Event -Name "runId")
+        if (-not [string]::IsNullOrWhiteSpace($runId)) {
+            return "production|" + $runId
+        }
+    }
+
+    $timestamp = Get-EventTimestampOrNull -Event $Event
+    $timeBucket = [string](Get-ReportValue -Object $Event -Name "timestampUtc")
+    if ($null -ne $timestamp) {
+        $bucketSeconds = [Math]::Floor($timestamp.Second / 5) * 5
+        $utc = $timestamp.ToUniversalTime()
+        $bucket = [datetime]::new($utc.Year, $utc.Month, $utc.Day, $utc.Hour, $utc.Minute, [int]$bucketSeconds, [System.DateTimeKind]::Utc)
+        $timeBucket = $bucket.ToString("yyyy-MM-ddTHH:mm:ssZ")
+    }
+
+    $operation = Get-EventOperationObject -Event $Event
+    $state = [string](Get-ReportValue -Object $operation -Name "state")
+    if ([string]::IsNullOrWhiteSpace($state)) {
+        if (Test-EventGuarded -Event $Event) {
+            $state = "guarded"
+        }
+        elseif (Test-EventFailed -Event $Event) {
+            $state = "failed"
+        }
+        else {
+            $state = "completed"
+        }
+    }
+
+    return (@(
+        "raw",
+        [string](Get-ReportValue -Object $Event -Name "machineName"),
+        [string](Get-ReportValue -Object $Event -Name "sessionId"),
+        [string](Get-ReportValue -Object $Event -Name "taskName"),
+        $state,
+        $timeBucket
+    ) -join "|")
+}
+
+function Select-UniqueOperationSampleEvents {
+    param([object[]]$Events)
+
+    $buckets = @{}
+    foreach ($event in $Events) {
+        $key = Get-OperationSampleGroupingKey -Event $event
+        if ([string]::IsNullOrWhiteSpace($key)) {
+            $key = [string](Get-ReportValue -Object $event -Name "eventId")
+        }
+
+        $priority = Get-OperationSamplePriority -Event $event
+        if (-not $buckets.ContainsKey($key) -or $priority -gt $buckets[$key].priority) {
+            $buckets[$key] = [ordered]@{
+                priority = $priority
+                event = $event
+            }
+        }
+    }
+
+    return @($buckets.Values |
+        ForEach-Object { $_.event } |
         Sort-Object @{ Expression = { [string](Get-ReportValue -Object $_ -Name "timestampUtc") } })
 }
 
@@ -681,7 +875,7 @@ $events = New-Object System.Collections.Generic.List[object]
 $badLines = 0
 foreach ($file in $eventFiles) {
     $lineNumber = 0
-    foreach ($line in Get-Content -LiteralPath $file.FullName -ErrorAction SilentlyContinue) {
+    foreach ($line in Get-Content -Encoding UTF8 -LiteralPath $file.FullName -ErrorAction SilentlyContinue) {
         $lineNumber++
         if ([string]::IsNullOrWhiteSpace($line)) {
             continue
@@ -727,7 +921,7 @@ foreach ($event in $eventArray) {
         Add-Count -Map $taskNameCounts -Key $taskName
 
         $code = Get-NestedReportValue -Object $event -Path @("params", "code")
-        foreach ($pattern in ConvertTo-StringArray (Get-ReportValue -Object $code -Name "writePatterns")) {
+        foreach ($pattern in Get-CodeWritePatterns -Code $code) {
             Add-Count -Map $sendCodeWritePatterns -Key $pattern
         }
     }
@@ -752,10 +946,13 @@ $outputFileCount = 0
 
 foreach ($event in $productionEvents) {
     $operation = Get-ReportValue -Object $event -Name "operation"
+    $related = Get-ReportValue -Object $event -Name "related"
     $project = Get-ReportValue -Object $event -Name "project"
+    $view = Get-ReportValue -Object $event -Name "view"
     $location = Get-ReportValue -Object $event -Name "location"
     $elements = Get-ReportValue -Object $event -Name "elements"
     $outputs = Get-ReportValue -Object $event -Name "outputs"
+    $contextText = Get-SummaryContextText -Operation $operation -Related $related -View $view -Elements $elements
 
     $success = Get-ReportValue -Object $operation -Name "success"
     $guarded = Get-ReportValue -Object $operation -Name "guarded"
@@ -766,8 +963,8 @@ foreach ($event in $productionEvents) {
         $projectName = [string](Get-ReportValue -Object $project -Name "title")
     }
     Add-Metric -Map $projectMetrics -Key $projectName -Success $success -Guarded $guarded -DurationMs $durationMs
-    Add-Metric -Map $disciplineMetrics -Key ([string](Get-ReportValue -Object $elements -Name "disciplineHint")) -Success $success -Guarded $guarded -DurationMs $durationMs
-    Add-Metric -Map $levelMetrics -Key ([string](Get-ReportValue -Object $location -Name "levelName")) -Success $success -Guarded $guarded -DurationMs $durationMs
+    Add-Metric -Map $disciplineMetrics -Key (Get-InferredDiscipline -Current ([string](Get-ReportValue -Object $elements -Name "disciplineHint")) -ContextText $contextText) -Success $success -Guarded $guarded -DurationMs $durationMs
+    Add-Metric -Map $levelMetrics -Key (Get-InferredLevelName -Current ([string](Get-ReportValue -Object $location -Name "levelName")) -ContextText $contextText) -Success $success -Guarded $guarded -DurationMs $durationMs
 
     $machineUser = ("{0}\{1}" -f (Get-ReportValue -Object $event -Name "machineName"), (Get-ReportValue -Object $event -Name "userName")).Trim("\")
     Add-Metric -Map $machineUserMetrics -Key $machineUser -Success $success -Guarded $guarded -DurationMs $durationMs
@@ -821,7 +1018,7 @@ $sendCodeSamples = @($sendCodeEvents |
             length = Get-ReportValue -Object $code -Name "length"
             lineCount = Get-ReportValue -Object $code -Name "lineCount"
             hasManualTransaction = Get-ReportValue -Object $code -Name "hasManualTransaction"
-            writePatterns = ConvertTo-StringArray (Get-ReportValue -Object $code -Name "writePatterns")
+            writePatterns = Get-CodeWritePatterns -Code $code
             preview = Get-ReportValue -Object $code -Name "preview"
         }
     })
@@ -854,7 +1051,7 @@ foreach ($event in $sendCodeEvents) {
     $entry.count++
     Add-Count -Map $entry.toolNames -Key ([string](Get-ReportValue -Object $event -Name "toolName"))
     Add-Count -Map $entry.taskNames -Key ([string](Get-ReportValue -Object $event -Name "taskName"))
-    foreach ($pattern in ConvertTo-StringArray (Get-ReportValue -Object $code -Name "writePatterns")) {
+    foreach ($pattern in Get-CodeWritePatterns -Code $code) {
         Add-Count -Map $entry.writePatterns -Key $pattern
     }
     if ((Get-BooleanOrNull (Get-ReportValue -Object $code -Name "hasManualTransaction")) -eq $true) {

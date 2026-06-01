@@ -152,6 +152,11 @@ and tool-specific verification fields before saying a write actually happened.
   It never writes by schedule name, requires `scheduleId`, `section`, and
   zero-based row/column coordinates, defaults to `mode: "dryRun"`, can block
   stale targets with `expectedCurrentText`, and verifies committed cell text.
+- `set_schedule_cells_by_text` - production-safe schedule row text workflow.
+  Use it when a schedule edit starts from a sheet/schedule filter and visible
+  row text instead of exact coordinates. It requires bounded scope, defaults to
+  dry-run, blocks ambiguous row matches by default, supports
+  `expectedCurrentText`, and verifies committed cell text.
 
 **API docs server (`revit-api-docs`)** - required companion:
 
@@ -210,8 +215,10 @@ Default workflow for every Revit runtime task:
    models, do not scan all schedule cells without a `nameQuery` or exact
    `scheduleIds`; keep `maxRowsPerSection` and `maxColumnsPerSection` bounded.
    For exact schedule text edits after row/column discovery, use
-   `set_schedule_cells` with `expectedCurrentText` instead of ad hoc
-   `send_code_to_revit` write snippets.
+   `set_schedule_cells` with `expectedCurrentText`. If the target is known by
+   sheet/schedule plus row text, use `set_schedule_cells_by_text` to preview
+   matches and then commit. Use ad hoc `send_code_to_revit` schedule write
+   snippets only for unsupported cases.
 8. Use `send_code_to_revit_safe` for read-only probes and write previews. It
    rejects `transactionMode: "auto"` and always executes with
    `transactionMode: "none"`. Use raw `send_code_to_revit` only when the user

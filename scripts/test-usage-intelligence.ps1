@@ -46,6 +46,7 @@ $eventRoot = Join-Path $reportsRoot "events\2026\05\27\TEST-PC"
 New-Item -ItemType Directory -Path $machineRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $rawOnlyEventRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $eventRoot -Force | Out-Null
+$turkishTaskName = "Raw-only sheet text scan with Turkish dotless $([char]0x0131), cell $([char]0x00FC), view $([char]0x00F6)"
 
 try {
     $latest = [ordered]@{
@@ -86,7 +87,7 @@ try {
             userName = "USER1"
             runtime = [ordered]@{ version = "2026.05.27.191-test"; buildHash = "test" }
             toolName = "send_code_to_revit_safe"
-            taskName = "Raw-only failed safe code"
+            taskName = $turkishTaskName
             durationMs = 620
             result = [ordered]@{ success = $false; guarded = $false; state = "failed"; errorMessage = "compile failed"; responseKeys = @("success", "error") }
             params = [ordered]@{
@@ -102,11 +103,28 @@ try {
         }
         [ordered]@{
             schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-raw-1-command"
+            eventType = "revit.command"
+            timestampUtc = "2026-05-26T08:01:02.000Z"
+            sessionId = "session-raw"
+            sequence = 2
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.27.191-test"; buildHash = "test" }
+            commandName = "send_code_to_revit_safe"
+            logicalToolName = "send_code_to_revit_safe"
+            taskName = $turkishTaskName
+            durationMs = 618
+            result = [ordered]@{ success = $false; guarded = $false; state = "failed"; errorMessage = "compile failed"; responseKeys = @("success", "error") }
+            params = [ordered]@{}
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
             eventId = "evt-raw-2"
             eventType = "mcp.tool"
             timestampUtc = "2026-05-26T08:02:00.000Z"
             sessionId = "session-raw"
-            sequence = 2
+            sequence = 3
             machineName = "TEST-PC"
             userName = "USER1"
             runtime = [ordered]@{ version = "2026.05.27.191-test"; buildHash = "test" }
@@ -185,7 +203,7 @@ try {
                     lineCount = 3
                     hasManualTransaction = $true
                     writePatterns = @("Document.Delete", "Manual Transaction")
-                    preview = "document.Delete(new ElementId(101));"
+                    preview = "document.Delete(new ElementId(101)); sectionData.SetCellText(1, 2, ""R914X023"");"
                 }
             }
         }
@@ -223,11 +241,11 @@ try {
             contextSchemaVersion = "revagent.production.context.v1"
             related = [ordered]@{ sourceEventType = "mcp.tool"; toolName = "export_revit_view_image" }
             runId = "run-export"
-            operation = [ordered]@{ taskName = "Export current 3D view"; durationMs = 980; success = $true; guarded = $false }
+            operation = [ordered]@{ taskName = "M701 schedule export Level 03"; durationMs = 980; success = $true; guarded = $false }
             project = [ordered]@{ documentTitle = "Office Tower" }
-            view = [ordered]@{ active = [ordered]@{ id = 20; name = "{3D}"; type = "ThreeD" } }
+            view = [ordered]@{ active = [ordered]@{ id = 20; name = "Level 03 Mechanical"; type = "DrawingSheet" } }
             location = [ordered]@{}
-            elements = [ordered]@{ categories = @(); disciplineHint = "mechanical_hvac"; samples = @() }
+            elements = [ordered]@{ categories = @(); disciplineHint = $null; samples = @() }
             outputs = [ordered]@{ files = @([ordered]@{ path = "C:\Temp\view.png"; fileName = "view.png"; bytes = 123; width = 600; height = 400 }) }
             response = [ordered]@{ responseKeys = @("files", "success") }
         }
@@ -243,7 +261,7 @@ try {
         -OutputPath $outputPath `
         -Top 10
 
-    $summary = Get-Content -Raw -LiteralPath $outputPath | ConvertFrom-Json
+    $summary = Get-Content -Raw -Encoding UTF8 -LiteralPath $outputPath | ConvertFrom-Json
     Assert-Equal $summary.schemaVersion "revagent.usage.summary.v1" "Summary schema version mismatch."
     Assert-Equal $summary.source.machineReportCount 1 "Machine report count mismatch."
     Assert-Equal $summary.source.eventFileCount 1 "Event file count mismatch."
@@ -252,6 +270,7 @@ try {
     Assert-Equal $summary.sendCode.count 1 "send_code event count mismatch."
     Assert-Equal $summary.sendCode.manualTransactionCount 1 "Manual transaction count mismatch."
     Assert-True (($summary.sendCode.writePatterns | Where-Object { $_.name -eq "Document.Delete" }).count -eq 1) "Write pattern summary missing Document.Delete."
+    Assert-True (($summary.sendCode.writePatterns | Where-Object { $_.name -eq "Schedule.SetCellText" }).count -eq 1) "Write pattern summary missing Schedule.SetCellText preview detection."
     Assert-Equal $summary.sendCode.candidateRepeatThreshold 2 "Dynamic promotion repeat threshold mismatch."
     $dynamicCandidate = @($summary.sendCode.promotionCandidates | Where-Object { $_.hash -eq "abc" }) | Select-Object -First 1
     Assert-True ($null -ne $dynamicCandidate) "Dynamic write/manual transaction pattern must be promoted as a native tool candidate."
@@ -259,7 +278,10 @@ try {
     Assert-True (@($dynamicCandidate.promotionReasons | Where-Object { $_ -eq "manual_transaction" }).Count -eq 1) "Dynamic candidate must include manual transaction reason."
     Assert-Equal $dynamicCandidate.candidateAction "design_native_tool_with_preflight_and_verification" "Dynamic candidate action should come from the promotion registry."
     Assert-True (@($dynamicCandidate.registryMatches).Count -ge 1) "Dynamic candidate must include registry matches."
+    Assert-True (@(@($dynamicCandidate.writePatterns) | Where-Object { $_.name -eq "Schedule.SetCellText" }).Count -eq 1) "Dynamic candidate must carry Schedule.SetCellText pattern evidence."
     Assert-True (($summary.production.byProject | Where-Object { $_.name -eq "Office Tower" }).count -eq 3) "Project rollup mismatch."
+    Assert-True (($summary.production.byDiscipline | Where-Object { $_.name -eq "mechanical_hvac" }).count -eq 3) "Discipline fallback rollup mismatch."
+    Assert-True (($summary.production.byLevel | Where-Object { $_.name -eq "Level 03" }).count -eq 1) "Level fallback rollup mismatch."
     Assert-True (($summary.production.byCategory | Where-Object { $_.name -eq "Ducts" }).count -eq 2) "Category rollup mismatch."
     Assert-Equal $summary.production.generatedFileCount 1 "Generated file count mismatch."
     Assert-Equal $summary.friction.guarded.Count 1 "Guarded operation count mismatch."
@@ -288,10 +310,10 @@ try {
     Assert-True (Test-Path -LiteralPath $publishReport.logPath -PathType Leaf) "Publish log was not written."
     Assert-True (-not (Test-Path -LiteralPath $publishReport.lockPath -PathType Leaf)) "Publish lock was not released."
 
-    $latestSummary = Get-Content -Raw -LiteralPath $latestJson | ConvertFrom-Json
+    $latestSummary = Get-Content -Raw -Encoding UTF8 -LiteralPath $latestJson | ConvertFrom-Json
     Assert-Equal $latestSummary.schemaVersion "revagent.usage.summary.v1" "Latest summary schema mismatch."
     Assert-Equal $latestSummary.source.eventCount 5 "Latest summary event count mismatch."
-    $markdownText = Get-Content -Raw -LiteralPath $latestMarkdown
+    $markdownText = Get-Content -Raw -Encoding UTF8 -LiteralPath $latestMarkdown
     Assert-True ($markdownText -match 'revAgent Usage Summary') "Markdown summary title missing."
     Assert-True ($markdownText -match 'Guarded write preview Level 02 Room 204') "Markdown guarded operation sample missing."
 
@@ -303,19 +325,21 @@ try {
         -Top 10
     $multiDateReport = $multiDateOutput | ConvertFrom-Json
     Assert-Equal $multiDateReport.latestDateUtc "2026-05-27" "Publish latest date must be the newest requested day."
-    $multiLatest = Get-Content -Raw -LiteralPath (Join-Path $multiDateRoot "latest.json") | ConvertFrom-Json
+    $multiLatest = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $multiDateRoot "latest.json") | ConvertFrom-Json
     Assert-Equal $multiLatest.dateUtc "2026-05-27" "Latest JSON must point to the newest requested day."
 
-    $rawOnlySummary = Get-Content -Raw -LiteralPath (Join-Path $multiDateRoot "daily\2026-05-26.json") | ConvertFrom-Json
-    Assert-Equal $rawOnlySummary.source.eventCount 2 "Raw-only summary event count mismatch."
+    $rawOnlySummary = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $multiDateRoot "daily\2026-05-26.json") | ConvertFrom-Json
+    Assert-Equal $rawOnlySummary.source.eventCount 3 "Raw-only summary event count mismatch."
     Assert-Equal $rawOnlySummary.production.operationCount 0 "Raw-only day must not invent production context operations."
     Assert-Equal $rawOnlySummary.production.byProject.Count 0 "Raw-only project rollup must be an empty array."
     Assert-Equal $rawOnlySummary.production.byMachineUser.Count 0 "Raw-only machine-user rollup must be an empty array."
     Assert-Equal @($rawOnlySummary.friction.failed).Count 1 "Raw-only failed tool event must appear in failed samples."
-    Assert-True (@(@($rawOnlySummary.friction.failed) | Where-Object { $_.taskName -eq "Raw-only failed safe code" }).Count -eq 1) "Raw-only failed sample task missing."
+    Assert-True (@(@($rawOnlySummary.friction.failed) | Where-Object { $_.taskName -eq $turkishTaskName }).Count -eq 1) "Raw-only failed sample task missing or not de-duplicated."
+    Assert-True (@(@($rawOnlySummary.friction.failed) | Where-Object { $_.sourceEventType -eq "mcp.tool" }).Count -eq 1) "Raw-only duplicate mcp.tool/revit.command sample must prefer the MCP tool event."
     Assert-True (@(@($rawOnlySummary.friction.slow) | Where-Object { $_.taskName -eq "Raw-only slow session context" }).Count -eq 1) "Raw-only slow sample task missing."
-    $rawOnlyMarkdown = Get-Content -Raw -LiteralPath (Join-Path $multiDateRoot "daily\2026-05-26.md")
-    Assert-True ($rawOnlyMarkdown -match 'Raw-only failed safe code') "Raw-only failed sample missing from Markdown."
+    $rawOnlyMarkdown = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $multiDateRoot "daily\2026-05-26.md")
+    Assert-True ($rawOnlyMarkdown -match [regex]::Escape($turkishTaskName)) "Raw-only failed sample missing from Markdown or UTF-8 text was corrupted."
+    Assert-True ($rawOnlyMarkdown -notmatch 'Ä±|Ã¼|Ã¶') "Markdown summary must not contain mojibake for Turkish task text."
     Assert-True ($rawOnlyMarkdown -match '## Failed Operations') "Markdown failed operation section missing."
     Assert-True ($rawOnlyMarkdown -match 'No data.') "Raw-only empty rollups must render as No data."
     Assert-True ($rawOnlyMarkdown -notmatch '\| \s*\| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \|') "Markdown must not render blank zero metric rows."

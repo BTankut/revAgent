@@ -21,6 +21,7 @@ import { registerInspectSchedulesTool } from "./inspect_schedules.js";
 import { registerInspectParameterSchemaTool } from "./inspect_parameter_schema.js";
 import { registerSetElementParameterTool } from "./set_element_parameter.js";
 import { registerSetScheduleCellsTool } from "./set_schedule_cells.js";
+import { registerSetScheduleCellsByTextTool } from "./set_schedule_cells_by_text.js";
 import { registerListRevitInstancesTool } from "./list_revit_instances.js";
 import { registerGetRevitMcpStatusTool } from "./get_revit_mcp_status.js";
 import { wrapServerWithTelemetry } from "../utils/telemetry.js";
@@ -51,5 +52,6 @@ export async function registerTools(server) {
     registerInspectParameterSchemaTool(telemetryServer);
     registerSetElementParameterTool(telemetryServer);
     registerSetScheduleCellsTool(telemetryServer);
-    console.error("Registered 25 Revit MCP tools");
+    registerSetScheduleCellsByTextTool(telemetryServer);
+    console.error("Registered 26 Revit MCP tools");
 }

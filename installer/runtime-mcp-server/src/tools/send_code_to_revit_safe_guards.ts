@@ -2,6 +2,8 @@ const WRITE_PATTERNS = [
     { name: "Parameter.Set", pattern: /\.Set\s*\(/i },
     { name: "Parameter.SetValueString", pattern: /\.SetValueString\s*\(/i },
     { name: "Parameter.ClearValue", pattern: /\.ClearValue\s*\(/i },
+    { name: "Schedule.SetCellText", pattern: /\.\s*SetCellText\s*\(/i },
+    { name: "Schedule table edit", pattern: /\.\s*(InsertRow|RemoveRow|InsertColumn|RemoveColumn|SetCellStyle|SetMergedCell)\s*\(/i },
     { name: "Document.Delete", pattern: /\.\s*Delete\s*\(/i },
     { name: "ElementTransformUtils", pattern: /ElementTransformUtils/i },
     { name: "Location.Move", pattern: /\.Move\s*\(/i },

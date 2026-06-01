@@ -410,6 +410,8 @@ try {
     $inspectSchedulesToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_schedules.ts")
     $setParameterToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_element_parameter.ts")
     $setScheduleCellsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_schedule_cells.ts")
+    $setScheduleCellsByTextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_schedule_cells_by_text.ts")
+    $safeCodeGuardsCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit_safe_guards.ts")
     $telemetryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\telemetry.ts")
     $safeCodeToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit_safe.ts")
     $apiDocsIndexCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\src\utils\docIndex.ts")
@@ -456,7 +458,7 @@ try {
     Assert-True ($statusToolCode -match 'runtimeVersion') "Status output must include the active runtime version."
     Assert-True ($statusToolCode -match 'schemaVersion') "Status output must include the status/schema version."
     Assert-True ($statusToolCode -match 'toolSurfaceVersion') "Status output must include the registered tool surface version."
-    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.29') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
+    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.30') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
     Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
     Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
@@ -514,6 +516,13 @@ try {
     Assert-True ($setScheduleCellsToolCode -match 'expectedCurrentText') "set_schedule_cells must support expected current value preflight."
     Assert-True ($setScheduleCellsToolCode -match 'transactionMode: mode === "commit" \? "auto" : "none"') "set_schedule_cells must use auto transactions only for commit mode."
     Assert-True ($setScheduleCellsToolCode -match 'if \(!dryRun\)') "set_schedule_cells commit exceptions must escape the snippet so the wrapper transaction can roll back."
+    Assert-True ($setScheduleCellsByTextToolCode -match 'PRODUCTION_SCHEDULE_CELL_WRITE_BY_TEXT') "set_schedule_cells_by_text must identify itself as a production schedule row-text write tool."
+    Assert-True ($setScheduleCellsByTextToolCode -match 'rowTextQuery') "set_schedule_cells_by_text must require bounded row text matching."
+    Assert-True ($setScheduleCellsByTextToolCode -match 'allowMultipleMatches') "set_schedule_cells_by_text must block ambiguous multi-row writes by default."
+    Assert-True ($setScheduleCellsByTextToolCode -match 'expectedCurrentText') "set_schedule_cells_by_text must support compare-and-set target cell protection."
+    Assert-True ($setScheduleCellsByTextToolCode -match 'transactionMode: mode === "commit" \? "auto" : "none"') "set_schedule_cells_by_text must use auto transactions only for commit mode."
+    Assert-True ($setScheduleCellsByTextToolCode -match 'generic send_code_to_revit') "set_schedule_cells_by_text tool description must steer agents away from raw schedule write snippets."
+    Assert-True ($safeCodeGuardsCode -match 'Schedule\.SetCellText') "send_code_to_revit_safe write guards must detect schedule cell text writes."
     $activateViewHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewEventHandler.cs")
     Assert-True ($activateViewHandlerCode -match 'Changed = true,\s+ActiveViewChanged = true') "activate_view must mark ActiveViewChanged when it successfully changes the active view."
     Assert-True ($closeViewCode -match 'Changed = closed \|\| activeViewChanged') "close_view must mark Changed when a view is closed or active view changes."

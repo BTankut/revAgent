@@ -583,19 +583,40 @@ function uniqueStrings(values, maxItems = 20) {
     return [...new Set(values.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim()))].slice(0, maxItems);
 }
 
-function inferDiscipline(categories = [], taskName = "") {
-    const text = `${categories.join(" ")} ${taskName}`.toLowerCase();
+function inferDiscipline(categories = [], taskName = "", extraText = "", toolName = "") {
+    const text = `${categories.join(" ")} ${taskName} ${extraText} ${toolName}`.toLowerCase();
+    if (/\bm\d{2,}[a-z]?\b/i.test(text)) {
+        return "mechanical_hvac";
+    }
+    if (/\bp\d{2,}[a-z]?\b/i.test(text)) {
+        return "mechanical_piping";
+    }
+    if (/\be\d{2,}[a-z]?\b/i.test(text)) {
+        return "electrical";
+    }
+    if (/\bs\d{2,}[a-z]?\b/i.test(text)) {
+        return "structural";
+    }
+    if (/\ba\d{2,}[a-z]?\b/i.test(text)) {
+        return "architectural";
+    }
     if (/(duct|air terminal|mechanical equipment|diffuser|damper|hvac|fan coil|ahu|havaland|mekanik)/i.test(text)) {
         return "mechanical_hvac";
     }
-    if (/(pipe|plumbing|sanitary|domestic|hydronic|sprinkler|fire|piping|boru|yangın|temiz su|pis su)/i.test(text)) {
+    if (/(pipe|plumbing|sanitary|domestic|hydronic|sprinkler|fire|piping|boru|yangın|yangin|temiz su|pis su)/i.test(text)) {
         return "mechanical_piping";
     }
     if (/(electrical|cable|lighting|elektrik)/i.test(text)) {
         return "electrical";
     }
+    if (/(structural|beam|column|framing|statik|kiris|kolon)/i.test(text)) {
+        return "structural";
+    }
     if (/(wall|door|window|room|space|architect|mimari)/i.test(text)) {
         return "architectural";
+    }
+    if (/(schedule|sheet|drawing|revision|pafta|metraj|mahal listesi)/i.test(text)) {
+        return "schedule_documentation";
     }
     return null;
 }
@@ -603,6 +624,72 @@ function inferDiscipline(categories = [], taskName = "") {
 function buildProjectId(documentPath, documentTitle) {
     const identity = documentPath || documentTitle || "";
     return identity ? shortHash(identity) : null;
+}
+
+function firstStringParam(params = {}, names = []) {
+    for (const name of names) {
+        const value = params?.[name];
+        if (typeof value === "string" && value.trim()) {
+            return value.trim();
+        }
+    }
+    return null;
+}
+
+function collectStringParams(params = {}, names = []) {
+    return names
+        .map((name) => params?.[name])
+        .filter((value) => typeof value === "string" && value.trim())
+        .map((value) => value.trim());
+}
+
+function collectContextText(params = {}, taskName = "", activeView = null, beforeView = null, afterView = null, details = {}) {
+    const values = [
+        taskName,
+        details.toolName,
+        details.commandName,
+        details.logicalToolName,
+        ...collectStringParams(params, [
+            "query",
+            "nameQuery",
+            "cellQuery",
+            "sheetQuery",
+            "scheduleNameQuery",
+            "scheduleQuery",
+            "rowTextQuery",
+            "planNameContains",
+            "category",
+            "discipline",
+        ]),
+        ...(Array.isArray(params.rowTextQueries) ? params.rowTextQueries : []),
+        ...(Array.isArray(params.categoryNames) ? params.categoryNames : []),
+        activeView?.name,
+        beforeView?.name,
+        afterView?.name,
+    ];
+    return values
+        .filter((value) => typeof value === "string" && value.trim())
+        .join(" ");
+}
+
+function inferLevelNameFromText(...values) {
+    const text = values.filter((value) => typeof value === "string" && value.trim()).join(" ");
+    if (!text) {
+        return null;
+    }
+    const levelMatch = text.match(/\b(?:level|lvl|l)\s*[-_ ]?(\d{1,2})\b/i);
+    if (levelMatch) {
+        return `Level ${levelMatch[1].padStart(2, "0")}`;
+    }
+    const floorMatch = text.match(/\b(?:kat|floor)\s*[-_ ]?(\d{1,2})\b/i);
+    if (floorMatch) {
+        return `Level ${floorMatch[1].padStart(2, "0")}`;
+    }
+    const basementMatch = text.match(/\b(?:basement|bodrum|b)\s*[-_ ]?(\d{1,2})\b/i);
+    if (basementMatch) {
+        return `Basement ${basementMatch[1].padStart(2, "0")}`;
+    }
+    return null;
 }
 
 export function extractProductionContext(details = {}) {
@@ -637,9 +724,11 @@ export function extractProductionContext(details = {}) {
     const roomNumber = coerceString(findFirstDeep(responseTarget, ["roomNumber", "RoomNumber"], 5));
     const spaceName = coerceString(findFirstDeep(responseTarget, ["spaceName", "SpaceName"], 5));
     const spaceNumber = coerceString(findFirstDeep(responseTarget, ["spaceNumber", "SpaceNumber"], 5));
-    const query = typeof params.query === "string" ? params.query : null;
+    const query = firstStringParam(params, ["query", "nameQuery", "cellQuery", "sheetQuery", "scheduleNameQuery", "scheduleQuery", "rowTextQuery"]);
     const outputDir = typeof params.outputDir === "string" ? params.outputDir : coerceString(findFirstDeep(responseTarget, ["outputDir", "OutputDir"], 4));
     const filePrefix = typeof params.filePrefix === "string" ? params.filePrefix : coerceString(findFirstDeep(responseTarget, ["filePrefix", "FilePrefix"], 4));
+    const contextText = collectContextText(params, taskName || "", activeView, beforeView, afterView, details);
+    const inferredLevelName = levelName || inferLevelNameFromText(contextText);
 
     const hasProductionSignal = Boolean(
         taskName ||
@@ -652,7 +741,7 @@ export function extractProductionContext(details = {}) {
         selectionIds.length ||
         elements.length ||
         files.length ||
-        levelName ||
+        inferredLevelName ||
         roomName ||
         spaceName ||
         query ||
@@ -699,7 +788,7 @@ export function extractProductionContext(details = {}) {
         },
         location: {
             levelId,
-            levelName,
+            levelName: inferredLevelName,
             roomName,
             roomNumber,
             spaceName,
@@ -710,7 +799,7 @@ export function extractProductionContext(details = {}) {
             selectionIds,
             selectionCount: coerceNumber(findFirstDeep(responseTarget, ["selectionCount", "SelectionCount"], 4)),
             categories,
-            disciplineHint: inferDiscipline(categories, taskName || ""),
+            disciplineHint: inferDiscipline(categories, taskName || "", contextText, details.toolName || details.logicalToolName || details.commandName || ""),
             samples: elements,
             samplesTruncated: elementLimit > 0 && elements.length >= elementLimit,
         },

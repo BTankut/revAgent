@@ -86,7 +86,16 @@ Friction samples prefer `production.context` because it carries project, view,
 level, room, category, and output context. When a raw `mcp.tool` or
 `revit.command` event has no matching production context, the summarizer still
 uses that raw event for guarded, failed, and slow samples so counts and sample
-lists stay consistent.
+lists stay consistent. Raw `mcp.tool` and `revit.command` samples that describe
+the same logical operation are grouped before friction samples are emitted, so
+one failed schedule edit does not appear twice only because it crossed both the
+MCP wrapper and Revit bridge layers.
+
+Summary readers and writers use UTF-8 explicitly. If task names contain Turkish
+characters, the daily JSON/Markdown should preserve the original text rather
+than mojibake such as `Ã¼` or `Ä±`. Dynamic-code write-pattern detection also
+recognizes schedule cell edits such as `SetCellText` and schedule table edits,
+so repeated schedule-write snippets can be promoted into native tools.
 
 The publish wrapper is `scripts/publish-usage-summary.ps1`. It runs the
 summarizer and writes stable NAS outputs:

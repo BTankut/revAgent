@@ -152,7 +152,10 @@ schedule cells unless the operator explicitly needs that broad search.
 For schedule text edits after exact row/column discovery, use
 `set_schedule_cells`; it requires exact `scheduleId`, section, row, and column,
 defaults to dry-run, can compare `expectedCurrentText`, and verifies committed
-cell text.
+cell text. For row-text-driven schedule edits, use
+`set_schedule_cells_by_text` after bounding the search by sheet or schedule; it
+previews matches, blocks ambiguous rows by default, and verifies committed cell
+text.
 
 ## Dynamic Execution Transaction Discipline
 
