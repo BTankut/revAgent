@@ -488,6 +488,88 @@ function sameTaskName(left, right) {
   return taskGroupingName(left) && taskGroupingName(left) === taskGroupingName(right);
 }
 
+function telemetryDisplayToolName(event) {
+  if (!event) {
+    return "";
+  }
+  const action = event.result && typeof event.result === "object" ? event.result.action || "" : "";
+  if (event.scope === "mcp.tool" && event.toolName) {
+    return event.toolName;
+  }
+  if (event.toolName && event.toolName !== "send_code_to_revit") {
+    return event.toolName;
+  }
+  if (event.logicalToolName && event.logicalToolName !== "send_code_to_revit" && event.logicalToolName !== event.taskName) {
+    return event.logicalToolName;
+  }
+  if (action && action !== "send_code_to_revit") {
+    return action;
+  }
+  return event.toolName || event.commandName || event.logicalToolName || "";
+}
+
+function telemetryMatchScore(event) {
+  if (!event) {
+    return 0;
+  }
+  let score = 0;
+  if (event.scope === "mcp.tool") score += 100;
+  if (event.toolName && event.toolName !== "send_code_to_revit") score += 50;
+  if (event.groupedEventCount) score += 10;
+  if (telemetryDisplayToolName(event) && telemetryDisplayToolName(event) !== "send_code_to_revit") score += 10;
+  return score;
+}
+
+function findMatchingTelemetryActivity(statusEvent, telemetryActivities) {
+  if (!statusEvent || !Array.isArray(telemetryActivities) || !taskGroupingName(statusEvent)) {
+    return null;
+  }
+  const statusMs = activityStartMs(statusEvent);
+  return telemetryActivities
+    .filter((event) => sameTaskName(event, statusEvent))
+    .map((event) => ({
+      event,
+      delta: Math.abs(activityStartMs(event) - statusMs),
+      score: telemetryMatchScore(event),
+    }))
+    .filter((candidate) => candidate.delta <= 5000)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.delta - b.delta;
+    })[0]?.event || null;
+}
+
+function enrichRevitStatusActivity(statusEvent, telemetryActivities) {
+  if (!statusEvent) {
+    return statusEvent;
+  }
+  const telemetryEvent = findMatchingTelemetryActivity(statusEvent, telemetryActivities);
+  if (!telemetryEvent) {
+    return statusEvent;
+  }
+  const displayToolName = telemetryDisplayToolName(telemetryEvent);
+  const groupedScopes = [
+    ...new Set([
+      ...(Array.isArray(telemetryEvent.groupedScopes) ? telemetryEvent.groupedScopes : []),
+      telemetryEvent.scope,
+      statusEvent.scope,
+    ].filter(Boolean)),
+  ];
+  return {
+    ...statusEvent,
+    scope: telemetryEvent.scope === "mcp.tool" ? "mcp.tool" : statusEvent.scope,
+    toolName: displayToolName || statusEvent.toolName,
+    logicalToolName: telemetryEvent.logicalToolName || displayToolName || statusEvent.logicalToolName,
+    result: {
+      ...(statusEvent.result || {}),
+      action: telemetryEvent.result?.action || statusEvent.result?.action || null,
+    },
+    source: displayToolName && displayToolName !== statusEvent.toolName ? "revit.status+telemetry" : statusEvent.source,
+    groupedEventCount: Math.max(telemetryEvent.groupedEventCount || 0, 1) + 1,
+    groupedScopes,
+  };
+}
+
 function isCoveredByRevitStatus(event, revitStatusActivities) {
   if (!taskGroupingName(event)) {
     return false;
@@ -506,8 +588,9 @@ function chooseRecentActivities(liveStatus, machineName, telemetryActivities) {
   const revitStatusActivities = buildRevitStatusActivities(liveStatus, machineName);
   const statusActivities = buildStatusActivities(telemetryActivities);
   if (revitStatusActivities.length > 0) {
+    const enrichedRevitStatusActivities = revitStatusActivities.map((event) => enrichRevitStatusActivity(event, statusActivities));
     const telemetryOnly = statusActivities.filter((event) => !isCoveredByRevitStatus(event, revitStatusActivities));
-    return sortActivities([...revitStatusActivities, ...telemetryOnly]);
+    return sortActivities([...enrichedRevitStatusActivities, ...telemetryOnly]);
   }
   return statusActivities.length > 0
     ? statusActivities
@@ -691,14 +774,19 @@ export function loadDashboardData(config = {}) {
     const liveStatus = readJsonFile(path.join(liveRoot, machineName, "status.json"));
     const machine = summarizeMachine(machineName, machineReport, liveStatus, stable?.version || "", now, staleSeconds, offlineSeconds);
     const fallbackActivities = chooseRecentActivities(machine.live, machineName, activityByMachine.get(machineName));
+    const activeTelemetryActivities = buildStatusActivities(machine.live?.activeTasks || [machine.live?.activeTask].filter(Boolean));
+    const activeStatusActivity = enrichRevitStatusActivity(
+      revitStatusTaskToActivity(machine.live?.revitStatus?.activeTask, machineName),
+      activeTelemetryActivities,
+    );
     const displayMachine = machine.live
       ? {
           ...machine,
           live: {
             ...machine.live,
             activeTasks: buildStatusActivities(machine.live.activeTasks || []),
-            activeTask: revitStatusTaskToActivity(machine.live.revitStatus?.activeTask, machineName) ||
-              buildStatusActivities(machine.live.activeTasks || [machine.live.activeTask]).find(Boolean) ||
+            activeTask: activeStatusActivity ||
+              activeTelemetryActivities.find(Boolean) ||
               machine.live.activeTask,
             recentActivity: fallbackActivities.slice(0, 20),
           },

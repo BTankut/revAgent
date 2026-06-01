@@ -140,8 +140,20 @@ try {
           responseBytes: 1200,
           error: null,
         },
+        {
+          id: "status-inspect-schedules",
+          method: "send_code_to_revit",
+          taskName: "smoke inspect schedules",
+          state: "completed",
+          startedAtUtc: new Date(now.getTime() + 6500).toISOString(),
+          finishedAtUtc: new Date(now.getTime() + 6580).toISOString(),
+          elapsedMs: 80,
+          requestBytes: 900,
+          responseBytes: 1800,
+          error: null,
+        },
       ],
-      recentHistoryCount: 3,
+      recentHistoryCount: 4,
       recentHistoryCapacity: 100,
     },
     writeHealth: {
@@ -334,6 +346,43 @@ try {
     },
   });
 
+  appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
+    schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-inspect-schedules-tool",
+    phase: "completed",
+    scope: "mcp.tool",
+    machineName: "TESTPC",
+    toolName: "inspect_schedules",
+    taskName: "smoke inspect schedules",
+    startedAtUtc: new Date(now.getTime() + 6500).toISOString(),
+    timestampUtc: new Date(now.getTime() + 6590).toISOString(),
+    durationMs: 90,
+    result: {
+      success: true,
+      guarded: false,
+      action: "inspect_schedules",
+    },
+  });
+
+  appendNdjson(path.join(reportsRoot, "live", "machines", "TESTPC", "activity", `${todayUtc}.ndjson`), {
+    schemaVersion: "revagent.live.activity.v1",
+    liveTaskId: "smoke-inspect-schedules-inner",
+    phase: "completed",
+    scope: "revit.command",
+    machineName: "TESTPC",
+    commandName: "send_code_to_revit",
+    logicalToolName: "inspect_schedules",
+    taskName: "smoke inspect schedules",
+    startedAtUtc: new Date(now.getTime() + 6510).toISOString(),
+    timestampUtc: new Date(now.getTime() + 6570).toISOString(),
+    durationMs: 60,
+    result: {
+      success: true,
+      guarded: false,
+      action: "inspect_schedules",
+    },
+  });
+
   writeJson(path.join(reportsRoot, "summaries", "latest.json"), {
     schemaVersion: "revagent.usage.summary.v1",
     dateUtc: todayUtc,
@@ -387,9 +436,9 @@ try {
   assert.equal(data.overview.currentVersionCount, 1);
   assert.equal(data.overview.staleMachineCount, 1);
   assert.equal(data.overview.offlineMachineCount, 1);
-  assert.equal(data.overview.productionOperationCount, 7);
-  assert.equal(data.overview.liveOperationCount, 7);
-  assert.equal(data.overview.liveCompletedCount, 5);
+  assert.equal(data.overview.productionOperationCount, 8);
+  assert.equal(data.overview.liveOperationCount, 8);
+  assert.equal(data.overview.liveCompletedCount, 6);
   assert.equal(data.overview.guardedCount, 1);
   assert.equal(data.overview.failedCount, 1);
   assert.equal(data.overview.summaryProductionOperationCount, 2);
@@ -411,7 +460,7 @@ try {
   assert.equal(oldMachine.targetVersion, version);
   assert.equal(oldMachine.reportedTargetVersion, "2026.05.31.100-oldbuild");
   assert.equal(closedMachine.connectionState, "offline");
-  assert.equal(data.activity.length, 7);
+  assert.equal(data.activity.length, 8);
   assert.equal(data.activity[0].taskName, "smoke status cleanup");
   assert.equal(data.activity[0].phase, "completed");
   assert.equal(data.activity[0].toolName, "send_code_to_revit");
@@ -423,11 +472,15 @@ try {
   assert.equal(data.activity.find((event) => event.taskName === "smoke schedule guidance").source, "revit.status");
   assert.equal(data.activity.filter((event) => event.taskName === "smoke semantic guard").length, 1);
   assert.equal(data.activity.find((event) => event.taskName === "smoke semantic guard").phase, "completed");
-  assert.equal(data.activity.find((event) => event.taskName === "smoke semantic guard").toolName, "send_code_to_revit");
+  assert.equal(data.activity.find((event) => event.taskName === "smoke semantic guard").toolName, "set_element_parameter");
+  assert.equal(data.activity.filter((event) => event.taskName === "smoke inspect schedules").length, 1);
+  assert.equal(data.activity.find((event) => event.taskName === "smoke inspect schedules").toolName, "inspect_schedules");
+  assert.equal(data.activity.find((event) => event.taskName === "smoke inspect schedules").source, "revit.status+telemetry");
+  assert.equal(data.activity.find((event) => event.taskName === "smoke inspect schedules").requestBytes, 900);
   assert.equal("params" in data.activity[0], false);
   assert.equal(JSON.stringify(data).includes("\"preview\""), false);
   assert.equal(JSON.stringify(data).includes("yyyyyyyy"), false);
-  assert.ok(JSON.stringify(data).length < 16000);
+  assert.ok(JSON.stringify(data).length < 18000);
   assert.equal(data.summary.toolUsage[0].name, "inspect_elements");
   const brief = buildDashboardBrief(data);
   assert.equal(brief.schemaVersion, "revagent.dashboard.brief.v1");
