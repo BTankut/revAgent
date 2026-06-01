@@ -134,6 +134,13 @@ writes, image export, and safe custom-code workflows. It is intended for model
 querying, visual QA, view navigation, sheet/schedule/parameter inspection, and
 controlled Revit API operations.
 
+Runtime tools that guard, write, or export should expose the shared minimal
+result contract where practical: `success`, `guarded`, `state`, `action`, and
+optional `error`, `reason`, `warnings`, and `notices`. Treat `guarded=true` as
+protected behavior, not as a failed model operation. Do not assume every
+successful operation committed model data; inspect fields such as `state`,
+`committed`, `mode`, and tool-specific verification fields.
+
 For DrawingSheet text lookup in large projects, use `inspect_sheet_text` before
 raw dynamic C# sheet loops. Start with `sheetQuery` or exact `sheetIds`, keep
 limits bounded, and enable `scanScheduleCells` only when the target text may be
@@ -174,6 +181,9 @@ cell text.
   Runtime-only changes may not require a Revit payload build.
 - Do not publish to the NAS release channel without local testing and human
   approval.
+- Before publishing, run the non-Revit local gate and keep committed MCP build
+  payloads fresh; the NAS publish script also runs the payload freshness
+  preflight.
 - Keep documentation in sync with tool behavior, especially write-action level,
   safety gates, deployment behavior, and update behavior.
 - Product-facing strings should use the `revAgent` brand. Keep implementation

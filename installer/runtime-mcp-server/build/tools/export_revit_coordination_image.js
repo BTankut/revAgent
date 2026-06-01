@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { connectionTargetSchema, csharpString, executeRevitCode, executionOptionsFromArgs, formatJsonContent, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
+import { runtimeFailure } from "../utils/runtimeResult.js";
 const intentSchema = z.enum(["raw_evidence", "coordination_overlay", "system_focus", "clash_clearance"]);
 const formatSchema = z.enum(["png", "jpg_lossless", "jpg_medium", "tiff", "bmp", "targa"]);
 const dpiSchema = z.enum(["72", "150", "300", "600"]);
@@ -139,7 +140,7 @@ var viewFamilyType = new FilteredElementCollector(document)
   .Cast<ViewFamilyType>()
   .FirstOrDefault(vft => vft.ViewFamily == ViewFamily.ThreeDimensional);
 if (viewFamilyType == null) {
-  return new { success = false, error = "three_dimensional_view_family_type_not_found" };
+  return new { success = false, guarded = false, state = "failed", action = "export_revit_coordination_image", error = "three_dimensional_view_family_type_not_found" };
 }
 
 View3D reviewView = new FilteredElementCollector(document)
@@ -905,6 +906,9 @@ string modelStateNote = cleanupDeletedCreatedView
 
 return new {
   success = files.Count > 0,
+  guarded = false,
+  state = files.Count > 0 ? "completed" : "failed",
+  action = "export_revit_coordination_image",
   tool = "export_revit_coordination_image",
   revitWriteAction = cleanupDeletedCreatedView ? "temporary_review_view_export" : "review_view_only",
   intent = intent,
@@ -968,11 +972,20 @@ return new {
   warnings = warnings,
   notices = notices
 };`;
-        const response = await executeRevitCode(code, {
-            ...executionOptionsFromArgs(args),
-            taskType: "export_revit_coordination_image",
-            transactionMode: "auto",
-        });
-        return formatJsonContent(response?.result ?? response);
+        try {
+            const response = await executeRevitCode(code, {
+                ...executionOptionsFromArgs(args, "Export Revit coordination image"),
+                taskType: "export_revit_coordination_image",
+                transactionMode: "auto",
+            });
+            return formatJsonContent(response?.result ?? response);
+        }
+        catch (error) {
+            return formatJsonContent(runtimeFailure({
+                action: "export_revit_coordination_image",
+                error: error instanceof Error ? error.message : String(error),
+                extra: { tool: "export_revit_coordination_image" },
+            }));
+        }
     });
 }

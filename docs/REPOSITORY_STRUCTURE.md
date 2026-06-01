@@ -14,6 +14,8 @@ for servers, assemblies, manifests, and installed paths.
 |-- CHANGELOG.md
 |-- README.md
 |-- config/
+|   |-- dynamic-tool-promotion-registry.json
+|   |-- dynamic-tool-promotion-rules.json
 |   `-- revit-versions.json
 |-- dashboard/
 |   |-- server.mjs
@@ -26,6 +28,7 @@ for servers, assemblies, manifests, and installed paths.
 |   |-- PLATFORM_ARCHITECTURE.md
 |   |-- PLATFORM_MODERNIZATION_SUMMARY.md
 |   |-- REPOSITORY_STRUCTURE.md
+|   |-- REVAGENT_ARCHITECTURE_HARDENING_PLAN.md
 |   |-- REVAGENT_LIVE_DASHBOARD_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
@@ -36,6 +39,8 @@ for servers, assemblies, manifests, and installed paths.
 |   |-- start-live-dashboard.ps1
 |   |-- test-all.ps1
 |   |-- test-commandset-live.ps1
+|   |-- test-mcp-build-payload-freshness.ps1
+|   |-- test-typescript-nocheck-policy.ps1
 |   |-- test-live-dashboard.ps1
 |   `-- test-installer-smoke.ps1
 |-- src/
@@ -113,11 +118,22 @@ layer unless they require a reusable native Revit bridge primitive.
 
 `installer/runtime-mcp-server/src` and `installer/revit-api-docs-mcp/src` are
 the TypeScript MCP source trees. Their `build/` folders remain the runtime
-payload contract consumed by installer and Codex MCP registrations.
+payload contract consumed by installer and Codex MCP registrations. Keep new
+TypeScript source checked by default; `scripts/test-typescript-nocheck-policy.ps1`
+guards the current explicit `@ts-nocheck` debt boundary.
+
+`config/dynamic-tool-promotion-*.json` contains the machine-readable rule and
+registry used by usage summaries to flag repeated or risky dynamic C# patterns
+for native runtime-tool review.
 
 `scripts/test-commandset-live.ps1` is the optional live Revit commandset gate.
 It is not part of `test-all` because it requires a running Revit session, but it
 should be used when shared bridge command payload behavior changes.
+
+`scripts/test-mcp-build-payload-freshness.ps1` recompiles the MCP packages into
+a temporary location and compares the output with committed `build/` payloads.
+It also checks Revit payload presence/freshness. `scripts/test-all.ps1` and the
+NAS publish preflight run this gate before release packaging.
 
 `installer/lib` contains shared PowerShell helper modules for updater/installer
 behavior. `config/revit-versions.json` is the central Revit version matrix.

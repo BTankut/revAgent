@@ -290,6 +290,10 @@ Optional aggregate command from repo root:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
 ```
 
+The aggregate gate includes installer smoke, usage intelligence, live dashboard
+helpers, TypeScript `@ts-nocheck` policy enforcement, both MCP package tests,
+and MCP/Revit payload freshness verification.
+
 Revit add-in build check:
 
 ```powershell

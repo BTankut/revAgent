@@ -1,4 +1,3 @@
-// @ts-nocheck
 const WRITE_PATTERNS = [
     { name: "Parameter.Set", pattern: /\.Set\s*\(/i },
     { name: "Parameter.SetValueString", pattern: /\.SetValueString\s*\(/i },

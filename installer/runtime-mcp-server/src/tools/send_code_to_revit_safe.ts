@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from "zod";
 import {
     connectionOptionsFromArgs,
@@ -11,16 +10,18 @@ import {
     truncateText,
 } from "../utils/revitToolHelpers.js";
 import { findWritePatterns } from "./send_code_to_revit_safe_guards.js";
+import { runtimeFailure, runtimeGuarded, runtimeSuccess } from "../utils/runtimeResult.js";
 
 function formatSafetyBlock(error, writePatterns, safetyReason) {
-    return formatJsonContent({
-        success: false,
-        guarded: true,
-        state: "guarded",
+    return formatJsonContent(runtimeGuarded({
+        action: "send_code_to_revit_safe_preflight",
         error,
-        safetyReason,
-        writePatterns,
-    });
+        reason: safetyReason,
+        extra: {
+            safetyReason,
+            writePatterns,
+        },
+    }));
 }
 
 export function registerSendCodeToRevitSafeTool(server) {
@@ -68,11 +69,14 @@ export function registerSendCodeToRevitSafeTool(server) {
             const normalized = args.parseJsonResult === false
                 ? response
                 : normalizeRevitExecutionResponse(response);
-            const serialized = JSON.stringify({
-                success: true,
-                intent,
-                response: normalized,
-            }, null, 2);
+            const successPayload = runtimeSuccess({
+                action: "send_code_to_revit_safe",
+                extra: {
+                    intent,
+                    response: normalized,
+                },
+            });
+            const serialized = JSON.stringify(successPayload, null, 2);
             const trimmed = truncateText(serialized, args.maxReturnedChars);
             if (trimmed.truncated) {
                 return {
@@ -84,17 +88,13 @@ export function registerSendCodeToRevitSafeTool(server) {
                     ],
                 };
             }
-            return formatJsonContent({
-                success: true,
-                intent,
-                response: normalized,
-            });
+            return formatJsonContent(successPayload);
         }
         catch (error) {
-            return formatJsonContent({
-                success: false,
+            return formatJsonContent(runtimeFailure({
+                action: "send_code_to_revit_safe",
                 error: error instanceof Error ? error.message : String(error),
-            });
+            }));
         }
     });
 }

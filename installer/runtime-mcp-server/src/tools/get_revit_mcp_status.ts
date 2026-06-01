@@ -1,7 +1,4 @@
-// @ts-nocheck
-import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
 import {
@@ -12,33 +9,16 @@ import {
     normalizeRevitExecutionResponse,
 } from "../utils/revitToolHelpers.js";
 import { recordLiveRevitStatus } from "../utils/telemetry.js";
+import {
+    getRuntimeRoot,
+    parseBuildHash,
+    readInstalledState,
+    readJsonFile,
+} from "../utils/runtimeIdentity.js";
 
 const RUNTIME_PROCESS_STARTED_AT_UTC = new Date().toISOString();
 const STATUS_SCHEMA_VERSION = "revit-mcp-status.v3";
 const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.29";
-
-function readJsonFile(pathToRead) {
-    try {
-        if (!pathToRead || !fs.existsSync(pathToRead)) {
-            return null;
-        }
-        return JSON.parse(fs.readFileSync(pathToRead, "utf8").replace(/^\uFEFF/, ""));
-    }
-    catch {
-        return null;
-    }
-}
-
-function getRuntimeRoot() {
-    const thisFile = fileURLToPath(import.meta.url);
-    return path.resolve(path.dirname(thisFile), "..", "..");
-}
-
-function getInstallRoot() {
-    const runtimeRoot = getRuntimeRoot();
-    const parent = path.dirname(runtimeRoot);
-    return parent && parent !== runtimeRoot ? parent : runtimeRoot;
-}
 
 function readPackageMetadata() {
     const packageJson = readJsonFile(path.join(getRuntimeRoot(), "package.json"));
@@ -48,30 +28,11 @@ function readPackageMetadata() {
     };
 }
 
-function readInstalledState() {
-    const installRoot = getInstallRoot();
-    const candidates = [
-        path.join(installRoot, "updater", "installed.json"),
-        path.join(process.cwd(), "..", "updater", "installed.json"),
-        "C:\\ProgramData\\DPE\\RevitMCP\\updater\\installed.json",
-    ];
-    for (const candidate of candidates) {
-        const state = readJsonFile(candidate);
-        if (state) {
-            return state;
-        }
-    }
-    return null;
-}
-
-function parseBuildHash(version) {
-    const match = String(version || "").match(/-([0-9a-f]{7,40})$/i);
-    return match ? match[1] : null;
-}
-
 function getRuntimeIdentity() {
     const packageMetadata = readPackageMetadata();
-    const installedState = readInstalledState();
+    const installedState = readInstalledState([
+        path.join(process.cwd(), "..", "updater", "installed.json"),
+    ]);
     const runtimeVersion = installedState?.version || packageMetadata.packageVersion;
     return {
         runtimeVersion,

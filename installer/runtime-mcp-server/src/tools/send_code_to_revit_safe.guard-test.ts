@@ -1,4 +1,3 @@
-// @ts-nocheck
 import assert from "node:assert/strict";
 import { findWritePatterns } from "./send_code_to_revit_safe_guards.js";
 

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import Database from 'better-sqlite3';
 import { join } from 'path';
 import { fileURLToPath } from 'url';

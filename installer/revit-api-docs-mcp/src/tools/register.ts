@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { registerSearchApiTool } from "./search_api.js";
 import { registerGetTypeDetailsTool } from "./get_type_details.js";
 import { registerGetMemberDetailsTool } from "./get_member_details.js";

@@ -264,6 +264,11 @@ Optional aggregate command:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
 ```
 
+The aggregate gate includes the TypeScript `@ts-nocheck` policy, both MCP
+package tests, usage/live-dashboard smoke checks, and committed MCP/Revit
+payload freshness verification. The NAS publish script also runs the payload
+freshness preflight before staging a release.
+
 For a C# source build check without refreshing bundled payload binaries:
 
 ```powershell

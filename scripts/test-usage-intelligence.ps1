@@ -252,6 +252,13 @@ try {
     Assert-Equal $summary.sendCode.count 1 "send_code event count mismatch."
     Assert-Equal $summary.sendCode.manualTransactionCount 1 "Manual transaction count mismatch."
     Assert-True (($summary.sendCode.writePatterns | Where-Object { $_.name -eq "Document.Delete" }).count -eq 1) "Write pattern summary missing Document.Delete."
+    Assert-Equal $summary.sendCode.candidateRepeatThreshold 2 "Dynamic promotion repeat threshold mismatch."
+    $dynamicCandidate = @($summary.sendCode.promotionCandidates | Where-Object { $_.hash -eq "abc" }) | Select-Object -First 1
+    Assert-True ($null -ne $dynamicCandidate) "Dynamic write/manual transaction pattern must be promoted as a native tool candidate."
+    Assert-True (@($dynamicCandidate.promotionReasons | Where-Object { $_ -eq "write_patterns_present" }).Count -eq 1) "Dynamic candidate must include write pattern reason."
+    Assert-True (@($dynamicCandidate.promotionReasons | Where-Object { $_ -eq "manual_transaction" }).Count -eq 1) "Dynamic candidate must include manual transaction reason."
+    Assert-Equal $dynamicCandidate.candidateAction "design_native_tool_with_preflight_and_verification" "Dynamic candidate action should come from the promotion registry."
+    Assert-True (@($dynamicCandidate.registryMatches).Count -ge 1) "Dynamic candidate must include registry matches."
     Assert-True (($summary.production.byProject | Where-Object { $_.name -eq "Office Tower" }).count -eq 3) "Project rollup mismatch."
     Assert-True (($summary.production.byCategory | Where-Object { $_.name -eq "Ducts" }).count -eq 2) "Category rollup mismatch."
     Assert-Equal $summary.production.generatedFileCount 1 "Generated file count mismatch."

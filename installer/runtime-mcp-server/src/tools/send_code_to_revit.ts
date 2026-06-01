@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
 import {
@@ -13,6 +12,7 @@ import {
     recordLiveActivityStarted,
     recordRevitCommandTelemetry,
 } from "../utils/telemetry.js";
+import { runtimeGuarded } from "../utils/runtimeResult.js";
 
 function findUnsupportedMethodBodySnippet(code) {
     const source = String(code || "");
@@ -85,7 +85,7 @@ export function registerSendCodeToRevitTool(server) {
             .optional()
             .describe("When true, parse JSON-looking result strings, including double-encoded JSON strings. Defaults true. Set false to inspect the raw wire result."),
     }, async (args, extra) => {
-        const params = {
+        const params: Record<string, unknown> = {
             code: args.code,
             parameters: args.parameters || [],
             transactionMode: args.transactionMode || "auto",
@@ -109,14 +109,11 @@ export function registerSendCodeToRevitTool(server) {
         const unsupportedSnippet = findUnsupportedMethodBodySnippet(args.code);
         if (unsupportedSnippet) {
             const durationMs = Math.max(0, Date.now() - startedAtMs);
-            const guardedResponse = {
-                success: false,
-                guarded: true,
-                state: "guarded",
+            const guardedResponse = runtimeGuarded({
                 action: "dynamic_snippet_preflight",
                 reason: unsupportedSnippet.reason,
                 error: unsupportedSnippet.message,
-            };
+            });
             recordRevitCommandTelemetry({
                 commandName: "send_code_to_revit",
                 logicalToolName: "send_code_to_revit",

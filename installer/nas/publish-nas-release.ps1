@@ -267,6 +267,16 @@ Write-Host "Dirty   : $isDirty"
 Write-Host "Version : $Version"
 Write-Host "Channel : $Channel"
 
+Write-Section "Release preflight"
+$payloadFreshnessScript = Join-Path $RepoRoot "scripts\test-mcp-build-payload-freshness.ps1"
+if (-not (Test-Path -LiteralPath $payloadFreshnessScript -PathType Leaf)) {
+    throw "Payload freshness preflight was not found: $payloadFreshnessScript"
+}
+& $payloadFreshnessScript -RepoRoot $RepoRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "Payload freshness preflight failed."
+}
+
 Write-Section "Prepare release folders"
 if (-not $ReleaseRoot.StartsWith("\\")) {
     Write-Warning "ReleaseRoot is not a UNC path. For office deployment, prefer a path that every workstation can read, e.g. \\dpe-nas\...\revit-mcp-deploy"

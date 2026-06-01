@@ -1,4 +1,3 @@
-﻿// @ts-nocheck
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -10,6 +9,7 @@ import {
   formatJsonContent,
   taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
+import { runtimeFailure } from "../utils/runtimeResult.js";
 
 const rangeSchema = z.enum(["current_view", "visible_region", "set_of_views"]);
 const formatSchema = z.enum(["png", "jpg_lossless", "jpg_medium", "tiff", "bmp", "targa"]);
@@ -142,7 +142,7 @@ else if (selectorProvided) {
 }
 
 if (selectedView == null) {
-  return new { success = false, error = "view_not_found", viewId = viewIdInput, viewName = viewNameInput };
+  return new { success = false, guarded = false, state = "failed", action = "export_revit_view_image", error = "view_not_found", viewId = viewIdInput, viewName = viewNameInput };
 }
 sourceView = selectedView;
 exportView = selectedView;
@@ -171,6 +171,9 @@ if (selectedView is ViewSchedule) {
   if (!allowTemporaryScheduleSheet) {
     return new {
       success = false,
+      guarded = true,
+      state = "guarded",
+      action = "export_revit_view_image",
       error = "unsupported_view_type_for_image_export",
       reason = "schedule_views_cannot_be_exported_directly_with_document_export_image_without_temporary_sheet",
       guidance = "Enable allowTemporaryScheduleSheet, or export a DrawingSheet that contains this schedule. Use get_active_view_context on the sheet to inspect scheduleSheetInstances before choosing the sheet.",
@@ -214,7 +217,7 @@ if (selectedView is ViewSchedule) {
   notices.Add("schedule_export_used_temporary_sheet");
 }
 if ((requestedRange == "current_view" || requestedRange == "visible_region") && activeView == null) {
-  return new { success = false, error = "active_view_not_available" };
+  return new { success = false, guarded = false, state = "failed", action = "export_revit_view_image", error = "active_view_not_available" };
 }
 
 var before = new HashSet<string>(System.IO.Directory.GetFiles(outputDir).Select(f => System.IO.Path.GetFullPath(f)), System.StringComparer.OrdinalIgnoreCase);
@@ -457,6 +460,9 @@ var files = System.IO.Directory.GetFiles(outputDir)
 
 return new {
   success = files.Count > 0,
+  guarded = false,
+  state = files.Count > 0 ? "completed" : "failed",
+  action = "export_revit_view_image",
   tool = "export_revit_view_image",
   revitWriteAction = scheduleExportUsedTemporarySheet ? "temporary_schedule_sheet_export" : "none",
   exportRange = scheduleExportUsedTemporarySheet ? "set_of_views" : requestedRange,
@@ -494,12 +500,21 @@ return new {
   notices = notices
 };`;
 
-      const response = await executeRevitCode(code, {
-        ...executionOptionsFromArgs(args),
-        taskType: "export_revit_view_image",
-        transactionMode: allowTemporaryScheduleSheet ? "auto" : "none",
-      });
-      return formatJsonContent(response?.result ?? response);
+      try {
+        const response = await executeRevitCode(code, {
+          ...executionOptionsFromArgs(args, "Export Revit view image"),
+          taskType: "export_revit_view_image",
+          transactionMode: allowTemporaryScheduleSheet ? "auto" : "none",
+        });
+        return formatJsonContent(response?.result ?? response);
+      }
+      catch (error) {
+        return formatJsonContent(runtimeFailure({
+          action: "export_revit_view_image",
+          error: error instanceof Error ? error.message : String(error),
+          extra: { tool: "export_revit_view_image" },
+        }));
+      }
     },
   );
 }

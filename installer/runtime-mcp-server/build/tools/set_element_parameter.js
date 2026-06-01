@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { connectionOptionsFromArgs, connectionTargetSchema, csharpString, executeRevitCode, formatJsonContent, getSelectionElementIds, taskMetadataSchema, taskOptionsFromArgs, } from "../utils/revitToolHelpers.js";
+import { runtimeFailure, runtimeGuarded } from "../utils/runtimeResult.js";
 function valueToText(value) {
     if (typeof value === "boolean") {
         return value ? "true" : "false";
@@ -17,13 +18,15 @@ async function resolveSingleElementId(args, connectionOptions) {
             return selected[0];
         }
         return {
-            success: false,
-            state: "guarded",
-            guarded: true,
+            ...runtimeGuarded({
+                action: "set_element_parameter",
+                reason: "single_selection_required",
+                error: selected.length === 0
+                    ? "No selected Revit element was found. Provide elementId or select exactly one element."
+                    : "Multiple selected elements were found. Provide one explicit elementId for a production parameter write.",
+            }),
+            tool: "set_element_parameter",
             guardReason: "single_selection_required",
-            error: selected.length === 0
-                ? "No selected Revit element was found. Provide elementId or select exactly one element."
-                : "Multiple selected elements were found. Provide one explicit elementId for a production parameter write.",
             selectedElementIds: selected,
         };
     }
@@ -278,6 +281,7 @@ object Blocked(string reason, string message, object extra = null)
         success = false,
         state = "guarded",
         guarded = true,
+        action = "set_element_parameter",
         guardReason = reason,
         error = message,
         tool = "set_element_parameter",
@@ -421,7 +425,9 @@ try
 
         return new {
             success = true,
+            guarded = false,
             state = "dry_run",
+            action = "set_element_parameter",
             committed = false,
             tool = "set_element_parameter",
             revitWriteAction = "element_parameter",
@@ -510,7 +516,9 @@ try
 
     return new {
         success = true,
+        guarded = false,
         state = "committed",
+        action = "set_element_parameter",
         committed = true,
         tool = "set_element_parameter",
         revitWriteAction = "element_parameter",
@@ -559,6 +567,7 @@ catch (Exception ex)
         success = false,
         state = "failed",
         guarded = false,
+        action = "set_element_parameter",
         tool = "set_element_parameter",
         mode = mode,
         operation = operation,
@@ -589,11 +598,12 @@ export function registerSetElementParameterTool(server) {
             const resolvedElementId = await resolveSingleElementId(args, connectionOptions);
             if (!resolvedElementId || typeof resolvedElementId === "object") {
                 return formatJsonContent(resolvedElementId || {
-                    success: false,
-                    state: "guarded",
-                    guarded: true,
+                    ...runtimeGuarded({
+                        action: "set_element_parameter",
+                        reason: "element_id_required",
+                        error: "Provide elementId or set useSelection=true with exactly one selected element.",
+                    }),
                     guardReason: "element_id_required",
-                    error: "Provide elementId or set useSelection=true with exactly one selected element.",
                     tool: "set_element_parameter",
                 });
             }
@@ -601,11 +611,12 @@ export function registerSetElementParameterTool(server) {
             const operation = args.operation === "clear" ? "clear" : "set";
             if (operation === "set" && (args.value === undefined || args.value === null)) {
                 return formatJsonContent({
-                    success: false,
-                    state: "guarded",
-                    guarded: true,
+                    ...runtimeGuarded({
+                        action: "set_element_parameter",
+                        reason: "value_required",
+                        error: "value is required when operation=set. Use operation=clear only when you intentionally want to restore a no-value state.",
+                    }),
                     guardReason: "value_required",
-                    error: "value is required when operation=set. Use operation=clear only when you intentionally want to restore a no-value state.",
                     tool: "set_element_parameter",
                     mode,
                     operation,
@@ -621,12 +632,11 @@ export function registerSetElementParameterTool(server) {
             return formatJsonContent(response && response.result ? response.result : response);
         }
         catch (error) {
-            return formatJsonContent({
-                success: false,
-                state: "failed",
-                tool: "set_element_parameter",
+            return formatJsonContent(runtimeFailure({
+                action: "set_element_parameter",
                 error: error instanceof Error ? error.message : String(error),
-            });
+                extra: { tool: "set_element_parameter" },
+            }));
         }
     });
 }

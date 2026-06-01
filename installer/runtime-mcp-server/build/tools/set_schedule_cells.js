@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { connectionOptionsFromArgs, connectionTargetSchema, csharpString, csharpStringArray, executeRevitCode, formatJsonContent, taskMetadataSchema, taskOptionsFromArgs, } from "../utils/revitToolHelpers.js";
+import { runtimeFailure } from "../utils/runtimeResult.js";
 function csharpIntArrayFromValues(values) {
     const normalized = values
         .map((value) => Number.parseInt(String(value), 10))
@@ -202,6 +203,7 @@ try
         return new {
             success = true,
             guarded = false,
+            state = "dry_run",
             action = "set_schedule_cells",
             scheduleId = schedule.Id.IntegerValue,
             scheduleName = schedule.Name,
@@ -261,7 +263,7 @@ try
     return new {
         success = success,
         guarded = !success,
-        state = success ? null : "guarded",
+        state = success ? "committed" : "guarded",
         action = "set_schedule_cells",
         reason = success ? null : "schedule_cell_verification_failed",
         scheduleId = schedule.Id.IntegerValue,
@@ -322,15 +324,12 @@ export function registerSetScheduleCellsTool(server) {
             return formatJsonContent(response && response.result ? response.result : response);
         }
         catch (error) {
-            return formatJsonContent({
-                success: false,
-                guarded: true,
-                state: "guarded",
+            return formatJsonContent(runtimeFailure({
                 action: "set_schedule_cells",
                 reason: "set_schedule_cells_runtime_error",
                 error: error instanceof Error ? error.message : String(error),
-                committed: false,
-            });
+                extra: { committed: false },
+            }));
         }
     });
 }

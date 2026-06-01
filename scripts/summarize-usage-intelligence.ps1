@@ -241,7 +241,90 @@ function Convert-MetricMapToRows {
                 averageDurationMs = $average
                 maxDurationMs = $_.maxDurationMs
             }
-        })
+    })
+}
+
+function Get-DynamicPromotionRepeatThreshold {
+    $fallback = 2
+    try {
+        $rulesPath = Join-Path (Join-Path $PSScriptRoot "..") "config\dynamic-tool-promotion-rules.json"
+        if (-not (Test-Path -LiteralPath $rulesPath -PathType Leaf)) {
+            return $fallback
+        }
+        $rules = Get-Content -Raw -LiteralPath $rulesPath | ConvertFrom-Json
+        $threshold = Get-IntOrNull (Get-ReportValue -Object $rules -Name "repeatThreshold")
+        if ($null -eq $threshold -or $threshold -lt 2) {
+            return $fallback
+        }
+        return $threshold
+    }
+    catch {
+        return $fallback
+    }
+}
+
+function Get-DynamicPromotionRegistry {
+    try {
+        $registryPath = Join-Path (Join-Path $PSScriptRoot "..") "config\dynamic-tool-promotion-registry.json"
+        if (-not (Test-Path -LiteralPath $registryPath -PathType Leaf)) {
+            return $null
+        }
+        return Get-Content -Raw -LiteralPath $registryPath | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+function Resolve-DynamicPromotionRegistryMatch {
+    param(
+        [string[]]$Reasons,
+        [object]$Registry
+    )
+
+    $defaultAction = "review_for_native_runtime_tool"
+    if ($null -ne $Registry) {
+        $configuredDefault = [string](Get-ReportValue -Object $Registry -Name "defaultCandidateAction")
+        if (-not [string]::IsNullOrWhiteSpace($configuredDefault)) {
+            $defaultAction = $configuredDefault
+        }
+    }
+
+    $reasonSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($reason in @($Reasons)) {
+        if (-not [string]::IsNullOrWhiteSpace($reason)) {
+            [void]$reasonSet.Add($reason)
+        }
+    }
+
+    $matches = [System.Collections.Generic.List[object]]::new()
+    if ($null -ne $Registry) {
+        foreach ($entry in @($Registry.entries)) {
+            $matchReasons = @(ConvertTo-StringArray (Get-ReportValue -Object $entry -Name "matchReasons"))
+            $matchedReasons = @($matchReasons | Where-Object { $reasonSet.Contains([string]$_) })
+            if ($matchedReasons.Count -eq 0) {
+                continue
+            }
+
+            [void]$matches.Add([ordered]@{
+                id = [string](Get-ReportValue -Object $entry -Name "id")
+                state = [string](Get-ReportValue -Object $entry -Name "state")
+                candidateAction = [string](Get-ReportValue -Object $entry -Name "candidateAction")
+                matchedReasons = @($matchedReasons)
+            })
+        }
+    }
+
+    $action = $defaultAction
+    $firstAction = @($matches | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.candidateAction) } | Select-Object -First 1)
+    if ($firstAction.Count -gt 0) {
+        $action = [string]$firstAction[0].candidateAction
+    }
+
+    return [ordered]@{
+        candidateAction = $action
+        registryMatches = @($matches)
+    }
 }
 
 function Read-JsonFileOrNull {
@@ -743,6 +826,89 @@ $sendCodeSamples = @($sendCodeEvents |
         }
     })
 
+$promotionRepeatThreshold = Get-DynamicPromotionRepeatThreshold
+$promotionRegistry = Get-DynamicPromotionRegistry
+$sendCodePatternGroups = @{}
+foreach ($event in $sendCodeEvents) {
+    $code = Get-NestedReportValue -Object $event -Path @("params", "code")
+    $hash = [string](Get-ReportValue -Object $code -Name "hash")
+    if ([string]::IsNullOrWhiteSpace($hash)) {
+        continue
+    }
+
+    if (-not $sendCodePatternGroups.ContainsKey($hash)) {
+        $sendCodePatternGroups[$hash] = [ordered]@{
+            hash = $hash
+            count = 0
+            toolNames = @{}
+            taskNames = @{}
+            writePatterns = @{}
+            hasManualTransaction = $false
+            maxLength = 0
+            maxLineCount = 0
+            preview = ""
+        }
+    }
+
+    $entry = $sendCodePatternGroups[$hash]
+    $entry.count++
+    Add-Count -Map $entry.toolNames -Key ([string](Get-ReportValue -Object $event -Name "toolName"))
+    Add-Count -Map $entry.taskNames -Key ([string](Get-ReportValue -Object $event -Name "taskName"))
+    foreach ($pattern in ConvertTo-StringArray (Get-ReportValue -Object $code -Name "writePatterns")) {
+        Add-Count -Map $entry.writePatterns -Key $pattern
+    }
+    if ((Get-BooleanOrNull (Get-ReportValue -Object $code -Name "hasManualTransaction")) -eq $true) {
+        $entry.hasManualTransaction = $true
+    }
+    $length = Get-IntOrNull (Get-ReportValue -Object $code -Name "length")
+    if ($null -ne $length -and $length -gt $entry.maxLength) {
+        $entry.maxLength = $length
+    }
+    $lineCount = Get-IntOrNull (Get-ReportValue -Object $code -Name "lineCount")
+    if ($null -ne $lineCount -and $lineCount -gt $entry.maxLineCount) {
+        $entry.maxLineCount = $lineCount
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$entry.preview)) {
+        $entry.preview = [string](Get-ReportValue -Object $code -Name "preview")
+    }
+}
+
+$sendCodePromotionCandidates = @($sendCodePatternGroups.Values |
+    ForEach-Object {
+        $reasons = [System.Collections.Generic.List[string]]::new()
+        if ($_.count -ge $promotionRepeatThreshold) {
+            [void]$reasons.Add("repeated_hash")
+        }
+        if ($_.writePatterns.Count -gt 0) {
+            [void]$reasons.Add("write_patterns_present")
+        }
+        if ($_.hasManualTransaction -eq $true) {
+            [void]$reasons.Add("manual_transaction")
+        }
+        if ($reasons.Count -eq 0) {
+            return
+        }
+        $registryMatch = Resolve-DynamicPromotionRegistryMatch -Reasons $reasons.ToArray() -Registry $promotionRegistry
+
+        [ordered]@{
+            hash = $_.hash
+            count = $_.count
+            promotionReasons = $reasons.ToArray()
+            candidateAction = $registryMatch.candidateAction
+            registryMatches = @($registryMatch.registryMatches)
+            toolNames = @(Convert-CountMapToRows -Map $_.toolNames -Limit 5)
+            taskNames = @(Convert-CountMapToRows -Map $_.taskNames -Limit 5)
+            writePatterns = @(Convert-CountMapToRows -Map $_.writePatterns -Limit 10)
+            hasManualTransaction = $_.hasManualTransaction
+            maxLength = $_.maxLength
+            maxLineCount = $_.maxLineCount
+            preview = $_.preview
+        }
+    } |
+    Where-Object { $null -ne $_ } |
+    Sort-Object @{ Expression = { $_.count }; Descending = $true }, hash |
+    Select-Object -First $Top)
+
 $taskNameSamples = @($taskNameCounts.GetEnumerator() |
     Sort-Object @{ Expression = { $_.Value }; Descending = $true }, Name |
     Select-Object -First $TaskSampleLimit |
@@ -794,6 +960,8 @@ $summary = [ordered]@{
         rawCount = @($sendCodeEvents | Where-Object { (Get-ReportValue -Object $_ -Name "toolName") -eq "send_code_to_revit" }).Count
         manualTransactionCount = @($sendCodeEvents | Where-Object { (Get-NestedReportValue -Object $_ -Path @("params", "code", "hasManualTransaction")) -eq $true }).Count
         writePatterns = @(Convert-CountMapToRows -Map $sendCodeWritePatterns -Limit $Top)
+        candidateRepeatThreshold = $promotionRepeatThreshold
+        promotionCandidates = @($sendCodePromotionCandidates)
         samples = @($sendCodeSamples)
     }
 }

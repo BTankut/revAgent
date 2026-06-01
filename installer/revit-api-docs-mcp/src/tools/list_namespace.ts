@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from "zod";
 import { listNamespace } from "../utils/docIndex.js";
 

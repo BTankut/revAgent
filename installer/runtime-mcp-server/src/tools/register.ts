@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { registerSendCodeToRevitTool } from "./send_code_to_revit.js";
 import { registerSendCodeToRevitSafeTool } from "./send_code_to_revit_safe.js";
 import { registerGetRevitSessionContextTool } from "./get_revit_session_context.js";

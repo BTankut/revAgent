@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { z } from "zod";
 import { getTypeDetails } from "../utils/docIndex.js";
 

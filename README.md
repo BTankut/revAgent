@@ -409,7 +409,10 @@ npm install --no-audit --no-fund
 npm run test
 ```
 
-Use `scripts\test-all.ps1` to run the non-Revit checks in one command.
+Use `scripts\test-all.ps1` to run the non-Revit checks in one command. It
+includes installer smoke, usage intelligence, live dashboard helpers,
+`@ts-nocheck` policy enforcement, both MCP package test suites, and committed
+MCP/Revit payload freshness checks.
 
 When the shared bridge command payload changes and Revit 2022 is available, run the
 optional live commandset gate separately:
@@ -523,6 +526,7 @@ revit-mcp-skill/
 |   |-- PLATFORM_ARCHITECTURE.md
 |   |-- PLATFORM_MODERNIZATION_SUMMARY.md
 |   |-- REPOSITORY_STRUCTURE.md
+|   |-- REVAGENT_ARCHITECTURE_HARDENING_PLAN.md
 |   |-- REVAGENT_LIVE_DASHBOARD_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
@@ -545,6 +549,8 @@ revit-mcp-skill/
 |   `-- evals.json
 |-- scripts/
 |   |-- build-revit-plugin.ps1
+|   |-- test-mcp-build-payload-freshness.ps1
+|   |-- test-typescript-nocheck-policy.ps1
 |   |-- test-all.ps1
 |   `-- test-installer-smoke.ps1
 |-- src/

@@ -4,6 +4,12 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added the revAgent architecture hardening plan and enforcement pass:
+  TypeScript `@ts-nocheck` policy, shared runtime result helpers, write/export
+  contract checks, telemetry helper split, dynamic C# promotion reporting, and
+  MCP/Revit payload freshness gates.
+- Added a NAS release preflight that verifies committed MCP build payloads and
+  Revit payload freshness before packaging.
 - Added direct standalone Schedule image export to `export_revit_view_image`
   through a temporary sheet that is deleted before the wrapper transaction
   commits, while keeping existing containing-sheet hints in the response.

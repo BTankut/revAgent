@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "defaultCandidateAction": "review_for_native_runtime_tool",
+  "states": [
+    "candidate",
+    "promoted",
+    "watch",
+    "rejected"
+  ],
+  "entries": [
+    {
+      "id": "repeated_dynamic_pattern",
+      "state": "candidate",
+      "matchReasons": [
+        "repeated_hash"
+      ],
+      "candidateAction": "promote_when_workflow_is_production_repeated"
+    },
+    {
+      "id": "dynamic_model_write_pattern",
+      "state": "candidate",
+      "matchReasons": [
+        "write_patterns_present"
+      ],
+      "candidateAction": "design_native_tool_with_preflight_and_verification"
+    },
+    {
+      "id": "dynamic_manual_transaction",
+      "state": "candidate",
+      "matchReasons": [
+        "manual_transaction"
+      ],
+      "candidateAction": "move_transaction_boundary_to_runtime_tool"
+    }
+  ]
+}

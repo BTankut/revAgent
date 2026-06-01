@@ -1,10 +1,28 @@
 // @ts-nocheck
 import crypto from "node:crypto";
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { findWritePatterns } from "../tools/send_code_to_revit_safe_guards.js";
+import {
+    defaultLocalTelemetryRoot,
+    isTruthy,
+    normalizeMachineName,
+    parseBuildHash,
+    readInstalledState,
+    readJsonFile,
+    readUpdaterConfig,
+    sanitizeTelemetryPathSegment,
+} from "./runtimeIdentity.js";
+import {
+    appendJsonLine,
+    enqueueAppendJsonLine,
+    enqueueLiveWrite,
+    getLiveWriteHealth,
+    writeJsonFile,
+} from "./telemetryWriters.js";
+
+export { sanitizeTelemetryPathSegment } from "./runtimeIdentity.js";
+export { flushLiveWritesForTests } from "./telemetryWriters.js";
 
 const TELEMETRY_SCHEMA_VERSION = "revagent.telemetry.v1";
 const LIVE_STATUS_SCHEMA_VERSION = "revagent.live.status.v1";
@@ -12,107 +30,14 @@ const LIVE_ACTIVITY_SCHEMA_VERSION = "revagent.live.activity.v1";
 const TELEMETRY_SESSION_ID = crypto.randomUUID();
 const TELEMETRY_PROCESS_STARTED_AT_UTC = new Date().toISOString();
 let telemetrySequence = 0;
-const telemetryWriteQueues = new Map();
-const liveWriteQueues = new Map();
 const liveActiveTasks = new Map();
 const liveRecentActivity = [];
 let liveRevitStatus = null;
-let liveWritesInFlight = 0;
-let liveWritesDropped = 0;
 let liveHeartbeatTimer = null;
 let liveLastHeartbeatUtc = null;
 
-function isTruthy(value) {
-    return /^(1|true|yes|on)$/i.test(String(value || "").trim());
-}
-
 function telemetryDisabled() {
     return isTruthy(process.env.REVAGENT_TELEMETRY_DISABLED);
-}
-
-function readJsonFile(filePath) {
-    try {
-        if (!filePath || !fs.existsSync(filePath)) {
-            return null;
-        }
-        return JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
-    }
-    catch {
-        return null;
-    }
-}
-
-function getRuntimeRoot() {
-    const thisFile = fileURLToPath(import.meta.url);
-    return path.resolve(path.dirname(thisFile), "..", "..");
-}
-
-function getInstallRoot() {
-    const runtimeRoot = getRuntimeRoot();
-    const parent = path.dirname(runtimeRoot);
-    return parent && parent !== runtimeRoot ? parent : runtimeRoot;
-}
-
-function getProgramDataRoot() {
-    return process.env.ProgramData || process.env.PROGRAMDATA || "C:\\ProgramData";
-}
-
-function readUpdaterConfig() {
-    const installRoot = getInstallRoot();
-    const candidates = [
-        process.env.REVAGENT_UPDATER_CONFIG,
-        path.join(installRoot, "updater", "updater-config.json"),
-        path.join(getProgramDataRoot(), "DPE", "RevitMCP", "updater", "updater-config.json"),
-    ].filter(Boolean);
-
-    for (const candidate of candidates) {
-        const config = readJsonFile(candidate);
-        if (config) {
-            return config;
-        }
-    }
-    return null;
-}
-
-function readInstalledState() {
-    const installRoot = getInstallRoot();
-    const candidates = [
-        path.join(installRoot, "updater", "installed.json"),
-        path.join(getProgramDataRoot(), "DPE", "RevitMCP", "updater", "installed.json"),
-    ];
-    for (const candidate of candidates) {
-        const state = readJsonFile(candidate);
-        if (state) {
-            return state;
-        }
-    }
-    return null;
-}
-
-function parseBuildHash(version) {
-    const match = String(version || "").match(/-([0-9a-f]{7,40})$/i);
-    return match ? match[1] : null;
-}
-
-function defaultLocalTelemetryRoot() {
-    return path.join(getProgramDataRoot(), "DPE", "RevitMCP", "state", "telemetry");
-}
-
-function normalizeMachineName(value) {
-    const text = String(value || "").trim();
-    return (text || "unknown-machine").toUpperCase();
-}
-
-export function sanitizeTelemetryPathSegment(value, fallback = "unknown") {
-    const text = String(value || "").trim();
-    if (!text) {
-        return fallback;
-    }
-    const safe = text
-        .replace(/[<>:"/\\|?*\x00-\x1F\s]+/g, "_")
-        .replace(/_+/g, "_")
-        .replace(/^[._-]+|[._-]+$/g, "");
-    return safe || fallback;
 }
 
 function hashText(value) {
@@ -882,41 +807,6 @@ function resolveLiveMachineTargets(relativeParts = []) {
     return targets;
 }
 
-async function writeJsonFile(filePath, value) {
-    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.promises.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-function enqueueLiveWrite(filePath, writer) {
-    if (liveStatusDisabled()) {
-        return false;
-    }
-
-    if (liveWritesInFlight >= liveMaxWriteInFlight()) {
-        liveWritesDropped++;
-        return false;
-    }
-
-    liveWritesInFlight++;
-    const previous = liveWriteQueues.get(filePath) || Promise.resolve();
-    const write = previous
-        .catch(() => undefined)
-        .then(() => writer(filePath));
-
-    liveWriteQueues.set(filePath, write);
-    write
-        .catch(() => {
-            liveWritesDropped++;
-        })
-        .finally(() => {
-            if (liveWriteQueues.get(filePath) === write) {
-                liveWriteQueues.delete(filePath);
-            }
-            liveWritesInFlight = Math.max(0, liveWritesInFlight - 1);
-        });
-    return true;
-}
-
 function publicLiveTask(task) {
     if (!task) {
         return null;
@@ -1033,11 +923,7 @@ function buildLiveStatusSnapshot(reason = "activity") {
         activeTasks: [...liveActiveTasks.values()].map(publicLiveTask),
         recentActivity: liveRecentActivity.slice(0, liveRecentActivityLimit()),
         revitStatus: liveRevitStatus,
-        writeHealth: {
-            inFlight: liveWritesInFlight,
-            dropped: liveWritesDropped,
-            maxInFlight: liveMaxWriteInFlight(),
-        },
+        writeHealth: getLiveWriteHealth(liveMaxWriteInFlight()),
     };
 }
 
@@ -1094,7 +980,11 @@ function mergeExistingLiveStatusSnapshot(filePath, snapshot) {
 function writeLiveStatusSnapshot(reason = "activity") {
     const snapshot = buildLiveStatusSnapshot(reason);
     for (const target of resolveLiveMachineTargets(["status.json"])) {
-        enqueueLiveWrite(target.path, (filePath) => writeJsonFile(filePath, mergeExistingLiveStatusSnapshot(filePath, snapshot)));
+        enqueueLiveWrite(
+            target.path,
+            (filePath) => writeJsonFile(filePath, mergeExistingLiveStatusSnapshot(filePath, snapshot)),
+            { disabled: liveStatusDisabled, maxInFlight: liveMaxWriteInFlight },
+        );
     }
 }
 
@@ -1148,7 +1038,11 @@ function writeLiveActivity(event) {
     rememberLiveActivity(event);
     const parts = dateParts(new Date(event.timestampUtc || Date.now()));
     for (const target of resolveLiveMachineTargets(["activity", `${parts.ymd}.ndjson`])) {
-        enqueueLiveWrite(target.path, (filePath) => appendJsonLine(filePath, event));
+        enqueueLiveWrite(
+            target.path,
+            (filePath) => appendJsonLine(filePath, event),
+            { disabled: liveStatusDisabled, maxInFlight: liveMaxWriteInFlight },
+        );
     }
     writeLiveStatusSnapshot(event.phase);
 }
@@ -1261,13 +1155,6 @@ function startLiveStatusHeartbeat() {
     }
 }
 
-export async function flushLiveWritesForTests(timeoutMs = 2000) {
-    const deadline = Date.now() + timeoutMs;
-    while (liveWritesInFlight > 0 && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-}
-
 export function buildTelemetryEvent(partial = {}) {
     const installedState = readInstalledState();
     const runtimeVersion = installedState?.version || null;
@@ -1292,29 +1179,6 @@ export function buildTelemetryEvent(partial = {}) {
         },
         ...partial,
     };
-}
-
-async function appendJsonLine(filePath, event) {
-    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.promises.appendFile(filePath, `${JSON.stringify(event)}\n`, "utf8");
-}
-
-function enqueueAppendJsonLine(filePath, event) {
-    const previous = telemetryWriteQueues.get(filePath) || Promise.resolve();
-    const write = previous
-        .catch(() => undefined)
-        .then(() => appendJsonLine(filePath, event));
-
-    telemetryWriteQueues.set(filePath, write);
-    write
-        .finally(() => {
-            if (telemetryWriteQueues.get(filePath) === write) {
-                telemetryWriteQueues.delete(filePath);
-            }
-        })
-        .catch(() => undefined);
-
-    return write;
 }
 
 export async function recordTelemetryEvent(partial = {}) {

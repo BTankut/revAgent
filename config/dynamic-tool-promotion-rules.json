@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "repeatThreshold": 2,
+  "promotionTriggers": [
+    "repeated_hash",
+    "write_patterns_present",
+    "manual_transaction"
+  ]
+}

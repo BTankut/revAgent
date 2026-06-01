@@ -42,6 +42,12 @@ context, view/focus helpers, parameter inspection, controlled parameter and
 schedule-cell writes, schedule inspection, visual QA exports, and safe
 custom-code workflows.
 
+Guard-heavy, write-adjacent, and export tools use a shared minimal result
+contract where practical: `success`, `guarded`, `state`, `action`, and optional
+`error`, `reason`, `warnings`, and `notices`. Treat `guarded=true` as protected
+behavior, not as a failed model operation. Check `state`, `committed`, `mode`,
+and tool-specific verification fields before saying a write actually happened.
+
 - `list_revit_instances` - discover reachable Revit MCP instances and ports
 - `get_revit_mcp_status` - read active/recent task status without waiting
   behind the active command lock; default output is compact, with optional

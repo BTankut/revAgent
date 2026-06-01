@@ -58,6 +58,8 @@ revit-mcp-skill/
 |-- AGENTS.md
 |-- CHANGELOG.md
 |-- config/
+|   |-- dynamic-tool-promotion-registry.json
+|   |-- dynamic-tool-promotion-rules.json
 |   `-- revit-versions.json
 |-- docs/
 |   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
@@ -66,11 +68,19 @@ revit-mcp-skill/
 |   |-- PLATFORM_ARCHITECTURE.md
 |   |-- PLATFORM_MODERNIZATION_SUMMARY.md
 |   |-- REPOSITORY_STRUCTURE.md
+|   |-- REVAGENT_ARCHITECTURE_HARDENING_PLAN.md
+|   |-- REVAGENT_LIVE_DASHBOARD_PLAN.md
+|   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
 |-- references/
 |-- scripts/
 |   |-- build-revit-plugin.ps1
+|   |-- start-live-dashboard.ps1
 |   |-- test-all.ps1
+|   |-- test-commandset-live.ps1
+|   |-- test-live-dashboard.ps1
+|   |-- test-mcp-build-payload-freshness.ps1
+|   |-- test-typescript-nocheck-policy.ps1
 |   `-- test-installer-smoke.ps1
 |-- src/
 |   `-- revit-plugin/
@@ -96,6 +106,9 @@ Important source vs payload rule:
 - `installer/lib/` contains shared PowerShell helper modules used by installer
   and updater entrypoints.
 - `config/revit-versions.json` is the central Revit version matrix.
+- `config/dynamic-tool-promotion-*.json` defines the usage-summary rules for
+  flagging repeated or risky dynamic C# snippets as native runtime-tool
+  candidates.
 
 Do not edit deployed files under `C:\ProgramData\DPE\RevitMCP` as a source of
 truth. Fix the repo, rebuild or refresh payloads when needed, commit the repo,
@@ -203,7 +216,8 @@ Both servers are required. If only the runtime server is available, non-trivial
 Revit API work is not considered fully set up.
 
 Both MCP packages are TypeScript-first. Edit `src/`, then emit the existing
-`build/` contract:
+`build/` contract. New source should not add `@ts-nocheck`; the current
+unchecked debt is kept in the explicit policy allowlist.
 
 ```powershell
 cd .\installer\runtime-mcp-server
@@ -222,6 +236,13 @@ local Revit API index.
 After changes to bundled MCP server payloads, run the relevant local tests,
 commit `src/`, `build/`, `package.json`, and `package-lock.json` together, and
 verify `codex mcp list` after install or update.
+
+For runtime/docs MCP source changes, also keep the committed payload fresh:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-typescript-nocheck-policy.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-mcp-build-payload-freshness.ps1
+```
 
 ## PowerShell Installer/Updater Modules
 
@@ -313,6 +334,10 @@ Aggregate non-Revit tests can also be run with:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
 ```
+
+`test-all.ps1` includes installer smoke, usage intelligence, live dashboard
+helpers, the `@ts-nocheck` policy, both MCP package tests, and MCP/Revit payload
+freshness checks. It does not run the live Revit commandset gate.
 
 When `src/revit-plugin/RevitMCPCommandSet` or `installer/command-payload`
 changes, run the optional live commandset gate on a workstation with Revit 2022
