@@ -12,7 +12,7 @@ description: >
   critical path, or system flow. Localized Turkish requests for the same
   mechanical MEP tasks are also in scope.
 license: UNLICENSED
-version: 0.4.5
+version: 0.4.6
 ---
 
 # Revit MCP - MEP Automation Expert
@@ -34,6 +34,34 @@ only the bare names appear, so the rules stay host-agnostic.
 Office install/update standardizes Codex memory settings idempotently in
 `%USERPROFILE%\.codex\config.toml` and must not create timestamped `.codex`
 backup artifacts during normal operation.
+
+## Tool Selection Authority - Hard Rule
+
+The current installed `SKILL.md`, `AGENTS.md`, and live MCP tool descriptions
+are the authoritative instructions for Revit MCP work. They override Codex
+memory, older chat history, older examples, and any remembered raw C# workflow.
+
+Before using a remembered pattern, check whether the current runtime has a
+dedicated tool for the same job. If it does, use the dedicated tool. Raw
+`send_code_to_revit` is a fallback for unsupported cases only, not the default
+path for schedule, sheet, parameter, navigation, or visual QA workflows.
+
+Hard routing rules:
+
+- Sheet text lookup: use `inspect_sheet_text` before any custom sheet loop.
+- Schedule discovery/cell reading: use `inspect_schedules` before any custom
+  schedule loop.
+- Schedule edit with exact row/column: use `set_schedule_cells`.
+- Schedule edit by visible row text plus sheet/schedule filter: use
+  `set_schedule_cells_by_text`.
+- Element parameter write: use `set_element_parameter`.
+- Live show/zoom/select/navigation: use live navigation tools, not image export.
+- PNG/JPEG/report/evidence image: use image export tools, not live navigation
+  as the final artifact.
+
+If you still choose raw `send_code_to_revit`, state the missing capability or
+unsupported edge case first, keep the snippet small, and return to the
+dedicated tools as soon as the missing bridge is resolved.
 
 **Runtime server (`revit-mcp`)** - dynamic execution plus read-only context:
 

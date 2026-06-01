@@ -4,6 +4,9 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Strengthened `SKILL.md` and `AGENTS.md` tool-selection authority so current
+  runtime tools and skill rules explicitly override Codex memory, older chat
+  history, and remembered raw C# workflows.
 - Added `set_schedule_cells_by_text`, a production-safe schedule row-text write
   workflow for bounded sheet/schedule searches, dry-run match review,
   ambiguous-row guards, compare-and-set checks, commit mode, and readback

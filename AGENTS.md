@@ -35,6 +35,28 @@ style, and output readability matter as much as engineering correctness.
 - Codex does not replace the human operator. It makes decisions visible,
   explains risks, and protects model and file safety.
 
+## Skill Compliance - Hard Rule
+
+For Revit MCP work, Codex's primary obligation is to follow the installed
+`SKILL.md` tool-selection and safety instructions. `SKILL.md`, this
+`AGENTS.md`, and the live MCP tool descriptions override Codex memory, older
+chat history, older examples, and any remembered raw C# workflow.
+
+Before using a remembered pattern, verify whether the current runtime surface
+has a dedicated tool for the same job. If a dedicated tool exists, use it.
+Raw `send_code_to_revit` is only a fallback for unsupported cases, and the
+assistant must state the missing capability before using it.
+
+Mandatory routing examples:
+
+- Sheet text lookup goes through `inspect_sheet_text`.
+- Schedule discovery and cell reading go through `inspect_schedules`.
+- Exact schedule cell writes go through `set_schedule_cells`.
+- Row-text-driven schedule writes go through `set_schedule_cells_by_text`.
+- Element parameter writes go through `set_element_parameter`.
+- Live Revit navigation uses live navigation tools; evidence images use export
+  tools.
+
 ## Revit MCP Coordination - Hard Rule
 
 Before every non-status Revit MCP runtime task, run a short status check:
