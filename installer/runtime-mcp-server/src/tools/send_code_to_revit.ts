@@ -14,6 +14,27 @@ import {
     recordRevitCommandTelemetry,
 } from "../utils/telemetry.js";
 
+function findUnsupportedMethodBodySnippet(code) {
+    const source = String(code || "");
+    const typeDeclaration = source.match(/^\s*(?:public|private|protected|internal|static|sealed|abstract|partial|\s)*\b(?:class|struct|interface|enum|record)\s+[A-Za-z_][A-Za-z0-9_]*/m);
+    if (typeDeclaration) {
+        return {
+            reason: "dynamic_snippet_type_declaration_not_supported",
+            message: "Dynamic snippets are inserted inside Execute(Document document, object[] parameters). C# type declarations such as class/struct/interface/enum/record cannot be declared inside that method body. Use local functions, built-in collections, or add a native runtime tool when reusable helper types are needed.",
+        };
+    }
+
+    const namespaceDeclaration = source.match(/^\s*namespace\s+[A-Za-z_][A-Za-z0-9_.]*/m);
+    if (namespaceDeclaration) {
+        return {
+            reason: "dynamic_snippet_namespace_declaration_not_supported",
+            message: "Dynamic snippets are inserted inside Execute(Document document, object[] parameters). namespace declarations cannot be declared inside that method body. Use method-body C# only.",
+        };
+    }
+
+    return null;
+}
+
 function findErrorLikeResult(value) {
     const normalized = normalizeRevitExecutionResponse(value);
     if (normalized && typeof normalized === "object" && normalized.success === false) {
@@ -85,6 +106,39 @@ export function registerSendCodeToRevitTool(server) {
             params,
             startedAtMs,
         });
+        const unsupportedSnippet = findUnsupportedMethodBodySnippet(args.code);
+        if (unsupportedSnippet) {
+            const durationMs = Math.max(0, Date.now() - startedAtMs);
+            const guardedResponse = {
+                success: false,
+                guarded: true,
+                state: "guarded",
+                action: "dynamic_snippet_preflight",
+                reason: unsupportedSnippet.reason,
+                error: unsupportedSnippet.message,
+            };
+            recordRevitCommandTelemetry({
+                commandName: "send_code_to_revit",
+                logicalToolName: "send_code_to_revit",
+                executionKind: "dynamicCode",
+                params,
+                options,
+                response: guardedResponse,
+                startedAtMs,
+            });
+            recordLiveActivityFinished(liveTask, {
+                response: guardedResponse,
+                durationMs,
+            });
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `Code execution guarded: ${unsupportedSnippet.message}`,
+                    },
+                ],
+            };
+        }
         try {
             const response = await withRevitConnection(async (revitClient) => {
                 return await revitClient.sendCommand("send_code_to_revit", params, options);

@@ -129,9 +129,19 @@ trust-affecting warnings.
 
 The current `revit-mcp` runtime surface is a reusable production access layer
 for live Revit execution, model context, view/focus workflows, parameter
-inspection, image export, and safe custom-code workflows. It is intended for
-model querying, visual QA, view navigation, parameter inspection, and
+inspection, schedule inspection, controlled parameter and schedule-cell writes,
+image export, and safe custom-code workflows. It is intended for model
+querying, visual QA, view navigation, schedule and parameter inspection, and
 controlled Revit API operations.
+
+For schedule lookup or schedule cell reading in large projects, use
+`inspect_schedules` before raw dynamic C# loops. Start with `nameQuery` or
+exact `scheduleIds`, keep row/column limits bounded, and avoid scanning all
+schedule cells unless the operator explicitly needs that broad search.
+For schedule text edits after exact row/column discovery, use
+`set_schedule_cells`; it requires exact `scheduleId`, section, row, and column,
+defaults to dry-run, can compare `expectedCurrentText`, and verifies committed
+cell text.
 
 ## Dynamic Execution Transaction Discipline
 
@@ -148,6 +158,9 @@ controlled Revit API operations.
 - Dynamic snippets are injected into `Execute(Document document, object[]
   parameters)`. `document` and `parameters` are guaranteed; `uidoc` is not
   automatically in scope.
+- Dynamic snippets are method-body code. Do not declare C# `class`, `struct`,
+  `interface`, `enum`, `record`, or `namespace` blocks inside
+  `send_code_to_revit`; use local functions or add a native runtime tool.
 
 ## File And Deployment Discipline
 

@@ -55,14 +55,16 @@ structural, and electrical modules should add module-specific MCP tools in the
 runtime layer while reusing this shared Revit bridge for common execution,
 context, selection, view, and navigation operations.
 
-The current runtime server registers 22 tools:
+The current runtime server registers 24 tools:
 
 - status and targeting: `list_revit_instances`, `get_revit_mcp_status`
 - dynamic execution: `send_code_to_revit`, `send_code_to_revit_safe`
 - model/session context: `get_revit_session_context`,
-  `get_active_view_context`, `inspect_elements`, `inspect_parameter_schema`
+  `get_active_view_context`, `inspect_elements`, `inspect_schedules`,
+  `inspect_parameter_schema`
 - controlled data writes: `set_element_parameter` for exact-schema
-  parameter set/clear operations
+  parameter set/clear operations, and `set_schedule_cells` for exact schedule
+  cell text writes by schedule id/section/row/column
 - live view workflows: `list_open_views`, `activate_view`, `close_view`,
   `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`,
   `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements`
@@ -70,6 +72,14 @@ The current runtime server registers 22 tools:
   `create_3d_view_for_elements`
 - image evidence: `export_revit_view_image`,
   `export_revit_coordination_image`
+
+`inspect_schedules` is a read-only runtime tool for large-project schedule
+work. It provides bounded schedule-name discovery and bounded header/body/footer
+cell reads/scans so agents do not have to generate broad ad hoc C# loops over
+every schedule and every cell. `set_schedule_cells` is the paired write path for
+known schedule cells: it never resolves by schedule name, defaults to dry-run,
+blocks stale cells with `expectedCurrentText` unless explicitly allowed, commits
+through the wrapper transaction, and verifies the final cell text.
 
 The companion docs server registers 5 lookup tools: `search_api`,
 `get_type_details`, `get_member_details`, `list_namespace`, and

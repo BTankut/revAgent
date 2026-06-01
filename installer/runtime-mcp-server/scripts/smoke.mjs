@@ -84,8 +84,10 @@ const expectedTools = [
   "show_element_in_plan_and_3d",
   "smart_focus_elements",
   "inspect_elements",
+  "inspect_schedules",
   "inspect_parameter_schema",
   "set_element_parameter",
+  "set_schedule_cells",
 ];
 
 assert.deepEqual([...tools.keys()], expectedTools);
@@ -102,6 +104,14 @@ const setParameterDescription = tools.get("set_element_parameter").description;
 assert.match(setParameterDescription, /PRODUCTION_PARAMETER_WRITE/);
 assert.match(setParameterDescription, /Never writes by visible display name alone/);
 assert.match(setParameterDescription, /Defaults to dryRun/);
+const inspectSchedulesDescription = tools.get("inspect_schedules").description;
+assert.match(inspectSchedulesDescription, /SCHEDULE_INSPECTION_READ_ONLY/);
+assert.match(inspectSchedulesDescription, /large models/);
+assert.match(inspectSchedulesDescription, /generic send_code_to_revit/);
+const setScheduleCellsDescription = tools.get("set_schedule_cells").description;
+assert.match(setScheduleCellsDescription, /PRODUCTION_SCHEDULE_CELL_WRITE/);
+assert.match(setScheduleCellsDescription, /scheduleId/);
+assert.match(setScheduleCellsDescription, /Defaults to dryRun/);
 
 const autoStyleExpectations = {
   raw_evidence: "raw",
@@ -329,6 +339,13 @@ assert.equal(toolTelemetry.params.code.writePatternCount > 0, true);
 const productionTelemetry = telemetryLines.find((line) => line.eventType === "production.context" && line.related?.toolName === "send_code_to_revit_safe");
 assert.equal(productionTelemetry.operation.taskName, "Write preview for Level 02 Room 204");
 assert.equal(productionTelemetry.operation.guarded, true);
+const rawSendCodeTool = tools.get("send_code_to_revit");
+const typeDeclarationGuard = await rawSendCodeTool.handler({
+  code: "public class BadHelper {}\nreturn new { success = true };",
+  taskName: "Unsupported snippet helper type",
+});
+assert.match(typeDeclarationGuard.content[0].text, /Code execution guarded/);
+assert.match(typeDeclarationGuard.content[0].text, /type declarations/);
 delete process.env.REVAGENT_TELEMETRY_ROOT;
 delete process.env.REVAGENT_REPORTS_ROOT;
 

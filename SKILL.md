@@ -38,8 +38,9 @@ backup artifacts during normal operation.
 **Runtime server (`revit-mcp`)** - dynamic execution plus read-only context:
 
 This runtime surface is intentionally reusable: live Revit execution, model
-context, view/focus helpers, parameter inspection, controlled parameter writes,
-visual QA exports, and safe custom-code workflows.
+context, view/focus helpers, parameter inspection, controlled parameter and
+schedule-cell writes, schedule inspection, visual QA exports, and safe
+custom-code workflows.
 
 - `list_revit_instances` - discover reachable Revit MCP instances and ports
 - `get_revit_mcp_status` - read active/recent task status without waiting
@@ -119,6 +120,11 @@ visual QA exports, and safe custom-code workflows.
   same-level plan and 3D view
 - `inspect_elements` - targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
+- `inspect_schedules` - read-only schedule discovery and bounded cell
+  inspection. Use `nameQuery` or exact `scheduleIds` first in large projects,
+  then add `cellQuery`, `includeCells`, row/column limits, and section selection
+  as needed. Prefer this over broad custom C# loops when finding schedules or
+  reading schedule cells.
 - `inspect_parameter_schema` - parameter schema for element ids or category
   samples: user-facing BIP display name/id first, raw enum alias as diagnostic
   data, alias note, storage type, unit, shared/read-only, raw/display values.
@@ -132,6 +138,10 @@ visual QA exports, and safe custom-code workflows.
   allowed, then verifies the value or `HasValue=false` state after
   `mode: "commit"`. Empty string writes are not treated as true no-value
   clears; use `operation: "clear"` when that distinction matters.
+- `set_schedule_cells` - production-safe exact schedule-cell text write tool.
+  It never writes by schedule name, requires `scheduleId`, `section`, and
+  zero-based row/column coordinates, defaults to `mode: "dryRun"`, can block
+  stale targets with `expectedCurrentText`, and verifies committed cell text.
 
 **API docs server (`revit-api-docs`)** - required companion:
 
@@ -181,7 +191,14 @@ Default workflow for every Revit runtime task:
    `inspect_elements`. For ordinary parameter writes, prefer
    `set_element_parameter` over raw dynamic C# because it performs the exact
    schema preflight and readback verification itself.
-6. Use `send_code_to_revit_safe` for read-only probes and write previews. It
+6. For schedule lookup, schedule evidence planning, or schedule cell reading,
+   call `inspect_schedules` before writing raw C# schedule loops. In large
+   models, do not scan all schedule cells without a `nameQuery` or exact
+   `scheduleIds`; keep `maxRowsPerSection` and `maxColumnsPerSection` bounded.
+   For exact schedule text edits after row/column discovery, use
+   `set_schedule_cells` with `expectedCurrentText` instead of ad hoc
+   `send_code_to_revit` write snippets.
+7. Use `send_code_to_revit_safe` for read-only probes and write previews. It
    rejects `transactionMode: "auto"` and always executes with
    `transactionMode: "none"`. Use raw `send_code_to_revit` only when the user
    explicitly asks for broad dynamic execution or a confirmed write.

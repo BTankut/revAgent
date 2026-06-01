@@ -7,7 +7,7 @@ import { connectionOptionsFromArgs, connectionTargetSchema, compactMcpStatusPayl
 import { recordLiveRevitStatus } from "../utils/telemetry.js";
 const RUNTIME_PROCESS_STARTED_AT_UTC = new Date().toISOString();
 const STATUS_SCHEMA_VERSION = "revit-mcp-status.v3";
-const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.26";
+const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.28";
 function readJsonFile(pathToRead) {
     try {
         if (!pathToRead || !fs.existsSync(pathToRead)) {
