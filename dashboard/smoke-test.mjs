@@ -477,6 +477,34 @@ try {
   assert.equal(data.activity.find((event) => event.taskName === "smoke inspect schedules").toolName, "inspect_schedules");
   assert.equal(data.activity.find((event) => event.taskName === "smoke inspect schedules").source, "revit.status+telemetry");
   assert.equal(data.activity.find((event) => event.taskName === "smoke inspect schedules").requestBytes, 900);
+
+  writeJson(path.join(reportsRoot, "live", "machines", "TESTPC", "status.json"), {
+    schemaVersion: "revagent.live.status.v1",
+    machineName: "TESTPC",
+    userName: "BT",
+    lastHeartbeatUtc: new Date(now.getTime() + 10000).toISOString(),
+    runtime: {
+      version,
+    },
+    activeTask: null,
+    activeTasks: [],
+    recentActivity: [],
+    revitStatus: null,
+    writeHealth: {
+      droppedCount: 0,
+    },
+  });
+  const cachedStatusData = loadDashboardData({
+    reportsRoot,
+    releaseRoot,
+    staleSeconds: 60,
+    offlineSeconds: 300,
+    activityLimit: 20,
+  });
+  assert.equal(cachedStatusData.activity.find((event) => event.taskName === "smoke inspect schedules").toolName, "inspect_schedules");
+  assert.equal(cachedStatusData.activity.find((event) => event.taskName === "smoke inspect schedules").source, "revit.status+telemetry");
+  assert.equal(cachedStatusData.activity.find((event) => event.taskName === "smoke inspect schedules").requestBytes, 900);
+
   assert.equal("params" in data.activity[0], false);
   assert.equal(JSON.stringify(data).includes("\"preview\""), false);
   assert.equal(JSON.stringify(data).includes("yyyyyyyy"), false);

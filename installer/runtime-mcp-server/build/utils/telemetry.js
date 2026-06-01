@@ -941,10 +941,49 @@ function buildLiveStatusSnapshot(reason = "activity") {
         },
     };
 }
+function hasUsefulLiveStatusData(status) {
+    const recentTasks = Array.isArray(status?.revitStatus?.recentTasks) ? status.revitStatus.recentTasks : [];
+    const activeTasks = Array.isArray(status?.activeTasks) ? status.activeTasks : [];
+    const recentActivity = Array.isArray(status?.recentActivity) ? status.recentActivity : [];
+    return Boolean(status?.activeTask ||
+        activeTasks.length > 0 ||
+        recentActivity.length > 0 ||
+        status?.revitStatus?.activeTask ||
+        recentTasks.length > 0);
+}
+function liveStatusAgeMs(status) {
+    const ms = Date.parse(String(status?.generatedAtUtc || status?.lastHeartbeatUtc || ""));
+    return Number.isFinite(ms) ? Math.max(0, Date.now() - ms) : Number.POSITIVE_INFINITY;
+}
+function mergeExistingLiveStatusSnapshot(filePath, snapshot) {
+    if (hasUsefulLiveStatusData(snapshot)) {
+        return snapshot;
+    }
+    const existing = readJsonFile(filePath);
+    if (!existing || normalizeMachineName(existing.machineName) !== normalizeMachineName(snapshot.machineName)) {
+        return snapshot;
+    }
+    const maxAgeMs = Math.max(10 * 60 * 1000, liveHeartbeatIntervalMs() * 6);
+    if (!hasUsefulLiveStatusData(existing) || liveStatusAgeMs(existing) > maxAgeMs) {
+        return snapshot;
+    }
+    return {
+        ...snapshot,
+        recentActivity: Array.isArray(snapshot.recentActivity) && snapshot.recentActivity.length > 0
+            ? snapshot.recentActivity
+            : (Array.isArray(existing.recentActivity) ? existing.recentActivity : []),
+        revitStatus: existing.revitStatus
+            ? {
+                ...existing.revitStatus,
+                activeTask: snapshot.revitStatus?.activeTask || null,
+            }
+            : snapshot.revitStatus,
+    };
+}
 function writeLiveStatusSnapshot(reason = "activity") {
     const snapshot = buildLiveStatusSnapshot(reason);
     for (const target of resolveLiveMachineTargets(["status.json"])) {
-        enqueueLiveWrite(target.path, (filePath) => writeJsonFile(filePath, snapshot));
+        enqueueLiveWrite(target.path, (filePath) => writeJsonFile(filePath, mergeExistingLiveStatusSnapshot(filePath, snapshot)));
     }
 }
 function rememberLiveActivity(event) {

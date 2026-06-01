@@ -11,6 +11,8 @@ const DEFAULT_PORT = 8765;
 const DEFAULT_ACTIVITY_READ_BYTES = 4 * 1024 * 1024;
 const DEFAULT_STALE_SECONDS = 60;
 const DEFAULT_OFFLINE_SECONDS = 300;
+const LIVE_STATUS_CACHE_TTL_MS = 10 * 60 * 1000;
+const liveStatusCache = new Map();
 
 function parseArgs(argv = process.argv.slice(2)) {
   const args = {};
@@ -74,6 +76,51 @@ function readJsonFile(filePath) {
       path: filePath,
     };
   }
+}
+
+function hasUsefulRevitStatus(status) {
+  const revitStatus = status?.revitStatus;
+  const recentTasks = Array.isArray(revitStatus?.recentTasks) ? revitStatus.recentTasks : [];
+  return Boolean(revitStatus?.activeTask || recentTasks.length > 0);
+}
+
+function mergeLiveStatusCache(machineName, liveStatus, now, offlineSeconds) {
+  if (!liveStatus) {
+    return liveStatus;
+  }
+
+  const key = normalizeMachineName(machineName || liveStatus.machineName || "");
+  const currentRevitStatus = liveStatus.revitStatus || null;
+  const currentRecentTasks = Array.isArray(currentRevitStatus?.recentTasks) ? currentRevitStatus.recentTasks : [];
+  const cached = liveStatusCache.get(key);
+  const cacheTtlMs = Math.max(LIVE_STATUS_CACHE_TTL_MS, Number(offlineSeconds || DEFAULT_OFFLINE_SECONDS) * 1000);
+
+  if (hasUsefulRevitStatus(liveStatus)) {
+    liveStatusCache.set(key, {
+      cachedAtMs: now,
+      revitStatus: currentRevitStatus,
+    });
+    return liveStatus;
+  }
+
+  if (!cached || now - cached.cachedAtMs > cacheTtlMs || !hasUsefulRevitStatus({ revitStatus: cached.revitStatus })) {
+    return liveStatus;
+  }
+
+  return {
+    ...liveStatus,
+    revitStatus: {
+      ...(cached.revitStatus || {}),
+      ...(currentRevitStatus || {}),
+      // A heartbeat-only runtime process may overwrite status.json without
+      // recent Revit tasks. Keep the last rich recent task list stable, but do
+      // not resurrect a cached active task.
+      activeTask: currentRevitStatus?.activeTask || null,
+      recentTasks: currentRecentTasks.length > 0
+        ? currentRecentTasks
+        : (Array.isArray(cached.revitStatus?.recentTasks) ? cached.revitStatus.recentTasks : []),
+    },
+  };
 }
 
 function listDirectories(root) {
@@ -771,7 +818,12 @@ export function loadDashboardData(config = {}) {
 
   const machines = machineNames.map((machineName) => {
     const machineReport = readJsonFile(path.join(machinesRoot, machineName, "latest.json"));
-    const liveStatus = readJsonFile(path.join(liveRoot, machineName, "status.json"));
+    const liveStatus = mergeLiveStatusCache(
+      machineName,
+      readJsonFile(path.join(liveRoot, machineName, "status.json")),
+      now,
+      offlineSeconds,
+    );
     const machine = summarizeMachine(machineName, machineReport, liveStatus, stable?.version || "", now, staleSeconds, offlineSeconds);
     const fallbackActivities = chooseRecentActivities(machine.live, machineName, activityByMachine.get(machineName));
     const activeTelemetryActivities = buildStatusActivities(machine.live?.activeTasks || [machine.live?.activeTask].filter(Boolean));
