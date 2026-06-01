@@ -442,7 +442,7 @@ Expected MCP servers:
 
 11. If the installer stops with a Roslyn runtime error, repair the Revit 2022 installation first. Do not try to fix a normal end-user install by adding NuGet packages into the deployed bundle.
 
-Expected bundled runtime commands: 24 tools registered by the runtime server.
+Expected bundled runtime commands: 25 tools registered by the runtime server.
 
 - `list_revit_instances`
 - `get_revit_mcp_status`
@@ -518,6 +518,8 @@ revit-mcp-skill/
 |-- AGENTS.md
 |-- CHANGELOG.md
 |-- config/
+|   |-- dynamic-tool-promotion-registry.json
+|   |-- dynamic-tool-promotion-rules.json
 |   `-- revit-versions.json
 |-- docs/
 |   |-- ADR-0001-UPDATER-DOTNET-HELPER.md

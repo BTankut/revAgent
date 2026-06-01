@@ -39,7 +39,7 @@ backup artifacts during normal operation.
 
 This runtime surface is intentionally reusable: live Revit execution, model
 context, view/focus helpers, parameter inspection, controlled parameter and
-schedule-cell writes, schedule inspection, visual QA exports, and safe
+schedule-cell writes, sheet/schedule inspection, visual QA exports, and safe
 custom-code workflows.
 
 Guard-heavy, write-adjacent, and export tools use a shared minimal result
