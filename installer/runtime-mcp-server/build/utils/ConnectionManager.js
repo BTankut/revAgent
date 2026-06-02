@@ -45,6 +45,11 @@ function sanitizeLockPart(value) {
 function lockDirForTarget(target) {
     return path.join(LOCK_ROOT, `${sanitizeLockPart(target.host)}-${target.port}.lock`);
 }
+function errorCode(error) {
+    return error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : null;
+}
 function uniqueTargets(targets) {
     const seen = new Set();
     const output = [];
@@ -204,7 +209,7 @@ function removeStaleLock(lockDir) {
         }
     }
     catch (error) {
-        if (!error || error.code === "ENOENT") {
+        if (!error || errorCode(error) === "ENOENT") {
             return;
         }
     }
@@ -230,7 +235,7 @@ async function acquireRevitCommandLock(target, waitMs = LOCK_WAIT_MS) {
             };
         }
         catch (error) {
-            if (!error || error.code !== "EEXIST") {
+            if (!error || errorCode(error) !== "EEXIST") {
                 throw error;
             }
             removeStaleLock(lockDir);

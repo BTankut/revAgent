@@ -170,9 +170,12 @@ export class RevitClientConnection {
             return;
         }
         if (response && response.error && this.responseCallbacks.size === 1) {
-            const [pendingId, pendingCallback] = this.responseCallbacks.entries().next().value;
-            pendingCallback(responseData);
-            this.responseCallbacks.delete(pendingId);
+            const pending = this.responseCallbacks.entries().next().value;
+            if (pending) {
+                const [pendingId, pendingCallback] = pending;
+                pendingCallback(responseData);
+                this.responseCallbacks.delete(pendingId);
+            }
             return;
         }
         if (response && response.error && this.responseCallbacks.size > 1) {

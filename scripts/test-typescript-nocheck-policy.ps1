@@ -33,6 +33,31 @@ $sourceRoots = @(
     "installer\revit-api-docs-mcp\src"
 )
 
+$strictConfigPaths = @(
+    "installer\runtime-mcp-server\tsconfig.json",
+    "installer\revit-api-docs-mcp\tsconfig.json"
+)
+
+foreach ($configPath in $strictConfigPaths) {
+    $fullConfigPath = Join-Path $RepoRoot $configPath
+    if (-not (Test-Path -LiteralPath $fullConfigPath -PathType Leaf)) {
+        throw "TypeScript config was not found: $fullConfigPath"
+    }
+
+    $config = Get-Content -Raw -LiteralPath $fullConfigPath | ConvertFrom-Json
+    $compilerOptions = $config.compilerOptions
+    if ($compilerOptions.strict -ne $true) {
+        throw "TypeScript strict:true is required in $configPath."
+    }
+
+    foreach ($maskedOption in @("noImplicitAny", "useUnknownInCatchVariables")) {
+        $property = $compilerOptions.PSObject.Properties[$maskedOption]
+        if ($null -ne $property -and $property.Value -eq $false) {
+            throw "TypeScript strict:true must not be masked by $maskedOption:false in $configPath."
+        }
+    }
+}
+
 $actualNoCheck = [System.Collections.Generic.List[string]]::new()
 foreach ($sourceRoot in $sourceRoots) {
     $fullRoot = Join-Path $RepoRoot $sourceRoot

@@ -81,6 +81,12 @@ function lockDirForTarget(target: RevitConnectionTarget) {
     return path.join(LOCK_ROOT, `${sanitizeLockPart(target.host)}-${target.port}.lock`);
 }
 
+function errorCode(error: unknown): string | null {
+    return error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : null;
+}
+
 function uniqueTargets(targets: RegistryEntry[]): RevitConnectionTarget[] {
     const seen = new Set<string>();
     const output: RevitConnectionTarget[] = [];
@@ -247,7 +253,7 @@ function removeStaleLock(lockDir: string) {
         }
     }
     catch (error) {
-        if (!error || error.code === "ENOENT") {
+        if (!error || errorCode(error) === "ENOENT") {
             return;
         }
     }
@@ -274,7 +280,7 @@ async function acquireRevitCommandLock(target: RevitConnectionTarget, waitMs = L
             };
         }
         catch (error) {
-            if (!error || error.code !== "EEXIST") {
+            if (!error || errorCode(error) !== "EEXIST") {
                 throw error;
             }
             removeStaleLock(lockDir);
