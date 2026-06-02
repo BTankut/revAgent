@@ -1,12 +1,16 @@
 <#
 .SYNOPSIS
-    Verify committed MCP build payloads match their TypeScript source.
+    Verify committed MCP and Revit payloads match their source inputs.
 
 .DESCRIPTION
     The installer and Codex registrations consume build/index.js. Because build
     output is currently part of the package contract, source changes must keep
     build output fresh. This test compiles each MCP package into a temporary
     folder and compares that output with the checked-in build folder.
+
+    Revit payload freshness is validated through a committed content manifest
+    written by scripts\build-revit-plugin.ps1. It uses Git blob SHAs for source
+    inputs so checkout and merge mtimes cannot create false stale results.
 #>
 
 [CmdletBinding()]
@@ -21,6 +25,8 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
+
+Import-Module (Join-Path $RepoRoot "scripts\RevitPayloadManifest.psm1") -Force
 
 function Get-RelativeFileHashMap {
     param(
@@ -96,63 +102,11 @@ function Assert-BuildFresh {
     }
 }
 
-function Get-NewestPayloadSourceFile {
-    param(
-        [string]$SourceRoot
-    )
-
-    if (-not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
-        throw "Payload source root was not found: $SourceRoot"
-    }
-
-    $files = @(Get-ChildItem -LiteralPath $SourceRoot -Recurse -File -Include "*.cs", "*.csproj", "*.xaml", "*.json" |
-        Where-Object { $_.FullName -notmatch '[\\\/](bin|obj)[\\\/]' } |
-        Sort-Object LastWriteTimeUtc -Descending)
-
-    if ($files.Count -eq 0) {
-        throw "No payload source files were found under: $SourceRoot"
-    }
-
-    return $files[0]
-}
-
-function Assert-RevitPayloadFresh {
-    param(
-        [string]$SourceRelativePath,
-        [string[]]$PayloadRelativePaths
-    )
-
-    $sourceRoot = Join-Path $RepoRoot $SourceRelativePath
-    $newestSource = Get-NewestPayloadSourceFile -SourceRoot $sourceRoot
-
-    foreach ($payloadRelativePath in $PayloadRelativePaths) {
-        $payloadPath = Join-Path $RepoRoot $payloadRelativePath
-        if (-not (Test-Path -LiteralPath $payloadPath -PathType Leaf)) {
-            throw "Revit payload file is missing: $payloadRelativePath"
-        }
-
-        $payload = Get-Item -LiteralPath $payloadPath
-        if ($payload.Length -le 0) {
-            throw "Revit payload file is empty: $payloadRelativePath"
-        }
-
-        if ($newestSource.LastWriteTimeUtc -gt $payload.LastWriteTimeUtc) {
-            throw "Revit payload may be stale. Source '$($newestSource.FullName)' is newer than payload '$payloadRelativePath'. Run scripts\build-revit-plugin.ps1 and refresh installer payloads before release."
-        }
-    }
-}
-
 Assert-BuildFresh -PackageRelativePath "installer\runtime-mcp-server"
 Assert-BuildFresh -PackageRelativePath "installer\revit-api-docs-mcp"
 
 if (-not $McpOnly) {
-    Assert-RevitPayloadFresh -SourceRelativePath "src\revit-plugin\revit-mcp-plugin" -PayloadRelativePaths @(
-        "installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
-    )
-    Assert-RevitPayloadFresh -SourceRelativePath "src\revit-plugin\RevitMCPCommandSet" -PayloadRelativePaths @(
-        "installer\command-payload\RevitMCPCommandSet.dll",
-        "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet\2022\RevitMCPCommandSet.dll"
-    )
+    Assert-RevitPayloadManifestFresh -RepoRoot $RepoRoot
 }
 
 if ($McpOnly) {

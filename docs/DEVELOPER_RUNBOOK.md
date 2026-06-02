@@ -156,11 +156,11 @@ used. Production NAS releases should be published from a clean tree.
 3. Inspect existing patterns before editing.
 4. Make the smallest safe change in source files.
 5. If Revit add-in source, DLL, or command payload changed, rebuild the plugin
-   payload and keep full Revit payload freshness local-only.
+   payload so the committed DLLs and Revit payload manifest move together.
 6. Run targeted validation. For Revit C#/DLL/command-payload changes, a green
    `Engineering gates` CI result is not enough; before deployment, also run
-   the local live gate (`scripts/test-commandset-live.ps1`) and full DLL/Revit
-   payload freshness. CI intentionally does not cover this surface.
+   the local live gate (`scripts/test-commandset-live.ps1`). CI covers the
+   manifest-based Revit payload freshness check, but not live Revit behavior.
 7. Commit source and generated payload together when payload is affected.
 8. Push the topic branch and open a pull request. See `Git Commit And Push` for
    the exact protected branch workflow.
@@ -197,14 +197,15 @@ Commit together:
 - refreshed files under `installer/revit-plugin/`
 - refreshed files under `installer/command-payload/` if the command payload
   changed
+- `installer/revit-payload-manifest.json`
 - `CHANGELOG.md` when behavior changes
 - relevant docs
 
 Do not publish an add-in change if the payload binaries were not refreshed.
-For Revit C#/DLL/command-payload changes, the CI `Engineering gates` check is
-not sufficient for deployment readiness. Run the full payload freshness check
-and the local live commandset gate before NAS publish; these checks are
-intentionally local-only in the Definition Of Done table.
+For Revit C#/DLL/command-payload changes, the CI `Engineering gates` check
+proves the committed manifest and payload files match source, but it is not
+sufficient for deployment readiness. Run the local live commandset gate before
+NAS publish.
 
 ## Runtime And Docs MCP Development
 
@@ -401,9 +402,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-ci.ps1
 `test-ci.ps1` installs both MCP packages with `npm ci`, runs forced strict
 TypeScript checks in both packages, checks the zero `@ts-nocheck` policy,
 verifies MCP build payload freshness with
-`test-mcp-build-payload-freshness.ps1 -McpOnly`, then runs both package
-`npm test` chains. Freshness intentionally runs before `npm test` because
-`npm run build` rewrites the local `build/` folder in the CI workspace.
+`test-mcp-build-payload-freshness.ps1`, then runs both package `npm test`
+chains. Freshness intentionally runs before `npm test` because `npm run build`
+rewrites the local `build/` folder in the CI workspace. The Revit half reads
+`installer/revit-payload-manifest.json`; it does not rebuild the add-in or
+compare file mtimes.
 
 | Invariant | Enforcing script/test | CI job | Local-only note |
 | --- | --- | --- | --- |
@@ -411,7 +414,7 @@ verifies MCP build payload freshness with
 | New `@ts-nocheck` usage is blocked | `scripts/test-typescript-nocheck-policy.ps1` | `Engineering gates` | - |
 | Runtime MCP package still builds and passes local characterization tests | `installer/runtime-mcp-server` `npm test` | `Engineering gates` | - |
 | Revit API docs MCP package still builds and smoke-tests | `installer/revit-api-docs-mcp` `npm test` | `Engineering gates` | - |
-| MCP build payloads match TypeScript source | `scripts/test-mcp-build-payload-freshness.ps1 -McpOnly` | `Engineering gates` | Full Revit DLL payload freshness remains local-only. |
+| MCP build payloads and the Revit payload manifest match source | `scripts/test-mcp-build-payload-freshness.ps1` | `Engineering gates` | Live Revit behavior remains local-only. |
 | Bridge result contract stays canonical and idempotent | runtime `bridge-result-contract-test` via `npm test` | `Engineering gates` | Live Revit skew checks remain local-only. |
 | Production write tools keep guard/verification contracts | runtime `write-tool-contract-test` via `npm test` | `Engineering gates` | - |
 | Tool argument schema inference does not collapse to `any` | runtime `tool-inference-test` via `npm test` | `Engineering gates` | - |
