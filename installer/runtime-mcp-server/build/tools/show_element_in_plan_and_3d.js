@@ -7,6 +7,19 @@ const elementIdSchema = z.union([
 function unwrapResponse(response) {
     return response && response.result ? response.result : response;
 }
+function readField(payload, pascalName, camelName) {
+    if (!payload || typeof payload !== "object") {
+        return undefined;
+    }
+    const normalizedCamelName = camelName ?? pascalName.charAt(0).toLowerCase() + pascalName.slice(1);
+    return payload[pascalName] ?? payload[normalizedCamelName];
+}
+function isSuccess(payload) {
+    if (!payload || typeof payload !== "object") {
+        return false;
+    }
+    return readField(payload, "Success", "success") !== false;
+}
 function buildDefault3DViewName(elementId, element) {
     const label = element && (element.FamilyName || element.TypeName || element.Name)
         ? String(element.FamilyName || element.TypeName || element.Name)
@@ -17,16 +30,16 @@ function compactElement(element) {
     if (!element || typeof element !== "object")
         return element;
     return {
-        Id: element.Id,
-        Name: element.Name,
-        Category: element.Category,
-        FamilyName: element.FamilyName,
-        TypeName: element.TypeName,
-        LevelId: element.LevelId,
-        LevelName: element.LevelName,
-        Mark: element.Mark,
-        MatchScore: element.MatchScore,
-        MatchConfidence: element.MatchConfidence,
+        Id: readField(element, "Id", "id"),
+        Name: readField(element, "Name", "name"),
+        Category: readField(element, "Category", "category"),
+        FamilyName: readField(element, "FamilyName", "familyName"),
+        TypeName: readField(element, "TypeName", "typeName"),
+        LevelId: readField(element, "LevelId", "levelId"),
+        LevelName: readField(element, "LevelName", "levelName"),
+        Mark: readField(element, "Mark", "mark"),
+        MatchScore: readField(element, "MatchScore", "matchScore"),
+        MatchConfidence: readField(element, "MatchConfidence", "matchConfidence"),
     };
 }
 function compactView(view) {
@@ -43,61 +56,63 @@ function summarizeFind(findResult) {
     if (!findResult || typeof findResult !== "object")
         return findResult;
     return {
-        Success: findResult.Success,
-        Count: findResult.Count,
-        Truncated: findResult.Truncated,
-        Ambiguous: findResult.Ambiguous,
-        TopScore: findResult.TopScore,
-        TopConfidence: findResult.TopConfidence,
-        TopScoreTiedCount: findResult.TopScoreTiedCount,
-        PlanCandidateMode: findResult.PlanCandidateMode,
-        SelectionHint: findResult.SelectionHint,
+        Success: readField(findResult, "Success", "success"),
+        Count: readField(findResult, "Count", "count"),
+        Truncated: readField(findResult, "Truncated", "truncated"),
+        Ambiguous: readField(findResult, "Ambiguous", "ambiguous"),
+        TopScore: readField(findResult, "TopScore", "topScore"),
+        TopConfidence: readField(findResult, "TopConfidence", "topConfidence"),
+        TopScoreTiedCount: readField(findResult, "TopScoreTiedCount", "topScoreTiedCount"),
+        PlanCandidateMode: readField(findResult, "PlanCandidateMode", "planCandidateMode"),
+        SelectionHint: readField(findResult, "SelectionHint", "selectionHint"),
     };
 }
 function summarizePlan(planResult) {
     if (!planResult || typeof planResult !== "object")
         return planResult;
     return {
-        Success: planResult.Success,
-        Message: planResult.Message,
-        PlanMode: planResult.PlanMode,
-        PlanOpenMode: planResult.PlanOpenMode,
-        PlanOpenNote: planResult.PlanOpenNote,
-        SelectedPlan: compactView(planResult.SelectedPlan),
-        TargetView: compactView(planResult.TargetView),
-        ActiveView: compactView(planResult.ActiveView),
-        ActiveViewChanged: planResult.ActiveViewChanged,
-        ActivePlanMatchesElementLevel: planResult.ActivePlanMatchesElementLevel,
-        PlanSelectionReason: planResult.PlanSelectionReason,
-        ZoomMethod: planResult.ZoomMethod,
-        Selected: planResult.Selected,
-        Zoomed: planResult.Zoomed,
-        FitToScreen: planResult.FitToScreen,
-        FitToScreenWarning: planResult.FitToScreenWarning,
-        PlanVisibilityWarning: planResult.PlanVisibilityWarning,
-        FocusWarning: planResult.FocusWarning,
-        PlanCandidatesTotal: planResult.PlanCandidatesTotal,
-        PlanCandidatesTruncated: planResult.PlanCandidatesTruncated,
+        Success: readField(planResult, "Success", "success"),
+        Message: readField(planResult, "Message", "message"),
+        Error: readField(planResult, "Error", "error"),
+        PlanMode: readField(planResult, "PlanMode", "planMode"),
+        PlanOpenMode: readField(planResult, "PlanOpenMode", "planOpenMode"),
+        PlanOpenNote: readField(planResult, "PlanOpenNote", "planOpenNote"),
+        SelectedPlan: compactView(readField(planResult, "SelectedPlan", "selectedPlan")),
+        TargetView: compactView(readField(planResult, "TargetView", "targetView")),
+        ActiveView: compactView(readField(planResult, "ActiveView", "activeView")),
+        ActiveViewChanged: readField(planResult, "ActiveViewChanged", "activeViewChanged"),
+        ActivePlanMatchesElementLevel: readField(planResult, "ActivePlanMatchesElementLevel", "activePlanMatchesElementLevel"),
+        PlanSelectionReason: readField(planResult, "PlanSelectionReason", "planSelectionReason"),
+        ZoomMethod: readField(planResult, "ZoomMethod", "zoomMethod"),
+        Selected: readField(planResult, "Selected", "selected"),
+        Zoomed: readField(planResult, "Zoomed", "zoomed"),
+        FitToScreen: readField(planResult, "FitToScreen", "fitToScreen"),
+        FitToScreenWarning: readField(planResult, "FitToScreenWarning", "fitToScreenWarning"),
+        PlanVisibilityWarning: readField(planResult, "PlanVisibilityWarning", "planVisibilityWarning"),
+        FocusWarning: readField(planResult, "FocusWarning", "focusWarning"),
+        PlanCandidatesTotal: readField(planResult, "PlanCandidatesTotal", "planCandidatesTotal"),
+        PlanCandidatesTruncated: readField(planResult, "PlanCandidatesTruncated", "planCandidatesTruncated"),
     };
 }
 function summarizeThreeD(threeDResult) {
     if (!threeDResult || typeof threeDResult !== "object")
         return threeDResult;
     return {
-        Success: threeDResult.Success,
-        Message: threeDResult.Message,
-        TargetView: compactView(threeDResult.TargetView),
-        ActiveView: compactView(threeDResult.ActiveView),
-        CreatedView: threeDResult.CreatedView,
-        ReusedView: threeDResult.ReusedView,
-        SectionBoxApplied: threeDResult.SectionBoxApplied,
-        SectionBoxState: threeDResult.SectionBoxState,
-        CameraOrientation: threeDResult.CameraOrientation,
-        CameraApplied: threeDResult.CameraApplied,
-        CameraWarning: threeDResult.CameraWarning,
-        ZoomMethod: threeDResult.ZoomMethod,
-        Selected: threeDResult.Selected,
-        Zoomed: threeDResult.Zoomed,
+        Success: readField(threeDResult, "Success", "success"),
+        Message: readField(threeDResult, "Message", "message"),
+        Error: readField(threeDResult, "Error", "error"),
+        TargetView: compactView(readField(threeDResult, "TargetView", "targetView")),
+        ActiveView: compactView(readField(threeDResult, "ActiveView", "activeView")),
+        CreatedView: readField(threeDResult, "CreatedView", "createdView"),
+        ReusedView: readField(threeDResult, "ReusedView", "reusedView"),
+        SectionBoxApplied: readField(threeDResult, "SectionBoxApplied", "sectionBoxApplied"),
+        SectionBoxState: readField(threeDResult, "SectionBoxState", "sectionBoxState"),
+        CameraOrientation: readField(threeDResult, "CameraOrientation", "cameraOrientation"),
+        CameraApplied: readField(threeDResult, "CameraApplied", "cameraApplied"),
+        CameraWarning: readField(threeDResult, "CameraWarning", "cameraWarning"),
+        ZoomMethod: readField(threeDResult, "ZoomMethod", "zoomMethod"),
+        Selected: readField(threeDResult, "Selected", "selected"),
+        Zoomed: readField(threeDResult, "Zoomed", "zoomed"),
     };
 }
 export function registerShowElementInPlanAnd3DTool(server) {
@@ -151,15 +166,17 @@ export function registerShowElementInPlanAnd3DTool(server) {
                     timeoutMs: args.timeoutMs,
                     taskName: "Find element for plan and 3D presentation",
                 }, options));
-                if (!findResult || findResult.Success === false) {
+                if (!findResult || !isSuccess(findResult)) {
                     return formatJsonContent({
                         Success: false,
                         Action: "show_element_in_plan_and_3d",
-                        Error: findResult && findResult.Error ? findResult.Error : "Element search failed.",
+                        Error: readField(findResult, "Error", "error") || "Element search failed.",
                         Find: findResult,
                     });
                 }
-                const candidates = Array.isArray(findResult.Elements) ? findResult.Elements : [];
+                const candidates = Array.isArray(readField(findResult, "Elements", "elements"))
+                    ? readField(findResult, "Elements", "elements")
+                    : [];
                 if (candidates.length === 0) {
                     return formatJsonContent({
                         Success: false,
@@ -168,7 +185,7 @@ export function registerShowElementInPlanAnd3DTool(server) {
                         Find: findResult,
                     });
                 }
-                if (findResult.Ambiguous && args.allowAmbiguous !== true) {
+                if (readField(findResult, "Ambiguous", "ambiguous") && args.allowAmbiguous !== true) {
                     return formatJsonContent({
                         Success: false,
                         Action: "show_element_in_plan_and_3d",
@@ -187,7 +204,7 @@ export function registerShowElementInPlanAnd3DTool(server) {
                         Find: findResult,
                     });
                 }
-                chosenElementId = chosenElement.Id;
+                chosenElementId = readField(chosenElement, "Id", "id");
             }
             if (chosenElementId === undefined || chosenElementId === null) {
                 return formatJsonContent({
@@ -211,11 +228,11 @@ export function registerShowElementInPlanAnd3DTool(server) {
                 timeoutMs: args.timeoutMs,
                 taskName: "Show element in existing plan",
             }, options));
-            if (!planResult || planResult.Success === false) {
+            if (!planResult || !isSuccess(planResult)) {
                 return formatJsonContent({
                     Success: false,
                     Action: "show_element_in_plan_and_3d",
-                    Error: planResult && planResult.Error ? planResult.Error : "Plan presentation failed.",
+                    Error: readField(planResult, "Error", "error") || "Plan presentation failed.",
                     ChosenElementId: chosenElementId,
                     ChosenElement: chosenElement,
                     Find: findResult,
@@ -241,7 +258,7 @@ export function registerShowElementInPlanAnd3DTool(server) {
                     taskName: "Show element in focused 3D view",
                 }, options));
             }
-            const threeDSuccess = args.create3d === false || (threeDResult && threeDResult.Success !== false);
+            const threeDSuccess = args.create3d === false || isSuccess(threeDResult);
             const fullPayload = trimPlanCandidatesInPayload({
                 Success: threeDSuccess,
                 Action: "show_element_in_plan_and_3d",

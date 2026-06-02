@@ -188,12 +188,12 @@ export function registerSmartFocusElementsTool(server: ToolServer) {
                 taskName: "Smart focus fallback to same-level existing plan",
             }, options));
 
-            if (!planFocus || planFocus.Success === false) {
+            if (!planFocus || !isSuccess(planFocus)) {
                 return formatJsonContent({
                     Success: false,
                     Action: "smart_focus_elements",
                     Mode: mode,
-                    Error: planFocus && planFocus.Error ? planFocus.Error : "Same-level existing plan focus failed.",
+                    Error: planFocus && (planFocus.Error ?? planFocus.error) ? planFocus.Error ?? planFocus.error : "Same-level existing plan focus failed.",
                     Focus: activeFocus,
                     Plan: planFocus,
                 });

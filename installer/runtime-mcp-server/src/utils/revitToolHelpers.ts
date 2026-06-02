@@ -200,9 +200,11 @@ export function trimPlanCandidatesInPayload(payload: any, options: TrimPlanCandi
 
         const clone: JsonObject = {};
         for (const [key, child] of Object.entries(value)) {
-            if (key === "PlanCandidates" && Array.isArray(child)) {
-                clone.PlanCandidatesTotal = child.length;
-                clone.PlanCandidatesTruncated = child.length > maxCandidates;
+            if ((key === "PlanCandidates" || key === "planCandidates") && Array.isArray(child)) {
+                const totalKey = key === "PlanCandidates" ? "PlanCandidatesTotal" : "planCandidatesTotal";
+                const truncatedKey = key === "PlanCandidates" ? "PlanCandidatesTruncated" : "planCandidatesTruncated";
+                clone[totalKey] = child.length;
+                clone[truncatedKey] = child.length > maxCandidates;
                 clone[key] = child.slice(0, maxCandidates).map((item) => visit(item));
                 continue;
             }
