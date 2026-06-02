@@ -790,36 +790,38 @@ Install `scripts/install-usage-summary-task.ps1` on exactly one coordinator
 workstation to run the publisher daily. The scheduled publisher uses
 `reports\summaries\publish.lock` and writes logs under `reports\summaries\logs`.
 
-## Why `send_code_to_revit` stays primary
+## Why `send_code_to_revit` remains available
 
-Real Revit tasks usually need:
+Dedicated runtime tools are the default path for known production workflows:
+status/context checks, sheet and schedule inspection, schedule-cell writes,
+element parameter writes, live navigation, and image export. Agents should check
+for a dedicated tool before falling back to raw dynamic code.
 
-- linked model lookup
-- room matching
-- nearest room fallback
-- custom filtering
-- type/instance parameter fallback
-- bulk export
-- CSV/XLSX output safety
+`send_code_to_revit` remains the broad-control escape hatch for unsupported
+cases that still need Revit API flexibility, such as linked model lookup, room
+matching, nearest-room fallback, custom filters, unusual type/instance parameter
+fallbacks, bulk exports, or CSV/XLSX output preparation.
 
-In practice, one strong custom-code tool performs better than a large set of narrow tools.
+When raw execution is needed, the agent should state the missing capability,
+verify non-trivial API symbols through `revit-api-docs`, keep the snippet small,
+use `send_code_to_revit_safe` for read-only probes and previews, and promote
+repeated raw-code patterns into native runtime tools.
 
-That is why `send_code_to_revit` should remain the first-class runtime tool in both the MCP setup and the skill.
+## Skill maintenance direction
 
-## Skill update direction
+`SKILL.md` and `AGENTS.md` should strongly document:
 
-`SKILL.md` should strongly document:
-
-- call `get_revit_session_context` first for non-trivial tasks
-- use `resolve_api_symbols_bulk` before non-trivial snippets to confirm exact API signatures
+- call `get_revit_mcp_status` before every non-status Revit MCP runtime task
+- use dedicated runtime tools before raw dynamic code
+- use `inspect_sheet_text`, `inspect_schedules`, `set_schedule_cells`,
+  `set_schedule_cells_by_text`, and `set_element_parameter` for their covered
+  workflows
+- use `resolve_api_symbols_bulk` before non-trivial raw snippets
 - use `send_code_to_revit_safe` for read-only probes and previews
 - keep raw `send_code_to_revit` as the explicit broad-control escape hatch
-- linked model and room matching workflow
-- parameter lookup order
-- bulk-query performance patterns
-- export and Excel safety rules
-- `Mark` + `ElementId` + `Unique_Mark` identity strategy
-- single-element -> small sample -> full export debug flow
+- promote repeated raw-code patterns into native runtime tools
+- keep visual QA, export, usage intelligence, and deployment guidance aligned
+  with the current runtime surface
 
 ## Installer note
 

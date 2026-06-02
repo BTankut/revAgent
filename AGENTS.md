@@ -128,11 +128,11 @@ Practical use:
 Live Revit navigation is a different intent from image export:
 
 - For "show", "select", "zoom", "open on screen", "open a new 3D view",
-  "ekranda göster", "seç", or "yakından gör", use live view tools such as
+  or localized equivalents for showing/selecting/zooming, use live view tools such as
   `focus_elements`, `smart_focus_elements`, `create_3d_view_for_elements`, or
   `show_element_in_plan_and_3d`.
 - For "PNG", "JPEG", "export", "report image", "evidence image", or
-  "görsel çıktı", use `export_revit_view_image` or
+  localized equivalents for visual output, use `export_revit_view_image` or
   `export_revit_coordination_image`.
 - For schedule evidence, use `export_revit_view_image` on the Schedule view for
   a direct standalone schedule image, or export a DrawingSheet when sheet layout
