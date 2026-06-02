@@ -22,7 +22,6 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
 $allowedNoCheck = @(
-    "installer\runtime-mcp-server\src\utils\ConnectionManager.ts",
     "installer\runtime-mcp-server\src\utils\telemetry.ts"
 )
 

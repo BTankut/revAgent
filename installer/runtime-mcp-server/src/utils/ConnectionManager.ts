@@ -1,8 +1,35 @@
-// @ts-nocheck
 import { RevitClientConnection } from "./SocketClient.js";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+
+type RegistryEntry = Record<string, any>;
+
+interface RevitConnectionTarget extends RegistryEntry {
+    host: string;
+    port: number;
+    source?: string;
+    name?: string;
+    metadata?: RegistryEntry;
+}
+
+interface RevitConnectionOptions {
+    target?: string | number;
+    host?: string;
+    port?: string | number;
+    ports?: string | Array<string | number>;
+    includeRegistry?: boolean;
+    skipLock?: boolean;
+    lockWaitMs?: number;
+    logSocketErrors?: boolean;
+    connectTimeoutMs?: number;
+    timeoutMs?: number;
+}
+
+type RevitConnectionOperation = (
+    revitClient: RevitClientConnection,
+    target: RevitConnectionTarget,
+) => Promise<any> | any;
 
 const DEFAULT_HOST = process.env.REVIT_MCP_HOST || process.env.REVIT_HOST || "localhost";
 const DEFAULT_PORT = parsePort(process.env.REVIT_MCP_PORT || process.env.REVIT_PORT, 8080);
@@ -13,11 +40,11 @@ const LOCK_WAIT_MS = 8000;
 const LOCK_STALE_MS = 10 * 60 * 1000;
 const LOCK_POLL_MS = 250;
 
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number) {
+    return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-function parsePort(value, fallback) {
+function parsePort(value: unknown, fallback?: number): number {
     if (value === undefined || value === null || value === "") {
         return fallback;
     }
@@ -28,7 +55,7 @@ function parsePort(value, fallback) {
     return port;
 }
 
-function parsePortList(value) {
+function parsePortList(value: unknown): number[] {
     if (!value) {
         return [];
     }
@@ -39,21 +66,21 @@ function parsePortList(value) {
         .map((item) => parsePort(item));
 }
 
-function normalizeHost(value) {
+function normalizeHost(value: unknown) {
     return value ? String(value).trim() : DEFAULT_HOST;
 }
 
-function sanitizeLockPart(value) {
+function sanitizeLockPart(value: unknown) {
     return String(value).replace(/[^a-zA-Z0-9_.-]/g, "_");
 }
 
-function lockDirForTarget(target) {
+function lockDirForTarget(target: RevitConnectionTarget) {
     return path.join(LOCK_ROOT, `${sanitizeLockPart(target.host)}-${target.port}.lock`);
 }
 
-function uniqueTargets(targets) {
-    const seen = new Set();
-    const output = [];
+function uniqueTargets(targets: RegistryEntry[]): RevitConnectionTarget[] {
+    const seen = new Set<string>();
+    const output: RevitConnectionTarget[] = [];
     for (const target of targets) {
         const host = normalizeHost(target.host);
         const port = parsePort(target.port);
@@ -71,7 +98,7 @@ function uniqueTargets(targets) {
     return output;
 }
 
-function readRegistry() {
+function readRegistry(): RegistryEntry[] {
     try {
         if (!fs.existsSync(DEFAULT_REGISTRY_PATH)) {
             return [];
@@ -95,7 +122,7 @@ function readRegistry() {
     return [];
 }
 
-function registryTargetMatches(entry, name) {
+function registryTargetMatches(entry: RegistryEntry, name: unknown) {
     const wanted = String(name).toLowerCase();
     const candidates = [
         entry.name,
@@ -110,7 +137,7 @@ function registryTargetMatches(entry, name) {
     return candidates.some((value) => String(value).toLowerCase() === wanted);
 }
 
-function targetFromRegistry(name) {
+function targetFromRegistry(name: unknown): RevitConnectionTarget | null {
     const entry = readRegistry().find((item) => registryTargetMatches(item, name));
     if (!entry) {
         return null;
@@ -124,7 +151,7 @@ function targetFromRegistry(name) {
     };
 }
 
-function targetFromString(value, fallbackHost) {
+function targetFromString(value: unknown, fallbackHost: string): RevitConnectionTarget | null {
     const text = String(value || "").trim();
     if (!text) {
         return null;
@@ -147,7 +174,7 @@ function targetFromString(value, fallbackHost) {
     return null;
 }
 
-export function resolveRevitConnectionTarget(options = {}) {
+export function resolveRevitConnectionTarget(options: RevitConnectionOptions = {}): RevitConnectionTarget {
     const fallbackHost = normalizeHost(options.host);
     const explicitPort = options.port !== undefined && options.port !== null
         ? parsePort(options.port)
@@ -178,7 +205,7 @@ export function resolveRevitConnectionTarget(options = {}) {
     };
 }
 
-export function getCandidateRevitTargets(options = {}) {
+export function getCandidateRevitTargets(options: RevitConnectionOptions = {}) {
     const host = normalizeHost(options.host);
     const targets = [];
     if (options.includeRegistry !== false) {
@@ -209,7 +236,7 @@ export function getCandidateRevitTargets(options = {}) {
     return uniqueTargets(targets);
 }
 
-function removeStaleLock(lockDir) {
+function removeStaleLock(lockDir: string) {
     try {
         const stat = fs.statSync(lockDir);
         if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
@@ -223,7 +250,7 @@ function removeStaleLock(lockDir) {
     }
 }
 
-async function acquireRevitCommandLock(target, waitMs = LOCK_WAIT_MS) {
+async function acquireRevitCommandLock(target: RevitConnectionTarget, waitMs = LOCK_WAIT_MS) {
     const lockDir = lockDirForTarget(target);
     const started = Date.now();
     fs.mkdirSync(LOCK_ROOT, { recursive: true });
@@ -256,7 +283,7 @@ async function acquireRevitCommandLock(target, waitMs = LOCK_WAIT_MS) {
     }
 }
 
-export async function withRevitConnection(operation, options = {}) {
+export async function withRevitConnection(operation: RevitConnectionOperation, options: RevitConnectionOptions = {}) {
     const target = resolveRevitConnectionTarget(options);
     const releaseLock = options.skipLock === true
         ? () => { }
@@ -266,7 +293,7 @@ export async function withRevitConnection(operation, options = {}) {
     });
     try {
         if (!revitClient.isConnected) {
-            await new Promise((resolve, reject) => {
+            await new Promise<void>((resolve, reject) => {
                 let timeoutHandle;
                 const onConnect = () => {
                     revitClient.socket.removeListener("connect", onConnect);
