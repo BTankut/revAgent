@@ -14,29 +14,37 @@ const elementIdSchema = z.union([
     z.string().regex(/^\d+$/),
 ]);
 
+function readField(payload: any, pascalName: string, camelName?: string) {
+    if (!payload || typeof payload !== "object") {
+        return undefined;
+    }
+    const normalizedCamelName = camelName ?? pascalName.charAt(0).toLowerCase() + pascalName.slice(1);
+    return payload[pascalName] ?? payload[normalizedCamelName];
+}
+
 function compactView(view: any) {
     if (!view || typeof view !== "object") return view;
     return {
-        Id: view.Id ?? view.id,
-        Name: view.Name ?? view.name,
-        ViewType: view.ViewType ?? view.viewType,
-        Scale: view.Scale ?? view.scale,
+        Id: readField(view, "Id", "id"),
+        Name: readField(view, "Name", "name"),
+        ViewType: readField(view, "ViewType", "viewType"),
+        Scale: readField(view, "Scale", "scale"),
     };
 }
 
 function compactElement(element: any) {
     if (!element || typeof element !== "object") return element;
     return {
-        Id: element.Id,
-        Name: element.Name,
-        Category: element.Category,
-        ClassName: element.ClassName,
-        FamilyName: element.FamilyName,
-        TypeName: element.TypeName,
-        LevelId: element.LevelId,
-        LevelName: element.LevelName,
-        Mark: element.Mark,
-        HasBoundingBox: element.HasBoundingBox,
+        Id: readField(element, "Id", "id"),
+        Name: readField(element, "Name", "name"),
+        Category: readField(element, "Category", "category"),
+        ClassName: readField(element, "ClassName", "className"),
+        FamilyName: readField(element, "FamilyName", "familyName"),
+        TypeName: readField(element, "TypeName", "typeName"),
+        LevelId: readField(element, "LevelId", "levelId"),
+        LevelName: readField(element, "LevelName", "levelName"),
+        Mark: readField(element, "Mark", "mark"),
+        HasBoundingBox: readField(element, "HasBoundingBox", "hasBoundingBox"),
     };
 }
 
@@ -45,40 +53,40 @@ function compactPlanResult(payload: any) {
         return payload;
     }
     return {
-        Success: payload.Success,
-        Action: payload.Action,
-        Message: payload.Message,
-        Error: payload.Error,
+        Success: readField(payload, "Success", "success"),
+        Action: readField(payload, "Action", "action"),
+        Message: readField(payload, "Message", "message"),
+        Error: readField(payload, "Error", "error"),
         ResponseMode: "compact",
-        PlanMode: payload.PlanMode,
-        PlanCandidateMode: payload.PlanCandidateMode,
-        FallbackUsed: payload.FallbackUsed,
-        VerifiedCandidateCount: payload.VerifiedCandidateCount,
-        RejectedCandidateCount: payload.RejectedCandidateCount,
-        PlanOpenMode: payload.PlanOpenMode,
-        PlanOpenNote: payload.PlanOpenNote,
-        FocusBlocked: payload.FocusBlocked,
-        FocusBlockReason: payload.FocusBlockReason,
-        FocusSuggestion: payload.FocusSuggestion,
-        TargetView: compactView(payload.TargetView),
-        SelectedPlan: compactView(payload.SelectedPlan),
-        SuggestedView: compactView(payload.SuggestedView),
-        ActiveView: compactView(payload.ActiveView),
-        ActiveViewChanged: payload.ActiveViewChanged,
-        ActivePlanMatchesElementLevel: payload.ActivePlanMatchesElementLevel,
-        LevelId: payload.LevelId,
-        LevelName: payload.LevelName,
-        PlanSelectionReason: payload.PlanSelectionReason,
-        Selected: payload.Selected,
-        Zoomed: payload.Zoomed,
-        ZoomMethod: payload.ZoomMethod,
-        FitToScreen: payload.FitToScreen,
-        FitToScreenWarning: payload.FitToScreenWarning,
-        PlanVisibilityWarning: payload.PlanVisibilityWarning,
-        FocusWarning: payload.FocusWarning,
-        Element: compactElement(payload.ElementInfo),
-        PlanCandidatesTotal: payload.PlanCandidatesTotal,
-        PlanCandidatesTruncated: payload.PlanCandidatesTruncated,
+        PlanMode: readField(payload, "PlanMode", "planMode"),
+        PlanCandidateMode: readField(payload, "PlanCandidateMode", "planCandidateMode"),
+        FallbackUsed: readField(payload, "FallbackUsed", "fallbackUsed"),
+        VerifiedCandidateCount: readField(payload, "VerifiedCandidateCount", "verifiedCandidateCount"),
+        RejectedCandidateCount: readField(payload, "RejectedCandidateCount", "rejectedCandidateCount"),
+        PlanOpenMode: readField(payload, "PlanOpenMode", "planOpenMode"),
+        PlanOpenNote: readField(payload, "PlanOpenNote", "planOpenNote"),
+        FocusBlocked: readField(payload, "FocusBlocked", "focusBlocked"),
+        FocusBlockReason: readField(payload, "FocusBlockReason", "focusBlockReason"),
+        FocusSuggestion: readField(payload, "FocusSuggestion", "focusSuggestion"),
+        TargetView: compactView(readField(payload, "TargetView", "targetView")),
+        SelectedPlan: compactView(readField(payload, "SelectedPlan", "selectedPlan")),
+        SuggestedView: compactView(readField(payload, "SuggestedView", "suggestedView")),
+        ActiveView: compactView(readField(payload, "ActiveView", "activeView")),
+        ActiveViewChanged: readField(payload, "ActiveViewChanged", "activeViewChanged"),
+        ActivePlanMatchesElementLevel: readField(payload, "ActivePlanMatchesElementLevel", "activePlanMatchesElementLevel"),
+        LevelId: readField(payload, "LevelId", "levelId"),
+        LevelName: readField(payload, "LevelName", "levelName"),
+        PlanSelectionReason: readField(payload, "PlanSelectionReason", "planSelectionReason"),
+        Selected: readField(payload, "Selected", "selected"),
+        Zoomed: readField(payload, "Zoomed", "zoomed"),
+        ZoomMethod: readField(payload, "ZoomMethod", "zoomMethod"),
+        FitToScreen: readField(payload, "FitToScreen", "fitToScreen"),
+        FitToScreenWarning: readField(payload, "FitToScreenWarning", "fitToScreenWarning"),
+        PlanVisibilityWarning: readField(payload, "PlanVisibilityWarning", "planVisibilityWarning"),
+        FocusWarning: readField(payload, "FocusWarning", "focusWarning"),
+        Element: compactElement(readField(payload, "ElementInfo", "elementInfo")),
+        PlanCandidatesTotal: readField(payload, "PlanCandidatesTotal", "planCandidatesTotal"),
+        PlanCandidatesTruncated: readField(payload, "PlanCandidatesTruncated", "planCandidatesTruncated"),
     };
 }
 
