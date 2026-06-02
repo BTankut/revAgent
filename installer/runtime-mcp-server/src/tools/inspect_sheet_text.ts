@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionOptionsFromArgs,
@@ -393,7 +394,7 @@ catch (Exception ex)
 }`;
 }
 
-export function registerInspectSheetTextTool(server) {
+export function registerInspectSheetTextTool(server: ToolServer) {
     server.tool("inspect_sheet_text", "[SHEET_TEXT_INSPECTION_READ_ONLY] Read-only bounded search of DrawingSheet text notes and placed schedule instances. Prefer this over generic send_code_to_revit for sheet text searches in large projects.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

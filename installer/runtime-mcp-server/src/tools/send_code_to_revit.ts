@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
 import {
@@ -55,7 +56,7 @@ function findErrorLikeResult(value) {
     return null;
 }
 
-export function registerSendCodeToRevitTool(server) {
+export function registerSendCodeToRevitTool(server: ToolServer) {
     server.tool("send_code_to_revit", "Send C# code to Revit for execution. The code will be inserted into a template with access to the Revit Document and parameters. Your code should be written to work within the Execute method of the template.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

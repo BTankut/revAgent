@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionTargetSchema,
@@ -7,7 +8,7 @@ import {
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
 
-export function registerCloseViewTool(server) {
+export function registerCloseViewTool(server: ToolServer) {
     server.tool("close_view", "Close an open Revit UI view tab by id or unique name without opening a transaction. If the target is active, another open view is activated first.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

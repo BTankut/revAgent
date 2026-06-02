@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionTargetSchema,
@@ -12,7 +13,7 @@ const elementIdSchema = z.union([
     z.string().regex(/^\d+$/),
 ]);
 
-export function registerSectionBoxElementsTool(server) {
+export function registerSectionBoxElementsTool(server: ToolServer) {
     server.tool("section_box_elements", "Apply a 3D section box around Revit elements, optionally select them, and zoom to them. Requires a 3D view; if viewId/viewName is supplied, that view is activated first.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

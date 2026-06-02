@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     getMemberDetails,
@@ -64,7 +65,7 @@ async function resolveSymbol(revitVersion, symbol) {
     throw new Error(`Unsupported mode: ${symbol.mode}`);
 }
 
-export function registerResolveApiSymbolsBulkTool(server) {
+export function registerResolveApiSymbolsBulkTool(server: ToolServer) {
     server.tool("resolve_api_symbols_bulk", "Resolve multiple Revit API searches/types/members/namespaces in one call, preserving input order.", {
         revit_version: z.string().min(1).describe("Revit version to resolve against, e.g. 2022."),
         symbols: z.array(symbolSchema).min(1).max(25).describe("Symbols to resolve in order."),

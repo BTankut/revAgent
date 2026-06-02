@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionTargetSchema,
@@ -12,7 +13,7 @@ const elementIdSchema = z.union([
     z.string().regex(/^\d+$/),
 ]);
 
-export function registerCreate3DViewForElementsTool(server) {
+export function registerCreate3DViewForElementsTool(server: ToolServer) {
     server.tool("create_3d_view_for_elements", "[LIVE_VIEW_NAVIGATION_PRIMITIVE] Create or reuse a 3D Revit view for elements, optionally apply or clear a section box, activate the view, and focus/select the elements. Use this when the user wants to see, open, zoom to, or inspect elements live inside Revit. This can modify the document because views and section boxes are project data.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

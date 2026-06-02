@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionTargetSchema,
@@ -7,7 +8,7 @@ import {
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
 
-export function registerListOpenViewsTool(server) {
+export function registerListOpenViewsTool(server: ToolServer) {
     server.tool("list_open_views", "List Revit UI view tabs currently open in the active document.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

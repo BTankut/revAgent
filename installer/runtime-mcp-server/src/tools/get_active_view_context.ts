@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionOptionsFromArgs,
@@ -187,7 +188,7 @@ catch (Exception ex)
 }`;
 }
 
-export function registerGetActiveViewContextTool(server) {
+export function registerGetActiveViewContextTool(server: ToolServer) {
     server.tool("get_active_view_context", "Read-only active view context. Handles model views and DrawingSheet views; sheets return placed viewport/view data plus scheduleSheetInstances instead of pretending MEP model elements are directly visible.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

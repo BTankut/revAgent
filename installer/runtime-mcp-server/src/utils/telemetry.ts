@@ -19,6 +19,7 @@ import {
     getLiveWriteHealth,
     writeJsonFile,
 } from "./telemetryWriters.js";
+import type { ToolServer } from "../tools/types.js";
 
 export { sanitizeTelemetryPathSegment } from "./runtimeIdentity.js";
 export { flushLiveWritesForTests } from "./telemetryWriters.js";
@@ -1342,7 +1343,7 @@ function shouldRecordMcpTool(name: string) {
     return true;
 }
 
-export function wrapServerWithTelemetry(server: any) {
+export function wrapServerWithTelemetry(server: ToolServer): ToolServer {
     return {
         ...server,
         tool(name: string, description: any, schema: any, handler: any) {
@@ -1437,5 +1438,5 @@ export function wrapServerWithTelemetry(server: any) {
 
             return server.tool(name, actualDescription, actualSchema, wrappedHandler);
         },
-    };
+    } as ToolServer;
 }

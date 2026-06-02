@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionTargetSchema,
@@ -111,7 +112,7 @@ function summarizeThreeD(threeDResult) {
     };
 }
 
-export function registerShowElementInPlanAnd3DTool(server) {
+export function registerShowElementInPlanAnd3DTool(server: ToolServer) {
     server.tool("show_element_in_plan_and_3d", "[LIVE_VIEW_WORKFLOW_WRAPPER] Safely find or use one Revit element, show it in an existing plan, then optionally call create_3d_view_for_elements to create/reuse a focused 3D view. Use this when the user wants a combined plan plus 3D live Revit view workflow. Ambiguous search results are rejected by default for large-project safety.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

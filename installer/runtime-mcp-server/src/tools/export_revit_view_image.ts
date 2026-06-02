@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -53,7 +54,7 @@ function csharpNullableInt(value) {
   return String(Math.trunc(parsed));
 }
 
-export function registerExportRevitViewImageTool(server) {
+export function registerExportRevitViewImageTool(server: ToolServer) {
   server.tool(
     "export_revit_view_image",
     "[VISUAL_ARTIFACT_EXPORT] Export the active Revit view, DrawingSheet, Schedule view, or a selected view/sheet to PNG/JPEG/TIFF/BMP/TARGA using Document.ExportImage. Use this when the user asks for a raw image file, report/evidence screenshot, schedule/sheet export, or LLM visual artifact from an existing view. Ordinary view/sheet exports do not modify Revit. Direct schedule export creates a temporary sheet, exports it, and deletes that sheet before the wrapper transaction commits.",

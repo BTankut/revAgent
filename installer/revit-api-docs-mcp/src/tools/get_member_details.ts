@@ -1,7 +1,8 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import { getMemberDetails } from "../utils/docIndex.js";
 
-export function registerGetMemberDetailsTool(server) {
+export function registerGetMemberDetailsTool(server: ToolServer) {
     server.tool("get_member_details", "Get detailed information about a Revit API member, including signature, parameters, and XML documentation.", {
         member_name: z.string().min(1).describe("Member identifier. Supports XML doc IDs, full member names like Autodesk.Revit.DB.Wall.Create, or simple names like Create."),
         type_name: z.string().optional().describe("Optional declaring type filter, such as Autodesk.Revit.DB.Wall."),

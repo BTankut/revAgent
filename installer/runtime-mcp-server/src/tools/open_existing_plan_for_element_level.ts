@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionTargetSchema,
@@ -81,7 +82,7 @@ function compactPlanResult(payload) {
     };
 }
 
-export function registerOpenExistingPlanForElementLevelTool(server) {
+export function registerOpenExistingPlanForElementLevelTool(server: ToolServer) {
     server.tool("open_existing_plan_for_element_level", "Open the best existing non-template plan view for an element's level, then select and zoom to the element. This does not create a new view.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionOptionsFromArgs,
@@ -145,7 +146,7 @@ catch (Exception ex)
 }`;
 }
 
-export function registerGetRevitSessionContextTool(server) {
+export function registerGetRevitSessionContextTool(server: ToolServer) {
     server.tool("get_revit_session_context", "Read-only Revit session summary: version/build/culture/document state/active view/MEP counts/link counts/selection IDs.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

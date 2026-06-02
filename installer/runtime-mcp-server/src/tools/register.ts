@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { registerSendCodeToRevitTool } from "./send_code_to_revit.js";
 import { registerSendCodeToRevitSafeTool } from "./send_code_to_revit_safe.js";
 import { registerGetRevitSessionContextTool } from "./get_revit_session_context.js";
@@ -26,7 +27,7 @@ import { registerListRevitInstancesTool } from "./list_revit_instances.js";
 import { registerGetRevitMcpStatusTool } from "./get_revit_mcp_status.js";
 import { wrapServerWithTelemetry } from "../utils/telemetry.js";
 
-export async function registerTools(server) {
+export async function registerTools(server: ToolServer) {
     const telemetryServer = wrapServerWithTelemetry(server);
     registerListRevitInstancesTool(telemetryServer);
     registerGetRevitMcpStatusTool(telemetryServer);

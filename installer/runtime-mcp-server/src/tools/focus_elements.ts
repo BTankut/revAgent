@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionTargetSchema,
@@ -12,7 +13,7 @@ const elementIdSchema = z.union([
     z.string().regex(/^\d+$/),
 ]);
 
-export function registerFocusElementsTool(server) {
+export function registerFocusElementsTool(server: ToolServer) {
     server.tool("focus_elements", "Select and zoom to Revit elements in the active view or in a requested view tab. This is a UI operation and does not open a Revit transaction.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

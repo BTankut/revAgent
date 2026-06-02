@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionOptionsFromArgs,
@@ -24,7 +25,7 @@ function formatSafetyBlock(error, writePatterns, safetyReason) {
     }));
 }
 
-export function registerSendCodeToRevitSafeTool(server) {
+export function registerSendCodeToRevitSafeTool(server: ToolServer) {
     server.tool("send_code_to_revit_safe", "Run Revit C# through the existing dynamic execution command with read/preview safety checks, JSON result parsing, and output trimming. This MVP does not commit writes.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

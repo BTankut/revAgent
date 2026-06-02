@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionTargetSchema,
@@ -7,7 +8,7 @@ import {
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
 
-export function registerGetUiStateTool(server) {
+export function registerGetUiStateTool(server: ToolServer) {
     server.tool("get_ui_state", "Read the current Revit UI state: active view, open views, selected element ids/summaries, and document modifiable/read-only status.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

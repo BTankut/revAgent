@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     getCandidateRevitTargets,
@@ -137,7 +138,7 @@ async function probeTarget(target, timeoutMs) {
     }
 }
 
-export function registerListRevitInstancesTool(server) {
+export function registerListRevitInstancesTool(server: ToolServer) {
     server.tool("list_revit_instances", "Discover reachable Revit MCP socket instances by probing configured ports. Use this before targeting a specific Revit instance.", {
         host: z.string().optional().describe("Host to scan. Defaults to REVIT_MCP_HOST or localhost."),
         ports: z.array(z.union([z.number(), z.string()])).optional().describe("Ports to scan. Defaults to REVIT_MCP_PORTS, or 8080-8085."),

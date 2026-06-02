@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionOptionsFromArgs,
@@ -498,7 +499,7 @@ catch (Exception ex)
 }`;
 }
 
-export function registerSetScheduleCellsByTextTool(server) {
+export function registerSetScheduleCellsByTextTool(server: ToolServer) {
     server.tool("set_schedule_cells_by_text", "[PRODUCTION_SCHEDULE_CELL_WRITE_BY_TEXT] Finds bounded schedule rows by sheet/schedule filters and row text, then previews or commits a target column update with readback verification. Prefer this over generic send_code_to_revit for repeated schedule row text writes.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

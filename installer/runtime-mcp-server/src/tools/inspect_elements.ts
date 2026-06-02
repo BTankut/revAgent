@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionOptionsFromArgs,
@@ -214,7 +215,7 @@ catch (Exception ex)
 }`;
 }
 
-export function registerInspectElementsTool(server) {
+export function registerInspectElementsTool(server: ToolServer) {
     server.tool("inspect_elements", "Read-only inspection for selected or targeted Revit elements: class/category/type/level/key parameters/connector summary.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

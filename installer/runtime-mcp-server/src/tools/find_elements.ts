@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionTargetSchema,
@@ -44,7 +45,7 @@ function addWriteSafetyGuidance(payload) {
     return payload;
 }
 
-export function registerFindElementsTool(server) {
+export function registerFindElementsTool(server: ToolServer) {
     server.tool("find_elements", "Find Revit elements by category and text across element name, family, type, mark, comments, and id. Returns match score/confidence/reason fields so ambiguous large-project results can be disambiguated before writes.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

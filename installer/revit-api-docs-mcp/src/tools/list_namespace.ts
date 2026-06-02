@@ -1,7 +1,8 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import { listNamespace } from "../utils/docIndex.js";
 
-export function registerListNamespaceTool(server) {
+export function registerListNamespaceTool(server: ToolServer) {
     server.tool("list_namespace", "List types and child namespaces under a Revit API namespace.", {
         namespace: z.string().min(1).describe("Namespace to inspect, such as Autodesk.Revit.DB or Autodesk.Revit.UI.Selection."),
         revit_version: z.string().optional().describe("Optional Revit version. Defaults to 2022."),

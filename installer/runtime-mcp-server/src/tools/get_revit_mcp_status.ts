@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import path from "node:path";
 import { z } from "zod";
 import { withRevitConnection } from "../utils/ConnectionManager.js";
@@ -47,7 +48,7 @@ function getRuntimeIdentity() {
     };
 }
 
-export function registerGetRevitMcpStatusTool(server) {
+export function registerGetRevitMcpStatusTool(server: ToolServer) {
     server.tool("get_revit_mcp_status", "Read the Revit MCP task status without waiting behind the active Revit command lock. Includes runtimeVersion, schemaVersion, toolSurfaceVersion, processStartedAtUtc, buildTimestampUtc, buildHash, and bridge resultContractVersion when available so agents can verify the active runtime identity and bridge contract.", {
         ...connectionTargetSchema(z),
         includeRecentTasks: z.boolean().optional().describe("Include recent completed task records. Defaults true, with a compact limit."),

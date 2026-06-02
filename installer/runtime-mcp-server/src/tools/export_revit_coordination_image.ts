@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
@@ -63,7 +64,7 @@ export function resolveAutoTargetVisualStyle(intent) {
   return "technical_report";
 }
 
-export function registerExportRevitCoordinationImageTool(server) {
+export function registerExportRevitCoordinationImageTool(server: ToolServer) {
   server.tool(
     "export_revit_coordination_image",
     "[VISUAL_ARTIFACT_EXPORT_ONLY] Create or reuse a visual QA 3D view, optionally section-box target elements, apply a selectable target visual style, and export an image artifact. Auto style is report-friendly and never selects qa_high_contrast by itself. Use qa_high_contrast explicitly for debug/LLM evidence, technical_report or outline_only for report-style evidence, and raw when the target must keep native appearance. Use this when the user asks for PNG/JPEG/report/LLM visual evidence. Do not use this as the primary tool for live view navigation, selected-element zoom, or opening an element in a Revit view; for that workflow use create_3d_view_for_elements or show_element_in_plan_and_3d, then optionally export the active view with export_revit_view_image. It only writes review view settings; it does not create or modify MEP model elements. Set cleanupAfterExport=true when a newly created review view should be deleted after the image file is produced.",

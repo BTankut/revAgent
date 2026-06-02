@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionOptionsFromArgs,
@@ -588,7 +589,7 @@ catch (Exception ex)
 }`;
 }
 
-export function registerSetElementParameterTool(server) {
+export function registerSetElementParameterTool(server: ToolServer) {
     server.tool("set_element_parameter", "[PRODUCTION_PARAMETER_WRITE] Safely set or clear one Revit element parameter after exact inspect_parameter_schema-style identity resolution. Never writes by visible display name alone: duplicate display names, read-only parameters, identity mismatch, unsupported clear/no-value attempts, and unapproved type-parameter writes are blocked before commit. Defaults to dryRun; use mode=commit only for an explicitly confirmed write, then the tool reads the parameter back for verification.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

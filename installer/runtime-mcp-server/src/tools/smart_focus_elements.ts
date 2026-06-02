@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionTargetSchema,
@@ -92,7 +93,7 @@ function compactSmartFocusPayload(payload) {
     };
 }
 
-export function registerSmartFocusElementsTool(server) {
+export function registerSmartFocusElementsTool(server: ToolServer) {
     server.tool("smart_focus_elements", "[LIVE_VIEW_WORKFLOW_WRAPPER] Focus Revit elements without triggering Revit's modal closed-view search. It can try the active/requested view first, then open the best existing same-level plan, and optionally create/reuse a 3D view. Use this for live Revit focus/navigation, not image artifact export.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

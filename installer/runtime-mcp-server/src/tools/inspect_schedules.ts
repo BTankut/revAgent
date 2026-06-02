@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionOptionsFromArgs,
@@ -320,7 +321,7 @@ catch (Exception ex)
 }`;
 }
 
-export function registerInspectSchedulesTool(server) {
+export function registerInspectSchedulesTool(server: ToolServer) {
     server.tool("inspect_schedules", "[SCHEDULE_INSPECTION_READ_ONLY] Read-only Revit schedule discovery and bounded cell inspection for large models. Prefer this over generic send_code_to_revit when finding schedules or reading schedule cells.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

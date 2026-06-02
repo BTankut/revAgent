@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionTargetSchema,
@@ -7,7 +8,7 @@ import {
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
 
-export function registerActivateViewTool(server) {
+export function registerActivateViewTool(server: ToolServer) {
     server.tool("activate_view", "Activate an existing Revit view tab by id or unique name without opening a transaction. Supports plans, 3D views, sheets, schedules, legends, drafting views, sections, and elevations.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

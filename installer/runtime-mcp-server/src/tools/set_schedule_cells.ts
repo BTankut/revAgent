@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionOptionsFromArgs,
@@ -311,7 +312,7 @@ catch (Exception ex)
 }`;
 }
 
-export function registerSetScheduleCellsTool(server) {
+export function registerSetScheduleCellsTool(server: ToolServer) {
     server.tool("set_schedule_cells", "[PRODUCTION_SCHEDULE_CELL_WRITE] Writes exact Revit schedule cells by scheduleId, section, row, and column. Defaults to dryRun, blocks mismatched expectedCurrentText, and verifies committed values.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),

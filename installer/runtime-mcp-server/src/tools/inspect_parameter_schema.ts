@@ -1,3 +1,4 @@
+import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
     connectionOptionsFromArgs,
@@ -276,7 +277,7 @@ function withDuplicateDisplayNameWarnings(payload, args) {
     };
 }
 
-export function registerInspectParameterSchemaTool(server) {
+export function registerInspectParameterSchemaTool(server: ToolServer) {
     server.tool("inspect_parameter_schema", "Read-only parameter schema inspection for selected ids or a category sample: user-facing BIP display label/id, raw enum alias, storage type, unit type, shared/read-only flags, raw and display values.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
