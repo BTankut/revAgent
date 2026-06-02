@@ -146,8 +146,8 @@ the normal compiler path.
 
 `scripts/test-typescript-nocheck-policy.ps1` enforces the strict compiler
 settings and the zero-allowlist rule. `scripts/test-mcp-build-payload-freshness.ps1`
-and the NAS publish preflight then verify that committed `build/` payloads still
-match source.
+and the NAS publish preflight then verify that committed `build/` payloads and
+the Revit payload manifest still match source.
 
 ## Runtime Transport And Status
 
@@ -348,4 +348,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -Revit
 ```
 
 The full payload-refresh build without `-SkipPayloadCopy` should be reserved for
-intentional payload update work.
+intentional payload update work; it also refreshes
+`installer/revit-payload-manifest.json`.

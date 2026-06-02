@@ -106,7 +106,8 @@ dotnet build .\src\revit-plugin\RevitMCPCommandSet\RevitMCPCommandSet.csproj -c 
 The stable shared bridge payload under `installer/command-payload` is refreshed
 by `scripts/build-revit-plugin.ps1`. When the command set changes, commit both
 the refreshed `installer/command-payload` copy and the installed Revit
-command-set payload copy before release validation.
+command-set payload copy, plus `installer/revit-payload-manifest.json`, before
+release validation.
 The smoke tests also assert that the Revit plug-in source remains English-only
 and that the command-set source surface does not grow beyond the registered
 production bridge commands.
@@ -146,8 +147,10 @@ should be used when shared bridge command payload behavior changes.
 
 `scripts/test-mcp-build-payload-freshness.ps1` recompiles the MCP packages into
 a temporary location and compares the output with committed `build/` payloads.
-It also checks Revit payload presence/freshness. `scripts/test-all.ps1` and the
-NAS publish preflight run this gate before release packaging.
+It also checks Revit payload freshness through
+`installer/revit-payload-manifest.json`, using source Git blob SHAs instead of
+file mtimes. `scripts/test-all.ps1` and the NAS publish preflight run this gate
+before release packaging.
 
 `installer/lib` contains shared PowerShell helper modules for updater/installer
 behavior. `config/revit-versions.json` is the central Revit version matrix.

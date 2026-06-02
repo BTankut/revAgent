@@ -32,6 +32,7 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
 Import-Module (Join-Path $RepoRoot "installer\lib\RevitMcp.RevitVersions.psm1") -Force
+Import-Module (Join-Path $RepoRoot "scripts\RevitPayloadManifest.psm1") -Force
 $revitVersionConfig = Get-RevitMcpVersionConfig -Version $RevitVersion -RepoRoot $RepoRoot
 
 function Resolve-DotnetSdk {
@@ -166,6 +167,7 @@ if (-not (Test-Path -LiteralPath $builtCommandSetDll -PathType Leaf)) {
 }
 
 if (-not $SkipPayloadCopy) {
+    Assert-NoUntrackedRevitPayloadSourceInputs -RepoRoot $RepoRoot -RevitVersion $RevitVersion
     Assert-RevitMcpInstallerPayloadAvailable -Version $RevitVersion -RepoRoot $RepoRoot
     $payloadDir = Join-Path $RepoRoot ([string]$revitVersionConfig.payload.installerPluginPath)
     if (-not (Test-Path -LiteralPath $payloadDir -PathType Container)) {
@@ -238,7 +240,12 @@ if (-not $SkipPayloadCopy) {
         -CommandJsonPath (Join-Path $commandSetRoot "command.json") `
         -Version $RevitVersion
 
+    $manifestPath = Write-RevitPayloadManifest `
+        -RepoRoot $RepoRoot `
+        -RevitVersion $RevitVersion `
+        -Configuration $configuration
     Write-Host "Installer payload refreshed: $payloadDir" -ForegroundColor Green
+    Write-Host "Revit payload manifest refreshed: $manifestPath" -ForegroundColor Green
 }
 
 Write-Host "Built DLL: $builtDll" -ForegroundColor Green

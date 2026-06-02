@@ -17,9 +17,10 @@ remain exact implementation, tool, package, manifest, and path identifiers.
 - `AGENTS.md`: workstation-wide coordination rules copied during install
 - `src/revit-plugin/`: Revit add-in source code
 - `config/revit-versions.json`: central Revit version matrix and payload gate
-- `scripts/build-revit-plugin.ps1`: builds the add-in source and refreshes the installer payload binaries
+- `scripts/build-revit-plugin.ps1`: builds the add-in source and refreshes the installer payload binaries and manifest
 - `installer/revit-plugin/`: bundled Revit add-in payload
 - `installer/command-payload/`: command set DLL and manifest backup
+- `installer/revit-payload-manifest.json`: source-to-payload freshness manifest for Revit DLL payloads
 - `installer/runtime-mcp-server/`: TypeScript source and bundled local runtime MCP server build for live Revit execution
 - `dashboard/`: read-only live dashboard server and browser UI for office monitoring
 - `docs/PLATFORM_ARCHITECTURE.md`: current platform, bridge, runtime, telemetry, dashboard, and deployment architecture
@@ -419,7 +420,8 @@ npm run test
 Use `scripts\test-all.ps1` to run the non-Revit checks in one command. It
 includes installer smoke, usage intelligence, live dashboard helpers,
 `@ts-nocheck` policy enforcement, both MCP package test suites, and committed
-MCP/Revit payload freshness checks.
+MCP/Revit payload freshness checks. Revit payload freshness is manifest-based,
+so ordinary checkout or merge mtimes do not force a payload refresh.
 The runtime MCP test suite includes bridge result contract characterization
 checks for dynamic-result double encoding, central C# camelCase response
 helpers, `resultContractVersion`, and idempotent legacy normalization.
