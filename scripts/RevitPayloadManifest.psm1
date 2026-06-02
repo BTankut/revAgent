@@ -39,7 +39,9 @@ function Invoke-RevitPayloadGit {
         throw "git $($Arguments -join ' ') failed. $message"
     }
 
-    return @($output | ForEach-Object { [string]$_ })
+    return @($output |
+        Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } |
+        ForEach-Object { [string]$_ })
 }
 
 function Get-RevitPayloadManifestRelativePath {
@@ -133,7 +135,7 @@ function Get-UntrackedRevitPayloadSourceInputs {
     )
 
     $sourceRootGit = ConvertTo-RevitPayloadGitPath -Path ([string]$Group.SourceRoot)
-    $statusLines = @(Invoke-RevitPayloadGit -RepoRoot $RepoRoot -Arguments @("status", "--porcelain", "--", $sourceRootGit))
+    $statusLines = @(Invoke-RevitPayloadGit -RepoRoot $RepoRoot -Arguments @("status", "--porcelain", "--untracked-files=all", "--", $sourceRootGit))
     $untracked = @()
     foreach ($line in $statusLines) {
         if (-not $line.StartsWith("?? ")) {
@@ -363,8 +365,16 @@ function Assert-RevitPayloadManifestFresh {
         throw "Revit payload freshness manifest is missing: $script:RevitPayloadManifestRelativePath. $refreshMessage"
     }
 
-    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-    if ([int]$manifest.schemaVersion -ne $script:RevitPayloadManifestSchemaVersion) {
+    try {
+        $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Revit payload freshness manifest is empty or invalid JSON: $script:RevitPayloadManifestRelativePath. $($_.Exception.Message) $refreshMessage"
+    }
+    if ($null -eq $manifest) {
+        throw "Revit payload freshness manifest is empty or invalid JSON: $script:RevitPayloadManifestRelativePath. $refreshMessage"
+    }
+    if ($null -eq $manifest.schemaVersion -or [int]$manifest.schemaVersion -ne $script:RevitPayloadManifestSchemaVersion) {
         throw "Unsupported Revit payload manifest schemaVersion '$($manifest.schemaVersion)'. $refreshMessage"
     }
     if ([string]$manifest.kind -ne "revit-payload-freshness") {
