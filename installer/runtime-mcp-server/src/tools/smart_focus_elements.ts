@@ -126,9 +126,9 @@ export function registerSmartFocusElementsTool(server: ToolServer) {
         try {
             const options = executionOptionsFromArgs(args, "Smart focus Revit elements");
             const mode = args.mode || "activeThenElementLevelPlan";
-            let activeFocus = null;
-            let planFocus = null;
-            let threeD = null;
+            let activeFocus: JsonObject | null = null;
+            let planFocus: JsonObject | null = null;
+            let threeD: JsonObject | null = null;
 
             if (mode !== "elementLevelPlan") {
                 activeFocus = unwrapResponse(await sendRevitCommand("focus_elements", {

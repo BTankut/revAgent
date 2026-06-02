@@ -154,7 +154,7 @@ export function registerListRevitInstancesTool(server: ToolServer) {
             ports: args.ports,
             includeRegistry: args.includeRegistry,
         });
-        const results = [];
+        const results: JsonObject[] = [];
         for (const target of targets) {
             const result = await probeTarget(target, timeoutMs);
             if (result.reachable || args.includeUnreachable) {

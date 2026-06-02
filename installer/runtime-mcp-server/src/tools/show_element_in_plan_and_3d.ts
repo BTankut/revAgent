@@ -144,9 +144,9 @@ export function registerShowElementInPlanAnd3DTool(server: ToolServer) {
     }, async (args) => {
         try {
             const options = executionOptionsFromArgs(args, "Show element in plan and 3D");
-            let chosenElementId = args.elementId;
-            let chosenElement = null;
-            let findResult = null;
+            let chosenElementId: string | number | undefined = args.elementId;
+            let chosenElement: JsonObject | null = null;
+            let findResult: JsonObject | null = null;
 
             if (!chosenElementId) {
                 if (!args.query && (!args.categoryNames || args.categoryNames.length === 0)) {
@@ -177,7 +177,7 @@ export function registerShowElementInPlanAnd3DTool(server: ToolServer) {
                     });
                 }
 
-                const candidates = Array.isArray(findResult.Elements) ? findResult.Elements : [];
+                const candidates: JsonObject[] = Array.isArray(findResult.Elements) ? findResult.Elements : [];
                 if (candidates.length === 0) {
                     return formatJsonContent({
                         Success: false,
@@ -198,8 +198,25 @@ export function registerShowElementInPlanAnd3DTool(server: ToolServer) {
                     });
                 }
 
-                chosenElement = candidates[0];
+                chosenElement = candidates[0] || null;
+                if (!chosenElement) {
+                    return formatJsonContent({
+                        Success: false,
+                        Action: "show_element_in_plan_and_3d",
+                        Error: "No usable element candidate was returned.",
+                        Find: findResult,
+                    });
+                }
                 chosenElementId = chosenElement.Id;
+            }
+
+            if (chosenElementId === undefined || chosenElementId === null) {
+                return formatJsonContent({
+                    Success: false,
+                    Action: "show_element_in_plan_and_3d",
+                    Error: "No element id was resolved.",
+                    Find: findResult,
+                });
             }
 
             const planResult = unwrapResponse(await sendRevitCommand("open_existing_plan_for_element_level", {
@@ -229,7 +246,7 @@ export function registerShowElementInPlanAnd3DTool(server: ToolServer) {
                 });
             }
 
-            let threeDResult = null;
+            let threeDResult: JsonObject | null = null;
             if (args.create3d !== false) {
                 threeDResult = unwrapResponse(await sendRevitCommand("create_3d_view_for_elements", {
                     elementIds: [chosenElementId],

@@ -15,7 +15,10 @@ function sleep(ms) {
 }
 function parsePort(value, fallback) {
     if (value === undefined || value === null || value === "") {
-        return fallback;
+        if (fallback !== undefined) {
+            return fallback;
+        }
+        throw new Error("Invalid Revit MCP port: empty value");
     }
     const port = Number.parseInt(String(value), 10);
     if (!Number.isFinite(port) || port < 1 || port > 65535) {

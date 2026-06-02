@@ -178,8 +178,24 @@ export function registerShowElementInPlanAnd3DTool(server) {
                         Candidates: candidates,
                     });
                 }
-                chosenElement = candidates[0];
+                chosenElement = candidates[0] || null;
+                if (!chosenElement) {
+                    return formatJsonContent({
+                        Success: false,
+                        Action: "show_element_in_plan_and_3d",
+                        Error: "No usable element candidate was returned.",
+                        Find: findResult,
+                    });
+                }
                 chosenElementId = chosenElement.Id;
+            }
+            if (chosenElementId === undefined || chosenElementId === null) {
+                return formatJsonContent({
+                    Success: false,
+                    Action: "show_element_in_plan_and_3d",
+                    Error: "No element id was resolved.",
+                    Find: findResult,
+                });
             }
             const planResult = unwrapResponse(await sendRevitCommand("open_existing_plan_for_element_level", {
                 elementId: chosenElementId,

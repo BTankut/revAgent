@@ -248,7 +248,7 @@ function withDuplicateDisplayNameWarnings(payload: any, args: JsonObject) {
             if (!byDisplayName.has(key)) {
                 byDisplayName.set(key, { name, matches: [] });
             }
-            byDisplayName.get(key).matches.push(parameter);
+            byDisplayName.get(key)?.matches.push(parameter);
         }
 
         for (const group of byDisplayName.values()) {

@@ -27,8 +27,12 @@ async function resolveSymbol(revitVersion, symbol) {
         if (!symbol.type_name && !symbol.query) {
             throw new Error("type mode requires type_name or query");
         }
+        const typeName = symbol.type_name || symbol.query;
+        if (!typeName) {
+            throw new Error("type mode requires type_name or query");
+        }
         return await getTypeDetails({
-            typeName: symbol.type_name || symbol.query,
+            typeName,
             revitVersion,
             includeInherited: symbol.include_inherited,
         });
@@ -37,8 +41,12 @@ async function resolveSymbol(revitVersion, symbol) {
         if (!symbol.member_name && !symbol.query) {
             throw new Error("member mode requires member_name or query");
         }
+        const memberName = symbol.member_name || symbol.query;
+        if (!memberName) {
+            throw new Error("member mode requires member_name or query");
+        }
         return await getMemberDetails({
-            memberName: symbol.member_name || symbol.query,
+            memberName,
             typeName: symbol.type_name,
             kind: symbol.kind,
             revitVersion,
@@ -48,8 +56,12 @@ async function resolveSymbol(revitVersion, symbol) {
         if (!symbol.namespace && !symbol.query) {
             throw new Error("namespace mode requires namespace or query");
         }
+        const namespaceName = symbol.namespace || symbol.query;
+        if (!namespaceName) {
+            throw new Error("namespace mode requires namespace or query");
+        }
         return await listNamespace({
-            namespaceName: symbol.namespace || symbol.query,
+            namespaceName,
             revitVersion,
             includeChildNamespaces: symbol.include_child_namespaces,
         });

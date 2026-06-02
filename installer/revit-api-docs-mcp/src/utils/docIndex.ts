@@ -248,7 +248,10 @@ function hydrateIndex(raw: RawIndex): HydratedIndex {
         if (!namespaces.has(type.namespace)) {
             namespaces.set(type.namespace, { name: type.namespace, types: [] });
         }
-        namespaces.get(type.namespace).types.push(hydratedType);
+        const namespaceEntry = namespaces.get(type.namespace);
+        if (namespaceEntry) {
+            namespaceEntry.types.push(hydratedType);
+        }
         searchItems.push({
             id: type.id,
             kind: "type",
@@ -296,7 +299,7 @@ function hydrateIndex(raw: RawIndex): HydratedIndex {
     const namespaceItems = [...namespaces.values()].map((entry) => ({
         id: `N:${entry.name}`,
         kind: "namespace",
-        name: entry.name.split(".").at(-1),
+        name: entry.name.split(".").at(-1) ?? entry.name,
         fullName: entry.name,
         namespace: entry.name,
         assembly: uniqueBy(entry.types, (type) => type.assembly).map((type) => type.assembly).join(", "),
@@ -323,7 +326,10 @@ async function loadIndex(options: IndexOptions = {}): Promise<HydratedIndex> {
     const cacheKey = `${config.revitVersion}|${config.rootPath}`;
     const stale = await cacheIsStale(config);
     if (!stale && INDEX_CACHE.has(cacheKey)) {
-        return INDEX_CACHE.get(cacheKey);
+        const cached = INDEX_CACHE.get(cacheKey);
+        if (cached) {
+            return cached;
+        }
     }
     if (stale) {
         await runIndexBuilder(config);
@@ -583,7 +589,7 @@ function groupMembers(members: ApiMember[]): MemberGroups {
     return groups;
 }
 
-function resolveUniqueType(index: HydratedIndex, typeName: string) {
+function resolveUniqueType(index: HydratedIndex, typeName: string): { ambiguous: true; matches: ApiSymbol[] } | { ambiguous: false; type: ApiType } {
     const matches = findTypeMatches(index, typeName);
     if (matches.length === 0) {
         throw new Error(`No type matched '${typeName}'.`);
@@ -622,7 +628,7 @@ export async function searchApi(options: IndexOptions & { query: string; limit?:
 export async function getTypeDetails(options: IndexOptions & { typeName: string; includeInherited?: boolean }) {
     const index = await loadIndex({ revitVersion: options.revitVersion });
     const resolution = resolveUniqueType(index, options.typeName);
-    if (resolution.ambiguous) {
+    if (resolution.ambiguous === true) {
         return {
             typeName: options.typeName,
             ambiguous: true,

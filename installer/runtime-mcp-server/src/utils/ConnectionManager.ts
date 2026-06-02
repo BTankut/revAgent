@@ -46,7 +46,10 @@ function sleep(ms: number) {
 
 function parsePort(value: unknown, fallback?: number): number {
     if (value === undefined || value === null || value === "") {
-        return fallback;
+        if (fallback !== undefined) {
+            return fallback;
+        }
+        throw new Error("Invalid Revit MCP port: empty value");
     }
     const port = Number.parseInt(String(value), 10);
     if (!Number.isFinite(port) || port < 1 || port > 65535) {
@@ -66,7 +69,7 @@ function parsePortList(value: unknown): number[] {
         .map((item) => parsePort(item));
 }
 
-function normalizeHost(value: unknown) {
+function normalizeHost(value: unknown): string {
     return value ? String(value).trim() : DEFAULT_HOST;
 }
 
@@ -205,9 +208,9 @@ export function resolveRevitConnectionTarget(options: RevitConnectionOptions = {
     };
 }
 
-export function getCandidateRevitTargets(options: RevitConnectionOptions = {}) {
+export function getCandidateRevitTargets(options: RevitConnectionOptions = {}): RevitConnectionTarget[] {
     const host = normalizeHost(options.host);
-    const targets = [];
+    const targets: RevitConnectionTarget[] = [];
     if (options.includeRegistry !== false) {
         for (const entry of readRegistry()) {
             if (entry.port) {

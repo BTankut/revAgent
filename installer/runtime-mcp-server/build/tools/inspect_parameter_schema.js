@@ -230,7 +230,7 @@ function withDuplicateDisplayNameWarnings(payload, args) {
             if (!byDisplayName.has(key)) {
                 byDisplayName.set(key, { name, matches: [] });
             }
-            byDisplayName.get(key).matches.push(parameter);
+            byDisplayName.get(key)?.matches.push(parameter);
         }
         for (const group of byDisplayName.values()) {
             if (group.matches.length < 2) {
