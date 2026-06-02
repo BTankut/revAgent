@@ -1,9 +1,13 @@
-// @ts-nocheck
 import { spawn } from "child_process";
 import { existsSync } from "fs";
 import { mkdir, readFile, readdir, stat } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+
+interface IndexOptions {
+    revitVersion?: string;
+    rootPath?: string;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -61,7 +65,7 @@ async function discoverAssemblyPairs(rootPath) {
         .sort((left, right) => left.assemblyName.localeCompare(right.assemblyName));
 }
 
-async function getConfig(options = {}) {
+async function getConfig(options: IndexOptions = {}) {
     const revitVersion = String(options.revitVersion || process.env.REVIT_API_DOCS_VERSION || DEFAULT_REVIT_VERSION);
     const rootPath = options.rootPath || process.env.REVIT_API_DOCS_ROOT || defaultRevitRoot(revitVersion);
     if (!existsSync(rootPath)) {
@@ -99,7 +103,7 @@ async function cacheIsStale(config) {
 
 async function runIndexBuilder(config) {
     await mkdir(config.cacheDir, { recursive: true });
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
         const child = spawn("powershell", [
             "-ExecutionPolicy",
             "Bypass",
@@ -241,7 +245,7 @@ function hydrateIndex(raw) {
     };
 }
 
-async function loadIndex(options = {}) {
+async function loadIndex(options: IndexOptions = {}) {
     const config = await getConfig(options);
     const cacheKey = `${config.revitVersion}|${config.rootPath}`;
     const stale = await cacheIsStale(config);

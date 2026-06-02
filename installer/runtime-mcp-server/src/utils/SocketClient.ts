@@ -1,19 +1,47 @@
-// @ts-nocheck
 import * as net from "net";
 
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
-export class RevitClientConnection {
-    host;
-    port;
-    socket;
-    logErrors;
-    isConnected = false;
-    responseCallbacks = new Map();
-    buffer = Buffer.alloc(0);
-    framingMode = process.env.REVIT_MCP_FRAMING === "legacy" ? "legacy" : "length-prefixed";
+type SocketFramingMode = "legacy" | "length-prefixed";
+type JsonObject = Record<string, unknown>;
+type ResponseCallback = (responseData: string) => void;
 
-    constructor(host, port, options = {}) {
+interface RevitClientConnectionOptions {
+    logErrors?: boolean;
+}
+
+interface SendCommandOptions {
+    statusPreflight?: boolean;
+    statusTimeoutMs?: number;
+    timeoutMs?: number;
+    framing?: SocketFramingMode;
+    allowLegacyFallback?: boolean;
+}
+
+interface JsonObjectExtraction {
+    json: string;
+    remaining: string;
+}
+
+interface McpStatusPayload {
+    activeTask?: {
+        taskName?: string;
+        method?: string;
+        elapsedMs?: number;
+    } | null;
+}
+
+export class RevitClientConnection {
+    host: string;
+    port: number;
+    socket: net.Socket;
+    logErrors: boolean;
+    isConnected = false;
+    responseCallbacks = new Map<string, ResponseCallback>();
+    buffer = Buffer.alloc(0);
+    framingMode: SocketFramingMode = process.env.REVIT_MCP_FRAMING === "legacy" ? "legacy" : "length-prefixed";
+
+    constructor(host: string, port: number, options: RevitClientConnectionOptions = {}) {
         this.host = host;
         this.port = port;
         this.logErrors = options.logErrors !== false;
@@ -65,7 +93,7 @@ export class RevitClientConnection {
         }
     }
 
-    isLikelyLegacyJson(buffer) {
+    isLikelyLegacyJson(buffer: Buffer) {
         let index = 0;
         while (index < buffer.length && [0x20, 0x09, 0x0a, 0x0d].includes(buffer[index])) {
             index++;
@@ -73,7 +101,7 @@ export class RevitClientConnection {
         return index < buffer.length && buffer[index] === 0x7b;
     }
 
-    isLikelyLengthPrefixed(buffer) {
+    isLikelyLengthPrefixed(buffer: Buffer) {
         if (buffer.length < 4) {
             return true;
         }
@@ -98,7 +126,7 @@ export class RevitClientConnection {
         }
     }
 
-    extractFirstJsonObject(text) {
+    extractFirstJsonObject(text: string): JsonObjectExtraction | null {
         let depth = 0;
         let inString = false;
         let escaped = false;
@@ -181,7 +209,7 @@ export class RevitClientConnection {
         return true;
     }
 
-    handleResponseObject(response, responseData) {
+    handleResponseObject(response: any, responseData: string) {
         const hasId = response && response.id !== undefined && response.id !== null;
         const requestId = hasId ? String(response.id) : "default";
         const callback = this.responseCallbacks.get(requestId);
@@ -206,7 +234,7 @@ export class RevitClientConnection {
         }
     }
 
-    rejectPending(error) {
+    rejectPending(error: unknown) {
         for (const [requestId, callback] of this.responseCallbacks.entries()) {
             callback(JSON.stringify({
                 jsonrpc: "2.0",
@@ -243,7 +271,7 @@ export class RevitClientConnection {
         return Date.now().toString() + Math.random().toString().substring(2, 8);
     }
 
-    async sendCommand(command, params = {}, options = {}) {
+    async sendCommand(command: string, params: JsonObject = {}, options: SendCommandOptions = {}) {
         if (command !== "mcp_status" && options.statusPreflight !== false) {
             await this.ensureReadyForCommand(command, options);
         }
@@ -251,12 +279,12 @@ export class RevitClientConnection {
         return await this.sendCommandRequest(command, params, options);
     }
 
-    async ensureReadyForCommand(command, options = {}) {
+    async ensureReadyForCommand(command: string, options: SendCommandOptions = {}) {
         const statusTimeoutMs = options.statusTimeoutMs || Math.min(options.timeoutMs || 3000, 3000);
         const status = await this.sendCommandRequest("mcp_status", {}, {
             timeoutMs: statusTimeoutMs,
             statusPreflight: false,
-        });
+        }) as McpStatusPayload;
 
         const activeTask = status && typeof status === "object" ? status.activeTask : null;
         if (!activeTask) {
@@ -271,7 +299,7 @@ export class RevitClientConnection {
         throw new Error(`Revit MCP is busy with "${taskName}"${elapsedText}. Wait for it to finish before sending "${command}".`);
     }
 
-    formatElapsed(elapsedMs) {
+    formatElapsed(elapsedMs: number) {
         const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
         const hours = Math.floor(totalSeconds / 3600);
         const minutes = Math.floor((totalSeconds % 3600) / 60);
@@ -281,7 +309,7 @@ export class RevitClientConnection {
             .join(":");
     }
 
-    async sendCommandRequest(command, params = {}, options = {}) {
+    async sendCommandRequest(command: string, params: JsonObject = {}, options: SendCommandOptions = {}) {
         const framing = options.framing || this.framingMode;
         try {
             return await this.sendCommandRequestOnce(command, params, {
@@ -301,14 +329,14 @@ export class RevitClientConnection {
         }
     }
 
-    isFramingFallbackError(error) {
+    isFramingFallbackError(error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         return /Invalid JSON|Invalid JSON-RPC request|Invalid Revit MCP response frame length/i.test(message);
     }
 
-    sendCommandRequestOnce(command, params = {}, options = {}) {
+    sendCommandRequestOnce(command: string, params: JsonObject = {}, options: SendCommandOptions = {}) {
         return new Promise((resolve, reject) => {
-            let timeoutHandle;
+            let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
             try {
                 if (!this.isConnected) {
                     this.connect();
@@ -361,7 +389,7 @@ export class RevitClientConnection {
         });
     }
 
-    writeCommand(commandObj, framing) {
+    writeCommand(commandObj: JsonObject, framing: SocketFramingMode) {
         const payload = Buffer.from(JSON.stringify(commandObj), "utf8");
         if (framing === "length-prefixed") {
             const header = Buffer.alloc(4);

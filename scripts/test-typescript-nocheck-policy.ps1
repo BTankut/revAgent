@@ -22,11 +22,9 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
 $allowedNoCheck = @(
-    "installer\revit-api-docs-mcp\src\utils\docIndex.ts",
     "installer\runtime-mcp-server\src\database\service.ts",
     "installer\runtime-mcp-server\src\utils\ConnectionManager.ts",
     "installer\runtime-mcp-server\src\utils\revitToolHelpers.ts",
-    "installer\runtime-mcp-server\src\utils\SocketClient.ts",
     "installer\runtime-mcp-server\src\utils\telemetry.ts"
 )
 
