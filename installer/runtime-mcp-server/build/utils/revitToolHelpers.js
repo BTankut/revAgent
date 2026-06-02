@@ -1,5 +1,6 @@
 import { withRevitConnection } from "./ConnectionManager.js";
 import { recordLiveActivityFinished, recordLiveActivityStarted, recordLiveRevitStatus, recordRevitCommandTelemetry, } from "./telemetry.js";
+export const BRIDGE_RESULT_CONTRACT_VERSION = 2;
 export function connectionTargetSchema(z) {
     return {
         target: z.string().optional().describe("Optional Revit target: registered instance name, port number such as 8081, or host:port. Defaults to REVIT_MCP_TARGET/REVIT_MCP_PORT/8080."),
@@ -93,16 +94,31 @@ function parseJsonLike(value, depth = 0) {
         return value;
     }
 }
+export function getResultContractVersion(payload) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return null;
+    }
+    const raw = payload.resultContractVersion ?? payload.ResultContractVersion;
+    const parsed = Number.parseInt(String(raw ?? ""), 10);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+export function hasCanonicalBridgeResultContract(payload) {
+    const version = getResultContractVersion(payload);
+    return version !== null && version >= BRIDGE_RESULT_CONTRACT_VERSION;
+}
 export function normalizeRevitExecutionResponse(response) {
     const parsed = parseJsonLike(response);
+    if (hasCanonicalBridgeResultContract(parsed)) {
+        return parsed;
+    }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         const cloned = { ...parsed };
         if ("result" in cloned) {
             cloned.result = parseJsonLike(cloned.result);
         }
-        return cloned;
+        return normalizeSuccessCasing(cloned);
     }
-    return parsed;
+    return normalizeSuccessCasing(parsed);
 }
 function clampInt(value, fallback, min, max) {
     const parsed = Number.parseInt(String(value ?? ""), 10);

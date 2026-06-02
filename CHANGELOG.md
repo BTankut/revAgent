@@ -4,6 +4,14 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Normalized the Revit bridge result contract with a central C# camelCase
+  response helper, `resultContractVersion` on JSON-RPC result payloads, dynamic
+  execution results that no longer double-encode JSON object returns, and
+  per-response TypeScript legacy normalization for older DLLs.
+- Added bridge result contract characterization coverage to reject
+  `JsonConvert.SerializeObject(result)` regressions, raw bridge response
+  `JToken.FromObject` bypasses, missing `resultContractVersion`, and
+  non-idempotent canonical response normalization.
 - Strengthened `SKILL.md` and `AGENTS.md` tool-selection authority so current
   runtime tools and skill rules explicitly override Codex memory, older chat
   history, and remembered raw C# workflows.

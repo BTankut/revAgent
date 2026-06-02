@@ -162,6 +162,10 @@ optional `error`, `reason`, `warnings`, and `notices`. Treat `guarded=true` as
 protected behavior, not as a failed model operation. Do not assume every
 successful operation committed model data; inspect fields such as `state`,
 `committed`, `mode`, and tool-specific verification fields.
+Normalized bridge responses also expose `resultContractVersion` inside the
+JSON-RPC `result` object. Use it as a per-response capability signal, not a
+process-global switch; older DLLs and raw dynamic snippets still depend on the
+runtime compatibility normalizer.
 
 For DrawingSheet text lookup in large projects, use `inspect_sheet_text` before
 raw dynamic C# sheet loops. Start with `sheetQuery` or exact `sheetIds`, keep

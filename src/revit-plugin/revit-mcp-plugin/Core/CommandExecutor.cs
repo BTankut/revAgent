@@ -75,7 +75,7 @@ namespace revit_mcp_plugin.Core
             var response = new JsonRPCSuccessResponse
             {
                 Id = id,
-                Result = result is JToken jToken ? jToken : JToken.FromObject(result)
+                Result = BridgeResultContract.CreateResultPayload(result)
             };
 
             return response.ToJson();
@@ -90,7 +90,7 @@ namespace revit_mcp_plugin.Core
                 {
                     Code = code,
                     Message = message,
-                    Data = data != null ? JToken.FromObject(data) : null
+                    Data = data != null ? BridgeResultContract.ToCamelCaseToken(data) : null
                 }
             };
 

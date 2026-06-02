@@ -190,6 +190,9 @@ try {
     Assert-True ($executeCodeHandler -match 'JsonProperty\("guarded"\)') "Dynamic execution results must expose guarded for the status UI."
     Assert-True ($executeCodeHandler -match 'GetMetadataReferences') "Dynamic commandset must centralize metadata reference collection."
     Assert-True ($executeCodeHandler -match 'Dictionary<string, Assembly> chosen') "Dynamic commandset must de-duplicate loaded assemblies by simple name."
+    Assert-True ($executeCodeHandler -notmatch 'ResultInfo\.Result\s*=\s*JsonConvert\.SerializeObject\(result\)') "Dynamic execution must not double-encode JSON-looking object results."
+    Assert-True ($executeCodeHandler -match 'public JToken Result \{ get; set; \}') "Dynamic execution result payload must carry a JSON token/object."
+    Assert-True ($executeCodeHandler -match 'CreateSafeResultToken\(result\)') "Dynamic execution result payload must use the safe null/primitive/fallback token helper."
     $liveCommandsetTest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-commandset-live.ps1")
     Assert-True ($liveCommandsetTest -match 'Assert-RevitMcpReady') "Live commandset integration gate must status-check before non-status commands."
     Assert-True ($liveCommandsetTest -match 'transactionMode auto') "Live commandset integration gate must cover transactionMode auto."
@@ -347,6 +350,8 @@ try {
     $taskStatusController = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpTaskStatusWindowController.cs")
     $taskStatusService = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpTaskStatusService.cs")
     $socketServiceCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\SocketService.cs")
+    $commandExecutorCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\CommandExecutor.cs")
+    $bridgeResultContractCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\BridgeResultContract.cs")
     Assert-True ($taskStatusXaml -match 'Title="revAgent Status"') "Task status window title must use revAgent."
     Assert-True ($taskStatusXaml -match 'Your AI agent inside Revit\.') "Task status window must show the revAgent product tagline."
     Assert-True ($taskStatusXaml -match '2026 Baris Tankut') "Task status window must show the revAgent copyright footer."
@@ -375,6 +380,14 @@ try {
     Assert-True ($taskStatusCode -match 'MaxHistoryItems = 100') "Task status window must keep enough visible history for full-test/debug runs."
     Assert-True ($taskStatusService -notmatch 'NormalizeErrorMessage|ContainsCjk') "Task status service must not hide localized source text with a sanitizer."
     Assert-True ($socketServiceCode -match 'IsCommandResultGuarded') "Socket service must classify expected safety blocks as guarded tasks."
+    Assert-True ($bridgeResultContractCode -match 'public const int ResultContractVersion = 2') "Bridge result contract must expose the normalized payload floor."
+    Assert-True ($bridgeResultContractCode -match 'CamelCaseNamingStrategy') "Bridge result contract must centralize native camelCase serialization."
+    Assert-True ($bridgeResultContractCode -match 'ProcessDictionaryKeys = false') "Bridge result contract must not rewrite dictionary/domain payload keys."
+    Assert-True ($bridgeResultContractCode -match 'obj\["resultContractVersion"\] = ResultContractVersion') "Bridge result payloads must be self-describing."
+    Assert-True ($commandExecutorCode -match 'BridgeResultContract\.CreateResultPayload\(result\)') "CommandExecutor success responses must use the bridge result contract helper."
+    Assert-True ($socketServiceCode -match 'BridgeResultContract\.CreateResultPayload\(result\)') "SocketService success responses must use the bridge result contract helper."
+    Assert-True ($socketServiceCode -match 'BridgeResultContract\.ToCamelCaseToken\(result\)') "SocketService guarded/failure detection must inspect the same camelCase token shape."
+    Assert-True ($commandExecutorCode -notmatch 'JToken\.FromObject' -and $socketServiceCode -notmatch 'JToken\.FromObject') "Bridge response/guard/failure paths must not bypass the central camelCase helper."
     Assert-True ($taskStatusCode -match 'Guarded / blocked by safety') "Task status window must describe guarded tasks as a safety block, not a failure."
     Assert-True ($taskStatusCode -match 'return "!"') "Task status history must render guarded tasks with the warning-style exclamation symbol."
     Assert-True ($taskStatusCode -match 'return "\\u2715"') "Failed task history must keep a distinct failure symbol."
@@ -458,7 +471,7 @@ try {
     Assert-True ($statusToolCode -match 'runtimeVersion') "Status output must include the active runtime version."
     Assert-True ($statusToolCode -match 'schemaVersion') "Status output must include the status/schema version."
     Assert-True ($statusToolCode -match 'toolSurfaceVersion') "Status output must include the registered tool surface version."
-    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.30') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
+    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.31') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
     Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
     Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
@@ -468,6 +481,9 @@ try {
     Assert-True ($toolHelpersCode -match 'recentHistoryCount') "Status compact payload must report recent history count instead of a misleading total."
     Assert-True ($toolHelpersCode -match 'recentLimit, 3, 0, 100') "Status compact payload must preserve up to 100 recent tasks when requested."
     Assert-True ($toolHelpersCode -notmatch 'clone\.recentTasksTotal =') "Status compact payload must not emit the legacy recentTasksTotal name."
+    Assert-True ($toolHelpersCode -match 'BRIDGE_RESULT_CONTRACT_VERSION = 2') "Runtime formatter must know the normalized bridge result contract version."
+    Assert-True ($toolHelpersCode -match 'getResultContractVersion') "Runtime formatter must read bridge capability from each response payload."
+    Assert-True ($toolHelpersCode -match 'hasCanonicalBridgeResultContract\(parsed\)') "Runtime formatter must keep canonical bridge payload normalization idempotent."
     Assert-True ($toolHelpersCode -match 'normalizeSuccessCasing') "Runtime formatter must normalize response success casing."
     Assert-True ($toolHelpersCode -match 'delete clone\.Success') "Runtime formatter must emit canonical lowercase success instead of success/Success duplicates."
     Assert-True ($sendCodeToolCode -match 'parseJsonResult') "Raw send_code_to_revit must expose JSON-looking result parsing."

@@ -10,6 +10,7 @@ using Autodesk.Revit.UI;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using RevitMCPSDK.API.Interfaces;
 
 namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
@@ -86,7 +87,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
                 }
 
                 ResultInfo.Success = true;
-                ResultInfo.Result = JsonConvert.SerializeObject(result);
+                ResultInfo.Result = CreateSafeResultToken(result);
             }
             catch (Exception ex)
             {
@@ -106,6 +107,31 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             ResultInfo.Guarded = true;
             ResultInfo.GuardReason = reason;
             ResultInfo.ErrorMessage = message;
+        }
+
+        private static JToken CreateSafeResultToken(object result)
+        {
+            if (result == null)
+            {
+                return JValue.CreateNull();
+            }
+
+            try
+            {
+                JToken token = result as JToken;
+                return token != null ? token.DeepClone() : JToken.FromObject(result);
+            }
+            catch
+            {
+                try
+                {
+                    return new JValue(Convert.ToString(result));
+                }
+                catch
+                {
+                    return new JValue(result.GetType().FullName);
+                }
+            }
         }
 
         private static bool ContainsManualTransaction(string code)
@@ -282,7 +308,7 @@ namespace AIGeneratedCode
         public string GuardReason { get; set; } = string.Empty;
 
         [JsonProperty("result")]
-        public string Result { get; set; }
+        public JToken Result { get; set; }
 
         [JsonProperty("errorMessage")]
         public string ErrorMessage { get; set; } = string.Empty;

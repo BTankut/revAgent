@@ -15,10 +15,11 @@
     "guard-test": "node build/tools/send_code_to_revit_safe.guard-test.js",
     "runtime-result-test": "node scripts/runtime-result.test.mjs",
     "write-tool-contract-test": "node scripts/write-tool-contract.test.mjs",
+    "bridge-result-contract-test": "node scripts/bridge-result-contract.test.mjs",
     "live-feed-test": "node scripts/live-feed.test.mjs",
     "socket-test": "node scripts/socket-client.test.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "npm run build && npm run guard-test && npm run runtime-result-test && npm run write-tool-contract-test && npm run live-feed-test && npm run socket-test && npm run smoke"
+    "test": "npm run build && npm run guard-test && npm run runtime-result-test && npm run write-tool-contract-test && npm run bridge-result-contract-test && npm run live-feed-test && npm run socket-test && npm run smoke"
   },
   "files": [
     "build",

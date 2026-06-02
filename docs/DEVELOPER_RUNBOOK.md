@@ -337,7 +337,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
 
 `test-all.ps1` includes installer smoke, usage intelligence, live dashboard
 helpers, the `@ts-nocheck` policy, both MCP package tests, and MCP/Revit payload
-freshness checks. It does not run the live Revit commandset gate.
+freshness checks. It also runs bridge result contract characterization checks
+that reject dynamic-result double encoding, bypassed C# camelCase response
+helpers, missing `resultContractVersion`, and non-idempotent canonical
+normalization. It does not run the live Revit commandset gate.
 
 When `src/revit-plugin/RevitMCPCommandSet` or `installer/command-payload`
 changes, run the optional live commandset gate on a workstation with Revit 2022
@@ -351,7 +354,10 @@ This gate is intentionally separate from `test-all`: it connects to the Revit
 MCP socket, status-checks before each command, and validates real commandset
 behavior for `transactionMode: "auto"`, `transactionMode: "none"`, guarded
 manual transaction blocking, manual rollback in `none`, and
-`Newtonsoft.Json.JsonConvert` compilation.
+`Newtonsoft.Json.JsonConvert` compilation. For bridge result contract changes,
+also verify that dynamic object results are not double-encoded strings, native
+bridge responses emit camelCase `success`, and `resultContractVersion` is
+readable from the response payload and from `mcp_status` diagnostics.
 
 Keep `src/revit-plugin/RevitMCPCommandSet` limited to the registered production
 bridge commands: `send_code_to_revit`, `get_current_view_elements`,
@@ -381,8 +387,9 @@ Use the compact status defaults for routine preflight. Increase `recentLimit`
 up to 100 or set `includeDiagnostics=true` only when investigating a full-test,
 transport, or runtime issue. The status payload includes `runtimeIdentity` (`runtimeVersion`,
 `schemaVersion`, `toolSurfaceVersion`, `processStartedAtUtc`,
-`buildTimestampUtc`, and `buildHash`); check it when a workstation may be
-running an older runtime after an update or restart.
+`buildTimestampUtc`, and `buildHash`) and, for normalized Revit DLL payloads,
+`resultContractVersion`; check it when a workstation may be running an older
+runtime after an update or restart.
 
 Do not run Revit MCP runtime commands in parallel. The only exception is
 status polling while a task is already active.
@@ -418,9 +425,13 @@ Live smoke test after install:
    uses a wrapper-managed transaction, `transactionMode: "none"` runs without
    that wrapper, and a manual Revit `Transaction` inside `auto` returns
    `guarded` rather than `failed`.
-9. Confirm `revit-api-docs` responds to a small search such as
+9. For bridge result contract changes, confirm dynamic object results are not
+   returned as double-encoded strings, native bridge command responses use
+   camelCase `success`, and `resultContractVersion` is visible in both the
+   command response payload and `mcp_status`.
+10. Confirm `revit-api-docs` responds to a small search such as
    `FilteredElementCollector`.
-10. For transport-sensitive changes, run a large read-only marker/checksum probe
+11. For transport-sensitive changes, run a large read-only marker/checksum probe
     and confirm the returned marker matches the end of the payload. Do not rely
     only on the status window duration for transport validation.
 

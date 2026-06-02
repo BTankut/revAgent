@@ -205,6 +205,11 @@ a long Revit operation. Every response also includes `runtimeIdentity` with the
 active `runtimeVersion`, status `schemaVersion`, `toolSurfaceVersion`,
 `processStartedAtUtc`, `buildTimestampUtc`, and `buildHash`, so agents can
 detect whether the running runtime matches the deployed build.
+Bridge responses also include `resultContractVersion` in the JSON-RPC `result`
+payload when the active Revit DLL supports the normalized bridge contract. The
+TypeScript runtime decides compatibility per response from that payload, not
+from a process-global flag, so mixed old/new Revit instances can remain
+connected safely.
 
 The Revit socket protocol uses length-prefixed JSON-RPC frames by default, so
 large snippets and parameter payloads are not limited by the old single-read
@@ -413,6 +418,9 @@ Use `scripts\test-all.ps1` to run the non-Revit checks in one command. It
 includes installer smoke, usage intelligence, live dashboard helpers,
 `@ts-nocheck` policy enforcement, both MCP package test suites, and committed
 MCP/Revit payload freshness checks.
+The runtime MCP test suite includes bridge result contract characterization
+checks for dynamic-result double encoding, central C# camelCase response
+helpers, `resultContractVersion`, and idempotent legacy normalization.
 
 When the shared bridge command payload changes and Revit 2022 is available, run the
 optional live commandset gate separately:
@@ -424,7 +432,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-li
 This live gate connects to the Revit MCP socket, performs a status preflight
 before each non-status command, and validates `transactionMode` behavior,
 guarded manual-transaction handling, manual rollback in `none`, and
-`Newtonsoft.Json.JsonConvert` dynamic compilation. It is not included in
+`Newtonsoft.Json.JsonConvert` dynamic compilation. For bridge result contract
+changes, also confirm dynamic object results are not returned as double-encoded
+strings, native bridge responses use camelCase `success`, and
+`resultContractVersion` is readable from the response payload. It is not included in
 `scripts\test-all.ps1` because it requires a running Revit session with an
 active document.
 
@@ -626,6 +637,10 @@ The Revit add-in command payload still provides the low-level dynamic execution
 bridge internally. Common discovery, UI focus, plan/3D view workflow, parameter
 inspection, and visual QA paths are exposed as dedicated runtime tools so most
 production tasks can be audited before any broad custom C# write is used.
+The bridge result boundary is intentionally small: Revit DLL payloads emit
+canonical camelCase result objects with `resultContractVersion`, while the
+TypeScript normalizer keeps a legacy path for older DLLs and raw dynamic
+snippet payloads.
 
 Runtime commands perform a lightweight internal `mcp_status` preflight before sending non-status work to Revit and fail fast when another task is active. Agent workflows should still call `get_revit_mcp_status` explicitly before each Revit operation so the user can see what is running and why a command is being delayed.
 

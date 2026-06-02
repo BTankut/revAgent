@@ -75,6 +75,10 @@ contract where practical: `success`, `guarded`, `state`, `action`, and optional
 `error`, `reason`, `warnings`, and `notices`. Treat `guarded=true` as protected
 behavior, not as a failed model operation. Check `state`, `committed`, `mode`,
 and tool-specific verification fields before saying a write actually happened.
+Normalized Revit bridge payloads also expose `resultContractVersion` in the
+JSON-RPC `result` object. Treat that as a per-response capability signal; older
+DLLs and raw dynamic snippets can still require the runtime compatibility
+normalizer.
 
 - `list_revit_instances` - discover reachable Revit MCP instances and ports
 - `get_revit_mcp_status` - read active/recent task status without waiting
@@ -82,7 +86,9 @@ and tool-specific verification fields before saying a write actually happened.
   recent task limits and transport diagnostics for troubleshooting. It also
   returns `runtimeIdentity` (`runtimeVersion`, `schemaVersion`,
   `toolSurfaceVersion`, `processStartedAtUtc`, `buildTimestampUtc`, and
-  `buildHash`) so agents can confirm which runtime/schema is actually active.
+  `buildHash`) plus the bridge `resultContractVersion` when the active Revit
+  DLL supports it, so agents can confirm which runtime/schema is actually
+  active.
 - `send_code_to_revit` - raw dynamic execution for explicit, broad control
 - `send_code_to_revit_safe` - read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced

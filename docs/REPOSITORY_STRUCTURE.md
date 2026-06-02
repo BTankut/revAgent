@@ -77,6 +77,13 @@ such as `transactionMode`, guarded manual-transaction handling, dynamic compile
 metadata reference selection, view activation/close, element focus, and 3D
 section box behavior.
 
+The Revit host bridge result boundary is centralized in
+`src/revit-plugin/revit-mcp-plugin/Core/BridgeResultContract.cs`. It owns the
+camelCase response serializer and `resultContractVersion` injection used by
+JSON-RPC `result` payloads. Dynamic execution result objects still live in the
+shared command set, but they should return JSON tokens instead of
+pre-serialized JSON strings.
+
 `SampleCommandSet` and the old unregistered create/edit/filter/tag/data
 extraction command sources are intentionally not kept in this repository
 because they are not used by the installed production payload, make command
@@ -125,6 +132,10 @@ guards the current explicit `@ts-nocheck` debt boundary.
 `config/dynamic-tool-promotion-*.json` contains the machine-readable rule and
 registry used by usage summaries to flag repeated or risky dynamic C# patterns
 for native runtime-tool review.
+
+`docs/REVAGENT_BRIDGE_RESULT_CONTRACT_NORMALIZATION_PLAN.md` records the bridge
+result contract normalization plan. Keep it aligned when changing bridge
+payload shape, `resultContractVersion`, or compatibility normalization.
 
 `scripts/test-commandset-live.ps1` is the optional live Revit commandset gate.
 It is not part of `test-all` because it requires a running Revit session, but it

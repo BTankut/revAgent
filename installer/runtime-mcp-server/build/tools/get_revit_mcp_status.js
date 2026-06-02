@@ -6,7 +6,7 @@ import { recordLiveRevitStatus } from "../utils/telemetry.js";
 import { getRuntimeRoot, parseBuildHash, readInstalledState, readJsonFile, } from "../utils/runtimeIdentity.js";
 const RUNTIME_PROCESS_STARTED_AT_UTC = new Date().toISOString();
 const STATUS_SCHEMA_VERSION = "revit-mcp-status.v3";
-const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.30";
+const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.31";
 function readPackageMetadata() {
     const packageJson = readJsonFile(path.join(getRuntimeRoot(), "package.json"));
     return {
@@ -33,7 +33,7 @@ function getRuntimeIdentity() {
     };
 }
 export function registerGetRevitMcpStatusTool(server) {
-    server.tool("get_revit_mcp_status", "Read the Revit MCP task status without waiting behind the active Revit command lock. Includes runtimeVersion, schemaVersion, toolSurfaceVersion, processStartedAtUtc, buildTimestampUtc, and buildHash so agents can verify the active runtime identity.", {
+    server.tool("get_revit_mcp_status", "Read the Revit MCP task status without waiting behind the active Revit command lock. Includes runtimeVersion, schemaVersion, toolSurfaceVersion, processStartedAtUtc, buildTimestampUtc, buildHash, and bridge resultContractVersion when available so agents can verify the active runtime identity and bridge contract.", {
         ...connectionTargetSchema(z),
         includeRecentTasks: z.boolean().optional().describe("Include recent completed task records. Defaults true, with a compact limit."),
         recentLimit: z.number().int().min(0).max(100).optional().describe("Maximum recent task records to return when includeRecentTasks is true. Defaults 3."),
