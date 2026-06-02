@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { withRevitConnection } from "./ConnectionManager.js";
 import {
     recordLiveActivityFinished,
@@ -9,7 +8,41 @@ import {
 
 export const BRIDGE_RESULT_CONTRACT_VERSION = 2;
 
-export function connectionTargetSchema(z) {
+type JsonObject = Record<string, any>;
+
+interface ConnectionArgs extends JsonObject {
+    target?: string;
+    host?: string;
+    port?: number;
+    timeoutMs?: number;
+    taskName?: string;
+    taskId?: string;
+}
+
+interface TrimPlanCandidatesOptions {
+    verboseCandidates?: boolean;
+    maxPlanCandidates?: number;
+}
+
+interface CompactMcpStatusOptions {
+    includeRecentTasks?: boolean;
+    includeDiagnostics?: boolean;
+    recentLimit?: number;
+}
+
+interface ExecuteRevitCodeOptions extends ConnectionArgs {
+    parameters?: unknown[];
+    transactionMode?: string;
+    toolName?: string;
+    statusRefreshTimeoutMs?: number;
+}
+
+interface SendRevitCommandOptions extends ConnectionArgs {
+    toolName?: string;
+    statusRefreshTimeoutMs?: number;
+}
+
+export function connectionTargetSchema(z: any) {
     return {
         target: z.string().optional().describe("Optional Revit target: registered instance name, port number such as 8081, or host:port. Defaults to REVIT_MCP_TARGET/REVIT_MCP_PORT/8080."),
         host: z.string().optional().describe("Optional Revit socket host. Defaults to REVIT_MCP_HOST or localhost."),
@@ -17,14 +50,14 @@ export function connectionTargetSchema(z) {
     };
 }
 
-export function taskMetadataSchema(z) {
+export function taskMetadataSchema(z: any) {
     return {
         taskName: z.string().optional().describe("Optional display name shown in Revit while this MCP task is running."),
         taskId: z.string().optional().describe("Optional client task identifier forwarded to Revit status history."),
     };
 }
 
-export function connectionOptionsFromArgs(args = {}) {
+export function connectionOptionsFromArgs(args: ConnectionArgs = {}) {
     return {
         target: args.target,
         host: args.host,
@@ -33,22 +66,22 @@ export function connectionOptionsFromArgs(args = {}) {
     };
 }
 
-export function taskOptionsFromArgs(args = {}, defaultTaskName) {
+export function taskOptionsFromArgs(args: ConnectionArgs = {}, defaultTaskName: string) {
     return {
         taskName: args.taskName || defaultTaskName,
         taskId: args.taskId,
     };
 }
 
-export function executionOptionsFromArgs(args = {}, defaultTaskName) {
+export function executionOptionsFromArgs(args: ConnectionArgs = {}, defaultTaskName: string) {
     return {
         ...connectionOptionsFromArgs(args),
         ...taskOptionsFromArgs(args, defaultTaskName),
     };
 }
 
-export function normalizeSuccessCasing(payload) {
-    const visit = (value) => {
+export function normalizeSuccessCasing(payload: any) {
+    const visit = (value: any): any => {
         if (Array.isArray(value)) {
             return value.map((item) => visit(item));
         }
@@ -56,7 +89,7 @@ export function normalizeSuccessCasing(payload) {
             return value;
         }
 
-        const clone = {};
+        const clone: JsonObject = {};
         for (const [key, child] of Object.entries(value)) {
             clone[key] = visit(child);
         }
@@ -81,7 +114,7 @@ export function normalizeSuccessCasing(payload) {
     return visit(payload);
 }
 
-export function formatJsonContent(payload) {
+export function formatJsonContent(payload: any) {
     const normalizedPayload = normalizeSuccessCasing(payload);
     return {
         content: [
@@ -93,7 +126,7 @@ export function formatJsonContent(payload) {
     };
 }
 
-function parseJsonLike(value, depth = 0) {
+function parseJsonLike(value: any, depth = 0): any {
     if (typeof value !== "string") {
         return value;
     }
@@ -113,7 +146,7 @@ function parseJsonLike(value, depth = 0) {
     }
 }
 
-export function getResultContractVersion(payload) {
+export function getResultContractVersion(payload: any) {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
         return null;
     }
@@ -122,12 +155,12 @@ export function getResultContractVersion(payload) {
     return Number.isFinite(parsed) ? parsed : null;
 }
 
-export function hasCanonicalBridgeResultContract(payload) {
+export function hasCanonicalBridgeResultContract(payload: any) {
     const version = getResultContractVersion(payload);
     return version !== null && version >= BRIDGE_RESULT_CONTRACT_VERSION;
 }
 
-export function normalizeRevitExecutionResponse(response) {
+export function normalizeRevitExecutionResponse(response: any) {
     const parsed = parseJsonLike(response);
     if (hasCanonicalBridgeResultContract(parsed)) {
         return parsed;
@@ -142,7 +175,7 @@ export function normalizeRevitExecutionResponse(response) {
     return normalizeSuccessCasing(parsed);
 }
 
-function clampInt(value, fallback, min, max) {
+function clampInt(value: any, fallback: number, min: number, max: number) {
     const parsed = Number.parseInt(String(value ?? ""), 10);
     if (!Number.isFinite(parsed)) {
         return fallback;
@@ -150,14 +183,14 @@ function clampInt(value, fallback, min, max) {
     return Math.max(min, Math.min(max, parsed));
 }
 
-export function trimPlanCandidatesInPayload(payload, options = {}) {
+export function trimPlanCandidatesInPayload(payload: any, options: TrimPlanCandidatesOptions = {}) {
     const verbose = options.verboseCandidates === true;
     const maxCandidates = clampInt(options.maxPlanCandidates, 3, 0, 100);
     if (verbose) {
         return payload;
     }
 
-    const visit = (value) => {
+    const visit = (value: any): any => {
         if (Array.isArray(value)) {
             return value.map((item) => visit(item));
         }
@@ -165,7 +198,7 @@ export function trimPlanCandidatesInPayload(payload, options = {}) {
             return value;
         }
 
-        const clone = {};
+        const clone: JsonObject = {};
         for (const [key, child] of Object.entries(value)) {
             if (key === "PlanCandidates" && Array.isArray(child)) {
                 clone.PlanCandidatesTotal = child.length;
@@ -181,11 +214,11 @@ export function trimPlanCandidatesInPayload(payload, options = {}) {
     return visit(payload);
 }
 
-function compactTaskInfo(task, includeDiagnostics) {
+function compactTaskInfo(task: any, includeDiagnostics: boolean) {
     if (!task || typeof task !== "object") {
         return task;
     }
-    const compact = {
+    const compact: JsonObject = {
         id: task.id,
         requestId: task.requestId,
         method: task.method,
@@ -208,7 +241,7 @@ function compactTaskInfo(task, includeDiagnostics) {
     return compact;
 }
 
-export function compactMcpStatusPayload(payload, options = {}) {
+export function compactMcpStatusPayload(payload: any, options: CompactMcpStatusOptions = {}) {
     const includeRecentTasks = options.includeRecentTasks !== false;
     const includeDiagnostics = options.includeDiagnostics === true;
     const recentLimit = clampInt(options.recentLimit, 3, 0, 100);
@@ -245,13 +278,13 @@ export function compactMcpStatusPayload(payload, options = {}) {
     return clone;
 }
 
-export async function executeRevitCode(code, options = {}) {
+export async function executeRevitCode(code: string, options: ExecuteRevitCodeOptions = {}) {
     const params = {
         code,
         parameters: options.parameters || [],
         transactionMode: options.transactionMode || "none",
         taskName: options.taskName || "Run Revit code",
-    };
+    } as JsonObject;
     if (options.taskId) {
         params.taskId = options.taskId;
     }
@@ -308,7 +341,7 @@ export async function executeRevitCode(code, options = {}) {
     }
 }
 
-export async function refreshLiveRevitStatus(options = {}) {
+export async function refreshLiveRevitStatus(options: ExecuteRevitCodeOptions | SendRevitCommandOptions = {}) {
     const timeoutMs = Math.max(250, Math.min(5000, Number(options.statusRefreshTimeoutMs || 1500)));
     try {
         const status = await withRevitConnection(async (revitClient) => {
@@ -328,7 +361,7 @@ export async function refreshLiveRevitStatus(options = {}) {
     }
 }
 
-export async function sendRevitCommand(command, params = {}, options = {}) {
+export async function sendRevitCommand(command: string, params: JsonObject = {}, options: SendRevitCommandOptions = {}) {
     const commandParams = {
         ...params,
     };
@@ -391,7 +424,7 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
     }
 }
 
-export function csharpString(value) {
+export function csharpString(value: any) {
     if (value === null || value === undefined) {
         return "null";
     }
@@ -402,19 +435,19 @@ export function csharpString(value) {
         .replace(/\n/g, "\\n")}"`;
 }
 
-export function csharpStringArray(values) {
+export function csharpStringArray(values: any) {
     const safeValues = Array.isArray(values) ? values : [];
     return `new string[] { ${safeValues.map(csharpString).join(", ")} }`;
 }
 
-export function csharpIntArray(values) {
+export function csharpIntArray(values: any) {
     const safeValues = (Array.isArray(values) ? values : [])
         .map((value) => Number.parseInt(String(value), 10))
         .filter((value) => Number.isFinite(value));
     return `new int[] { ${safeValues.join(", ")} }`;
 }
 
-export function truncateText(text, maxChars) {
+export function truncateText(text: any, maxChars: any) {
     const limit = Number(maxChars || 0);
     if (!limit || typeof text !== "string" || text.length <= limit) {
         return { text, truncated: false };
@@ -425,9 +458,9 @@ export function truncateText(text, maxChars) {
     };
 }
 
-export function extractElementIdsFromSelectionResponse(response) {
-    const ids = new Set();
-    const visit = (value, parentKey = "") => {
+export function extractElementIdsFromSelectionResponse(response: any) {
+    const ids = new Set<number>();
+    const visit = (value: any, parentKey = "") => {
         if (value === null || value === undefined) {
             return;
         }
@@ -455,7 +488,7 @@ export function extractElementIdsFromSelectionResponse(response) {
     return [...ids].filter((id) => Number.isFinite(id) && id > 0);
 }
 
-export async function getSelectionElementIds(limit = 100, options = {}) {
+export async function getSelectionElementIds(limit = 100, options: SendRevitCommandOptions = {}) {
     const response = await sendRevitCommand("get_selected_elements", { limit }, options);
     return extractElementIdsFromSelectionResponse(response).slice(0, limit);
 }
