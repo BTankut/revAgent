@@ -1,4 +1,3 @@
-// @ts-nocheck
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -24,31 +23,50 @@ import {
 export { sanitizeTelemetryPathSegment } from "./runtimeIdentity.js";
 export { flushLiveWritesForTests } from "./telemetryWriters.js";
 
+type JsonObject = Record<string, any>;
+type JsonArray = any[];
+
+interface LiveTask extends JsonObject {
+    liveTaskId?: string;
+    scope?: string | null;
+    toolName?: string | null;
+    commandName?: string | null;
+    logicalToolName?: string | null;
+    executionKind?: string | null;
+    taskName?: string | null;
+    taskId?: string | null;
+    state?: string | null;
+    startedAtUtc?: string | null;
+    finishedAtUtc?: string | null;
+    durationMs?: number | null;
+    result?: any;
+}
+
 const TELEMETRY_SCHEMA_VERSION = "revagent.telemetry.v1";
 const LIVE_STATUS_SCHEMA_VERSION = "revagent.live.status.v1";
 const LIVE_ACTIVITY_SCHEMA_VERSION = "revagent.live.activity.v1";
 const TELEMETRY_SESSION_ID = crypto.randomUUID();
 const TELEMETRY_PROCESS_STARTED_AT_UTC = new Date().toISOString();
 let telemetrySequence = 0;
-const liveActiveTasks = new Map();
-const liveRecentActivity = [];
-let liveRevitStatus = null;
-let liveHeartbeatTimer = null;
-let liveLastHeartbeatUtc = null;
+const liveActiveTasks = new Map<string, LiveTask>();
+const liveRecentActivity: LiveTask[] = [];
+let liveRevitStatus: JsonObject | null = null;
+let liveHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let liveLastHeartbeatUtc: string | null = null;
 
 function telemetryDisabled() {
     return isTruthy(process.env.REVAGENT_TELEMETRY_DISABLED);
 }
 
-function hashText(value) {
+function hashText(value: any) {
     return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
 }
 
-function shortHash(value) {
+function shortHash(value: any) {
     return hashText(value).slice(0, 16);
 }
 
-function truncateText(value, maxChars = 400) {
+function truncateText(value: any, maxChars = 400) {
     const text = String(value || "");
     if (text.length <= maxChars) {
         return {
@@ -62,11 +80,11 @@ function truncateText(value, maxChars = 400) {
     };
 }
 
-function countLines(value) {
+function countLines(value: any) {
     return String(value || "").split(/\r\n|\r|\n/).length;
 }
 
-function clampTelemetryInt(value, fallback, min, max) {
+function clampTelemetryInt(value: any, fallback: number, min: number, max: number) {
     const parsed = Number.parseInt(String(value ?? ""), 10);
     if (!Number.isFinite(parsed)) {
         return fallback;
@@ -98,9 +116,9 @@ function liveHeartbeatIntervalMs() {
     return clampTelemetryInt(process.env.REVAGENT_LIVE_STATUS_HEARTBEAT_MS, 5000, 0, 60000);
 }
 
-function summarizeText(value, maxChars) {
+function summarizeText(value: any, maxChars: number) {
     const text = String(value || "");
-    const summary = {
+    const summary: JsonObject = {
         hash: shortHash(text),
         length: text.length,
         present: text.length > 0,
@@ -113,9 +131,9 @@ function summarizeText(value, maxChars) {
     return summary;
 }
 
-function summarizeCode(code) {
+function summarizeCode(code: any) {
     const text = String(code || "");
-    const summary = {
+    const summary: JsonObject = {
         hash: shortHash(text),
         length: text.length,
         lineCount: countLines(text),
@@ -132,7 +150,7 @@ function summarizeCode(code) {
     return summary;
 }
 
-function summarizeScalarParam(key, value) {
+function summarizeScalarParam(key: string, value: any) {
     const safeStringKeys = new Set([
         "transactionMode",
         "responseMode",
@@ -162,9 +180,9 @@ function summarizeScalarParam(key, value) {
     return undefined;
 }
 
-export function summarizeTelemetryParams(params = {}) {
-    const summary = {
-        keys: [],
+export function summarizeTelemetryParams(params: JsonObject = {}) {
+    const summary: JsonObject = {
+        keys: [] as string[],
     };
 
     if (!params || typeof params !== "object") {
@@ -208,7 +226,7 @@ export function summarizeTelemetryParams(params = {}) {
     return summary;
 }
 
-function unwrapResponse(response) {
+function unwrapResponse(response: any) {
     if (response && typeof response === "object") {
         const topLevelSuccess = getValueCaseInsensitive(response, ["success", "Success"]);
         if (topLevelSuccess === false) {
@@ -227,7 +245,7 @@ function unwrapResponse(response) {
     return response;
 }
 
-function getValueCaseInsensitive(object, names) {
+function getValueCaseInsensitive(object: any, names: string[]) {
     if (!object || typeof object !== "object") {
         return undefined;
     }
@@ -245,7 +263,7 @@ function getValueCaseInsensitive(object, names) {
     return undefined;
 }
 
-export function summarizeTelemetryResponse(response, error = null) {
+export function summarizeTelemetryResponse(response: any, error: any = null) {
     if (error) {
         return {
             success: false,
@@ -279,7 +297,7 @@ export function summarizeTelemetryResponse(response, error = null) {
     };
 }
 
-function summarizeMcpToolResult(result, error = null) {
+function summarizeMcpToolResult(result: any, error: any = null) {
     if (error) {
         return summarizeTelemetryResponse(null, error);
     }
@@ -305,7 +323,7 @@ function telemetryContextElementLimit() {
     return clampTelemetryInt(process.env.REVAGENT_TELEMETRY_CONTEXT_ELEMENTS, 12, 0, 100);
 }
 
-function parseJsonLikeText(value) {
+function parseJsonLikeText(value: any): any {
     if (typeof value !== "string") {
         return value;
     }
@@ -325,7 +343,7 @@ function parseJsonLikeText(value) {
     }
 }
 
-function unwrapMcpToolResult(result) {
+function unwrapMcpToolResult(result: any) {
     try {
         const text = result?.content?.find?.((item) => item?.type === "text")?.text;
         if (typeof text === "string") {
@@ -337,15 +355,15 @@ function unwrapMcpToolResult(result) {
     return result;
 }
 
-function asObject(value) {
+function asObject(value: any): JsonObject | null {
     return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 
-function getValueCaseInsensitiveLocal(object, names) {
+function getValueCaseInsensitiveLocal(object: any, names: string[]) {
     return getValueCaseInsensitive(object, names);
 }
 
-function findFirstDeep(value, names, maxDepth = 5) {
+function findFirstDeep(value: any, names: string[], maxDepth = 5): any {
     if (maxDepth < 0 || value === null || value === undefined) {
         return undefined;
     }
@@ -375,7 +393,7 @@ function findFirstDeep(value, names, maxDepth = 5) {
     return undefined;
 }
 
-function findArraysByKey(value, keyNames, maxDepth = 5, results = []) {
+function findArraysByKey(value: any, keyNames: string[], maxDepth = 5, results: JsonArray[] = []) {
     if (maxDepth < 0 || value === null || value === undefined || results.length >= 20) {
         return results;
     }
@@ -398,7 +416,7 @@ function findArraysByKey(value, keyNames, maxDepth = 5, results = []) {
     return results;
 }
 
-function findObjectsByKey(value, keyNames, maxDepth = 5, results = []) {
+function findObjectsByKey(value: any, keyNames: string[], maxDepth = 5, results: JsonObject[] = []) {
     if (maxDepth < 0 || value === null || value === undefined || results.length >= 20) {
         return results;
     }
@@ -421,7 +439,7 @@ function findObjectsByKey(value, keyNames, maxDepth = 5, results = []) {
     return results;
 }
 
-function coerceString(value) {
+function coerceString(value: any) {
     if (value === null || value === undefined) {
         return null;
     }
@@ -434,7 +452,7 @@ function coerceString(value) {
     return null;
 }
 
-function coerceNumber(value) {
+function coerceNumber(value: any) {
     if (typeof value === "number" && Number.isFinite(value)) {
         return value;
     }
@@ -444,15 +462,15 @@ function coerceNumber(value) {
     return null;
 }
 
-function arraySample(values, maxItems = 25) {
+function arraySample(values: any, maxItems = 25) {
     return [...new Set((Array.isArray(values) ? values : [])
         .map((value) => coerceNumber(value))
         .filter((value) => Number.isFinite(value)))]
         .slice(0, maxItems);
 }
 
-function extractIdsFromParams(params = {}) {
-    const ids = [];
+function extractIdsFromParams(params: JsonObject = {}) {
+    const ids: any[] = [];
     if (params.elementId !== undefined) {
         ids.push(params.elementId);
     }
@@ -467,7 +485,7 @@ function extractIdsFromParams(params = {}) {
     return arraySample(ids, 50);
 }
 
-function summarizeElement(value) {
+function summarizeElement(value: any) {
     const object = asObject(value);
     if (!object) {
         return null;
@@ -497,8 +515,8 @@ function summarizeElement(value) {
     };
 }
 
-function uniqueElements(elements) {
-    const seen = new Set();
+function uniqueElements(elements: any[]) {
+    const seen = new Set<string>();
     return elements.filter((element) => {
         if (!element) {
             return false;
@@ -512,7 +530,7 @@ function uniqueElements(elements) {
     });
 }
 
-function extractElementSummaries(responseTarget, limit) {
+function extractElementSummaries(responseTarget: any, limit: number) {
     const arrays = findArraysByKey(responseTarget, [
         "elements",
         "Elements",
@@ -525,7 +543,7 @@ function extractElementSummaries(responseTarget, limit) {
         "targetElement",
         "TargetElement",
     ]);
-    const elements = [];
+    const elements: any[] = [];
     for (const object of directObjects) {
         elements.push(summarizeElement(object));
     }
@@ -537,7 +555,7 @@ function extractElementSummaries(responseTarget, limit) {
     return uniqueElements(elements).slice(0, limit);
 }
 
-function extractSelectionIds(responseTarget) {
+function extractSelectionIds(responseTarget: any) {
     const raw = findFirstDeep(responseTarget, ["selectionIds", "SelectionIds"], 4);
     if (Array.isArray(raw)) {
         return arraySample(raw, 50);
@@ -545,9 +563,9 @@ function extractSelectionIds(responseTarget) {
     return [];
 }
 
-function extractFileSummaries(responseTarget) {
+function extractFileSummaries(responseTarget: any) {
     const arrays = findArraysByKey(responseTarget, ["files", "Files"], 4);
-    const files = [];
+    const files: JsonObject[] = [];
     for (const array of arrays) {
         for (const item of array.slice(0, 12)) {
             const object = asObject(item);
@@ -567,7 +585,7 @@ function extractFileSummaries(responseTarget) {
     return files.filter((file) => file.path || file.fileName);
 }
 
-function extractViewSummary(responseTarget, names) {
+function extractViewSummary(responseTarget: any, names: string[]) {
     const object = findFirstDeep(responseTarget, names, 4);
     if (!asObject(object)) {
         return null;
@@ -579,11 +597,11 @@ function extractViewSummary(responseTarget, names) {
     };
 }
 
-function uniqueStrings(values, maxItems = 20) {
+function uniqueStrings(values: any[], maxItems = 20) {
     return [...new Set(values.filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim()))].slice(0, maxItems);
 }
 
-function inferDiscipline(categories = [], taskName = "", extraText = "", toolName = "") {
+function inferDiscipline(categories: any[] = [], taskName = "", extraText = "", toolName = "") {
     const text = `${categories.join(" ")} ${taskName} ${extraText} ${toolName}`.toLowerCase();
     if (/\bm\d{2,}[a-z]?\b/i.test(text)) {
         return "mechanical_hvac";
@@ -621,12 +639,12 @@ function inferDiscipline(categories = [], taskName = "", extraText = "", toolNam
     return null;
 }
 
-function buildProjectId(documentPath, documentTitle) {
+function buildProjectId(documentPath: any, documentTitle: any) {
     const identity = documentPath || documentTitle || "";
     return identity ? shortHash(identity) : null;
 }
 
-function firstStringParam(params = {}, names = []) {
+function firstStringParam(params: JsonObject = {}, names: string[] = []) {
     for (const name of names) {
         const value = params?.[name];
         if (typeof value === "string" && value.trim()) {
@@ -636,14 +654,14 @@ function firstStringParam(params = {}, names = []) {
     return null;
 }
 
-function collectStringParams(params = {}, names = []) {
+function collectStringParams(params: JsonObject = {}, names: string[] = []) {
     return names
         .map((name) => params?.[name])
         .filter((value) => typeof value === "string" && value.trim())
         .map((value) => value.trim());
 }
 
-function collectContextText(params = {}, taskName = "", activeView = null, beforeView = null, afterView = null, details = {}) {
+function collectContextText(params: JsonObject = {}, taskName = "", activeView: any = null, beforeView: any = null, afterView: any = null, details: JsonObject = {}) {
     const values = [
         taskName,
         details.toolName,
@@ -672,7 +690,7 @@ function collectContextText(params = {}, taskName = "", activeView = null, befor
         .join(" ");
 }
 
-function inferLevelNameFromText(...values) {
+function inferLevelNameFromText(...values: any[]) {
     const text = values.filter((value) => typeof value === "string" && value.trim()).join(" ");
     if (!text) {
         return null;
@@ -692,7 +710,7 @@ function inferLevelNameFromText(...values) {
     return null;
 }
 
-export function extractProductionContext(details = {}) {
+export function extractProductionContext(details: JsonObject = {}) {
     const responseTarget = details.sourceEventType === "mcp.tool"
         ? unwrapMcpToolResult(details.response)
         : unwrapResponse(details.response);
@@ -814,7 +832,7 @@ export function extractProductionContext(details = {}) {
     };
 }
 
-function recordProductionContextTelemetry(details = {}) {
+function recordProductionContextTelemetry(details: JsonObject = {}) {
     const context = extractProductionContext(details);
     if (!context) {
         return;
@@ -832,14 +850,14 @@ function resolveTelemetryConfig() {
     };
 }
 
-function dateParts(date) {
+function dateParts(date: Date) {
     const year = date.getUTCFullYear().toString();
     const month = String(date.getUTCMonth() + 1).padStart(2, "0");
     const day = String(date.getUTCDate()).padStart(2, "0");
     return { year, month, day, ymd: `${year}-${month}-${day}` };
 }
 
-export function resolveTelemetryTargets(event) {
+export function resolveTelemetryTargets(event: JsonObject) {
     const config = resolveTelemetryConfig();
     if (config.disabled) {
         return [];
@@ -849,7 +867,7 @@ export function resolveTelemetryTargets(event) {
     const parts = dateParts(timestamp);
     const machine = sanitizeTelemetryPathSegment(normalizeMachineName(event.machineName), "unknown-machine");
     const localPath = path.join(config.localRoot, "events", `${parts.ymd}.ndjson`);
-    const targets = [{ kind: "local", path: localPath }];
+    const targets: JsonObject[] = [{ kind: "local", path: localPath }];
 
     if (!config.localOnly && config.reportsRoot) {
         targets.push({
@@ -871,7 +889,7 @@ function resolveLiveConfig() {
     };
 }
 
-function resolveLiveMachineTargets(relativeParts = []) {
+function resolveLiveMachineTargets(relativeParts: string[] = []) {
     const config = resolveLiveConfig();
     if (config.disabled) {
         return [];
@@ -879,7 +897,7 @@ function resolveLiveMachineTargets(relativeParts = []) {
 
     const machine = sanitizeTelemetryPathSegment(normalizeMachineName(process.env.COMPUTERNAME || os.hostname()), "unknown-machine");
     const parts = ["machines", machine, ...relativeParts];
-    const targets = [
+    const targets: JsonObject[] = [
         {
             kind: "local",
             path: path.join(config.localRoot, ...parts),
@@ -896,7 +914,7 @@ function resolveLiveMachineTargets(relativeParts = []) {
     return targets;
 }
 
-function publicLiveTask(task) {
+function publicLiveTask(task: LiveTask | null | undefined) {
     if (!task) {
         return null;
     }
@@ -918,7 +936,7 @@ function publicLiveTask(task) {
     };
 }
 
-function publicRevitStatusTask(task) {
+function publicRevitStatusTask(task: any) {
     if (!task || typeof task !== "object") {
         return null;
     }
@@ -939,7 +957,7 @@ function publicRevitStatusTask(task) {
     };
 }
 
-function normalizeRevitStatusPayload(status) {
+function normalizeRevitStatusPayload(status: any) {
     if (!status || typeof status !== "object") {
         return null;
     }
@@ -956,7 +974,7 @@ function normalizeRevitStatusPayload(status) {
     };
 }
 
-export function recordLiveRevitStatus(status) {
+export function recordLiveRevitStatus(status: any) {
     if (liveStatusDisabled()) {
         return;
     }
@@ -1016,7 +1034,7 @@ function buildLiveStatusSnapshot(reason = "activity") {
     };
 }
 
-function hasUsefulLiveStatusData(status) {
+function hasUsefulLiveStatusData(status: any) {
     const recentTasks = Array.isArray(status?.revitStatus?.recentTasks) ? status.revitStatus.recentTasks : [];
     const activeTasks = Array.isArray(status?.activeTasks) ? status.activeTasks : [];
     const recentActivity = Array.isArray(status?.recentActivity) ? status.recentActivity : [];
@@ -1029,12 +1047,12 @@ function hasUsefulLiveStatusData(status) {
     );
 }
 
-function liveStatusAgeMs(status) {
+function liveStatusAgeMs(status: any) {
     const ms = Date.parse(String(status?.generatedAtUtc || status?.lastHeartbeatUtc || ""));
     return Number.isFinite(ms) ? Math.max(0, Date.now() - ms) : Number.POSITIVE_INFINITY;
 }
 
-function mergeExistingLiveStatusSnapshot(filePath, snapshot) {
+function mergeExistingLiveStatusSnapshot(filePath: string, snapshot: JsonObject) {
     if (hasUsefulLiveStatusData(snapshot)) {
         return snapshot;
     }
@@ -1077,8 +1095,8 @@ function writeLiveStatusSnapshot(reason = "activity") {
     }
 }
 
-function rememberLiveActivity(event) {
-    const task = {
+function rememberLiveActivity(event: JsonObject) {
+    const task: LiveTask = {
         liveTaskId: event.liveTaskId,
         scope: event.scope,
         toolName: event.toolName,
@@ -1123,7 +1141,7 @@ function rememberLiveActivity(event) {
     }
 }
 
-function writeLiveActivity(event) {
+function writeLiveActivity(event: JsonObject) {
     rememberLiveActivity(event);
     const parts = dateParts(new Date(event.timestampUtc || Date.now()));
     for (const target of resolveLiveMachineTargets(["activity", `${parts.ymd}.ndjson`])) {
@@ -1136,7 +1154,7 @@ function writeLiveActivity(event) {
     writeLiveStatusSnapshot(event.phase);
 }
 
-function buildLiveTaskId(details = {}, startedAtMs) {
+function buildLiveTaskId(details: JsonObject = {}, startedAtMs: number) {
     if (details.taskId) {
         return String(details.taskId);
     }
@@ -1152,7 +1170,7 @@ function buildLiveTaskId(details = {}, startedAtMs) {
     ].join("|"));
 }
 
-export function recordLiveActivityStarted(details = {}) {
+export function recordLiveActivityStarted(details: JsonObject = {}) {
     if (liveStatusDisabled()) {
         return null;
     }
@@ -1193,7 +1211,7 @@ export function recordLiveActivityStarted(details = {}) {
     };
 }
 
-export function recordLiveActivityFinished(task, details = {}) {
+export function recordLiveActivityFinished(task: any, details: JsonObject = {}) {
     if (!task || liveStatusDisabled()) {
         return;
     }
@@ -1244,7 +1262,7 @@ function startLiveStatusHeartbeat() {
     }
 }
 
-export function buildTelemetryEvent(partial = {}) {
+export function buildTelemetryEvent(partial: JsonObject = {}): JsonObject {
     const installedState = readInstalledState();
     const runtimeVersion = installedState?.version || null;
     return {
@@ -1270,7 +1288,7 @@ export function buildTelemetryEvent(partial = {}) {
     };
 }
 
-export async function recordTelemetryEvent(partial = {}) {
+export async function recordTelemetryEvent(partial: JsonObject = {}) {
     if (telemetryDisabled()) {
         return;
     }
@@ -1287,7 +1305,7 @@ export function recordRuntimeSessionStart() {
     });
 }
 
-export function recordRevitCommandTelemetry(details = {}) {
+export function recordRevitCommandTelemetry(details: JsonObject = {}) {
     const durationMs = Math.max(0, Date.now() - (details.startedAtMs || Date.now()));
     const responseSummary = summarizeTelemetryResponse(details.response, details.error);
     void recordTelemetryEvent({
@@ -1317,17 +1335,17 @@ export function recordRevitCommandTelemetry(details = {}) {
     });
 }
 
-function shouldRecordMcpTool(name) {
+function shouldRecordMcpTool(name: string) {
     if (name === "get_revit_mcp_status" && !isTruthy(process.env.REVAGENT_TELEMETRY_INCLUDE_STATUS)) {
         return false;
     }
     return true;
 }
 
-export function wrapServerWithTelemetry(server) {
+export function wrapServerWithTelemetry(server: any) {
     return {
         ...server,
-        tool(name, description, schema, handler) {
+        tool(name: string, description: any, schema: any, handler: any) {
             let actualDescription = description;
             let actualSchema = schema;
             let actualHandler = handler;
@@ -1337,7 +1355,7 @@ export function wrapServerWithTelemetry(server) {
                 actualDescription = "";
             }
 
-            const wrappedHandler = async (args, extra) => {
+            const wrappedHandler = async (args: any, extra: any) => {
                 const startedAtMs = Date.now();
                 const shouldRecord = shouldRecordMcpTool(name);
                 const liveTask = shouldRecord

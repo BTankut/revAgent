@@ -21,9 +21,7 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 }
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
-$allowedNoCheck = @(
-    "installer\runtime-mcp-server\src\utils\telemetry.ts"
-)
+$allowedNoCheck = @()
 
 $allowSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 foreach ($path in $allowedNoCheck) {
