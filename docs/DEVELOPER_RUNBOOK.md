@@ -152,14 +152,22 @@ used. Production NAS releases should be published from a clean tree.
 ## Normal Development Workflow
 
 1. Pull latest `main`.
-2. Inspect existing patterns before editing.
-3. Make the smallest safe change in source files.
-4. If Revit add-in source changed, rebuild the plugin payload.
-5. Run targeted validation.
-6. Commit source and generated payload together when payload is affected.
-7. Push `main`.
-8. Publish the tested release to NAS `stable`.
-9. Verify one real Revit workstation after the stable publish.
+2. Create a topic branch such as `codex/<short-topic>`.
+3. Inspect existing patterns before editing.
+4. Make the smallest safe change in source files.
+5. If Revit add-in source, DLL, or command payload changed, rebuild the plugin
+   payload and keep full Revit payload freshness local-only.
+6. Run targeted validation. For Revit C#/DLL/command-payload changes, a green
+   `Engineering gates` CI result is not enough; before deployment, also run
+   the local live gate (`scripts/test-commandset-live.ps1`) and full DLL/Revit
+   payload freshness. CI intentionally does not cover this surface.
+7. Commit source and generated payload together when payload is affected.
+8. Push the topic branch and open a pull request. See `Git Commit And Push` for
+   the exact protected branch workflow.
+9. Merge only after the required `Engineering gates` check is green.
+10. Update local `main` with `git pull --ff-only`.
+11. Publish the tested release to NAS `stable`.
+12. Verify one real Revit workstation after the stable publish.
 
 Useful baseline commands:
 
@@ -193,6 +201,10 @@ Commit together:
 - relevant docs
 
 Do not publish an add-in change if the payload binaries were not refreshed.
+For Revit C#/DLL/command-payload changes, the CI `Engineering gates` check is
+not sufficient for deployment readiness. Run the full payload freshness check
+and the local live commandset gate before NAS publish; these checks are
+intentionally local-only in the Definition Of Done table.
 
 ## Runtime And Docs MCP Development
 
