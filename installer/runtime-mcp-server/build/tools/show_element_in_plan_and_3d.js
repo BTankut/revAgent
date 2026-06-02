@@ -1,18 +1,11 @@
 import { z } from "zod";
-import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, trimPlanCandidatesInPayload, } from "../utils/revitToolHelpers.js";
+import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, readCasedField as readField, sendRevitCommand, taskMetadataSchema, trimPlanCandidatesInPayload, } from "../utils/revitToolHelpers.js";
 const elementIdSchema = z.union([
     z.number().int().positive(),
     z.string().regex(/^\d+$/),
 ]);
 function unwrapResponse(response) {
     return response && response.result ? response.result : response;
-}
-function readField(payload, pascalName, camelName) {
-    if (!payload || typeof payload !== "object") {
-        return undefined;
-    }
-    const normalizedCamelName = camelName ?? pascalName.charAt(0).toLowerCase() + pascalName.slice(1);
-    return payload[pascalName] ?? payload[normalizedCamelName];
 }
 function isSuccess(payload) {
     if (!payload || typeof payload !== "object") {
@@ -280,9 +273,9 @@ export function registerShowElementInPlanAnd3DTool(server) {
                 return formatJsonContent(fullPayload);
             }
             return formatJsonContent({
-                Success: fullPayload.Success,
+                Success: readField(fullPayload, "Success", "success"),
                 Action: fullPayload.Action,
-                Message: fullPayload.Message,
+                Message: readField(fullPayload, "Message", "message"),
                 ResponseMode: "compact",
                 ChosenElementId: chosenElementId,
                 ChosenElement: compactElement(chosenElement),

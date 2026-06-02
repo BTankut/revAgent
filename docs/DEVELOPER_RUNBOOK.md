@@ -372,6 +372,68 @@ with a status-message sanitizer.
 This local flow does not run `publish-nas-release.ps1` and does not touch
 `channels\stable.json`.
 
+## Definition Of Done
+
+Use this table to decide whether a development change is ready for review,
+push, release, or manual Revit validation. CI-safe gates run without Revit, NAS
+shares, ProgramData installs, admin rights, or live dashboard state. Local-only
+gates stay manual because they need a real workstation, Revit session, NAS
+access, or deployment approval.
+
+CI-safe aggregate gate:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-ci.ps1
+```
+
+`test-ci.ps1` installs both MCP packages with `npm ci`, runs forced strict
+TypeScript checks in both packages, checks the zero `@ts-nocheck` policy,
+verifies MCP build payload freshness with
+`test-mcp-build-payload-freshness.ps1 -McpOnly`, then runs both package
+`npm test` chains. Freshness intentionally runs before `npm test` because
+`npm run build` rewrites the local `build/` folder in the CI workspace.
+
+| Invariant | Enforcing script/test | CI job | Local-only note |
+| --- | --- | --- | --- |
+| TypeScript stays strict and unmasked | `scripts/test-typescript-nocheck-policy.ps1` plus forced `tsc --noEmit --strict --noImplicitAny --strictNullChecks --useUnknownInCatchVariables` in both MCP packages | `Engineering gates` | - |
+| New `@ts-nocheck` usage is blocked | `scripts/test-typescript-nocheck-policy.ps1` | `Engineering gates` | - |
+| Runtime MCP package still builds and passes local characterization tests | `installer/runtime-mcp-server` `npm test` | `Engineering gates` | - |
+| Revit API docs MCP package still builds and smoke-tests | `installer/revit-api-docs-mcp` `npm test` | `Engineering gates` | - |
+| MCP build payloads match TypeScript source | `scripts/test-mcp-build-payload-freshness.ps1 -McpOnly` | `Engineering gates` | Full Revit DLL payload freshness remains local-only. |
+| Bridge result contract stays canonical and idempotent | runtime `bridge-result-contract-test` via `npm test` | `Engineering gates` | Live Revit skew checks remain local-only. |
+| Production write tools keep guard/verification contracts | runtime `write-tool-contract-test` via `npm test` | `Engineering gates` | - |
+| Tool argument schema inference does not collapse to `any` | runtime `tool-inference-test` via `npm test` | `Engineering gates` | - |
+| Runtime tools do not reintroduce raw PascalCase bridge response member-access | runtime `casing-member-access-test` via `npm test` | `Engineering gates` | Compatibility helpers may still read legacy casing through string-literal helper calls. |
+| Live commandset behavior is valid in Revit | `scripts/test-commandset-live.ps1` | No | Requires Revit 2022 open with an active document. |
+| Live dashboard helpers and publish backfill are valid | `scripts/test-live-dashboard.ps1` or `scripts/test-all.ps1` | No | Local-only; not part of the CI-safe gate. |
+| NAS publish/update/install behavior is valid | `installer\nas\publish-nas-release.ps1`, updater tools, and manual workstation verification | No | Requires human-approved deployment flow and NAS access. |
+
+The GitHub Actions workflow at `.github/workflows/ci.yml` runs the
+`Engineering gates` job on `push` to `main`, pull requests targeting `main`,
+and manual `workflow_dispatch`.
+
+Important: CI alone reports a bad direct push after it lands. To physically
+block broken changes from entering `main`, configure GitHub branch protection
+for `main`:
+
+1. Require pull requests before merge.
+2. Require the `Engineering gates` status check to pass.
+3. Disable direct push or admin bypass if the repository policy allows it.
+
+`better-sqlite3` is installed normally in CI through `npm ci`; do not use
+`--ignore-scripts` unless a CI failure proves that the sqlite native install is
+the only blocking issue and the runtime tests do not load that native module.
+
+Optional local pre-push hooks are available but are not enabled automatically:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-git-hooks.ps1
+```
+
+The hook runs `scripts/test-pre-push.ps1`, which performs the fast forced
+strict TypeScript checks and the `@ts-nocheck` policy check. It is an early
+local warning only; CI plus branch protection remains the authoritative gate.
+
 ## Revit MCP Runtime Rule
 
 Before every non-status Revit MCP runtime command:

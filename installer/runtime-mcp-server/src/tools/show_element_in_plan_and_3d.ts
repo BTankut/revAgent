@@ -4,6 +4,7 @@ import {
     connectionTargetSchema,
     executionOptionsFromArgs,
     formatJsonContent,
+    readCasedField as readField,
     sendRevitCommand,
     taskMetadataSchema,
     trimPlanCandidatesInPayload,
@@ -18,14 +19,6 @@ type JsonObject = Record<string, any>;
 
 function unwrapResponse(response: any) {
     return response && response.result ? response.result : response;
-}
-
-function readField(payload: any, pascalName: string, camelName?: string) {
-    if (!payload || typeof payload !== "object") {
-        return undefined;
-    }
-    const normalizedCamelName = camelName ?? pascalName.charAt(0).toLowerCase() + pascalName.slice(1);
-    return payload[pascalName] ?? payload[normalizedCamelName];
 }
 
 function isSuccess(payload: any) {
@@ -309,9 +302,9 @@ export function registerShowElementInPlanAnd3DTool(server: ToolServer) {
             }
 
             return formatJsonContent({
-                Success: fullPayload.Success,
+                Success: readField(fullPayload, "Success", "success"),
                 Action: fullPayload.Action,
-                Message: fullPayload.Message,
+                Message: readField(fullPayload, "Message", "message"),
                 ResponseMode: "compact",
                 ChosenElementId: chosenElementId,
                 ChosenElement: compactElement(chosenElement),

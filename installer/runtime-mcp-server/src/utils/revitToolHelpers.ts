@@ -57,6 +57,14 @@ export function taskMetadataSchema(z: any) {
     };
 }
 
+export function readCasedField(payload: any, pascalName: string, camelName?: string) {
+    if (!payload || typeof payload !== "object") {
+        return undefined;
+    }
+    const normalizedCamelName = camelName ?? pascalName.charAt(0).toLowerCase() + pascalName.slice(1);
+    return payload[pascalName] ?? payload[normalizedCamelName];
+}
+
 export function connectionOptionsFromArgs(args: ConnectionArgs = {}) {
     return {
         target: args.target,

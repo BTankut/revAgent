@@ -11,7 +11,8 @@
 
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = ""
+    [string]$RepoRoot = "",
+    [switch]$McpOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -137,12 +138,20 @@ function Assert-RevitPayloadFresh {
 
 Assert-BuildFresh -PackageRelativePath "installer\runtime-mcp-server"
 Assert-BuildFresh -PackageRelativePath "installer\revit-api-docs-mcp"
-Assert-RevitPayloadFresh -SourceRelativePath "src\revit-plugin\revit-mcp-plugin" -PayloadRelativePaths @(
-    "installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
-)
-Assert-RevitPayloadFresh -SourceRelativePath "src\revit-plugin\RevitMCPCommandSet" -PayloadRelativePaths @(
-    "installer\command-payload\RevitMCPCommandSet.dll",
-    "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet\2022\RevitMCPCommandSet.dll"
-)
 
-Write-Host "MCP and Revit payload freshness passed." -ForegroundColor Green
+if (-not $McpOnly) {
+    Assert-RevitPayloadFresh -SourceRelativePath "src\revit-plugin\revit-mcp-plugin" -PayloadRelativePaths @(
+        "installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
+    )
+    Assert-RevitPayloadFresh -SourceRelativePath "src\revit-plugin\RevitMCPCommandSet" -PayloadRelativePaths @(
+        "installer\command-payload\RevitMCPCommandSet.dll",
+        "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet\2022\RevitMCPCommandSet.dll"
+    )
+}
+
+if ($McpOnly) {
+    Write-Host "MCP build payload freshness passed." -ForegroundColor Green
+}
+else {
+    Write-Host "MCP and Revit payload freshness passed." -ForegroundColor Green
+}

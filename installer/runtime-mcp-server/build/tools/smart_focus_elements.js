@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, trimPlanCandidatesInPayload, } from "../utils/revitToolHelpers.js";
+import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, readCasedField as readField, sendRevitCommand, taskMetadataSchema, trimPlanCandidatesInPayload, } from "../utils/revitToolHelpers.js";
 const elementIdSchema = z.union([
     z.number().int().positive(),
     z.string().regex(/^\d+$/),
@@ -11,13 +11,8 @@ function isSuccess(payload) {
     if (!payload || typeof payload !== "object") {
         return false;
     }
-    if (Object.prototype.hasOwnProperty.call(payload, "Success")) {
-        return payload.Success !== false;
-    }
-    if (Object.prototype.hasOwnProperty.call(payload, "success")) {
-        return payload.success !== false;
-    }
-    return true;
+    const success = readField(payload, "Success", "success");
+    return success !== false;
 }
 function compactView(view) {
     if (!view || typeof view !== "object") {
@@ -38,9 +33,9 @@ function compactFocusResult(result) {
     }
     const planCandidates = result.PlanCandidates ?? result.planCandidates;
     return {
-        success: result.Success ?? result.success,
-        message: result.Message ?? result.message,
-        error: result.Error ?? result.error,
+        success: readField(result, "Success", "success"),
+        message: readField(result, "Message", "message"),
+        error: readField(result, "Error", "error"),
         focusBlocked: result.FocusBlocked ?? result.focusBlocked,
         focusBlockReason: result.FocusBlockReason ?? result.focusBlockReason,
         focusSuggestion: result.FocusSuggestion ?? result.focusSuggestion,
@@ -67,9 +62,9 @@ function compactFocusResult(result) {
 }
 function compactSmartFocusPayload(payload) {
     return {
-        Success: payload.Success,
+        Success: readField(payload, "Success", "success"),
         Action: payload.Action,
-        Message: payload.Message,
+        Message: readField(payload, "Message", "message"),
         ResponseMode: "compact",
         Mode: payload.Mode,
         UsedStep: payload.UsedStep,
@@ -150,7 +145,7 @@ export function registerSmartFocusElementsTool(server) {
                         Success: false,
                         Action: "smart_focus_elements",
                         Mode: mode,
-                        Error: activeFocus && activeFocus.Error ? activeFocus.Error : "Active/requested view focus failed.",
+                        Error: readField(activeFocus, "Error", "error") || "Active/requested view focus failed.",
                         Focus: activeFocus,
                     });
                 }
@@ -171,7 +166,7 @@ export function registerSmartFocusElementsTool(server) {
                     Success: false,
                     Action: "smart_focus_elements",
                     Mode: mode,
-                    Error: planFocus && (planFocus.Error ?? planFocus.error) ? planFocus.Error ?? planFocus.error : "Same-level existing plan focus failed.",
+                    Error: readField(planFocus, "Error", "error") || "Same-level existing plan focus failed.",
                     Focus: activeFocus,
                     Plan: planFocus,
                 });

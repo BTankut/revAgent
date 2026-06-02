@@ -4,13 +4,14 @@ import {
     connectionTargetSchema,
     executionOptionsFromArgs,
     formatJsonContent,
+    readCasedField as readField,
     sendRevitCommand,
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
 
 function addWriteSafetyGuidance(payload: any) {
     if (!payload || typeof payload !== "object") return payload;
-    const success = payload.success ?? payload.Success;
+    const success = readField(payload, "Success", "success");
     if (success === false) return payload;
 
     const count = Number(payload.count ?? payload.Count ?? 0);

@@ -1,16 +1,9 @@
 import { z } from "zod";
-import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, trimPlanCandidatesInPayload, } from "../utils/revitToolHelpers.js";
+import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, readCasedField as readField, sendRevitCommand, taskMetadataSchema, trimPlanCandidatesInPayload, } from "../utils/revitToolHelpers.js";
 const elementIdSchema = z.union([
     z.number().int().positive(),
     z.string().regex(/^\d+$/),
 ]);
-function readField(payload, pascalName, camelName) {
-    if (!payload || typeof payload !== "object") {
-        return undefined;
-    }
-    const normalizedCamelName = camelName ?? pascalName.charAt(0).toLowerCase() + pascalName.slice(1);
-    return payload[pascalName] ?? payload[normalizedCamelName];
-}
 function compactView(view) {
     if (!view || typeof view !== "object")
         return view;

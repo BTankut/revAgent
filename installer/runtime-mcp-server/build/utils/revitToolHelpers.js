@@ -14,6 +14,13 @@ export function taskMetadataSchema(z) {
         taskId: z.string().optional().describe("Optional client task identifier forwarded to Revit status history."),
     };
 }
+export function readCasedField(payload, pascalName, camelName) {
+    if (!payload || typeof payload !== "object") {
+        return undefined;
+    }
+    const normalizedCamelName = camelName ?? pascalName.charAt(0).toLowerCase() + pascalName.slice(1);
+    return payload[pascalName] ?? payload[normalizedCamelName];
+}
 export function connectionOptionsFromArgs(args = {}) {
     return {
         target: args.target,

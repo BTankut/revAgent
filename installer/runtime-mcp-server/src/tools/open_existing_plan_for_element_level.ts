@@ -4,6 +4,7 @@ import {
     connectionTargetSchema,
     executionOptionsFromArgs,
     formatJsonContent,
+    readCasedField as readField,
     sendRevitCommand,
     taskMetadataSchema,
     trimPlanCandidatesInPayload,
@@ -13,14 +14,6 @@ const elementIdSchema = z.union([
     z.number().int().positive(),
     z.string().regex(/^\d+$/),
 ]);
-
-function readField(payload: any, pascalName: string, camelName?: string) {
-    if (!payload || typeof payload !== "object") {
-        return undefined;
-    }
-    const normalizedCamelName = camelName ?? pascalName.charAt(0).toLowerCase() + pascalName.slice(1);
-    return payload[pascalName] ?? payload[normalizedCamelName];
-}
 
 function compactView(view: any) {
     if (!view || typeof view !== "object") return view;
