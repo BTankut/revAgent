@@ -29,6 +29,15 @@ function isSuccess(payload: any) {
     return success !== false;
 }
 
+function isGuardedResult(payload: any) {
+    if (!payload || typeof payload !== "object") {
+        return false;
+    }
+    return readField(payload, "Guarded", "guarded") === true ||
+        readField(payload, "State", "state") === "guarded" ||
+        readField(payload, "FocusBlocked", "focusBlocked") === true;
+}
+
 function compactView(view: any) {
     if (!view || typeof view !== "object") {
         return view || null;
@@ -79,20 +88,63 @@ function compactFocusResult(result: any) {
 
 function compactSmartFocusPayload(payload: JsonObject) {
     return {
-        Success: readField(payload, "Success", "success"),
-        Action: payload.Action,
-        Message: readField(payload, "Message", "message"),
-        ResponseMode: "compact",
-        Mode: payload.Mode,
-        UsedStep: payload.UsedStep,
-        FocusSummary: compactFocusResult(payload.Focus),
-        PlanSummary: compactFocusResult(payload.Plan),
-        ThreeDSummary: compactFocusResult(payload.ThreeD),
+        success: readField(payload, "Success", "success"),
+        guarded: readField(payload, "Guarded", "guarded") === true,
+        state: readField(payload, "State", "state"),
+        action: readField(payload, "Action", "action"),
+        message: readField(payload, "Message", "message"),
+        error: readField(payload, "Error", "error"),
+        resultContractVersion: readField(payload, "ResultContractVersion", "resultContractVersion"),
+        responseMode: "compact",
+        mode: payload.mode ?? payload.Mode,
+        usedStep: payload.usedStep ?? payload.UsedStep,
+        focusSummary: compactFocusResult(payload.focus ?? payload.Focus),
+        planSummary: compactFocusResult(payload.plan ?? payload.Plan),
+        threeDSummary: compactFocusResult(payload.threeD ?? payload.ThreeD),
+    };
+}
+
+function firstResultContractVersion(...payloads: any[]) {
+    for (const payload of payloads) {
+        const raw = readField(payload, "ResultContractVersion", "resultContractVersion");
+        const parsed = Number.parseInt(String(raw ?? ""), 10);
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+    return null;
+}
+
+function workflowPayload(args: {
+    success: boolean;
+    guarded?: boolean;
+    message?: string;
+    error?: string;
+    mode: string;
+    usedStep?: string;
+    focus?: JsonObject | null;
+    plan?: JsonObject | null;
+    threeD?: JsonObject | null;
+}) {
+    const guarded = args.guarded === true;
+    return {
+        success: args.success,
+        guarded,
+        state: guarded ? "guarded" : args.success ? "completed" : "failed",
+        action: "smart_focus_elements",
+        message: args.message,
+        error: args.error,
+        resultContractVersion: firstResultContractVersion(args.focus, args.plan, args.threeD),
+        mode: args.mode,
+        usedStep: args.usedStep,
+        focus: args.focus,
+        plan: args.plan,
+        threeD: args.threeD,
     };
 }
 
 export function registerSmartFocusElementsTool(server: ToolServer) {
-    server.tool("smart_focus_elements", "[LIVE_VIEW_WORKFLOW_WRAPPER] Focus Revit elements without triggering Revit's modal closed-view search. It can try the active/requested view first, then open the best existing same-level plan, and optionally create/reuse a 3D view. Use this for live Revit focus/navigation, not image artifact export.", {
+    server.tool("smart_focus_elements", "[LIVE_VIEW_WORKFLOW_WRAPPER] Focus Revit elements without triggering Revit's modal closed-view search. It can try the active/requested view first, then open the best existing same-level plan, and optionally create/reuse a 3D view. When create3d=true, the 3D step runs after whichever live focus step succeeds. Use this for live Revit focus/navigation, not image artifact export.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         elementIds: z.array(elementIdSchema).min(1).describe("ElementId values to select and show."),
@@ -106,7 +158,7 @@ export function registerSmartFocusElementsTool(server: ToolServer) {
         select: z.boolean().optional().describe("Select the supplied elements. Defaults true."),
         zoom: z.boolean().optional().describe("Zoom/show the supplied elements. Defaults true."),
         fitToScreen: z.boolean().optional().describe("Run Revit UI ZoomToFit after focus. Defaults false."),
-        create3d: z.boolean().optional().describe("After plan focus, create/reuse a focused 3D view for all supplied elements. Defaults false."),
+        create3d: z.boolean().optional().describe("After the successful active/requested-view or plan focus step, create/reuse a focused 3D view for all supplied elements. Defaults false."),
         viewName3d: z.string().optional().describe("Desired 3D view name when create3d=true."),
         reuseExisting3d: z.boolean().optional().describe("Reuse an existing 3D view with the same name when create3d=true. Defaults true."),
         sectionBox: z.boolean().optional().describe("Apply a section box in the 3D view when create3d=true. Defaults false."),
@@ -143,32 +195,56 @@ export function registerSmartFocusElementsTool(server: ToolServer) {
                 }, options));
 
                 if (activeFocus && isSuccess(activeFocus)) {
-                    const fullPayload = trimPlanCandidatesInPayload({
-                        Success: true,
-                        Action: "smart_focus_elements",
-                        Message: "Elements were focused in the active/requested view.",
-                        Mode: mode,
-                        UsedStep: "activeOrRequestedView",
-                        Focus: activeFocus,
-                    }, {
+                    if (args.create3d === true) {
+                        threeD = unwrapResponse(await sendRevitCommand("create_3d_view_for_elements", {
+                            elementIds: args.elementIds,
+                            viewName: args.viewName3d,
+                            reuseExisting: args.reuseExisting3d,
+                            createIfMissing: true,
+                            sectionBox: args.sectionBox,
+                            paddingMm: args.paddingMm,
+                            cameraOrientation: args.cameraOrientation,
+                            framingPaddingMm: args.framingPaddingMm,
+                            activate: true,
+                            select: args.select,
+                            zoom: args.zoom,
+                            fitToScreen: args.fitToScreen,
+                            allowPartial: args.allowPartial,
+                            timeoutMs: args.timeoutMs,
+                            taskName: "Smart focus optional 3D view after active/requested focus",
+                        }, options));
+                    }
+
+                    const success = args.create3d === true ? Boolean(threeD && isSuccess(threeD)) : true;
+                    const fullPayload = trimPlanCandidatesInPayload(workflowPayload({
+                        success,
+                        message: args.create3d === true
+                            ? success
+                                ? "Elements were focused in the active/requested view and focused in 3D."
+                                : "Elements were focused in the active/requested view, but the 3D step failed."
+                            : "Elements were focused in the active/requested view.",
+                        mode,
+                        usedStep: args.create3d === true ? "activeOrRequestedViewThen3D" : "activeOrRequestedView",
+                        focus: activeFocus,
+                        threeD,
+                    }), {
                         verboseCandidates: args.verboseCandidates,
                         maxPlanCandidates: args.maxPlanCandidates ?? 3,
                     });
-                    return formatJsonContent(args.responseMode === "full"
+                    return formatJsonContent(args.responseMode === "full" || !success
                         ? fullPayload
                         : compactSmartFocusPayload(fullPayload));
                 }
 
-                const activeFocusBlocked = activeFocus &&
-                    (activeFocus.FocusBlocked === true || activeFocus.focusBlocked === true);
+                const activeFocusBlocked = isGuardedResult(activeFocus);
                 if (mode === "activeOnly" || !activeFocus || !activeFocusBlocked) {
-                    return formatJsonContent({
-                        Success: false,
-                        Action: "smart_focus_elements",
-                        Mode: mode,
-                        Error: readField(activeFocus, "Error", "error") || "Active/requested view focus failed.",
-                        Focus: activeFocus,
-                    });
+                    return formatJsonContent(workflowPayload({
+                        success: false,
+                        guarded: activeFocusBlocked,
+                        mode,
+                        error: readField(activeFocus, "Error", "error") || "Active/requested view focus failed.",
+                        focus: activeFocus,
+                    }));
                 }
             }
 
@@ -185,14 +261,14 @@ export function registerSmartFocusElementsTool(server: ToolServer) {
             }, options));
 
             if (!planFocus || !isSuccess(planFocus)) {
-                return formatJsonContent({
-                    Success: false,
-                    Action: "smart_focus_elements",
-                    Mode: mode,
-                    Error: readField(planFocus, "Error", "error") || "Same-level existing plan focus failed.",
-                    Focus: activeFocus,
-                    Plan: planFocus,
-                });
+                return formatJsonContent(workflowPayload({
+                    success: false,
+                    guarded: isGuardedResult(planFocus),
+                    mode,
+                    error: readField(planFocus, "Error", "error") || "Same-level existing plan focus failed.",
+                    focus: activeFocus,
+                    plan: planFocus,
+                }));
             }
 
             if (args.create3d === true) {
@@ -216,20 +292,19 @@ export function registerSmartFocusElementsTool(server: ToolServer) {
             }
 
             const success = args.create3d === true ? Boolean(threeD && isSuccess(threeD)) : true;
-            const fullPayload = trimPlanCandidatesInPayload({
-                Success: success,
-                Action: "smart_focus_elements",
-                Message: args.create3d === true
+            const fullPayload = trimPlanCandidatesInPayload(workflowPayload({
+                success,
+                message: args.create3d === true
                     ? success
                         ? "Elements were focused in a same-level plan and focused in 3D."
                         : "Elements were focused in a same-level plan, but the 3D step failed."
                     : "Elements were focused in a same-level plan.",
-                Mode: mode,
-                UsedStep: args.create3d === true ? "elementLevelPlanThen3D" : "elementLevelPlan",
-                Focus: activeFocus,
-                Plan: planFocus,
-                ThreeD: threeD,
-            }, {
+                mode,
+                usedStep: args.create3d === true ? "elementLevelPlanThen3D" : "elementLevelPlan",
+                focus: activeFocus,
+                plan: planFocus,
+                threeD,
+            }), {
                 verboseCandidates: args.verboseCandidates,
                 maxPlanCandidates: args.maxPlanCandidates ?? 3,
             });
@@ -238,11 +313,11 @@ export function registerSmartFocusElementsTool(server: ToolServer) {
                 : compactSmartFocusPayload(fullPayload));
         }
         catch (error) {
-            return formatJsonContent({
-                Success: false,
-                Action: "smart_focus_elements",
-                Error: error instanceof Error ? error.message : String(error),
-            });
+            return formatJsonContent(workflowPayload({
+                success: false,
+                mode: args.mode || "unknown",
+                error: error instanceof Error ? error.message : String(error),
+            }));
         }
     });
 }

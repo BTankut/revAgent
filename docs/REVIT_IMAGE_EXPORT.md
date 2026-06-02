@@ -42,6 +42,10 @@ status preflight and single-command rule.
     Target-pixel detection is QA-only. Missing highlight pixels are reported as
     warnings for surface-highlight styles and as notices for `raw` /
     `outline_only`.
+  - Guarded target evidence: if `elementIds` are provided but none resolve in
+    the model, the tool returns guarded `no_requested_elements_found` by
+    default. Set `allowFullViewFallback=true` only when a full 3D context image
+    is intentionally acceptable.
   - Cleanup/audit: the response reports `view.created`, `createdViews`, and
     `cleanup.cleanupAfterExportRequested` /
     `cleanup.cleanupAfterExportApplied` so temporary review views are visible
@@ -194,8 +198,11 @@ architectural backgrounds at the same time, prefer the coordination tool:
 
 1. Inspect or select the elements that matter.
 2. Use `export_revit_coordination_image` with those element ids.
-3. Review the generated 3D QA view and exported image.
-4. If the image is still noisy, reduce the element scope or create a more
+3. If all requested ids are missing, treat the guarded response as protected
+   behavior; do not accept a full 3D fallback as target evidence unless
+   `allowFullViewFallback=true` was explicit.
+4. Review the generated 3D QA view and exported image.
+5. If the image is still noisy, reduce the element scope or create a more
    focused view before exporting.
 
 Element scope matters. If the selected ducts or pipes are long and spread

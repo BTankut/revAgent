@@ -83,12 +83,13 @@ reads/scans so agents do not have to generate broad ad hoc C# loops over every
 schedule and every cell. `set_schedule_cells` is the paired write path for known
 schedule cells: it never resolves by schedule name, defaults to dry-run, blocks
 stale cells with `expectedCurrentText` unless explicitly allowed, commits
-through the wrapper transaction, and verifies the final cell text.
+through the wrapper transaction, guards non-writable standard schedule body
+cells as `non_writable_standard_body_cell`, and verifies the final cell text.
 `set_schedule_cells_by_text` covers the common production workflow where the
 operator knows a sheet/schedule and visible row label but not exact coordinates:
 it requires bounded scope, previews row matches, blocks ambiguous matches by
 default, supports `expectedCurrentText`, commits through the wrapper
-transaction, and verifies readback.
+transaction, uses the same standard body-cell guard, and verifies readback.
 
 The companion docs server registers 5 lookup tools: `search_api`,
 `get_type_details`, `get_member_details`, `list_namespace`, and

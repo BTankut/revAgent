@@ -105,6 +105,9 @@ Available runtime tools:
   use softer styles only for report, presentation, or native technical output.
   The `auto` style is report-friendly and never selects `qa_high_contrast`;
   request `qa_high_contrast` explicitly when strong QA marking is required.
+  If `elementIds` are supplied but none are found, the default result is
+  guarded `no_requested_elements_found`; full 3D fallback evidence requires
+  explicit `allowFullViewFallback=true`.
   Pass `cleanupAfterExport=true` when a newly created review view should be
   removed after the image file is produced. Existing reused review views are
   kept to avoid deleting operator-owned project data.
@@ -121,6 +124,9 @@ Practical use:
    for focused 3D evidence.
    For single-target exports, prefer the normal model-first result:
    `cropBasis: "model_bbox_projection"` and `postProcessedCropApplied=false`.
+   If all requested element ids are missing, treat the guarded result as
+   protected behavior; do not use a full 3D fallback image as target evidence
+   unless the caller explicitly allowed it.
 4. Record the exported file path in the user response or review note.
 5. Image export tools are still covered by the Revit MCP hard rule: status
    preflight first, no parallel runtime commands.
@@ -178,10 +184,11 @@ schedule cells unless the operator explicitly needs that broad search.
 For schedule text edits after exact row/column discovery, use
 `set_schedule_cells`; it requires exact `scheduleId`, section, row, and column,
 defaults to dry-run, can compare `expectedCurrentText`, and verifies committed
-cell text. For row-text-driven schedule edits, use
+cell text. It guards non-writable standard schedule body cells as
+`non_writable_standard_body_cell` before commit. For row-text-driven schedule edits, use
 `set_schedule_cells_by_text` after bounding the search by sheet or schedule; it
 previews matches, blocks ambiguous rows by default, and verifies committed cell
-text.
+text. It uses the same standard schedule body-cell guard.
 
 ## Dynamic Execution Transaction Discipline
 

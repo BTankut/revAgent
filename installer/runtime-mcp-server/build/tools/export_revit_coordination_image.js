@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { connectionTargetSchema, csharpString, executeRevitCode, executionOptionsFromArgs, formatJsonContent, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
-import { runtimeFailure } from "../utils/runtimeResult.js";
+import { runtimeFailure, runtimeGuarded } from "../utils/runtimeResult.js";
 const intentSchema = z.enum(["raw_evidence", "coordination_overlay", "system_focus", "clash_clearance"]);
 const formatSchema = z.enum(["png", "jpg_lossless", "jpg_medium", "tiff", "bmp", "targa"]);
 const dpiSchema = z.enum(["72", "150", "300", "600"]);
@@ -33,11 +33,34 @@ function safePrefix(value) {
     const raw = value && value.trim() ? value.trim() : `revit-coordination-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     return raw.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 120);
 }
+function parseElementIds(values) {
+    const rawValues = values || [];
+    const ids = [];
+    const invalid = [];
+    for (const value of rawValues) {
+        if (typeof value === "number") {
+            if (Number.isSafeInteger(value) && value > 0) {
+                ids.push(value);
+            }
+            else {
+                invalid.push(value);
+            }
+            continue;
+        }
+        const text = String(value).trim();
+        if (/^\d+$/.test(text)) {
+            const parsed = Number(text);
+            if (Number.isSafeInteger(parsed) && parsed > 0) {
+                ids.push(parsed);
+                continue;
+            }
+        }
+        invalid.push(value);
+    }
+    return { ids, invalid, suppliedCount: rawValues.length };
+}
 function csharpIntList(values) {
-    const ints = (values || [])
-        .map((value) => Number(value))
-        .filter((value) => Number.isFinite(value))
-        .map((value) => Math.trunc(value));
+    const ints = values.map((value) => Math.trunc(value));
     return `new List<int> { ${ints.join(", ")} }`;
 }
 export function resolveAutoTargetVisualStyle(intent) {
@@ -52,7 +75,7 @@ export function resolveAutoTargetVisualStyle(intent) {
     return "technical_report";
 }
 export function registerExportRevitCoordinationImageTool(server) {
-    server.tool("export_revit_coordination_image", "[VISUAL_ARTIFACT_EXPORT_ONLY] Create or reuse a visual QA 3D view, optionally section-box target elements, apply a selectable target visual style, and export an image artifact. Auto style is report-friendly and never selects qa_high_contrast by itself. Use qa_high_contrast explicitly for debug/LLM evidence, technical_report or outline_only for report-style evidence, and raw when the target must keep native appearance. Use this when the user asks for PNG/JPEG/report/LLM visual evidence. Do not use this as the primary tool for live view navigation, selected-element zoom, or opening an element in a Revit view; for that workflow use create_3d_view_for_elements or show_element_in_plan_and_3d, then optionally export the active view with export_revit_view_image. It only writes review view settings; it does not create or modify MEP model elements. Set cleanupAfterExport=true when a newly created review view should be deleted after the image file is produced.", {
+    server.tool("export_revit_coordination_image", "[VISUAL_ARTIFACT_EXPORT_ONLY] Create or reuse a visual QA 3D view, optionally section-box target elements, apply a selectable target visual style, and export an image artifact. Auto style is report-friendly and never selects qa_high_contrast by itself. Use qa_high_contrast explicitly for debug/LLM evidence, technical_report or outline_only for report-style evidence, and raw when the target must keep native appearance. Use this when the user asks for PNG/JPEG/report/LLM visual evidence. If elementIds are provided but none are found, it returns guarded no_requested_elements_found unless allowFullViewFallback=true is explicit. Do not use this as the primary tool for live view navigation, selected-element zoom, or opening an element in a Revit view; for that workflow use create_3d_view_for_elements or show_element_in_plan_and_3d, then optionally export the active view with export_revit_view_image. It only writes review view settings; it does not create or modify MEP model elements. Set cleanupAfterExport=true when a newly created review view should be deleted after the image file is produced.", {
         ...connectionTargetSchema(z),
         intent: intentSchema.optional().default("coordination_overlay"),
         targetVisualStyle: targetVisualStyleSchema.optional().default("auto").describe("Target override style. auto is report-friendly: raw_evidence -> raw, coordination_overlay -> outline_only, system_focus/clash_clearance -> technical_report. qa_high_contrast is used only when explicitly requested. raw applies no target override."),
@@ -69,6 +92,7 @@ export function registerExportRevitCoordinationImageTool(server) {
         cropToTargetHighlight: z.boolean().optional().default(true).describe("When true, tightens the Revit 3D view crop box from model bbox/camera projection. Raster highlight pixels are QA metrics only unless Revit model crop-box framing is unavailable."),
         targetMinFillRatio: z.number().min(0.1).max(0.9).optional().default(0.4).describe("Minimum target occupancy used when sizing model-bounding-box projection crops. Raster highlight fill, when detected, is reported separately as QA."),
         highlightCropPaddingPx: z.number().int().min(0).max(2000).optional().default(24).describe("Debug fallback padding for highlight-pixel crops when model projection is not available."),
+        allowFullViewFallback: z.boolean().optional().default(false).describe("When elementIds are provided but none are found, allow exporting the full review 3D view instead of returning guarded. Defaults false to avoid misleading element evidence."),
         dpi: dpiSchema.optional().default("300"),
         fitDirection: fitDirectionSchema.optional().default("horizontal"),
         format: formatSchema.optional().default("png"),
@@ -78,6 +102,20 @@ export function registerExportRevitCoordinationImageTool(server) {
         ...taskMetadataSchema(z),
         timeoutMs: z.number().int().positive().optional(),
     }, async (args) => {
+        const parsedElementIds = parseElementIds(args.elementIds);
+        if (parsedElementIds.invalid.length > 0) {
+            return formatJsonContent(runtimeGuarded({
+                action: "export_revit_coordination_image",
+                reason: "invalid_element_ids",
+                error: "elementIds must be positive integer Revit ElementId values. UniqueId strings or other non-numeric ids are not valid target evidence ids.",
+                extra: {
+                    revitWriteAction: "none",
+                    requestedElementCount: parsedElementIds.suppliedCount,
+                    validElementCount: parsedElementIds.ids.length,
+                    invalidElementIds: parsedElementIds.invalid,
+                },
+            }));
+        }
         const outputDir = path.resolve(args.outputDir || defaultOutputDir());
         const filePrefix = safePrefix(args.filePrefix);
         const requestedIntent = args.intent || "coordination_overlay";
@@ -98,6 +136,7 @@ export function registerExportRevitCoordinationImageTool(server) {
         const cropToTargetHighlight = args.cropToTargetHighlight !== false;
         const targetMinFillRatio = Number.isFinite(Number(args.targetMinFillRatio)) ? Math.max(0.1, Math.min(0.9, Number(args.targetMinFillRatio))) : 0.4;
         const highlightCropPaddingPx = Number.isFinite(Number(args.highlightCropPaddingPx)) ? Math.trunc(args.highlightCropPaddingPx) : 24;
+        const allowFullViewFallback = args.allowFullViewFallback === true;
         const transparency = Math.trunc(args.contextTransparency ?? 65);
         const cleanupAfterExport = args.cleanupAfterExport === true;
         const code = `
@@ -108,7 +147,7 @@ string filePrefix = ${csharpString(filePrefix)};
 string desiredViewName = ${csharpString(args.viewName || "DPE Visual QA - Coordination Export")};
 string intent = ${csharpString(requestedIntent)};
 string targetVisualStyle = ${csharpString(resolvedTargetVisualStyle)};
-var requestedElementIds = ${csharpIntList(args.elementIds)};
+var requestedElementIds = ${csharpIntList(parsedElementIds.ids)};
 double marginFeet = ${marginMm} / 304.8;
 double singleElementMarginFeet = ${singleElementMarginMm} / 304.8;
 int contextTransparency = ${transparency};
@@ -124,6 +163,7 @@ bool cropToTargetHighlight = ${cropToTargetHighlight ? "true" : "false"};
 bool allowFinalUpscale = ${allowFinalUpscale ? "true" : "false"};
 double targetMinFillRatio = ${targetMinFillRatio};
 int highlightCropPaddingPx = ${highlightCropPaddingPx};
+bool allowFullViewFallback = ${allowFullViewFallback ? "true" : "false"};
 bool cleanupAfterExport = ${cleanupAfterExport ? "true" : "false"};
 
 System.IO.Directory.CreateDirectory(outputDir);
@@ -143,6 +183,34 @@ if (viewFamilyType == null) {
   return new { success = false, guarded = false, state = "failed", action = "export_revit_coordination_image", error = "three_dimensional_view_family_type_not_found" };
 }
 
+var targetElements = new List<Element>();
+var missingIds = new List<int>();
+foreach (int rawId in requestedElementIds) {
+  var element = document.GetElement(new ElementId(rawId));
+  if (element == null) missingIds.Add(rawId);
+  else targetElements.Add(element);
+}
+if (missingIds.Count > 0) warnings.Add("coordination_element_ids_not_found:" + String.Join(",", missingIds));
+if (requestedElementIds.Count > 0 && targetElements.Count == 0 && !allowFullViewFallback) {
+  return new {
+    success = false,
+    guarded = true,
+    state = "guarded",
+    action = "export_revit_coordination_image",
+    reason = "no_requested_elements_found",
+    error = "All requested element ids were missing. Refusing to export a full 3D fallback image unless allowFullViewFallback=true.",
+    revitWriteAction = "none",
+    requestedElementCount = requestedElementIds.Count,
+    foundElementCount = targetElements.Count,
+    missingElementIds = missingIds,
+    outputDir = outputDir,
+    filePrefix = filePrefix,
+    warnings = warnings,
+    notices = notices
+  };
+}
+if (targetElements.Count == 0) warnings.Add("coordination_no_element_scope_full_3d_view_exported");
+
 View3D reviewView = new FilteredElementCollector(document)
   .OfClass(typeof(View3D))
   .Cast<View3D>()
@@ -158,16 +226,6 @@ if (reviewView == null) {
 
 reviewView.DetailLevel = ViewDetailLevel.Fine;
 reviewView.DisplayStyle = DisplayStyle.ShadingWithEdges;
-
-var targetElements = new List<Element>();
-var missingIds = new List<int>();
-foreach (int rawId in requestedElementIds) {
-  var element = document.GetElement(new ElementId(rawId));
-  if (element == null) missingIds.Add(rawId);
-  else targetElements.Add(element);
-}
-if (missingIds.Count > 0) warnings.Add("coordination_element_ids_not_found:" + String.Join(",", missingIds));
-if (targetElements.Count == 0) warnings.Add("coordination_no_element_scope_full_3d_view_exported");
 
 BoundingBoxXYZ merged = null;
 foreach (var element in targetElements) {

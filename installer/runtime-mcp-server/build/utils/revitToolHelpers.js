@@ -42,6 +42,16 @@ export function executionOptionsFromArgs(args = {}, defaultTaskName) {
     };
 }
 export function normalizeSuccessCasing(payload) {
+    const contractKeyAliases = [
+        ["Success", "success"],
+        ["SUCCESS", "success"],
+        ["Guarded", "guarded"],
+        ["State", "state"],
+        ["Action", "action"],
+        ["Message", "message"],
+        ["Error", "error"],
+        ["ResultContractVersion", "resultContractVersion"],
+    ];
     const visit = (value) => {
         if (Array.isArray(value)) {
             return value.map((item) => visit(item));
@@ -53,19 +63,13 @@ export function normalizeSuccessCasing(payload) {
         for (const [key, child] of Object.entries(value)) {
             clone[key] = visit(child);
         }
-        if (Object.prototype.hasOwnProperty.call(clone, "Success")) {
-            if (!Object.prototype.hasOwnProperty.call(clone, "success")) {
-                clone.success = clone.Success;
+        for (const [pascalName, camelName] of contractKeyAliases) {
+            if (Object.prototype.hasOwnProperty.call(clone, pascalName)) {
+                if (!Object.prototype.hasOwnProperty.call(clone, camelName)) {
+                    clone[camelName] = clone[pascalName];
+                }
+                delete clone[pascalName];
             }
-            delete clone.Success;
-        }
-        if (Object.prototype.hasOwnProperty.call(clone, "SUCCESS") &&
-            !Object.prototype.hasOwnProperty.call(clone, "success")) {
-            clone.success = clone.SUCCESS;
-            delete clone.SUCCESS;
-        }
-        else if (Object.prototype.hasOwnProperty.call(clone, "SUCCESS")) {
-            delete clone.SUCCESS;
         }
         return clone;
     };

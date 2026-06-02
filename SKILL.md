@@ -144,6 +144,10 @@ normalizer.
   and `allowFinalUpscale=false` prevents pixelated enlargement. Raster
   highlight pixels are QA-only. Use `targetVisualStyle` to choose
   `qa_high_contrast`, `technical_report`, `outline_only`, or `raw` output.
+  If `elementIds` are supplied but none resolve in the model, the tool returns
+  a guarded `no_requested_elements_found` response by default; pass
+  `allowFullViewFallback=true` only when a full 3D view export is explicitly
+  acceptable.
   Do not use it as the primary tool for live view navigation,
   selected-element zoom, or opening an element in a Revit view. It writes only
   review view settings; it does not create or modify ducts, pipes, terminals,
@@ -157,7 +161,8 @@ normalizer.
   `responseMode: "full"` for audit/debug output.
 - `smart_focus_elements` - live view workflow wrapper that tries active/requested view
   focus without modal search, then optionally falls back to an existing
-  same-level plan and 3D view
+  same-level plan. When `create3d=true`, it creates/reuses the focused 3D view
+  after whichever live focus step succeeds.
 - `inspect_elements` - targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
 - `inspect_sheet_text` - read-only DrawingSheet text search and placed
@@ -185,12 +190,14 @@ normalizer.
 - `set_schedule_cells` - production-safe exact schedule-cell text write tool.
   It never writes by schedule name, requires `scheduleId`, `section`, and
   zero-based row/column coordinates, defaults to `mode: "dryRun"`, can block
-  stale targets with `expectedCurrentText`, and verifies committed cell text.
+  stale targets with `expectedCurrentText`, guards standard schedule body cells
+  as `non_writable_standard_body_cell`, and verifies committed cell text.
 - `set_schedule_cells_by_text` - production-safe schedule row text workflow.
   Use it when a schedule edit starts from a sheet/schedule filter and visible
   row text instead of exact coordinates. It requires bounded scope, defaults to
   dry-run, blocks ambiguous row matches by default, supports
-  `expectedCurrentText`, and verifies committed cell text.
+  `expectedCurrentText`, guards standard schedule body cells as
+  `non_writable_standard_body_cell`, and verifies committed cell text.
 
 **API docs server (`revit-api-docs`)** - required companion:
 
@@ -253,6 +260,10 @@ Default workflow for every Revit runtime task:
    sheet/schedule plus row text, use `set_schedule_cells_by_text` to preview
    matches and then commit. Use ad hoc `send_code_to_revit` schedule write
    snippets only for unsupported cases.
+   Standard schedule body cells are not directly writable through Revit
+   `SetCellText`; these tools should return guarded
+   `non_writable_standard_body_cell` before commit instead of presenting the
+   dry-run as committable.
 8. Use `send_code_to_revit_safe` for read-only probes and write previews. It
    rejects `transactionMode: "auto"` and always executes with
    `transactionMode: "none"`. Use raw `send_code_to_revit` only when the user
@@ -303,6 +314,8 @@ tool.
     `scheduleSheetInstances`.
   - Element-specific coordination/review image artifact around target ids:
     `export_revit_coordination_image`.
+    If all requested target ids are missing, do not accept a full-view export
+    as element evidence unless `allowFullViewFallback=true` is explicit.
 - Do not use `export_revit_coordination_image` as the primary tool for live
   view navigation, selected-element zoom, or opening an element in a new Revit
   view. For that workflow, first use `create_3d_view_for_elements` or

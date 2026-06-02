@@ -136,6 +136,20 @@ string ReadCell(ViewSchedule schedule, SectionType sectionType, int row, int col
     }
 }
 
+bool IsStandardScheduleBodyCellWriteForbidden(ViewSchedule schedule, SectionType sectionType)
+{
+    if (sectionType != SectionType.Body) return false;
+    try
+    {
+        ScheduleDefinition definition = schedule.Definition;
+        if (definition != null && definition.IsKeySchedule) return false;
+    }
+    catch
+    {
+    }
+    return true;
+}
+
 object MatchResult(ViewSchedule schedule, string sheetNumber, string sheetName, SectionType sectionType, int row, int column, string rowText, string before, bool readable, bool wouldChange, bool blocked, string reason, string error)
 {
     return new {
@@ -274,6 +288,7 @@ try
     foreach (ViewSchedule schedule in schedules)
     {
         TableSectionData sectionData = schedule.GetTableData().GetSectionData(sectionType);
+        bool standardScheduleBodyCellWriteForbidden = IsStandardScheduleBodyCellWriteForbidden(schedule, sectionType);
         int firstRow = sectionData.FirstRowNumber;
         int lastRow = sectionData.LastRowNumber;
         int firstColumn = sectionData.FirstColumnNumber;
@@ -316,11 +331,18 @@ try
                     blocked = true;
                     reason = "target_cell_not_readable";
                 }
+                bool wouldWrite = readable && !string.Equals(before, requestedValue, StringComparison.Ordinal);
                 if (!blocked && hasExpectedCurrentText && !allowCurrentMismatch && !string.Equals(before, expectedCurrentText, StringComparison.Ordinal))
                 {
                     blocked = true;
                     reason = "current_value_mismatch";
                     error = "Current cell text does not match expectedCurrentText.";
+                }
+                if (!blocked && wouldWrite && standardScheduleBodyCellWriteForbidden)
+                {
+                    blocked = true;
+                    reason = "non_writable_standard_body_cell";
+                    error = "Revit forbids SetCellText on standard schedule body sections. Write the underlying element parameter, or target a key schedule/header/footer cell.";
                 }
             }
 
@@ -485,7 +507,7 @@ catch (Exception ex)
 }`;
 }
 export function registerSetScheduleCellsByTextTool(server) {
-    server.tool("set_schedule_cells_by_text", "[PRODUCTION_SCHEDULE_CELL_WRITE_BY_TEXT] Finds bounded schedule rows by sheet/schedule filters and row text, then previews or commits a target column update with readback verification. Prefer this over generic send_code_to_revit for repeated schedule row text writes.", {
+    server.tool("set_schedule_cells_by_text", "[PRODUCTION_SCHEDULE_CELL_WRITE_BY_TEXT] Finds bounded schedule rows by sheet/schedule filters and row text, then previews or commits a target column update with readback verification. Guards non-writable standard schedule body cells as non_writable_standard_body_cell. Prefer this over generic send_code_to_revit for repeated schedule row text writes.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         scheduleIds: z.array(z.union([z.number(), z.string()])).optional().describe("Exact ViewSchedule ids to inspect. Preferred when known."),

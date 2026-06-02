@@ -182,6 +182,28 @@ assert.equal("Success" in successAliasPayload, false);
 assert.equal(successAliasPayload.nested.success, false);
 assert.equal("Success" in successAliasPayload.nested, false);
 
+const contractAliasContent = formatJsonContent({
+  Success: false,
+  Guarded: true,
+  State: "guarded",
+  Action: "find_elements",
+  Message: "No matching elements found.",
+  Error: "guarded by safety",
+  ResultContractVersion: 2,
+});
+const contractAliasPayload = JSON.parse(contractAliasContent.content[0].text);
+assert.equal(contractAliasPayload.success, false);
+assert.equal(contractAliasPayload.guarded, true);
+assert.equal(contractAliasPayload.state, "guarded");
+assert.equal(contractAliasPayload.action, "find_elements");
+assert.equal(contractAliasPayload.message, "No matching elements found.");
+assert.equal(contractAliasPayload.error, "guarded by safety");
+assert.equal(contractAliasPayload.resultContractVersion, 2);
+assert.equal("Success" in contractAliasPayload, false);
+assert.equal("Guarded" in contractAliasPayload, false);
+assert.equal("Action" in contractAliasPayload, false);
+assert.equal("ResultContractVersion" in contractAliasPayload, false);
+
 const trimmed = truncateText("abcdef", 3);
 assert.equal(trimmed.truncated, true);
 assert.match(trimmed.text, /truncated 3 chars/);
@@ -388,6 +410,17 @@ const typeDeclarationGuard = await rawSendCodeTool.handler({
 });
 assert.match(typeDeclarationGuard.content[0].text, /Code execution guarded/);
 assert.match(typeDeclarationGuard.content[0].text, /type declarations/);
+const coordinationTool = tools.get("export_revit_coordination_image");
+const invalidCoordinationIds = await coordinationTool.handler({
+  elementIds: ["not-a-revit-element-id"],
+  outputDir: os.tmpdir(),
+  taskName: "Invalid coordination element ids",
+});
+const invalidCoordinationPayload = JSON.parse(invalidCoordinationIds.content[0].text);
+assert.equal(invalidCoordinationPayload.success, false);
+assert.equal(invalidCoordinationPayload.guarded, true);
+assert.equal(invalidCoordinationPayload.reason, "invalid_element_ids");
+assert.equal(invalidCoordinationPayload.revitWriteAction, "none");
 delete process.env.REVAGENT_TELEMETRY_ROOT;
 delete process.env.REVAGENT_REPORTS_ROOT;
 
