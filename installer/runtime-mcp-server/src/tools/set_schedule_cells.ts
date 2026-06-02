@@ -145,6 +145,7 @@ try
     TableSectionData sectionData = schedule.GetTableData().GetSectionData(sectionType);
     int rowCount = sectionData.NumberOfRows;
     int columnCount = sectionData.NumberOfColumns;
+    bool standardScheduleBodyCellWriteForbidden = IsStandardScheduleBodyCellWriteForbidden(schedule, sectionType);
 
     if (rows.Length == 0)
     {
@@ -206,7 +207,7 @@ try
             error = "Current cell text does not match expectedCurrentText.";
         }
 
-        if (!blocked && cellWouldChange && IsStandardScheduleBodyCellWriteForbidden(schedule, sectionType))
+        if (!blocked && cellWouldChange && standardScheduleBodyCellWriteForbidden)
         {
             blocked = true;
             reason = "non_writable_standard_body_cell";

@@ -14,6 +14,14 @@ function isSuccess(payload) {
     const success = readField(payload, "Success", "success");
     return success !== false;
 }
+function isGuardedResult(payload) {
+    if (!payload || typeof payload !== "object") {
+        return false;
+    }
+    return readField(payload, "Guarded", "guarded") === true ||
+        readField(payload, "State", "state") === "guarded" ||
+        readField(payload, "FocusBlocked", "focusBlocked") === true;
+}
 function compactView(view) {
     if (!view || typeof view !== "object") {
         return view || null;
@@ -193,8 +201,7 @@ export function registerSmartFocusElementsTool(server) {
                         ? fullPayload
                         : compactSmartFocusPayload(fullPayload));
                 }
-                const activeFocusBlocked = Boolean(activeFocus &&
-                    (activeFocus.FocusBlocked === true || activeFocus.focusBlocked === true));
+                const activeFocusBlocked = isGuardedResult(activeFocus);
                 if (mode === "activeOnly" || !activeFocus || !activeFocusBlocked) {
                     return formatJsonContent(workflowPayload({
                         success: false,
@@ -219,6 +226,7 @@ export function registerSmartFocusElementsTool(server) {
             if (!planFocus || !isSuccess(planFocus)) {
                 return formatJsonContent(workflowPayload({
                     success: false,
+                    guarded: isGuardedResult(planFocus),
                     mode,
                     error: readField(planFocus, "Error", "error") || "Same-level existing plan focus failed.",
                     focus: activeFocus,

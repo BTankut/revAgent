@@ -28,6 +28,15 @@ function isSuccess(payload: any) {
     return readField(payload, "Success", "success") !== false;
 }
 
+function isGuardedResult(payload: any) {
+    if (!payload || typeof payload !== "object") {
+        return false;
+    }
+    return readField(payload, "Guarded", "guarded") === true ||
+        readField(payload, "State", "state") === "guarded" ||
+        readField(payload, "FocusBlocked", "focusBlocked") === true;
+}
+
 function buildDefault3DViewName(elementId: string | number, element: JsonObject | null) {
     const label = element && (element.FamilyName || element.TypeName || element.Name)
         ? String(element.FamilyName || element.TypeName || element.Name)
@@ -291,6 +300,7 @@ export function registerShowElementInPlanAnd3DTool(server: ToolServer) {
             if (!planResult || !isSuccess(planResult)) {
                 return formatJsonContent(workflowPayload({
                     success: false,
+                    guarded: isGuardedResult(planResult),
                     error: readField(planResult, "Error", "error") || "Plan presentation failed.",
                     chosenElementId,
                     chosenElement,

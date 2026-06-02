@@ -304,6 +304,7 @@ try
     foreach (ViewSchedule schedule in schedules)
     {
         TableSectionData sectionData = schedule.GetTableData().GetSectionData(sectionType);
+        bool standardScheduleBodyCellWriteForbidden = IsStandardScheduleBodyCellWriteForbidden(schedule, sectionType);
         int firstRow = sectionData.FirstRowNumber;
         int lastRow = sectionData.LastRowNumber;
         int firstColumn = sectionData.FirstColumnNumber;
@@ -353,7 +354,7 @@ try
                     reason = "current_value_mismatch";
                     error = "Current cell text does not match expectedCurrentText.";
                 }
-                if (!blocked && wouldWrite && IsStandardScheduleBodyCellWriteForbidden(schedule, sectionType))
+                if (!blocked && wouldWrite && standardScheduleBodyCellWriteForbidden)
                 {
                     blocked = true;
                     reason = "non_writable_standard_body_cell";

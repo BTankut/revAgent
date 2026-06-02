@@ -39,7 +39,7 @@ function parseElementIds(values) {
     const invalid = [];
     for (const value of rawValues) {
         if (typeof value === "number") {
-            if (Number.isInteger(value) && value > 0) {
+            if (Number.isSafeInteger(value) && value > 0) {
                 ids.push(value);
             }
             else {
