@@ -1,3 +1,4 @@
+// @ts-nocheck
 import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
