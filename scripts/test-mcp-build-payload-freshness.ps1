@@ -32,10 +32,16 @@ function Get-RelativeFileHashMap {
         return $map
     }
 
-    Get-ChildItem -LiteralPath $Root -Recurse -File -Filter "*.js" |
+    $rootFullName = (Get-Item -LiteralPath $Root).FullName.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $rootPrefix = $rootFullName + [System.IO.Path]::DirectorySeparatorChar
+
+    Get-ChildItem -LiteralPath $rootFullName -Recurse -File -Filter "*.js" |
         Sort-Object FullName |
         ForEach-Object {
-            $relative = $_.FullName.Substring($Root.Length + 1).Replace("/", "\")
+            if (-not $_.FullName.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "File '$($_.FullName)' is not under expected root '$rootFullName'."
+            }
+            $relative = $_.FullName.Substring($rootPrefix.Length).Replace("/", "\")
             $map[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
         }
     return $map
