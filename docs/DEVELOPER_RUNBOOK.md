@@ -410,15 +410,11 @@ verifies MCP build payload freshness with
 
 The GitHub Actions workflow at `.github/workflows/ci.yml` runs the
 `Engineering gates` job on `push` to `main`, pull requests targeting `main`,
-and manual `workflow_dispatch`.
-
-Important: CI alone reports a bad direct push after it lands. To physically
-block broken changes from entering `main`, configure GitHub branch protection
-for `main`:
-
-1. Require pull requests before merge.
-2. Require the `Engineering gates` status check to pass.
-3. Disable direct push or admin bypass if the repository policy allows it.
+and manual `workflow_dispatch`. The `main` branch is protected: pull requests
+are required, the `Engineering gates` status check is required, strict status
+checks are enabled, direct force-push/deletion is disabled, and admin
+enforcement is enabled. Treat a red `Engineering gates` check as a hard stop;
+do not merge or deploy from that change.
 
 `better-sqlite3` is installed normally in CI through `npm ci`; do not use
 `--ignore-scripts` unless a CI failure proves that the sqlite native install is
@@ -521,13 +517,23 @@ work.
 
 ## Git Commit And Push
 
-Typical flow:
+Typical development flow:
 
 ```powershell
 git status --short
+git switch -c codex/<short-topic>
 git add <changed-files>
 git commit -m "Short imperative message"
-git push origin main
+git push -u origin codex/<short-topic>
+gh pr create --base main --head codex/<short-topic>
+```
+
+Merge the pull request only after the required `Engineering gates` check is
+green. After merge, update the local main branch:
+
+```powershell
+git switch main
+git pull --ff-only
 ```
 
 Keep commits coherent:
@@ -536,8 +542,9 @@ Keep commits coherent:
 - installer/updater behavior and docs in the same commit when useful
 - no unrelated cleanup mixed into a production fix
 
-Never deploy from an uncommitted production change unless it is an explicit
-temporary test package with `-AllowDirty`.
+Direct `main` pushes are no longer the normal development path. Never deploy
+from an unmerged branch, a red CI run, or an uncommitted production change
+unless it is an explicit temporary test package with `-AllowDirty`.
 
 ## NAS Deployment Model
 

@@ -424,6 +424,13 @@ The runtime MCP test suite includes bridge result contract characterization
 checks for dynamic-result double encoding, central C# camelCase response
 helpers, `resultContractVersion`, and idempotent legacy normalization.
 
+The protected `main` branch also runs the GitHub Actions `Engineering gates`
+job on pull requests and pushes to `main`. Normal development should happen on
+a topic branch, then merge through a pull request after the required
+`Engineering gates` check is green. A green commit or pull request still does
+not deploy to the office NAS; deployment changes only when the NAS publish
+script is run intentionally.
+
 When the shared bridge command payload changes and Revit 2022 is available, run the
 optional live commandset gate separately:
 
