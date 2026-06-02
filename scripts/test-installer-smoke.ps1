@@ -406,6 +406,7 @@ try {
     $viewHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ViewCommandHelpers.cs")
     $discoveryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementDiscoveryHelpers.cs")
     $findCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsCommand.cs")
+    $findHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsEventHandler.cs")
     $findToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\find_elements.ts")
     $inspectElementsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_elements.ts")
     $showPlan3dToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\show_element_in_plan_and_3d.ts")
@@ -448,9 +449,11 @@ try {
     Assert-True ($findToolCode -match 'writeSafetyWarning') "find_elements compact output must make discovery-only write risk visible."
     Assert-True ($findToolCode -match 'builtInParameterId') "find_elements write guidance must require stable parameter identity before writes."
     Assert-True ($findCommandCode -match 'planCandidateMode != "none"') "find_elements command must keep plan candidate scans opt-in."
+    Assert-True ($findHandlerCode -match 'No matching elements found\.') "find_elements no-match result must not say matching elements were found."
     Assert-True ($discoveryCode -match 'verifyVisibility \? element : null') "metadata plan candidates must avoid expensive per-view element visibility checks."
     Assert-True ($showPlan3dToolCode -match 'responseMode: z\.enum\(\["compact", "full"\]\)') "show_element_in_plan_and_3d must expose compact/full response modes."
-    Assert-True ($showPlan3dToolCode -match 'ResponseMode: "compact"') "show_element_in_plan_and_3d must default successful responses to compact summaries."
+    Assert-True ($showPlan3dToolCode -match 'responseMode: "compact"') "show_element_in_plan_and_3d must default successful responses to compact summaries."
+    Assert-True ($showPlan3dToolCode -match 'action: "show_element_in_plan_and_3d"' -and $showPlan3dToolCode -match 'state:' -and $showPlan3dToolCode -match 'guarded') "show_element_in_plan_and_3d must expose the shared lowercase minimal response contract."
     Assert-True ($showPlan3dToolCode -match 'readCasedField as readField') "show_element_in_plan_and_3d must read normalized bridge result fields case-insensitively."
     Assert-True ($showPlan3dToolCode -notmatch 'planResult\.Success === false') "show_element_in_plan_and_3d must not miss lower-case nested success=false values."
     Assert-True ($showPlan3dToolCode -notmatch 'threeDResult && threeDResult\.Success !== false') "show_element_in_plan_and_3d must compute 3D success from normalized result casing."
@@ -463,8 +466,11 @@ try {
     Assert-True ($openPlanToolCode -notmatch 'trimmedPayload && trimmedPayload\.Success === false') "open_existing_plan_for_element_level compact mode must stay compact for failure responses."
     Assert-True ($showPlan3dToolCode -match 'responseMode: "full"') "show_element_in_plan_and_3d must request the full nested plan result before building its own compact summary."
     Assert-True ($smartFocusToolCode -match 'responseMode: z\.enum\(\["compact", "full"\]\)') "smart_focus_elements must expose compact/full response modes."
-    Assert-True ($smartFocusToolCode -match 'ResponseMode: "compact"') "smart_focus_elements must default successful responses to compact summaries."
+    Assert-True ($smartFocusToolCode -match 'responseMode: "compact"') "smart_focus_elements must default successful responses to compact summaries."
+    Assert-True ($smartFocusToolCode -match 'action: "smart_focus_elements"' -and $smartFocusToolCode -match 'state:' -and $smartFocusToolCode -match 'guarded') "smart_focus_elements must expose the shared lowercase minimal response contract."
     Assert-True ($smartFocusToolCode -match 'function compactSmartFocusPayload') "smart_focus_elements must build a compact successful payload."
+    Assert-True ($smartFocusToolCode -match 'activeOrRequestedViewThen3D') "smart_focus_elements must run the optional 3D step after active/requested focus when create3d=true."
+    Assert-True ($smartFocusToolCode -match 'Smart focus optional 3D view after active/requested focus') "smart_focus_elements must name the post-active-focus 3D step clearly."
     Assert-True ($smartFocusToolCode -match 'readCasedField as readField') "smart_focus_elements must read normalized bridge result fields case-insensitively."
     Assert-True ($smartFocusToolCode -notmatch 'planFocus\.Success === false') "smart_focus_elements must not miss lower-case nested plan success=false values."
     Assert-True ($sessionContextToolCode -match 'apiProbeState') "Session context must move tool-probe modifiable state out of the document summary."
@@ -479,7 +485,7 @@ try {
     Assert-True ($statusToolCode -match 'runtimeVersion') "Status output must include the active runtime version."
     Assert-True ($statusToolCode -match 'schemaVersion') "Status output must include the status/schema version."
     Assert-True ($statusToolCode -match 'toolSurfaceVersion') "Status output must include the registered tool surface version."
-    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.31') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
+    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.32') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
     Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
     Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
@@ -494,7 +500,7 @@ try {
     Assert-True ($toolHelpersCode -match 'hasCanonicalBridgeResultContract\(parsed\)') "Runtime formatter must keep canonical bridge payload normalization idempotent."
     Assert-True ($toolHelpersCode -match 'export function readCasedField') "Runtime formatter helpers must expose one shared case-tolerant field reader."
     Assert-True ($toolHelpersCode -match 'normalizeSuccessCasing') "Runtime formatter must normalize response success casing."
-    Assert-True ($toolHelpersCode -match 'delete clone\.Success') "Runtime formatter must emit canonical lowercase success instead of success/Success duplicates."
+    Assert-True ($toolHelpersCode -match '\["Success", "success"\]' -and $toolHelpersCode -match 'delete clone\[pascalName\]') "Runtime formatter must emit canonical lowercase contract fields instead of PascalCase duplicates."
     Assert-True ($toolHelpersCode -match 'key === "PlanCandidates" \|\| key === "planCandidates"') "Plan candidate trimming must handle canonical lower-case bridge payloads."
     Assert-True ($sendCodeToolCode -match 'parseJsonResult') "Raw send_code_to_revit must expose JSON-looking result parsing."
     Assert-True ($sendCodeToolCode -match 'normalizeRevitExecutionResponse\(response\)') "Raw send_code_to_revit must parse double-encoded JSON-looking results by default."
@@ -541,12 +547,16 @@ try {
     Assert-True ($setScheduleCellsToolCode -match 'Defaults to dryRun') "set_schedule_cells must default to dry-run behavior."
     Assert-True ($setScheduleCellsToolCode -match 'expectedCurrentText') "set_schedule_cells must support expected current value preflight."
     Assert-True ($setScheduleCellsToolCode -match 'transactionMode: mode === "commit" \? "auto" : "none"') "set_schedule_cells must use auto transactions only for commit mode."
+    Assert-True ($setScheduleCellsToolCode -match 'non_writable_standard_body_cell') "set_schedule_cells dry-run must guard non-writable standard schedule body cells before commit."
+    Assert-True ($setScheduleCellsToolCode -match 'IsStandardScheduleBodyCellWriteForbidden' -and $setScheduleCellsToolCode -match 'IsKeySchedule') "set_schedule_cells must distinguish standard body cells from writable key schedule/header/footer cells."
     Assert-True ($setScheduleCellsToolCode -match 'if \(!dryRun\)') "set_schedule_cells commit exceptions must escape the snippet so the wrapper transaction can roll back."
     Assert-True ($setScheduleCellsByTextToolCode -match 'PRODUCTION_SCHEDULE_CELL_WRITE_BY_TEXT') "set_schedule_cells_by_text must identify itself as a production schedule row-text write tool."
     Assert-True ($setScheduleCellsByTextToolCode -match 'rowTextQuery') "set_schedule_cells_by_text must require bounded row text matching."
     Assert-True ($setScheduleCellsByTextToolCode -match 'allowMultipleMatches') "set_schedule_cells_by_text must block ambiguous multi-row writes by default."
     Assert-True ($setScheduleCellsByTextToolCode -match 'expectedCurrentText') "set_schedule_cells_by_text must support compare-and-set target cell protection."
     Assert-True ($setScheduleCellsByTextToolCode -match 'transactionMode: mode === "commit" \? "auto" : "none"') "set_schedule_cells_by_text must use auto transactions only for commit mode."
+    Assert-True ($setScheduleCellsByTextToolCode -match 'non_writable_standard_body_cell') "set_schedule_cells_by_text dry-run must guard non-writable standard schedule body cells before commit."
+    Assert-True ($setScheduleCellsByTextToolCode -match 'IsStandardScheduleBodyCellWriteForbidden' -and $setScheduleCellsByTextToolCode -match 'IsKeySchedule') "set_schedule_cells_by_text must distinguish standard body cells from writable key schedule/header/footer cells."
     Assert-True ($setScheduleCellsByTextToolCode -match 'generic send_code_to_revit') "set_schedule_cells_by_text tool description must steer agents away from raw schedule write snippets."
     Assert-True ($safeCodeGuardsCode -match 'Schedule\.SetCellText') "send_code_to_revit_safe write guards must detect schedule cell text writes."
     $activateViewHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewEventHandler.cs")
@@ -581,6 +591,9 @@ try {
     Assert-True ($create3dToolCode -match 'LIVE_VIEW_NAVIGATION_PRIMITIVE') "create_3d_view_for_elements must identify itself as the live 3D navigation primitive."
     Assert-True ($showPlan3dToolCode -match 'LIVE_VIEW_WORKFLOW_WRAPPER') "show_element_in_plan_and_3d must identify itself as the live plan+3D workflow wrapper."
     Assert-True ($coordinationImageToolCode -match 'VISUAL_ARTIFACT_EXPORT_ONLY') "Coordination image export must identify itself as an image artifact export tool."
+    Assert-True ($coordinationImageToolCode -match 'allowFullViewFallback') "Coordination image export must require explicit full-view fallback when requested element ids are all missing."
+    Assert-True ($coordinationImageToolCode -match 'no_requested_elements_found') "Coordination image export must return a stable guard reason when no requested elements are found."
+    Assert-True ($coordinationImageToolCode -match 'requestedElementIds\.Count > 0 && targetElements\.Count == 0 && !allowFullViewFallback') "Coordination image export must guard missing requested element ids before full-view export."
     Assert-True ($coordinationImageToolCode -match 'createdViews') "Coordination image export must report created review views for cleanup/audit."
     Assert-True ($coordinationImageToolCode -match 'cleanupAfterExport: z\.boolean') "Coordination image export must expose a user-controlled cleanupAfterExport parameter."
     Assert-True ($coordinationImageToolCode -match 'cleanupAfterExportRequested') "Coordination image export must report whether cleanupAfterExport was requested."

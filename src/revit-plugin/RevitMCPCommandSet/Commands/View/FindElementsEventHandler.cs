@@ -137,7 +137,9 @@ namespace RevitMCPCommandSet.Commands.View
                 {
                     Success = true,
                     Action = "find_elements",
-                    Message = "Matching Revit elements were found.",
+                    Message = matches.Count == 0
+                        ? "No matching elements found."
+                        : "Matching Revit elements were found.",
                     Query = _query,
                     CategoryNames = _categoryNames,
                     Count = matches.Count,

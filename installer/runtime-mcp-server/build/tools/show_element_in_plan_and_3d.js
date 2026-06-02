@@ -108,6 +108,35 @@ function summarizeThreeD(threeDResult) {
         Zoomed: readField(threeDResult, "Zoomed", "zoomed"),
     };
 }
+function firstResultContractVersion(...payloads) {
+    for (const payload of payloads) {
+        const raw = readField(payload, "ResultContractVersion", "resultContractVersion");
+        const parsed = Number.parseInt(String(raw ?? ""), 10);
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+    return null;
+}
+function workflowPayload(args) {
+    const guarded = args.guarded === true;
+    return {
+        success: args.success,
+        guarded,
+        state: guarded ? "guarded" : args.success ? "completed" : "failed",
+        action: "show_element_in_plan_and_3d",
+        message: args.message,
+        error: args.error,
+        resultContractVersion: firstResultContractVersion(args.find, args.plan, args.threeD),
+        chosenElementId: args.chosenElementId,
+        chosenElement: args.chosenElement,
+        find: args.find,
+        plan: args.plan,
+        threeD: args.threeD,
+        ambiguous: args.ambiguous,
+        candidates: args.candidates,
+    };
+}
 export function registerShowElementInPlanAnd3DTool(server) {
     server.tool("show_element_in_plan_and_3d", "[LIVE_VIEW_WORKFLOW_WRAPPER] Safely find or use one Revit element, show it in an existing plan, then optionally call create_3d_view_for_elements to create/reuse a focused 3D view. Use this when the user wants a combined plan plus 3D live Revit view workflow. Ambiguous search results are rejected by default for large-project safety.", {
         ...connectionTargetSchema(z),
@@ -143,11 +172,11 @@ export function registerShowElementInPlanAnd3DTool(server) {
             let findResult = null;
             if (!chosenElementId) {
                 if (!args.query && (!args.categoryNames || args.categoryNames.length === 0)) {
-                    return formatJsonContent({
-                        Success: false,
-                        Action: "show_element_in_plan_and_3d",
-                        Error: "Pass elementId, or pass query/categoryNames for a safe search.",
-                    });
+                    return formatJsonContent(workflowPayload({
+                        success: false,
+                        guarded: true,
+                        error: "Pass elementId, or pass query/categoryNames for a safe search.",
+                    }));
                 }
                 findResult = unwrapResponse(await sendRevitCommand("find_elements", {
                     query: args.query,
@@ -160,52 +189,51 @@ export function registerShowElementInPlanAnd3DTool(server) {
                     taskName: "Find element for plan and 3D presentation",
                 }, options));
                 if (!findResult || !isSuccess(findResult)) {
-                    return formatJsonContent({
-                        Success: false,
-                        Action: "show_element_in_plan_and_3d",
-                        Error: readField(findResult, "Error", "error") || "Element search failed.",
-                        Find: findResult,
-                    });
+                    return formatJsonContent(workflowPayload({
+                        success: false,
+                        error: readField(findResult, "Error", "error") || "Element search failed.",
+                        find: findResult,
+                    }));
                 }
                 const candidates = Array.isArray(readField(findResult, "Elements", "elements"))
                     ? readField(findResult, "Elements", "elements")
                     : [];
                 if (candidates.length === 0) {
-                    return formatJsonContent({
-                        Success: false,
-                        Action: "show_element_in_plan_and_3d",
-                        Error: "No matching elements were found.",
-                        Find: findResult,
-                    });
+                    return formatJsonContent(workflowPayload({
+                        success: false,
+                        guarded: true,
+                        error: "No matching elements were found.",
+                        find: findResult,
+                    }));
                 }
                 if (readField(findResult, "Ambiguous", "ambiguous") && args.allowAmbiguous !== true) {
-                    return formatJsonContent({
-                        Success: false,
-                        Action: "show_element_in_plan_and_3d",
-                        Error: "Multiple plausible elements matched. Use a more specific query or pass elementId before opening views.",
-                        Ambiguous: true,
-                        Find: findResult,
-                        Candidates: candidates,
-                    });
+                    return formatJsonContent(workflowPayload({
+                        success: false,
+                        guarded: true,
+                        error: "Multiple plausible elements matched. Use a more specific query or pass elementId before opening views.",
+                        ambiguous: true,
+                        find: findResult,
+                        candidates,
+                    }));
                 }
                 chosenElement = candidates[0] || null;
                 if (!chosenElement) {
-                    return formatJsonContent({
-                        Success: false,
-                        Action: "show_element_in_plan_and_3d",
-                        Error: "No usable element candidate was returned.",
-                        Find: findResult,
-                    });
+                    return formatJsonContent(workflowPayload({
+                        success: false,
+                        guarded: true,
+                        error: "No usable element candidate was returned.",
+                        find: findResult,
+                    }));
                 }
                 chosenElementId = readField(chosenElement, "Id", "id");
             }
             if (chosenElementId === undefined || chosenElementId === null) {
-                return formatJsonContent({
-                    Success: false,
-                    Action: "show_element_in_plan_and_3d",
-                    Error: "No element id was resolved.",
-                    Find: findResult,
-                });
+                return formatJsonContent(workflowPayload({
+                    success: false,
+                    guarded: true,
+                    error: "No element id was resolved.",
+                    find: findResult,
+                }));
             }
             const planResult = unwrapResponse(await sendRevitCommand("open_existing_plan_for_element_level", {
                 elementId: chosenElementId,
@@ -222,15 +250,14 @@ export function registerShowElementInPlanAnd3DTool(server) {
                 taskName: "Show element in existing plan",
             }, options));
             if (!planResult || !isSuccess(planResult)) {
-                return formatJsonContent({
-                    Success: false,
-                    Action: "show_element_in_plan_and_3d",
-                    Error: readField(planResult, "Error", "error") || "Plan presentation failed.",
-                    ChosenElementId: chosenElementId,
-                    ChosenElement: chosenElement,
-                    Find: findResult,
-                    Plan: planResult,
-                });
+                return formatJsonContent(workflowPayload({
+                    success: false,
+                    error: readField(planResult, "Error", "error") || "Plan presentation failed.",
+                    chosenElementId,
+                    chosenElement,
+                    find: findResult,
+                    plan: planResult,
+                }));
             }
             let threeDResult = null;
             if (args.create3d !== false) {
@@ -252,20 +279,19 @@ export function registerShowElementInPlanAnd3DTool(server) {
                 }, options));
             }
             const threeDSuccess = args.create3d === false || isSuccess(threeDResult);
-            const fullPayload = trimPlanCandidatesInPayload({
-                Success: threeDSuccess,
-                Action: "show_element_in_plan_and_3d",
-                Message: args.create3d === false
+            const fullPayload = trimPlanCandidatesInPayload(workflowPayload({
+                success: threeDSuccess,
+                message: args.create3d === false
                     ? "Element was shown in an existing plan."
                     : threeDSuccess
                         ? "Element was shown in an existing plan and focused in 3D."
                         : "Element was shown in plan, but the 3D step failed.",
-                ChosenElementId: chosenElementId,
-                ChosenElement: chosenElement,
-                Find: findResult,
-                Plan: planResult,
-                ThreeD: threeDResult,
-            }, {
+                chosenElementId,
+                chosenElement,
+                find: findResult,
+                plan: planResult,
+                threeD: threeDResult,
+            }), {
                 verboseCandidates: args.verboseCandidates,
                 maxPlanCandidates: args.maxPlanCandidates ?? 3,
             });
@@ -273,23 +299,26 @@ export function registerShowElementInPlanAnd3DTool(server) {
                 return formatJsonContent(fullPayload);
             }
             return formatJsonContent({
-                Success: readField(fullPayload, "Success", "success"),
-                Action: fullPayload.Action,
-                Message: readField(fullPayload, "Message", "message"),
-                ResponseMode: "compact",
-                ChosenElementId: chosenElementId,
-                ChosenElement: compactElement(chosenElement),
-                FindSummary: summarizeFind(findResult),
-                PlanSummary: summarizePlan(planResult),
-                ThreeDSummary: summarizeThreeD(threeDResult),
+                success: readField(fullPayload, "Success", "success"),
+                guarded: readField(fullPayload, "Guarded", "guarded") === true,
+                state: readField(fullPayload, "State", "state"),
+                action: readField(fullPayload, "Action", "action"),
+                message: readField(fullPayload, "Message", "message"),
+                error: readField(fullPayload, "Error", "error"),
+                resultContractVersion: readField(fullPayload, "ResultContractVersion", "resultContractVersion"),
+                responseMode: "compact",
+                chosenElementId,
+                chosenElement: compactElement(chosenElement),
+                findSummary: summarizeFind(findResult),
+                planSummary: summarizePlan(planResult),
+                threeDSummary: summarizeThreeD(threeDResult),
             });
         }
         catch (error) {
-            return formatJsonContent({
-                Success: false,
-                Action: "show_element_in_plan_and_3d",
-                Error: error instanceof Error ? error.message : String(error),
-            });
+            return formatJsonContent(workflowPayload({
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+            }));
         }
     });
 }

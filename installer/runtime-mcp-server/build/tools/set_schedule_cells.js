@@ -63,6 +63,20 @@ string ReadCell(ViewSchedule schedule, SectionType sectionType, int row, int col
     }
 }
 
+bool IsStandardScheduleBodyCellWriteForbidden(ViewSchedule schedule, SectionType sectionType)
+{
+    if (sectionType != SectionType.Body) return false;
+    try
+    {
+        ScheduleDefinition definition = schedule.Definition;
+        if (definition != null && definition.IsKeySchedule) return false;
+    }
+    catch
+    {
+    }
+    return true;
+}
+
 object CellResult(int index, int row, int column, string requestedValue, string beforeValue, string afterValue, bool readable, bool changed, bool verified, bool blocked, string reason, string error)
 {
     return new {
@@ -160,6 +174,7 @@ try
             }
         }
 
+        bool cellWouldChange = readable && !string.Equals(before, requestedValue, StringComparison.Ordinal);
         if (!blocked && hasExpectedCurrentTexts[i] && !allowCurrentMismatch && !string.Equals(before, expectedCurrentTexts[i] ?? "", StringComparison.Ordinal))
         {
             blocked = true;
@@ -167,12 +182,18 @@ try
             error = "Current cell text does not match expectedCurrentText.";
         }
 
+        if (!blocked && cellWouldChange && IsStandardScheduleBodyCellWriteForbidden(schedule, sectionType))
+        {
+            blocked = true;
+            reason = "non_writable_standard_body_cell";
+            error = "Revit forbids SetCellText on standard schedule body sections. Write the underlying element parameter, or target a key schedule/header/footer cell.";
+        }
+
         if (blocked)
         {
             errors.Add(reason + " at row " + row.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", column " + column.ToString(System.Globalization.CultureInfo.InvariantCulture) + ": " + error);
         }
 
-        bool cellWouldChange = !string.Equals(before, requestedValue, StringComparison.Ordinal);
         if (!blocked && cellWouldChange) wouldChangeCount++;
         planned.Add(CellResult(i, row, column, requestedValue, before, before, readable, cellWouldChange, false, blocked, reason, error));
     }
@@ -298,7 +319,7 @@ catch (Exception ex)
 }`;
 }
 export function registerSetScheduleCellsTool(server) {
-    server.tool("set_schedule_cells", "[PRODUCTION_SCHEDULE_CELL_WRITE] Writes exact Revit schedule cells by scheduleId, section, row, and column. Defaults to dryRun, blocks mismatched expectedCurrentText, and verifies committed values.", {
+    server.tool("set_schedule_cells", "[PRODUCTION_SCHEDULE_CELL_WRITE] Writes exact Revit schedule cells by scheduleId, section, row, and column. Defaults to dryRun, blocks mismatched expectedCurrentText, guards non-writable standard schedule body cells as non_writable_standard_body_cell, and verifies committed values.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         scheduleId: z.union([z.number(), z.string()]).describe("Exact ViewSchedule element id. Schedule names are not accepted for writes."),

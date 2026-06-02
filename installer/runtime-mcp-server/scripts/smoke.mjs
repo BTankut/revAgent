@@ -182,6 +182,28 @@ assert.equal("Success" in successAliasPayload, false);
 assert.equal(successAliasPayload.nested.success, false);
 assert.equal("Success" in successAliasPayload.nested, false);
 
+const contractAliasContent = formatJsonContent({
+  Success: false,
+  Guarded: true,
+  State: "guarded",
+  Action: "find_elements",
+  Message: "No matching elements found.",
+  Error: "guarded by safety",
+  ResultContractVersion: 2,
+});
+const contractAliasPayload = JSON.parse(contractAliasContent.content[0].text);
+assert.equal(contractAliasPayload.success, false);
+assert.equal(contractAliasPayload.guarded, true);
+assert.equal(contractAliasPayload.state, "guarded");
+assert.equal(contractAliasPayload.action, "find_elements");
+assert.equal(contractAliasPayload.message, "No matching elements found.");
+assert.equal(contractAliasPayload.error, "guarded by safety");
+assert.equal(contractAliasPayload.resultContractVersion, 2);
+assert.equal("Success" in contractAliasPayload, false);
+assert.equal("Guarded" in contractAliasPayload, false);
+assert.equal("Action" in contractAliasPayload, false);
+assert.equal("ResultContractVersion" in contractAliasPayload, false);
+
 const trimmed = truncateText("abcdef", 3);
 assert.equal(trimmed.truncated, true);
 assert.match(trimmed.text, /truncated 3 chars/);
