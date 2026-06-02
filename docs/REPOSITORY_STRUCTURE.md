@@ -24,12 +24,8 @@ for servers, assemblies, manifests, and installed paths.
 |-- docs/
 |   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
 |   |-- DEVELOPER_RUNBOOK.md
-|   |-- MONOREPO_MIGRATION.md
 |   |-- PLATFORM_ARCHITECTURE.md
-|   |-- PLATFORM_MODERNIZATION_SUMMARY.md
 |   |-- REPOSITORY_STRUCTURE.md
-|   |-- REVAGENT_ARCHITECTURE_HARDENING_PLAN.md
-|   |-- REVAGENT_LIVE_DASHBOARD_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
 |-- references/
@@ -125,17 +121,24 @@ layer unless they require a reusable native Revit bridge primitive.
 
 `installer/runtime-mcp-server/src` and `installer/revit-api-docs-mcp/src` are
 the TypeScript MCP source trees. Their `build/` folders remain the runtime
-payload contract consumed by installer and Codex MCP registrations. Keep new
-TypeScript source checked by default; `scripts/test-typescript-nocheck-policy.ps1`
-guards the current explicit `@ts-nocheck` debt boundary.
+payload contract consumed by installer and Codex MCP registrations. Both
+packages run with `strict: true`; keep new TypeScript source checked by
+default. `scripts/test-typescript-nocheck-policy.ps1` guards strict compiler
+settings and a zero-allowlist `@ts-nocheck` policy for both MCP source trees.
 
 `config/dynamic-tool-promotion-*.json` contains the machine-readable rule and
 registry used by usage summaries to flag repeated or risky dynamic C# patterns
 for native runtime-tool review.
 
-`docs/REVAGENT_BRIDGE_RESULT_CONTRACT_NORMALIZATION_PLAN.md` records the bridge
-result contract normalization plan. Keep it aligned when changing bridge
-payload shape, `resultContractVersion`, or compatibility normalization.
+`docs/PLATFORM_ARCHITECTURE.md` records the current bridge result contract and
+compatibility-normalization architecture. Keep it aligned when changing bridge
+payload shape, `resultContractVersion`, or TypeScript compatibility
+normalization.
+
+Completed plan and migration documents are not active source-of-truth files.
+If they are still useful for manual archaeology, keep local copies under the
+ignored `docs/_retired/` folder after copying any durable decisions into the
+active docs above.
 
 `scripts/test-commandset-live.ps1` is the optional live Revit commandset gate.
 It is not part of `test-all` because it requires a running Revit session, but it

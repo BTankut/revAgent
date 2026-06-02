@@ -108,6 +108,46 @@ payload:
 - dynamic compilation de-duplicates loaded assembly references by assembly name
   so multiple loaded Newtonsoft versions do not break `JsonConvert` snippets.
 
+## Bridge Result Contract
+
+Native Revit bridge command responses are normalized at the Revit host
+boundary. `BridgeResultContract.cs` owns the camelCase JSON-RPC result payload
+shape and injects `resultContractVersion` so clients can recognize the active
+bridge capability per response.
+
+The runtime TypeScript helper layer treats canonical
+`resultContractVersion >= 2` payloads as already normalized and idempotent.
+Legacy or raw dynamic responses still pass through compatibility parsing and
+success-casing fallback so rolling workstation updates do not break clients.
+Dynamic snippet object results are preserved as result objects; they must not
+be converted into double-encoded JSON strings.
+
+`scripts/test-all.ps1` includes bridge result contract characterization tests
+that reject missing `resultContractVersion`, bypassed native camelCase helpers,
+double-encoded dynamic object results, and non-idempotent canonical
+normalization.
+
+## TypeScript Runtime Hardening
+
+Both MCP packages are strict TypeScript packages. Their `tsconfig.json` files
+must keep `strict: true`, and `strict` must not be weakened with local
+`noImplicitAny: false` or `useUnknownInCatchVariables: false` overrides.
+Source under `installer/runtime-mcp-server/src` and
+`installer/revit-api-docs-mcp/src` must not use `@ts-nocheck`; the policy
+allowlist is empty.
+
+The former unchecked utility surfaces are now checked by default:
+`SocketClient.ts`, `ConnectionManager.ts`, `revitToolHelpers.ts`,
+`telemetry.ts`, `database/service.ts`, and the Revit API docs `docIndex.ts`.
+This keeps socket framing, Revit connection locking/preflight, bridge response
+normalization, live/usage telemetry, database helpers, and API-doc indexing in
+the normal compiler path.
+
+`scripts/test-typescript-nocheck-policy.ps1` enforces the strict compiler
+settings and the zero-allowlist rule. `scripts/test-mcp-build-payload-freshness.ps1`
+and the NAS publish preflight then verify that committed `build/` payloads still
+match source.
+
 ## Runtime Transport And Status
 
 The Node runtime and Revit add-in communicate over the local Revit MCP socket.

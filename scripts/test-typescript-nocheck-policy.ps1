@@ -1,12 +1,11 @@
 <#
 .SYNOPSIS
-    Enforce the current TypeScript @ts-nocheck debt boundary.
+    Enforce the zero-allowlist TypeScript @ts-nocheck policy.
 
 .DESCRIPTION
-    Existing unchecked files are kept in an explicit allowlist so the current
-    runtime can keep shipping while the boundary shrinks. New TypeScript source
-    files under the MCP packages must not introduce @ts-nocheck unless this
-    allowlist is deliberately changed in the same review.
+    TypeScript source files under the runtime and Revit API docs MCP packages
+    must stay checked by default. The allowlist is intentionally empty; adding
+    @ts-nocheck requires a deliberate policy change in the same review.
 #>
 
 [CmdletBinding()]
@@ -77,7 +76,7 @@ foreach ($sourceRoot in $sourceRoots) {
 
 $newNoCheck = @($actualNoCheck | Where-Object { -not $allowSet.Contains($_) })
 if ($newNoCheck.Count -gt 0) {
-    throw "New TypeScript @ts-nocheck usage is not allowed. Remove it or deliberately update the shrinking allowlist: $($newNoCheck -join ', ')"
+    throw "TypeScript @ts-nocheck usage is not allowed by the current zero-allowlist policy. Remove it or make an explicit policy change: $($newNoCheck -join ', ')"
 }
 
 $actualSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)

@@ -22,15 +22,15 @@ remain exact implementation, tool, package, manifest, and path identifiers.
 - `installer/command-payload/`: command set DLL and manifest backup
 - `installer/runtime-mcp-server/`: TypeScript source and bundled local runtime MCP server build for live Revit execution
 - `dashboard/`: read-only live dashboard server and browser UI for office monitoring
-- `docs/REVAGENT_LIVE_DASHBOARD_PLAN.md`: live dashboard feed, UI, polling, and public exposure plan
-- `docs/REVAGENT_USAGE_INTELLIGENCE.md`: usage-intelligence event, summary, and analyst pipeline
+- `docs/PLATFORM_ARCHITECTURE.md`: current platform, bridge, runtime, telemetry, dashboard, and deployment architecture
+- `docs/REVAGENT_USAGE_INTELLIGENCE.md`: usage-intelligence event, summary, live dashboard, and analyst pipeline
 - `docs/REVIT_IMAGE_EXPORT.md`: visual QA export workflow for active views,
   selected views, and coordination-focused 3D review images
 - `installer/revit-api-docs-mcp/`: TypeScript source and required companion local MCP server for Revit API DLL + XML documentation search
 - `installer/lib/`: shared PowerShell helper modules for installer/updater behavior
 - `installer/install-self-contained.ps1`: self-contained installer script
 - `installer/nas/`: NAS release publishing, workstation updater, and scheduled update bootstrap scripts
-- `docs/`: repository structure and migration notes
+- `docs/`: active architecture, runbook, repository structure, usage, and visual QA documentation
 - `evals/evals.json`: eval set aligned to the current `send_code_to_revit` contract
 
 ## Repository model
@@ -49,7 +49,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -Revit
 ```
 
 Commit the source change and refreshed payload binaries together. See
-`docs/REPOSITORY_STRUCTURE.md`, `docs/MONOREPO_MIGRATION.md`, and
+`docs/REPOSITORY_STRUCTURE.md`, `docs/PLATFORM_ARCHITECTURE.md`, and
 `docs/DEVELOPER_RUNBOOK.md`.
 
 ## Technical direction
@@ -73,6 +73,8 @@ explicit:
   versions are loaded in the Revit AppDomain
 - the runtime MCP server exposes raw dynamic execution plus read-only context
   primitives for session, active view, elements, and parameter schema
+- both MCP packages compile with `strict:true`, keep committed `build/` payloads
+  fresh, and reject `@ts-nocheck` in runtime/docs MCP source
 - the runtime MCP server also exposes Revit image export tools for visual QA:
   `export_revit_view_image` is read-only for ordinary view/sheet exports and
   uses a temporary sheet for standalone Schedule exports, while
@@ -536,12 +538,8 @@ revit-mcp-skill/
 |-- docs/
 |   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
 |   |-- DEVELOPER_RUNBOOK.md
-|   |-- MONOREPO_MIGRATION.md
 |   |-- PLATFORM_ARCHITECTURE.md
-|   |-- PLATFORM_MODERNIZATION_SUMMARY.md
 |   |-- REPOSITORY_STRUCTURE.md
-|   |-- REVAGENT_ARCHITECTURE_HARDENING_PLAN.md
-|   |-- REVAGENT_LIVE_DASHBOARD_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
 |-- dashboard/

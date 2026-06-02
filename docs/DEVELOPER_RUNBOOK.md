@@ -64,12 +64,8 @@ revit-mcp-skill/
 |-- docs/
 |   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
 |   |-- DEVELOPER_RUNBOOK.md
-|   |-- MONOREPO_MIGRATION.md
 |   |-- PLATFORM_ARCHITECTURE.md
-|   |-- PLATFORM_MODERNIZATION_SUMMARY.md
 |   |-- REPOSITORY_STRUCTURE.md
-|   |-- REVAGENT_ARCHITECTURE_HARDENING_PLAN.md
-|   |-- REVAGENT_LIVE_DASHBOARD_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
 |-- references/
@@ -216,8 +212,11 @@ Both servers are required. If only the runtime server is available, non-trivial
 Revit API work is not considered fully set up.
 
 Both MCP packages are TypeScript-first. Edit `src/`, then emit the existing
-`build/` contract. New source should not add `@ts-nocheck`; the current
-unchecked debt is kept in the explicit policy allowlist.
+`build/` contract. Both package `tsconfig.json` files must keep `strict: true`
+without masking it with `noImplicitAny:false` or
+`useUnknownInCatchVariables:false`. New source must not add `@ts-nocheck`; the
+current policy allowlist is empty and the runtime/docs MCP source trees are
+expected to stay checked by default.
 
 ```powershell
 cd .\installer\runtime-mcp-server
@@ -781,3 +780,9 @@ When behavior changes, update the relevant docs in the same commit:
 
 This runbook should stay operational and command-oriented. Avoid vague history.
 Write down exact paths, exact commands, and the current source of truth.
+Completed one-off planning documents should not remain in the active docs set.
+After their durable decisions are reflected in `README.md`,
+`docs/PLATFORM_ARCHITECTURE.md`, `docs/DEVELOPER_RUNBOOK.md`,
+`docs/REPOSITORY_STRUCTURE.md`, `SKILL.md`, `AGENTS.md`, or `CHANGELOG.md`, keep
+local copies only under ignored `docs/_retired/` if they are still useful for
+manual reference.

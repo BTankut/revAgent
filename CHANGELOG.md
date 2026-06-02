@@ -4,6 +4,10 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Retired completed planning and migration documents from the active docs set,
+  moved durable architecture notes into the living README/runbook/platform docs,
+  and replaced release-manifest tracking of retired docs with current
+  architecture/runbook files.
 - Normalized the Revit bridge result contract with a central C# camelCase
   response helper, `resultContractVersion` on JSON-RPC result payloads, dynamic
   execution results that no longer double-encode JSON object returns, and

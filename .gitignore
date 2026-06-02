@@ -22,3 +22,8 @@
 
 # Large offline dependency payloads are kept locally/NAS-side, not in Git.
 installer/nas/dependencies/
+
+# Retired planning/history documents are kept locally only. Active repository
+# documentation must stay in README.md, SKILL.md, AGENTS.md, CHANGELOG.md, and
+# the non-retired docs/ files.
+docs/_retired/
