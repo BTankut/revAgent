@@ -410,6 +410,17 @@ const typeDeclarationGuard = await rawSendCodeTool.handler({
 });
 assert.match(typeDeclarationGuard.content[0].text, /Code execution guarded/);
 assert.match(typeDeclarationGuard.content[0].text, /type declarations/);
+const coordinationTool = tools.get("export_revit_coordination_image");
+const invalidCoordinationIds = await coordinationTool.handler({
+  elementIds: ["not-a-revit-element-id"],
+  outputDir: os.tmpdir(),
+  taskName: "Invalid coordination element ids",
+});
+const invalidCoordinationPayload = JSON.parse(invalidCoordinationIds.content[0].text);
+assert.equal(invalidCoordinationPayload.success, false);
+assert.equal(invalidCoordinationPayload.guarded, true);
+assert.equal(invalidCoordinationPayload.reason, "invalid_element_ids");
+assert.equal(invalidCoordinationPayload.revitWriteAction, "none");
 delete process.env.REVAGENT_TELEMETRY_ROOT;
 delete process.env.REVAGENT_REPORTS_ROOT;
 

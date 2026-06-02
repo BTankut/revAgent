@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import { connectionTargetSchema, csharpString, executeRevitCode, executionOptionsFromArgs, formatJsonContent, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
-import { runtimeFailure } from "../utils/runtimeResult.js";
+import { runtimeFailure, runtimeGuarded } from "../utils/runtimeResult.js";
 const intentSchema = z.enum(["raw_evidence", "coordination_overlay", "system_focus", "clash_clearance"]);
 const formatSchema = z.enum(["png", "jpg_lossless", "jpg_medium", "tiff", "bmp", "targa"]);
 const dpiSchema = z.enum(["72", "150", "300", "600"]);
@@ -33,11 +33,34 @@ function safePrefix(value) {
     const raw = value && value.trim() ? value.trim() : `revit-coordination-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     return raw.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 120);
 }
+function parseElementIds(values) {
+    const rawValues = values || [];
+    const ids = [];
+    const invalid = [];
+    for (const value of rawValues) {
+        if (typeof value === "number") {
+            if (Number.isInteger(value) && value > 0) {
+                ids.push(value);
+            }
+            else {
+                invalid.push(value);
+            }
+            continue;
+        }
+        const text = String(value).trim();
+        if (/^\d+$/.test(text)) {
+            const parsed = Number(text);
+            if (Number.isSafeInteger(parsed) && parsed > 0) {
+                ids.push(parsed);
+                continue;
+            }
+        }
+        invalid.push(value);
+    }
+    return { ids, invalid, suppliedCount: rawValues.length };
+}
 function csharpIntList(values) {
-    const ints = (values || [])
-        .map((value) => Number(value))
-        .filter((value) => Number.isFinite(value))
-        .map((value) => Math.trunc(value));
+    const ints = values.map((value) => Math.trunc(value));
     return `new List<int> { ${ints.join(", ")} }`;
 }
 export function resolveAutoTargetVisualStyle(intent) {
@@ -79,6 +102,20 @@ export function registerExportRevitCoordinationImageTool(server) {
         ...taskMetadataSchema(z),
         timeoutMs: z.number().int().positive().optional(),
     }, async (args) => {
+        const parsedElementIds = parseElementIds(args.elementIds);
+        if (parsedElementIds.invalid.length > 0) {
+            return formatJsonContent(runtimeGuarded({
+                action: "export_revit_coordination_image",
+                reason: "invalid_element_ids",
+                error: "elementIds must be positive integer Revit ElementId values. UniqueId strings or other non-numeric ids are not valid target evidence ids.",
+                extra: {
+                    revitWriteAction: "none",
+                    requestedElementCount: parsedElementIds.suppliedCount,
+                    validElementCount: parsedElementIds.ids.length,
+                    invalidElementIds: parsedElementIds.invalid,
+                },
+            }));
+        }
         const outputDir = path.resolve(args.outputDir || defaultOutputDir());
         const filePrefix = safePrefix(args.filePrefix);
         const requestedIntent = args.intent || "coordination_overlay";
@@ -110,7 +147,7 @@ string filePrefix = ${csharpString(filePrefix)};
 string desiredViewName = ${csharpString(args.viewName || "DPE Visual QA - Coordination Export")};
 string intent = ${csharpString(requestedIntent)};
 string targetVisualStyle = ${csharpString(resolvedTargetVisualStyle)};
-var requestedElementIds = ${csharpIntList(args.elementIds)};
+var requestedElementIds = ${csharpIntList(parsedElementIds.ids)};
 double marginFeet = ${marginMm} / 304.8;
 double singleElementMarginFeet = ${singleElementMarginMm} / 304.8;
 int contextTransparency = ${transparency};

@@ -306,7 +306,7 @@ export function registerSmartFocusElementsTool(server: ToolServer) {
         catch (error) {
             return formatJsonContent(workflowPayload({
                 success: false,
-                mode: "unknown",
+                mode: args.mode || "unknown",
                 error: error instanceof Error ? error.message : String(error),
             }));
         }

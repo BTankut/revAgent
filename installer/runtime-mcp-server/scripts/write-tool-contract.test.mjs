@@ -65,12 +65,15 @@ assertContains(exportCoordinationImage, 'action = "export_revit_coordination_ima
 assertContains(exportCoordinationImage, "allowFullViewFallback", "export_revit_coordination_image must require explicit full-view fallback for all-missing requested element ids.");
 assertContains(exportCoordinationImage, "no_requested_elements_found", "export_revit_coordination_image must expose a stable guard reason for all-missing requested element ids.");
 assertContains(exportCoordinationImage, "requestedElementIds.Count > 0 && targetElements.Count == 0 && !allowFullViewFallback", "export_revit_coordination_image must guard all-missing requested element ids before full-view export.");
+assertContains(exportCoordinationImage, "parseElementIds", "export_revit_coordination_image must validate supplied elementIds before C# list generation.");
+assertContains(exportCoordinationImage, "invalid_element_ids", "export_revit_coordination_image must guard non-numeric supplied elementIds instead of silently exporting full view evidence.");
 
 const smartFocusElements = readSource("src/tools/smart_focus_elements.ts");
 assertContains(smartFocusElements, 'action: "smart_focus_elements"', "smart_focus_elements must expose the lowercase shared action field.");
 assertContains(smartFocusElements, "state:", "smart_focus_elements must expose the shared state field.");
 assertContains(smartFocusElements, "activeOrRequestedViewThen3D", "smart_focus_elements must honor create3d=true after active/requested focus succeeds.");
 assertContains(smartFocusElements, "Smart focus optional 3D view after active/requested focus", "smart_focus_elements must make the post-active-focus 3D step auditable.");
+assertContains(smartFocusElements, 'mode: args.mode || "unknown"', "smart_focus_elements catch responses must preserve the requested mode when available.");
 
 const showElementInPlanAnd3D = readSource("src/tools/show_element_in_plan_and_3d.ts");
 assertContains(showElementInPlanAnd3D, 'action: "show_element_in_plan_and_3d"', "show_element_in_plan_and_3d must expose the lowercase shared action field.");

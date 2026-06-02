@@ -594,6 +594,8 @@ try {
     Assert-True ($coordinationImageToolCode -match 'allowFullViewFallback') "Coordination image export must require explicit full-view fallback when requested element ids are all missing."
     Assert-True ($coordinationImageToolCode -match 'no_requested_elements_found') "Coordination image export must return a stable guard reason when no requested elements are found."
     Assert-True ($coordinationImageToolCode -match 'requestedElementIds\.Count > 0 && targetElements\.Count == 0 && !allowFullViewFallback') "Coordination image export must guard missing requested element ids before full-view export."
+    Assert-True ($coordinationImageToolCode -match 'parseElementIds') "Coordination image export must validate supplied elementIds before C# list generation."
+    Assert-True ($coordinationImageToolCode -match 'invalid_element_ids') "Coordination image export must guard non-numeric supplied elementIds instead of silently exporting full view evidence."
     Assert-True ($coordinationImageToolCode -match 'createdViews') "Coordination image export must report created review views for cleanup/audit."
     Assert-True ($coordinationImageToolCode -match 'cleanupAfterExport: z\.boolean') "Coordination image export must expose a user-controlled cleanupAfterExport parameter."
     Assert-True ($coordinationImageToolCode -match 'cleanupAfterExportRequested') "Coordination image export must report whether cleanupAfterExport was requested."
