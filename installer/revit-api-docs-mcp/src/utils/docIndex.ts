@@ -9,24 +9,97 @@ interface IndexOptions {
     rootPath?: string;
 }
 
+interface AssemblyPair {
+    assemblyName: string;
+    dllPath: string;
+    xmlPath: string;
+}
+
+interface IndexConfig {
+    revitVersion: string;
+    rootPath: string;
+    assemblyPairs: AssemblyPair[];
+    cacheDir: string;
+    cacheFile: string;
+}
+
+interface ApiSymbol {
+    id: string;
+    kind: string;
+    name: string;
+    fullName: string;
+    assembly: string;
+    namespace: string;
+    summary?: string;
+    signature?: string;
+    declaringType?: string;
+    [key: string]: any;
+}
+
+interface ApiType extends ApiSymbol {
+    baseType?: string;
+    interfaces?: string[];
+    simpleName?: string;
+}
+
+interface ApiMember extends ApiSymbol {
+    declaringType: string;
+}
+
+interface NamespaceEntry {
+    name: string;
+    types: ApiType[];
+}
+
+interface RawIndex {
+    version: string;
+    sourceRoot: string;
+    schemaVersion?: number;
+    types: ApiType[];
+    members: ApiMember[];
+    [key: string]: any;
+}
+
+interface HydratedIndex extends RawIndex {
+    typeById: Map<string, ApiType>;
+    typeByFullName: Map<string, ApiType>;
+    typesByName: Map<string, ApiType[]>;
+    membersById: Map<string, ApiMember>;
+    membersByFullName: Map<string, ApiMember[]>;
+    membersByName: Map<string, ApiMember[]>;
+    membersByType: Map<string, ApiMember[]>;
+    namespaces: Map<string, NamespaceEntry>;
+    searchItems: ApiSymbol[];
+}
+
+interface MemberAlias {
+    memberName: string;
+    kind: string;
+    parameterType: string | null;
+    reason: string;
+}
+
+type MemberGroupKey = "constructors" | "methods" | "properties" | "fields" | "events";
+type MemberGroups = Record<MemberGroupKey, ApiSymbol[]>;
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PACKAGE_ROOT = path.resolve(__dirname, "..", "..");
 const INDEX_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "build-index.ps1");
 const DEFAULT_REVIT_VERSION = "2022";
 const INDEX_SCHEMA_VERSION = 2;
-const INDEX_CACHE = new Map();
+const INDEX_CACHE = new Map<string, HydratedIndex>();
 
-function parseJson(text) {
+function parseJson(text: string): RawIndex {
     return JSON.parse(String(text).replace(/^\uFEFF/, ""));
 }
 
-function normalize(text) {
+function normalize(text: unknown): string {
     return String(text || "").trim().toLowerCase();
 }
 
-function uniqueBy(items, keySelector) {
-    const seen = new Set();
+function uniqueBy<T>(items: T[], keySelector: (item: T) => string): T[] {
+    const seen = new Set<string>();
     return items.filter((item) => {
         const key = keySelector(item);
         if (seen.has(key)) {
@@ -37,7 +110,7 @@ function uniqueBy(items, keySelector) {
     });
 }
 
-function defaultRevitRoot(version) {
+function defaultRevitRoot(version: string): string {
     return path.join("C:\\Program Files\\Autodesk", `Revit ${version}`);
 }
 
@@ -48,7 +121,7 @@ function defaultCacheDir() {
     return path.join("C:\\ProgramData", "DPE", "RevitMCP", "state", "revit-api-docs", "cache");
 }
 
-async function discoverAssemblyPairs(rootPath) {
+async function discoverAssemblyPairs(rootPath: string): Promise<AssemblyPair[]> {
     const entries = await readdir(rootPath, { withFileTypes: true });
     return entries
         .filter((entry) => entry.isFile() && /^RevitAPI.*\.dll$/i.test(entry.name))
@@ -86,7 +159,7 @@ async function getConfig(options: IndexOptions = {}) {
     };
 }
 
-async function cacheIsStale(config) {
+async function cacheIsStale(config: IndexConfig): Promise<boolean> {
     if (!existsSync(config.cacheFile)) {
         return true;
     }
@@ -101,7 +174,7 @@ async function cacheIsStale(config) {
     return false;
 }
 
-async function runIndexBuilder(config) {
+async function runIndexBuilder(config: IndexConfig): Promise<void> {
     await mkdir(config.cacheDir, { recursive: true });
     await new Promise<void>((resolve, reject) => {
         const child = spawn("powershell", [
@@ -137,7 +210,7 @@ async function runIndexBuilder(config) {
     });
 }
 
-function toSummaryRecord(symbol) {
+function toSummaryRecord(symbol: ApiSymbol): ApiSymbol {
     return {
         id: symbol.id,
         kind: symbol.kind || "type",
@@ -151,16 +224,16 @@ function toSummaryRecord(symbol) {
     };
 }
 
-function hydrateIndex(raw) {
-    const typeById = new Map();
-    const typeByFullName = new Map();
-    const typesByName = new Map();
-    const membersById = new Map();
-    const membersByFullName = new Map();
-    const membersByName = new Map();
-    const membersByType = new Map();
-    const namespaces = new Map();
-    const searchItems = [];
+function hydrateIndex(raw: RawIndex): HydratedIndex {
+    const typeById = new Map<string, ApiType>();
+    const typeByFullName = new Map<string, ApiType>();
+    const typesByName = new Map<string, ApiType[]>();
+    const membersById = new Map<string, ApiMember>();
+    const membersByFullName = new Map<string, ApiMember[]>();
+    const membersByName = new Map<string, ApiMember[]>();
+    const membersByType = new Map<string, ApiMember[]>();
+    const namespaces = new Map<string, NamespaceEntry>();
+    const searchItems: ApiSymbol[] = [];
 
     for (const type of raw.types) {
         const hydratedType = {
@@ -245,7 +318,7 @@ function hydrateIndex(raw) {
     };
 }
 
-async function loadIndex(options: IndexOptions = {}) {
+async function loadIndex(options: IndexOptions = {}): Promise<HydratedIndex> {
     const config = await getConfig(options);
     const cacheKey = `${config.revitVersion}|${config.rootPath}`;
     const stale = await cacheIsStale(config);
@@ -270,7 +343,7 @@ async function loadIndex(options: IndexOptions = {}) {
     return hydrated;
 }
 
-function scoreMatch(item, query) {
+function scoreMatch(item: ApiSymbol, query: string): number {
     const lowered = normalize(query);
     const name = normalize(item.name);
     const fullName = normalize(item.fullName);
@@ -316,7 +389,7 @@ function scoreMatch(item, query) {
     return tokenScore;
 }
 
-function filterByAssembly(items, assembly) {
+function filterByAssembly<T extends ApiSymbol>(items: T[], assembly?: string): T[] {
     if (!assembly) {
         return items;
     }
@@ -324,14 +397,14 @@ function filterByAssembly(items, assembly) {
     return items.filter((item) => normalize(item.assembly).includes(assemblyFilter));
 }
 
-function filterByKind(items, kind) {
+function filterByKind<T extends ApiSymbol>(items: T[], kind?: string): T[] {
     if (!kind) {
         return items;
     }
     return items.filter((item) => item.kind === kind);
 }
 
-function getMemberNameAliases(memberName, kind) {
+function getMemberNameAliases(memberName: string, kind?: string): MemberAlias[] {
     const text = String(memberName || "").trim();
     if (!text) {
         return [];
@@ -340,7 +413,7 @@ function getMemberNameAliases(memberName, kind) {
     const argsMatch = text.match(/\(([^)]*)\)\s*$/);
     const parameterType = resolveGetParameterArgumentType(argsMatch?.[1]);
     const withoutArgs = text.replace(/\s*\([^)]*\)\s*$/, "");
-    const aliases = [];
+    const aliases: MemberAlias[] = [];
     if (/(^|\.)get_parameter$/i.test(withoutArgs)) {
         aliases.push({
             memberName: withoutArgs.replace(/get_parameter$/i, "Parameter"),
@@ -361,7 +434,7 @@ function getMemberNameAliases(memberName, kind) {
     return uniqueBy(aliases, (alias) => `${normalize(alias.memberName)}|${alias.kind || kind || ""}`);
 }
 
-function resolveGetParameterArgumentType(value) {
+function resolveGetParameterArgumentType(value: unknown): string | null {
     const text = normalize(value);
     if (!text) {
         return null;
@@ -378,7 +451,7 @@ function resolveGetParameterArgumentType(value) {
     return null;
 }
 
-function findTypeMatches(index, typeName) {
+function findTypeMatches(index: HydratedIndex, typeName: string): ApiType[] {
     const query = normalize(typeName);
     if (!query) {
         return [];
@@ -399,9 +472,9 @@ function findTypeMatches(index, typeName) {
     return fuzzy.slice(0, 20);
 }
 
-function findDirectMemberMatches(index, memberName, typeName, kind) {
+function findDirectMemberMatches(index: HydratedIndex, memberName: string, typeName?: string, kind?: string): ApiMember[] {
     const query = normalize(memberName);
-    let matches = [];
+    let matches: ApiMember[] = [];
     if (!query) {
         return matches;
     }
@@ -442,7 +515,7 @@ function findDirectMemberMatches(index, memberName, typeName, kind) {
     return uniqueBy(matches, (member) => member.id);
 }
 
-function findMemberMatches(index, memberName, typeName, kind) {
+function findMemberMatches(index: HydratedIndex, memberName: string, typeName?: string, kind?: string) {
     const directMatches = findDirectMemberMatches(index, memberName, typeName, kind);
     if (directMatches.length > 0) {
         return {
@@ -478,8 +551,8 @@ function findMemberMatches(index, memberName, typeName, kind) {
     };
 }
 
-function groupMembers(members) {
-    const groups = {
+function groupMembers(members: ApiMember[]): MemberGroups {
+    const groups: MemberGroups = {
         constructors: [],
         methods: [],
         properties: [],
@@ -504,13 +577,13 @@ function groupMembers(members) {
             groups.events.push(summaryRecord);
         }
     }
-    for (const key of Object.keys(groups)) {
+    for (const key of Object.keys(groups) as MemberGroupKey[]) {
         groups[key].sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
     }
     return groups;
 }
 
-function resolveUniqueType(index, typeName) {
+function resolveUniqueType(index: HydratedIndex, typeName: string) {
     const matches = findTypeMatches(index, typeName);
     if (matches.length === 0) {
         throw new Error(`No type matched '${typeName}'.`);
@@ -527,7 +600,7 @@ function resolveUniqueType(index, typeName) {
     };
 }
 
-export async function searchApi(options) {
+export async function searchApi(options: IndexOptions & { query: string; limit?: number; kind?: string; assembly?: string }) {
     const limit = Math.max(1, Math.min(100, Number(options.limit || 20)));
     const index = await loadIndex({ revitVersion: options.revitVersion });
     const filtered = filterByAssembly(filterByKind(index.searchItems, options.kind), options.assembly);
@@ -546,7 +619,7 @@ export async function searchApi(options) {
     };
 }
 
-export async function getTypeDetails(options) {
+export async function getTypeDetails(options: IndexOptions & { typeName: string; includeInherited?: boolean }) {
     const index = await loadIndex({ revitVersion: options.revitVersion });
     const resolution = resolveUniqueType(index, options.typeName);
     if (resolution.ambiguous) {
@@ -558,7 +631,7 @@ export async function getTypeDetails(options) {
     }
     const type = resolution.type;
     const declaredMembers = index.membersByType.get(normalize(type.fullName)) || [];
-    const inheritedMembers = [];
+    const inheritedMembers: Array<{ declaringType: string; members: MemberGroups }> = [];
     if (options.includeInherited) {
         let baseTypeName = type.baseType;
         while (baseTypeName) {
@@ -594,7 +667,7 @@ export async function getTypeDetails(options) {
     };
 }
 
-export async function getMemberDetails(options) {
+export async function getMemberDetails(options: IndexOptions & { memberName: string; typeName?: string; kind?: string }) {
     const index = await loadIndex({ revitVersion: options.revitVersion });
     const resolution = findMemberMatches(index, options.memberName, options.typeName, options.kind);
     const matches = resolution.matches;
@@ -634,7 +707,7 @@ export async function getMemberDetails(options) {
     };
 }
 
-export async function listNamespace(options) {
+export async function listNamespace(options: IndexOptions & { namespaceName: string; includeChildNamespaces?: boolean }) {
     const index = await loadIndex({ revitVersion: options.revitVersion });
     const exact = index.namespaces.get(options.namespaceName) ||
         [...index.namespaces.values()].find((entry) => normalize(entry.name) === normalize(options.namespaceName));

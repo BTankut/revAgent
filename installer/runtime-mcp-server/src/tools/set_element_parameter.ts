@@ -12,14 +12,16 @@ import {
 } from "../utils/revitToolHelpers.js";
 import { runtimeFailure, runtimeGuarded } from "../utils/runtimeResult.js";
 
-function valueToText(value) {
+type JsonObject = Record<string, any>;
+
+function valueToText(value: unknown): string {
     if (typeof value === "boolean") {
         return value ? "true" : "false";
     }
     return String(value ?? "");
 }
 
-async function resolveSingleElementId(args, connectionOptions) {
+async function resolveSingleElementId(args: JsonObject, connectionOptions: JsonObject) {
     if (args.elementId !== undefined && args.elementId !== null && String(args.elementId).trim() !== "") {
         const parsed = Number.parseInt(String(args.elementId), 10);
         return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -45,7 +47,7 @@ async function resolveSingleElementId(args, connectionOptions) {
     return null;
 }
 
-function buildSetElementParameterCode(args, elementId) {
+function buildSetElementParameterCode(args: JsonObject, elementId: number) {
     const parameterName = csharpString(args.parameterName || "");
     const parameterSource = csharpString(args.parameterSource || "instance");
     const valueText = csharpString(valueToText(args.value));

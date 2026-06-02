@@ -12,7 +12,9 @@ import {
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
 
-function buildInspectParameterSchemaCode(args) {
+type JsonObject = Record<string, any>;
+
+function buildInspectParameterSchemaCode(args: JsonObject) {
     const explicitIds = csharpIntArray(args.elementIds || []);
     const category = csharpString(args.category || "");
     const sampleLimit = Number.isFinite(args.sampleLimit) ? Math.max(1, Math.min(25, args.sampleLimit)) : 5;
@@ -206,7 +208,7 @@ catch (Exception ex)
 }`;
 }
 
-function summarizeParameterIdentity(parameter) {
+function summarizeParameterIdentity(parameter: JsonObject) {
     if (!parameter || typeof parameter !== "object") {
         return {};
     }
@@ -223,7 +225,7 @@ function summarizeParameterIdentity(parameter) {
     };
 }
 
-function withDuplicateDisplayNameWarnings(payload, args) {
+function withDuplicateDisplayNameWarnings(payload: any, args: JsonObject) {
     if (args.parameterNameMatchMode !== "exact" ||
         !payload ||
         typeof payload !== "object" ||
@@ -231,12 +233,12 @@ function withDuplicateDisplayNameWarnings(payload, args) {
         return payload;
     }
 
-    const duplicateDisplayNameWarnings = [];
+    const duplicateDisplayNameWarnings: JsonObject[] = [];
     const warnings = Array.isArray(payload.warnings) ? [...payload.warnings] : [];
 
     for (const element of payload.elements) {
         const parameters = Array.isArray(element?.parameters) ? element.parameters : [];
-        const byDisplayName = new Map();
+        const byDisplayName = new Map<string, { name: string; matches: any[] }>();
         for (const parameter of parameters) {
             const name = typeof parameter?.name === "string" ? parameter.name.trim() : "";
             if (!name) {

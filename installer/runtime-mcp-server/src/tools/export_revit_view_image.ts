@@ -17,7 +17,11 @@ const formatSchema = z.enum(["png", "jpg_lossless", "jpg_medium", "tiff", "bmp",
 const dpiSchema = z.enum(["72", "150", "300", "600"]);
 const fitDirectionSchema = z.enum(["horizontal", "vertical"]);
 
-const fileTypeByFormat = {
+type ExportFormat = z.infer<typeof formatSchema>;
+type ExportDpi = z.infer<typeof dpiSchema>;
+type FitDirection = z.infer<typeof fitDirectionSchema>;
+
+const fileTypeByFormat: Record<ExportFormat, string> = {
   png: "PNG",
   jpg_lossless: "JPEGLossless",
   jpg_medium: "JPEGMedium",
@@ -26,14 +30,14 @@ const fileTypeByFormat = {
   targa: "TARGA",
 };
 
-const resolutionByDpi = {
+const resolutionByDpi: Record<ExportDpi, string> = {
   "72": "DPI_72",
   "150": "DPI_150",
   "300": "DPI_300",
   "600": "DPI_600",
 };
 
-const fitDirectionByInput = {
+const fitDirectionByInput: Record<FitDirection, string> = {
   horizontal: "Horizontal",
   vertical: "Vertical",
 };
@@ -42,12 +46,12 @@ function defaultOutputDir() {
   return path.join(os.tmpdir(), "revit-mcp-image-export");
 }
 
-function safePrefix(value) {
+function safePrefix(value?: string) {
   const raw = value && value.trim() ? value.trim() : `revit-view-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   return raw.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 120);
 }
 
-function csharpNullableInt(value) {
+function csharpNullableInt(value: unknown) {
   if (value === undefined || value === null || value === "") return "null";
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return "null";
@@ -82,7 +86,7 @@ export function registerExportRevitViewImageTool(server: ToolServer) {
       const outputDir = path.resolve(args.outputDir || defaultOutputDir());
       const filePrefix = safePrefix(args.filePrefix);
       const fileType = fileTypeByFormat[args.format || "png"];
-      const resolution = resolutionByDpi[String(args.dpi || "150")];
+      const resolution = resolutionByDpi[String(args.dpi || "150") as ExportDpi];
       const fitDirection = fitDirectionByInput[args.fitDirection || "horizontal"];
       const pixelSize = Math.trunc(args.pixelSize || 6000);
       const enforcePixelSize = args.enforcePixelSize !== false;

@@ -12,18 +12,20 @@ import {
     taskOptionsFromArgs,
 } from "../utils/revitToolHelpers.js";
 
-async function resolveElementIds(args, connectionOptions) {
+type JsonObject = Record<string, any>;
+
+async function resolveElementIds(args: JsonObject, connectionOptions: JsonObject) {
     const explicit = Array.isArray(args.elementIds) ? args.elementIds : [];
     let ids = explicit
-        .map((value) => Number.parseInt(String(value), 10))
-        .filter((value) => Number.isFinite(value) && value > 0);
+        .map((value: unknown) => Number.parseInt(String(value), 10))
+        .filter((value: number) => Number.isFinite(value) && value > 0);
     if (args.useSelection) {
         ids = ids.concat(await getSelectionElementIds(args.limit || 20, connectionOptions));
     }
     return [...new Set(ids)].slice(0, args.limit || 20);
 }
 
-function buildInspectElementsCode(ids, args) {
+function buildInspectElementsCode(ids: number[], args: JsonObject) {
     const idArray = csharpIntArray(ids);
     const includeParameters = args.includeParameters !== false ? "true" : "false";
     const includeTypeParameters = args.includeTypeParameters === true ? "true" : "false";

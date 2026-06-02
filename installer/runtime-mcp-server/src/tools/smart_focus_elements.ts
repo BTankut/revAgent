@@ -14,11 +14,13 @@ const elementIdSchema = z.union([
     z.string().regex(/^\d+$/),
 ]);
 
-function unwrapResponse(response) {
+type JsonObject = Record<string, any>;
+
+function unwrapResponse(response: any) {
     return response && response.result ? response.result : response;
 }
 
-function isSuccess(payload) {
+function isSuccess(payload: any) {
     if (!payload || typeof payload !== "object") {
         return false;
     }
@@ -31,7 +33,7 @@ function isSuccess(payload) {
     return true;
 }
 
-function compactView(view) {
+function compactView(view: any) {
     if (!view || typeof view !== "object") {
         return view || null;
     }
@@ -45,7 +47,7 @@ function compactView(view) {
     };
 }
 
-function compactFocusResult(result) {
+function compactFocusResult(result: any) {
     if (!result || typeof result !== "object") {
         return result || null;
     }
@@ -79,7 +81,7 @@ function compactFocusResult(result) {
     };
 }
 
-function compactSmartFocusPayload(payload) {
+function compactSmartFocusPayload(payload: JsonObject) {
     return {
         Success: payload.Success,
         Action: payload.Action,

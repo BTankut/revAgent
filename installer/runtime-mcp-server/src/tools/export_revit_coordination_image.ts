@@ -18,7 +18,13 @@ const dpiSchema = z.enum(["72", "150", "300", "600"]);
 const fitDirectionSchema = z.enum(["horizontal", "vertical"]);
 const targetVisualStyleSchema = z.enum(["auto", "qa_high_contrast", "technical_report", "outline_only", "raw"]);
 
-const fileTypeByFormat = {
+type ExportFormat = z.infer<typeof formatSchema>;
+type ExportDpi = z.infer<typeof dpiSchema>;
+type FitDirection = z.infer<typeof fitDirectionSchema>;
+type ExportIntent = z.infer<typeof intentSchema>;
+type TargetVisualStyle = z.infer<typeof targetVisualStyleSchema>;
+
+const fileTypeByFormat: Record<ExportFormat, string> = {
   png: "PNG",
   jpg_lossless: "JPEGLossless",
   jpg_medium: "JPEGMedium",
@@ -27,14 +33,14 @@ const fileTypeByFormat = {
   targa: "TARGA",
 };
 
-const resolutionByDpi = {
+const resolutionByDpi: Record<ExportDpi, string> = {
   "72": "DPI_72",
   "150": "DPI_150",
   "300": "DPI_300",
   "600": "DPI_600",
 };
 
-const fitDirectionByInput = {
+const fitDirectionByInput: Record<FitDirection, string> = {
   horizontal: "Horizontal",
   vertical: "Vertical",
 };
@@ -43,12 +49,12 @@ function defaultOutputDir() {
   return path.join(os.tmpdir(), "revit-mcp-image-export");
 }
 
-function safePrefix(value) {
+function safePrefix(value?: string) {
   const raw = value && value.trim() ? value.trim() : `revit-coordination-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   return raw.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 120);
 }
 
-function csharpIntList(values) {
+function csharpIntList(values?: Array<string | number>) {
   const ints = (values || [])
     .map((value) => Number(value))
     .filter((value) => Number.isFinite(value))
@@ -56,7 +62,7 @@ function csharpIntList(values) {
   return `new List<int> { ${ints.join(", ")} }`;
 }
 
-export function resolveAutoTargetVisualStyle(intent) {
+export function resolveAutoTargetVisualStyle(intent: ExportIntent): Exclude<TargetVisualStyle, "auto"> {
   if (intent === "raw_evidence") return "raw";
   if (intent === "coordination_overlay") return "outline_only";
   if (intent === "system_focus") return "technical_report";
@@ -103,7 +109,7 @@ export function registerExportRevitCoordinationImageTool(server: ToolServer) {
         ? resolveAutoTargetVisualStyle(requestedIntent)
         : requestedTargetVisualStyle;
       const fileType = fileTypeByFormat[args.format || "png"];
-      const resolution = resolutionByDpi[String(args.dpi || "150")];
+      const resolution = resolutionByDpi[String(args.dpi || "150") as ExportDpi];
       const fitDirection = fitDirectionByInput[args.fitDirection || "horizontal"];
       const pixelSize = Math.trunc(args.pixelSize || 4000);
       const preExportPixelSize = Number.isFinite(Number(args.preExportPixelSize)) ? Math.max(0, Math.trunc(Number(args.preExportPixelSize))) : 0;

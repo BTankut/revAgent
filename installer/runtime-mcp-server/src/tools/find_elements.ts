@@ -8,7 +8,7 @@ import {
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
 
-function addWriteSafetyGuidance(payload) {
+function addWriteSafetyGuidance(payload: any) {
     if (!payload || typeof payload !== "object") return payload;
     const success = payload.success ?? payload.Success;
     if (success === false) return payload;

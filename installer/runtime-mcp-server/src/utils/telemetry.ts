@@ -304,7 +304,7 @@ function summarizeMcpToolResult(result: any, error: any = null) {
     }
 
     try {
-        const text = result?.content?.find?.((item) => item?.type === "text")?.text;
+        const text = result?.content?.find?.((item: any) => item?.type === "text")?.text;
         if (typeof text === "string" && text.trim().startsWith("{")) {
             return summarizeTelemetryResponse(JSON.parse(text));
         }
@@ -346,7 +346,7 @@ function parseJsonLikeText(value: any): any {
 
 function unwrapMcpToolResult(result: any) {
     try {
-        const text = result?.content?.find?.((item) => item?.type === "text")?.text;
+        const text = result?.content?.find?.((item: any) => item?.type === "text")?.text;
         if (typeof text === "string") {
             return parseJsonLikeText(text);
         }
@@ -995,7 +995,7 @@ function chooseBestActiveTask() {
 
     return active
         .sort((a, b) => {
-            const scopePriority = (task) => task.scope === "revit.command" ? 2 : 1;
+            const scopePriority = (task: LiveTask) => task.scope === "revit.command" ? 2 : 1;
             const priorityDelta = scopePriority(b) - scopePriority(a);
             if (priorityDelta !== 0) {
                 return priorityDelta;

@@ -12,16 +12,18 @@ import {
     taskOptionsFromArgs,
 } from "../utils/revitToolHelpers.js";
 
-function uniqueSections(values) {
+type JsonObject = Record<string, any>;
+
+function uniqueSections(values: unknown): string[] {
     const requested = Array.isArray(values) && values.length > 0 ? values : ["header", "body"];
-    return [...new Set(requested.map((value) => String(value || "").toLowerCase()))]
-        .filter((value) => ["header", "body", "footer"].includes(value));
+    return [...new Set(requested.map((value: unknown) => String(value || "").toLowerCase()))]
+        .filter((value: string) => ["header", "body", "footer"].includes(value));
 }
 
-function buildInspectSchedulesCode(args) {
+function buildInspectSchedulesCode(args: JsonObject) {
     const scheduleIds = (args.scheduleIds || [])
-        .map((value) => Number.parseInt(String(value), 10))
-        .filter((value) => Number.isFinite(value) && value > 0);
+        .map((value: unknown) => Number.parseInt(String(value), 10))
+        .filter((value: number) => Number.isFinite(value) && value > 0);
     const sections = uniqueSections(args.sections);
     const includeCells = args.includeCells === true ? "true" : "false";
     const scanCells = args.scanCells === true || Boolean(args.cellQuery) ? "true" : "false";

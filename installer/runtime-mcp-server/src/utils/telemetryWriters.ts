@@ -21,7 +21,7 @@ export async function appendJsonLine(filePath: string, event: unknown): Promise<
 export function enqueueAppendJsonLine(filePath: string, event: unknown): Promise<unknown> {
     const previous = telemetryWriteQueues.get(filePath) || Promise.resolve();
     const write = previous
-        .catch(() => undefined)
+        .catch((): undefined => undefined)
         .then(() => appendJsonLine(filePath, event));
 
     telemetryWriteQueues.set(filePath, write);
@@ -31,7 +31,7 @@ export function enqueueAppendJsonLine(filePath: string, event: unknown): Promise
                 telemetryWriteQueues.delete(filePath);
             }
         })
-        .catch(() => undefined);
+        .catch((): undefined => undefined);
 
     return write;
 }
@@ -56,7 +56,7 @@ export function enqueueLiveWrite(
     liveWritesInFlight++;
     const previous = liveWriteQueues.get(filePath) || Promise.resolve();
     const write = previous
-        .catch(() => undefined)
+        .catch((): undefined => undefined)
         .then(() => writer(filePath));
 
     liveWriteQueues.set(filePath, write);

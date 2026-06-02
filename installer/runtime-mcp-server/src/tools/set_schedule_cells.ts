@@ -12,20 +12,30 @@ import {
 } from "../utils/revitToolHelpers.js";
 import { runtimeFailure } from "../utils/runtimeResult.js";
 
-function csharpIntArrayFromValues(values) {
+type JsonObject = Record<string, any>;
+
+interface NormalizedCellSpec {
+    row: number;
+    column: number;
+    value: string;
+    hasExpectedCurrentText: boolean;
+    expectedCurrentText: string;
+}
+
+function csharpIntArrayFromValues(values: number[]) {
     const normalized = values
-        .map((value) => Number.parseInt(String(value), 10))
-        .filter((value) => Number.isFinite(value));
+        .map((value: number) => Number.parseInt(String(value), 10))
+        .filter((value: number) => Number.isFinite(value));
     return `new int[] { ${normalized.join(", ")} }`;
 }
 
-function csharpBoolArray(values) {
-    return `new bool[] { ${values.map((value) => value ? "true" : "false").join(", ")} }`;
+function csharpBoolArray(values: boolean[]) {
+    return `new bool[] { ${values.map((value: boolean) => value ? "true" : "false").join(", ")} }`;
 }
 
-function normalizeCellSpecs(args) {
+function normalizeCellSpecs(args: JsonObject): NormalizedCellSpec[] {
     const cells = Array.isArray(args.cells) ? args.cells : [];
-    return cells.slice(0, 200).map((cell) => ({
+    return cells.slice(0, 200).map((cell: JsonObject) => ({
         row: Math.max(0, Number.parseInt(String(cell.row), 10) || 0),
         column: Math.max(0, Number.parseInt(String(cell.column), 10) || 0),
         value: String(cell.value ?? ""),
@@ -34,7 +44,7 @@ function normalizeCellSpecs(args) {
     }));
 }
 
-function buildSetScheduleCellsCode(args) {
+function buildSetScheduleCellsCode(args: JsonObject) {
     const scheduleId = Number.parseInt(String(args.scheduleId), 10);
     const cells = normalizeCellSpecs(args);
     const section = csharpString(args.section);

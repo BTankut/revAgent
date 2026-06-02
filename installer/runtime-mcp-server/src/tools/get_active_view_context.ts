@@ -10,7 +10,9 @@ import {
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
 
-function buildActiveViewContextCode(args) {
+type JsonObject = Record<string, any>;
+
+function buildActiveViewContextCode(args: JsonObject) {
     const includeSheetViewports = args.includeSheetViewports !== false ? "true" : "false";
     const includeSheetScheduleInstances = args.includeSheetScheduleInstances !== false ? "true" : "false";
     const includeModelElements = args.includeModelElements === true ? "true" : "false";

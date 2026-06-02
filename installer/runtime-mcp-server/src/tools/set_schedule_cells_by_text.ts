@@ -12,19 +12,21 @@ import {
 } from "../utils/revitToolHelpers.js";
 import { runtimeFailure } from "../utils/runtimeResult.js";
 
-function normalizeIntegerValues(values, maxCount = 100) {
+type JsonObject = Record<string, any>;
+
+function normalizeIntegerValues(values: unknown, maxCount = 100): number[] {
     return (Array.isArray(values) ? values : [])
         .slice(0, maxCount)
-        .map((value) => Number.parseInt(String(value), 10))
-        .filter((value) => Number.isFinite(value));
+        .map((value: unknown) => Number.parseInt(String(value), 10))
+        .filter((value: number) => Number.isFinite(value));
 }
 
-function csharpIntArray(values) {
+function csharpIntArray(values: number[]) {
     return `new int[] { ${values.join(", ")} }`;
 }
 
-function normalizeTextQueries(args) {
-    const queries = [];
+function normalizeTextQueries(args: JsonObject): string[] {
+    const queries: string[] = [];
     if (typeof args.rowTextQuery === "string" && args.rowTextQuery.trim()) {
         queries.push(args.rowTextQuery.trim());
     }
@@ -37,7 +39,7 @@ function normalizeTextQueries(args) {
     return [...new Set(queries)].slice(0, 20);
 }
 
-function buildSetScheduleCellsByTextCode(args) {
+function buildSetScheduleCellsByTextCode(args: JsonObject) {
     const scheduleIds = normalizeIntegerValues(args.scheduleIds, 200);
     const sheetIds = normalizeIntegerValues(args.sheetIds, 200);
     const rowTextQueries = normalizeTextQueries(args);

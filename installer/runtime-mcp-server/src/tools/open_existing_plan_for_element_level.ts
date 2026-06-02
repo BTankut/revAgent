@@ -14,7 +14,7 @@ const elementIdSchema = z.union([
     z.string().regex(/^\d+$/),
 ]);
 
-function compactView(view) {
+function compactView(view: any) {
     if (!view || typeof view !== "object") return view;
     return {
         Id: view.Id ?? view.id,
@@ -24,7 +24,7 @@ function compactView(view) {
     };
 }
 
-function compactElement(element) {
+function compactElement(element: any) {
     if (!element || typeof element !== "object") return element;
     return {
         Id: element.Id,
@@ -40,7 +40,7 @@ function compactElement(element) {
     };
 }
 
-function compactPlanResult(payload) {
+function compactPlanResult(payload: any) {
     if (!payload || typeof payload !== "object") {
         return payload;
     }

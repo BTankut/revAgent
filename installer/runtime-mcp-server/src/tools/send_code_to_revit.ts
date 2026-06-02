@@ -15,7 +15,7 @@ import {
 } from "../utils/telemetry.js";
 import { runtimeGuarded } from "../utils/runtimeResult.js";
 
-function findUnsupportedMethodBodySnippet(code) {
+function findUnsupportedMethodBodySnippet(code: string) {
     const source = String(code || "");
     const typeDeclaration = source.match(/^\s*(?:public|private|protected|internal|static|sealed|abstract|partial|\s)*\b(?:class|struct|interface|enum|record)\s+[A-Za-z_][A-Za-z0-9_]*/m);
     if (typeDeclaration) {
@@ -36,7 +36,7 @@ function findUnsupportedMethodBodySnippet(code) {
     return null;
 }
 
-function findErrorLikeResult(value) {
+function findErrorLikeResult(value: any) {
     const normalized = normalizeRevitExecutionResponse(value);
     if (normalized && typeof normalized === "object" && normalized.success === false) {
         return normalized.error || normalized.errorMessage || normalized.message || "Revit code returned success=false.";

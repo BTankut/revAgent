@@ -14,18 +14,20 @@ const elementIdSchema = z.union([
     z.string().regex(/^\d+$/),
 ]);
 
-function unwrapResponse(response) {
+type JsonObject = Record<string, any>;
+
+function unwrapResponse(response: any) {
     return response && response.result ? response.result : response;
 }
 
-function buildDefault3DViewName(elementId, element) {
+function buildDefault3DViewName(elementId: string | number, element: JsonObject | null) {
     const label = element && (element.FamilyName || element.TypeName || element.Name)
         ? String(element.FamilyName || element.TypeName || element.Name)
         : "Element";
     return `3D - ${label} ${elementId}`.replace(/[{}[\];<>?`~]/g, "").slice(0, 90);
 }
 
-function compactElement(element) {
+function compactElement(element: any) {
     if (!element || typeof element !== "object") return element;
     return {
         Id: element.Id,
@@ -41,7 +43,7 @@ function compactElement(element) {
     };
 }
 
-function compactView(view) {
+function compactView(view: any) {
     if (!view || typeof view !== "object") return view;
     return {
         Id: view.Id ?? view.id,
@@ -51,7 +53,7 @@ function compactView(view) {
     };
 }
 
-function summarizeFind(findResult) {
+function summarizeFind(findResult: any) {
     if (!findResult || typeof findResult !== "object") return findResult;
     return {
         Success: findResult.Success,
@@ -66,7 +68,7 @@ function summarizeFind(findResult) {
     };
 }
 
-function summarizePlan(planResult) {
+function summarizePlan(planResult: any) {
     if (!planResult || typeof planResult !== "object") return planResult;
     return {
         Success: planResult.Success,
@@ -92,7 +94,7 @@ function summarizePlan(planResult) {
     };
 }
 
-function summarizeThreeD(threeDResult) {
+function summarizeThreeD(threeDResult: any) {
     if (!threeDResult || typeof threeDResult !== "object") return threeDResult;
     return {
         Success: threeDResult.Success,

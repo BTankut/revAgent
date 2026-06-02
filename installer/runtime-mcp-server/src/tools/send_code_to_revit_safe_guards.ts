@@ -20,7 +20,7 @@ const WRITE_PATTERNS = [
     { name: "Manual Transaction", pattern: /new\s+(Transaction|SubTransaction|TransactionGroup)\s*\(|(Transaction|SubTransaction|TransactionGroup)\s*\(/i },
 ];
 
-export function findWritePatterns(code) {
+export function findWritePatterns(code: string): string[] {
     return WRITE_PATTERNS
         .filter((entry) => entry.pattern.test(code))
         .map((entry) => entry.name);

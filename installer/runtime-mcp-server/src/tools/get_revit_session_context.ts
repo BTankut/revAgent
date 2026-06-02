@@ -10,14 +10,16 @@ import {
     taskOptionsFromArgs,
 } from "../utils/revitToolHelpers.js";
 
-function payloadFromExecution(response) {
+type JsonObject = Record<string, any>;
+
+function payloadFromExecution(response: any) {
     if (response && typeof response === "object" && response.result && typeof response.result === "object") {
         return response.result;
     }
     return response;
 }
 
-function buildSessionContextCode(options) {
+function buildSessionContextCode(options: JsonObject) {
     const includeCounts = options.includeCategoryCounts !== false ? "true" : "false";
     const includeLinks = options.includeLinks !== false ? "true" : "false";
     return `

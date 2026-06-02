@@ -11,10 +11,12 @@ import {
     taskOptionsFromArgs,
 } from "../utils/revitToolHelpers.js";
 
-function buildInspectSheetTextCode(args) {
+type JsonObject = Record<string, any>;
+
+function buildInspectSheetTextCode(args: JsonObject) {
     const sheetIds = (args.sheetIds || [])
-        .map((value) => Number.parseInt(String(value), 10))
-        .filter((value) => Number.isFinite(value) && value > 0);
+        .map((value: unknown) => Number.parseInt(String(value), 10))
+        .filter((value: number) => Number.isFinite(value) && value > 0);
     const sheetQuery = csharpString(args.sheetQuery || args.query || "");
     const textQuery = csharpString(args.textQuery || "");
     const includeTextNotes = args.includeTextNotes === false ? "false" : "true";

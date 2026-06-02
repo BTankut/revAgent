@@ -19,7 +19,9 @@ const symbolSchema = z.object({
     limit: z.number().int().min(1).max(100).optional(),
 });
 
-async function resolveSymbol(revitVersion, symbol) {
+type SymbolRequest = z.infer<typeof symbolSchema>;
+
+async function resolveSymbol(revitVersion: string, symbol: SymbolRequest) {
     if (symbol.mode === "search") {
         if (!symbol.query) {
             throw new Error("search mode requires query");
@@ -70,7 +72,7 @@ export function registerResolveApiSymbolsBulkTool(server: ToolServer) {
         revit_version: z.string().min(1).describe("Revit version to resolve against, e.g. 2022."),
         symbols: z.array(symbolSchema).min(1).max(25).describe("Symbols to resolve in order."),
     }, async (args) => {
-        const results = [];
+        const results: Array<Record<string, any>> = [];
         for (let index = 0; index < args.symbols.length; index++) {
             const symbol = args.symbols[index];
             try {

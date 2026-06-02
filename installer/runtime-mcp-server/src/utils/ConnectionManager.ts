@@ -294,7 +294,7 @@ export async function withRevitConnection(operation: RevitConnectionOperation, o
     try {
         if (!revitClient.isConnected) {
             await new Promise<void>((resolve, reject) => {
-                let timeoutHandle;
+                let timeoutHandle: ReturnType<typeof setTimeout>;
                 const onConnect = () => {
                     revitClient.socket.removeListener("connect", onConnect);
                     revitClient.socket.removeListener("error", onError);

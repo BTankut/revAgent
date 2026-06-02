@@ -10,6 +10,8 @@ import {
     normalizeRevitExecutionResponse,
 } from "../utils/revitToolHelpers.js";
 
+type JsonObject = Record<string, any>;
+
 const INSTANCE_INFO_CODE = `
 try
 {
@@ -50,7 +52,7 @@ catch (Exception ex)
     return new { success = false, error = ex.ToString() };
 }`;
 
-function payloadFromResponse(response) {
+function payloadFromResponse(response: any) {
     const normalized = normalizeRevitExecutionResponse(response);
     if (normalized && typeof normalized === "object" && normalized.result) {
         return normalized.result;
@@ -58,8 +60,8 @@ function payloadFromResponse(response) {
     return normalized;
 }
 
-async function probeTarget(target, timeoutMs) {
-    let status = null;
+async function probeTarget(target: JsonObject, timeoutMs: number) {
+    let status: any = null;
     try {
         status = await withRevitConnection(async (revitClient) => {
             return await revitClient.sendCommand("mcp_status", {}, {
@@ -132,7 +134,7 @@ async function probeTarget(target, timeoutMs) {
                 recentLimit: 3,
                 includeDiagnostics: false,
             }),
-            info: null,
+            info: null as any,
             infoError: error instanceof Error ? error.message : String(error),
         };
     }

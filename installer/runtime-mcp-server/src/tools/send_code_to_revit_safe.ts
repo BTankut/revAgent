@@ -13,7 +13,7 @@ import {
 import { findWritePatterns } from "./send_code_to_revit_safe_guards.js";
 import { runtimeFailure, runtimeGuarded, runtimeSuccess } from "../utils/runtimeResult.js";
 
-function formatSafetyBlock(error, writePatterns, safetyReason) {
+function formatSafetyBlock(error: string, writePatterns: string[], safetyReason: string) {
     return formatJsonContent(runtimeGuarded({
         action: "send_code_to_revit_safe_preflight",
         error,

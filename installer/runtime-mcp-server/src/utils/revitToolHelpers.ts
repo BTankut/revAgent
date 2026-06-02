@@ -263,7 +263,7 @@ export function compactMcpStatusPayload(payload: any, options: CompactMcpStatusO
         if (includeRecentTasks) {
             clone.recentTasks = target.recentTasks
                 .slice(0, recentLimit)
-                .map((task) => compactTaskInfo(task, includeDiagnostics));
+                .map((task: any) => compactTaskInfo(task, includeDiagnostics));
             clone.recentTasksTruncated = target.recentTasks.length > recentLimit;
         }
         else {
