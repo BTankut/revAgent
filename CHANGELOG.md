@@ -4,170 +4,326 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
-- Added large-model progressive search hardening for revAgent element, sheet,
-  and schedule discovery: MEP-aware category inference for engineering terms,
-  explicit search budgets and `allowExpensiveSearch`, Revit-side category,
-  active-view, link-scope, workset, family/type/system, and level filters,
-  partial results before socket timeout, guarded `needs_scope` fallbacks, and
-  search-policy telemetry/dashboard coverage.
-- Changed `get_revit_session_context` to default to a minimal context so large
-  project document checks do not perform expensive MEP category and linked
-  room/space summaries unless `detailLevel="counts"` or `full` is requested.
-- Added large-model guard policy to `inspect_sheet_text` and
-  `inspect_schedules`, requiring bounded sheet/schedule scope or explicit
-  `allowExpensiveSearch=true` before broad project-wide text and cell scans.
-- Bumped the runtime tool surface version to
-  `revit-mcp-runtime-tools.33` for the large-model search policy, expanded
-  `find_elements` filters/budgets, and lightweight session context default.
-- Retired completed planning and migration documents from the active docs set,
-  moved durable architecture notes into the living README/runbook/platform docs,
-  and replaced release-manifest tracking of retired docs with current
-  architecture/runbook files.
-- Normalized the Revit bridge result contract with a central C# camelCase
-  response helper, `resultContractVersion` on JSON-RPC result payloads, dynamic
-  execution results that no longer double-encode JSON object returns, and
-  per-response TypeScript legacy normalization for older DLLs.
-- Added bridge result contract characterization coverage to reject
-  `JsonConvert.SerializeObject(result)` regressions, raw bridge response
-  `JToken.FromObject` bypasses, missing `resultContractVersion`, and
-  non-idempotent canonical response normalization.
-- Strengthened `SKILL.md` and `AGENTS.md` tool-selection authority so current
-  runtime tools and skill rules explicitly override Codex memory, older chat
-  history, and remembered raw C# workflows.
-- Added `set_schedule_cells_by_text`, a production-safe schedule row-text write
-  workflow for bounded sheet/schedule searches, dry-run match review,
-  ambiguous-row guards, compare-and-set checks, commit mode, and readback
-  verification.
-- Fixed usage-summary text handling so daily JSON/Markdown explicitly reads
-  telemetry as UTF-8, de-duplicates matching raw MCP/Revit friction samples,
-  and recognizes schedule `SetCellText` write patterns in dynamic-code
-  promotion analysis.
-- Added the revAgent architecture hardening plan and enforcement pass:
-  TypeScript `@ts-nocheck` policy, shared runtime result helpers, write/export
-  contract checks, telemetry helper split, dynamic C# promotion reporting, and
-  MCP/Revit payload freshness gates.
-- Added a NAS release preflight that verifies committed MCP build payloads and
-  Revit payload freshness before packaging.
-- Added direct standalone Schedule image export to `export_revit_view_image`
-  through a temporary sheet that is deleted before the wrapper transaction
-  commits, while keeping existing containing-sheet hints in the response.
-- Added `cleanupAfterExport` to `export_revit_coordination_image` so newly
-  created review views can be deleted after the image file is produced; reused
-  project review views are preserved.
-- Clarified `export_revit_coordination_image` cleanup reporting with
-  `cleanup.documentMayRemainModified` and `modelState.dirtyFlagNote`, because
-  deleting a temporary review view does not guarantee Revit clears the document
-  dirty flag.
-- Added `set_element_parameter`, a production-safe single-parameter write tool
-  with dry-run/commit modes, exact schema preflight, duplicate display-name and
-  read-only guards, type-write approval, compare-and-set support, and readback
-  verification.
-- Bumped the runtime tool surface version to
-  `revit-mcp-runtime-tools.23` for the export schema/behavior change.
-- Bumped the runtime tool surface version to
-  `revit-mcp-runtime-tools.24` for the live status/dashboard alignment change.
-- Bumped the runtime tool surface version to
-  `revit-mcp-runtime-tools.25` for the controlled parameter-write tool.
-- Bumped the runtime tool surface version to
-  `revit-mcp-runtime-tools.30` for the schedule row-text write workflow and
-  usage-intelligence write-pattern update.
-- Changed live dashboard activity rendering to match the revAgent status
-  window semantics: started/completed lifecycle pairs and nested
-  `mcp.tool`/`send_code_to_revit` events are collapsed into one user-facing
-  task row, while controlled schedule-export guidance is not shown as a red
-  operational failure. Completed rows now use the same check mark convention as
-  the status window.
-- Fixed the live dashboard Recent Tasks source so it prefers the add-in's
-  `mcp_status.recentTasks` history when available. This keeps task result,
-  duration, and ordering aligned with the revAgent status window, while raw
-  runtime telemetry remains available only as a fallback and diagnostic source.
-- Preserved guarded/failed MCP tool semantics on the dashboard when an inner
-  generic Revit `send_code_to_revit` status row is technically completed but
-  the production tool blocked the operation before write.
-- Added DrawingSheet support to `export_revit_view_image`, with clearer
-  guidance for unsupported standalone schedule views and sheet placement hints
-  when available.
-- Added `scheduleSheetInstances` to `get_active_view_context` for active sheet
-  inspection, including instance id, schedule id/name, point, and box data.
-- Made `find_elements` write-safety guidance explicit in compact responses and
-  documented that display parameter names alone are not valid write targets.
-- Added `scripts/summarize-usage-intelligence.ps1`, the first deterministic
-  reader layer for NAS usage intelligence. It summarizes machine latest reports
-  and daily runtime telemetry into `revagent.usage.summary.v1` JSON for
-  dashboards and later LLM review.
-- Added `scripts/publish-usage-summary.ps1` to publish daily summaries under
-  `reports\summaries\daily` and refresh `reports\summaries\latest.json` plus
-  a compact Markdown support view.
-- Added `scripts/install-usage-summary-task.ps1` for the single coordinator
-  workstation, with hidden daily scheduled execution, publish locking, and
-  NAS summary logs.
-- Fixed runtime telemetry writes so concurrent local/NAS appends to the same
-  `.ndjson` file preserve event order.
-- Fixed updater report generation so `localInstall` summaries are populated
-  when the successful update path passes a freshly created installed-state map.
-- Added `production.context` telemetry events that derive project, view,
-  level/room/space, target element, category/discipline, output, task intent,
-  duration, and result-state context from existing tool/command calls without
-  sending extra Revit requests.
-- Added top-level `taskName` to `mcp.tool` telemetry so the short purpose text
-  shown in revAgent status is available directly in usage analysis.
-- Added a non-blocking live dashboard feed under `reports\live\machines` with
-  per-machine `status.json` snapshots and daily activity NDJSON for 2-5 second
-  dashboard polling.
-- Added the read-only revAgent live dashboard MVP with machine cards, active
-  task stream, deployment health, latest usage metrics, and a dashboard smoke
-  test.
-- Fixed live dashboard machine cards so the latest activity line falls back to
-  the per-machine activity stream when the fast status snapshot has no recent
-  activity list.
-- Changed the live dashboard into a revAgent-status-style operations board with
-  one task history window per machine, one all-machine activity window, and a
-  single-machine focus mode.
-- Added System/Light/Dark theme selection to the live dashboard.
-- Changed the live dashboard layout so the left two-thirds column contains
-  All Status Activity followed by Tool Usage and Friction, while the right
-  one-third column is reserved for stacked Machine Status Windows.
-- Limited All Status Activity to the latest 50 live records by default, with
-  an explicit expand/collapse control for up to 200 records.
-- Hardened the live dashboard polling path for production use by compacting
-  `/api/overview`, stripping raw live payload details from the UI response,
-  bounding daily activity tail reads, adding non-overlapping refreshes with a
-  timeout, and returning compact JSON with `nosniff` headers.
-- Fixed live dashboard version health so machines are compared against the
-  current stable channel version instead of an older target version recorded in
-  each machine's last update report.
-- Fixed top dashboard metrics so Live Operations, Guarded, and Failed are
-  calculated from current live activity instead of the latest daily summary,
-  which may lag behind production.
-- Added `/api/brief` as a compact read-only dashboard export for analyst/LLM
-  handoff.
-- Added `scripts\publish-live-backfill.ps1` to merge local live-feed spool
-  files into NAS `reports\live` when a workstation needs repair/backfill.
-- Fixed usage-summary friction samples so failed/slow raw tool or command
-  events are still reported when no derived `production.context` event exists,
-  empty production rollups stay as empty arrays instead of blank zero rows, and
-  Markdown summaries show failed operation samples explicitly.
-- Classified `send_code_to_revit_safe` write-looking rejections as guarded
-  safety blocks in telemetry and tool responses.
-- Increased Revit-side recent task history and status-query limits to 100
-  records for full-test/debug runs.
-- Added `files[].finalPixelSizeMatchesRequest` to `export_revit_view_image`
-  output so "already correct size" is distinct from "resizer changed file".
-- Added Revit API docs alias resolution for common
-  `Element.get_Parameter(...)` lookups, mapping them to the XML-doc
-  `Element.Parameter` property.
-- Expanded office-internal telemetry signal with normalized machine names,
-  useful bounded text values, and dynamic-code previews for later LLM analysis.
-- Unified the Revit add-in bridge command surface into one
-  `RevitMCPCommandSet` payload so Settings shows a single shared revAgent
-  bridge while preserving the existing runtime MCP command names.
-- Added an optional live Revit commandset integration gate,
-  `scripts/test-commandset-live.ps1`, for real Revit 2022 validation of
-  `transactionMode: "auto"`, `transactionMode: "none"`, guarded manual
-  transaction handling, manual rollback in `none`, and direct
-  `Newtonsoft.Json.JsonConvert` compilation.
-- Changed revAgent recent task history so guarded safety blocks use the warning
-  symbol `!`, while failed tasks keep the distinct failure symbol.
+- Reworked the changelog so stable deployments are listed under their own
+  version headings instead of accumulating in one long `Unreleased` section.
+- Backfilled NAS stable deploy headings from `2026.05.25.178-a153f01f`
+  through the current `2026.06.03.265-fef8b178` deploy.
+
+## 2026.06.03.265-fef8b178
+
+- Published stable deploy at 2026-06-03T19:30:38.2110216Z from commit `fef8b17`.
+- Documentation-only deploy that added large-model search release notes to the
+  shipped package.
+- Follow-up changelog structure fixes are tracked under `Unreleased` until the
+  next deploy.
+
+## 2026.06.03.263-ecab65ab
+
+- Published stable deploy at 2026-06-03T19:16:26.6694716Z from commit `ecab65a`.
+- Released large-model progressive search hardening for revAgent element,
+  sheet, and schedule discovery.
+- Added MEP-aware category inference, search budgets, `allowExpensiveSearch`,
+  API-level filters, partial results, and guarded `needs_scope` fallbacks.
+- Changed `get_revit_session_context` to default to lightweight minimal context
+  and bumped the runtime tool surface to `revit-mcp-runtime-tools.33`.
+
+## 2026.06.02.255-33c6ad2f
+
+- Published stable deploy at 2026-06-02T20:23:44.1561052Z from commit `33c6ad2`.
+- Published the Revit payload refresh tied to the manifest-based payload
+  freshness flow.
+- Kept the deploy package aligned with the committed Revit payload DLLs and
+  `installer/revit-payload-manifest.json`.
+
+## 2026.06.02.246-d8844884
+
+- Published stable deploy at 2026-06-02T13:34:54.0828258Z from commit `d884488`.
+- Align docs with tool-first runtime guidance.
+
+## 2026.06.02.245-54284b98
+
+- Published stable deploy at 2026-06-02T13:11:51.4499356Z from commit `54284b9`.
+- Fix open plan compact result field handling.
+
+## 2026.06.02.244-0fa24741
+
+- Published stable deploy at 2026-06-02T12:58:00.0763516Z from commit `0fa2474`.
+- Fix navigation wrapper normalized result handling.
+
+## 2026.06.02.243-88624f63
+
+- Published stable deploy at 2026-06-02T12:33:03.2294985Z from commit `88624f6`.
+- Retire completed planning docs.
+
+## 2026.06.02.238-40c7c2c3
+
+- Published stable deploy at 2026-06-02T11:13:03.6985563Z from commit `40c7c2c`.
+- Remove nocheck from telemetry.
+
+## 2026.06.02.233-4bd17e48
+
+- Published stable deploy at 2026-06-02T08:14:27.9414612Z from commit `4bd17e4`.
+- Normalize bridge result contract.
+
+## 2026.06.01.232-ef9f20ab
+
+- Published stable deploy at 2026-06-01T20:21:04.5456507Z from commit `ef9f20a`.
+- Strengthen Revit MCP tool selection rules.
+
+## 2026.06.01.231-311268a8
+
+- Published stable deploy at 2026-06-01T20:10:27.3917137Z from commit `311268a`.
+- Add schedule text write workflow and usage summary fixes.
+
+## 2026.06.01.230-d15bfc05
+
+- Published stable deploy at 2026-06-01T18:24:36.3879686Z from commit `d15bfc0`.
+- Align docs with runtime hardening plan.
+
+## 2026.06.01.229-06069401
+
+- Published stable deploy at 2026-06-01T18:12:11.1524274Z from commit `0606940`.
+- Harden revAgent runtime architecture guardrails.
+
+## 2026.06.01.228-52a0bf80
+
+- Published stable deploy at 2026-06-01T13:25:41.1730974Z from commit `52a0bf8`.
+- Add sheet text inspection hotfix.
+
+## 2026.06.01.227-912914ec
+
+- Published stable deploy at 2026-06-01T12:43:45.3082136Z from commit `912914e`.
+- Stabilize dashboard live status metrics.
+
+## 2026.06.01.226-cafa78b3
+
+- Published stable deploy at 2026-06-01T12:22:18.7655954Z from commit `cafa78b`.
+- Fix dashboard tool names for nested Revit commands.
+
+## 2026.06.01.225-c03dce0a
+
+- Published stable deploy at 2026-06-01T08:52:57.5427932Z from commit `c03dce0`.
+- Add schedule inspection and cell write tools.
+
+## 2026.05.31.223-f51a58f7
+
+- Published stable deploy at 2026-05-31T20:11:59.6514319Z from commit `f51a58f`.
+- Expire stale dashboard heartbeats offline.
+
+## 2026.05.31.222-a2bf41c6
+
+- Published stable deploy at 2026-05-31T19:18:45.8402033Z from commit `a2bf41c`.
+- Split dashboard machine status badges.
+
+## 2026.05.31.221-e5d06394
+
+- Published stable deploy at 2026-05-31T18:22:00.9455312Z from commit `e5d0639`.
+- Improve dashboard mobile layout.
+
+## 2026.05.31.220-a09fa3fc
+
+- Published stable deploy at 2026-05-31T18:07:09.9984225Z from commit `a09fa3f`.
+- Keep dashboard activity scroll position.
+
+## 2026.05.31.219-cda927c7
+
+- Published stable deploy at 2026-05-31T17:47:29.1957709Z from commit `cda927c`.
+- Remove dashboard machine task summary.
+
+## 2026.05.31.218-748a9f7c
+
+- Published stable deploy at 2026-05-31T17:42:34.4069517Z from commit `748a9f7`.
+- Simplify dashboard machine cards.
+
+## 2026.05.31.217-d19b4b37
+
+- Published stable deploy at 2026-05-31T17:16:05.0434341Z from commit `d19b4b3`.
+- Warn on empty string parameter dry runs.
+
+## 2026.05.31.216-3b57bf6d
+
+- Published stable deploy at 2026-05-31T17:02:37.8122003Z from commit `3b57bf6`.
+- Fix parameter clear fallback message escaping.
+
+## 2026.05.31.215-27c4a2fd
+
+- Published stable deploy at 2026-05-31T16:39:09.0048780Z from commit `27c4a2f`.
+- Add parameter clear mode and simplify live dashboard.
+
+## 2026.05.31.214-da910a1b
+
+- Published stable deploy at 2026-05-31T16:03:01.3334767Z from commit `da910a1`.
+- Add safe element parameter write tool.
+
+## 2026.05.31.213-dad396b2
+
+- Published stable deploy at 2026-05-31T14:27:26.8598363Z from commit `dad396b`.
+- Align dashboard with Revit status history.
+
+## 2026.05.31.212-96b51f0c
+
+- Published stable deploy at 2026-05-31T14:12:08.2676061Z from commit `96b51f0`.
+- Support temporary schedule export cleanup.
+
+## 2026.05.31.211-31b43244
+
+- Published stable deploy at 2026-05-31T13:52:46.2943591Z from commit `31b4324`.
+- Align dashboard activity with status window.
+
+## 2026.05.31.210-185a1983
+
+- Published stable deploy at 2026-05-31T13:40:42.8916717Z from commit `185a198`.
+- Support sheet evidence exports.
+
+## 2026.05.31.209-6b4e19f1
+
+- Published stable deploy at 2026-05-31T13:26:30.2423093Z from commit `6b4e19f`.
+- Use live activity for dashboard metrics.
+
+## 2026.05.31.208-9107df2c
+
+- Published stable deploy at 2026-05-31T13:14:09.6147941Z from commit `9107df2`.
+- Compare dashboard machines to stable version.
+
+## 2026.05.31.207-431a22c4
+
+- Published stable deploy at 2026-05-31T13:07:02.4455684Z from commit `431a22c`.
+- Harden live dashboard for production polling.
+
+## 2026.05.31.205-243764d2
+
+- Published stable deploy at 2026-05-31T12:52:12.2871257Z from commit `243764d`.
+- Stack dashboard summary panels.
+
+## 2026.05.31.204-3ac358c1
+
+- Published stable deploy at 2026-05-31T12:48:04.0858985Z from commit `3ac358c`.
+- Constrain dashboard activity stream.
+
+## 2026.05.31.203-145253a4
+
+- Published stable deploy at 2026-05-31T12:37:33.1478421Z from commit `145253a`.
+- Adjust dashboard activity layout.
+
+## 2026.05.31.202-846d760b
+
+- Published stable deploy at 2026-05-31T12:26:33.9900089Z from commit `846d760`.
+- Align dashboard with revAgent status window style.
+
+## 2026.05.31.201-25147d0d
+
+- Published stable deploy at 2026-05-31T12:14:47.8848451Z from commit `25147d0`.
+- Improve live dashboard operations board.
+
+## 2026.05.31.200-762b6483
+
+- Published stable deploy at 2026-05-31T11:45:54.0281580Z from commit `762b648`.
+- Fix dashboard recent activity fallback.
+
+## 2026.05.31.199-628640b0
+
+- Published stable deploy at 2026-05-31T11:26:20.4677992Z from commit `628640b`.
+- Add read-only live dashboard.
+
+## 2026.05.31.198-3c28b632
+
+- Published stable deploy at 2026-05-31T10:56:51.9250603Z from commit `3c28b63`.
+- Add live dashboard feed.
+
+## 2026.05.27.197-d5b0f301
+
+- Published stable deploy at 2026-05-27T13:53:21.2763984Z from commit `d5b0f30`.
+- Fix usage summary friction samples.
+
+## 2026.05.27.196-a9e94ac1
+
+- Published stable deploy at 2026-05-27T11:41:18.6127966Z from commit `a9e94ac`.
+- Fix usage summary latest selection.
+
+## 2026.05.27.195-b9d10945
+
+- Published stable deploy at 2026-05-27T11:38:52.1352056Z from commit `b9d1094`.
+- Fix usage summary task run-now.
+
+## 2026.05.27.194-0df56417
+
+- Published stable deploy at 2026-05-27T11:36:58.1740034Z from commit `0df5641`.
+- Schedule usage summary publishing.
+
+## 2026.05.27.193-110d735c
+
+- Published stable deploy at 2026-05-27T09:00:26.0224787Z from commit `110d735`.
+- Publish usage summaries.
+
+## 2026.05.27.192-4ddc4bc9
+
+- Published stable deploy at 2026-05-27T08:21:05.6906462Z from commit `4ddc4bc`.
+- Add usage intelligence summary.
+
+## 2026.05.27.191-fa60b140
+
+- Published stable deploy at 2026-05-27T08:11:00.8657514Z from commit `fa60b14`.
+- Fix telemetry event ordering and install reports.
+
+## 2026.05.27.190-1a217c1f
+
+- Published stable deploy at 2026-05-27T07:49:54.4391026Z from commit `1a217c1`.
+- Add production context telemetry.
+
+## 2026.05.27.189-f7c6fd97
+
+- Published stable deploy at 2026-05-26T23:04:07.9610526Z from commit `f7c6fd9`.
+- Improve telemetry and debug reporting.
+
+## 2026.05.27.188-91f7c563
+
+- Published stable deploy at 2026-05-26T22:21:38.1319342Z from commit `91f7c56`.
+- Add runtime usage telemetry foundation.
+
+## 2026.05.27.187-e97896c4
+
+- Published stable deploy at 2026-05-26T21:16:29.0010301Z from commit `e97896c`.
+- Fix report machine folder names.
+
+## 2026.05.26.186-fcc6621d
+
+- Published stable deploy at 2026-05-25T21:33:08.8275674Z from commit `fcc6621`.
+- Harden Revit view diagnostics.
+
+## 2026.05.25.185-3c9b8459
+
+- Published stable deploy at 2026-05-25T15:50:58.2223032Z from commit `3c9b845`.
+- Fix activate view change flag.
+
+## 2026.05.25.184-6712c4ae
+
+- Published stable deploy at 2026-05-25T15:38:16.1793095Z from commit `6712c4a`.
+- Complete machine report schema.
+
+## 2026.05.25.183-092ff5fb
+
+- Published stable deploy at 2026-05-25T15:33:12.0506769Z from commit `092ff5f`.
+- Add NAS machine install reports.
+
+## 2026.05.25.182-a6b68e52
+
+- Published stable deploy at 2026-05-25T14:52:49.6742210Z from commit `a6b68e5`.
+- Unify Revit bridge command set.
+
+## 2026.05.25.180-bbc6b4bd
+
+- Published stable deploy at 2026-05-25T13:38:25.6199677Z from commit `bbc6b4b`.
+- Remove dead runtime tool wrappers.
+
+## 2026.05.25.179-86988fb9
+
+- Published stable deploy at 2026-05-25T10:12:21.2571300Z from commit `86988fb`.
+- Clean localized Revit plugin source.
+
+## 2026.05.25.178-a153f01f
+
+- Published stable deploy at 2026-05-25T09:32:11.4985099Z from commit `a153f01`.
+- Use warning symbol for guarded tasks.
 
 ## 2026.05.25.175-71319629
 
