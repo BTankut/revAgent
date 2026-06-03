@@ -831,8 +831,14 @@ namespace RevitMCPCommandSet.Commands.View
                 ElementDiscoveryHelpers.ResolveElementLevel(searchDocument, element, out levelId, out levelName);
                 if (linkedDocument)
                 {
-                    List<string> levelNameFilters = GetEffectiveLevelNameFilters(true);
-                    if (levelNameFilters.Count == 0 || !ContainsAny(levelName, levelNameFilters))
+                    if (_levelIds.Count > 0)
+                    {
+                        if (_levelNamesFromLevelIds.Count == 0 || !ContainsAny(levelName, _levelNamesFromLevelIds))
+                        {
+                            return false;
+                        }
+                    }
+                    if (_levelNames.Count > 0 && !ContainsAny(levelName, _levelNames))
                     {
                         return false;
                     }
