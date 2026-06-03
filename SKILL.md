@@ -116,8 +116,11 @@ normalizer.
   workset filters, link scope, or `allowExpensiveSearch=true` only when the
   operator intentionally accepts a broader search. Existing plan candidates are
   opt-in through `planCandidateMode`; use `none` for fastest discovery,
-  `metadata` for quick same-level view ranking, and `verified` only when
-  view/crop/callout visibility must be proven.
+  `metadata` for quick same-level view ranking, and `verified` only for exact
+  element ids or an explicitly approved expensive search when view/crop/callout
+  visibility must be proven. Broad verified plan visibility is guarded before
+  Revit, and the bridge can downgrade it to metadata if called directly without
+  approval.
 - `open_existing_plan_for_element_level` - choose an existing non-template plan
   for an element's level, or keep the active plan when `planMode=activePlan`,
   then select and zoom to the element. Successful routine calls return compact

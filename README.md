@@ -667,13 +667,19 @@ full-view context exports.
 engineering terms such as fan coil/FCU, valve/vana, damper, duct, pipe,
 sprinkler, diffuser, pump, and AHU are inferred into bounded category scopes
 before the first search. The Revit bridge uses API-level category/view filters
-when available, tracks `scannedElementCount`, and can return partial results
-before the socket timeout. Keep `planCandidateMode="none"` for broad first-pass
-discovery; use `metadata` or `verified` only after candidates are narrow enough
-to justify plan search cost. Use `searchBudget="fast"` for routine discovery,
-then add `levelNames`, `activeViewOnly`, family/type/system/workset filters, or
-`allowExpensiveSearch=true` for deliberate deeper searches. Treat its compact
-response as insufficient for writes until `inspect_elements` and
+when available, keeps level filters in the correctness-safe in-memory
+post-filter path, tracks `scannedElementCount`, and can return partial results
+before the socket timeout.
+Keep `planCandidateMode="none"` for broad first-pass discovery; use `metadata`
+for quick same-level plan ranking. Use `verified` only for exact element ids or
+after the operator explicitly accepts the expensive visibility check with
+`allowExpensiveSearch=true`/`searchBudget="deep"`. Broad verified requests are
+guarded before Revit when possible and can be downgraded to metadata by the
+bridge if called directly without approval. Use `searchBudget="fast"` for
+routine discovery, then add `levelNames`, `activeViewOnly`,
+family/type/system/workset filters, or `allowExpensiveSearch=true` for
+deliberate deeper searches. Treat its compact response as insufficient for
+writes until `inspect_elements` and
 `inspect_parameter_schema` have confirmed the exact element and stable
 parameter identity. Use
 `set_element_parameter` for ordinary parameter writes. It may accept a visible

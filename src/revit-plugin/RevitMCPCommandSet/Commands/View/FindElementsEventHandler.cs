@@ -43,6 +43,7 @@ namespace RevitMCPCommandSet.Commands.View
 
     public class FindElementsEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
     {
+        private const int VerifiedPlanCandidateMaxMatchesWithoutApproval = 3;
         private readonly ManualResetEvent _resetEvent = new ManualResetEvent(false);
         private string _originalQuery;
         private string _query;
@@ -199,11 +200,28 @@ namespace RevitMCPCommandSet.Commands.View
                     .ThenBy(m => m.Item1.Id.GetIdValue())
                     .ToList();
 
-                List<ElementSearchItem> items = orderedMatches
-                    .Take(_limit)
-                    .Select(m => BuildSearchItem(m.Item3, uiDocument, m.Item1, m.Item4, m.Item2))
-                    .Where(item => item != null)
-                    .ToList();
+                if (IsVerifiedPlanCandidateMode() && !CanRunVerifiedPlanCandidates(orderedMatches.Count))
+                {
+                    _planCandidateMode = "metadata";
+                    warnings.Add("verified plan candidate visibility was downgraded to metadata because the matched set is too broad without allowExpensiveSearch.");
+                    warnings.Add("verified_visibility_expensive");
+                }
+
+                bool planCandidateStopped = false;
+                List<ElementSearchItem> items = new List<ElementSearchItem>();
+                foreach (Tuple<Element, SearchMatchSummary, Document, RevitLinkInstance> match in orderedMatches.Take(_limit))
+                {
+                    ElementSearchItem item = BuildSearchItem(match.Item3, uiDocument, match.Item1, match.Item4, match.Item2, deadlineUtc, ref planCandidateStopped, ref stoppedReason);
+                    if (item != null)
+                    {
+                        items.Add(item);
+                    }
+                    if (planCandidateStopped)
+                    {
+                        partial = true;
+                        break;
+                    }
+                }
 
                 foreach (ElementSearchItem item in items)
                 {
@@ -214,9 +232,11 @@ namespace RevitMCPCommandSet.Commands.View
                 int tiedCount = topScore > 0 ? orderedMatches.Count(m => m.Item2.Score == topScore) : 0;
                 string topConfidence = orderedMatches.Count > 0 ? orderedMatches[0].Item2.Confidence : "none";
                 bool ambiguous = orderedMatches.Count > 1 && (tiedCount > 1 || !string.Equals(topConfidence, "high", StringComparison.OrdinalIgnoreCase));
-                string selectionHint = ambiguous
-                    ? "Multiple plausible matches were found. Use elementId, mark, level, system, family/type, or a more specific query before making changes."
-                    : "Top match is the best current candidate; still verify level, mark, and plan before making changes.";
+                string selectionHint = orderedMatches.Count == 0
+                    ? "No matching elements found. Narrow or adjust the query, category, level, family/type, system, active view, or workset scope."
+                    : ambiguous
+                        ? "Multiple plausible matches were found. Use elementId, mark, level, system, family/type, or a more specific query before making changes."
+                        : "Top match is the best current candidate; still verify level, mark, and plan before making changes.";
 
                 Complete(new FindElementsResult
                 {
@@ -460,27 +480,29 @@ namespace RevitMCPCommandSet.Commands.View
             ref bool partial,
             ref string stoppedReason)
         {
-            IEnumerable<Element> elements = BuildCollector(searchDocument, uiDocument, linkInstance, warnings);
-            foreach (Element element in elements)
+            using (FilteredElementCollector collector = BuildCollector(searchDocument, uiDocument, linkInstance, warnings))
             {
-                if (StopBudgetReached(scannedElementCount, deadlineUtc, out stoppedReason))
+                foreach (Element element in collector.WhereElementIsNotElementType())
                 {
-                    partial = true;
-                    return;
-                }
+                    if (StopBudgetReached(scannedElementCount, deadlineUtc, out stoppedReason))
+                    {
+                        partial = true;
+                        return;
+                    }
 
-                scannedElementCount++;
-                if (!MatchesAdditionalFilters(searchDocument, element))
-                {
-                    continue;
-                }
+                    scannedElementCount++;
+                    if (!MatchesAdditionalFilters(searchDocument, element))
+                    {
+                        continue;
+                    }
 
-                candidateElementCount++;
-                AddIfMatch(searchDocument, element, linkInstance, matches);
+                    candidateElementCount++;
+                    AddIfMatch(searchDocument, element, linkInstance, matches);
+                }
             }
         }
 
-        private IEnumerable<Element> BuildCollector(Document searchDocument, UIDocument uiDocument, RevitLinkInstance linkInstance, List<string> warnings)
+        private FilteredElementCollector BuildCollector(Document searchDocument, UIDocument uiDocument, RevitLinkInstance linkInstance, List<string> warnings)
         {
             FilteredElementCollector collector;
             ElementId collectorViewId = ElementId.InvalidElementId;
@@ -519,7 +541,7 @@ namespace RevitMCPCommandSet.Commands.View
                 warnings.Add("Category names could not be mapped to BuiltInCategory; falling back to post-filter category matching.");
             }
 
-            return collector.WhereElementIsNotElementType();
+            return collector;
         }
 
         private void SearchLinkedDocuments(
@@ -540,28 +562,31 @@ namespace RevitMCPCommandSet.Commands.View
                 return;
             }
 
-            FilteredElementCollector linkCollector = new FilteredElementCollector(hostDocument)
-                .OfClass(typeof(RevitLinkInstance))
-                .WhereElementIsNotElementType();
-
-            foreach (Element linkElement in linkCollector)
+            using (FilteredElementCollector linkCollector = new FilteredElementCollector(hostDocument))
             {
-                if (StopBudgetReached(scannedElementCount, deadlineUtc, out stoppedReason))
-                {
-                    partial = true;
-                    return;
-                }
-                RevitLinkInstance link = linkElement as RevitLinkInstance;
-                if (link == null) continue;
-                Document linkDocument = link.GetLinkDocument();
-                if (linkDocument == null)
-                {
-                    warnings.Add("Linked document is not loaded for link instance: " + link.Name);
-                    continue;
-                }
+                IEnumerable<Element> linkElements = linkCollector
+                    .OfClass(typeof(RevitLinkInstance))
+                    .WhereElementIsNotElementType();
 
-                SearchDocument(linkDocument, null, link, matches, warnings, ref scannedElementCount, ref candidateElementCount, deadlineUtc, ref partial, ref stoppedReason);
-                if (partial) return;
+                foreach (Element linkElement in linkElements)
+                {
+                    if (StopBudgetReached(scannedElementCount, deadlineUtc, out stoppedReason))
+                    {
+                        partial = true;
+                        return;
+                    }
+                    RevitLinkInstance link = linkElement as RevitLinkInstance;
+                    if (link == null) continue;
+                    Document linkDocument = link.GetLinkDocument();
+                    if (linkDocument == null)
+                    {
+                        warnings.Add("Linked document is not loaded for link instance: " + link.Name);
+                        continue;
+                    }
+
+                    SearchDocument(linkDocument, null, link, matches, warnings, ref scannedElementCount, ref candidateElementCount, deadlineUtc, ref partial, ref stoppedReason);
+                    if (partial) return;
+                }
             }
         }
 
@@ -725,9 +750,14 @@ namespace RevitMCPCommandSet.Commands.View
             UIDocument uiDocument,
             Element element,
             RevitLinkInstance linkInstance,
-            SearchMatchSummary match)
+            SearchMatchSummary match,
+            DateTime deadlineUtc,
+            ref bool partial,
+            ref string stoppedReason)
         {
             bool includePlanCandidates = _includePlanCandidates && linkInstance == null;
+            bool planCandidateBudgetStopped;
+            string planCandidateStoppedReason;
             ElementSearchItem item = ElementDiscoveryHelpers.BuildElementSearchItem(
                 searchDocument,
                 uiDocument,
@@ -735,7 +765,17 @@ namespace RevitMCPCommandSet.Commands.View
                 includePlanCandidates,
                 _planNameContains,
                 _planCandidateMode,
-                match);
+                match,
+                deadlineUtc,
+                out planCandidateBudgetStopped,
+                out planCandidateStoppedReason);
+            if (planCandidateBudgetStopped)
+            {
+                partial = true;
+                stoppedReason = string.IsNullOrWhiteSpace(planCandidateStoppedReason)
+                    ? "max_elapsed"
+                    : planCandidateStoppedReason;
+            }
             if (item == null)
             {
                 return null;
@@ -750,6 +790,38 @@ namespace RevitMCPCommandSet.Commands.View
                 item.PlanCandidates = null;
             }
             return item;
+        }
+
+        private bool IsVerifiedPlanCandidateMode()
+        {
+            return _includePlanCandidates &&
+                string.Equals(_planCandidateMode, "verified", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool CanRunVerifiedPlanCandidates(int matchCount)
+        {
+            if (!IsVerifiedPlanCandidateMode())
+            {
+                return true;
+            }
+
+            if (_allowExpensiveSearch)
+            {
+                return true;
+            }
+
+            if (IsExactTargetVerifiedMatchSet(matchCount))
+            {
+                return true;
+            }
+
+            return matchCount <= VerifiedPlanCandidateMaxMatchesWithoutApproval;
+        }
+
+        private bool IsExactTargetVerifiedMatchSet(int matchCount)
+        {
+            int exactTargetCount = _elementIds.Count + _uniqueIds.Count;
+            return exactTargetCount > 0 && matchCount <= exactTargetCount;
         }
 
         private object BuildEffectiveScope()

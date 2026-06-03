@@ -221,6 +221,33 @@ assert.equal(broadFindPolicy.reason, "needs_scope");
 assert.equal(broadFindPolicy.riskPolicy.riskLevel, "medium");
 assert.equal(broadFindPolicy.riskPolicy.requiresUserControl, true);
 
+const broadVerifiedPolicy = buildFindElementsSearchPolicy({
+  query: "MTL fan coil",
+  includePlanCandidates: true,
+  planCandidateMode: "verified",
+  modelSignals: { linkCount: 50, worksetCount: 45 },
+});
+assert.equal(broadVerifiedPolicy.guarded, true);
+assert.equal(broadVerifiedPolicy.reason, "needs_scope");
+assert.equal(broadVerifiedPolicy.riskPolicy.requiresUserControl, true);
+assert.equal(broadVerifiedPolicy.riskPolicy.reasons.includes("verified_visibility_expensive"), true);
+assert.equal(broadVerifiedPolicy.warnings.includes("verified_visibility_requires_exact_targets_or_approval"), true);
+
+const exactVerifiedPolicy = buildFindElementsSearchPolicy({
+  elementIds: [123],
+  includePlanCandidates: true,
+  planCandidateMode: "verified",
+});
+assert.equal(exactVerifiedPolicy.guarded, false);
+assert.equal(exactVerifiedPolicy.riskPolicy.requiresUserControl, false);
+
+const inertVerifiedModePolicy = buildFindElementsSearchPolicy({
+  query: "MTL fan coil",
+  planCandidateMode: "verified",
+});
+assert.equal(inertVerifiedModePolicy.riskPolicy.reasons.includes("verified_visibility_expensive"), false);
+assert.equal(inertVerifiedModePolicy.warnings.includes("verified_visibility_requires_exact_targets_or_approval"), false);
+
 const largeSignalPolicy = buildFindElementsSearchPolicy({
   query: "equipment tag",
   modelSignals: { linkCount: 50, worksetCount: 45 },

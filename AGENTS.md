@@ -191,6 +191,11 @@ duct/pipe/sprinkler/diffuser/pump/AHU terms to their MEP categories. Keep
 `planCandidateMode="none"` for the first pass, prefer host/active-view/category
 scope, and only use linked, verified, or deep searches after the operator
 accepts the cost with `allowExpensiveSearch=true` or an explicit deep budget.
+Verified plan visibility is materially slower than metadata plan ranking: use
+`planCandidateMode="metadata"` for ordinary discovery, and reserve
+`planCandidateMode="verified"` for exact element ids or explicit expensive
+search approval. Broad verified requests may return `needs_scope` before Revit
+or be downgraded to metadata by the bridge.
 If the tool returns `guarded=true`, `state="guarded"`, and
 `reason="needs_scope"`, treat it as controlled product behavior and ask for or
 derive a better level, active view, system, family/type, sheet, or schedule

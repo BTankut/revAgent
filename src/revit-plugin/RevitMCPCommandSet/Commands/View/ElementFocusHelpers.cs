@@ -221,11 +221,14 @@ namespace RevitMCPCommandSet.Commands.View
 
             try
             {
-                bool collectedInView = new FilteredElementCollector(document, view.Id)
-                    .WherePasses(new ElementIdSetFilter(new List<ElementId> { element.Id }))
-                    .WhereElementIsNotElementType()
-                    .ToElementIds()
-                    .Count > 0;
+                bool collectedInView;
+                using (FilteredElementCollector visibilityCollector = new FilteredElementCollector(document, view.Id))
+                {
+                    collectedInView = visibilityCollector
+                        .WherePasses(new ElementIdSetFilter(new List<ElementId> { element.Id }))
+                        .WhereElementIsNotElementType()
+                        .GetElementCount() > 0;
+                }
 
                 if (!collectedInView)
                 {

@@ -131,7 +131,37 @@ namespace RevitMCPCommandSet.Commands.View
             string planCandidateMode,
             SearchMatchSummary matchSummary = null)
         {
-            if (element == null)
+            bool planCandidateBudgetStopped;
+            string planCandidateStoppedReason;
+            return BuildElementSearchItem(
+                document,
+                uiDocument,
+                element,
+                includePlanCandidates,
+                planNameContains,
+                planCandidateMode,
+                matchSummary,
+                null,
+                out planCandidateBudgetStopped,
+                out planCandidateStoppedReason);
+        }
+
+        public static ElementSearchItem BuildElementSearchItem(
+            Document document,
+            UIDocument uiDocument,
+            Element element,
+            bool includePlanCandidates,
+            string planNameContains,
+            string planCandidateMode,
+            SearchMatchSummary matchSummary,
+            DateTime? deadlineUtc,
+            out bool planCandidateBudgetStopped,
+            out string planCandidateStoppedReason)
+        {
+            planCandidateBudgetStopped = false;
+            planCandidateStoppedReason = "";
+
+            if (document == null || element == null)
             {
                 return null;
             }
@@ -144,7 +174,16 @@ namespace RevitMCPCommandSet.Commands.View
             if (includePlanCandidates && levelId != null && levelId != ElementId.InvalidElementId)
             {
                 bool verifyVisibility = string.Equals(planCandidateMode, "verified", StringComparison.OrdinalIgnoreCase);
-                planCandidates = FindPlanCandidates(document, uiDocument, levelId, planNameContains, true, verifyVisibility ? element : null);
+                planCandidates = FindPlanCandidates(
+                    document,
+                    uiDocument,
+                    levelId,
+                    planNameContains,
+                    true,
+                    verifyVisibility ? element : null,
+                    deadlineUtc,
+                    out planCandidateBudgetStopped,
+                    out planCandidateStoppedReason);
             }
 
             return new ElementSearchItem
@@ -265,7 +304,7 @@ namespace RevitMCPCommandSet.Commands.View
             levelId = ElementId.InvalidElementId;
             levelName = "";
 
-            if (element == null)
+            if (document == null || element == null)
             {
                 return;
             }
@@ -328,6 +367,39 @@ namespace RevitMCPCommandSet.Commands.View
             bool preferMechanical,
             Element targetElement = null)
         {
+            bool budgetStopped;
+            string stoppedReason;
+            return FindPlanCandidates(
+                document,
+                uiDocument,
+                levelId,
+                nameContains,
+                preferMechanical,
+                targetElement,
+                null,
+                out budgetStopped,
+                out stoppedReason);
+        }
+
+        public static List<PlanCandidateSummary> FindPlanCandidates(
+            Document document,
+            UIDocument uiDocument,
+            ElementId levelId,
+            string nameContains,
+            bool preferMechanical,
+            Element targetElement,
+            DateTime? deadlineUtc,
+            out bool budgetStopped,
+            out string stoppedReason)
+        {
+            budgetStopped = false;
+            stoppedReason = "";
+
+            if (document == null)
+            {
+                return new List<PlanCandidateSummary>();
+            }
+
             HashSet<int> openViewIds = GetOpenViewIds(uiDocument);
             int activeViewId = document.ActiveView != null
                 ? document.ActiveView.Id.GetIdValue()
@@ -339,15 +411,26 @@ namespace RevitMCPCommandSet.Commands.View
                 return candidates;
             }
 
-            IEnumerable<ViewPlan> plans =
-                new FilteredElementCollector(document)
+            List<ViewPlan> plans;
+            using (FilteredElementCollector planCollector = new FilteredElementCollector(document))
+            {
+                plans = planCollector
                     .WhereElementIsNotElementType()
                     .OfClass(typeof(ViewPlan))
                     .Cast<ViewPlan>()
-                    .Where(v => !v.IsTemplate && v.GenLevel != null && v.GenLevel.Id.GetIdValue() == levelId.GetIdValue());
+                    .Where(v => !v.IsTemplate && v.GenLevel != null && v.GenLevel.Id.GetIdValue() == levelId.GetIdValue())
+                    .ToList();
+            }
 
             foreach (ViewPlan plan in plans)
             {
+                if (deadlineUtc.HasValue && DateTime.UtcNow >= deadlineUtc.Value)
+                {
+                    budgetStopped = true;
+                    stoppedReason = "max_elapsed";
+                    break;
+                }
+
                 PlanCandidateSummary candidate = BuildPlanCandidate(document, plan, openViewIds, activeViewId, nameContains, preferMechanical, targetElement);
                 candidates.Add(candidate);
             }

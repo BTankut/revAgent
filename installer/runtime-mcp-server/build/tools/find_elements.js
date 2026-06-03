@@ -35,7 +35,7 @@ function addWriteSafetyGuidance(payload) {
     return payload;
 }
 export function registerFindElementsTool(server) {
-    server.tool("find_elements", "Find Revit elements by MEP-aware progressive discovery. The tool infers obvious engineering scope first, e.g. fan coil/FCU -> Mechanical Equipment, uses API-level category/view filters in the Revit bridge, keeps planCandidateMode=none by default, and asks for allowExpensiveSearch/searchBudget=deep only before broad or linked scans. Discovery-only: inspect exact elements and parameter schema before writes.", {
+    server.tool("find_elements", "Find Revit elements by MEP-aware progressive discovery. The tool infers obvious engineering scope first, e.g. fan coil/FCU -> Mechanical Equipment, uses API-level category/view filters plus safe in-memory level filters in the Revit bridge, keeps planCandidateMode=none by default, and asks for allowExpensiveSearch/searchBudget=deep before broad, linked, or verified visibility scans. Discovery-only: inspect exact elements and parameter schema before writes.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Text to search in id, unique id, name, category, family, type, mark, and comments."),
@@ -65,7 +65,7 @@ export function registerFindElementsTool(server) {
         maxElementsScanned: z.number().int().positive().max(500000).optional().describe("Advanced override for the Revit-side scan cap. Prefer searchBudget for ordinary LLM use."),
         maxElapsedMs: z.number().int().positive().max(119000).optional().describe("Advanced override for the Revit-side elapsed budget. This is clamped below socket timeout so partial results can return before transport timeout."),
         includePlanCandidates: z.boolean().optional().describe("Include existing non-template plan views on each matched element level. Defaults false because view-visibility checks are intentionally expensive."),
-        planCandidateMode: z.enum(["none", "metadata", "verified"]).optional().describe("Plan candidate strategy. none is fastest and default. metadata ranks same-level plans without verifying element visibility. verified confirms the element is visible in each view and is slower."),
+        planCandidateMode: z.enum(["none", "metadata", "verified"]).optional().describe("Plan candidate strategy. none is fastest and default. metadata ranks same-level plans without verifying element visibility. verified confirms visibility in plan views and is allowed only for exact element targets or explicit expensive-search approval."),
         maxPlanCandidates: z.number().int().min(0).max(25).optional().describe("Maximum ranked plan candidates per element when planCandidateMode is metadata/verified or includePlanCandidates=true. Defaults 3."),
         planNameContains: z.string().optional().describe("Optional plan name preference used when ranking plan candidates."),
         limit: z.number().int().positive().max(200).optional().describe("Maximum elements to return. Defaults 20."),
@@ -94,7 +94,7 @@ export function registerFindElementsTool(server) {
                 worksetIds: args.worksetIds,
                 linkScope: policy.linkScope,
                 searchBudget: policy.searchBudget,
-                allowExpensiveSearch: args.allowExpensiveSearch === true,
+                allowExpensiveSearch: policy.allowExpensiveSearch,
                 maxElementsScanned: policy.maxElementsScanned,
                 maxElapsedMs: policy.maxElapsedMs,
                 includePlanCandidates: args.includePlanCandidates === true,
@@ -122,7 +122,7 @@ export function registerFindElementsTool(server) {
                     maxElementsScanned: policy.maxElementsScanned,
                     maxElapsedMs: policy.maxElapsedMs,
                     timeoutMs: policy.timeoutMs,
-                    allowExpensiveSearch: args.allowExpensiveSearch === true,
+                    allowExpensiveSearch: policy.allowExpensiveSearch,
                 };
                 payload.suggestedNextScopes = payload.suggestedNextScopes || policy.suggestedNextScopes;
                 payload.warnings = [...new Set([...(Array.isArray(payload.warnings) ? payload.warnings : []), ...policy.warnings])];

@@ -388,10 +388,17 @@ behavior. CI-safe tests must prove the runtime tool schema, progressive
 sheet/schedule `allowExpensiveSearch` guards, telemetry search-policy fields,
 and bumped tool surface version. Live validation must prove that inferred
 category searches use Revit API-level collector filters rather than collecting
-all instance elements, that Revit-side `maxElapsedMs` returns partial results
-before socket timeout, and that `needs_scope` is emitted as
-`state="guarded"` with `reason="needs_scope"` rather than a new incompatible
-state.
+all instance elements, level-scoped searches continue to use the in-memory
+`ResolveElementLevel` post-filter path for MEP correctness, Revit-side
+`maxElapsedMs` returns partial results before socket timeout, broad verified
+plan visibility requires exact targets or explicit expensive-search approval,
+and `needs_scope` is emitted as `state="guarded"` with `reason="needs_scope"`
+rather than a new incompatible state.
+
+API-level level prefiltering for MEP elements is intentionally deferred to a
+separate change. It must prove correctness for duct, pipe, flex, and other
+elements whose level is resolved through fallback parameters before it can
+replace the post-filter path.
 
 This local flow does not run `publish-nas-release.ps1` and does not touch
 `channels\stable.json`.
