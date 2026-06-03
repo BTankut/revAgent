@@ -180,6 +180,11 @@ assert.equal(inferredFindPolicy.riskPolicy.riskLevel, "low");
 assert.equal(inferredFindPolicy.riskPolicy.requiresUserControl, false);
 assert.deepEqual(inferredFindPolicy.riskPolicy.recommendedFirstScope, ["categoryNames=Mechanical Equipment"]);
 
+const turkishTermPolicy = buildFindElementsSearchPolicy({ query: "YY01 sihhi tesisat armatür" });
+assert.equal(turkishTermPolicy.guarded, false);
+assert.equal(turkishTermPolicy.effectiveQuery, "YY01");
+assert.deepEqual(turkishTermPolicy.effectiveCategoryNames, ["Plumbing Fixtures"]);
+
 const broadFindPolicy = buildFindElementsSearchPolicy({ query: "MTL" });
 assert.equal(broadFindPolicy.guarded, true);
 assert.equal(broadFindPolicy.reason, "needs_scope");

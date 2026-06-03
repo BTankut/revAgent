@@ -164,7 +164,7 @@ function stripConceptTerms(query: string, matchedTerms: string[]) {
     let effective = query;
     for (const term of matchedTerms.sort((a, b) => b.length - a.length)) {
         const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-        effective = effective.replace(new RegExp(`\\b${escaped}\\b`, "ig"), " ");
+        effective = effective.replace(new RegExp(`(?<!\\p{L})${escaped}(?!\\p{L})`, "igu"), " ");
     }
     return effective.replace(/\s+/g, " ").trim();
 }

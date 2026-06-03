@@ -64,8 +64,7 @@ try
                 counts[kv.Key] = new FilteredElementCollector(document)
                     .OfCategory(kv.Value)
                     .WhereElementIsNotElementType()
-                    .ToElementIds()
-                    .Count;
+                    .GetElementCount();
             }
             catch (Exception ex)
             {
@@ -95,8 +94,7 @@ try
                     linkedRooms += new FilteredElementCollector(linkDoc)
                         .OfCategory(BuiltInCategory.OST_Rooms)
                         .WhereElementIsNotElementType()
-                        .ToElementIds()
-                        .Count;
+                        .GetElementCount();
                 }
                 catch {}
                 try
@@ -104,8 +102,7 @@ try
                     linkedSpaces += new FilteredElementCollector(linkDoc)
                         .OfCategory(BuiltInCategory.OST_MEPSpaces)
                         .WhereElementIsNotElementType()
-                        .ToElementIds()
-                        .Count;
+                        .GetElementCount();
                 }
                 catch {}
             }

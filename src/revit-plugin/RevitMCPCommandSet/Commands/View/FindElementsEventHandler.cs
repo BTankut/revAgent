@@ -163,7 +163,21 @@ namespace RevitMCPCommandSet.Commands.View
                 List<Tuple<Element, SearchMatchSummary, Document, RevitLinkInstance>> matches =
                     new List<Tuple<Element, SearchMatchSummary, Document, RevitLinkInstance>>();
 
-                AddExactElementMatches(document, null, matches, warnings, ref scannedElementCount, ref candidateElementCount, deadlineUtc, ref partial, ref stoppedReason);
+                if (IsLinkedOnlyExactIdentitySearch())
+                {
+                    Complete(BuildGuardedResult(
+                        "needs_scope",
+                        "Exact elementIds and uniqueIds are scoped to the host document. Pass query/category scope before searching linked documents.",
+                        scannedElementCount,
+                        candidateElementCount,
+                        warnings));
+                    return;
+                }
+
+                if (ShouldSearchHostExactMatches())
+                {
+                    AddExactElementMatches(document, null, matches, warnings, ref scannedElementCount, ref candidateElementCount, deadlineUtc, ref partial, ref stoppedReason);
+                }
 
                 if (!partial && ShouldSearchHostCollector())
                 {
@@ -279,10 +293,44 @@ namespace RevitMCPCommandSet.Commands.View
                 !string.Equals(_linkScope, "linkedOnly", StringComparison.OrdinalIgnoreCase);
         }
 
+        private bool ShouldSearchHostExactMatches()
+        {
+            return HasExactIdentityScope() &&
+                !string.Equals(_linkScope, "linkedOnly", StringComparison.OrdinalIgnoreCase);
+        }
+
         private bool ShouldSearchLinks()
         {
-            return string.Equals(_linkScope, "linkedOnly", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(_linkScope, "hostAndLinked", StringComparison.OrdinalIgnoreCase);
+            return HasCollectorSearchScope() &&
+                (string.Equals(_linkScope, "linkedOnly", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(_linkScope, "hostAndLinked", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private bool HasExactIdentityScope()
+        {
+            return _elementIds.Count > 0 || _uniqueIds.Count > 0;
+        }
+
+        private bool HasCollectorSearchScope()
+        {
+            return !string.IsNullOrWhiteSpace(_query)
+                || _categoryNames.Count > 0
+                || _levelNames.Count > 0
+                || _levelIds.Count > 0
+                || _activeViewOnly
+                || _viewId.HasValue
+                || !string.IsNullOrWhiteSpace(_familyName)
+                || !string.IsNullOrWhiteSpace(_typeName)
+                || !string.IsNullOrWhiteSpace(_systemName)
+                || _worksetNames.Count > 0
+                || _worksetIds.Count > 0;
+        }
+
+        private bool IsLinkedOnlyExactIdentitySearch()
+        {
+            return string.Equals(_linkScope, "linkedOnly", StringComparison.OrdinalIgnoreCase) &&
+                HasExactIdentityScope() &&
+                !HasCollectorSearchScope();
         }
 
         private void AddExactElementMatches(
@@ -445,8 +493,6 @@ namespace RevitMCPCommandSet.Commands.View
                     continue;
                 }
 
-                AddExactElementMatches(linkDocument, link, matches, warnings, ref scannedElementCount, ref candidateElementCount, deadlineUtc, ref partial, ref stoppedReason);
-                if (partial) return;
                 SearchDocument(linkDocument, null, link, matches, warnings, ref scannedElementCount, ref candidateElementCount, deadlineUtc, ref partial, ref stoppedReason);
                 if (partial) return;
             }
@@ -490,20 +536,23 @@ namespace RevitMCPCommandSet.Commands.View
                 return false;
             }
 
-            ElementId levelId;
-            string levelName;
-            ElementDiscoveryHelpers.ResolveElementLevel(searchDocument, element, out levelId, out levelName);
-            if (_levelIds.Count > 0)
+            if (_levelIds.Count > 0 || _levelNames.Count > 0)
             {
-                int resolvedLevelId = levelId != null ? levelId.GetIdValue() : -1;
-                if (!_levelIds.Contains(resolvedLevelId))
+                ElementId levelId;
+                string levelName;
+                ElementDiscoveryHelpers.ResolveElementLevel(searchDocument, element, out levelId, out levelName);
+                if (_levelIds.Count > 0)
+                {
+                    int resolvedLevelId = levelId != null ? levelId.GetIdValue() : -1;
+                    if (!_levelIds.Contains(resolvedLevelId))
+                    {
+                        return false;
+                    }
+                }
+                if (_levelNames.Count > 0 && !ContainsAny(levelName, _levelNames))
                 {
                     return false;
                 }
-            }
-            if (_levelNames.Count > 0 && !ContainsAny(levelName, _levelNames))
-            {
-                return false;
             }
             if (!string.IsNullOrWhiteSpace(_familyName) && !ContainsText(ElementDiscoveryHelpers.GetFamilyName(searchDocument, element), _familyName))
             {
@@ -571,7 +620,9 @@ namespace RevitMCPCommandSet.Commands.View
             {
                 WorksetId id = element.WorksetId;
                 if (id == null) return "";
-                Workset workset = document.GetWorksetTable().GetWorkset(id);
+                WorksetTable table = document.GetWorksetTable();
+                if (table == null) return "";
+                Workset workset = table.GetWorkset(id);
                 return workset != null ? workset.Name : "";
             }
             catch
