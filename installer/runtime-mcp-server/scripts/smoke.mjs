@@ -185,6 +185,21 @@ assert.equal(turkishTermPolicy.guarded, false);
 assert.equal(turkishTermPolicy.effectiveQuery, "YY01");
 assert.deepEqual(turkishTermPolicy.effectiveCategoryNames, ["Plumbing Fixtures"]);
 
+const turkishFoldedTermPolicy = buildFindElementsSearchPolicy({ query: "YY01 sıhhi tesisat armatür" });
+assert.equal(turkishFoldedTermPolicy.guarded, false);
+assert.equal(turkishFoldedTermPolicy.effectiveQuery, "YY01");
+assert.deepEqual(turkishFoldedTermPolicy.effectiveCategoryNames, ["Plumbing Fixtures"]);
+
+const compactFcuPolicy = buildFindElementsSearchPolicy({ query: "FCU01" });
+assert.equal(compactFcuPolicy.guarded, false);
+assert.equal(compactFcuPolicy.effectiveQuery, "FCU01");
+assert.deepEqual(compactFcuPolicy.effectiveCategoryNames, ["Mechanical Equipment"]);
+
+const compactPumpPolicy = buildFindElementsSearchPolicy({ query: "PUMP1" });
+assert.equal(compactPumpPolicy.guarded, false);
+assert.equal(compactPumpPolicy.effectiveQuery, "PUMP1");
+assert.deepEqual(compactPumpPolicy.effectiveCategoryNames, ["Mechanical Equipment"]);
+
 const broadFindPolicy = buildFindElementsSearchPolicy({ query: "MTL" });
 assert.equal(broadFindPolicy.guarded, true);
 assert.equal(broadFindPolicy.reason, "needs_scope");

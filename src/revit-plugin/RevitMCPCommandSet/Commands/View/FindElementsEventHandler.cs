@@ -163,11 +163,11 @@ namespace RevitMCPCommandSet.Commands.View
                 List<Tuple<Element, SearchMatchSummary, Document, RevitLinkInstance>> matches =
                     new List<Tuple<Element, SearchMatchSummary, Document, RevitLinkInstance>>();
 
-                if (IsLinkedOnlyExactIdentitySearch())
+                if (IsLinkedOnlyHostElementIdSearch())
                 {
                     Complete(BuildGuardedResult(
                         "needs_scope",
-                        "Exact elementIds and uniqueIds are scoped to the host document. Pass query/category scope before searching linked documents.",
+                        "Numeric elementIds are scoped to the host document. Pass uniqueIds, query/category scope, or another linked-document filter before searching linked documents.",
                         scannedElementCount,
                         candidateElementCount,
                         warnings));
@@ -182,6 +182,11 @@ namespace RevitMCPCommandSet.Commands.View
                 if (!partial && ShouldSearchHostCollector())
                 {
                     SearchDocument(document, uiDocument, null, matches, warnings, ref scannedElementCount, ref candidateElementCount, deadlineUtc, ref partial, ref stoppedReason);
+                }
+
+                if (!partial && ShouldSearchLinkedUniqueIds())
+                {
+                    SearchLinkedUniqueIds(document, matches, warnings, ref scannedElementCount, ref candidateElementCount, deadlineUtc, ref partial, ref stoppedReason);
                 }
 
                 if (!partial && ShouldSearchLinks())
@@ -306,6 +311,13 @@ namespace RevitMCPCommandSet.Commands.View
                 string.Equals(_linkScope, "hostAndLinked", StringComparison.OrdinalIgnoreCase));
         }
 
+        private bool ShouldSearchLinkedUniqueIds()
+        {
+            return _uniqueIds.Count > 0 &&
+                (string.Equals(_linkScope, "linkedOnly", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(_linkScope, "hostAndLinked", StringComparison.OrdinalIgnoreCase));
+        }
+
         private bool HasExactIdentityScope()
         {
             return _elementIds.Count > 0 || _uniqueIds.Count > 0;
@@ -326,10 +338,11 @@ namespace RevitMCPCommandSet.Commands.View
                 || _worksetIds.Count > 0;
         }
 
-        private bool IsLinkedOnlyExactIdentitySearch()
+        private bool IsLinkedOnlyHostElementIdSearch()
         {
             return string.Equals(_linkScope, "linkedOnly", StringComparison.OrdinalIgnoreCase) &&
-                HasExactIdentityScope() &&
+                _elementIds.Count > 0 &&
+                _uniqueIds.Count == 0 &&
                 !HasCollectorSearchScope();
         }
 
@@ -378,6 +391,56 @@ namespace RevitMCPCommandSet.Commands.View
                 scannedElementCount++;
                 candidateElementCount++;
                 AddIfMatch(document, element, linkInstance, matches);
+            }
+        }
+
+        private void SearchLinkedUniqueIds(
+            Document hostDocument,
+            List<Tuple<Element, SearchMatchSummary, Document, RevitLinkInstance>> matches,
+            List<string> warnings,
+            ref int scannedElementCount,
+            ref int candidateElementCount,
+            DateTime deadlineUtc,
+            ref bool partial,
+            ref string stoppedReason)
+        {
+            FilteredElementCollector links = new FilteredElementCollector(hostDocument)
+                .OfClass(typeof(RevitLinkInstance));
+            foreach (RevitLinkInstance link in links.Cast<RevitLinkInstance>())
+            {
+                Document linkDocument = null;
+                try
+                {
+                    linkDocument = link.GetLinkDocument();
+                }
+                catch
+                {
+                }
+
+                if (linkDocument == null)
+                {
+                    warnings.Add("Skipped unloaded or inaccessible Revit link: " + link.Name);
+                    continue;
+                }
+
+                foreach (string uniqueId in _uniqueIds)
+                {
+                    if (StopBudgetReached(scannedElementCount, deadlineUtc, out stoppedReason))
+                    {
+                        partial = true;
+                        return;
+                    }
+
+                    Element element = linkDocument.GetElement(uniqueId);
+                    if (element == null)
+                    {
+                        continue;
+                    }
+
+                    scannedElementCount++;
+                    candidateElementCount++;
+                    AddIfMatch(linkDocument, element, link, matches);
+                }
             }
         }
 
