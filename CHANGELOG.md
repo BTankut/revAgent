@@ -13,9 +13,6 @@ All notable revAgent workstation deployment changes are tracked here.
   MEP correctness.
 - Fixed the no-match `selectionHint` so zero-result searches no longer claim
   there is a top match.
-- Deferred API-level level prefiltering for MEP elements to a future change;
-  it needs a correctness-safe design for duct, pipe, flex, and other elements
-  whose level is resolved through fallback parameters.
 - Bumped the runtime tool surface version to
   `revit-mcp-runtime-tools.34` for verified plan visibility guard behavior.
 
