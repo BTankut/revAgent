@@ -328,6 +328,10 @@ function buildSearchRiskPolicy(args, options) {
         score += 2;
         reasons.push("verified_plan_candidates_without_bounded_scope");
     }
+    if (options.verifiedVisibilityExpensive) {
+        score += 2;
+        reasons.push("verified_visibility_expensive");
+    }
     if (options.searchBudget === "deep" || options.allowExpensiveSearch) {
         reasons.push("operator_approved_expensive_search");
     }
@@ -343,6 +347,7 @@ function buildSearchRiskPolicy(args, options) {
                 : "unknown";
     const requiresUserControl = !options.allowExpensiveSearch && (options.broadLinkedSearch ||
         options.verifiedBroadSearch ||
+        options.verifiedVisibilityExpensive ||
         (!options.boundedScope && score >= 2));
     return {
         riskLevel,
@@ -369,7 +374,11 @@ export function buildFindElementsSearchPolicy(args = {}) {
     const allowExpensiveSearch = args.allowExpensiveSearch === true || searchBudget === "deep";
     const linkedExactUniqueIdOnlyScope = hasLinkedExactUniqueIdOnlyScope(args, linkScope, originalQuery, effectiveCategoryNames);
     const broadLinkedSearch = linkScope !== "hostOnly" && !allowExpensiveSearch && !linkedExactUniqueIdOnlyScope;
-    const verifiedBroadSearch = String(args.planCandidateMode || "").toLowerCase() === "verified" && !boundedScope;
+    const planCandidateMode = String(args.planCandidateMode || (args.includePlanCandidates === true ? "verified" : "none")).toLowerCase();
+    const requestedVerifiedPlanCandidates = planCandidateMode === "verified";
+    const exactElementScope = hasNonEmptyArrayValue(args.elementIds) || hasNonEmptyArrayValue(args.uniqueIds);
+    const verifiedBroadSearch = requestedVerifiedPlanCandidates && !boundedScope;
+    const verifiedVisibilityExpensive = requestedVerifiedPlanCandidates && !exactElementScope;
     const riskPolicy = buildSearchRiskPolicy(args, {
         originalQuery,
         boundedScope,
@@ -378,6 +387,7 @@ export function buildFindElementsSearchPolicy(args = {}) {
         allowExpensiveSearch,
         broadLinkedSearch,
         verifiedBroadSearch,
+        verifiedVisibilityExpensive,
         searchBudget,
     });
     const guarded = riskPolicy.requiresUserControl;
@@ -390,6 +400,9 @@ export function buildFindElementsSearchPolicy(args = {}) {
     }
     if (verifiedBroadSearch) {
         warnings.push("verified_plan_candidates_require_bounded_scope");
+    }
+    if (verifiedVisibilityExpensive) {
+        warnings.push("verified_visibility_requires_exact_targets_or_approval");
     }
     if (riskPolicy.requiresUserControl) {
         warnings.push("search_requires_user_scope_control");
@@ -411,6 +424,7 @@ export function buildFindElementsSearchPolicy(args = {}) {
         maxElementsScanned,
         maxElapsedMs,
         timeoutMs,
+        allowExpensiveSearch,
         guarded,
         reason: guarded ? "needs_scope" : undefined,
         message: guarded
@@ -442,7 +456,7 @@ export function buildGuardedNeedsScopePayload(policy) {
             maxElementsScanned: policy.maxElementsScanned,
             maxElapsedMs: policy.maxElapsedMs,
             timeoutMs: policy.timeoutMs,
-            allowExpensiveSearch: false,
+            allowExpensiveSearch: policy.allowExpensiveSearch,
         },
         suggestedNextScopes: policy.suggestedNextScopes,
         warnings: policy.warnings,

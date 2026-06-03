@@ -84,9 +84,11 @@ The runtime infers obvious engineering scope before calling Revit, for example
 fan coil/FCU to Mechanical Equipment, valve/vana to pipe accessory/fitting
 categories, and duct/pipe/sprinkler/damper/diffuser/pump/AHU terms to bounded
 MEP category scopes. The bridge then uses API-level category/view collectors
-where possible instead of collecting every instance element and filtering only
-in memory. Broad linked, verified, or deep searches are explicit through
-`allowExpensiveSearch` and `searchBudget`.
+where possible, plus API-level level filters when level scope resolves, instead
+of collecting every instance element and filtering only in memory. Broad linked,
+verified, or deep searches are explicit through `allowExpensiveSearch` and
+`searchBudget`; verified plan visibility is treated as a separate expensive
+operation and is limited to exact targets or explicit approval.
 
 `inspect_sheet_text` is a read-only runtime tool for large-project DrawingSheet
 text work. It provides bounded sheet text-note search and placed schedule

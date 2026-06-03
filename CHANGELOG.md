@@ -4,10 +4,25 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
-- Reworked the changelog so stable deployments are listed under their own
-  version headings instead of accumulating in one long `Unreleased` section.
-- Backfilled NAS stable deploy headings from `2026.05.25.178-a153f01f`
-  through the current `2026.06.03.265-fef8b178` deploy.
+- Hardened `find_elements` verified plan visibility so broad verified requests
+  require exact element ids or explicit expensive-search approval, with Revit
+  bridge fallback to metadata ranking when direct calls bypass the runtime
+  guard.
+- Extended Revit-side elapsed-budget handling into plan visibility verification
+  and added API-level `ElementLevelFilter` prefiltering when level scope
+  resolves.
+- Fixed the no-match `selectionHint` so zero-result searches no longer claim
+  there is a top match.
+- Bumped the runtime tool surface version to
+  `revit-mcp-runtime-tools.34` for verified plan visibility guard behavior.
+
+## 2026.06.03.267-ee433485
+
+- Published stable deploy at 2026-06-03T19:46:41.6417971Z from commit
+  `ee43348`.
+- Documentation-only deploy that reorganized `CHANGELOG.md` into stable deploy
+  headings and backfilled NAS stable release entries through
+  `2026.06.03.265-fef8b178`.
 
 ## 2026.06.03.265-fef8b178
 

@@ -43,6 +43,7 @@ namespace RevitMCPCommandSet.Commands.View
 
     public class FindElementsEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
     {
+        private const int VerifiedPlanCandidateMaxMatchesWithoutApproval = 3;
         private readonly ManualResetEvent _resetEvent = new ManualResetEvent(false);
         private string _originalQuery;
         private string _query;
@@ -199,11 +200,26 @@ namespace RevitMCPCommandSet.Commands.View
                     .ThenBy(m => m.Item1.Id.GetIdValue())
                     .ToList();
 
-                List<ElementSearchItem> items = orderedMatches
-                    .Take(_limit)
-                    .Select(m => BuildSearchItem(m.Item3, uiDocument, m.Item1, m.Item4, m.Item2))
-                    .Where(item => item != null)
-                    .ToList();
+                if (IsVerifiedPlanCandidateMode() && !CanRunVerifiedPlanCandidates(orderedMatches.Count))
+                {
+                    _planCandidateMode = "metadata";
+                    warnings.Add("verified plan candidate visibility was downgraded to metadata because the matched set is too broad without allowExpensiveSearch.");
+                    warnings.Add("verified_visibility_expensive");
+                }
+
+                List<ElementSearchItem> items = new List<ElementSearchItem>();
+                foreach (Tuple<Element, SearchMatchSummary, Document, RevitLinkInstance> match in orderedMatches.Take(_limit))
+                {
+                    ElementSearchItem item = BuildSearchItem(match.Item3, uiDocument, match.Item1, match.Item4, match.Item2, deadlineUtc, ref partial, ref stoppedReason);
+                    if (item != null)
+                    {
+                        items.Add(item);
+                    }
+                    if (partial)
+                    {
+                        break;
+                    }
+                }
 
                 foreach (ElementSearchItem item in items)
                 {
@@ -214,9 +230,11 @@ namespace RevitMCPCommandSet.Commands.View
                 int tiedCount = topScore > 0 ? orderedMatches.Count(m => m.Item2.Score == topScore) : 0;
                 string topConfidence = orderedMatches.Count > 0 ? orderedMatches[0].Item2.Confidence : "none";
                 bool ambiguous = orderedMatches.Count > 1 && (tiedCount > 1 || !string.Equals(topConfidence, "high", StringComparison.OrdinalIgnoreCase));
-                string selectionHint = ambiguous
-                    ? "Multiple plausible matches were found. Use elementId, mark, level, system, family/type, or a more specific query before making changes."
-                    : "Top match is the best current candidate; still verify level, mark, and plan before making changes.";
+                string selectionHint = orderedMatches.Count == 0
+                    ? "No matching elements found. Narrow or adjust the query, category, level, family/type, system, active view, or workset scope."
+                    : ambiguous
+                        ? "Multiple plausible matches were found. Use elementId, mark, level, system, family/type, or a more specific query before making changes."
+                        : "Top match is the best current candidate; still verify level, mark, and plan before making changes.";
 
                 Complete(new FindElementsResult
                 {
@@ -519,7 +537,92 @@ namespace RevitMCPCommandSet.Commands.View
                 warnings.Add("Category names could not be mapped to BuiltInCategory; falling back to post-filter category matching.");
             }
 
+            List<ElementId> levelFilterIds = ResolveCollectorLevelFilterIds(searchDocument);
+            if (levelFilterIds.Count > 0)
+            {
+                ElementFilter levelFilter = BuildLevelElementFilter(levelFilterIds);
+                if (levelFilter != null)
+                {
+                    try
+                    {
+                        collector = collector.WherePasses(levelFilter);
+                    }
+                    catch (Exception ex)
+                    {
+                        warnings.Add("Level prefilter failed, falling back to post-filter level matching: " + ex.Message);
+                    }
+                }
+            }
+
             return collector.WhereElementIsNotElementType();
+        }
+
+        private List<ElementId> ResolveCollectorLevelFilterIds(Document searchDocument)
+        {
+            HashSet<int> seen = new HashSet<int>();
+            List<ElementId> levelIds = new List<ElementId>();
+
+            foreach (int id in _levelIds)
+            {
+                if (id <= 0 || seen.Contains(id))
+                {
+                    continue;
+                }
+                Element level = searchDocument.GetElement(new ElementId(id));
+                if (level is Level)
+                {
+                    seen.Add(id);
+                    levelIds.Add(new ElementId(id));
+                }
+            }
+
+            if (_levelNames.Count == 0)
+            {
+                return levelIds;
+            }
+
+            using (FilteredElementCollector levelCollector = new FilteredElementCollector(searchDocument))
+            {
+                IEnumerable<Level> levels = levelCollector
+                    .OfClass(typeof(Level))
+                    .Cast<Level>();
+                foreach (Level level in levels)
+                {
+                    if (level == null || !ContainsAny(level.Name, _levelNames))
+                    {
+                        continue;
+                    }
+
+                    int id = level.Id.GetIdValue();
+                    if (seen.Contains(id))
+                    {
+                        continue;
+                    }
+
+                    seen.Add(id);
+                    levelIds.Add(level.Id);
+                }
+            }
+
+            return levelIds;
+        }
+
+        private static ElementFilter BuildLevelElementFilter(List<ElementId> levelIds)
+        {
+            if (levelIds == null || levelIds.Count == 0)
+            {
+                return null;
+            }
+
+            if (levelIds.Count == 1)
+            {
+                return new ElementLevelFilter(levelIds[0]);
+            }
+
+            List<ElementFilter> filters = levelIds
+                .Select(levelId => (ElementFilter)new ElementLevelFilter(levelId))
+                .ToList();
+            return new LogicalOrFilter(filters);
         }
 
         private void SearchLinkedDocuments(
@@ -725,9 +828,14 @@ namespace RevitMCPCommandSet.Commands.View
             UIDocument uiDocument,
             Element element,
             RevitLinkInstance linkInstance,
-            SearchMatchSummary match)
+            SearchMatchSummary match,
+            DateTime deadlineUtc,
+            ref bool partial,
+            ref string stoppedReason)
         {
             bool includePlanCandidates = _includePlanCandidates && linkInstance == null;
+            bool planCandidateBudgetStopped;
+            string planCandidateStoppedReason;
             ElementSearchItem item = ElementDiscoveryHelpers.BuildElementSearchItem(
                 searchDocument,
                 uiDocument,
@@ -735,7 +843,17 @@ namespace RevitMCPCommandSet.Commands.View
                 includePlanCandidates,
                 _planNameContains,
                 _planCandidateMode,
-                match);
+                match,
+                deadlineUtc,
+                out planCandidateBudgetStopped,
+                out planCandidateStoppedReason);
+            if (planCandidateBudgetStopped)
+            {
+                partial = true;
+                stoppedReason = string.IsNullOrWhiteSpace(planCandidateStoppedReason)
+                    ? "max_elapsed"
+                    : planCandidateStoppedReason;
+            }
             if (item == null)
             {
                 return null;
@@ -750,6 +868,27 @@ namespace RevitMCPCommandSet.Commands.View
                 item.PlanCandidates = null;
             }
             return item;
+        }
+
+        private bool IsVerifiedPlanCandidateMode()
+        {
+            return _includePlanCandidates &&
+                string.Equals(_planCandidateMode, "verified", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool CanRunVerifiedPlanCandidates(int matchCount)
+        {
+            if (!IsVerifiedPlanCandidateMode())
+            {
+                return true;
+            }
+
+            if (_allowExpensiveSearch)
+            {
+                return true;
+            }
+
+            return matchCount <= VerifiedPlanCandidateMaxMatchesWithoutApproval;
         }
 
         private object BuildEffectiveScope()
