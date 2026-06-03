@@ -637,7 +637,7 @@ namespace RevitMCPCommandSet.Commands.View
                 return null;
             }
 
-            List<ElementFilter> filters = new List<ElementFilter>();
+            List<ElementFilter> flatFilters = new List<ElementFilter>();
             foreach (ElementId levelId in levelIds)
             {
                 if (levelId == null || levelId == ElementId.InvalidElementId)
@@ -645,35 +645,28 @@ namespace RevitMCPCommandSet.Commands.View
                     continue;
                 }
 
-                List<ElementFilter> levelSourceFilters = new List<ElementFilter>
-                {
-                    new ElementLevelFilter(levelId)
-                };
+                flatFilters.Add(new ElementLevelFilter(levelId));
                 foreach (BuiltInParameter builtInParameter in LevelFilterBuiltInParameters)
                 {
                     ElementFilter parameterFilter = BuildLevelParameterElementFilter(builtInParameter, levelId);
                     if (parameterFilter != null)
                     {
-                        levelSourceFilters.Add(parameterFilter);
+                        flatFilters.Add(parameterFilter);
                     }
                 }
-
-                filters.Add(levelSourceFilters.Count == 1
-                    ? levelSourceFilters[0]
-                    : (ElementFilter)new LogicalOrFilter(levelSourceFilters));
             }
 
-            if (filters.Count == 0)
+            if (flatFilters.Count == 0)
             {
                 return null;
             }
 
-            if (filters.Count == 1)
+            if (flatFilters.Count == 1)
             {
-                return filters[0];
+                return flatFilters[0];
             }
 
-            return new LogicalOrFilter(filters);
+            return new LogicalOrFilter(flatFilters);
         }
 
         private static ElementFilter BuildLevelParameterElementFilter(BuiltInParameter builtInParameter, ElementId levelId)
