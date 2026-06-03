@@ -611,7 +611,7 @@ namespace RevitMCPCommandSet.Commands.View
                     .Cast<Level>();
                 foreach (Level level in levels)
                 {
-                    if (level == null || !ContainsAny(level.Name, levelNameFilters))
+                    if (level == null || !MatchesCollectorLevelName(level.Name, linkedDocument))
                     {
                         continue;
                     }
@@ -680,7 +680,7 @@ namespace RevitMCPCommandSet.Commands.View
         {
             try
             {
-                ParameterValueProvider provider = new ParameterValueProvider(new ElementId(builtInParameter));
+                ParameterValueProvider provider = new ParameterValueProvider(new ElementId((int)builtInParameter));
                 FilterElementIdRule rule = new FilterElementIdRule(provider, new FilterNumericEquals(), levelId);
                 return new ElementParameterFilter(rule);
             }
@@ -741,6 +741,21 @@ namespace RevitMCPCommandSet.Commands.View
             }
 
             return _effectiveLinkedLevelNames;
+        }
+
+        private bool MatchesCollectorLevelName(string levelName, bool linkedDocument)
+        {
+            if (string.IsNullOrWhiteSpace(levelName))
+            {
+                return false;
+            }
+
+            if (linkedDocument && ContainsExact(levelName, _levelNamesFromLevelIds))
+            {
+                return true;
+            }
+
+            return ContainsAny(levelName, _levelNames);
         }
 
         private void SearchLinkedDocuments(
@@ -833,7 +848,7 @@ namespace RevitMCPCommandSet.Commands.View
                 {
                     if (_levelIds.Count > 0)
                     {
-                        if (_levelNamesFromLevelIds.Count == 0 || !ContainsAny(levelName, _levelNamesFromLevelIds))
+                        if (_levelNamesFromLevelIds.Count == 0 || !ContainsExact(levelName, _levelNamesFromLevelIds))
                         {
                             return false;
                         }
@@ -896,6 +911,19 @@ namespace RevitMCPCommandSet.Commands.View
             foreach (string query in queries)
             {
                 if (ContainsText(value, query))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool ContainsExact(string value, List<string> queries)
+        {
+            if (string.IsNullOrWhiteSpace(value) || queries == null) return false;
+            foreach (string query in queries)
+            {
+                if (!string.IsNullOrWhiteSpace(query) && string.Equals(value.Trim(), query.Trim(), StringComparison.OrdinalIgnoreCase))
                 {
                     return true;
                 }
