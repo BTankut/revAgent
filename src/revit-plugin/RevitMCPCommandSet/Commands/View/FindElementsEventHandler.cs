@@ -399,42 +399,51 @@ namespace RevitMCPCommandSet.Commands.View
             ref bool partial,
             ref string stoppedReason)
         {
-            FilteredElementCollector links = new FilteredElementCollector(hostDocument)
-                .OfClass(typeof(RevitLinkInstance));
-            foreach (RevitLinkInstance link in links.Cast<RevitLinkInstance>())
+            using (FilteredElementCollector linksCollector = new FilteredElementCollector(hostDocument))
             {
-                Document linkDocument = null;
-                try
+                IEnumerable<RevitLinkInstance> links = linksCollector
+                    .OfClass(typeof(RevitLinkInstance))
+                    .OfType<RevitLinkInstance>();
+                foreach (RevitLinkInstance link in links)
                 {
-                    linkDocument = link.GetLinkDocument();
-                }
-                catch
-                {
-                }
-
-                if (linkDocument == null)
-                {
-                    warnings.Add("Skipped unloaded or inaccessible Revit link: " + link.Name);
-                    continue;
-                }
-
-                foreach (string uniqueId in _uniqueIds)
-                {
-                    if (StopBudgetReached(scannedElementCount, deadlineUtc, out stoppedReason))
+                    Document linkDocument = null;
+                    try
                     {
-                        partial = true;
-                        return;
+                        linkDocument = link.GetLinkDocument();
+                    }
+                    catch
+                    {
                     }
 
-                    Element element = linkDocument.GetElement(uniqueId);
-                    if (element == null)
+                    if (linkDocument == null)
                     {
+                        warnings.Add("Skipped unloaded or inaccessible Revit link: " + link.Name);
                         continue;
                     }
 
-                    scannedElementCount++;
-                    candidateElementCount++;
-                    AddIfMatch(linkDocument, element, link, matches);
+                    foreach (string uniqueId in _uniqueIds)
+                    {
+                        if (string.IsNullOrWhiteSpace(uniqueId))
+                        {
+                            continue;
+                        }
+
+                        if (StopBudgetReached(scannedElementCount, deadlineUtc, out stoppedReason))
+                        {
+                            partial = true;
+                            return;
+                        }
+
+                        Element element = linkDocument.GetElement(uniqueId);
+                        if (element == null)
+                        {
+                            continue;
+                        }
+
+                        scannedElementCount++;
+                        candidateElementCount++;
+                        AddIfMatch(linkDocument, element, link, matches);
+                    }
                 }
             }
         }

@@ -311,6 +311,27 @@ function hasBoundedScope(args: JsonObject = {}, effectiveCategoryNames: string[]
     );
 }
 
+function hasNonEmptyArrayValue(value: unknown) {
+    return Array.isArray(value) && value.some((item) => String(item ?? "").trim());
+}
+
+function hasLinkedExactUniqueIdOnlyScope(args: JsonObject, linkScope: string, originalQuery: string, effectiveCategoryNames: string[]) {
+    return linkScope !== "hostOnly" &&
+        hasNonEmptyArrayValue(args.uniqueIds) &&
+        !hasNonEmptyArrayValue(args.elementIds) &&
+        !originalQuery &&
+        effectiveCategoryNames.length === 0 &&
+        args.activeViewOnly !== true &&
+        !args.viewId &&
+        !hasNonEmptyArrayValue(args.levelIds) &&
+        !hasNonEmptyArrayValue(args.levelNames) &&
+        !args.familyName &&
+        !args.typeName &&
+        !args.systemName &&
+        !hasNonEmptyArrayValue(args.worksetIds) &&
+        !hasNonEmptyArrayValue(args.worksetNames);
+}
+
 function isGenericUnscopedQuery(query: string) {
     const trimmed = String(query || "").trim();
     return Boolean(trimmed && GENERIC_QUERY_PATTERN.test(trimmed));
@@ -428,7 +449,8 @@ export function buildFindElementsSearchPolicy(args: JsonObject = {}): FindElemen
     const boundedScope = hasBoundedScope(args, effectiveCategoryNames);
     const linkScope = String(args.linkScope || "hostOnly");
     const allowExpensiveSearch = args.allowExpensiveSearch === true || searchBudget === "deep";
-    const broadLinkedSearch = linkScope !== "hostOnly" && !allowExpensiveSearch;
+    const linkedExactUniqueIdOnlyScope = hasLinkedExactUniqueIdOnlyScope(args, linkScope, originalQuery, effectiveCategoryNames);
+    const broadLinkedSearch = linkScope !== "hostOnly" && !allowExpensiveSearch && !linkedExactUniqueIdOnlyScope;
     const verifiedBroadSearch = String(args.planCandidateMode || "").toLowerCase() === "verified" && !boundedScope;
     const riskPolicy = buildSearchRiskPolicy(args, {
         originalQuery,

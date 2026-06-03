@@ -200,6 +200,21 @@ assert.equal(compactPumpPolicy.guarded, false);
 assert.equal(compactPumpPolicy.effectiveQuery, "PUMP1");
 assert.deepEqual(compactPumpPolicy.effectiveCategoryNames, ["Mechanical Equipment"]);
 
+const linkedUniqueIdPolicy = buildFindElementsSearchPolicy({
+  uniqueIds: ["linked-element-uid"],
+  linkScope: "linkedOnly",
+});
+assert.equal(linkedUniqueIdPolicy.guarded, false);
+assert.equal(linkedUniqueIdPolicy.riskPolicy.requiresUserControl, false);
+assert.equal(linkedUniqueIdPolicy.linkScope, "linkedOnly");
+
+const linkedElementIdPolicy = buildFindElementsSearchPolicy({
+  elementIds: [123],
+  linkScope: "linkedOnly",
+});
+assert.equal(linkedElementIdPolicy.guarded, true);
+assert.equal(linkedElementIdPolicy.reason, "needs_scope");
+
 const broadFindPolicy = buildFindElementsSearchPolicy({ query: "MTL" });
 assert.equal(broadFindPolicy.guarded, true);
 assert.equal(broadFindPolicy.reason, "needs_scope");

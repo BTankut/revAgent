@@ -61,10 +61,13 @@ try
         {
             try
             {
-                counts[kv.Key] = new FilteredElementCollector(document)
-                    .OfCategory(kv.Value)
-                    .WhereElementIsNotElementType()
-                    .GetElementCount();
+                using (FilteredElementCollector collector = new FilteredElementCollector(document))
+                {
+                    counts[kv.Key] = collector
+                        .OfCategory(kv.Value)
+                        .WhereElementIsNotElementType()
+                        .GetElementCount();
+                }
             }
             catch (Exception ex)
             {
@@ -76,35 +79,42 @@ try
 
     if (includeLinkSummary)
     {
-        FilteredElementCollector linkCollector = new FilteredElementCollector(document)
-            .OfClass(typeof(RevitLinkInstance))
-            .WhereElementIsNotElementType();
-        foreach (Element linkElem in linkCollector)
+        using (FilteredElementCollector linkCollector = new FilteredElementCollector(document))
         {
-            linkInstances++;
-            RevitLinkInstance link = linkElem as RevitLinkInstance;
-            if (link == null) continue;
-            Document linkDoc = link.GetLinkDocument();
-            if (linkDoc == null) continue;
-            loadedLinks++;
-            if (includeLinkDetails)
+            foreach (RevitLinkInstance link in linkCollector
+                .OfClass(typeof(RevitLinkInstance))
+                .WhereElementIsNotElementType()
+                .OfType<RevitLinkInstance>())
             {
-                try
+                linkInstances++;
+                Document linkDoc = link.GetLinkDocument();
+                if (linkDoc == null) continue;
+                loadedLinks++;
+                if (includeLinkDetails)
                 {
-                    linkedRooms += new FilteredElementCollector(linkDoc)
-                        .OfCategory(BuiltInCategory.OST_Rooms)
-                        .WhereElementIsNotElementType()
-                        .GetElementCount();
+                    try
+                    {
+                        using (FilteredElementCollector linkedRoomCollector = new FilteredElementCollector(linkDoc))
+                        {
+                            linkedRooms += linkedRoomCollector
+                                .OfCategory(BuiltInCategory.OST_Rooms)
+                                .WhereElementIsNotElementType()
+                                .GetElementCount();
+                        }
+                    }
+                    catch {}
+                    try
+                    {
+                        using (FilteredElementCollector linkedSpaceCollector = new FilteredElementCollector(linkDoc))
+                        {
+                            linkedSpaces += linkedSpaceCollector
+                                .OfCategory(BuiltInCategory.OST_MEPSpaces)
+                                .WhereElementIsNotElementType()
+                                .GetElementCount();
+                        }
+                    }
+                    catch {}
                 }
-                catch {}
-                try
-                {
-                    linkedSpaces += new FilteredElementCollector(linkDoc)
-                        .OfCategory(BuiltInCategory.OST_MEPSpaces)
-                        .WhereElementIsNotElementType()
-                        .GetElementCount();
-                }
-                catch {}
             }
         }
     }
