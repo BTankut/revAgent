@@ -300,7 +300,7 @@ namespace RevitMCPCommandSet.Commands.View
 
         private bool ShouldSearchHostExactMatches()
         {
-            return HasExactIdentityScope() &&
+            return (_elementIds.Count > 0 || _uniqueIds.Count > 0) &&
                 !string.Equals(_linkScope, "linkedOnly", StringComparison.OrdinalIgnoreCase);
         }
 
@@ -316,11 +316,6 @@ namespace RevitMCPCommandSet.Commands.View
             return _uniqueIds.Count > 0 &&
                 (string.Equals(_linkScope, "linkedOnly", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(_linkScope, "hostAndLinked", StringComparison.OrdinalIgnoreCase));
-        }
-
-        private bool HasExactIdentityScope()
-        {
-            return _elementIds.Count > 0 || _uniqueIds.Count > 0;
         }
 
         private bool HasCollectorSearchScope()
