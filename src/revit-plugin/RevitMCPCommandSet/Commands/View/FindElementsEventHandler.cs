@@ -53,6 +53,7 @@ namespace RevitMCPCommandSet.Commands.View
         private List<string> _levelNames = new List<string>();
         private List<int> _levelIds = new List<int>();
         private List<string> _levelNamesFromLevelIds = new List<string>();
+        private List<string> _effectiveLinkedLevelNames;
         private bool _activeViewOnly;
         private int? _viewId;
         private string _familyName;
@@ -110,6 +111,7 @@ namespace RevitMCPCommandSet.Commands.View
             _levelNames = levelNames ?? new List<string>();
             _levelIds = levelIds ?? new List<int>();
             _levelNamesFromLevelIds = new List<string>();
+            _effectiveLinkedLevelNames = null;
             _activeViewOnly = activeViewOnly;
             _viewId = viewId;
             _familyName = familyName ?? "";
@@ -672,15 +674,19 @@ namespace RevitMCPCommandSet.Commands.View
                 return _levelNames;
             }
 
-            List<string> names = new List<string>();
-            foreach (string name in _levelNames.Concat(_levelNamesFromLevelIds))
+            if (_effectiveLinkedLevelNames == null)
             {
-                if (!string.IsNullOrWhiteSpace(name) && !names.Contains(name, StringComparer.OrdinalIgnoreCase))
+                _effectiveLinkedLevelNames = new List<string>();
+                foreach (string name in _levelNames.Concat(_levelNamesFromLevelIds))
                 {
-                    names.Add(name);
+                    if (!string.IsNullOrWhiteSpace(name) && !_effectiveLinkedLevelNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        _effectiveLinkedLevelNames.Add(name);
+                    }
                 }
             }
-            return names;
+
+            return _effectiveLinkedLevelNames;
         }
 
         private void SearchLinkedDocuments(

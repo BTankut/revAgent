@@ -479,6 +479,7 @@ try {
     Assert-True ($findHandlerCode -match 'ElementMulticategoryFilter') "find_elements bridge must use API-level category filters instead of only in-memory category filtering."
     Assert-True ($findHandlerCode -match 'ElementLevelFilter' -and $findHandlerCode -match 'LogicalOrFilter') "find_elements bridge must use API-level level filters when level ids/names are resolved."
     Assert-True ($findHandlerCode -match 'ResolveLevelNamesFromIds' -and $findHandlerCode -match '_levelNamesFromLevelIds' -and $findHandlerCode -match 'ResolveCollectorLevelFilterIds\(searchDocument, linkInstance != null\)') "find_elements bridge must map host level ids to linked-document levels by name."
+    Assert-True ($findHandlerCode -match '_effectiveLinkedLevelNames' -and $findHandlerCode -match '_effectiveLinkedLevelNames = null' -and $findHandlerCode -match 'if \(_effectiveLinkedLevelNames == null\)') "find_elements bridge must cache linked-document effective level-name filters per request."
     Assert-True ($findHandlerCode -match 'MatchesAdditionalFilters\(searchDocument, element, linkInstance != null\)') "find_elements bridge must avoid host numeric level-id matching inside linked documents."
     Assert-True ($findHandlerCode -match 'ScannedElementCount' -and $findHandlerCode -match 'Partial' -and $findHandlerCode -match 'ScanStoppedReason') "find_elements bridge must report scan budget and partial-result state."
     Assert-True ($findHandlerCode -match 'No matching elements found\.') "find_elements no-match result must not say matching elements were found."
