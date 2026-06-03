@@ -36,6 +36,10 @@ namespace RevitMCPCommandSet.Commands.View
         public string Mark { get; set; }
         public string Comments { get; set; }
         public bool HasBoundingBox { get; set; }
+        public string SourceDocumentTitle { get; set; }
+        public string SourceDocumentKind { get; set; }
+        public int? LinkInstanceId { get; set; }
+        public string LinkInstanceName { get; set; }
         public int MatchScore { get; set; }
         public string MatchConfidence { get; set; }
         public string MatchReason { get; set; }
@@ -66,6 +70,57 @@ namespace RevitMCPCommandSet.Commands.View
             "mekanik",
             "tesisat"
         };
+
+        private static readonly Dictionary<string, BuiltInCategory> CategoryAliases =
+            new Dictionary<string, BuiltInCategory>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "Mechanical Equipment", BuiltInCategory.OST_MechanicalEquipment },
+                { "Ducts", BuiltInCategory.OST_DuctCurves },
+                { "duct", BuiltInCategory.OST_DuctCurves },
+                { "Duct Fittings", BuiltInCategory.OST_DuctFitting },
+                { "Duct Accessories", BuiltInCategory.OST_DuctAccessory },
+                { "Air Terminals", BuiltInCategory.OST_DuctTerminal },
+                { "diffuser", BuiltInCategory.OST_DuctTerminal },
+                { "Pipes", BuiltInCategory.OST_PipeCurves },
+                { "pipe", BuiltInCategory.OST_PipeCurves },
+                { "Pipe Fittings", BuiltInCategory.OST_PipeFitting },
+                { "Pipe Accessories", BuiltInCategory.OST_PipeAccessory },
+                { "Plumbing Fixtures", BuiltInCategory.OST_PlumbingFixtures },
+                { "Sprinklers", BuiltInCategory.OST_Sprinklers },
+                { "Flex Ducts", BuiltInCategory.OST_FlexDuctCurves },
+                { "Flex Pipes", BuiltInCategory.OST_FlexPipeCurves }
+            };
+
+        public static List<BuiltInCategory> ResolveBuiltInCategories(IList<string> categoryNames)
+        {
+            List<BuiltInCategory> categories = new List<BuiltInCategory>();
+            if (categoryNames == null)
+            {
+                return categories;
+            }
+
+            foreach (string categoryName in categoryNames)
+            {
+                if (string.IsNullOrWhiteSpace(categoryName)) continue;
+                BuiltInCategory exact;
+                if (CategoryAliases.TryGetValue(categoryName.Trim(), out exact))
+                {
+                    if (!categories.Contains(exact)) categories.Add(exact);
+                    continue;
+                }
+
+                foreach (KeyValuePair<string, BuiltInCategory> alias in CategoryAliases)
+                {
+                    if (alias.Key.IndexOf(categoryName, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        categoryName.IndexOf(alias.Key, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        if (!categories.Contains(alias.Value)) categories.Add(alias.Value);
+                    }
+                }
+            }
+
+            return categories;
+        }
 
         public static ElementSearchItem BuildElementSearchItem(
             Document document,
@@ -191,6 +246,7 @@ namespace RevitMCPCommandSet.Commands.View
             AddFieldMatch(result, "family", GetFamilyName(document, element), trimmedQuery, 620, 260);
             AddFieldMatch(result, "type", GetTypeName(document, element), trimmedQuery, 600, 240);
             AddFieldMatch(result, "comments", GetParameterString(element, "Comments"), trimmedQuery, 250, 120);
+            AddTokenMatches(document, element, result, trimmedQuery);
 
             result.Matches = result.Fields.Count > 0 && result.Fields.Any(f => !string.Equals(f, "categoryFilter", StringComparison.OrdinalIgnoreCase));
             result.Confidence = BuildMatchConfidence(result.Score);
@@ -525,6 +581,109 @@ namespace RevitMCPCommandSet.Commands.View
                 result.Score += containsScore;
                 result.Fields.Add(fieldName + ":contains");
             }
+        }
+
+        private static void AddTokenMatches(Document document, Element element, SearchMatchSummary result, string query)
+        {
+            string[] tokens = SplitSearchTokens(query);
+            if (tokens.Length <= 1)
+            {
+                return;
+            }
+
+            Dictionary<string, string> fields = new Dictionary<string, string>
+            {
+                { "id", element.Id.GetIdValue().ToString() },
+                { "uniqueId", element.UniqueId ?? "" },
+                { "category", element.Category != null ? element.Category.Name : "" },
+                { "mark", GetParameterString(element, "Mark") },
+                { "name", element.Name ?? "" },
+                { "family", GetFamilyName(document, element) },
+                { "type", GetTypeName(document, element) },
+                { "comments", GetParameterString(element, "Comments") }
+            };
+
+            List<string> matchedFields = new List<string>();
+            int score = 0;
+            foreach (string token in tokens)
+            {
+                bool tokenMatched = false;
+                foreach (KeyValuePair<string, string> field in fields)
+                {
+                    if (string.IsNullOrWhiteSpace(field.Value)) continue;
+                    if (string.Equals(field.Value.Trim(), token, StringComparison.OrdinalIgnoreCase))
+                    {
+                        matchedFields.Add(field.Key + ":tokenExact");
+                        score += TokenScore(field.Key, true);
+                        tokenMatched = true;
+                        break;
+                    }
+                    if (field.Value.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        matchedFields.Add(field.Key + ":tokenContains");
+                        score += TokenScore(field.Key, false);
+                        tokenMatched = true;
+                        break;
+                    }
+                }
+                if (!tokenMatched)
+                {
+                    return;
+                }
+            }
+
+            result.Score += score;
+            result.Fields.Add("queryTokens:all");
+            foreach (string field in matchedFields)
+            {
+                if (!result.Fields.Contains(field))
+                {
+                    result.Fields.Add(field);
+                }
+            }
+        }
+
+        private static string[] SplitSearchTokens(string query)
+        {
+            return (query ?? "")
+                .Split(new[] { ' ', '\t', '\r', '\n', '-', '_', '/', '\\' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(t => t.Trim())
+                .Where(t => t.Length >= 2)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        private static int TokenScore(string fieldName, bool exact)
+        {
+            int baseScore;
+            switch (fieldName)
+            {
+                case "id":
+                    baseScore = 180;
+                    break;
+                case "uniqueId":
+                    baseScore = 160;
+                    break;
+                case "mark":
+                    baseScore = 150;
+                    break;
+                case "family":
+                    baseScore = 130;
+                    break;
+                case "type":
+                    baseScore = 125;
+                    break;
+                case "name":
+                    baseScore = 110;
+                    break;
+                case "category":
+                    baseScore = 80;
+                    break;
+                default:
+                    baseScore = 50;
+                    break;
+            }
+            return exact ? baseScore * 2 : baseScore;
         }
 
         private static string BuildMatchConfidence(int score)

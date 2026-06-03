@@ -382,6 +382,17 @@ they are deliberately promoted into the production registry and fully reviewed.
 The smoke gate rejects localized or mojibake source text instead of hiding it
 with a status-message sanitizer.
 
+For large-model search changes, verify both CI-safe contracts and live Revit
+behavior. CI-safe tests must prove the runtime tool schema, progressive
+`find_elements` search policy, `detailLevel="minimal"` session context default,
+sheet/schedule `allowExpensiveSearch` guards, telemetry search-policy fields,
+and bumped tool surface version. Live validation must prove that inferred
+category searches use Revit API-level collector filters rather than collecting
+all instance elements, that Revit-side `maxElapsedMs` returns partial results
+before socket timeout, and that `needs_scope` is emitted as
+`state="guarded"` with `reason="needs_scope"` rather than a new incompatible
+state.
+
 This local flow does not run `publish-nas-release.ps1` and does not touch
 `channels\stable.json`.
 

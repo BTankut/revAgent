@@ -176,11 +176,25 @@ runtime compatibility normalizer.
 For DrawingSheet text lookup in large projects, use `inspect_sheet_text` before
 raw dynamic C# sheet loops. Start with `sheetQuery` or exact `sheetIds`, keep
 limits bounded, and enable `scanScheduleCells` only when the target text may be
-inside placed schedules.
+inside placed schedules. Project-wide sheet text or placed schedule-cell scans
+require explicit `allowExpensiveSearch=true`.
 For schedule lookup or schedule cell reading in large projects, use
 `inspect_schedules` before raw dynamic C# loops. Start with `nameQuery` or
 exact `scheduleIds`, keep row/column limits bounded, and avoid scanning all
-schedule cells unless the operator explicitly needs that broad search.
+schedule cells unless the operator explicitly needs that broad search and
+`allowExpensiveSearch=true` is passed.
+For element discovery in large projects, use `find_elements` as a progressive
+MEP-aware search rather than a full-model free-text scan. Let it infer obvious
+engineering scope first: fan coil/FCU maps to Mechanical Equipment, valve/vana
+to pipe accessory/fitting categories, damper to duct accessory/equipment, and
+duct/pipe/sprinkler/diffuser/pump/AHU terms to their MEP categories. Keep
+`planCandidateMode="none"` for the first pass, prefer host/active-view/category
+scope, and only use linked, verified, or deep searches after the operator
+accepts the cost with `allowExpensiveSearch=true` or an explicit deep budget.
+If the tool returns `guarded=true`, `state="guarded"`, and
+`reason="needs_scope"`, treat it as controlled product behavior and ask for or
+derive a better level, active view, system, family/type, sheet, or schedule
+scope.
 For schedule text edits after exact row/column discovery, use
 `set_schedule_cells`; it requires exact `scheduleId`, section, row, and column,
 defaults to dry-run, can compare `expectedCurrentText`, and verifies committed

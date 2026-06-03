@@ -308,7 +308,7 @@ catch (Exception ex)
 }`;
 }
 export function registerInspectSchedulesTool(server) {
-    server.tool("inspect_schedules", "[SCHEDULE_INSPECTION_READ_ONLY] Read-only Revit schedule discovery and bounded cell inspection for large models. Prefer this over generic send_code_to_revit when finding schedules or reading schedule cells.", {
+    server.tool("inspect_schedules", "[SCHEDULE_INSPECTION_READ_ONLY] Read-only Revit schedule discovery and bounded cell inspection for large models. Prefer this over generic send_code_to_revit when finding schedules or reading schedule cells. For large models, use nameQuery/scheduleIds first; broad cell scans require allowExpensiveSearch=true.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Alias for nameQuery. Matches schedule names with Turkish/diacritic/Cyrillic-U normalization."),
@@ -318,6 +318,7 @@ export function registerInspectSchedulesTool(server) {
         sections: z.array(z.enum(["header", "body", "footer"])).optional().describe("Schedule sections to read/scan. Defaults to header and body."),
         includeCells: z.boolean().optional().describe("Return a bounded cell snapshot for each returned schedule. Defaults false."),
         scanCells: z.boolean().optional().describe("Scan bounded cells for cellQuery. Defaults true when cellQuery is provided, otherwise false."),
+        allowExpensiveSearch: z.boolean().optional().describe("Explicit approval for scanning schedule cells without scheduleIds/nameQuery. Defaults false."),
         maxSchedules: z.number().int().positive().max(200).optional().describe("Maximum schedules to inspect/return. Defaults 50."),
         maxRowsPerSection: z.number().int().min(0).max(1000).optional().describe("Maximum rows per section to read/scan. Defaults 80."),
         maxColumnsPerSection: z.number().int().min(0).max(200).optional().describe("Maximum columns per section to read/scan. Defaults 30."),
@@ -325,6 +326,25 @@ export function registerInspectSchedulesTool(server) {
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Socket timeout in milliseconds. Defaults 120000."),
     }, async (args) => {
         try {
+            const hasScheduleScope = Boolean((Array.isArray(args.scheduleIds) && args.scheduleIds.length > 0) ||
+                String(args.nameQuery || args.query || "").trim());
+            const wantsCells = Boolean(args.includeCells === true || args.scanCells === true || String(args.cellQuery || "").trim());
+            if (wantsCells && !hasScheduleScope && args.allowExpensiveSearch !== true) {
+                return formatJsonContent({
+                    success: true,
+                    guarded: true,
+                    state: "guarded",
+                    action: "inspect_schedules",
+                    reason: "needs_scope",
+                    message: "Schedule cell scanning without scheduleIds/nameQuery can be expensive in large models. First discover schedules by name, pass exact scheduleIds, or set allowExpensiveSearch=true.",
+                    suggestedNextScopes: ["nameQuery", "scheduleIds", "maxRowsPerSection", "maxColumnsPerSection", "allowExpensiveSearch"],
+                    scanPolicy: {
+                        allowExpensiveSearch: false,
+                        includeCells: args.includeCells === true,
+                        scanCells: args.scanCells === true || Boolean(args.cellQuery),
+                    },
+                });
+            }
             const response = await executeRevitCode(buildInspectSchedulesCode(args), {
                 ...connectionOptionsFromArgs(args),
                 ...taskOptionsFromArgs(args, "Inspect Revit schedules"),

@@ -94,7 +94,10 @@ normalizer.
   rejection, JSON result parsing, output trimming, and forced
   `transactionMode: "none"`
 - `get_revit_session_context` - first-call context for version/build/culture,
-  document state, active view, selection, MEP counts, and link counts
+  document state, active view, and selection. It defaults to
+  `detailLevel="minimal"` so large-model document checks do not perform MEP
+  category or linked room/space counts; request `counts` or `full` only when
+  those expensive summaries are needed.
 - `get_active_view_context` - model-view vs sheet-view context; sheets return
   placed viewports and `scheduleSheetInstances` instead of direct
   model-category assumptions
@@ -104,11 +107,17 @@ normalizer.
 - `close_view` - close an open Revit UI view tab without opening a transaction
 - `get_ui_state` - read active view, open UI views, selected element ids and
   summaries, section box flags, and document writable state
-- `find_elements` - find elements by category plus text across id, name,
-  family, type, mark, comments, and return match confidence. Existing plan
-  candidates are opt-in through `planCandidateMode`; use `none` for fastest
-  discovery, `metadata` for quick same-level view ranking, and `verified` only
-  when view/crop/callout visibility must be proven.
+- `find_elements` - MEP-aware progressive element discovery. It can infer
+  obvious engineering scope before searching, for example fan coil/FCU to
+  `Mechanical Equipment`, valve/vana to pipe accessory/fitting categories, and
+  duct/pipe/sprinkler/damper/diffuser/pump/AHU terms to bounded MEP category
+  scopes. Use `searchBudget="fast"` for first-pass discovery, then add
+  `levelNames`, `activeViewOnly`, `familyName`, `typeName`, `systemName`,
+  workset filters, link scope, or `allowExpensiveSearch=true` only when the
+  operator intentionally accepts a broader search. Existing plan candidates are
+  opt-in through `planCandidateMode`; use `none` for fastest discovery,
+  `metadata` for quick same-level view ranking, and `verified` only when
+  view/crop/callout visibility must be proven.
 - `open_existing_plan_for_element_level` - choose an existing non-template plan
   for an element's level, or keep the active plan when `planMode=activePlan`,
   then select and zoom to the element. Successful routine calls return compact
@@ -168,12 +177,14 @@ normalizer.
 - `inspect_sheet_text` - read-only DrawingSheet text search and placed
   schedule inventory. Use `sheetQuery` or exact `sheetIds` first in large
   projects; enable `scanScheduleCells` only when target text may be inside
-  placed schedules. Prefer this over broad custom C# sheet loops.
+  placed schedules. Project-wide text or placed-schedule cell scans require
+  `allowExpensiveSearch=true`. Prefer this over broad custom C# sheet loops.
 - `inspect_schedules` - read-only schedule discovery and bounded cell
   inspection. Use `nameQuery` or exact `scheduleIds` first in large projects,
   then add `cellQuery`, `includeCells`, row/column limits, and section selection
-  as needed. Prefer this over broad custom C# loops when finding schedules or
-  reading schedule cells.
+  as needed. Broad cell scans without schedule scope require
+  `allowExpensiveSearch=true`. Prefer this over broad custom C# loops when
+  finding schedules or reading schedule cells.
 - `inspect_parameter_schema` - parameter schema for element ids or category
   samples: user-facing BIP display name/id first, raw enum alias as diagnostic
   data, alias note, storage type, unit, shared/read-only, raw/display values.
@@ -250,11 +261,15 @@ Default workflow for every Revit runtime task:
 6. For DrawingSheet text lookup, call `inspect_sheet_text` before writing raw
    C# sheet loops. Use `sheetQuery` or exact `sheetIds` and bounded limits;
    enable `scanScheduleCells` only when schedule cells on the sheet must be
-   searched.
+   searched. If the user intentionally wants project-wide sheet text or placed
+   schedule-cell search, pass `allowExpensiveSearch=true` and keep row/sheet
+   limits bounded.
 7. For schedule lookup, schedule evidence planning, or schedule cell reading,
    call `inspect_schedules` before writing raw C# schedule loops. In large
    models, do not scan all schedule cells without a `nameQuery` or exact
-   `scheduleIds`; keep `maxRowsPerSection` and `maxColumnsPerSection` bounded.
+   `scheduleIds` unless the user explicitly accepts the cost with
+   `allowExpensiveSearch=true`; keep `maxRowsPerSection` and
+   `maxColumnsPerSection` bounded.
    For exact schedule text edits after row/column discovery, use
    `set_schedule_cells` with `expectedCurrentText`. If the target is known by
    sheet/schedule plus row text, use `set_schedule_cells_by_text` to preview
@@ -272,7 +287,12 @@ Default workflow for every Revit runtime task:
 Plan candidate mode rules:
 
 - For broad element discovery, use `find_elements` with
-  `planCandidateMode: "none"` or omit it.
+  `planCandidateMode: "none"` or omit it. First let the tool infer obvious MEP
+  scope from terms such as fan coil/FCU, valve/vana, damper, duct, pipe,
+  sprinkler, diffuser, pump, or AHU before asking the user for more scope.
+- If the inferred first pass returns too many candidates, group or narrow with
+  `levelNames`, `activeViewOnly`, `familyName`, `typeName`, `systemName`, or
+  workset filters before escalating to link or deep searches.
 - If the user only needs likely plan names, use `planCandidateMode: "metadata"`.
   This ranks same-level plans quickly but does not prove crop/callout
   visibility.
@@ -408,9 +428,11 @@ Use this playbook for common view and focus requests:
   should not appear; use `SuggestedView` or rerun with
   `planMode: "elementLevel"`.
 - When the user describes an element by name/type/system instead of id, use
-  `find_elements` before writing custom C# search snippets. Start with category
-  filters such as `Mechanical Equipment`, `Ducts`, `Air Terminals`, `Pipes`, or
-  `Pipe Fittings` when the discipline is clear. In large models, treat
+  `find_elements` before writing custom C# search snippets. Let it infer
+  obvious category filters such as `Mechanical Equipment`, `Ducts`,
+  `Air Terminals`, `Pipes`, `Pipe Fittings`, or `Sprinklers` when the
+  discipline is clear; add explicit category filters when the term is
+  ambiguous. In large models, treat
   `Ambiguous`, `TopScoreTiedCount`, `MatchConfidence`, and `MatchReason` as
   safety signals; ask for or derive a more specific id/mark/level before writes
   when the top result is not clearly unique.

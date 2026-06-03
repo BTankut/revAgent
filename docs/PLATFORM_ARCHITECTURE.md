@@ -74,13 +74,31 @@ The current runtime server registers 26 tools:
 - image evidence: `export_revit_view_image`,
   `export_revit_coordination_image`
 
+`get_revit_session_context` defaults to `detailLevel="minimal"` so large-model
+document checks do not perform MEP category counts or linked room/space scans.
+Callers must opt into `detailLevel="counts"` or `detailLevel="full"` when those
+expensive summaries are truly needed.
+
+`find_elements` is the progressive MEP-aware discovery tool for element search.
+The runtime infers obvious engineering scope before calling Revit, for example
+fan coil/FCU to Mechanical Equipment, valve/vana to pipe accessory/fitting
+categories, and duct/pipe/sprinkler/damper/diffuser/pump/AHU terms to bounded
+MEP category scopes. The bridge then uses API-level category/view collectors
+where possible instead of collecting every instance element and filtering only
+in memory. Broad linked, verified, or deep searches are explicit through
+`allowExpensiveSearch` and `searchBudget`.
+
 `inspect_sheet_text` is a read-only runtime tool for large-project DrawingSheet
 text work. It provides bounded sheet text-note search and placed schedule
 inventory so agents do not have to generate broad ad hoc C# sheet scans.
+Project-wide text or placed schedule-cell scans require explicit
+`allowExpensiveSearch=true`.
 `inspect_schedules` is a read-only runtime tool for large-project schedule work.
 It provides bounded schedule-name discovery and bounded header/body/footer cell
 reads/scans so agents do not have to generate broad ad hoc C# loops over every
-schedule and every cell. `set_schedule_cells` is the paired write path for known
+schedule and every cell. Broad cell scans without `nameQuery` or exact
+`scheduleIds` require explicit `allowExpensiveSearch=true`.
+`set_schedule_cells` is the paired write path for known
 schedule cells: it never resolves by schedule name, defaults to dry-run, blocks
 stale cells with `expectedCurrentText` unless explicitly allowed, commits
 through the wrapper transaction, guards non-writable standard schedule body

@@ -135,7 +135,7 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/revit-plugin/revit_mcp_plugin/RevitMCPPlugin.dll",
-                                                  "sha256":  "e6381d9e60404ec93fc83c9a72656c7f0a8a428a89e5e4525507aa074cdbe150",
+                                                  "sha256":  "9d0e50bb2f5f77835331a61ccb3845483b1a6d0a1bc8393ebce4af2cabb5884e",
                                                   "sizeBytes":  93184
                                               }
                                           ]
@@ -208,7 +208,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ElementDiscoveryHelpers.cs",
-                                                "gitBlobSha":  "7c2def055a361b4290d04a3c711b0433506b9fda"
+                                                "gitBlobSha":  "2e6157bfa9a665682b6f332485b8eb1c2d1bc536"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ElementFocusHelpers.cs",
@@ -216,11 +216,11 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/FindElementsCommand.cs",
-                                                "gitBlobSha":  "e4498f78ab4556414afc4f1b52ba921dbc4c9626"
+                                                "gitBlobSha":  "b0af13dd5288431119750a783314d1a9d4b125b4"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/FindElementsEventHandler.cs",
-                                                "gitBlobSha":  "82c8605f6c13d5e9b2d53782ea91fff0c02ee214"
+                                                "gitBlobSha":  "74deaadd4565c193dd09ae89d1d12ae9745376ef"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/FocusElementsCommand.cs",
@@ -302,13 +302,13 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/command-payload/RevitMCPCommandSet.dll",
-                                                  "sha256":  "1727fedf31af1b8ecb5943cf8424127fdee766a9788ddfb5c70e69db870e395e",
-                                                  "sizeBytes":  128512
+                                                  "sha256":  "b31c1200ec8802bf87802c07420428bd9e2fd9888735639f9fe0b6b5c02ab5e0",
+                                                  "sizeBytes":  148480
                                               },
                                               {
                                                   "path":  "installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPCommandSet/2022/RevitMCPCommandSet.dll",
-                                                  "sha256":  "1727fedf31af1b8ecb5943cf8424127fdee766a9788ddfb5c70e69db870e395e",
-                                                  "sizeBytes":  128512
+                                                  "sha256":  "b31c1200ec8802bf87802c07420428bd9e2fd9888735639f9fe0b6b5c02ab5e0",
+                                                  "sizeBytes":  148480
                                               }
                                           ]
                          }
