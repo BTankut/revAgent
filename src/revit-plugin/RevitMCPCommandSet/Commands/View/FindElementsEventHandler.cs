@@ -52,6 +52,7 @@ namespace RevitMCPCommandSet.Commands.View
         private List<string> _uniqueIds = new List<string>();
         private List<string> _levelNames = new List<string>();
         private List<int> _levelIds = new List<int>();
+        private List<string> _levelNamesFromLevelIds = new List<string>();
         private bool _activeViewOnly;
         private int? _viewId;
         private string _familyName;
@@ -108,6 +109,7 @@ namespace RevitMCPCommandSet.Commands.View
             _uniqueIds = uniqueIds ?? new List<string>();
             _levelNames = levelNames ?? new List<string>();
             _levelIds = levelIds ?? new List<int>();
+            _levelNamesFromLevelIds = new List<string>();
             _activeViewOnly = activeViewOnly;
             _viewId = viewId;
             _familyName = familyName ?? "";
@@ -148,6 +150,7 @@ namespace RevitMCPCommandSet.Commands.View
             {
                 UIDocument uiDocument = app.ActiveUIDocument;
                 Document document = uiDocument.Document;
+                _levelNamesFromLevelIds = ResolveLevelNamesFromIds(document, _levelIds);
 
                 if (!HasAnySearchScope())
                 {
@@ -207,16 +210,18 @@ namespace RevitMCPCommandSet.Commands.View
                     warnings.Add("verified_visibility_expensive");
                 }
 
+                bool planCandidateStopped = false;
                 List<ElementSearchItem> items = new List<ElementSearchItem>();
                 foreach (Tuple<Element, SearchMatchSummary, Document, RevitLinkInstance> match in orderedMatches.Take(_limit))
                 {
-                    ElementSearchItem item = BuildSearchItem(match.Item3, uiDocument, match.Item1, match.Item4, match.Item2, deadlineUtc, ref partial, ref stoppedReason);
+                    ElementSearchItem item = BuildSearchItem(match.Item3, uiDocument, match.Item1, match.Item4, match.Item2, deadlineUtc, ref planCandidateStopped, ref stoppedReason);
                     if (item != null)
                     {
                         items.Add(item);
                     }
-                    if (partial)
+                    if (planCandidateStopped)
                     {
+                        partial = true;
                         break;
                     }
                 }
@@ -488,7 +493,7 @@ namespace RevitMCPCommandSet.Commands.View
                 }
 
                 scannedElementCount++;
-                if (!MatchesAdditionalFilters(searchDocument, element))
+                if (!MatchesAdditionalFilters(searchDocument, element, linkInstance != null))
                 {
                     continue;
                 }
@@ -537,7 +542,7 @@ namespace RevitMCPCommandSet.Commands.View
                 warnings.Add("Category names could not be mapped to BuiltInCategory; falling back to post-filter category matching.");
             }
 
-            List<ElementId> levelFilterIds = ResolveCollectorLevelFilterIds(searchDocument);
+            List<ElementId> levelFilterIds = ResolveCollectorLevelFilterIds(searchDocument, linkInstance != null);
             if (levelFilterIds.Count > 0)
             {
                 ElementFilter levelFilter = BuildLevelElementFilter(levelFilterIds);
@@ -557,26 +562,30 @@ namespace RevitMCPCommandSet.Commands.View
             return collector.WhereElementIsNotElementType();
         }
 
-        private List<ElementId> ResolveCollectorLevelFilterIds(Document searchDocument)
+        private List<ElementId> ResolveCollectorLevelFilterIds(Document searchDocument, bool linkedDocument)
         {
             HashSet<int> seen = new HashSet<int>();
             List<ElementId> levelIds = new List<ElementId>();
 
-            foreach (int id in _levelIds)
+            if (!linkedDocument)
             {
-                if (id <= 0 || seen.Contains(id))
+                foreach (int id in _levelIds)
                 {
-                    continue;
-                }
-                Element level = searchDocument.GetElement(new ElementId(id));
-                if (level is Level)
-                {
-                    seen.Add(id);
-                    levelIds.Add(new ElementId(id));
+                    if (id <= 0 || seen.Contains(id))
+                    {
+                        continue;
+                    }
+                    Element level = searchDocument.GetElement(new ElementId(id));
+                    if (level is Level)
+                    {
+                        seen.Add(id);
+                        levelIds.Add(new ElementId(id));
+                    }
                 }
             }
 
-            if (_levelNames.Count == 0)
+            List<string> levelNameFilters = GetEffectiveLevelNameFilters(linkedDocument);
+            if (levelNameFilters.Count == 0)
             {
                 return levelIds;
             }
@@ -588,7 +597,7 @@ namespace RevitMCPCommandSet.Commands.View
                     .Cast<Level>();
                 foreach (Level level in levels)
                 {
-                    if (level == null || !ContainsAny(level.Name, _levelNames))
+                    if (level == null || !ContainsAny(level.Name, levelNameFilters))
                     {
                         continue;
                     }
@@ -623,6 +632,55 @@ namespace RevitMCPCommandSet.Commands.View
                 .Select(levelId => (ElementFilter)new ElementLevelFilter(levelId))
                 .ToList();
             return new LogicalOrFilter(filters);
+        }
+
+        private static List<string> ResolveLevelNamesFromIds(Document document, List<int> levelIds)
+        {
+            List<string> names = new List<string>();
+            if (document == null || levelIds == null || levelIds.Count == 0)
+            {
+                return names;
+            }
+
+            foreach (int id in levelIds)
+            {
+                if (id <= 0)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    Element level = document.GetElement(new ElementId(id));
+                    if (level is Level && !string.IsNullOrWhiteSpace(level.Name) && !names.Contains(level.Name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        names.Add(level.Name);
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            return names;
+        }
+
+        private List<string> GetEffectiveLevelNameFilters(bool linkedDocument)
+        {
+            if (!linkedDocument)
+            {
+                return _levelNames;
+            }
+
+            List<string> names = new List<string>();
+            foreach (string name in _levelNames.Concat(_levelNamesFromLevelIds))
+            {
+                if (!string.IsNullOrWhiteSpace(name) && !names.Contains(name, StringComparer.OrdinalIgnoreCase))
+                {
+                    names.Add(name);
+                }
+            }
+            return names;
         }
 
         private void SearchLinkedDocuments(
@@ -699,7 +757,7 @@ namespace RevitMCPCommandSet.Commands.View
             matches.Add(Tuple.Create(element, match, searchDocument, linkInstance));
         }
 
-        private bool MatchesAdditionalFilters(Document searchDocument, Element element)
+        private bool MatchesAdditionalFilters(Document searchDocument, Element element, bool linkedDocument)
         {
             if (element == null)
             {
@@ -711,7 +769,15 @@ namespace RevitMCPCommandSet.Commands.View
                 ElementId levelId;
                 string levelName;
                 ElementDiscoveryHelpers.ResolveElementLevel(searchDocument, element, out levelId, out levelName);
-                if (_levelIds.Count > 0)
+                if (linkedDocument)
+                {
+                    List<string> levelNameFilters = GetEffectiveLevelNameFilters(true);
+                    if (levelNameFilters.Count == 0 || !ContainsAny(levelName, levelNameFilters))
+                    {
+                        return false;
+                    }
+                }
+                else if (_levelIds.Count > 0)
                 {
                     int resolvedLevelId = levelId != null ? levelId.GetIdValue() : -1;
                     if (!_levelIds.Contains(resolvedLevelId))
@@ -719,7 +785,7 @@ namespace RevitMCPCommandSet.Commands.View
                         return false;
                     }
                 }
-                if (_levelNames.Count > 0 && !ContainsAny(levelName, _levelNames))
+                if (!linkedDocument && _levelNames.Count > 0 && !ContainsAny(levelName, _levelNames))
                 {
                     return false;
                 }
@@ -898,6 +964,7 @@ namespace RevitMCPCommandSet.Commands.View
                 categoryNames = _categoryNames,
                 levelNames = _levelNames,
                 levelIds = _levelIds,
+                levelNamesFromLevelIds = _levelNamesFromLevelIds,
                 activeViewOnly = _activeViewOnly,
                 viewId = _viewId,
                 familyName = _familyName,
