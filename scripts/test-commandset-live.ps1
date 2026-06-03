@@ -396,6 +396,24 @@ if ([bool]$budgetProbe.partial) {
     Assert-True ([int]$budgetProbe.scannedElementCount -le 1) "Budgeted find_elements should stop at the configured scan cap."
 }
 
+Write-Host "Test find_elements linkedOnly exact-id guard"
+$linkedOnlyExactProbe = Invoke-FindElements `
+    -TaskName "$prefix find linked exact guard" `
+    -Params ([ordered]@{
+        elementIds = @(1)
+        linkScope = "linkedOnly"
+        searchBudget = "fast"
+        maxElementsScanned = 10
+        maxElapsedMs = 1000
+        timeoutMs = 5000
+        limit = 1
+    })
+Assert-Equal ([bool]$linkedOnlyExactProbe.success) $true "linkedOnly exact-id find_elements should return a protected result, not a transport failure."
+Assert-Equal ([bool]$linkedOnlyExactProbe.guarded) $true "linkedOnly exact-id find_elements should be guarded."
+Assert-Equal ([string]$linkedOnlyExactProbe.state) "guarded" "linkedOnly exact-id guard state changed."
+Assert-Equal ([string]$linkedOnlyExactProbe.reason) "needs_scope" "linkedOnly exact-id guard reason changed."
+Assert-Equal ([int]$linkedOnlyExactProbe.scannedElementCount) 0 "linkedOnly exact-id guard should not scan host or linked documents."
+
 Write-Host "Test runtime MEP-aware find_elements policy"
 Assert-RuntimeFindElementsPolicy
 

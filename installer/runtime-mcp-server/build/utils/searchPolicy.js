@@ -82,6 +82,35 @@ function normalizeText(value) {
         .replace(/\s+/g, " ")
         .trim();
 }
+function normalizeSearchFragment(value) {
+    return value
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .replace(/ı/g, "i")
+        .replace(/İ/g, "I")
+        .toLowerCase();
+}
+function normalizeWithSourceIndex(value) {
+    const normalizedChars = [];
+    const sourceRanges = [];
+    for (let index = 0; index < value.length;) {
+        const codePoint = value.codePointAt(index);
+        if (codePoint === undefined)
+            break;
+        const original = String.fromCodePoint(codePoint);
+        const nextIndex = index + original.length;
+        const normalized = normalizeSearchFragment(original);
+        for (const char of normalized) {
+            normalizedChars.push(char);
+            sourceRanges.push([index, nextIndex]);
+        }
+        index = nextIndex;
+    }
+    return {
+        text: normalizedChars.join(""),
+        sourceRanges,
+    };
+}
 function uniqueStrings(values) {
     const seen = new Set();
     const result = [];
@@ -112,12 +141,31 @@ function toPositiveInt(value, fallback, min, max) {
     return Math.max(min, Math.min(max, parsed));
 }
 function stripConceptTerms(query, matchedTerms) {
-    let effective = query;
+    const normalizedQuery = normalizeWithSourceIndex(query);
+    const deleteSourceChars = new Array(query.length).fill(false);
     for (const term of matchedTerms.sort((a, b) => b.length - a.length)) {
-        const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-        effective = effective.replace(new RegExp(`\\b${escaped}\\b`, "ig"), " ");
+        const normalizedTerm = normalizeWithSourceIndex(term).text;
+        if (!normalizedTerm)
+            continue;
+        const escaped = normalizedTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+        const regex = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "gu");
+        let match;
+        while ((match = regex.exec(normalizedQuery.text)) !== null) {
+            for (let index = match.index; index < regex.lastIndex; index++) {
+                const range = normalizedQuery.sourceRanges[index];
+                if (!range)
+                    continue;
+                for (let sourceIndex = range[0]; sourceIndex < range[1]; sourceIndex++) {
+                    deleteSourceChars[sourceIndex] = true;
+                }
+            }
+        }
     }
-    return effective.replace(/\s+/g, " ").trim();
+    let result = "";
+    for (let index = 0; index < query.length; index++) {
+        result += deleteSourceChars[index] ? " " : query[index];
+    }
+    return result.replace(/\s+/g, " ").trim();
 }
 function inferScopeFromQuery(query) {
     const normalizedQuery = normalizeText(query);
@@ -203,6 +251,25 @@ function hasBoundedScope(args = {}, effectiveCategoryNames = []) {
         (Array.isArray(args.worksetNames) && args.worksetNames.length > 0) ||
         (Array.isArray(args.elementIds) && args.elementIds.length > 0) ||
         (Array.isArray(args.uniqueIds) && args.uniqueIds.length > 0));
+}
+function hasNonEmptyArrayValue(value) {
+    return Array.isArray(value) && value.some((item) => String(item ?? "").trim());
+}
+function hasLinkedExactUniqueIdOnlyScope(args, linkScope, originalQuery, effectiveCategoryNames) {
+    return linkScope !== "hostOnly" &&
+        hasNonEmptyArrayValue(args.uniqueIds) &&
+        !hasNonEmptyArrayValue(args.elementIds) &&
+        !originalQuery &&
+        effectiveCategoryNames.length === 0 &&
+        args.activeViewOnly !== true &&
+        !args.viewId &&
+        !hasNonEmptyArrayValue(args.levelIds) &&
+        !hasNonEmptyArrayValue(args.levelNames) &&
+        !args.familyName &&
+        !args.typeName &&
+        !args.systemName &&
+        !hasNonEmptyArrayValue(args.worksetIds) &&
+        !hasNonEmptyArrayValue(args.worksetNames);
 }
 function isGenericUnscopedQuery(query) {
     const trimmed = String(query || "").trim();
@@ -300,7 +367,8 @@ export function buildFindElementsSearchPolicy(args = {}) {
     const boundedScope = hasBoundedScope(args, effectiveCategoryNames);
     const linkScope = String(args.linkScope || "hostOnly");
     const allowExpensiveSearch = args.allowExpensiveSearch === true || searchBudget === "deep";
-    const broadLinkedSearch = linkScope !== "hostOnly" && !allowExpensiveSearch;
+    const linkedExactUniqueIdOnlyScope = hasLinkedExactUniqueIdOnlyScope(args, linkScope, originalQuery, effectiveCategoryNames);
+    const broadLinkedSearch = linkScope !== "hostOnly" && !allowExpensiveSearch && !linkedExactUniqueIdOnlyScope;
     const verifiedBroadSearch = String(args.planCandidateMode || "").toLowerCase() === "verified" && !boundedScope;
     const riskPolicy = buildSearchRiskPolicy(args, {
         originalQuery,
