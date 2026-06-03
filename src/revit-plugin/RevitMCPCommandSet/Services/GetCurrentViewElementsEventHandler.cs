@@ -92,11 +92,14 @@ namespace RevitMCPCommandSet.Services
                 }
 
                 // Read all elements visible to the active view collector.
-                var collector = new FilteredElementCollector(doc, activeView.Id)
-                    .WhereElementIsNotElementType();
+                IList<Element> elements;
+                using (var collector = new FilteredElementCollector(doc, activeView.Id))
+                {
+                    collector.WhereElementIsNotElementType();
 
-                // Materialize all candidate elements.
-                IList<Element> elements = collector.ToElements();
+                    // Materialize all candidate elements.
+                    elements = collector.ToElements();
+                }
 
                 // Filter by requested categories.
                 if (allCategories.Count > 0)
@@ -114,10 +117,13 @@ namespace RevitMCPCommandSet.Services
                     if (builtInCategories.Count > 0)
                     {
                         ElementMulticategoryFilter categoryFilter = new ElementMulticategoryFilter(builtInCategories);
-                        elements = new FilteredElementCollector(doc, activeView.Id)
-                            .WhereElementIsNotElementType()
-                            .WherePasses(categoryFilter)
-                            .ToElements();
+                        using (var categoryCollector = new FilteredElementCollector(doc, activeView.Id))
+                        {
+                            elements = categoryCollector
+                                .WhereElementIsNotElementType()
+                                .WherePasses(categoryFilter)
+                                .ToElements();
+                        }
                     }
                 }
 
@@ -147,6 +153,12 @@ namespace RevitMCPCommandSet.Services
                     Properties = GetElementProperties(e)
                 }).ToList();
 
+                int totalElementsInView;
+                using (var totalCollector = new FilteredElementCollector(doc, activeView.Id))
+                {
+                    totalElementsInView = totalCollector.GetElementCount();
+                }
+
                 ResultInfo = new ViewElementsResult
                 {
 #if REVIT2024_OR_GREATER
@@ -155,7 +167,7 @@ namespace RevitMCPCommandSet.Services
                     ViewId = activeView.Id.IntegerValue,
 #endif
                     ViewName = activeView.Name,
-                    TotalElementsInView = new FilteredElementCollector(doc, activeView.Id).GetElementCount(),
+                    TotalElementsInView = totalElementsInView,
                     FilteredElementCount = elementInfos.Count,
                     Elements = elementInfos
                 };

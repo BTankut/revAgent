@@ -228,11 +228,16 @@ namespace RevitMCPCommandSet.Commands.View
                 return false;
             }
 
-            IEnumerable<Autodesk.Revit.DB.View> views =
-                new FilteredElementCollector(document)
+            List<Autodesk.Revit.DB.View> viewElements;
+            using (FilteredElementCollector viewCollector = new FilteredElementCollector(document))
+            {
+                viewElements = viewCollector
                     .WhereElementIsNotElementType()
                     .ToElements()
-                    .OfType<Autodesk.Revit.DB.View>();
+                    .OfType<Autodesk.Revit.DB.View>()
+                    .ToList();
+            }
+            IEnumerable<Autodesk.Revit.DB.View> views = viewElements;
 
             if (!string.IsNullOrWhiteSpace(viewType))
             {
@@ -340,14 +345,17 @@ namespace RevitMCPCommandSet.Commands.View
                 ? "Revit MCP 3D Focus"
                 : requestedName.Trim();
 
-            HashSet<string> names =
-                new HashSet<string>(
-                    new FilteredElementCollector(document)
-                        .WhereElementIsNotElementType()
-                        .ToElements()
-                        .OfType<Autodesk.Revit.DB.View>()
-                        .Select(v => v.Name),
-                    StringComparer.OrdinalIgnoreCase);
+            List<string> existingViewNames;
+            using (FilteredElementCollector viewCollector = new FilteredElementCollector(document))
+            {
+                existingViewNames = viewCollector
+                    .WhereElementIsNotElementType()
+                    .ToElements()
+                    .OfType<Autodesk.Revit.DB.View>()
+                    .Select(v => v.Name)
+                    .ToList();
+            }
+            HashSet<string> names = new HashSet<string>(existingViewNames, StringComparer.OrdinalIgnoreCase);
 
             if (!names.Contains(baseName))
             {

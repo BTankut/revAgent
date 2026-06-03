@@ -9,10 +9,13 @@ All notable revAgent workstation deployment changes are tracked here.
   bridge fallback to metadata ranking when direct calls bypass the runtime
   guard.
 - Extended Revit-side elapsed-budget handling into plan visibility verification
-  and added API-level `ElementLevelFilter` prefiltering when level scope
-  resolves.
+  while keeping level filtering in the existing in-memory post-filter path for
+  MEP correctness.
 - Fixed the no-match `selectionHint` so zero-result searches no longer claim
   there is a top match.
+- Deferred API-level level prefiltering for MEP elements to a future change;
+  it needs a correctness-safe design for duct, pipe, flex, and other elements
+  whose level is resolved through fallback parameters.
 - Bumped the runtime tool surface version to
   `revit-mcp-runtime-tools.34` for verified plan visibility guard behavior.
 

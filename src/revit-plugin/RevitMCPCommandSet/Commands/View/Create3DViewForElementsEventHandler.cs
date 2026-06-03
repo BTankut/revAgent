@@ -291,13 +291,16 @@ namespace RevitMCPCommandSet.Commands.View
 
         private View3D FindExisting3DView(Document document, string viewName)
         {
-            return new FilteredElementCollector(document)
-                .WhereElementIsNotElementType()
-                .OfClass(typeof(View3D))
-                .Cast<View3D>()
-                .Where(v => !v.IsTemplate && string.Equals(v.Name, viewName, StringComparison.OrdinalIgnoreCase))
-                .OrderBy(v => v.Id.GetIdValue())
-                .FirstOrDefault();
+            using (FilteredElementCollector viewCollector = new FilteredElementCollector(document))
+            {
+                return viewCollector
+                    .WhereElementIsNotElementType()
+                    .OfClass(typeof(View3D))
+                    .Cast<View3D>()
+                    .Where(v => !v.IsTemplate && string.Equals(v.Name, viewName, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(v => v.Id.GetIdValue())
+                    .FirstOrDefault();
+            }
         }
 
         private View3D Create3DView(
@@ -318,11 +321,14 @@ namespace RevitMCPCommandSet.Commands.View
             {
                 transaction.Start();
 
-                ViewFamilyType viewFamilyType =
-                    new FilteredElementCollector(document)
+                ViewFamilyType viewFamilyType;
+                using (FilteredElementCollector viewFamilyTypeCollector = new FilteredElementCollector(document))
+                {
+                    viewFamilyType = viewFamilyTypeCollector
                         .OfClass(typeof(ViewFamilyType))
                         .Cast<ViewFamilyType>()
                         .FirstOrDefault(v => v.ViewFamily == ViewFamily.ThreeDimensional);
+                }
                 if (viewFamilyType == null)
                 {
                     throw new InvalidOperationException("No 3D ViewFamilyType was found in the active document.");

@@ -51,7 +51,7 @@ function addWriteSafetyGuidance(payload: any) {
 }
 
 export function registerFindElementsTool(server: ToolServer) {
-    server.tool("find_elements", "Find Revit elements by MEP-aware progressive discovery. The tool infers obvious engineering scope first, e.g. fan coil/FCU -> Mechanical Equipment, uses API-level category/view/level filters in the Revit bridge, keeps planCandidateMode=none by default, and asks for allowExpensiveSearch/searchBudget=deep before broad, linked, or verified visibility scans. Discovery-only: inspect exact elements and parameter schema before writes.", {
+    server.tool("find_elements", "Find Revit elements by MEP-aware progressive discovery. The tool infers obvious engineering scope first, e.g. fan coil/FCU -> Mechanical Equipment, uses API-level category/view filters plus safe in-memory level filters in the Revit bridge, keeps planCandidateMode=none by default, and asks for allowExpensiveSearch/searchBudget=deep before broad, linked, or verified visibility scans. Discovery-only: inspect exact elements and parameter schema before writes.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Text to search in id, unique id, name, category, family, type, mark, and comments."),

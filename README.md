@@ -667,8 +667,9 @@ full-view context exports.
 engineering terms such as fan coil/FCU, valve/vana, damper, duct, pipe,
 sprinkler, diffuser, pump, and AHU are inferred into bounded category scopes
 before the first search. The Revit bridge uses API-level category/view filters
-when available, applies API-level level filters when level scope resolves, tracks
-`scannedElementCount`, and can return partial results before the socket timeout.
+when available, keeps level filters in the correctness-safe in-memory
+post-filter path, tracks `scannedElementCount`, and can return partial results
+before the socket timeout.
 Keep `planCandidateMode="none"` for broad first-pass discovery; use `metadata`
 for quick same-level plan ranking. Use `verified` only for exact element ids or
 after the operator explicitly accepts the expensive visibility check with
