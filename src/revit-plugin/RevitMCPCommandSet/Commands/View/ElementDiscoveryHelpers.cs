@@ -411,16 +411,12 @@ namespace RevitMCPCommandSet.Commands.View
                 return candidates;
             }
 
-            List<ViewPlan> plans;
-            using (FilteredElementCollector planCollector = new FilteredElementCollector(document))
-            {
-                plans = planCollector
-                    .WhereElementIsNotElementType()
-                    .OfClass(typeof(ViewPlan))
-                    .Cast<ViewPlan>()
-                    .Where(v => !v.IsTemplate && v.GenLevel != null && v.GenLevel.Id.GetIdValue() == levelId.GetIdValue())
-                    .ToList();
-            }
+            List<ViewPlan> plans = new FilteredElementCollector(document)
+                .WhereElementIsNotElementType()
+                .OfClass(typeof(ViewPlan))
+                .Cast<ViewPlan>()
+                .Where(v => !v.IsTemplate && v.GenLevel != null && v.GenLevel.Id.GetIdValue() == levelId.GetIdValue())
+                .ToList();
 
             foreach (ViewPlan plan in plans)
             {

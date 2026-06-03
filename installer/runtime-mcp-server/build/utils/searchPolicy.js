@@ -375,7 +375,7 @@ export function buildFindElementsSearchPolicy(args = {}) {
     const linkedExactUniqueIdOnlyScope = hasLinkedExactUniqueIdOnlyScope(args, linkScope, originalQuery, effectiveCategoryNames);
     const broadLinkedSearch = linkScope !== "hostOnly" && !allowExpensiveSearch && !linkedExactUniqueIdOnlyScope;
     const planCandidateMode = String(args.planCandidateMode || (args.includePlanCandidates === true ? "verified" : "none")).toLowerCase();
-    const requestedVerifiedPlanCandidates = planCandidateMode === "verified";
+    const requestedVerifiedPlanCandidates = args.includePlanCandidates === true && planCandidateMode === "verified";
     const exactElementScope = hasNonEmptyArrayValue(args.elementIds) || hasNonEmptyArrayValue(args.uniqueIds);
     const verifiedBroadSearch = requestedVerifiedPlanCandidates && !boundedScope;
     const verifiedVisibilityExpensive = requestedVerifiedPlanCandidates && !exactElementScope;

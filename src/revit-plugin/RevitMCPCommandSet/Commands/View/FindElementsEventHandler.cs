@@ -431,51 +431,49 @@ namespace RevitMCPCommandSet.Commands.View
             ref bool partial,
             ref string stoppedReason)
         {
-            using (FilteredElementCollector linksCollector = new FilteredElementCollector(hostDocument))
+            FilteredElementCollector linksCollector = new FilteredElementCollector(hostDocument);
+            IEnumerable<RevitLinkInstance> links = linksCollector
+                .OfClass(typeof(RevitLinkInstance))
+                .OfType<RevitLinkInstance>();
+            foreach (RevitLinkInstance link in links)
             {
-                IEnumerable<RevitLinkInstance> links = linksCollector
-                    .OfClass(typeof(RevitLinkInstance))
-                    .OfType<RevitLinkInstance>();
-                foreach (RevitLinkInstance link in links)
+                Document linkDocument = null;
+                try
                 {
-                    Document linkDocument = null;
-                    try
-                    {
-                        linkDocument = link.GetLinkDocument();
-                    }
-                    catch
-                    {
-                    }
+                    linkDocument = link.GetLinkDocument();
+                }
+                catch
+                {
+                }
 
-                    if (linkDocument == null)
+                if (linkDocument == null)
+                {
+                    warnings.Add("Skipped unloaded or inaccessible Revit link: " + link.Name);
+                    continue;
+                }
+
+                foreach (string uniqueId in _uniqueIds)
+                {
+                    if (string.IsNullOrWhiteSpace(uniqueId))
                     {
-                        warnings.Add("Skipped unloaded or inaccessible Revit link: " + link.Name);
                         continue;
                     }
 
-                    foreach (string uniqueId in _uniqueIds)
+                    if (StopBudgetReached(scannedElementCount, deadlineUtc, out stoppedReason))
                     {
-                        if (string.IsNullOrWhiteSpace(uniqueId))
-                        {
-                            continue;
-                        }
-
-                        if (StopBudgetReached(scannedElementCount, deadlineUtc, out stoppedReason))
-                        {
-                            partial = true;
-                            return;
-                        }
-
-                        Element element = linkDocument.GetElement(uniqueId);
-                        if (element == null)
-                        {
-                            continue;
-                        }
-
-                        scannedElementCount++;
-                        candidateElementCount++;
-                        AddIfMatch(linkDocument, element, link, matches);
+                        partial = true;
+                        return;
                     }
+
+                    Element element = linkDocument.GetElement(uniqueId);
+                    if (element == null)
+                    {
+                        continue;
+                    }
+
+                    scannedElementCount++;
+                    candidateElementCount++;
+                    AddIfMatch(linkDocument, element, link, matches);
                 }
             }
         }
@@ -604,27 +602,25 @@ namespace RevitMCPCommandSet.Commands.View
                 return levelIds;
             }
 
-            using (FilteredElementCollector levelCollector = new FilteredElementCollector(searchDocument))
+            FilteredElementCollector levelCollector = new FilteredElementCollector(searchDocument);
+            IEnumerable<Level> levels = levelCollector
+                .OfClass(typeof(Level))
+                .Cast<Level>();
+            foreach (Level level in levels)
             {
-                IEnumerable<Level> levels = levelCollector
-                    .OfClass(typeof(Level))
-                    .Cast<Level>();
-                foreach (Level level in levels)
+                if (level == null || !MatchesCollectorLevelName(level.Name, linkedDocument))
                 {
-                    if (level == null || !MatchesCollectorLevelName(level.Name, linkedDocument))
-                    {
-                        continue;
-                    }
-
-                    int id = level.Id.GetIdValue();
-                    if (seen.Contains(id))
-                    {
-                        continue;
-                    }
-
-                    seen.Add(id);
-                    levelIds.Add(level.Id);
+                    continue;
                 }
+
+                int id = level.Id.GetIdValue();
+                if (seen.Contains(id))
+                {
+                    continue;
+                }
+
+                seen.Add(id);
+                levelIds.Add(level.Id);
             }
 
             return levelIds;
