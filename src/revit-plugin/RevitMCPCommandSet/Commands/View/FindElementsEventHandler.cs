@@ -44,6 +44,13 @@ namespace RevitMCPCommandSet.Commands.View
     public class FindElementsEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
     {
         private const int VerifiedPlanCandidateMaxMatchesWithoutApproval = 3;
+        private static readonly BuiltInParameter[] LevelFilterBuiltInParameters = new[]
+        {
+            BuiltInParameter.INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM,
+            BuiltInParameter.FAMILY_LEVEL_PARAM,
+            BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM,
+            BuiltInParameter.RBS_START_LEVEL_PARAM
+        };
         private readonly ManualResetEvent _resetEvent = new ManualResetEvent(false);
         private string _originalQuery;
         private string _query;
@@ -569,6 +576,11 @@ namespace RevitMCPCommandSet.Commands.View
             HashSet<int> seen = new HashSet<int>();
             List<ElementId> levelIds = new List<ElementId>();
 
+            if (searchDocument == null)
+            {
+                return levelIds;
+            }
+
             if (!linkedDocument)
             {
                 foreach (int id in _levelIds)
@@ -625,15 +637,57 @@ namespace RevitMCPCommandSet.Commands.View
                 return null;
             }
 
-            if (levelIds.Count == 1)
+            List<ElementFilter> filters = new List<ElementFilter>();
+            foreach (ElementId levelId in levelIds)
             {
-                return new ElementLevelFilter(levelIds[0]);
+                if (levelId == null || levelId == ElementId.InvalidElementId)
+                {
+                    continue;
+                }
+
+                List<ElementFilter> levelSourceFilters = new List<ElementFilter>
+                {
+                    new ElementLevelFilter(levelId)
+                };
+                foreach (BuiltInParameter builtInParameter in LevelFilterBuiltInParameters)
+                {
+                    ElementFilter parameterFilter = BuildLevelParameterElementFilter(builtInParameter, levelId);
+                    if (parameterFilter != null)
+                    {
+                        levelSourceFilters.Add(parameterFilter);
+                    }
+                }
+
+                filters.Add(levelSourceFilters.Count == 1
+                    ? levelSourceFilters[0]
+                    : (ElementFilter)new LogicalOrFilter(levelSourceFilters));
             }
 
-            List<ElementFilter> filters = levelIds
-                .Select(levelId => (ElementFilter)new ElementLevelFilter(levelId))
-                .ToList();
+            if (filters.Count == 0)
+            {
+                return null;
+            }
+
+            if (filters.Count == 1)
+            {
+                return filters[0];
+            }
+
             return new LogicalOrFilter(filters);
+        }
+
+        private static ElementFilter BuildLevelParameterElementFilter(BuiltInParameter builtInParameter, ElementId levelId)
+        {
+            try
+            {
+                ParameterValueProvider provider = new ParameterValueProvider(new ElementId(builtInParameter));
+                FilterElementIdRule rule = new FilterElementIdRule(provider, new FilterNumericEquals(), levelId);
+                return new ElementParameterFilter(rule);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static List<string> ResolveLevelNamesFromIds(Document document, List<int> levelIds)
@@ -960,7 +1014,18 @@ namespace RevitMCPCommandSet.Commands.View
                 return true;
             }
 
+            if (IsExactTargetVerifiedMatchSet(matchCount))
+            {
+                return true;
+            }
+
             return matchCount <= VerifiedPlanCandidateMaxMatchesWithoutApproval;
+        }
+
+        private bool IsExactTargetVerifiedMatchSet(int matchCount)
+        {
+            int exactTargetCount = _elementIds.Count + _uniqueIds.Count;
+            return exactTargetCount > 0 && matchCount <= exactTargetCount;
         }
 
         private object BuildEffectiveScope()

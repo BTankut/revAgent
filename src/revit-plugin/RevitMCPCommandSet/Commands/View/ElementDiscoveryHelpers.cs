@@ -161,7 +161,7 @@ namespace RevitMCPCommandSet.Commands.View
             planCandidateBudgetStopped = false;
             planCandidateStoppedReason = "";
 
-            if (element == null)
+            if (document == null || element == null)
             {
                 return null;
             }
@@ -304,7 +304,7 @@ namespace RevitMCPCommandSet.Commands.View
             levelId = ElementId.InvalidElementId;
             levelName = "";
 
-            if (element == null)
+            if (document == null || element == null)
             {
                 return;
             }
@@ -394,6 +394,11 @@ namespace RevitMCPCommandSet.Commands.View
         {
             budgetStopped = false;
             stoppedReason = "";
+
+            if (document == null)
+            {
+                return new List<PlanCandidateSummary>();
+            }
 
             HashSet<int> openViewIds = GetOpenViewIds(uiDocument);
             int activeViewId = document.ActiveView != null
