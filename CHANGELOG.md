@@ -4,6 +4,21 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added large-model progressive search hardening for revAgent element, sheet,
+  and schedule discovery: MEP-aware category inference for engineering terms,
+  explicit search budgets and `allowExpensiveSearch`, Revit-side category,
+  active-view, link-scope, workset, family/type/system, and level filters,
+  partial results before socket timeout, guarded `needs_scope` fallbacks, and
+  search-policy telemetry/dashboard coverage.
+- Changed `get_revit_session_context` to default to a minimal context so large
+  project document checks do not perform expensive MEP category and linked
+  room/space summaries unless `detailLevel="counts"` or `full` is requested.
+- Added large-model guard policy to `inspect_sheet_text` and
+  `inspect_schedules`, requiring bounded sheet/schedule scope or explicit
+  `allowExpensiveSearch=true` before broad project-wide text and cell scans.
+- Bumped the runtime tool surface version to
+  `revit-mcp-runtime-tools.33` for the large-model search policy, expanded
+  `find_elements` filters/budgets, and lightweight session context default.
 - Retired completed planning and migration documents from the active docs set,
   moved durable architecture notes into the living README/runbook/platform docs,
   and replaced release-manifest tracking of retired docs with current
