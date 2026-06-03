@@ -634,7 +634,7 @@ small production surface instead of many narrow one-off commands.
 | --- | --- | --- |
 | Instance and status | `list_revit_instances`, `get_revit_mcp_status` | Read-only. `get_revit_mcp_status` is the only runtime tool intended to run while another Revit task is active. |
 | Dynamic execution | `send_code_to_revit`, `send_code_to_revit_safe` | Raw `send_code_to_revit` can write if the supplied C# writes. `transactionMode: "auto"` opens a wrapper-managed transaction and guards manual transaction snippets; `transactionMode: "none"` executes without an outer transaction. `send_code_to_revit_safe` is for read/preview work, rejects write-looking snippets, and uses `none`. |
-| Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_sheet_text`, `inspect_schedules`, `inspect_parameter_schema` | Read-only model/session/element/sheet/schedule/parameter inspection before engineering decisions or writes. `get_active_view_context` reports both sheet `viewports` and `scheduleSheetInstances`. `inspect_sheet_text` is the bounded DrawingSheet text-note and placed-schedule inventory path for large projects and should be used instead of broad custom C# sheet scans. `inspect_schedules` is the bounded schedule name/cell inspection path for large projects and should be used instead of broad custom C# schedule scans. |
+| Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_sheet_text`, `inspect_schedules`, `inspect_parameter_schema` | Read-only model/session/element/sheet/schedule/parameter inspection before engineering decisions or writes. `get_revit_session_context` defaults to `detailLevel="minimal"` so document checks do not perform heavy category or linked room/space counts. `get_active_view_context` reports both sheet `viewports` and `scheduleSheetInstances`. `inspect_sheet_text` is the bounded DrawingSheet text-note and placed-schedule inventory path for large projects and should be used instead of broad custom C# sheet scans. `inspect_schedules` is the bounded schedule name/cell inspection path for large projects and should be used instead of broad custom C# schedule scans. |
 | Controlled data writes | `set_element_parameter`, `set_schedule_cells`, `set_schedule_cells_by_text` | `set_element_parameter` is the production-safe single-parameter set/clear path. It defaults to `mode="dryRun"` and `operation="set"`, performs exact `inspect_parameter_schema`-style identity resolution, blocks duplicate display names/read-only parameters/type writes without explicit approval, commits only with `mode="commit"`, and verifies the value by reading it back. `operation="clear"` attempts Revit `Parameter.ClearValue` for a true no-value state and reports `clear_value_not_supported` instead of faking clear with an empty string when Revit does not support it. `set_schedule_cells` writes exact schedule cells only by `scheduleId`, `section`, `row`, and `column`; it defaults to dry-run, can require `expectedCurrentText`, guards non-writable standard schedule body cells as `non_writable_standard_body_cell`, commits through the wrapper transaction, and verifies committed cell text. `set_schedule_cells_by_text` is the higher-level schedule workflow for bounded sheet/schedule scope plus row-text matching; it blocks ambiguous matches by default, supports `expectedCurrentText`, defaults to dry-run, guards the same standard body-cell restriction, and verifies commit readback. |
 | Live view navigation | `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. |
 | View-data writes | `section_box_elements`, `create_3d_view_for_elements` | Can modify project view data by applying section boxes or creating/reusing 3D review views. Use explicit intent and verify afterward. |
@@ -663,9 +663,19 @@ When element ids are supplied for evidence, an all-missing target set is
 guarded by default; request `allowFullViewFallback=true` only for deliberate
 full-view context exports.
 
-`find_elements` is discovery-only. Treat its compact response as insufficient
-for writes until `inspect_elements` and `inspect_parameter_schema` have
-confirmed the exact element and stable parameter identity. Use
+`find_elements` is discovery-only. It is also progressive and MEP-aware: obvious
+engineering terms such as fan coil/FCU, valve/vana, damper, duct, pipe,
+sprinkler, diffuser, pump, and AHU are inferred into bounded category scopes
+before the first search. The Revit bridge uses API-level category/view filters
+when available, tracks `scannedElementCount`, and can return partial results
+before the socket timeout. Keep `planCandidateMode="none"` for broad first-pass
+discovery; use `metadata` or `verified` only after candidates are narrow enough
+to justify plan search cost. Use `searchBudget="fast"` for routine discovery,
+then add `levelNames`, `activeViewOnly`, family/type/system/workset filters, or
+`allowExpensiveSearch=true` for deliberate deeper searches. Treat its compact
+response as insufficient for writes until `inspect_elements` and
+`inspect_parameter_schema` have confirmed the exact element and stable
+parameter identity. Use
 `set_element_parameter` for ordinary parameter writes. It may accept a visible
 parameter name as the user's target, but it enumerates the schema first and
 will not write through a direct display-name shortcut; duplicate display names
@@ -678,11 +688,14 @@ For sheet text work, use `inspect_sheet_text` before raw dynamic code. It
 performs read-only bounded DrawingSheet text-note search and placed schedule
 inventory. Start with `sheetQuery` or exact `sheetIds`; enable
 `scanScheduleCells` only when the target text may be inside placed schedules.
+Project-wide text or placed-schedule cell scans require
+`allowExpensiveSearch=true`.
 
 For schedule work, use `inspect_schedules` before raw dynamic code. It performs
 read-only bounded schedule discovery and cell inspection with `nameQuery`,
 `cellQuery`, `scheduleIds`, section selection, and row/column limits. In large
-projects, avoid broad cell scans without `nameQuery` or explicit `scheduleIds`.
+projects, avoid broad cell scans without `nameQuery` or explicit `scheduleIds`
+unless the operator explicitly accepts the cost with `allowExpensiveSearch=true`.
 For schedule text edits, use `set_schedule_cells` after exact row/column targets
 are known. When the work starts from a visible row label or sheet/schedule text
 search, use `set_schedule_cells_by_text`: bound it with `sheetQuery`,

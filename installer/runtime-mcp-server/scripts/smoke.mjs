@@ -19,6 +19,9 @@ import {
   summarizeTelemetryParams,
   summarizeTelemetryResponse,
 } from "../build/utils/telemetry.js";
+import {
+  buildFindElementsSearchPolicy,
+} from "../build/utils/searchPolicy.js";
 
 const tools = new Map();
 const server = {
@@ -106,13 +109,19 @@ const setParameterDescription = tools.get("set_element_parameter").description;
 assert.match(setParameterDescription, /PRODUCTION_PARAMETER_WRITE/);
 assert.match(setParameterDescription, /Never writes by visible display name alone/);
 assert.match(setParameterDescription, /Defaults to dryRun/);
+const findElementsDescription = tools.get("find_elements").description;
+assert.match(findElementsDescription, /MEP-aware progressive discovery/);
+assert.match(findElementsDescription, /fan coil\/FCU -> Mechanical Equipment/);
+assert.match(findElementsDescription, /allowExpensiveSearch/);
 const inspectSchedulesDescription = tools.get("inspect_schedules").description;
 assert.match(inspectSchedulesDescription, /SCHEDULE_INSPECTION_READ_ONLY/);
 assert.match(inspectSchedulesDescription, /large models/);
+assert.match(inspectSchedulesDescription, /allowExpensiveSearch=true/);
 assert.match(inspectSchedulesDescription, /generic send_code_to_revit/);
 const inspectSheetTextDescription = tools.get("inspect_sheet_text").description;
 assert.match(inspectSheetTextDescription, /SHEET_TEXT_INSPECTION_READ_ONLY/);
 assert.match(inspectSheetTextDescription, /DrawingSheet/);
+assert.match(inspectSheetTextDescription, /allowExpensiveSearch=true/);
 assert.match(inspectSheetTextDescription, /generic send_code_to_revit/);
 const setScheduleCellsDescription = tools.get("set_schedule_cells").description;
 assert.match(setScheduleCellsDescription, /PRODUCTION_SCHEDULE_CELL_WRITE/);
@@ -160,6 +169,39 @@ assert.equal(
   chooseExpectedToolForIntent("bu eleman için rapora PNG görsel çıktı al"),
   "export_revit_coordination_image",
 );
+
+const inferredFindPolicy = buildFindElementsSearchPolicy({ query: "MTL fan coil" });
+assert.equal(inferredFindPolicy.guarded, false);
+assert.equal(inferredFindPolicy.effectiveQuery, "MTL");
+assert.deepEqual(inferredFindPolicy.effectiveCategoryNames, ["Mechanical Equipment"]);
+assert.equal(inferredFindPolicy.searchBudget, "fast");
+assert.equal(inferredFindPolicy.maxElapsedMs < inferredFindPolicy.timeoutMs, true);
+assert.equal(inferredFindPolicy.riskPolicy.riskLevel, "low");
+assert.equal(inferredFindPolicy.riskPolicy.requiresUserControl, false);
+assert.deepEqual(inferredFindPolicy.riskPolicy.recommendedFirstScope, ["categoryNames=Mechanical Equipment"]);
+
+const broadFindPolicy = buildFindElementsSearchPolicy({ query: "MTL" });
+assert.equal(broadFindPolicy.guarded, true);
+assert.equal(broadFindPolicy.reason, "needs_scope");
+assert.equal(broadFindPolicy.riskPolicy.riskLevel, "medium");
+assert.equal(broadFindPolicy.riskPolicy.requiresUserControl, true);
+
+const largeSignalPolicy = buildFindElementsSearchPolicy({
+  query: "equipment tag",
+  modelSignals: { linkCount: 50, worksetCount: 45 },
+});
+assert.equal(largeSignalPolicy.guarded, true);
+assert.equal(largeSignalPolicy.riskPolicy.riskLevel, "high");
+assert.equal(largeSignalPolicy.riskPolicy.reasons.includes("high_link_count"), true);
+assert.equal(largeSignalPolicy.riskPolicy.reasons.includes("high_workset_count"), true);
+
+const approvedLinkedPolicy = buildFindElementsSearchPolicy({
+  query: "MTL",
+  linkScope: "hostAndLinked",
+  allowExpensiveSearch: true,
+});
+assert.equal(approvedLinkedPolicy.guarded, false);
+assert.equal(approvedLinkedPolicy.riskPolicy.reasons.includes("operator_approved_expensive_search"), true);
 
 const normalized = normalizeRevitExecutionResponse({
   result: JSON.stringify({ success: true, count: 2 }),
@@ -217,6 +259,8 @@ const telemetryParamSummary = summarizeTelemetryParams({
   elementIds: [1, 2, 3],
   transactionMode: "none",
   query: "sensitive search text",
+  searchBudget: "fast",
+  linkScope: "hostOnly",
 });
 assert.equal(telemetryParamSummary.code.lineCount, 1);
 assert.equal(telemetryParamSummary.code.hasManualTransaction, true);
@@ -225,6 +269,8 @@ assert.equal(telemetryParamSummary.elementIds.count, 3);
 assert.equal(telemetryParamSummary.transactionMode, "none");
 assert.equal(typeof telemetryParamSummary.query.hash, "string");
 assert.equal(telemetryParamSummary.query.text, "sensitive search text");
+assert.equal(telemetryParamSummary.searchBudget, "fast");
+assert.equal(telemetryParamSummary.linkScope, "hostOnly");
 
 const scheduleWriteParamSummary = summarizeTelemetryParams({
   code: "TableSectionData sectionData = schedule.GetTableData().GetSectionData(SectionType.Body); sectionData.SetCellText(1, 2, \"R914X023\");",
@@ -268,6 +314,8 @@ const productionContext = extractProductionContext({
     taskName: "Find ducts on Level 02 Room 204",
     query: "supply duct room 204",
     categoryNames: ["Ducts"],
+    searchBudget: "fast",
+    linkScope: "hostOnly",
     elementIds: [101, 102],
   },
   response: {
@@ -278,6 +326,12 @@ const productionContext = extractProductionContext({
     ActiveView: { Id: 7, Name: "Level 02 - Mechanical", ViewType: "FloorPlan" },
     LevelName: "Level 02",
     SelectionIds: [101],
+    InferredScope: { categoryNames: ["Ducts"], residualQuery: "supply room 204" },
+    EffectiveScope: { categoryNames: ["Ducts"], linkScope: "hostOnly" },
+    RiskPolicy: { riskLevel: "low", recommendedFirstScope: ["categoryNames=Ducts"], requiresUserControl: false },
+    ScanPolicy: { searchBudget: "fast", maxElapsedMs: 4500, planCandidateMode: "none" },
+    ScannedElementCount: 18,
+    Partial: false,
     Elements: [
       { Id: 101, Name: "Supply Duct", Category: "Ducts", LevelName: "Level 02", RoomNumber: "204" },
     ],
@@ -294,6 +348,13 @@ assert.deepEqual(productionContext.elements.targetElementIds, [101, 102]);
 assert.deepEqual(productionContext.elements.selectionIds, [101]);
 assert.equal(productionContext.elements.disciplineHint, "mechanical_hvac");
 assert.equal(productionContext.elements.samples[0].roomNumber, "204");
+assert.equal(productionContext.search.searchBudget, "fast");
+assert.equal(productionContext.search.linkScope, "hostOnly");
+assert.equal(productionContext.search.riskLevel, "low");
+assert.equal(productionContext.search.requiresUserControl, false);
+assert.equal(productionContext.search.scannedElementCount, 18);
+assert.equal(productionContext.search.partial, false);
+assert.equal(productionContext.search.effectiveScope.categoryNames[0], "Ducts");
 
 const scheduleContext = extractProductionContext({
   sourceEventType: "mcp.tool",

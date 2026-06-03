@@ -561,6 +561,7 @@ function New-RawOperationBrief {
         guarded = Get-ReportValue -Object $operation -Name "guarded"
         state = Get-ReportValue -Object $operation -Name "state"
         errorMessage = Get-ReportValue -Object $operation -Name "errorMessage"
+        search = $null
     }
 }
 
@@ -577,6 +578,7 @@ function New-OperationBrief {
     $view = Get-ReportValue -Object $Event -Name "view"
     $location = Get-ReportValue -Object $Event -Name "location"
     $elements = Get-ReportValue -Object $Event -Name "elements"
+    $search = Get-ReportValue -Object $Event -Name "search"
     $activeView = Get-ReportValue -Object $view -Name "active"
     $contextText = Get-SummaryContextText -Operation $operation -Related $related -View $view -Elements $elements
     $levelName = Get-InferredLevelName -Current ([string](Get-ReportValue -Object $location -Name "levelName")) -ContextText $contextText
@@ -609,6 +611,20 @@ function New-OperationBrief {
         guarded = Get-ReportValue -Object $operation -Name "guarded"
         state = Get-ReportValue -Object $operation -Name "state"
         errorMessage = Get-ReportValue -Object $operation -Name "errorMessage"
+        search = if ($null -ne $search) {
+            [ordered]@{
+                searchBudget = Get-ReportValue -Object $search -Name "searchBudget"
+                linkScope = Get-ReportValue -Object $search -Name "linkScope"
+                planCandidateMode = Get-ReportValue -Object $search -Name "planCandidateMode"
+                allowExpensiveSearch = Get-ReportValue -Object $search -Name "allowExpensiveSearch"
+                scannedElementCount = Get-ReportValue -Object $search -Name "scannedElementCount"
+                partial = Get-ReportValue -Object $search -Name "partial"
+                scanStoppedReason = Get-ReportValue -Object $search -Name "scanStoppedReason"
+                needsScope = Get-ReportValue -Object $search -Name "needsScope"
+            }
+        } else {
+            $null
+        }
     }
 }
 
@@ -1116,6 +1132,33 @@ $taskNameSamples = @($taskNameCounts.GetEnumerator() |
         }
     })
 
+$searchPolicySamples = @($productionEvents |
+    Where-Object { $null -ne (Get-ReportValue -Object $_ -Name "search") } |
+    Select-Object -First $Top |
+    ForEach-Object {
+        $operation = Get-ReportValue -Object $_ -Name "operation"
+        $related = Get-ReportValue -Object $_ -Name "related"
+        $search = Get-ReportValue -Object $_ -Name "search"
+        [ordered]@{
+            timestampUtc = Get-ReportValue -Object $_ -Name "timestampUtc"
+            machineName = Get-ReportValue -Object $_ -Name "machineName"
+            userName = Get-ReportValue -Object $_ -Name "userName"
+            tool = Get-ReportValue -Object $related -Name "toolName"
+            taskName = Get-ReportValue -Object $operation -Name "taskName"
+            riskLevel = Get-ReportValue -Object $search -Name "riskLevel"
+            recommendedFirstScope = Get-ReportValue -Object $search -Name "recommendedFirstScope"
+            requiresUserControl = Get-ReportValue -Object $search -Name "requiresUserControl"
+            searchBudget = Get-ReportValue -Object $search -Name "searchBudget"
+            linkScope = Get-ReportValue -Object $search -Name "linkScope"
+            planCandidateMode = Get-ReportValue -Object $search -Name "planCandidateMode"
+            allowExpensiveSearch = Get-ReportValue -Object $search -Name "allowExpensiveSearch"
+            scannedElementCount = Get-ReportValue -Object $search -Name "scannedElementCount"
+            partial = Get-ReportValue -Object $search -Name "partial"
+            scanStoppedReason = Get-ReportValue -Object $search -Name "scanStoppedReason"
+            needsScope = Get-ReportValue -Object $search -Name "needsScope"
+        }
+    })
+
 $summary = [ordered]@{
     schemaVersion = "revagent.usage.summary.v1"
     dateUtc = $date.ToString("yyyy-MM-dd")
@@ -1145,6 +1188,7 @@ $summary = [ordered]@{
         byCategory = @(Convert-MetricMapToRows -Map $categoryMetrics -Limit $Top)
         generatedFileCount = $outputFileCount
         taskNameSamples = @($taskNameSamples)
+        searchPolicySamples = @($searchPolicySamples)
     }
     friction = [ordered]@{
         guarded = @($guardedOperations)

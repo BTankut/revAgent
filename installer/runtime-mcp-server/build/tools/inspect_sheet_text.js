@@ -382,7 +382,7 @@ catch (Exception ex)
 }`;
 }
 export function registerInspectSheetTextTool(server) {
-    server.tool("inspect_sheet_text", "[SHEET_TEXT_INSPECTION_READ_ONLY] Read-only bounded search of DrawingSheet text notes and placed schedule instances. Prefer this over generic send_code_to_revit for sheet text searches in large projects.", {
+    server.tool("inspect_sheet_text", "[SHEET_TEXT_INSPECTION_READ_ONLY] Read-only bounded search of DrawingSheet text notes and placed schedule instances. Prefer this over generic send_code_to_revit for sheet text searches in large projects. Use sheetQuery/sheetIds first; project-wide text or placed-schedule cell scans require allowExpensiveSearch=true.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Alias for sheetQuery. Matches sheet number and sheet name with Turkish/diacritic/Cyrillic-U normalization."),
@@ -392,6 +392,7 @@ export function registerInspectSheetTextTool(server) {
         includeTextNotes: z.boolean().optional().describe("Include bounded sheet TextNote results. Defaults true."),
         includeScheduleInstances: z.boolean().optional().describe("Include placed ScheduleSheetInstance entries on matching sheets. Defaults true."),
         scanScheduleCells: z.boolean().optional().describe("When true, search bounded body cells of placed schedules for textQuery. Defaults false to avoid broad scans."),
+        allowExpensiveSearch: z.boolean().optional().describe("Explicit approval for project-wide sheet text or placed-schedule cell scans without sheetIds/sheetQuery. Defaults false."),
         maxSheets: z.number().int().positive().max(200).optional().describe("Maximum sheets to inspect/return. Defaults 30."),
         maxTextNotesPerSheet: z.number().int().min(0).max(1000).optional().describe("Maximum matching text notes returned per sheet. Defaults 200."),
         maxScheduleInstancesPerSheet: z.number().int().min(0).max(300).optional().describe("Maximum schedule instances returned per sheet. Defaults 100."),
@@ -401,6 +402,27 @@ export function registerInspectSheetTextTool(server) {
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Socket timeout in milliseconds. Defaults 120000."),
     }, async (args) => {
         try {
+            const hasSheetScope = Boolean((Array.isArray(args.sheetIds) && args.sheetIds.length > 0) ||
+                String(args.sheetQuery || args.query || "").trim());
+            const hasTextQuery = Boolean(String(args.textQuery || "").trim());
+            const wantsBroadTextSearch = hasTextQuery && !hasSheetScope;
+            const wantsScheduleCellScan = args.scanScheduleCells === true;
+            if ((wantsBroadTextSearch || wantsScheduleCellScan) && !hasSheetScope && args.allowExpensiveSearch !== true) {
+                return formatJsonContent({
+                    success: true,
+                    guarded: true,
+                    state: "guarded",
+                    action: "inspect_sheet_text",
+                    reason: "needs_scope",
+                    message: "Project-wide sheet text or placed schedule cell scanning can be expensive in large models. First pass sheetQuery/sheetIds, or set allowExpensiveSearch=true.",
+                    suggestedNextScopes: ["sheetQuery", "sheetIds", "maxSheets", "scanScheduleCells=false", "allowExpensiveSearch"],
+                    scanPolicy: {
+                        allowExpensiveSearch: false,
+                        textQuery: hasTextQuery,
+                        scanScheduleCells: wantsScheduleCellScan,
+                    },
+                });
+            }
             const response = await executeRevitCode(buildInspectSheetTextCode(args), {
                 ...connectionOptionsFromArgs(args),
                 ...taskOptionsFromArgs(args, "Inspect Revit sheet text"),

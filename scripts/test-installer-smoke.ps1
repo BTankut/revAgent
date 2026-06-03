@@ -199,6 +199,10 @@ try {
     Assert-True ($liveCommandsetTest -match 'transactionMode none') "Live commandset integration gate must cover transactionMode none."
     Assert-True ($liveCommandsetTest -match 'manual_transaction_requires_transactionMode_none') "Live commandset integration gate must assert the manual transaction guard reason."
     Assert-True ($liveCommandsetTest -match 'Newtonsoft\.Json\.JsonConvert') "Live commandset integration gate must cover Newtonsoft dynamic compilation."
+    Assert-True ($liveCommandsetTest -match 'find_elements' -and $liveCommandsetTest -match 'needs_scope') "Live commandset integration gate must cover find_elements guarded needs_scope behavior."
+    Assert-True ($liveCommandsetTest -match 'Mechanical Equipment' -and $liveCommandsetTest -match 'scanPolicy\.searchBudget') "Live commandset integration gate must cover category-bounded find_elements search policy metadata."
+    Assert-True ($liveCommandsetTest -match 'scanStoppedReason' -and $liveCommandsetTest -match 'max_scanned') "Live commandset integration gate must cover bounded find_elements partial metadata."
+    Assert-True ($liveCommandsetTest -match 'MTL fan coil' -and $liveCommandsetTest -match 'live broad MTL guard proof') "Live commandset integration gate must cover runtime MEP inference and broad-query guard behavior."
     Assert-NoLocalizedRevitPluginSourceText -Root $RepoRoot
     $commandSetSourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet") -Recurse -File -Filter *.cs |
         Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } |
@@ -423,6 +427,7 @@ try {
     $findCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsCommand.cs")
     $findHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsEventHandler.cs")
     $findToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\find_elements.ts")
+    $searchPolicyCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\searchPolicy.ts")
     $inspectElementsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_elements.ts")
     $showPlan3dToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\show_element_in_plan_and_3d.ts")
     $sessionContextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_revit_session_context.ts")
@@ -461,10 +466,21 @@ try {
     Assert-True ($openPlanToolCode -match 'planCandidateMode: z\.enum\(\["metadataFirst", "verified"\]\)') "open_existing_plan_for_element_level tool must expose metadataFirst/verified plan selection."
     Assert-True ($openPlanToolCode -match 'maxMetadataVerifyCandidates: z\.number\(\)\.int\(\)\.min\(1\)\.max\(25\)') "open_existing_plan_for_element_level tool must expose a bounded metadata verification cap."
     Assert-True ($findToolCode -match 'planCandidateMode: z\.enum\(\["none", "metadata", "verified"\]\)') "find_elements must expose explicit plan candidate modes."
+    Assert-True ($findToolCode -match 'searchBudget: z\.enum\(\["fast", "balanced", "deep"\]\)') "find_elements must expose ergonomic searchBudget presets."
+    Assert-True ($findToolCode -match 'allowExpensiveSearch') "find_elements must expose explicit expensive-search approval."
+    Assert-True ($findToolCode -match 'modelSignals' -and $findToolCode -match 'cheap large-model signals') "find_elements must accept cheap prior model risk signals without collecting heavy counts."
+    Assert-True ($findToolCode -match 'buildFindElementsSearchPolicy') "find_elements must infer MEP search scope before calling Revit."
+    Assert-True ($findToolCode -match 'riskPolicy') "find_elements must return explicit search risk policy metadata."
     Assert-True ($findToolCode -match 'writeSafetyWarning') "find_elements compact output must make discovery-only write risk visible."
     Assert-True ($findToolCode -match 'builtInParameterId') "find_elements write guidance must require stable parameter identity before writes."
     Assert-True ($findCommandCode -match 'planCandidateMode != "none"') "find_elements command must keep plan candidate scans opt-in."
+    Assert-True ($findCommandCode -match 'maxElapsedMs' -and $findCommandCode -match 'timeoutMs - 1000') "find_elements command must keep Revit scan budget below socket timeout."
+    Assert-True ($findHandlerCode -match 'ElementMulticategoryFilter') "find_elements bridge must use API-level category filters instead of only in-memory category filtering."
+    Assert-True ($findHandlerCode -match 'ScannedElementCount' -and $findHandlerCode -match 'Partial' -and $findHandlerCode -match 'ScanStoppedReason') "find_elements bridge must report scan budget and partial-result state."
     Assert-True ($findHandlerCode -match 'No matching elements found\.') "find_elements no-match result must not say matching elements were found."
+    Assert-True ($searchPolicyCode -match 'riskLevel' -and $searchPolicyCode -match 'recommendedFirstScope' -and $searchPolicyCode -match 'requiresUserControl') "Search policy must expose risk level, first-scope recommendation, and user-control flag."
+    Assert-True ($discoveryCode -match 'ResolveBuiltInCategories') "Element discovery helper must map inferred MEP categories to BuiltInCategory filters."
+    Assert-True ($discoveryCode -match 'queryTokens:all') "Element discovery helper must support token-aware matching for mixed queries like MTL fan coil."
     Assert-True ($discoveryCode -match 'verifyVisibility \? element : null') "metadata plan candidates must avoid expensive per-view element visibility checks."
     Assert-True ($showPlan3dToolCode -match 'responseMode: z\.enum\(\["compact", "full"\]\)') "show_element_in_plan_and_3d must expose compact/full response modes."
     Assert-True ($showPlan3dToolCode -match 'responseMode: "compact"') "show_element_in_plan_and_3d must default successful responses to compact summaries."
@@ -492,6 +508,9 @@ try {
     Assert-True ($smartFocusToolCode -notmatch 'planFocus\.Success === false') "smart_focus_elements must not miss lower-case nested plan success=false values."
     Assert-True ($sessionContextToolCode -match 'apiProbeState') "Session context must move tool-probe modifiable state out of the document summary."
     Assert-True ($sessionContextToolCode -match 'documentIsModifiableDuringProbe') "Session context must label probe-time modifiable state clearly."
+    Assert-True ($sessionContextToolCode -match 'detailLevel: z\.enum\(\["minimal", "counts", "full"\]\)') "Session context must expose minimal/counts/full detail levels."
+    Assert-True ($sessionContextToolCode -match 'detailLevel \|\| "minimal"') "Session context must default to minimal detail for large-model document checks."
+    Assert-True ($sessionContextToolCode -match 'linked room/space counts require detailLevel=full') "Session context must keep linked room/space scans explicit."
     Assert-True ($sessionContextToolCode -notmatch 'apiProbeState\s*=\s*new\s*\{\s*isModifiable\s*=') "Session context must not expose apiProbeState.isModifiable."
     Assert-True ($activeViewContextToolCode -match 'ScheduleSheetInstance') "Active sheet context must inspect placed schedule instances."
     Assert-True ($activeViewContextToolCode -match 'scheduleSheetInstances') "Active sheet context must expose scheduleSheetInstances."
@@ -502,7 +521,7 @@ try {
     Assert-True ($statusToolCode -match 'runtimeVersion') "Status output must include the active runtime version."
     Assert-True ($statusToolCode -match 'schemaVersion') "Status output must include the status/schema version."
     Assert-True ($statusToolCode -match 'toolSurfaceVersion') "Status output must include the registered tool surface version."
-    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.32') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
+    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.33') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
     Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
     Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
@@ -555,10 +574,12 @@ try {
     Assert-True ($inspectSheetTextToolCode -match 'SHEET_TEXT_INSPECTION_READ_ONLY') "inspect_sheet_text must identify itself as a read-only sheet text inspection tool."
     Assert-True ($inspectSheetTextToolCode -match 'maxTextNotesPerSheet') "inspect_sheet_text must bound text-note reads by sheet."
     Assert-True ($inspectSheetTextToolCode -match 'scanScheduleCells') "inspect_sheet_text must keep placed schedule cell scanning explicit."
+    Assert-True ($inspectSheetTextToolCode -match 'allowExpensiveSearch' -and $inspectSheetTextToolCode -match 'reason: "needs_scope"') "inspect_sheet_text must guard project-wide broad scans without explicit approval."
     Assert-True ($inspectSheetTextToolCode -match 'generic send_code_to_revit') "inspect_sheet_text must steer agents away from broad custom C# sheet scans."
     Assert-True ($inspectSchedulesToolCode -match 'SCHEDULE_INSPECTION_READ_ONLY') "inspect_schedules must identify itself as a read-only schedule inspection tool."
     Assert-True ($inspectSchedulesToolCode -match 'maxRowsPerSection') "inspect_schedules must bound schedule cell reads by row limit."
     Assert-True ($inspectSchedulesToolCode -match 'maxColumnsPerSection') "inspect_schedules must bound schedule cell reads by column limit."
+    Assert-True ($inspectSchedulesToolCode -match 'allowExpensiveSearch' -and $inspectSchedulesToolCode -match 'reason: "needs_scope"') "inspect_schedules must guard broad cell scans without explicit approval."
     Assert-True ($inspectSchedulesToolCode -match 'Cell scan is bounded') "inspect_schedules must warn when broad cell scan is requested."
     Assert-True ($setScheduleCellsToolCode -match 'PRODUCTION_SCHEDULE_CELL_WRITE') "set_schedule_cells must identify itself as a production schedule-cell write tool."
     Assert-True ($setScheduleCellsToolCode -match 'Defaults to dryRun') "set_schedule_cells must default to dry-run behavior."

@@ -218,6 +218,19 @@ function Invoke-RevitCode {
     return Invoke-RevitMcpRequest -Method "send_code_to_revit" -Params $params
 }
 
+function Invoke-FindElements {
+    param(
+        [object]$Params,
+        [string]$TaskName
+    )
+
+    Assert-RevitMcpReady -NextCommand "find_elements" | Out-Null
+    if ($Params -is [System.Collections.IDictionary]) {
+        $Params["taskName"] = $TaskName
+    }
+    return Invoke-RevitMcpRequest -Method "find_elements" -Params $Params
+}
+
 function Assert-SuccessfulCodeResult {
     param(
         [object]$Result,
@@ -229,12 +242,162 @@ function Assert-SuccessfulCodeResult {
     Assert-Equal ([bool]$Result.guarded) $false "$CaseName should not be guarded."
 }
 
+function Assert-RuntimeFindElementsPolicy {
+    $runtimeRegisterPath = "C:\ProgramData\DPE\RevitMCP\runtime\build\tools\register.js"
+    Assert-True (Test-Path -LiteralPath $runtimeRegisterPath) "Installed runtime register.js was not found: $runtimeRegisterPath"
+
+    $env:REVAGENT_LIVE_RUNTIME_REGISTER = $runtimeRegisterPath
+$nodeScript = @'
+const { performance } = await import('node:perf_hooks');
+const { pathToFileURL } = await import('node:url');
+console.error = () => {};
+const registerUrl = pathToFileURL(process.env.REVAGENT_LIVE_RUNTIME_REGISTER).href;
+const { registerTools } = await import(registerUrl);
+const tools = new Map();
+await registerTools({ tool: (name, description, schema, handler) => tools.set(name, { description, schema, handler }) });
+const statusBefore = JSON.parse((await tools.get('get_revit_mcp_status').handler({ timeoutMs: 5000 })).content[0].text);
+const inferredStart = performance.now();
+const inferred = JSON.parse((await tools.get('find_elements').handler({
+  query: 'MTL fan coil',
+  searchBudget: 'fast',
+  planCandidateMode: 'none',
+  limit: 5,
+  taskName: 'live MTL fan coil inference proof'
+})).content[0].text);
+const inferredElapsedMs = Math.round(performance.now() - inferredStart);
+const statusAfterInferred = JSON.parse((await tools.get('get_revit_mcp_status').handler({ timeoutMs: 5000 })).content[0].text);
+const broadStart = performance.now();
+const broad = JSON.parse((await tools.get('find_elements').handler({
+  query: 'MTL',
+  searchBudget: 'fast',
+  planCandidateMode: 'none',
+  limit: 5,
+  taskName: 'live broad MTL guard proof'
+})).content[0].text);
+const broadElapsedMs = Math.round(performance.now() - broadStart);
+const statusAfterBroad = JSON.parse((await tools.get('get_revit_mcp_status').handler({ timeoutMs: 5000 })).content[0].text);
+console.log(JSON.stringify({
+  statusBefore: { recentHistoryCount: statusBefore.recentHistoryCount, activeTask: statusBefore.activeTask },
+  inferred: {
+    elapsedMs: inferredElapsedMs,
+    success: inferred.success,
+    guarded: inferred.guarded,
+    query: inferred.query,
+    categoryNames: inferred.categoryNames,
+    count: inferred.count,
+    scannedElementCount: inferred.scannedElementCount,
+    partial: inferred.partial,
+    planCandidateMode: inferred.planCandidateMode,
+    riskPolicy: inferred.riskPolicy
+  },
+  broad: {
+    elapsedMs: broadElapsedMs,
+    success: broad.success,
+    guarded: broad.guarded,
+    state: broad.state,
+    reason: broad.reason,
+    riskPolicy: broad.riskPolicy
+  },
+  history: {
+    afterInferred: statusAfterInferred.recentHistoryCount,
+    afterBroad: statusAfterBroad.recentHistoryCount,
+    activeTask: statusAfterBroad.activeTask
+  }
+}));
+'@
+
+    $nodeOutput = & node --input-type=module -e $nodeScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "Node runtime find_elements policy proof failed with exit code $LASTEXITCODE."
+    }
+
+    $proof = ($nodeOutput -join "`n") | ConvertFrom-Json
+    Assert-Equal ([bool]$proof.inferred.success) $true "Runtime MTL fan coil inference should succeed."
+    Assert-Equal ([bool]$proof.inferred.guarded) $false "Runtime MTL fan coil inference should not be guarded."
+    Assert-Equal ([string]$proof.inferred.query) "MTL" "Runtime MTL fan coil inference should strip the MEP concept token."
+    Assert-True (@($proof.inferred.categoryNames) -contains "Mechanical Equipment") "Runtime MTL fan coil inference should use Mechanical Equipment scope."
+    Assert-Equal ([string]$proof.inferred.planCandidateMode) "none" "Runtime inferred first pass should not request plan candidates."
+    Assert-Equal ([string]$proof.inferred.riskPolicy.riskLevel) "low" "Runtime inferred first pass should report low search risk."
+    Assert-Equal ([bool]$proof.inferred.riskPolicy.requiresUserControl) $false "Runtime inferred first pass should not require user control."
+    Assert-Equal ([bool]$proof.broad.success) $true "Runtime broad MTL guard should return a protected result."
+    Assert-Equal ([bool]$proof.broad.guarded) $true "Runtime broad MTL query should be guarded."
+    Assert-Equal ([string]$proof.broad.state) "guarded" "Runtime broad MTL guard state changed."
+    Assert-Equal ([string]$proof.broad.reason) "needs_scope" "Runtime broad MTL guard reason changed."
+    Assert-Equal ([bool]$proof.broad.riskPolicy.requiresUserControl) $true "Runtime broad MTL query should require user control."
+    Assert-Equal ([int]$proof.history.afterBroad) ([int]$proof.history.afterInferred) "Runtime broad guard should not add a Revit bridge task."
+    Assert-True ($null -eq $proof.history.activeTask) "Runtime find_elements policy proof should leave no active Revit task."
+}
+
 Write-Host "Live commandset integration target: $HostName`:$Port"
 
 $initialStatus = Assert-RevitMcpReady -NextCommand "live commandset tests"
 Assert-True ($initialStatus.service.isRunning -eq $true) "Revit MCP service did not report running."
 
 $prefix = "revAgent commandset live " + (Get-Date -Format "HHmmss")
+
+Write-Host "Test find_elements guarded no-scope contract"
+$noScopeProbe = Invoke-FindElements `
+    -TaskName "$prefix find no scope" `
+    -Params ([ordered]@{
+        searchBudget = "fast"
+        maxElementsScanned = 10
+        maxElapsedMs = 1000
+        timeoutMs = 5000
+        limit = 1
+    })
+Assert-Equal ([bool]$noScopeProbe.success) $true "No-scope find_elements should return a protected result, not a transport failure."
+Assert-Equal ([bool]$noScopeProbe.guarded) $true "No-scope find_elements should be guarded."
+Assert-Equal ([string]$noScopeProbe.state) "guarded" "No-scope find_elements state changed."
+Assert-Equal ([string]$noScopeProbe.reason) "needs_scope" "No-scope find_elements reason changed."
+Assert-Equal ([string]$noScopeProbe.scanStoppedReason) "needs_scope" "No-scope find_elements scan stop reason changed."
+
+Write-Host "Test find_elements category-bounded search contract"
+$noMatchQuery = "__revagent_live_no_match_" + (Get-Date -Format "HHmmssfff")
+$categoryProbe = Invoke-FindElements `
+    -TaskName "$prefix find category bounded" `
+    -Params ([ordered]@{
+        query = $noMatchQuery
+        categoryNames = @("Mechanical Equipment")
+        planCandidateMode = "none"
+        searchBudget = "fast"
+        maxElementsScanned = 250
+        maxElapsedMs = 2000
+        timeoutMs = 6000
+        limit = 3
+    })
+Assert-Equal ([bool]$categoryProbe.success) $true "Category-bounded find_elements should succeed."
+Assert-Equal ([bool]$categoryProbe.guarded) $false "Category-bounded find_elements should not be guarded."
+Assert-Equal ([string]$categoryProbe.state) "completed" "Category-bounded find_elements state changed."
+Assert-Equal ([string]$categoryProbe.planCandidateMode) "none" "Category-bounded first pass should not request plan candidates."
+Assert-Equal ([string]$categoryProbe.scanPolicy.searchBudget) "fast" "Category-bounded find_elements should report the search budget."
+Assert-True ([int]$categoryProbe.scanPolicy.maxElapsedMs -lt 6000) "Revit-side find_elements budget must stay below socket timeout."
+Assert-True ([int]$categoryProbe.scannedElementCount -ge 0) "Category-bounded find_elements should report scanned element count."
+Assert-True ([int]$categoryProbe.candidateElementCount -ge 0) "Category-bounded find_elements should report candidate element count."
+if ([int]$categoryProbe.count -eq 0) {
+    Assert-Equal ([string]$categoryProbe.message) "No matching elements found." "No-match find_elements message changed."
+}
+
+Write-Host "Test find_elements bounded partial metadata when scan budget stops"
+$budgetProbe = Invoke-FindElements `
+    -TaskName "$prefix find scan budget" `
+    -Params ([ordered]@{
+        categoryNames = @("Ducts", "Pipes", "Mechanical Equipment", "Air Terminals")
+        planCandidateMode = "none"
+        searchBudget = "fast"
+        maxElementsScanned = 1
+        maxElapsedMs = 2000
+        timeoutMs = 6000
+        limit = 1
+    })
+Assert-Equal ([bool]$budgetProbe.success) $true "Budgeted find_elements should succeed or return a controlled partial result."
+Assert-Equal ([string]$budgetProbe.planCandidateMode) "none" "Budgeted first pass should not request plan candidates."
+if ([bool]$budgetProbe.partial) {
+    Assert-Equal ([string]$budgetProbe.scanStoppedReason) "max_scanned" "Budgeted find_elements partial reason changed."
+    Assert-True ([int]$budgetProbe.scannedElementCount -le 1) "Budgeted find_elements should stop at the configured scan cap."
+}
+
+Write-Host "Test runtime MEP-aware find_elements policy"
+Assert-RuntimeFindElementsPolicy
 
 Write-Host "Test transactionMode none and Newtonsoft.Json compile"
 $noneProbe = Invoke-RevitCode `

@@ -165,6 +165,10 @@ function summarizeScalarParam(key: string, value: any) {
         "category",
         "discipline",
         "cropBasis",
+        "searchBudget",
+        "linkScope",
+        "reason",
+        "scanStoppedReason",
     ]);
 
     if (typeof value === "boolean" || typeof value === "number") {
@@ -748,6 +752,13 @@ export function extractProductionContext(details: JsonObject = {}) {
     const filePrefix = typeof params.filePrefix === "string" ? params.filePrefix : coerceString(findFirstDeep(responseTarget, ["filePrefix", "FilePrefix"], 4));
     const contextText = collectContextText(params, taskName || "", activeView, beforeView, afterView, details);
     const inferredLevelName = levelName || inferLevelNameFromText(contextText);
+    const inferredScope = findFirstDeep(responseTarget, ["inferredScope", "InferredScope"], 5);
+    const effectiveScope = findFirstDeep(responseTarget, ["effectiveScope", "EffectiveScope"], 5);
+    const riskPolicy = findFirstDeep(responseTarget, ["riskPolicy", "RiskPolicy", "searchRiskPolicy", "SearchRiskPolicy"], 5);
+    const scanPolicy = findFirstDeep(responseTarget, ["scanPolicy", "ScanPolicy"], 5);
+    const partial = findFirstDeep(responseTarget, ["partial", "Partial"], 4);
+    const scanStoppedReason = coerceString(findFirstDeep(responseTarget, ["scanStoppedReason", "ScanStoppedReason"], 4));
+    const scannedElementCount = coerceNumber(findFirstDeep(responseTarget, ["scannedElementCount", "ScannedElementCount"], 4));
 
     const hasProductionSignal = Boolean(
         taskName ||
@@ -826,6 +837,27 @@ export function extractProductionContext(details: JsonObject = {}) {
             outputDir,
             filePrefix,
             files,
+        },
+        search: {
+            query,
+            inferredScope,
+            effectiveScope,
+            riskPolicy,
+            riskLevel: getValueCaseInsensitiveLocal(riskPolicy, ["riskLevel", "RiskLevel"]) || null,
+            recommendedFirstScope: getValueCaseInsensitiveLocal(riskPolicy, ["recommendedFirstScope", "RecommendedFirstScope"]) || null,
+            requiresUserControl: getValueCaseInsensitiveLocal(riskPolicy, ["requiresUserControl", "RequiresUserControl"]) === true,
+            scanPolicy,
+            searchBudget: params.searchBudget || getValueCaseInsensitiveLocal(scanPolicy, ["searchBudget", "SearchBudget"]) || null,
+            linkScope: params.linkScope || getValueCaseInsensitiveLocal(effectiveScope, ["linkScope", "LinkScope"]) || null,
+            planCandidateMode: params.planCandidateMode || getValueCaseInsensitiveLocal(scanPolicy, ["planCandidateMode", "PlanCandidateMode"]) || null,
+            allowExpensiveSearch: params.allowExpensiveSearch === true || getValueCaseInsensitiveLocal(scanPolicy, ["allowExpensiveSearch", "AllowExpensiveSearch"]) === true,
+            scannedElementCount,
+            partial: partial === true,
+            scanStoppedReason,
+            needsScope: responseSummary.guarded && responseSummary.state === "guarded" && (
+                getValueCaseInsensitiveLocal(responseObject, ["reason", "Reason"]) === "needs_scope" ||
+                scanStoppedReason === "needs_scope"
+            ),
         },
         response: {
             responseKeys: responseSummary.responseKeys || (responseObject ? Object.keys(responseObject).sort().slice(0, 40) : []),

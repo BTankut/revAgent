@@ -180,6 +180,28 @@ try {
                 samples = @([ordered]@{ id = 101; name = "Supply Duct"; category = "Ducts"; levelName = "Level 02"; roomNumber = "204" })
             }
             outputs = [ordered]@{ files = @() }
+            search = [ordered]@{
+                query = "duct room 204"
+                inferredScope = [ordered]@{ categoryNames = @("Ducts"); residualQuery = "room 204" }
+                effectiveScope = [ordered]@{ categoryNames = @("Ducts"); linkScope = "hostOnly" }
+                riskPolicy = [ordered]@{
+                    riskLevel = "low"
+                    recommendedFirstScope = @("categoryNames=Ducts")
+                    requiresUserControl = $false
+                }
+                riskLevel = "low"
+                recommendedFirstScope = @("categoryNames=Ducts")
+                requiresUserControl = $false
+                scanPolicy = [ordered]@{ searchBudget = "fast"; maxElapsedMs = 4500; planCandidateMode = "none" }
+                searchBudget = "fast"
+                linkScope = "hostOnly"
+                planCandidateMode = "none"
+                allowExpensiveSearch = $false
+                scannedElementCount = 18
+                partial = $false
+                scanStoppedReason = $null
+                needsScope = $false
+            }
             response = [ordered]@{ responseKeys = @("Elements", "success") }
         }
         [ordered]@{
@@ -284,6 +306,13 @@ try {
     Assert-True (($summary.production.byLevel | Where-Object { $_.name -eq "Level 03" }).count -eq 1) "Level fallback rollup mismatch."
     Assert-True (($summary.production.byCategory | Where-Object { $_.name -eq "Ducts" }).count -eq 2) "Category rollup mismatch."
     Assert-Equal $summary.production.generatedFileCount 1 "Generated file count mismatch."
+    Assert-Equal @($summary.production.searchPolicySamples).Count 1 "Search policy sample count mismatch."
+    Assert-Equal $summary.production.searchPolicySamples[0].searchBudget "fast" "Search policy budget was not preserved."
+    Assert-Equal $summary.production.searchPolicySamples[0].riskLevel "low" "Search policy risk level was not preserved."
+    Assert-Equal ([bool]$summary.production.searchPolicySamples[0].requiresUserControl) $false "Search policy user-control flag was not preserved."
+    Assert-Equal $summary.production.searchPolicySamples[0].linkScope "hostOnly" "Search policy link scope was not preserved."
+    Assert-Equal $summary.production.searchPolicySamples[0].scannedElementCount 18 "Search policy scanned count was not preserved."
+    Assert-Equal ([bool]$summary.production.searchPolicySamples[0].partial) $false "Search policy partial flag was not preserved."
     Assert-Equal $summary.friction.guarded.Count 1 "Guarded operation count mismatch."
 
     $summaryRoot = Join-Path $reportsRoot "summaries"

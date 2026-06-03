@@ -7,11 +7,15 @@ function payloadFromExecution(response) {
     return response;
 }
 function buildSessionContextCode(options) {
-    const includeCounts = options.includeCategoryCounts !== false ? "true" : "false";
-    const includeLinks = options.includeLinks !== false ? "true" : "false";
+    const detailLevel = String(options.detailLevel || "minimal").toLowerCase();
+    const includeCounts = (options.includeCategoryCounts === true || detailLevel === "counts" || detailLevel === "full") ? "true" : "false";
+    const includeLinkSummary = options.includeLinks !== false ? "true" : "false";
+    const includeLinkDetails = (options.includeLinks === true && detailLevel === "full") || detailLevel === "full" ? "true" : "false";
     return `
 bool includeCounts = ${includeCounts};
-bool includeLinks = ${includeLinks};
+bool includeLinkSummary = ${includeLinkSummary};
+bool includeLinkDetails = ${includeLinkDetails};
+string detailLevel = "${detailLevel}";
 try
 {
     System.Collections.Generic.List<string> warnings = new System.Collections.Generic.List<string>();
@@ -58,12 +62,12 @@ try
         }
     }
 
-    if (includeLinks)
+    if (includeLinkSummary)
     {
         FilteredElementCollector linkCollector = new FilteredElementCollector(document)
             .OfClass(typeof(RevitLinkInstance))
             .WhereElementIsNotElementType();
-        foreach (Element linkElem in linkCollector.ToElements())
+        foreach (Element linkElem in linkCollector)
         {
             linkInstances++;
             RevitLinkInstance link = linkElem as RevitLinkInstance;
@@ -71,24 +75,27 @@ try
             Document linkDoc = link.GetLinkDocument();
             if (linkDoc == null) continue;
             loadedLinks++;
-            try
+            if (includeLinkDetails)
             {
-                linkedRooms += new FilteredElementCollector(linkDoc)
-                    .OfCategory(BuiltInCategory.OST_Rooms)
-                    .WhereElementIsNotElementType()
-                    .ToElementIds()
-                    .Count;
+                try
+                {
+                    linkedRooms += new FilteredElementCollector(linkDoc)
+                        .OfCategory(BuiltInCategory.OST_Rooms)
+                        .WhereElementIsNotElementType()
+                        .ToElementIds()
+                        .Count;
+                }
+                catch {}
+                try
+                {
+                    linkedSpaces += new FilteredElementCollector(linkDoc)
+                        .OfCategory(BuiltInCategory.OST_MEPSpaces)
+                        .WhereElementIsNotElementType()
+                        .ToElementIds()
+                        .Count;
+                }
+                catch {}
             }
-            catch {}
-            try
-            {
-                linkedSpaces += new FilteredElementCollector(linkDoc)
-                    .OfCategory(BuiltInCategory.OST_MEPSpaces)
-                    .WhereElementIsNotElementType()
-                    .ToElementIds()
-                    .Count;
-            }
-            catch {}
         }
     }
 
@@ -119,12 +126,14 @@ try
             scale = activeView.Scale,
             isTemplate = activeView.IsTemplate
         },
+        detailLevel = detailLevel,
         counts = counts,
         links = new {
             instances = linkInstances,
             loaded = loadedLinks,
-            linkedRooms = linkedRooms,
-            linkedSpaces = linkedSpaces
+            linkedRooms = includeLinkDetails ? (int?)linkedRooms : null,
+            linkedSpaces = includeLinkDetails ? (int?)linkedSpaces : null,
+            detailsIncluded = includeLinkDetails
         },
         warnings = warnings.ToArray()
     };
@@ -135,11 +144,12 @@ catch (Exception ex)
 }`;
 }
 export function registerGetRevitSessionContextTool(server) {
-    server.tool("get_revit_session_context", "Read-only Revit session summary: version/build/culture/document state/active view/MEP counts/link counts/selection IDs.", {
+    server.tool("get_revit_session_context", "Read-only Revit session summary. Defaults to detailLevel=minimal so large-model document checks do not perform heavy MEP category or linked room/space counts. Use detailLevel=counts/full only when those expensive counts are explicitly needed.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
-        includeCategoryCounts: z.boolean().optional().describe("Include known MEP category counts. Defaults true."),
-        includeLinks: z.boolean().optional().describe("Include Revit link and linked room/space counts. Defaults true."),
+        detailLevel: z.enum(["minimal", "counts", "full"]).optional().describe("Context detail level. minimal is default and avoids category counts and linked room/space scans; counts adds host MEP category counts; full also scans linked room/space counts."),
+        includeCategoryCounts: z.boolean().optional().describe("Compatibility flag. true includes known MEP category counts; default false unless detailLevel is counts/full."),
+        includeLinks: z.boolean().optional().describe("Include cheap Revit link instance summary. Defaults true; linked room/space counts require detailLevel=full."),
         includeSelection: z.boolean().optional().describe("Include selected element ids using the existing Revit selection command. Defaults true."),
     }, async (args) => {
         const connectionOptions = connectionOptionsFromArgs(args);
