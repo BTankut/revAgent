@@ -65,13 +65,12 @@ export function revitTaskKey(task, fallback = "") {
     if (hasStableIdentityValue(task.id)) {
         return `id:${task.id}`;
     }
-    const parts = [
-        task.method || "",
-        task.taskName || "",
-        task.startedAtUtc || "",
-    ];
-    const key = parts.join("|");
-    return key.replace(/\|/g, "") ? `task:${key}` : fallback;
+    const method = task.method || "";
+    const taskName = task.taskName || "";
+    const startedAtUtc = task.startedAtUtc || "";
+    return method || taskName || startedAtUtc
+        ? `task:${method}|${taskName}|${startedAtUtc}`
+        : fallback;
 }
 export function mergeRevitTask(cachedTask, currentTask) {
     const stateSource = chooseStateSource(cachedTask, currentTask);

@@ -83,13 +83,12 @@ export function revitTaskKey(task: RevitTask | null | undefined, fallback = "") 
         return `id:${task.id}`;
     }
 
-    const parts = [
-        task.method || "",
-        task.taskName || "",
-        task.startedAtUtc || "",
-    ];
-    const key = parts.join("|");
-    return key.replace(/\|/g, "") ? `task:${key}` : fallback;
+    const method = task.method || "";
+    const taskName = task.taskName || "";
+    const startedAtUtc = task.startedAtUtc || "";
+    return method || taskName || startedAtUtc
+        ? `task:${method}|${taskName}|${startedAtUtc}`
+        : fallback;
 }
 
 export function mergeRevitTask(cachedTask: RevitTask | null | undefined, currentTask: RevitTask | null | undefined) {
@@ -131,11 +130,15 @@ export function mergeRevitTask(cachedTask: RevitTask | null | undefined, current
     return merged;
 }
 
-export function mergeRecentRevitTasks(currentTasks: any, cachedTasks: any, limit = 100) {
+export function mergeRecentRevitTasks(
+    currentTasks: RevitTask[] | null | undefined,
+    cachedTasks: RevitTask[] | null | undefined,
+    limit = 100,
+) {
     const maxTasks = Math.max(1, Math.min(200, Number(limit) || 100));
     const keyed = new Map<string, RevitTask>();
 
-    const addTasks = (tasks: any, prefix: string) => {
+    const addTasks = (tasks: RevitTask[] | null | undefined, prefix: string) => {
         for (const [index, task] of (Array.isArray(tasks) ? tasks : []).entries()) {
             if (!task || typeof task !== "object") {
                 continue;
