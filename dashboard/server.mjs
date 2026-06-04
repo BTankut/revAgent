@@ -115,13 +115,7 @@ function mergeLiveStatusCache(machineName, liveStatus, now, offlineSeconds) {
 
   return {
     ...liveStatus,
-    revitStatus: {
-      ...mergeRevitStatusSnapshots(currentRevitStatus, cachedRevitStatus),
-      // A heartbeat-only runtime process may overwrite status.json without
-      // recent Revit tasks. Keep the last rich recent task list stable, but do
-      // not resurrect a cached active task.
-      activeTask: currentRevitStatus?.activeTask || null,
-    },
+    revitStatus: mergeRevitStatusSnapshots(currentRevitStatus, cachedRevitStatus),
   };
 }
 

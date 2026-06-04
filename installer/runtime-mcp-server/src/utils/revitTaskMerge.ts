@@ -20,6 +20,10 @@ function isTerminalState(value: any) {
     return TERMINAL_STATES.has(String(value || "").toLowerCase());
 }
 
+function hasStableIdentityValue(value: any) {
+    return value !== undefined && value !== null && value !== "";
+}
+
 function taskTimestampMs(task: RevitTask | null | undefined) {
     const ms = Date.parse(String(task?.finishedAtUtc || task?.startedAtUtc || ""));
     return Number.isFinite(ms) ? ms : 0;
@@ -72,10 +76,10 @@ export function revitTaskKey(task: RevitTask | null | undefined, fallback = "") 
     if (!task || typeof task !== "object") {
         return fallback;
     }
-    if (task.requestId) {
+    if (hasStableIdentityValue(task.requestId)) {
         return `request:${task.requestId}`;
     }
-    if (task.id) {
+    if (hasStableIdentityValue(task.id)) {
         return `id:${task.id}`;
     }
 
@@ -115,7 +119,7 @@ export function mergeRevitTask(cachedTask: RevitTask | null | undefined, current
         merged.elapsedMs = null;
     }
 
-    if (stateOf({ state: merged.state }) === "failed") {
+    if (stateOf(merged) === "failed") {
         merged.error = coalesceValue(
             coalesceMatchingStateField(merged.state, cachedTask, currentTask, "error"),
             chooseFailedErrorSource(cachedTask, currentTask)?.error,

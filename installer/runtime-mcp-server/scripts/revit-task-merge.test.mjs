@@ -124,6 +124,11 @@ function task(overrides = {}) {
 }
 
 {
+  assert.equal(revitTaskKey(task({ id: 0 })), "id:0");
+  assert.equal(revitTaskKey(task({ requestId: 0 })), "request:0");
+}
+
+{
   const cachedEntry = { cachedAtMs: 1000, revitStatus: { recentTasks: [task({ state: "completed" })] } };
   assert.equal(unexpiredCachedRevitStatus(cachedEntry, 1500, 1000), cachedEntry.revitStatus);
   assert.equal(unexpiredCachedRevitStatus(cachedEntry, 2501, 1000), null);
