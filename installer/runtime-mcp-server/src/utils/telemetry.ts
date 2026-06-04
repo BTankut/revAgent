@@ -1007,6 +1007,97 @@ function normalizeRevitStatusPayload(status: any) {
     };
 }
 
+function revitTaskTimestampMs(task: JsonObject | null | undefined) {
+    const ms = Date.parse(String(task?.finishedAtUtc || task?.startedAtUtc || ""));
+    return Number.isFinite(ms) ? ms : 0;
+}
+
+function revitTaskKey(task: JsonObject | null | undefined, fallback: string) {
+    if (!task || typeof task !== "object") {
+        return fallback;
+    }
+    if (task.requestId) {
+        return `request:${task.requestId}`;
+    }
+    if (task.id) {
+        return `id:${task.id}`;
+    }
+
+    const parts = [
+        task.method || "",
+        task.taskName || "",
+        task.startedAtUtc || "",
+        task.finishedAtUtc || "",
+    ];
+    const key = parts.join("|");
+    return key.replace(/\|/g, "") ? `task:${key}` : fallback;
+}
+
+function coalesceTaskField(primary: JsonObject | null | undefined, secondary: JsonObject | null | undefined, field: string) {
+    return primary?.[field] !== undefined && primary?.[field] !== null
+        ? primary[field]
+        : secondary?.[field] ?? null;
+}
+
+function mergeRevitTask(cachedTask: JsonObject | null | undefined, currentTask: JsonObject | null | undefined) {
+    const merged: JsonObject = {
+        ...(cachedTask || {}),
+        ...(currentTask || {}),
+    };
+    for (const field of ["elapsedMs", "requestBytes", "responseBytes", "method", "taskName", "state", "startedAtUtc", "finishedAtUtc", "error", "port"]) {
+        merged[field] = coalesceTaskField(currentTask, cachedTask, field);
+    }
+    return merged;
+}
+
+function mergeRecentRevitTasks(currentTasks: any, cachedTasks: any, limit = 100) {
+    const maxTasks = Math.max(1, Math.min(200, Number(limit) || 100));
+    const keyed = new Map<string, JsonObject>();
+
+    const addTasks = (tasks: any, prefix: string) => {
+        for (const [index, task] of (Array.isArray(tasks) ? tasks : []).entries()) {
+            if (!task || typeof task !== "object") {
+                continue;
+            }
+            const key = revitTaskKey(task, `${prefix}:${index}`);
+            const existing = keyed.get(key);
+            keyed.set(key, existing ? mergeRevitTask(existing, task) : task);
+        }
+    };
+
+    addTasks(cachedTasks, "cached");
+    addTasks(currentTasks, "current");
+
+    return [...keyed.values()]
+        .sort((a, b) => revitTaskTimestampMs(b) - revitTaskTimestampMs(a))
+        .slice(0, maxTasks);
+}
+
+function mergeRevitStatusSnapshots(currentRevitStatus: any, cachedRevitStatus: any) {
+    const current = currentRevitStatus && typeof currentRevitStatus === "object" ? currentRevitStatus : null;
+    const cached = cachedRevitStatus && typeof cachedRevitStatus === "object" ? cachedRevitStatus : null;
+    if (!current && !cached) {
+        return null;
+    }
+
+    const recentHistoryCapacity = current?.recentHistoryCapacity ?? cached?.recentHistoryCapacity ?? 100;
+    const recentTasks = mergeRecentRevitTasks(current?.recentTasks, cached?.recentTasks, recentHistoryCapacity);
+    const recentHistoryCount = Math.max(
+        Number(current?.recentHistoryCount) || 0,
+        Number(cached?.recentHistoryCount) || 0,
+        recentTasks.length,
+    );
+
+    return {
+        ...(cached || {}),
+        ...(current || {}),
+        activeTask: current?.activeTask || null,
+        recentTasks,
+        recentHistoryCount,
+        recentHistoryCapacity,
+    };
+}
+
 export function recordLiveRevitStatus(status: any) {
     if (liveStatusDisabled()) {
         return;
@@ -1086,10 +1177,6 @@ function liveStatusAgeMs(status: any) {
 }
 
 function mergeExistingLiveStatusSnapshot(filePath: string, snapshot: JsonObject) {
-    if (hasUsefulLiveStatusData(snapshot)) {
-        return snapshot;
-    }
-
     const existing = readJsonFile(filePath);
     if (!existing || normalizeMachineName(existing.machineName) !== normalizeMachineName(snapshot.machineName)) {
         return snapshot;
@@ -1101,19 +1188,14 @@ function mergeExistingLiveStatusSnapshot(filePath: string, snapshot: JsonObject)
     }
 
     // Multiple runtime sessions on the same workstation can write heartbeat-only
-    // snapshots. Preserve rich recent history from the Revit-connected session,
-    // but never resurrect a cached active task.
+    // or partial snapshots. Preserve rich recent history from all recent
+    // Revit-connected sessions, but never resurrect a cached active task.
     return {
         ...snapshot,
         recentActivity: Array.isArray(snapshot.recentActivity) && snapshot.recentActivity.length > 0
             ? snapshot.recentActivity
             : (Array.isArray(existing.recentActivity) ? existing.recentActivity : []),
-        revitStatus: existing.revitStatus
-            ? {
-                ...existing.revitStatus,
-                activeTask: snapshot.revitStatus?.activeTask || null,
-            }
-            : snapshot.revitStatus,
+        revitStatus: mergeRevitStatusSnapshots(snapshot.revitStatus, existing.revitStatus),
     };
 }
 

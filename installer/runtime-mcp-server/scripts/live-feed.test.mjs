@@ -51,6 +51,8 @@ try {
         startedAtUtc: "2026-05-31T12:00:00.000Z",
         finishedAtUtc: "2026-05-31T12:00:01.000Z",
         elapsedMs: 1000,
+        requestBytes: 111,
+        responseBytes: 222,
         error: "status failure",
       },
     ],
@@ -76,7 +78,39 @@ try {
   assert.ok(status.recentActivity.some((item) => item.taskName === "Find live dashboard ducts" && item.phase === "completed"));
   assert.equal(status.revitStatus.recentTasks[0].taskName, "Status window aligned task");
   assert.equal(status.revitStatus.recentTasks[0].state, "failed");
+  assert.equal(status.revitStatus.recentTasks[0].responseBytes, 222);
   assert.equal(status.writeHealth.dropped, 0);
+
+  telemetry.recordLiveRevitStatus({
+    activeTask: null,
+    recentTasks: [
+      {
+        id: "status-2",
+        method: "send_code_to_revit",
+        taskName: "Other live dashboard session",
+        state: "completed",
+        startedAtUtc: "2026-05-31T12:00:02.000Z",
+        finishedAtUtc: "2026-05-31T12:00:03.000Z",
+        elapsedMs: 1000,
+        requestBytes: 333,
+        responseBytes: 444,
+        error: null,
+      },
+    ],
+    recentHistoryCount: 1,
+    recentHistoryCapacity: 100,
+  });
+  await telemetry.flushLiveWritesForTests();
+
+  const mergedStatus = JSON.parse(fs.readFileSync(statusPath, "utf8"));
+  assert.ok(
+    mergedStatus.revitStatus.recentTasks.some((item) => item.taskName === "Status window aligned task" && item.responseBytes === 222),
+    "Existing Revit status history must survive another live session snapshot.",
+  );
+  assert.ok(
+    mergedStatus.revitStatus.recentTasks.some((item) => item.taskName === "Other live dashboard session" && item.responseBytes === 444),
+    "New Revit status history from the current snapshot must still be included.",
+  );
 
   const lines = fs.readFileSync(activityPath, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
   assert.equal(lines.length, 2);

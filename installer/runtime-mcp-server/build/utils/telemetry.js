@@ -888,6 +888,81 @@ function normalizeRevitStatusPayload(status) {
         recentHistoryCapacity: target.recentHistoryCapacity ?? null,
     };
 }
+function revitTaskTimestampMs(task) {
+    const ms = Date.parse(String(task?.finishedAtUtc || task?.startedAtUtc || ""));
+    return Number.isFinite(ms) ? ms : 0;
+}
+function revitTaskKey(task, fallback) {
+    if (!task || typeof task !== "object") {
+        return fallback;
+    }
+    if (task.requestId) {
+        return `request:${task.requestId}`;
+    }
+    if (task.id) {
+        return `id:${task.id}`;
+    }
+    const parts = [
+        task.method || "",
+        task.taskName || "",
+        task.startedAtUtc || "",
+        task.finishedAtUtc || "",
+    ];
+    const key = parts.join("|");
+    return key.replace(/\|/g, "") ? `task:${key}` : fallback;
+}
+function coalesceTaskField(primary, secondary, field) {
+    return primary?.[field] !== undefined && primary?.[field] !== null
+        ? primary[field]
+        : secondary?.[field] ?? null;
+}
+function mergeRevitTask(cachedTask, currentTask) {
+    const merged = {
+        ...(cachedTask || {}),
+        ...(currentTask || {}),
+    };
+    for (const field of ["elapsedMs", "requestBytes", "responseBytes", "method", "taskName", "state", "startedAtUtc", "finishedAtUtc", "error", "port"]) {
+        merged[field] = coalesceTaskField(currentTask, cachedTask, field);
+    }
+    return merged;
+}
+function mergeRecentRevitTasks(currentTasks, cachedTasks, limit = 100) {
+    const maxTasks = Math.max(1, Math.min(200, Number(limit) || 100));
+    const keyed = new Map();
+    const addTasks = (tasks, prefix) => {
+        for (const [index, task] of (Array.isArray(tasks) ? tasks : []).entries()) {
+            if (!task || typeof task !== "object") {
+                continue;
+            }
+            const key = revitTaskKey(task, `${prefix}:${index}`);
+            const existing = keyed.get(key);
+            keyed.set(key, existing ? mergeRevitTask(existing, task) : task);
+        }
+    };
+    addTasks(cachedTasks, "cached");
+    addTasks(currentTasks, "current");
+    return [...keyed.values()]
+        .sort((a, b) => revitTaskTimestampMs(b) - revitTaskTimestampMs(a))
+        .slice(0, maxTasks);
+}
+function mergeRevitStatusSnapshots(currentRevitStatus, cachedRevitStatus) {
+    const current = currentRevitStatus && typeof currentRevitStatus === "object" ? currentRevitStatus : null;
+    const cached = cachedRevitStatus && typeof cachedRevitStatus === "object" ? cachedRevitStatus : null;
+    if (!current && !cached) {
+        return null;
+    }
+    const recentHistoryCapacity = current?.recentHistoryCapacity ?? cached?.recentHistoryCapacity ?? 100;
+    const recentTasks = mergeRecentRevitTasks(current?.recentTasks, cached?.recentTasks, recentHistoryCapacity);
+    const recentHistoryCount = Math.max(Number(current?.recentHistoryCount) || 0, Number(cached?.recentHistoryCount) || 0, recentTasks.length);
+    return {
+        ...(cached || {}),
+        ...(current || {}),
+        activeTask: current?.activeTask || null,
+        recentTasks,
+        recentHistoryCount,
+        recentHistoryCapacity,
+    };
+}
 export function recordLiveRevitStatus(status) {
     if (liveStatusDisabled()) {
         return;
@@ -958,9 +1033,6 @@ function liveStatusAgeMs(status) {
     return Number.isFinite(ms) ? Math.max(0, Date.now() - ms) : Number.POSITIVE_INFINITY;
 }
 function mergeExistingLiveStatusSnapshot(filePath, snapshot) {
-    if (hasUsefulLiveStatusData(snapshot)) {
-        return snapshot;
-    }
     const existing = readJsonFile(filePath);
     if (!existing || normalizeMachineName(existing.machineName) !== normalizeMachineName(snapshot.machineName)) {
         return snapshot;
@@ -974,12 +1046,7 @@ function mergeExistingLiveStatusSnapshot(filePath, snapshot) {
         recentActivity: Array.isArray(snapshot.recentActivity) && snapshot.recentActivity.length > 0
             ? snapshot.recentActivity
             : (Array.isArray(existing.recentActivity) ? existing.recentActivity : []),
-        revitStatus: existing.revitStatus
-            ? {
-                ...existing.revitStatus,
-                activeTask: snapshot.revitStatus?.activeTask || null,
-            }
-            : snapshot.revitStatus,
+        revitStatus: mergeRevitStatusSnapshots(snapshot.revitStatus, existing.revitStatus),
     };
 }
 function writeLiveStatusSnapshot(reason = "activity") {

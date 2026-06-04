@@ -501,6 +501,53 @@ try {
     schemaVersion: "revagent.live.status.v1",
     machineName: "TESTPC",
     userName: "BT",
+    lastHeartbeatUtc: new Date(now.getTime() + 9000).toISOString(),
+    runtime: {
+      version,
+    },
+    activeTask: null,
+    activeTasks: [],
+    recentActivity: [],
+    revitStatus: {
+      activeTask: null,
+      recentTasks: [
+        {
+          id: "status-other-session",
+          method: "send_code_to_revit",
+          taskName: "smoke other session task",
+          state: "completed",
+          startedAtUtc: new Date(now.getTime() + 7200).toISOString(),
+          finishedAtUtc: new Date(now.getTime() + 7300).toISOString(),
+          elapsedMs: 100,
+          requestBytes: 700,
+          responseBytes: 800,
+          error: null,
+        },
+      ],
+      recentHistoryCount: 1,
+      recentHistoryCapacity: 100,
+    },
+    writeHealth: {
+      droppedCount: 0,
+    },
+  });
+  const mergedStatusData = loadDashboardData({
+    reportsRoot,
+    releaseRoot,
+    staleSeconds: 60,
+    offlineSeconds: 300,
+    activityLimit: 20,
+  });
+  const mergedInspectSchedules = mergedStatusData.activity.find((event) => event.taskName === "smoke inspect schedules");
+  assert.equal(mergedInspectSchedules.toolName, "inspect_schedules");
+  assert.equal(mergedInspectSchedules.source, "revit.status+telemetry");
+  assert.equal(mergedInspectSchedules.requestBytes, 900);
+  assert.equal(mergedInspectSchedules.responseBytes, 1800);
+
+  writeJson(path.join(reportsRoot, "live", "machines", "TESTPC", "status.json"), {
+    schemaVersion: "revagent.live.status.v1",
+    machineName: "TESTPC",
+    userName: "BT",
     lastHeartbeatUtc: new Date(now.getTime() + 10000).toISOString(),
     runtime: {
       version,
@@ -523,6 +570,7 @@ try {
   assert.equal(cachedStatusData.activity.find((event) => event.taskName === "smoke inspect schedules").toolName, "inspect_schedules");
   assert.equal(cachedStatusData.activity.find((event) => event.taskName === "smoke inspect schedules").source, "revit.status+telemetry");
   assert.equal(cachedStatusData.activity.find((event) => event.taskName === "smoke inspect schedules").requestBytes, 900);
+  assert.equal(cachedStatusData.activity.find((event) => event.taskName === "smoke inspect schedules").responseBytes, 1800);
 
   assert.equal("params" in data.activity[0], false);
   assert.equal(JSON.stringify(data).includes("\"preview\""), false);
