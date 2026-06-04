@@ -19,6 +19,7 @@ import {
     getLiveWriteHealth,
     writeJsonFile,
 } from "./telemetryWriters.js";
+import { mergeRevitStatusSnapshots } from "./revitTaskMerge.js";
 import type { ToolServer } from "../tools/types.js";
 
 export { sanitizeTelemetryPathSegment } from "./runtimeIdentity.js";
@@ -1086,10 +1087,6 @@ function liveStatusAgeMs(status: any) {
 }
 
 function mergeExistingLiveStatusSnapshot(filePath: string, snapshot: JsonObject) {
-    if (hasUsefulLiveStatusData(snapshot)) {
-        return snapshot;
-    }
-
     const existing = readJsonFile(filePath);
     if (!existing || normalizeMachineName(existing.machineName) !== normalizeMachineName(snapshot.machineName)) {
         return snapshot;
@@ -1101,19 +1098,14 @@ function mergeExistingLiveStatusSnapshot(filePath: string, snapshot: JsonObject)
     }
 
     // Multiple runtime sessions on the same workstation can write heartbeat-only
-    // snapshots. Preserve rich recent history from the Revit-connected session,
-    // but never resurrect a cached active task.
+    // or partial snapshots. Preserve rich recent history from all recent
+    // Revit-connected sessions, but never resurrect a cached active task.
     return {
         ...snapshot,
         recentActivity: Array.isArray(snapshot.recentActivity) && snapshot.recentActivity.length > 0
             ? snapshot.recentActivity
             : (Array.isArray(existing.recentActivity) ? existing.recentActivity : []),
-        revitStatus: existing.revitStatus
-            ? {
-                ...existing.revitStatus,
-                activeTask: snapshot.revitStatus?.activeTask || null,
-            }
-            : snapshot.revitStatus,
+        revitStatus: mergeRevitStatusSnapshots(snapshot.revitStatus, existing.revitStatus),
     };
 }
 

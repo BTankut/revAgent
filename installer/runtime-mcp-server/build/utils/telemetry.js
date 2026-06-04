@@ -4,6 +4,7 @@ import path from "node:path";
 import { findWritePatterns } from "../tools/send_code_to_revit_safe_guards.js";
 import { defaultLocalTelemetryRoot, isTruthy, normalizeMachineName, parseBuildHash, readInstalledState, readJsonFile, readUpdaterConfig, sanitizeTelemetryPathSegment, } from "./runtimeIdentity.js";
 import { appendJsonLine, enqueueAppendJsonLine, enqueueLiveWrite, getLiveWriteHealth, writeJsonFile, } from "./telemetryWriters.js";
+import { mergeRevitStatusSnapshots } from "./revitTaskMerge.js";
 export { sanitizeTelemetryPathSegment } from "./runtimeIdentity.js";
 export { flushLiveWritesForTests } from "./telemetryWriters.js";
 const TELEMETRY_SCHEMA_VERSION = "revagent.telemetry.v1";
@@ -958,9 +959,6 @@ function liveStatusAgeMs(status) {
     return Number.isFinite(ms) ? Math.max(0, Date.now() - ms) : Number.POSITIVE_INFINITY;
 }
 function mergeExistingLiveStatusSnapshot(filePath, snapshot) {
-    if (hasUsefulLiveStatusData(snapshot)) {
-        return snapshot;
-    }
     const existing = readJsonFile(filePath);
     if (!existing || normalizeMachineName(existing.machineName) !== normalizeMachineName(snapshot.machineName)) {
         return snapshot;
@@ -974,12 +972,7 @@ function mergeExistingLiveStatusSnapshot(filePath, snapshot) {
         recentActivity: Array.isArray(snapshot.recentActivity) && snapshot.recentActivity.length > 0
             ? snapshot.recentActivity
             : (Array.isArray(existing.recentActivity) ? existing.recentActivity : []),
-        revitStatus: existing.revitStatus
-            ? {
-                ...existing.revitStatus,
-                activeTask: snapshot.revitStatus?.activeTask || null,
-            }
-            : snapshot.revitStatus,
+        revitStatus: mergeRevitStatusSnapshots(snapshot.revitStatus, existing.revitStatus),
     };
 }
 function writeLiveStatusSnapshot(reason = "activity") {

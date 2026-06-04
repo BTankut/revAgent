@@ -45,12 +45,15 @@ try {
     recentTasks: [
       {
         id: "status-1",
+        requestId: "request-1",
         method: "send_code_to_revit",
         taskName: "Status window aligned task",
         state: "failed",
         startedAtUtc: "2026-05-31T12:00:00.000Z",
         finishedAtUtc: "2026-05-31T12:00:01.000Z",
         elapsedMs: 1000,
+        requestBytes: 111,
+        responseBytes: 222,
         error: "status failure",
       },
     ],
@@ -76,7 +79,79 @@ try {
   assert.ok(status.recentActivity.some((item) => item.taskName === "Find live dashboard ducts" && item.phase === "completed"));
   assert.equal(status.revitStatus.recentTasks[0].taskName, "Status window aligned task");
   assert.equal(status.revitStatus.recentTasks[0].state, "failed");
+  assert.equal(status.revitStatus.recentTasks[0].responseBytes, 222);
   assert.equal(status.writeHealth.dropped, 0);
+
+  telemetry.recordLiveRevitStatus({
+    activeTask: null,
+    recentTasks: [
+      {
+        id: null,
+        requestId: "request-1",
+        method: "send_code_to_revit",
+        taskName: "Status window aligned task",
+        state: "running",
+        startedAtUtc: "2026-05-31T12:00:00.000Z",
+        finishedAtUtc: null,
+        elapsedMs: null,
+        requestBytes: null,
+        responseBytes: null,
+        error: null,
+      },
+      {
+        id: "status-2",
+        requestId: "request-2",
+        method: "send_code_to_revit",
+        taskName: "Other live dashboard session",
+        state: "completed",
+        startedAtUtc: "2026-05-31T12:00:02.000Z",
+        finishedAtUtc: "2026-05-31T12:00:03.000Z",
+        elapsedMs: 1000,
+        requestBytes: 333,
+        responseBytes: 444,
+        error: null,
+      },
+      {
+        method: "send_code_to_revit",
+        taskName: "Fallback lifecycle task",
+        state: "running",
+        startedAtUtc: "2026-05-31T12:00:04.000Z",
+        finishedAtUtc: null,
+        elapsedMs: null,
+        requestBytes: 555,
+        responseBytes: null,
+        error: null,
+      },
+      {
+        method: "send_code_to_revit",
+        taskName: "Fallback lifecycle task",
+        state: "completed",
+        startedAtUtc: "2026-05-31T12:00:04.000Z",
+        finishedAtUtc: "2026-05-31T12:00:05.000Z",
+        elapsedMs: 1000,
+        requestBytes: 555,
+        responseBytes: 666,
+        error: null,
+      },
+    ],
+    recentHistoryCount: 1,
+    recentHistoryCapacity: 100,
+  });
+  await telemetry.flushLiveWritesForTests();
+
+  const mergedStatus = JSON.parse(fs.readFileSync(statusPath, "utf8"));
+  assert.ok(
+    mergedStatus.revitStatus.recentTasks.some((item) => item.taskName === "Status window aligned task" && item.id === "status-1" && item.state === "failed" && item.responseBytes === 222),
+    "Existing Revit status history must survive another live session snapshot.",
+  );
+  assert.ok(
+    mergedStatus.revitStatus.recentTasks.some((item) => item.taskName === "Other live dashboard session" && item.responseBytes === 444),
+    "New Revit status history from the current snapshot must still be included.",
+  );
+  const fallbackLifecycleTasks = mergedStatus.revitStatus.recentTasks.filter((item) => item.taskName === "Fallback lifecycle task");
+  assert.equal(fallbackLifecycleTasks.length, 1);
+  assert.equal(fallbackLifecycleTasks[0].state, "completed");
+  assert.equal(fallbackLifecycleTasks[0].responseBytes, 666);
 
   const lines = fs.readFileSync(activityPath, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
   assert.equal(lines.length, 2);

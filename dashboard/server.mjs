@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { mergeRevitStatusSnapshots, unexpiredCachedRevitStatus } from "../installer/runtime-mcp-server/build/utils/revitTaskMerge.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -91,35 +92,30 @@ function mergeLiveStatusCache(machineName, liveStatus, now, offlineSeconds) {
 
   const key = normalizeMachineName(machineName || liveStatus.machineName || "");
   const currentRevitStatus = liveStatus.revitStatus || null;
-  const currentRecentTasks = Array.isArray(currentRevitStatus?.recentTasks) ? currentRevitStatus.recentTasks : [];
   const cached = liveStatusCache.get(key);
   const cacheTtlMs = Math.max(LIVE_STATUS_CACHE_TTL_MS, Number(offlineSeconds || DEFAULT_OFFLINE_SECONDS) * 1000);
+  const cachedRevitStatus = unexpiredCachedRevitStatus(cached, now, cacheTtlMs);
 
   if (hasUsefulRevitStatus(liveStatus)) {
+    const mergedRevitStatus = mergeRevitStatusSnapshots(currentRevitStatus, cachedRevitStatus);
+    const mergedLiveStatus = {
+      ...liveStatus,
+      revitStatus: mergedRevitStatus,
+    };
     liveStatusCache.set(key, {
       cachedAtMs: now,
-      revitStatus: currentRevitStatus,
+      revitStatus: mergedRevitStatus,
     });
-    return liveStatus;
+    return mergedLiveStatus;
   }
 
-  if (!cached || now - cached.cachedAtMs > cacheTtlMs || !hasUsefulRevitStatus({ revitStatus: cached.revitStatus })) {
+  if (!cachedRevitStatus || !hasUsefulRevitStatus({ revitStatus: cachedRevitStatus })) {
     return liveStatus;
   }
 
   return {
     ...liveStatus,
-    revitStatus: {
-      ...(cached.revitStatus || {}),
-      ...(currentRevitStatus || {}),
-      // A heartbeat-only runtime process may overwrite status.json without
-      // recent Revit tasks. Keep the last rich recent task list stable, but do
-      // not resurrect a cached active task.
-      activeTask: currentRevitStatus?.activeTask || null,
-      recentTasks: currentRecentTasks.length > 0
-        ? currentRecentTasks
-        : (Array.isArray(cached.revitStatus?.recentTasks) ? cached.revitStatus.recentTasks : []),
-    },
+    revitStatus: mergeRevitStatusSnapshots(currentRevitStatus, cachedRevitStatus),
   };
 }
 
