@@ -231,6 +231,19 @@ function Invoke-FindElements {
     return Invoke-RevitMcpRequest -Method "find_elements" -Params $Params
 }
 
+function Invoke-InspectSheetText {
+    param(
+        [object]$Params,
+        [string]$TaskName
+    )
+
+    Assert-RevitMcpReady -NextCommand "inspect_sheet_text" | Out-Null
+    if ($Params -is [System.Collections.IDictionary]) {
+        $Params["taskName"] = $TaskName
+    }
+    return Invoke-RevitMcpRequest -Method "inspect_sheet_text" -Params $Params
+}
+
 function Assert-SuccessfulCodeResult {
     param(
         [object]$Result,
@@ -395,6 +408,134 @@ if ([bool]$budgetProbe.partial) {
     Assert-Equal ([string]$budgetProbe.scanStoppedReason) "max_scanned" "Budgeted find_elements partial reason changed."
     Assert-True ([int]$budgetProbe.scannedElementCount -le 1) "Budgeted find_elements should stop at the configured scan cap."
 }
+
+Write-Host "Test native inspect_sheet_text guarded viewport no-scope contract"
+$sheetViewportNoScope = Invoke-InspectSheetText `
+    -TaskName "$prefix sheet viewport no scope guard" `
+    -Params ([ordered]@{
+        includeTextNotes = $false
+        includeScheduleInstances = $false
+        includeViewportTextNotes = $true
+        searchBudget = "fast"
+        maxElapsedMs = 1000
+        timeoutMs = 5000
+    })
+Assert-Equal ([bool]$sheetViewportNoScope.success) $true "No-scope viewport sheet text scan should return a protected result, not a transport failure."
+Assert-Equal ([bool]$sheetViewportNoScope.guarded) $true "No-scope viewport sheet text scan should be guarded."
+Assert-Equal ([string]$sheetViewportNoScope.state) "guarded" "No-scope viewport sheet text guard state changed."
+Assert-Equal ([string]$sheetViewportNoScope.reason) "needs_scope" "No-scope viewport sheet text guard reason changed."
+Assert-Equal ([int]$sheetViewportNoScope.scannedSheetCount) 0 "No-scope viewport guard should not scan Revit sheets."
+
+Write-Host "Discover one sheet for scoped native inspect_sheet_text checks"
+$sheetInventory = Invoke-InspectSheetText `
+    -TaskName "$prefix sheet inventory scoped seed" `
+    -Params ([ordered]@{
+        includeTextNotes = $false
+        includeScheduleInstances = $false
+        includeViewportTextNotes = $false
+        maxSheets = 1
+        searchBudget = "fast"
+        maxElapsedMs = 2000
+        timeoutMs = 7000
+    })
+Assert-Equal ([bool]$sheetInventory.success) $true "Sheet inventory seed should succeed."
+Assert-True (@($sheetInventory.sheets).Count -ge 1) "Live commandset sheet checks require at least one sheet in the active test model."
+$firstSheet = @($sheetInventory.sheets)[0]
+$firstSheetId = [int]$firstSheet.id
+$firstSheetNumber = [string]$firstSheet.sheetNumber
+
+Write-Host "Test native inspect_sheet_text scoped viewport text-note contract"
+$viewportScoped = Invoke-InspectSheetText `
+    -TaskName "$prefix sheet viewport scoped" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        includeTextNotes = $false
+        includeScheduleInstances = $false
+        includeViewportTextNotes = $true
+        searchBudget = "fast"
+        maxViewportsPerSheet = 5
+        maxViewportTextNotesPerView = 25
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$viewportScoped.success) $true "Scoped viewport sheet text scan should succeed."
+Assert-Equal ([bool]$viewportScoped.guarded) $false "Scoped viewport sheet text scan should not be guarded."
+Assert-Equal ([string]$viewportScoped.action) "inspect_sheet_text" "Scoped viewport sheet text action changed."
+Assert-True ([int]$viewportScoped.scannedSheetCount -le 1) "Scoped viewport sheet text scan should stay on the requested sheet."
+Assert-True ($viewportScoped.scanPolicy.maxElapsedMs -lt $viewportScoped.scanPolicy.timeoutMs) "Native sheet text budget must stay below socket timeout."
+
+Write-Host "Test native inspect_sheet_text max_elapsed partial metadata"
+$elapsedProbe = Invoke-InspectSheetText `
+    -TaskName "$prefix sheet max elapsed" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        includeTextNotes = $true
+        includeScheduleInstances = $true
+        includeViewportTextNotes = $true
+        searchBudget = "fast"
+        maxElapsedMs = 1
+        timeoutMs = 5000
+    })
+Assert-Equal ([bool]$elapsedProbe.success) $true "Small elapsed-budget sheet scan should return a controlled result."
+if ([bool]$elapsedProbe.partial) {
+    Assert-Equal ([string]$elapsedProbe.scanStoppedReason) "max_elapsed" "Small elapsed-budget sheet scan partial reason changed."
+}
+
+Write-Host "Test native inspect_sheet_text max_bytes pressure metadata"
+$bytesProbe = Invoke-InspectSheetText `
+    -TaskName "$prefix sheet max bytes" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        includeTextNotes = $true
+        includeScheduleInstances = $true
+        includeViewportTextNotes = $true
+        searchBudget = "fast"
+        maxResponseBytes = 4096
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$bytesProbe.success) $true "Small response-budget sheet scan should return a controlled result."
+if ([bool]$bytesProbe.partial) {
+    Assert-Equal ([string]$bytesProbe.scanStoppedReason) "max_bytes" "Small response-budget sheet scan partial reason changed."
+}
+
+Write-Host "Test native inspect_sheet_text schedule cell cap metadata"
+$scheduleCapProbe = Invoke-InspectSheetText `
+    -TaskName "$prefix sheet schedule cell cap" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        includeTextNotes = $false
+        includeScheduleInstances = $true
+        scanScheduleCells = $true
+        maxScheduleCellsScanned = 1
+        maxRowsPerSchedule = 10
+        maxColumnsPerSchedule = 10
+        searchBudget = "fast"
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$scheduleCapProbe.success) $true "Schedule-cell capped sheet scan should return a controlled result."
+if ([bool]$scheduleCapProbe.partial) {
+    Assert-Equal ([string]$scheduleCapProbe.scanStoppedReason) "max_schedule_cells" "Schedule-cell capped sheet scan partial reason changed."
+}
+
+Write-Host "Test native inspect_sheet_text viewport tag deferred contract"
+$tagProbe = Invoke-InspectSheetText `
+    -TaskName "$prefix sheet viewport tags deferred" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        includeTextNotes = $false
+        includeScheduleInstances = $false
+        includeViewportTextNotes = $false
+        includeViewportTags = $true
+        searchBudget = "fast"
+        maxElapsedMs = 1000
+        timeoutMs = 5000
+    })
+Assert-Equal ([bool]$tagProbe.success) $true "Deferred viewport tag scan should return a controlled result."
+Assert-Equal ([bool]$tagProbe.guarded) $true "Deferred viewport tag scan should be guarded."
+Assert-Equal ([string]$tagProbe.reason) "viewport_tags_deferred" "Deferred viewport tag reason changed."
+Assert-True (@($tagProbe.warnings) -contains "viewport_tags_deferred") "Deferred viewport tag warning missing."
 
 Write-Host "Test find_elements linkedOnly exact-id guard"
 $linkedOnlyExactProbe = Invoke-FindElements `

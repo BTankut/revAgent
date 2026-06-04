@@ -365,15 +365,20 @@ Policy:
   unless `allowExpensiveSearch` is true.
 - `includeCells` and `scanCells` stay bounded by row/column limits.
 
-`inspect_sheet_text` should avoid accidental project-wide sheet/schedule
-traversal.
+`inspect_sheet_text` should avoid accidental project-wide sheet, placed-view,
+tag, or schedule traversal while still allowing intentional bounded
+engineering searches.
 
 Policy:
 
 - `sheetQuery` or `sheetIds` is preferred before text search.
+- `includeViewportTextNotes=true` inspects notes inside views placed on matching
+  sheets and requires bounded sheet scope or explicit expensive approval.
 - `scanScheduleCells=true` requires bounded sheet scope or explicit expensive
   approval.
-- The tool should suggest sheet number/name scope when it guards.
+- `includeViewportTags=true` stays opt-in; until native tag support is
+  characterized it returns the stable `viewport_tags_deferred` response.
+- The tool should suggest sheet number/name/view scope when it guards.
 
 ### 7. User-Facing Response Pattern
 

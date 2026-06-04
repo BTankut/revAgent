@@ -6,7 +6,7 @@ import { recordLiveRevitStatus } from "../utils/telemetry.js";
 import { getRuntimeRoot, parseBuildHash, readInstalledState, readJsonFile, } from "../utils/runtimeIdentity.js";
 const RUNTIME_PROCESS_STARTED_AT_UTC = new Date().toISOString();
 const STATUS_SCHEMA_VERSION = "revit-mcp-status.v3";
-const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.34";
+const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.35";
 function readPackageMetadata() {
     const packageJson = readJsonFile(path.join(getRuntimeRoot(), "package.json"));
     return {

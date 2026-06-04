@@ -375,7 +375,7 @@ Keep `src/revit-plugin/RevitMCPCommandSet` limited to the registered production
 bridge commands: `send_code_to_revit`, `get_current_view_elements`,
 `get_current_view_info`, `get_selected_elements`, `list_open_views`,
 `activate_view`, `close_view`, `get_ui_state`, `find_elements`,
-`open_existing_plan_for_element_level`, `focus_elements`,
+`inspect_sheet_text`, `open_existing_plan_for_element_level`, `focus_elements`,
 `section_box_elements`, and `create_3d_view_for_elements`. Do not reintroduce
 old unregistered create/edit/filter/tag/data-extraction command sources unless
 they are deliberately promoted into the production registry and fully reviewed.
@@ -392,8 +392,13 @@ all instance elements, level-scoped searches continue to use the in-memory
 `ResolveElementLevel` post-filter path for MEP correctness, Revit-side
 `maxElapsedMs` returns partial results before socket timeout, broad verified
 plan visibility requires exact targets or explicit expensive-search approval,
-and `needs_scope` is emitted as `state="guarded"` with `reason="needs_scope"`
-rather than a new incompatible state.
+native `inspect_sheet_text` guards no-scope viewport scans before expensive
+work, scoped sheet/viewport text-note evidence stays bounded, response pressure
+returns `scanStoppedReason="max_bytes"`, schedule-cell caps return
+`max_schedule_cells`, viewport tag requests return `viewport_tags_deferred`
+until tag support is implemented, and `needs_scope` is emitted as
+`state="guarded"` with `reason="needs_scope"` rather than a new incompatible
+state.
 
 API-level level prefiltering for MEP elements is intentionally deferred to a
 separate change. It must prove correctness for duct, pipe, flex, and other

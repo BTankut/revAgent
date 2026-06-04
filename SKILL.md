@@ -177,11 +177,20 @@ normalizer.
   after whichever live focus step succeeds.
 - `inspect_elements` - targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
-- `inspect_sheet_text` - read-only DrawingSheet text search and placed
-  schedule inventory. Use `sheetQuery` or exact `sheetIds` first in large
-  projects; enable `scanScheduleCells` only when target text may be inside
-  placed schedules. Project-wide text or placed-schedule cell scans require
-  `allowExpensiveSearch=true`. Prefer this over broad custom C# sheet loops.
+- `inspect_sheet_text` - read-only native sheet and viewport annotation
+  inspection. It covers DrawingSheet text notes, placed schedule inventory,
+  bounded placed schedule body-cell search, and optional viewport-linked text
+  notes from views placed on matching sheets. Use `sheetQuery` or exact
+  `sheetIds` first in large projects; enable `scanScheduleCells` only when
+  target text may be inside placed schedules, and enable
+  `includeViewportTextNotes` when plan/view annotations on the sheet are part
+  of the evidence. Project-wide sheet text, viewport text, tag, or
+  placed-schedule cell scans require `allowExpensiveSearch=true` and remain
+  budgeted. Treat `partial=true` with `scanStoppedReason` such as
+  `max_elapsed`, `max_bytes`, or `max_schedule_cells` as useful bounded
+  evidence, not a socket failure. `includeViewportTags` is opt-in and currently
+  returns the stable `viewport_tags_deferred` response. Prefer this over broad
+  custom C# sheet or placed-view loops.
 - `inspect_schedules` - read-only schedule discovery and bounded cell
   inspection. Use `nameQuery` or exact `scheduleIds` first in large projects,
   then add `cellQuery`, `includeCells`, row/column limits, and section selection
@@ -261,12 +270,17 @@ Default workflow for every Revit runtime task:
    `inspect_elements`. For ordinary parameter writes, prefer
    `set_element_parameter` over raw dynamic C# because it performs the exact
    schema preflight and readback verification itself.
-6. For DrawingSheet text lookup, call `inspect_sheet_text` before writing raw
-   C# sheet loops. Use `sheetQuery` or exact `sheetIds` and bounded limits;
-   enable `scanScheduleCells` only when schedule cells on the sheet must be
-   searched. If the user intentionally wants project-wide sheet text or placed
-   schedule-cell search, pass `allowExpensiveSearch=true` and keep row/sheet
-   limits bounded.
+6. For DrawingSheet or placed-view annotation lookup, call
+   `inspect_sheet_text` before writing raw C# sheet or viewport loops. Use
+   `sheetQuery` or exact `sheetIds` and bounded limits; enable
+   `scanScheduleCells` only when schedule cells on the sheet must be searched,
+   and enable `includeViewportTextNotes` when the target may be a note inside a
+   view placed on the sheet. If the user intentionally wants project-wide sheet
+   text, viewport text, tag, or placed schedule-cell search, pass
+   `allowExpensiveSearch=true` and keep row/sheet/view limits bounded. If
+   viewport tags are requested and the response is `viewport_tags_deferred`,
+   report the defer as current tool behavior and continue with text-note and
+   schedule evidence where useful.
 7. For schedule lookup, schedule evidence planning, or schedule cell reading,
    call `inspect_schedules` before writing raw C# schedule loops. In large
    models, do not scan all schedule cells without a `nameQuery` or exact

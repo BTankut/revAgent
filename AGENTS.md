@@ -173,11 +173,16 @@ JSON-RPC `result` object. Use it as a per-response capability signal, not a
 process-global switch; older DLLs and raw dynamic snippets still depend on the
 runtime compatibility normalizer.
 
-For DrawingSheet text lookup in large projects, use `inspect_sheet_text` before
-raw dynamic C# sheet loops. Start with `sheetQuery` or exact `sheetIds`, keep
-limits bounded, and enable `scanScheduleCells` only when the target text may be
-inside placed schedules. Project-wide sheet text or placed schedule-cell scans
-require explicit `allowExpensiveSearch=true`.
+For DrawingSheet and placed-view annotation lookup in large projects, use
+`inspect_sheet_text` before raw dynamic C# sheet or viewport loops. Start with
+`sheetQuery` or exact `sheetIds`, keep limits bounded, enable
+`scanScheduleCells` only when the target text may be inside placed schedules,
+and enable `includeViewportTextNotes` when plan/view annotations on placed
+views are part of the evidence. Project-wide sheet text, viewport text, tag, or
+placed schedule-cell scans require explicit `allowExpensiveSearch=true` and
+remain controlled by native elapsed, scan, and response-size budgets.
+`includeViewportTags` is opt-in and currently returns the stable documented
+`viewport_tags_deferred` response.
 For schedule lookup or schedule cell reading in large projects, use
 `inspect_schedules` before raw dynamic C# loops. Start with `nameQuery` or
 exact `scheduleIds`, keep row/column limits bounded, and avoid scanning all

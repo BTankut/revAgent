@@ -57,6 +57,13 @@ assertContains(sendCodeSafe, "runtimeGuarded", "send_code_to_revit_safe must rep
 assertContains(sendCodeSafe, "runtimeSuccess", "send_code_to_revit_safe must report successful safe execution through the shared result contract.");
 assertContains(sendCodeSafe, "runtimeFailure", "send_code_to_revit_safe must report runtime failures through the shared result contract.");
 
+const inspectSheetText = readSource("src/tools/inspect_sheet_text.ts");
+assertContains(inspectSheetText, "[SHEET_TEXT_INSPECTION_READ_ONLY]", "inspect_sheet_text must stay marked as a read-only sheet text inspection tool.");
+assertContains(inspectSheetText, 'sendRevitCommand("inspect_sheet_text"', "inspect_sheet_text must call the native commandset command.");
+assertContains(inspectSheetText, "includeViewportTextNotes", "inspect_sheet_text must expose viewport text-note inspection.");
+assertContains(inspectSheetText, "maxResponseBytes", "inspect_sheet_text must expose the native response-size guard.");
+assertContains(inspectSheetText, "viewport_tags_deferred", "inspect_sheet_text must document the stable viewport tag defer reason.");
+
 const exportViewImage = readSource("src/tools/export_revit_view_image.ts");
 assertContains(exportViewImage, "runtimeFailure", "export_revit_view_image must report JS-side runtime failures through the shared result contract.");
 assertContains(exportViewImage, 'action = "export_revit_view_image"', "export_revit_view_image C# responses must carry the shared action field.");

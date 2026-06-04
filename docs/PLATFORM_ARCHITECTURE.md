@@ -92,11 +92,15 @@ level matches. Broad linked, verified, or deep searches are explicit through
 as a separate expensive operation and is limited to exact targets or explicit
 approval.
 
-`inspect_sheet_text` is a read-only runtime tool for large-project DrawingSheet
-text work. It provides bounded sheet text-note search and placed schedule
-inventory so agents do not have to generate broad ad hoc C# sheet scans.
-Project-wide text or placed schedule-cell scans require explicit
-`allowExpensiveSearch=true`.
+`inspect_sheet_text` is a read-only native commandset workflow for large-project
+sheet and placed-view annotation work. It provides bounded sheet text-note
+search, placed schedule inventory, bounded placed schedule body-cell scanning,
+and optional viewport-linked text notes from views placed on matching sheets so
+agents do not have to generate broad ad hoc C# sheet or viewport collectors.
+Project-wide sheet text, viewport text, tag, or placed schedule-cell scans
+require explicit `allowExpensiveSearch=true`; native elapsed, scan-count, and
+response-size budgets return partial evidence before transport timeout. Viewport
+tag scanning is opt-in and currently returns `viewport_tags_deferred`.
 `inspect_schedules` is a read-only runtime tool for large-project schedule work.
 It provides bounded schedule-name discovery and bounded header/body/footer cell
 reads/scans so agents do not have to generate broad ad hoc C# loops over every

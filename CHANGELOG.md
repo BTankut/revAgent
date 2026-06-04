@@ -13,8 +13,16 @@ All notable revAgent workstation deployment changes are tracked here.
   MEP correctness.
 - Fixed the no-match `selectionHint` so zero-result searches no longer claim
   there is a top match.
+- Rebuilt `inspect_sheet_text` as a native Revit commandset workflow for sheet
+  text notes, placed schedule instances/cells, and viewport-linked text notes,
+  with Revit-side elapsed budgets, scan caps, partial results, and response-size
+  stops before socket timeout.
+- Kept viewport tag scanning opt-in but returned a stable documented
+  `viewport_tags_deferred` response until tag behavior is characterized across
+  production models.
 - Bumped the runtime tool surface version to
-  `revit-mcp-runtime-tools.34` for verified plan visibility guard behavior.
+  `revit-mcp-runtime-tools.35` for verified plan visibility and native sheet
+  annotation inspection behavior.
 
 ## 2026.06.03.267-ee433485
 
