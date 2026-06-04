@@ -921,7 +921,7 @@ function mergeRevitTask(cachedTask, currentTask) {
         ...(cachedTask || {}),
         ...(currentTask || {}),
     };
-    for (const field of ["elapsedMs", "requestBytes", "responseBytes", "method", "taskName", "state", "startedAtUtc", "finishedAtUtc", "error", "port"]) {
+    for (const field of ["id", "requestId", "elapsedMs", "requestBytes", "responseBytes", "method", "taskName", "state", "startedAtUtc", "finishedAtUtc", "error", "port"]) {
         merged[field] = coalesceTaskField(currentTask, cachedTask, field);
     }
     return merged;

@@ -142,6 +142,7 @@ try {
         },
         {
           id: "status-inspect-schedules",
+          requestId: "request-inspect-schedules",
           method: "send_code_to_revit",
           taskName: "smoke inspect schedules",
           state: "completed",
@@ -523,6 +524,19 @@ try {
           responseBytes: 800,
           error: null,
         },
+        {
+          id: null,
+          requestId: "request-inspect-schedules",
+          method: "send_code_to_revit",
+          taskName: "smoke inspect schedules",
+          state: "completed",
+          startedAtUtc: new Date(now.getTime() + 6500).toISOString(),
+          finishedAtUtc: new Date(now.getTime() + 6580).toISOString(),
+          elapsedMs: null,
+          requestBytes: null,
+          responseBytes: null,
+          error: null,
+        },
       ],
       recentHistoryCount: 1,
       recentHistoryCapacity: 100,
@@ -541,6 +555,7 @@ try {
   const mergedInspectSchedules = mergedStatusData.activity.find((event) => event.taskName === "smoke inspect schedules");
   assert.equal(mergedInspectSchedules.toolName, "inspect_schedules");
   assert.equal(mergedInspectSchedules.source, "revit.status+telemetry");
+  assert.equal(mergedInspectSchedules.eventId, "status-inspect-schedules");
   assert.equal(mergedInspectSchedules.requestBytes, 900);
   assert.equal(mergedInspectSchedules.responseBytes, 1800);
 
