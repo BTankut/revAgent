@@ -529,9 +529,9 @@ try {
           requestId: "request-inspect-schedules",
           method: "send_code_to_revit",
           taskName: "smoke inspect schedules",
-          state: "completed",
+          state: "running",
           startedAtUtc: new Date(now.getTime() + 6500).toISOString(),
-          finishedAtUtc: new Date(now.getTime() + 6580).toISOString(),
+          finishedAtUtc: null,
           elapsedMs: null,
           requestBytes: null,
           responseBytes: null,
@@ -578,6 +578,7 @@ try {
   assert.equal(mergedInspectSchedules.toolName, "inspect_schedules");
   assert.equal(mergedInspectSchedules.source, "revit.status+telemetry");
   assert.equal(mergedInspectSchedules.eventId, "status-inspect-schedules");
+  assert.equal(mergedInspectSchedules.phase, "completed");
   assert.equal(mergedInspectSchedules.requestBytes, 900);
   assert.equal(mergedInspectSchedules.responseBytes, 1800);
   const fallbackLifecycleRows = mergedStatusData.activity.filter((event) => event.taskName === "smoke fallback lifecycle");

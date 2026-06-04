@@ -1038,14 +1038,21 @@ function coalesceTaskField(primary: JsonObject | null | undefined, secondary: Js
         : secondary?.[field] ?? null;
 }
 
+function isTerminalRevitTaskState(value: any) {
+    return ["completed", "failed", "guarded", "blocked"].includes(String(value || "").toLowerCase());
+}
+
 function mergeRevitTask(cachedTask: JsonObject | null | undefined, currentTask: JsonObject | null | undefined) {
     const merged: JsonObject = {
         ...(cachedTask || {}),
         ...(currentTask || {}),
     };
-    for (const field of ["id", "requestId", "elapsedMs", "requestBytes", "responseBytes", "method", "taskName", "state", "startedAtUtc", "finishedAtUtc", "error", "port"]) {
+    for (const field of ["id", "requestId", "elapsedMs", "requestBytes", "responseBytes", "method", "taskName", "startedAtUtc", "finishedAtUtc", "error", "port"]) {
         merged[field] = coalesceTaskField(currentTask, cachedTask, field);
     }
+    merged.state = isTerminalRevitTaskState(cachedTask?.state) && !isTerminalRevitTaskState(currentTask?.state)
+        ? cachedTask?.state
+        : coalesceTaskField(currentTask, cachedTask, "state");
     return merged;
 }
 

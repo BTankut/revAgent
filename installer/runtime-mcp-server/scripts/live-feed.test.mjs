@@ -90,13 +90,13 @@ try {
         requestId: "request-1",
         method: "send_code_to_revit",
         taskName: "Status window aligned task",
-        state: "failed",
+        state: "running",
         startedAtUtc: "2026-05-31T12:00:00.000Z",
-        finishedAtUtc: "2026-05-31T12:00:01.000Z",
+        finishedAtUtc: null,
         elapsedMs: null,
         requestBytes: null,
         responseBytes: null,
-        error: "status failure",
+        error: null,
       },
       {
         id: "status-2",
@@ -141,7 +141,7 @@ try {
 
   const mergedStatus = JSON.parse(fs.readFileSync(statusPath, "utf8"));
   assert.ok(
-    mergedStatus.revitStatus.recentTasks.some((item) => item.taskName === "Status window aligned task" && item.id === "status-1" && item.responseBytes === 222),
+    mergedStatus.revitStatus.recentTasks.some((item) => item.taskName === "Status window aligned task" && item.id === "status-1" && item.state === "failed" && item.responseBytes === 222),
     "Existing Revit status history must survive another live session snapshot.",
   );
   assert.ok(
