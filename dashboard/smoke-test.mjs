@@ -537,6 +537,28 @@ try {
           responseBytes: null,
           error: null,
         },
+        {
+          method: "send_code_to_revit",
+          taskName: "smoke fallback lifecycle",
+          state: "running",
+          startedAtUtc: new Date(now.getTime() + 7400).toISOString(),
+          finishedAtUtc: null,
+          elapsedMs: null,
+          requestBytes: 300,
+          responseBytes: null,
+          error: null,
+        },
+        {
+          method: "send_code_to_revit",
+          taskName: "smoke fallback lifecycle",
+          state: "completed",
+          startedAtUtc: new Date(now.getTime() + 7400).toISOString(),
+          finishedAtUtc: new Date(now.getTime() + 7520).toISOString(),
+          elapsedMs: 120,
+          requestBytes: 300,
+          responseBytes: 1200,
+          error: null,
+        },
       ],
       recentHistoryCount: 1,
       recentHistoryCapacity: 100,
@@ -558,6 +580,10 @@ try {
   assert.equal(mergedInspectSchedules.eventId, "status-inspect-schedules");
   assert.equal(mergedInspectSchedules.requestBytes, 900);
   assert.equal(mergedInspectSchedules.responseBytes, 1800);
+  const fallbackLifecycleRows = mergedStatusData.activity.filter((event) => event.taskName === "smoke fallback lifecycle");
+  assert.equal(fallbackLifecycleRows.length, 1);
+  assert.equal(fallbackLifecycleRows[0].phase, "completed");
+  assert.equal(fallbackLifecycleRows[0].responseBytes, 1200);
 
   writeJson(path.join(reportsRoot, "live", "machines", "TESTPC", "status.json"), {
     schemaVersion: "revagent.live.status.v1",

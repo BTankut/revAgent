@@ -103,7 +103,6 @@ function revitTaskKey(task, fallback) {
     task.method || "",
     task.taskName || "",
     task.startedAtUtc || "",
-    task.finishedAtUtc || "",
   ];
   const key = parts.join("|");
   return key.replace(/\|/g, "") ? `task:${key}` : fallback;

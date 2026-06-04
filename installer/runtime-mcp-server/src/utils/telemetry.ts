@@ -1027,7 +1027,6 @@ function revitTaskKey(task: JsonObject | null | undefined, fallback: string) {
         task.method || "",
         task.taskName || "",
         task.startedAtUtc || "",
-        task.finishedAtUtc || "",
     ];
     const key = parts.join("|");
     return key.replace(/\|/g, "") ? `task:${key}` : fallback;
