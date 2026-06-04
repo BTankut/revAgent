@@ -4,6 +4,7 @@ import path from "node:path";
 import { findWritePatterns } from "../tools/send_code_to_revit_safe_guards.js";
 import { defaultLocalTelemetryRoot, isTruthy, normalizeMachineName, parseBuildHash, readInstalledState, readJsonFile, readUpdaterConfig, sanitizeTelemetryPathSegment, } from "./runtimeIdentity.js";
 import { appendJsonLine, enqueueAppendJsonLine, enqueueLiveWrite, getLiveWriteHealth, writeJsonFile, } from "./telemetryWriters.js";
+import { mergeRevitStatusSnapshots } from "./revitTaskMerge.js";
 export { sanitizeTelemetryPathSegment } from "./runtimeIdentity.js";
 export { flushLiveWritesForTests } from "./telemetryWriters.js";
 const TELEMETRY_SCHEMA_VERSION = "revagent.telemetry.v1";
@@ -886,86 +887,6 @@ function normalizeRevitStatusPayload(status) {
             .slice(0, 100),
         recentHistoryCount: target.recentHistoryCount ?? null,
         recentHistoryCapacity: target.recentHistoryCapacity ?? null,
-    };
-}
-function revitTaskTimestampMs(task) {
-    const ms = Date.parse(String(task?.finishedAtUtc || task?.startedAtUtc || ""));
-    return Number.isFinite(ms) ? ms : 0;
-}
-function revitTaskKey(task, fallback) {
-    if (!task || typeof task !== "object") {
-        return fallback;
-    }
-    if (task.requestId) {
-        return `request:${task.requestId}`;
-    }
-    if (task.id) {
-        return `id:${task.id}`;
-    }
-    const parts = [
-        task.method || "",
-        task.taskName || "",
-        task.startedAtUtc || "",
-    ];
-    const key = parts.join("|");
-    return key.replace(/\|/g, "") ? `task:${key}` : fallback;
-}
-function coalesceTaskField(primary, secondary, field) {
-    return primary?.[field] !== undefined && primary?.[field] !== null
-        ? primary[field]
-        : secondary?.[field] ?? null;
-}
-function isTerminalRevitTaskState(value) {
-    return ["completed", "failed", "guarded", "blocked"].includes(String(value || "").toLowerCase());
-}
-function mergeRevitTask(cachedTask, currentTask) {
-    const merged = {
-        ...(cachedTask || {}),
-        ...(currentTask || {}),
-    };
-    for (const field of ["id", "requestId", "elapsedMs", "requestBytes", "responseBytes", "method", "taskName", "startedAtUtc", "finishedAtUtc", "error", "port"]) {
-        merged[field] = coalesceTaskField(currentTask, cachedTask, field);
-    }
-    merged.state = isTerminalRevitTaskState(cachedTask?.state) && !isTerminalRevitTaskState(currentTask?.state)
-        ? cachedTask?.state
-        : coalesceTaskField(currentTask, cachedTask, "state");
-    return merged;
-}
-function mergeRecentRevitTasks(currentTasks, cachedTasks, limit = 100) {
-    const maxTasks = Math.max(1, Math.min(200, Number(limit) || 100));
-    const keyed = new Map();
-    const addTasks = (tasks, prefix) => {
-        for (const [index, task] of (Array.isArray(tasks) ? tasks : []).entries()) {
-            if (!task || typeof task !== "object") {
-                continue;
-            }
-            const key = revitTaskKey(task, `${prefix}:${index}`);
-            const existing = keyed.get(key);
-            keyed.set(key, existing ? mergeRevitTask(existing, task) : task);
-        }
-    };
-    addTasks(cachedTasks, "cached");
-    addTasks(currentTasks, "current");
-    return [...keyed.values()]
-        .sort((a, b) => revitTaskTimestampMs(b) - revitTaskTimestampMs(a))
-        .slice(0, maxTasks);
-}
-function mergeRevitStatusSnapshots(currentRevitStatus, cachedRevitStatus) {
-    const current = currentRevitStatus && typeof currentRevitStatus === "object" ? currentRevitStatus : null;
-    const cached = cachedRevitStatus && typeof cachedRevitStatus === "object" ? cachedRevitStatus : null;
-    if (!current && !cached) {
-        return null;
-    }
-    const recentHistoryCapacity = current?.recentHistoryCapacity ?? cached?.recentHistoryCapacity ?? 100;
-    const recentTasks = mergeRecentRevitTasks(current?.recentTasks, cached?.recentTasks, recentHistoryCapacity);
-    const recentHistoryCount = Math.max(Number(current?.recentHistoryCount) || 0, Number(cached?.recentHistoryCount) || 0, recentTasks.length);
-    return {
-        ...(cached || {}),
-        ...(current || {}),
-        activeTask: current?.activeTask || null,
-        recentTasks,
-        recentHistoryCount,
-        recentHistoryCapacity,
     };
 }
 export function recordLiveRevitStatus(status) {

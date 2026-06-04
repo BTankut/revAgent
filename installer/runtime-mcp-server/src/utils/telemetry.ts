@@ -19,6 +19,7 @@ import {
     getLiveWriteHealth,
     writeJsonFile,
 } from "./telemetryWriters.js";
+import { mergeRevitStatusSnapshots } from "./revitTaskMerge.js";
 import type { ToolServer } from "../tools/types.js";
 
 export { sanitizeTelemetryPathSegment } from "./runtimeIdentity.js";
@@ -1004,103 +1005,6 @@ function normalizeRevitStatusPayload(status: any) {
             .slice(0, 100),
         recentHistoryCount: target.recentHistoryCount ?? null,
         recentHistoryCapacity: target.recentHistoryCapacity ?? null,
-    };
-}
-
-function revitTaskTimestampMs(task: JsonObject | null | undefined) {
-    const ms = Date.parse(String(task?.finishedAtUtc || task?.startedAtUtc || ""));
-    return Number.isFinite(ms) ? ms : 0;
-}
-
-function revitTaskKey(task: JsonObject | null | undefined, fallback: string) {
-    if (!task || typeof task !== "object") {
-        return fallback;
-    }
-    if (task.requestId) {
-        return `request:${task.requestId}`;
-    }
-    if (task.id) {
-        return `id:${task.id}`;
-    }
-
-    const parts = [
-        task.method || "",
-        task.taskName || "",
-        task.startedAtUtc || "",
-    ];
-    const key = parts.join("|");
-    return key.replace(/\|/g, "") ? `task:${key}` : fallback;
-}
-
-function coalesceTaskField(primary: JsonObject | null | undefined, secondary: JsonObject | null | undefined, field: string) {
-    return primary?.[field] !== undefined && primary?.[field] !== null
-        ? primary[field]
-        : secondary?.[field] ?? null;
-}
-
-function isTerminalRevitTaskState(value: any) {
-    return ["completed", "failed", "guarded", "blocked"].includes(String(value || "").toLowerCase());
-}
-
-function mergeRevitTask(cachedTask: JsonObject | null | undefined, currentTask: JsonObject | null | undefined) {
-    const merged: JsonObject = {
-        ...(cachedTask || {}),
-        ...(currentTask || {}),
-    };
-    for (const field of ["id", "requestId", "elapsedMs", "requestBytes", "responseBytes", "method", "taskName", "startedAtUtc", "finishedAtUtc", "error", "port"]) {
-        merged[field] = coalesceTaskField(currentTask, cachedTask, field);
-    }
-    merged.state = isTerminalRevitTaskState(cachedTask?.state) && !isTerminalRevitTaskState(currentTask?.state)
-        ? cachedTask?.state
-        : coalesceTaskField(currentTask, cachedTask, "state");
-    return merged;
-}
-
-function mergeRecentRevitTasks(currentTasks: any, cachedTasks: any, limit = 100) {
-    const maxTasks = Math.max(1, Math.min(200, Number(limit) || 100));
-    const keyed = new Map<string, JsonObject>();
-
-    const addTasks = (tasks: any, prefix: string) => {
-        for (const [index, task] of (Array.isArray(tasks) ? tasks : []).entries()) {
-            if (!task || typeof task !== "object") {
-                continue;
-            }
-            const key = revitTaskKey(task, `${prefix}:${index}`);
-            const existing = keyed.get(key);
-            keyed.set(key, existing ? mergeRevitTask(existing, task) : task);
-        }
-    };
-
-    addTasks(cachedTasks, "cached");
-    addTasks(currentTasks, "current");
-
-    return [...keyed.values()]
-        .sort((a, b) => revitTaskTimestampMs(b) - revitTaskTimestampMs(a))
-        .slice(0, maxTasks);
-}
-
-function mergeRevitStatusSnapshots(currentRevitStatus: any, cachedRevitStatus: any) {
-    const current = currentRevitStatus && typeof currentRevitStatus === "object" ? currentRevitStatus : null;
-    const cached = cachedRevitStatus && typeof cachedRevitStatus === "object" ? cachedRevitStatus : null;
-    if (!current && !cached) {
-        return null;
-    }
-
-    const recentHistoryCapacity = current?.recentHistoryCapacity ?? cached?.recentHistoryCapacity ?? 100;
-    const recentTasks = mergeRecentRevitTasks(current?.recentTasks, cached?.recentTasks, recentHistoryCapacity);
-    const recentHistoryCount = Math.max(
-        Number(current?.recentHistoryCount) || 0,
-        Number(cached?.recentHistoryCount) || 0,
-        recentTasks.length,
-    );
-
-    return {
-        ...(cached || {}),
-        ...(current || {}),
-        activeTask: current?.activeTask || null,
-        recentTasks,
-        recentHistoryCount,
-        recentHistoryCapacity,
     };
 }
 
