@@ -136,6 +136,21 @@
                          "description":  "Find Revit elements by category and text across name, family, type, mark, and comments"
                      },
                      {
+                         "commandName":  "inspect_sheet_text",
+                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Inspect sheet text notes, placed schedule instances, and viewport-linked text notes with native budgeted partial results"
+                     },
+                     {
                          "commandName":  "open_existing_plan_for_element_level",
                          "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
