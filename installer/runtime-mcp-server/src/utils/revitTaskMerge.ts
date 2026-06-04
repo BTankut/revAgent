@@ -47,6 +47,27 @@ function chooseFailedErrorSource(cachedTask: RevitTask | null | undefined, curre
     return null;
 }
 
+function coalesceMatchingStateField(
+    mergedState: any,
+    cachedTask: RevitTask | null | undefined,
+    currentTask: RevitTask | null | undefined,
+    field: string,
+) {
+    const targetState = String(mergedState || "").toLowerCase();
+    const currentMatches = stateOf(currentTask) === targetState;
+    const cachedMatches = stateOf(cachedTask) === targetState;
+    if (currentMatches && cachedMatches) {
+        return coalesceTaskField(currentTask, cachedTask, field);
+    }
+    if (currentMatches) {
+        return coalesceTaskField(currentTask, null, field);
+    }
+    if (cachedMatches) {
+        return coalesceTaskField(cachedTask, null, field);
+    }
+    return null;
+}
+
 export function revitTaskKey(task: RevitTask | null | undefined, fallback = "") {
     if (!task || typeof task !== "object") {
         return fallback;
@@ -81,15 +102,24 @@ export function mergeRevitTask(cachedTask: RevitTask | null | undefined, current
     merged.state = coalesceValue(stateSource?.state, coalesceTaskField(currentTask, cachedTask, "state"));
 
     if (isTerminalState(merged.state)) {
-        merged.finishedAtUtc = coalesceValue(stateSource?.finishedAtUtc, null);
-        merged.elapsedMs = coalesceValue(stateSource?.elapsedMs, null);
+        merged.finishedAtUtc = coalesceValue(
+            coalesceMatchingStateField(merged.state, cachedTask, currentTask, "finishedAtUtc"),
+            stateSource?.finishedAtUtc,
+        );
+        merged.elapsedMs = coalesceValue(
+            coalesceMatchingStateField(merged.state, cachedTask, currentTask, "elapsedMs"),
+            stateSource?.elapsedMs,
+        );
     } else {
         merged.finishedAtUtc = null;
         merged.elapsedMs = null;
     }
 
     if (stateOf({ state: merged.state }) === "failed") {
-        merged.error = coalesceValue(chooseFailedErrorSource(cachedTask, currentTask)?.error, null);
+        merged.error = coalesceValue(
+            coalesceMatchingStateField(merged.state, cachedTask, currentTask, "error"),
+            chooseFailedErrorSource(cachedTask, currentTask)?.error,
+        );
     } else {
         merged.error = null;
     }

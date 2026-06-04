@@ -64,6 +64,26 @@ function task(overrides = {}) {
 }
 
 {
+  const failedRich = task({ state: "failed", finishedAtUtc, elapsedMs: 5000, error: "boom" });
+  const failedPartial = task({ state: "failed", finishedAtUtc: null, elapsedMs: null, error: null });
+  const merged = mergeRevitTask(failedRich, failedPartial);
+  assert.equal(merged.state, "failed");
+  assert.equal(merged.finishedAtUtc, finishedAtUtc);
+  assert.equal(merged.elapsedMs, 5000);
+  assert.equal(merged.error, "boom");
+}
+
+{
+  const failed = task({ state: "failed", finishedAtUtc: "2026-06-04T10:00:06.000Z", elapsedMs: 6000, error: "boom" });
+  const completedPartial = task({ state: "completed", finishedAtUtc: null, elapsedMs: null, error: null });
+  const merged = mergeRevitTask(failed, completedPartial);
+  assert.equal(merged.state, "completed");
+  assert.equal(merged.finishedAtUtc, null);
+  assert.equal(merged.elapsedMs, null);
+  assert.equal(merged.error, null);
+}
+
+{
   const guarded = task({ state: "guarded", finishedAtUtc, elapsedMs: 5000, error: "guard text" });
   const blocked = task({ state: "blocked", finishedAtUtc: "2026-06-04T10:01:00.000Z", elapsedMs: 60000, error: "blocked text" });
   const merged = mergeRevitTask(guarded, blocked);
