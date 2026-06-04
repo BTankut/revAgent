@@ -182,9 +182,12 @@ function mergeLiveStatusCache(machineName, liveStatus, now, offlineSeconds) {
   const currentRevitStatus = liveStatus.revitStatus || null;
   const cached = liveStatusCache.get(key);
   const cacheTtlMs = Math.max(LIVE_STATUS_CACHE_TTL_MS, Number(offlineSeconds || DEFAULT_OFFLINE_SECONDS) * 1000);
+  const cachedRevitStatus = cached && now - cached.cachedAtMs <= cacheTtlMs
+    ? cached.revitStatus
+    : null;
 
   if (hasUsefulRevitStatus(liveStatus)) {
-    const mergedRevitStatus = mergeRevitStatusSnapshots(currentRevitStatus, cached?.revitStatus);
+    const mergedRevitStatus = mergeRevitStatusSnapshots(currentRevitStatus, cachedRevitStatus);
     const mergedLiveStatus = {
       ...liveStatus,
       revitStatus: mergedRevitStatus,
@@ -196,14 +199,14 @@ function mergeLiveStatusCache(machineName, liveStatus, now, offlineSeconds) {
     return mergedLiveStatus;
   }
 
-  if (!cached || now - cached.cachedAtMs > cacheTtlMs || !hasUsefulRevitStatus({ revitStatus: cached.revitStatus })) {
+  if (!cachedRevitStatus || !hasUsefulRevitStatus({ revitStatus: cachedRevitStatus })) {
     return liveStatus;
   }
 
   return {
     ...liveStatus,
     revitStatus: {
-      ...mergeRevitStatusSnapshots(currentRevitStatus, cached.revitStatus),
+      ...mergeRevitStatusSnapshots(currentRevitStatus, cachedRevitStatus),
       // A heartbeat-only runtime process may overwrite status.json without
       // recent Revit tasks. Keep the last rich recent task list stable, but do
       // not resurrect a cached active task.

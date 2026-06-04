@@ -613,6 +613,56 @@ try {
   assert.equal(cachedStatusData.activity.find((event) => event.taskName === "smoke inspect schedules").requestBytes, 900);
   assert.equal(cachedStatusData.activity.find((event) => event.taskName === "smoke inspect schedules").responseBytes, 1800);
 
+  writeJson(path.join(reportsRoot, "live", "machines", "TESTPC", "status.json"), {
+    schemaVersion: "revagent.live.status.v1",
+    machineName: "TESTPC",
+    userName: "BT",
+    lastHeartbeatUtc: new Date(now.getTime() + 11 * 60 * 1000).toISOString(),
+    runtime: {
+      version,
+    },
+    activeTask: null,
+    activeTasks: [],
+    recentActivity: [],
+    revitStatus: {
+      activeTask: null,
+      recentTasks: [
+        {
+          id: "status-fresh-after-cache-expiry",
+          method: "send_code_to_revit",
+          taskName: "smoke fresh after cache expiry",
+          state: "completed",
+          startedAtUtc: new Date(now.getTime() + 11 * 60 * 1000).toISOString(),
+          finishedAtUtc: new Date(now.getTime() + 11 * 60 * 1000 + 100).toISOString(),
+          elapsedMs: 100,
+          requestBytes: 777,
+          responseBytes: 888,
+          error: null,
+        },
+      ],
+      recentHistoryCount: 1,
+      recentHistoryCapacity: 100,
+    },
+    writeHealth: {
+      droppedCount: 0,
+    },
+  });
+  const realDateNow = Date.now;
+  Date.now = () => now.getTime() + 11 * 60 * 1000;
+  try {
+    const expiredCacheData = loadDashboardData({
+      reportsRoot,
+      releaseRoot,
+      staleSeconds: 60,
+      offlineSeconds: 300,
+      activityLimit: 20,
+    });
+    assert.equal(expiredCacheData.activity.some((event) => event.taskName === "smoke fresh after cache expiry"), true);
+    assert.equal(expiredCacheData.activity.some((event) => event.taskName === "smoke status cleanup"), false);
+  } finally {
+    Date.now = realDateNow;
+  }
+
   assert.equal("params" in data.activity[0], false);
   assert.equal(JSON.stringify(data).includes("\"preview\""), false);
   assert.equal(JSON.stringify(data).includes("yyyyyyyy"), false);
