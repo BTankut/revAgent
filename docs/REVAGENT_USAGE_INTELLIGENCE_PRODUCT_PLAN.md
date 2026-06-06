@@ -20,9 +20,11 @@ Delivery order:
 5. Add usage-intelligence promotion tracking once the product surfaces exist.
 
 Workstream 3 and Workstream 4 are each project-scale efforts, comparable in
-size to the sheet-annotation #38 work. Each requires its own plan document,
-branch/PR sequence, live Revit validation, and release gate. They must not be
-folded into the hotfix PRs.
+size to the sheet-annotation #38 work. Workstream 3 uses the implementation
+decisions in its roadmap section as the approval checkpoint instead of a
+separate plan document. Workstream 4 still requires its own spike/plan
+artifact. Both require a branch/PR sequence, live Revit validation, and release
+gate. They must not be folded into the hotfix PRs.
 
 The roadmap should keep the original product intent intact while respecting the
 repo delivery model: small PRs, clear gates, and no merge/deploy without the
@@ -61,8 +63,9 @@ explicit gates.
 ### Planning Gates For Workstream 3 And Workstream 4
 
 - Do not code Workstream 3 directly.
-- When Workstream 3 is reached, first write its own plan document, get approval,
-  and then proceed with separate implementation PRs.
+- When Workstream 3 is reached, first lock the Implementation Decisions in this
+  roadmap section, get approval, and then proceed with separate implementation
+  PRs.
 - Do not code Workstream 4 directly.
 - When Workstream 4 is reached, first complete the mandatory design spike:
   - Excel ingestion path
@@ -71,8 +74,8 @@ explicit gates.
   - review output decisions
 - Do not write implementation code for Workstream 4 until the spike is complete
   and the follow-up plan is approved.
-- When Workstream 3 or Workstream 4 is reached, produce the required plan or
-  spike artifact and stop before implementation.
+- When Workstream 3 or Workstream 4 is reached, produce the required
+  implementation-decision or spike artifact and stop before implementation.
 
 ### Binding Execution Order
 
@@ -81,8 +84,9 @@ explicit gates.
 1. Workstream 1 viewport tags -> PR -> CI -> operator live Revit test -> merge.
 2. Workstream 2 schedules partial -> PR -> CI -> operator live Revit test ->
    merge.
-3. Workstream 3 annotation inventory/count -> plan document -> approval ->
-   implementation PRs, each with the required live gate.
+3. Workstream 3 annotation inventory/count -> Implementation Decisions in this
+   roadmap section -> approval -> implementation PRs, each with the required
+   live gate.
 4. Workstream 4 schedule-to-Excel reconciliation -> design spike -> plan ->
    implementation PRs.
 5. Workstream 5 usage-intelligence promotion tracking -> final roadmap step,
@@ -415,8 +419,9 @@ annotation conventions.
 
 ### Product Shape
 
-This is a separate project-scale workstream, not a hotfix add-on. It needs its
-own plan, PR sequence, live validation model, and release notes.
+This is a separate project-scale workstream, not a hotfix add-on. It needs an
+approved implementation-decision checkpoint, PR sequence, live validation
+model, and release notes.
 
 Add a general, parameterized annotation inventory/count surface. The final tool
 name can be decided during implementation; candidate names:
@@ -427,6 +432,47 @@ name can be decided during implementation; candidate names:
 
 The tool must not hardcode `Q/QHK 310.xxx`. That code family can be used only
 as an example profile or validation scenario.
+
+### Implementation Decisions
+
+1. Reuse existing evidence and budget helpers by extraction, not duplication.
+   WS3 implementation PRs must first extract and share the WS1 sheet evidence
+   builders for text notes, viewport text notes, viewport tags, placed schedule
+   cells, tag/tagged-element metadata, response-byte estimation, and suggested
+   scopes, plus the WS2 schedule section/cell readers and schedule-cell
+   evidence row builder. TypeScript wrappers reuse the existing broad-scan
+   result helpers.
+2. The four count semantics are fixed. `occurrence` counts every pattern match,
+   including multiple matches in one source element or cell. `uniqueText`
+   counts distinct normalized matched text per profile and grouping bucket.
+   `uniqueTag` counts distinct `tagId` values from viewport tag evidence only.
+   `uniqueTaggedElement` counts distinct resolved `taggedElementId` values from
+   viewport tag evidence only; unresolved tagged elements are evidence with a
+   warning, not counted. If a tag-specific count mode is requested without an
+   explicit source list, the source list defaults to `viewport_tags`; if the
+   caller explicitly combines a tag-specific count mode with non-tag sources,
+   the tool returns a guarded validation result with
+   `reason=invalid_count_mode_for_sources` and no fallback count mode.
+   Characterization tests must cover repeated matches in one source, duplicate
+   codes across sources, two tags pointing to one element, unresolved tags,
+   non-tag source validation, and placed schedule cells.
+3. Profiles are explicit input objects, not hardcoded product behavior. A
+   profile has a stable name and one or more named patterns using `exact`,
+   `contains`, `startsWith`, `regex`, or `normalizedRegex`. Simple query/regex
+   inputs are normalized into an anonymous profile before native execution:
+   `profileName` is `anonymous`, and pattern names are stable
+   `anonymous.<matchMode>.<ordinal>` values unless the caller supplies names.
+   Regex matching is bounded: pattern length is capped, candidate text is
+   trimmed before matching, each regex runs with a native timeout, broad regex
+   scans require explicit scope or `allowExpensiveSearch=true`, and invalid or
+   timed-out regexes return guarded/noticed results instead of unbounded scans.
+4. Workstream 3 implementation is multi-PR. After this decision checkpoint is
+   approved, split implementation into focused PRs: shared helper extraction
+   with no behavior change, core read-only annotation inventory/count for sheet
+   text and viewport tag evidence, placed schedule-cell integration and
+   continuation polish, then docs/release readiness. Every PR that changes a
+   DLL or command payload has its own CI, bot review, operator live gate, and
+   merge approval.
 
 ### Native Discipline
 
@@ -506,7 +552,8 @@ Counting modes:
 - Depends on Workstream 1 viewport tag evidence.
 - Depends on Workstream 2 schedule partial behavior for placed schedule cell
   scale and continuity.
-- Requires its own plan document before implementation.
+- Requires approved Implementation Decisions in this section before
+  implementation.
 - DLL/payload change expected: refresh manifest and run live Revit validation
   before merge.
 - Revit must be closed for install/deploy validation when payload files are
@@ -696,8 +743,9 @@ This is not a suggestion.
    operator live Revit test -> merge.
 2. Workstream 2 `inspect_schedules` partial/stop-reason hotfix -> PR -> CI ->
    operator live Revit test -> merge.
-3. Workstream 3 general annotation inventory/count -> plan document ->
-   approval -> implementation PRs, each with the required live gate.
+3. Workstream 3 general annotation inventory/count -> Implementation Decisions
+   in this roadmap section -> approval -> implementation PRs, each with the
+   required live gate.
 4. Workstream 4 schedule-to-Excel reconciliation -> mandatory design spike ->
    plan -> implementation PRs.
 5. Workstream 5 usage-intelligence promotion tracking -> deterministic smoke
