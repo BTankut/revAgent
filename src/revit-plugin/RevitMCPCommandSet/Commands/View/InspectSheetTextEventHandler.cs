@@ -672,7 +672,7 @@ namespace RevitMCPCommandSet.Commands.View
                     {
                         textNotesTruncated = true;
                         state.Stop("max_text_notes");
-                        continue;
+                        break;
                     }
 
                     Dictionary<string, object> record = BuildTextNoteRecord(
@@ -744,7 +744,7 @@ namespace RevitMCPCommandSet.Commands.View
                     {
                         tagsTruncated = true;
                         state.Stop("max_items");
-                        continue;
+                        break;
                     }
 
                     Dictionary<string, object> record = BuildViewportTagRecord(document, sheet, viewport, view, tag, tagText, warnings);
@@ -1493,7 +1493,7 @@ namespace RevitMCPCommandSet.Commands.View
                             ElementId linkedId = TryReadElementIdProperty(item, "LinkedElementId");
                             if (linkedId != null && linkedId != ElementId.InvalidElementId)
                             {
-                                return linkedId;
+                                AddOnce(warnings, "viewport_tag_linked_element_unresolved");
                             }
                         }
                     }
