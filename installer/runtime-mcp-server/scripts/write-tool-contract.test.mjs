@@ -82,12 +82,18 @@ assertContains(inspectSchedules, "normalizeBroadScanResult", "inspect_schedules 
 assertContains(inspectSchedules, "buildBroadScanGuardedResult", "inspect_schedules guarded paths must use the shared broad-scan result contract.");
 assertContains(inspectSchedules, "buildScheduleEvidenceRows", "inspect_schedules must expose assistant-readable schedule evidence rows.");
 assertContains(inspectSchedules, "export function normalizeScheduleResult", "inspect_schedules native-result normalization must be directly fixture-testable.");
+assertContains(inspectSchedules, 'sendRevitCommand("inspect_schedules"', "inspect_schedules must use the native commandset bridge instead of generated dynamic C#.");
 assertContains(inspectSchedules, "readNativeResultField(payload, \"success\") === false", "inspect_schedules failed native payloads must stop as read_failed.");
 assertContains(inspectSchedules, "schedules.filter(isObject)", "inspect_schedules must ignore non-object schedule entries before reading sections.");
 assertContains(inspectSchedules, "readNativeResultArray(schedule, \"sections\")", "inspect_schedules must ignore non-object section entries before reading matches.");
 assertContains(inspectSchedules, "readNativeResultField(lastEvidence, \"scheduleId\") ?? readNativeResultField(lastSchedule, \"id\") ?? null", "inspect_schedules must keep last scanned schedule id when no cell evidence matched.");
 assertContains(inspectSchedules, "clampIntArg(args.maxRowsPerSection, 80, 0, 1000)", "inspect_schedules must preserve valid zero row limits.");
 assertContains(inspectSchedules, "clampIntArg(args.maxColumnsPerSection, 30, 0, 200)", "inspect_schedules must preserve valid zero column limits.");
+assertContains(inspectSchedules, "maxElapsedMs", "inspect_schedules must expose native elapsed-budget control.");
+assertContains(inspectSchedules, "maxCells", "inspect_schedules must expose native cell-budget control.");
+assertContains(inspectSchedules, "maxResponseBytes", "inspect_schedules must expose native response-byte budget control.");
+assertContains(inspectSchedules, "startRow", "inspect_schedules must expose row continuation scope.");
+assertContains(inspectSchedules, "startColumn", "inspect_schedules must expose column continuation scope.");
 
 const broadScanResult = readSource("src/utils/broadScanResult.ts");
 assertContains(broadScanResult, "finiteNumberOrNull", "Shared broad-scan contract must not coerce null elapsedMs to zero.");

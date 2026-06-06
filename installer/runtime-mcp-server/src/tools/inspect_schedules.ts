@@ -1,15 +1,11 @@
 import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import {
-    connectionOptionsFromArgs,
     connectionTargetSchema,
-    csharpIntArray,
-    csharpString,
-    csharpStringArray,
-    executeRevitCode,
+    executionOptionsFromArgs,
     formatJsonContent,
+    sendRevitCommand,
     taskMetadataSchema,
-    taskOptionsFromArgs,
 } from "../utils/revitToolHelpers.js";
 import {
     buildBroadScanFailureResult,
@@ -39,307 +35,59 @@ function uniqueSections(values: unknown): string[] {
         .filter((value: string) => ["header", "body", "footer"].includes(value));
 }
 
-function buildInspectSchedulesCode(args: JsonObject) {
-    const scheduleIds = (args.scheduleIds || [])
+const budgetDefaults: Record<string, { maxElapsedMs: number; timeoutMs: number; maxCells: number }> = {
+    fast: { maxElapsedMs: 4500, timeoutMs: 12000, maxCells: 5000 },
+    balanced: { maxElapsedMs: 15000, timeoutMs: 30000, maxCells: 25000 },
+    deep: { maxElapsedMs: 45000, timeoutMs: 60000, maxCells: 100000 },
+};
+
+function resolveBudget(args: JsonObject) {
+    const searchBudget = ["fast", "balanced", "deep"].includes(String(args.searchBudget || ""))
+        ? String(args.searchBudget)
+        : "fast";
+    const defaults = budgetDefaults[searchBudget];
+    const maxElapsedMs = clampIntArg(args.maxElapsedMs, defaults.maxElapsedMs, 1, 119000);
+    const timeoutMs = clampIntArg(args.timeoutMs, Math.max(defaults.timeoutMs, Math.min(120000, maxElapsedMs + 5000)), 1000, 120000);
+    return {
+        searchBudget,
+        maxElapsedMs: Math.min(maxElapsedMs, Math.max(1, timeoutMs - 1000)),
+        timeoutMs,
+        maxCells: clampIntArg(args.maxCells, defaults.maxCells, 1, 500000),
+    };
+}
+
+function parseScheduleIds(values: unknown) {
+    return (Array.isArray(values) ? values : [])
         .map((value: unknown) => Number.parseInt(String(value), 10))
         .filter((value: number) => Number.isFinite(value) && value > 0);
+}
+
+function buildNativeParams(args: JsonObject, budget: ReturnType<typeof resolveBudget>) {
+    const scheduleIds = parseScheduleIds(args.scheduleIds);
     const sections = uniqueSections(args.sections);
-    const includeCells = args.includeCells === true ? "true" : "false";
-    const scanCells = args.scanCells === true || Boolean(args.cellQuery) ? "true" : "false";
-    const nameQuery = csharpString(args.nameQuery || args.query || "");
-    const cellQuery = csharpString(args.cellQuery || "");
-    const maxSchedules = clampIntArg(args.maxSchedules, 50, 1, 200);
-    const maxRowsPerSection = clampIntArg(args.maxRowsPerSection, 80, 0, 1000);
-    const maxColumnsPerSection = clampIntArg(args.maxColumnsPerSection, 30, 0, 200);
-    const maxCellTextChars = clampIntArg(args.maxCellTextChars, 180, 20, 1000);
-    return `
-int[] requestedScheduleIds = ${csharpIntArray(scheduleIds)};
-string[] requestedSections = ${csharpStringArray(sections)};
-string nameQuery = ${nameQuery};
-string cellQuery = ${cellQuery};
-bool includeCells = ${includeCells};
-bool scanCells = ${scanCells};
-int maxSchedules = ${maxSchedules};
-int maxRowsPerSection = ${maxRowsPerSection};
-int maxColumnsPerSection = ${maxColumnsPerSection};
-int maxCellTextChars = ${maxCellTextChars};
-
-string TrimCellText(string value)
-{
-    if (value == null) return "";
-    value = value.Replace("\\r", " ").Replace("\\n", " ").Replace("\\t", " ").Trim();
-    if (value.Length <= maxCellTextChars) return value;
-    return value.Substring(0, maxCellTextChars) + "...";
-}
-
-string NormalizeForSearch(string value)
-{
-    if (value == null) return "";
-    string replaced = value
-        .Replace('\\u0423', 'Y')
-        .Replace('\\u0443', 'y')
-        .Replace('\\u011E', 'G')
-        .Replace('\\u011F', 'g')
-        .Replace('\\u00DC', 'U')
-        .Replace('\\u00FC', 'u')
-        .Replace('\\u0130', 'I')
-        .Replace('\\u0131', 'i')
-        .Replace('\\u015E', 'S')
-        .Replace('\\u015F', 's')
-        .Replace('\\u00C7', 'C')
-        .Replace('\\u00E7', 'c')
-        .Replace('\\u00D6', 'O')
-        .Replace('\\u00F6', 'o');
-    string form = replaced.Normalize(System.Text.NormalizationForm.FormD);
-    System.Text.StringBuilder sb = new System.Text.StringBuilder();
-    foreach (char ch in form)
-    {
-        System.Globalization.UnicodeCategory category = System.Globalization.CharUnicodeInfo.GetUnicodeCategory(ch);
-        if (category != System.Globalization.UnicodeCategory.NonSpacingMark)
-        {
-            sb.Append(ch);
-        }
-    }
-    return sb.ToString().ToLowerInvariant();
-}
-
-bool ContainsNormalized(string value, string query)
-{
-    if (string.IsNullOrWhiteSpace(query)) return true;
-    return NormalizeForSearch(value).Contains(NormalizeForSearch(query));
-}
-
-SectionType SectionTypeForName(string sectionName)
-{
-    string normalized = (sectionName ?? "").ToLowerInvariant();
-    if (normalized == "footer") return SectionType.Footer;
-    if (normalized == "body") return SectionType.Body;
-    return SectionType.Header;
-}
-
-string ReadCell(ViewSchedule schedule, SectionType sectionType, int row, int column)
-{
-    try
-    {
-        return schedule.GetCellText(sectionType, row, column) ?? "";
-    }
-    catch
-    {
-        return "";
-    }
-}
-
-object ReadSection(ViewSchedule schedule, string sectionName, out int matchCount)
-{
-    SectionType sectionType = SectionTypeForName(sectionName);
-    System.Collections.Generic.List<object> rows = new System.Collections.Generic.List<object>();
-    System.Collections.Generic.List<object> matches = new System.Collections.Generic.List<object>();
-    matchCount = 0;
-    int rowCount = 0;
-    int columnCount = 0;
-    bool readFailed = false;
-    string readError = "";
-
-    try
-    {
-        TableSectionData data = schedule.GetTableData().GetSectionData(sectionType);
-        rowCount = data.NumberOfRows;
-        columnCount = data.NumberOfColumns;
-    }
-    catch (Exception ex)
-    {
-        readFailed = true;
-        readError = ex.Message;
-    }
-
-    int rowLimit = Math.Min(rowCount, maxRowsPerSection);
-    int columnLimit = Math.Min(columnCount, maxColumnsPerSection);
-    bool shouldReadCells = includeCells || (scanCells && !string.IsNullOrWhiteSpace(cellQuery));
-
-    if (!readFailed && shouldReadCells)
-    {
-        for (int row = 0; row < rowLimit; row++)
-        {
-            System.Collections.Generic.List<object> cells = new System.Collections.Generic.List<object>();
-            for (int column = 0; column < columnLimit; column++)
-            {
-                string text = ReadCell(schedule, sectionType, row, column);
-                string trimmed = TrimCellText(text);
-                if (includeCells)
-                {
-                    cells.Add(new {
-                        column = column,
-                        text = trimmed
-                    });
-                }
-                if (!string.IsNullOrWhiteSpace(cellQuery) && ContainsNormalized(text, cellQuery))
-                {
-                    matches.Add(new {
-                        section = sectionName,
-                        row = row,
-                        column = column,
-                        text = trimmed
-                    });
-                }
-            }
-            if (includeCells)
-            {
-                rows.Add(new {
-                    row = row,
-                    cells = cells.ToArray()
-                });
-            }
-        }
-    }
-
-    matchCount = matches.Count;
-    return new {
-        section = sectionName,
-        rowCount = rowCount,
-        columnCount = columnCount,
-        returnedRows = includeCells ? rowLimit : 0,
-        returnedColumns = includeCells ? columnLimit : 0,
-        rowsTruncated = rowCount > rowLimit,
-        columnsTruncated = columnCount > columnLimit,
-        scannedRows = shouldReadCells ? rowLimit : 0,
-        scannedColumns = shouldReadCells ? columnLimit : 0,
-        matches = matches.ToArray(),
-        cells = rows.ToArray(),
-        readFailed = readFailed,
-        readError = readError
+    return {
+        query: args.query,
+        nameQuery: args.nameQuery ?? args.query,
+        cellQuery: args.cellQuery,
+        scheduleIds,
+        sections,
+        includeCells: args.includeCells,
+        scanCells: args.scanCells,
+        allowExpensiveSearch: args.allowExpensiveSearch,
+        searchBudget: budget.searchBudget,
+        maxElapsedMs: budget.maxElapsedMs,
+        maxSchedules: clampIntArg(args.maxSchedules, 50, 1, 200),
+        maxRowsPerSection: clampIntArg(args.maxRowsPerSection, 80, 0, 1000),
+        maxColumnsPerSection: clampIntArg(args.maxColumnsPerSection, 30, 0, 200),
+        startRow: clampIntArg(args.startRow, 0, 0, 100000),
+        startColumn: clampIntArg(args.startColumn, 0, 0, 10000),
+        maxCellTextChars: clampIntArg(args.maxCellTextChars, 180, 20, 1000),
+        maxCells: budget.maxCells,
+        maxResponseBytes: clampIntArg(args.maxResponseBytes, 4 * 1024 * 1024, 4096, 16 * 1024 * 1024),
+        timeoutMs: budget.timeoutMs,
+        taskName: args.taskName || "Inspect Revit schedules",
+        taskId: args.taskId,
     };
-}
-
-try
-{
-    System.Collections.Generic.List<string> warnings = new System.Collections.Generic.List<string>();
-    System.Collections.Generic.List<ViewSchedule> sourceSchedules = new System.Collections.Generic.List<ViewSchedule>();
-    System.Collections.Generic.HashSet<int> requestedIds = new System.Collections.Generic.HashSet<int>();
-    foreach (int id in requestedScheduleIds)
-    {
-        requestedIds.Add(id);
-        ViewSchedule schedule = document.GetElement(new ElementId(id)) as ViewSchedule;
-        if (schedule != null && !schedule.IsTemplate)
-        {
-            sourceSchedules.Add(schedule);
-        }
-        else
-        {
-            warnings.Add("Schedule not found or is a template: " + id.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        }
-    }
-
-    bool hasExplicitIds = requestedIds.Count > 0;
-    if (!hasExplicitIds)
-    {
-        FilteredElementCollector collector = new FilteredElementCollector(document)
-            .OfClass(typeof(ViewSchedule));
-        foreach (Element element in collector)
-        {
-            ViewSchedule schedule = element as ViewSchedule;
-            if (schedule == null || schedule.IsTemplate) continue;
-            sourceSchedules.Add(schedule);
-        }
-    }
-
-    bool hasNameQuery = !string.IsNullOrWhiteSpace(nameQuery);
-    bool hasCellQuery = !string.IsNullOrWhiteSpace(cellQuery);
-    if (!hasExplicitIds && hasCellQuery && !hasNameQuery)
-    {
-        warnings.Add("Cell scan is bounded by maxSchedules/maxRowsPerSection/maxColumnsPerSection. Use nameQuery or scheduleIds first for large projects.");
-    }
-
-    System.Collections.Generic.List<object> schedules = new System.Collections.Generic.List<object>();
-    int totalSchedules = sourceSchedules.Count;
-    int candidateCount = 0;
-    int scannedScheduleCount = 0;
-    int scheduleNameMatchedCount = 0;
-    int cellMatchedScheduleCount = 0;
-    int totalCellMatches = 0;
-    bool truncated = false;
-
-    foreach (ViewSchedule schedule in sourceSchedules)
-    {
-        bool nameMatches = !hasNameQuery || ContainsNormalized(schedule.Name, nameQuery);
-        if (!hasExplicitIds && hasNameQuery && !nameMatches)
-        {
-            continue;
-        }
-
-        candidateCount++;
-        if (!hasExplicitIds && candidateCount > maxSchedules)
-        {
-            truncated = true;
-            break;
-        }
-        if (nameMatches) scheduleNameMatchedCount++;
-
-        System.Collections.Generic.List<object> sectionResults = new System.Collections.Generic.List<object>();
-        int scheduleMatchCount = 0;
-        bool shouldReadSections = includeCells || scanCells;
-        if (shouldReadSections)
-        {
-            scannedScheduleCount++;
-            foreach (string sectionName in requestedSections)
-            {
-                int sectionMatchCount = 0;
-                object sectionResult = ReadSection(schedule, sectionName, out sectionMatchCount);
-                sectionResults.Add(sectionResult);
-                scheduleMatchCount += sectionMatchCount;
-            }
-        }
-
-        bool includeSchedule = hasExplicitIds || nameMatches || !hasCellQuery || scheduleMatchCount > 0;
-        if (!includeSchedule) continue;
-        if (scheduleMatchCount > 0) cellMatchedScheduleCount++;
-        totalCellMatches += scheduleMatchCount;
-
-        schedules.Add(new {
-            id = schedule.Id.IntegerValue,
-            uniqueId = schedule.UniqueId,
-            name = schedule.Name,
-            viewType = schedule.ViewType.ToString(),
-            isTemplate = schedule.IsTemplate,
-            nameMatched = nameMatches,
-            cellMatchCount = scheduleMatchCount,
-            sections = sectionResults.ToArray()
-        });
-    }
-
-    return new {
-        success = true,
-        action = "inspect_schedules",
-        query = nameQuery,
-        nameQuery = nameQuery,
-        cellQuery = cellQuery,
-        totalSchedules = totalSchedules,
-        candidateCount = candidateCount,
-        returnedCount = schedules.Count,
-        truncated = truncated,
-        maxSchedules = maxSchedules,
-        scan = new {
-            enabled = scanCells,
-            includeCells = includeCells,
-            sections = requestedSections,
-            maxRowsPerSection = maxRowsPerSection,
-            maxColumnsPerSection = maxColumnsPerSection,
-            scannedScheduleCount = scannedScheduleCount,
-            scheduleNameMatchedCount = scheduleNameMatchedCount,
-            cellMatchedScheduleCount = cellMatchedScheduleCount,
-            totalCellMatches = totalCellMatches
-        },
-        schedules = schedules.ToArray(),
-        warnings = warnings.ToArray()
-    };
-}
-catch (Exception ex)
-{
-    return new {
-        success = false,
-        action = "inspect_schedules",
-        error = ex.ToString()
-    };
-}`;
 }
 
 function isObject(value: unknown): value is JsonObject {
@@ -395,6 +143,15 @@ function inferScheduleStopReason(payload: JsonObject) {
     return "max_cells";
 }
 
+function resolveScheduleStopReason(payload: JsonObject) {
+    const inferred = inferScheduleStopReason(payload);
+    const nativeReason = readNativeResultField(payload, "scanStoppedReason");
+    if (!nativeReason || (nativeReason === "completed" && inferred !== "completed")) {
+        return inferred;
+    }
+    return nativeReason;
+}
+
 function buildScheduleSummary(payload: JsonObject) {
     const scan = readNativeResultObject(payload, "scan") || {};
     const schedules = readNativeResultArray(payload, "schedules");
@@ -411,8 +168,8 @@ function buildScheduleSummary(payload: JsonObject) {
         matchCount: evidenceRows.length,
         totalCellMatches: readNativeResultField(scan, "totalCellMatches") ?? evidenceRows.length,
         scannedScheduleCount: readNativeResultField(scan, "scannedScheduleCount") ?? null,
-        partial: readNativeResultField(payload, "partial") === true,
-        scanStoppedReason: readNativeResultField(payload, "scanStoppedReason") ?? "completed",
+        partial: inferSchedulePartial(payload),
+        scanStoppedReason: resolveScheduleStopReason(payload),
     };
 }
 
@@ -429,10 +186,16 @@ function inferScheduleLastRead(payload: JsonObject) {
         : schedules.length > 0 ? schedules[schedules.length - 1] : null;
     const returnedRows = Number(readNativeResultField(lastSection, "returnedRows") ?? readNativeResultField(lastSection, "scannedRows") ?? 0);
     const returnedColumns = Number(readNativeResultField(lastSection, "returnedColumns") ?? readNativeResultField(lastSection, "scannedColumns") ?? 0);
+    const startRow = Number(readNativeResultField(lastSection, "startRow") ?? 0);
+    const startColumn = Number(readNativeResultField(lastSection, "startColumn") ?? 0);
     return {
         lastReadSection: readNativeResultField(lastEvidence, "section") ?? readNativeResultField(lastSection, "section") ?? null,
-        lastReadRow: readNativeResultField(lastEvidence, "row") ?? (returnedRows > 0 ? returnedRows - 1 : null),
-        lastReadColumn: readNativeResultField(lastEvidence, "column") ?? (returnedColumns > 0 ? returnedColumns - 1 : null),
+        lastReadRow: readNativeResultField(lastEvidence, "row")
+            ?? readNativeResultField(lastSection, "lastReadRow")
+            ?? (returnedRows > 0 ? startRow + returnedRows - 1 : null),
+        lastReadColumn: readNativeResultField(lastEvidence, "column")
+            ?? readNativeResultField(lastSection, "lastReadColumn")
+            ?? (returnedColumns > 0 ? startColumn + returnedColumns - 1 : null),
         lastReadSheetId: null,
         lastReadViewId: null,
         lastReadViewportId: null,
@@ -441,35 +204,107 @@ function inferScheduleLastRead(payload: JsonObject) {
 }
 
 function buildScheduleScanPolicy(args: JsonObject) {
+    const budget = resolveBudget(args);
     return {
+        searchBudget: budget.searchBudget,
         allowExpensiveSearch: args.allowExpensiveSearch === true,
         includeCells: args.includeCells === true,
         scanCells: args.scanCells === true || Boolean(args.cellQuery),
         sections: uniqueSections(args.sections),
+        maxElapsedMs: budget.maxElapsedMs,
         maxSchedules: clampIntArg(args.maxSchedules, 50, 1, 200),
         maxRowsPerSection: clampIntArg(args.maxRowsPerSection, 80, 0, 1000),
         maxColumnsPerSection: clampIntArg(args.maxColumnsPerSection, 30, 0, 200),
-        timeoutMs: clampIntArg(args.timeoutMs, 120000, 1000, 120000),
+        startRow: clampIntArg(args.startRow, 0, 0, 100000),
+        startColumn: clampIntArg(args.startColumn, 0, 0, 10000),
+        maxCells: budget.maxCells,
+        maxResponseBytes: clampIntArg(args.maxResponseBytes, 4 * 1024 * 1024, 4096, 16 * 1024 * 1024),
+        timeoutMs: budget.timeoutMs,
     };
+}
+
+function buildCompatibleSection(section: JsonObject) {
+    return {
+        ...section,
+        section: readNativeResultField(section, "section"),
+        rowCount: readNativeResultField(section, "rowCount"),
+        columnCount: readNativeResultField(section, "columnCount"),
+        startRow: readNativeResultField(section, "startRow"),
+        startColumn: readNativeResultField(section, "startColumn"),
+        returnedRows: readNativeResultField(section, "returnedRows"),
+        returnedColumns: readNativeResultField(section, "returnedColumns"),
+        rowsTruncated: readNativeResultField(section, "rowsTruncated"),
+        columnsTruncated: readNativeResultField(section, "columnsTruncated"),
+        scannedRows: readNativeResultField(section, "scannedRows"),
+        scannedColumns: readNativeResultField(section, "scannedColumns"),
+        scannedCells: readNativeResultField(section, "scannedCells"),
+        lastReadRow: readNativeResultField(section, "lastReadRow"),
+        lastReadColumn: readNativeResultField(section, "lastReadColumn"),
+        matches: readNativeResultArray(section, "matches").map((match) => ({
+            ...match,
+            section: readNativeResultField(match, "section"),
+            row: readNativeResultField(match, "row"),
+            column: readNativeResultField(match, "column"),
+            text: readNativeResultField(match, "text"),
+        })),
+        cells: readNativeResultArray(section, "cells").map((row) => ({
+            ...row,
+            row: readNativeResultField(row, "row"),
+            cells: readNativeResultArray(row, "cells").map((cell) => ({
+                ...cell,
+                column: readNativeResultField(cell, "column"),
+                text: readNativeResultField(cell, "text"),
+            })),
+        })),
+        readFailed: readNativeResultField(section, "readFailed"),
+        readError: readNativeResultField(section, "readError"),
+    };
+}
+
+function buildCompatibleSchedules(result: JsonObject) {
+    return readNativeResultArray(result, "schedules").map((schedule) => ({
+        ...schedule,
+        id: readNativeResultField(schedule, "id"),
+        uniqueId: readNativeResultField(schedule, "uniqueId"),
+        name: readNativeResultField(schedule, "name"),
+        viewType: readNativeResultField(schedule, "viewType"),
+        isTemplate: readNativeResultField(schedule, "isTemplate"),
+        nameMatched: readNativeResultField(schedule, "nameMatched"),
+        cellMatchCount: readNativeResultField(schedule, "cellMatchCount"),
+        sections: readNativeResultArray(schedule, "sections").map(buildCompatibleSection),
+    }));
+}
+
+function preserveScheduleCompatibilityFields(result: JsonObject) {
+    for (const field of ["query", "nameQuery", "cellQuery", "totalSchedules", "candidateCount", "returnedCount", "truncated", "maxSchedules", "scan", "matches"]) {
+        const value = readNativeResultField(result, field);
+        if (value !== undefined && result[field] === undefined) {
+            result[field] = value;
+        }
+    }
+    if (result.schedules === undefined) {
+        result.schedules = buildCompatibleSchedules(result);
+    }
+    return result;
 }
 
 export function normalizeScheduleResult(payload: JsonObject, args: JsonObject, elapsedMs: number) {
     const partial = inferSchedulePartial(payload);
-    return normalizeBroadScanResult(payload, {
+    return preserveScheduleCompatibilityFields(normalizeBroadScanResult(payload, {
         action: "inspect_schedules",
         elapsedMs,
         partial,
-        scanStoppedReason: readNativeResultField(payload, "scanStoppedReason") ?? inferScheduleStopReason(payload),
+        scanStoppedReason: resolveScheduleStopReason(payload),
         scanPolicy: buildScheduleScanPolicy(args),
-        suggestedNextScopes: ["nameQuery", "scheduleIds", "sections", "maxRowsPerSection", "maxColumnsPerSection", "allowExpensiveSearch"],
+        suggestedNextScopes: ["nameQuery", "scheduleIds", "sections", "startRow", "startColumn", "maxRowsPerSection", "maxColumnsPerSection", "maxCells", "maxResponseBytes", "maxElapsedMs", "allowExpensiveSearch"],
         summary: buildScheduleSummary,
         evidenceRows: buildScheduleEvidenceRows,
         lastRead: inferScheduleLastRead,
-    });
+    }));
 }
 
 export function registerInspectSchedulesTool(server: ToolServer) {
-    server.tool("inspect_schedules", "[SCHEDULE_INSPECTION_READ_ONLY] Read-only Revit schedule discovery and bounded cell inspection for large models. Prefer this over generic send_code_to_revit when finding schedules or reading schedule cells. For large models, use nameQuery/scheduleIds first; broad cell scans require allowExpensiveSearch=true.", {
+    server.tool("inspect_schedules", "[SCHEDULE_INSPECTION_READ_ONLY] Read-only native Revit schedule discovery and bounded cell inspection with partial-result continuation state. Prefer this over generic send_code_to_revit when finding schedules or reading schedule cells. For large models, use nameQuery/scheduleIds first; broad cell scans require allowExpensiveSearch=true.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Alias for nameQuery. Matches schedule names with Turkish/diacritic/Cyrillic-U normalization."),
@@ -480,9 +315,15 @@ export function registerInspectSchedulesTool(server: ToolServer) {
         includeCells: z.boolean().optional().describe("Return a bounded cell snapshot for each returned schedule. Defaults false."),
         scanCells: z.boolean().optional().describe("Scan bounded cells for cellQuery. Defaults true when cellQuery is provided, otherwise false."),
         allowExpensiveSearch: z.boolean().optional().describe("Explicit approval for scanning schedule cells without scheduleIds/nameQuery. Defaults false."),
+        searchBudget: z.enum(["fast", "balanced", "deep"]).optional().describe("Native Revit-side scan budget preset. fast is default; deep still respects maxElapsedMs and response-size caps."),
+        maxElapsedMs: z.number().int().positive().max(119000).optional().describe("Native Revit-side elapsed budget. It is clamped below timeoutMs so partial schedule results can return before transport timeout."),
         maxSchedules: z.number().int().positive().max(200).optional().describe("Maximum schedules to inspect/return. Defaults 50."),
         maxRowsPerSection: z.number().int().min(0).max(1000).optional().describe("Maximum rows per section to read/scan. Defaults 80."),
         maxColumnsPerSection: z.number().int().min(0).max(200).optional().describe("Maximum columns per section to read/scan. Defaults 30."),
+        startRow: z.number().int().min(0).max(100000).optional().describe("Zero-based first schedule row to read in each requested section. Defaults 0."),
+        startColumn: z.number().int().min(0).max(10000).optional().describe("Zero-based first schedule column to read in each requested section. Defaults 0."),
+        maxCells: z.number().int().positive().max(500000).optional().describe("Global native cap across schedule cells read or scanned. Defaults by searchBudget."),
+        maxResponseBytes: z.number().int().min(4096).max(16 * 1024 * 1024).optional().describe("Approximate native response-size cap. Defaults 4 MB."),
         maxCellTextChars: z.number().int().min(20).max(1000).optional().describe("Maximum characters retained per returned cell text. Defaults 180."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Socket timeout in milliseconds. Defaults 120000."),
     }, async (args) => {
@@ -498,7 +339,7 @@ export function registerInspectSchedulesTool(server: ToolServer) {
                     action: "inspect_schedules",
                     reason: "needs_scope",
                     message: "Schedule cell scanning without scheduleIds/nameQuery can be expensive in large models. First discover schedules by name, pass exact scheduleIds, or set allowExpensiveSearch=true.",
-                    suggestedNextScopes: ["nameQuery", "scheduleIds", "sections", "maxRowsPerSection", "maxColumnsPerSection", "allowExpensiveSearch"],
+                    suggestedNextScopes: ["nameQuery", "scheduleIds", "sections", "startRow", "startColumn", "maxRowsPerSection", "maxColumnsPerSection", "maxCells", "maxResponseBytes", "maxElapsedMs", "allowExpensiveSearch"],
                     scanPolicy: buildScheduleScanPolicy(args),
                     elapsedMs: Date.now() - startedAtMs,
                     summary: {
@@ -509,11 +350,11 @@ export function registerInspectSchedulesTool(server: ToolServer) {
                     },
                 }));
             }
-            const response = await executeRevitCode(buildInspectSchedulesCode(args), {
-                ...connectionOptionsFromArgs(args),
-                ...taskOptionsFromArgs(args, "Inspect Revit schedules"),
+            const budget = resolveBudget(args);
+            const response = await sendRevitCommand("inspect_schedules", buildNativeParams(args, budget), {
+                ...executionOptionsFromArgs(args, "Inspect Revit schedules"),
                 toolName: "inspect_schedules",
-                transactionMode: "none",
+                timeoutMs: budget.timeoutMs,
             });
             return formatJsonContent(normalizeScheduleResult(response && response.result ? response.result : response, args, Date.now() - startedAtMs));
         }
@@ -523,7 +364,7 @@ export function registerInspectSchedulesTool(server: ToolServer) {
                 error: error instanceof Error ? error.message : String(error),
                 elapsedMs: Date.now() - startedAtMs,
                 scanPolicy: buildScheduleScanPolicy(args),
-                suggestedNextScopes: ["nameQuery", "scheduleIds", "sections", "maxRowsPerSection", "maxColumnsPerSection", "allowExpensiveSearch"],
+                suggestedNextScopes: ["nameQuery", "scheduleIds", "sections", "startRow", "startColumn", "maxRowsPerSection", "maxColumnsPerSection", "maxCells", "maxResponseBytes", "maxElapsedMs", "allowExpensiveSearch"],
             }));
         }
     });

@@ -707,9 +707,13 @@ with tag API limitations reported through warnings or notices.
 
 For schedule work, use `inspect_schedules` before raw dynamic code. It performs
 read-only bounded schedule discovery and cell inspection with `nameQuery`,
-`cellQuery`, `scheduleIds`, section selection, and row/column limits. In large
-projects, avoid broad cell scans without `nameQuery` or explicit `scheduleIds`
-unless the operator explicitly accepts the cost with `allowExpensiveSearch=true`.
+`cellQuery`, `scheduleIds`, section selection, row/column limits, `maxElapsedMs`,
+`maxCells`, and `maxResponseBytes`. In large projects, avoid broad cell scans
+without `nameQuery` or explicit `scheduleIds` unless the operator explicitly
+accepts the cost with `allowExpensiveSearch=true`. If a native schedule read
+stops early, use `partial`, `scanStoppedReason`, `lastReadSection`,
+`lastReadRow`, `lastReadColumn`, and `lastReadItemId` to continue with exact
+`scheduleIds`, `sections`, `startRow`, `startColumn`, or smaller limits.
 For schedule text edits, use `set_schedule_cells` after exact row/column targets
 are known. When the work starts from a visible row label or sheet/schedule text
 search, use `set_schedule_cells_by_text`: bound it with `sheetQuery`,

@@ -107,7 +107,11 @@ notices without failing the whole sheet inspection.
 It provides bounded schedule-name discovery and bounded header/body/footer cell
 reads/scans so agents do not have to generate broad ad hoc C# loops over every
 schedule and every cell. Broad cell scans without `nameQuery` or exact
-`scheduleIds` require explicit `allowExpensiveSearch=true`.
+`scheduleIds` require explicit `allowExpensiveSearch=true`. Schedule traversal
+is owned by the native commandset handler and is bounded by `maxElapsedMs`,
+`maxCells`, and `maxResponseBytes`; early stops return `partial=true`,
+`scanStoppedReason`, and `lastReadSection`/`lastReadRow`/`lastReadColumn`
+continuation state instead of relying on socket timeout behavior.
 Both broad scan tools are normalized through the shared runtime broad-scan
 result contract in `installer/runtime-mcp-server/src/utils/broadScanResult.ts`.
 Their top-level result uses the same fields for `partial`, `scanStoppedReason`,

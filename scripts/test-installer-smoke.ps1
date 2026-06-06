@@ -204,6 +204,7 @@ try {
     Assert-True ($liveCommandsetTest -match 'scanStoppedReason' -and $liveCommandsetTest -match 'max_scanned') "Live commandset integration gate must cover bounded find_elements partial metadata."
     Assert-True ($liveCommandsetTest -match 'inspect_sheet_text' -and $liveCommandsetTest -match 'includeViewportTextNotes' -and $liveCommandsetTest -match 'includeViewportTags' -and $liveCommandsetTest -match 'viewportTag') "Live commandset integration gate must cover native sheet viewport text and tag evidence behavior."
     Assert-True ($liveCommandsetTest -match 'max_elapsed' -and $liveCommandsetTest -match 'max_bytes' -and $liveCommandsetTest -match 'max_schedule_cells') "Live commandset integration gate must cover native sheet annotation budget stop reasons."
+    Assert-True ($liveCommandsetTest -match 'inspect_schedules' -and $liveCommandsetTest -match 'maxCells' -and $liveCommandsetTest -match 'lastReadRow' -and $liveCommandsetTest -match 'max_bytes') "Live commandset integration gate must cover native schedule partial and continuation behavior."
     Assert-True ($liveCommandsetTest -match 'MTL fan coil' -and $liveCommandsetTest -match 'live broad MTL guard proof') "Live commandset integration gate must cover runtime MEP inference and broad-query guard behavior."
     Assert-NoLocalizedRevitPluginSourceText -Root $RepoRoot
     $commandSetSourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet") -Recurse -File -Filter *.cs |
@@ -230,6 +231,8 @@ try {
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\FocusElementsEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\GetUiStateCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\GetUiStateEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSchedulesCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSchedulesEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSheetTextCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSheetTextEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\ListOpenViewsCommand.cs",
@@ -449,6 +452,8 @@ try {
     $parameterSchemaToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_parameter_schema.ts")
     $inspectSheetTextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_sheet_text.ts")
     $inspectSchedulesToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_schedules.ts")
+    $inspectSchedulesHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSchedulesEventHandler.cs")
+    $commandSetRegistryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\command.json")
     $setParameterToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_element_parameter.ts")
     $setScheduleCellsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_schedule_cells.ts")
     $setScheduleCellsByTextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_schedule_cells_by_text.ts")
@@ -546,7 +551,7 @@ try {
     Assert-True ($statusToolCode -match 'runtimeVersion') "Status output must include the active runtime version."
     Assert-True ($statusToolCode -match 'schemaVersion') "Status output must include the status/schema version."
     Assert-True ($statusToolCode -match 'toolSurfaceVersion') "Status output must include the registered tool surface version."
-    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.35') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
+    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.36') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
     Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
     Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
@@ -622,10 +627,16 @@ try {
     Assert-True ($inspectSheetTextHandlerCode -notmatch 'viewport_tags_deferred') "inspect_sheet_text must not regress viewport tags to the old deferred contract."
     Assert-True ($inspectSchedulesToolCode -match 'SCHEDULE_INSPECTION_READ_ONLY') "inspect_schedules must identify itself as a read-only schedule inspection tool."
     Assert-True ($inspectSchedulesToolCode -match 'normalizeBroadScanResult' -and $inspectSchedulesToolCode -match 'buildBroadScanGuardedResult') "inspect_schedules must use the shared broad-scan result contract."
+    Assert-True ($inspectSchedulesToolCode -match 'sendRevitCommand\("inspect_schedules"') "inspect_schedules must route through the native commandset bridge."
+    Assert-True ($commandSetRegistryCode -match '"commandName": "inspect_schedules"') "Command payload registry must include native inspect_schedules."
     Assert-True ($inspectSchedulesToolCode -match 'maxRowsPerSection') "inspect_schedules must bound schedule cell reads by row limit."
     Assert-True ($inspectSchedulesToolCode -match 'maxColumnsPerSection') "inspect_schedules must bound schedule cell reads by column limit."
+    Assert-True ($inspectSchedulesToolCode -match 'maxElapsedMs' -and $inspectSchedulesToolCode -match 'maxCells' -and $inspectSchedulesToolCode -match 'maxResponseBytes') "inspect_schedules must expose elapsed, cell, and response-byte budgets."
+    Assert-True ($inspectSchedulesToolCode -match 'startRow' -and $inspectSchedulesToolCode -match 'startColumn') "inspect_schedules must expose row/column continuation scope."
+    Assert-True ($inspectSchedulesHandlerCode -match 'Stop\("max_elapsed"\)' -and $inspectSchedulesHandlerCode -match 'Stop\("max_cells"\)' -and $inspectSchedulesHandlerCode -match 'Stop\("max_bytes"\)') "Native inspect_schedules handler must own elapsed, cell, and byte stop reasons."
+    Assert-True ($inspectSchedulesHandlerCode -match 'lastReadRow' -and $inspectSchedulesHandlerCode -match 'lastReadColumn') "Native inspect_schedules handler must expose schedule continuation position."
     Assert-True ($inspectSchedulesToolCode -match 'allowExpensiveSearch' -and $inspectSchedulesToolCode -match 'reason: "needs_scope"') "inspect_schedules must guard broad cell scans without explicit approval."
-    Assert-True ($inspectSchedulesToolCode -match 'Cell scan is bounded') "inspect_schedules must warn when broad cell scan is requested."
+    Assert-True (($inspectSchedulesToolCode -match 'Cell scan is bounded') -or ($inspectSchedulesHandlerCode -match 'Cell scan is bounded')) "inspect_schedules must warn when broad cell scan is requested."
     foreach ($reason in @("completed", "max_elapsed", "max_rows", "max_columns", "max_cells", "max_items", "max_bytes", "read_failed", "needs_scope")) {
         Assert-True ($broadScanResultCode -match [regex]::Escape('"' + $reason + '"')) "Shared broad-scan result contract is missing stop reason '$reason'."
     }

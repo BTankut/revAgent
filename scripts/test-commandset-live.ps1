@@ -244,6 +244,19 @@ function Invoke-InspectSheetText {
     return Invoke-RevitMcpRequest -Method "inspect_sheet_text" -Params $Params
 }
 
+function Invoke-InspectSchedules {
+    param(
+        [object]$Params,
+        [string]$TaskName
+    )
+
+    Assert-RevitMcpReady -NextCommand "inspect_schedules" | Out-Null
+    if ($Params -is [System.Collections.IDictionary]) {
+        $Params["taskName"] = $TaskName
+    }
+    return Invoke-RevitMcpRequest -Method "inspect_schedules" -Params $Params
+}
+
 function Assert-SuccessfulCodeResult {
     param(
         [object]$Result,
@@ -443,6 +456,84 @@ Assert-True (@($sheetInventory.sheets).Count -ge 1) "Live commandset sheet check
 $firstSheet = @($sheetInventory.sheets)[0]
 $firstSheetId = [int]$firstSheet.id
 $firstSheetNumber = [string]$firstSheet.sheetNumber
+
+Write-Host "Discover one schedule for native inspect_schedules checks"
+$scheduleInventory = Invoke-InspectSchedules `
+    -TaskName "$prefix schedule inventory scoped seed" `
+    -Params ([ordered]@{
+        maxSchedules = 1
+        searchBudget = "fast"
+        maxElapsedMs = 2000
+        timeoutMs = 7000
+    })
+Assert-Equal ([bool]$scheduleInventory.success) $true "Schedule inventory seed should succeed."
+Assert-True (@($scheduleInventory.schedules).Count -ge 1) "Live commandset schedule checks require at least one schedule in the active test model."
+$firstSchedule = @($scheduleInventory.schedules)[0]
+$firstScheduleId = [int]$firstSchedule.id
+
+Write-Host "Test native inspect_schedules scoped small read contract"
+$scheduleSmallRead = Invoke-InspectSchedules `
+    -TaskName "$prefix schedule scoped small read" `
+    -Params ([ordered]@{
+        scheduleIds = @($firstScheduleId)
+        includeCells = $true
+        sections = @("body")
+        maxRowsPerSection = 2
+        maxColumnsPerSection = 2
+        maxCells = 10
+        maxResponseBytes = 120000
+        searchBudget = "fast"
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$scheduleSmallRead.success) $true "Scoped native schedule read should succeed."
+Assert-Equal ([bool]$scheduleSmallRead.guarded) $false "Scoped native schedule read should not be guarded."
+Assert-Equal ([string]$scheduleSmallRead.action) "inspect_schedules" "Scoped native schedule action changed."
+Assert-True ([int]$scheduleSmallRead.returnedCount -ge 1) "Scoped native schedule read should return the requested schedule."
+Assert-True ($scheduleSmallRead.scanPolicy.maxElapsedMs -lt $scheduleSmallRead.scanPolicy.timeoutMs) "Native schedule budget must stay below socket timeout."
+
+Write-Host "Test native inspect_schedules max_cells partial metadata"
+$scheduleCellCap = Invoke-InspectSchedules `
+    -TaskName "$prefix schedule max cells" `
+    -Params ([ordered]@{
+        scheduleIds = @($firstScheduleId)
+        includeCells = $true
+        sections = @("body")
+        maxRowsPerSection = 50
+        maxColumnsPerSection = 50
+        maxCells = 1
+        maxResponseBytes = 120000
+        searchBudget = "fast"
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$scheduleCellCap.success) $true "Small cell-budget schedule read should return a controlled result."
+if ([bool]$scheduleCellCap.partial) {
+    Assert-Equal ([string]$scheduleCellCap.scanStoppedReason) "max_cells" "Small cell-budget schedule scan partial reason changed."
+    Assert-True ($null -ne $scheduleCellCap.lastReadSection) "Partial schedule read must report lastReadSection."
+    Assert-True ($null -ne $scheduleCellCap.lastReadRow) "Partial schedule read must report lastReadRow."
+    Assert-True ($null -ne $scheduleCellCap.lastReadColumn) "Partial schedule read must report lastReadColumn."
+}
+
+Write-Host "Test native inspect_schedules max_bytes pressure metadata"
+$scheduleByteCap = Invoke-InspectSchedules `
+    -TaskName "$prefix schedule max bytes" `
+    -Params ([ordered]@{
+        scheduleIds = @($firstScheduleId)
+        includeCells = $true
+        sections = @("body")
+        maxRowsPerSection = 50
+        maxColumnsPerSection = 50
+        maxCells = 500
+        maxResponseBytes = 4096
+        searchBudget = "fast"
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$scheduleByteCap.success) $true "Small response-budget schedule read should return a controlled result."
+if ([bool]$scheduleByteCap.partial) {
+    Assert-Equal ([string]$scheduleByteCap.scanStoppedReason) "max_bytes" "Small response-budget schedule scan partial reason changed."
+}
 
 Write-Host "Test native inspect_sheet_text scoped viewport text-note contract"
 $viewportScoped = Invoke-InspectSheetText `
