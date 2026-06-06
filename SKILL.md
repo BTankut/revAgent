@@ -192,7 +192,9 @@ normalizer.
   `summary`, `evidenceRows`, `suggestedNextScopes`, and `lastRead*` continuation
   fields. Legacy native stop reasons may be preserved as raw diagnostics, but
   `scanStoppedReason` uses the shared canonical vocabulary. `includeViewportTags`
-  is opt-in and currently returns the stable `viewport_tags_deferred` response.
+  is opt-in and performs bounded native `IndependentTag` inspection, returning
+  readable tags as `viewportTag` evidence while reporting tag API limitations
+  through warnings or notices.
   Prefer this over broad custom C# sheet or placed-view loops.
 - `inspect_schedules` - read-only schedule discovery and bounded cell
   inspection. Use `nameQuery` or exact `scheduleIds` first in large projects,
@@ -283,10 +285,9 @@ Default workflow for every Revit runtime task:
    and enable `includeViewportTextNotes` when the target may be a note inside a
    view placed on the sheet. If the user intentionally wants project-wide sheet
    text, viewport text, tag, or placed schedule-cell search, pass
-   `allowExpensiveSearch=true` and keep row/sheet/view limits bounded. If
-   viewport tags are requested and the response is `viewport_tags_deferred`,
-   report the defer as current tool behavior and continue with text-note and
-   schedule evidence where useful.
+   `allowExpensiveSearch=true` and keep row/sheet/view limits bounded. When
+   viewport tags are requested, treat `viewportTag` rows as first-class evidence
+   and report any tag API limitations from `warnings` or `notices`.
 7. For schedule lookup, schedule evidence planning, or schedule cell reading,
    call `inspect_schedules` before writing raw C# schedule loops. In large
    models, do not scan all schedule cells without a `nameQuery` or exact

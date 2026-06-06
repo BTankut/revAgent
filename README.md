@@ -701,8 +701,9 @@ annotations on the sheet are part of the evidence. Project-wide text,
 viewport-text, tag, or placed-schedule cell scans require
 `allowExpensiveSearch=true`; the native handler can return `partial=true` with
 `scanStoppedReason` such as `max_elapsed`, `max_bytes`, or
-`max_schedule_cells` instead of timing out. `includeViewportTags` is currently
-opt-in and returns the stable documented `viewport_tags_deferred` response.
+`max_schedule_cells` instead of timing out. `includeViewportTags` is opt-in and
+returns bounded native `viewportTag` evidence from readable placed-view tags,
+with tag API limitations reported through warnings or notices.
 
 For schedule work, use `inspect_schedules` before raw dynamic code. It performs
 read-only bounded schedule discovery and cell inspection with `nameQuery`,

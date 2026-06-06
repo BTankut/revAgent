@@ -339,10 +339,12 @@ Acceptance:
   `allowExpensiveSearch=true`.
 - Viewport text-note scan respects native budget and caps.
 
-## Phase 7 - Viewport Tags Opt-In / Documented Defer
+## Phase 7 - Viewport Tags Opt-In Evidence
 
-Tag support remains opt-in. It should not block the hotfix if Revit API
-behavior is inconsistent.
+Tag support remains opt-in and bounded by sheet/view scope, elapsed budget,
+scan caps, and response-size budget. Revit API differences should degrade to
+warnings or notices for the affected tag rows rather than failing the whole
+inspection.
 
 Preferred behavior:
 
@@ -353,11 +355,11 @@ Preferred behavior:
 - Return element id, category, tag text, tagged element ids when available,
   sheet id, viewport id, and view id.
 
-Fallback if API behavior is risky or unstable:
+Fallback behavior for individual tag limitations:
 
-- Keep `includeViewportTags` guarded or return
-  `reason=viewport_tags_deferred`.
-- Document the defer in `CHANGELOG.md`, `SKILL.md`, and runbook.
+- Keep readable tag rows even when tagged element metadata cannot be resolved.
+- Report missing tag text, tagged element lookup failures, or unsupported tag
+  API paths through `warnings` or `notices`.
 - Keep the code path opt-in and non-breaking.
 
 Acceptance:
@@ -444,7 +446,7 @@ Required checks:
 - schedule cell scan cap -> partial result, not timeout
 - tag scan:
   - if implemented: bounded result or clear empty result
-  - if deferred: stable `viewport_tags_deferred` response
+  - readable tag text appears as `viewportTag` evidence
 
 Acceptance:
 

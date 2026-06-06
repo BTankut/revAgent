@@ -190,8 +190,10 @@ and enable `includeViewportTextNotes` when plan/view annotations on placed
 views are part of the evidence. Project-wide sheet text, viewport text, tag, or
 placed schedule-cell scans require explicit `allowExpensiveSearch=true` and
 remain controlled by native elapsed, scan, and response-size budgets.
-`includeViewportTags` is opt-in and currently returns the stable documented
-`viewport_tags_deferred` response.
+`includeViewportTags` is opt-in and performs bounded native viewport tag
+inspection. Treat readable tag rows as `viewportTag` evidence; tag API
+limitations should surface as warnings or notices without failing the whole
+sheet inspection.
 For schedule lookup or schedule cell reading in large projects, use
 `inspect_schedules` before raw dynamic C# loops. Start with `nameQuery` or
 exact `scheduleIds`, keep row/column limits bounded, and avoid scanning all

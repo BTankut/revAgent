@@ -519,9 +519,9 @@ if ([bool]$scheduleCapProbe.partial) {
     Assert-Equal ([string]$scheduleCapProbe.scanStoppedReason) "max_schedule_cells" "Schedule-cell capped sheet scan partial reason changed."
 }
 
-Write-Host "Test native inspect_sheet_text viewport tag deferred contract"
+Write-Host "Test native inspect_sheet_text scoped viewport tag contract"
 $tagProbe = Invoke-InspectSheetText `
-    -TaskName "$prefix sheet viewport tags deferred" `
+    -TaskName "$prefix sheet viewport tags scoped" `
     -Params ([ordered]@{
         sheetIds = @($firstSheetId)
         includeTextNotes = $false
@@ -529,13 +529,24 @@ $tagProbe = Invoke-InspectSheetText `
         includeViewportTextNotes = $false
         includeViewportTags = $true
         searchBudget = "fast"
-        maxElapsedMs = 1000
-        timeoutMs = 5000
+        maxViewports = 5
+        maxTags = 250
+        maxViewportTagsPerView = 25
+        maxElapsedMs = 5000
+        timeoutMs = 10000
     })
-Assert-Equal ([bool]$tagProbe.success) $true "Deferred viewport tag scan should return a controlled result."
-Assert-Equal ([bool]$tagProbe.guarded) $true "Deferred viewport tag scan should be guarded."
-Assert-Equal ([string]$tagProbe.reason) "viewport_tags_deferred" "Deferred viewport tag reason changed."
-Assert-True (@($tagProbe.warnings) -contains "viewport_tags_deferred") "Deferred viewport tag warning missing."
+Assert-Equal ([bool]$tagProbe.success) $true "Scoped viewport tag scan should return a controlled result."
+Assert-Equal ([bool]$tagProbe.guarded) $false "Scoped viewport tag scan should not be guarded."
+Assert-Equal ([string]$tagProbe.action) "inspect_sheet_text" "Scoped viewport tag action changed."
+Assert-True (-not (@($tagProbe.warnings) -contains "viewport_tags_deferred")) "Viewport tags must not regress to the old deferred warning."
+Assert-True ([int]$tagProbe.scannedSheetCount -le 1) "Scoped viewport tag scan should stay on the requested sheet."
+$tagRows = @($tagProbe.matches | Where-Object { ([string]$_.kind) -eq "viewportTag" -or ([string]$_.sourceType) -eq "viewportTag" })
+if ($tagRows.Count -gt 0) {
+    $firstTag = $tagRows[0]
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$firstTag.tagText)) "Viewport tag evidence must include tagText when readable tags are found."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$firstTag.tagTextNormalized)) "Viewport tag evidence must include normalized tag text."
+    Assert-True ([int]$firstTag.sheetId -eq $firstSheetId) "Viewport tag evidence should stay scoped to the requested sheet."
+}
 
 Write-Host "Test find_elements linkedOnly exact-id guard"
 $linkedOnlyExactProbe = Invoke-FindElements `

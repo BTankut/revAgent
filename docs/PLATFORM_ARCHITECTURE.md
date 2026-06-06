@@ -100,7 +100,9 @@ agents do not have to generate broad ad hoc C# sheet or viewport collectors.
 Project-wide sheet text, viewport text, tag, or placed schedule-cell scans
 require explicit `allowExpensiveSearch=true`; native elapsed, scan-count, and
 response-size budgets return partial evidence before transport timeout. Viewport
-tag scanning is opt-in and currently returns `viewport_tags_deferred`.
+tag scanning is opt-in and returns bounded native `viewportTag` evidence when
+tag text is readable; tag API limitations are reported through warnings or
+notices without failing the whole sheet inspection.
 `inspect_schedules` is a read-only runtime tool for large-project schedule work.
 It provides bounded schedule-name discovery and bounded header/body/footer cell
 reads/scans so agents do not have to generate broad ad hoc C# loops over every
