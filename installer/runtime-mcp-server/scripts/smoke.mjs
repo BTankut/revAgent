@@ -18,6 +18,7 @@ import {
   sanitizeTelemetryPathSegment,
   summarizeTelemetryParams,
   summarizeTelemetryResponse,
+  flushTelemetryWritesForTests,
 } from "../build/utils/telemetry.js";
 import {
   buildFindElementsSearchPolicy,
@@ -520,7 +521,7 @@ const rejectionPayload = JSON.parse(rejection.content[0].text);
 assert.equal(rejectionPayload.success, false);
 assert.equal(rejectionPayload.guarded, true);
 assert.match(rejectionPayload.error, /does not support writeCommit/);
-await new Promise((resolve) => setTimeout(resolve, 150));
+await flushTelemetryWritesForTests();
 const telemetryFiles = fs.readdirSync(path.join(telemetryRoot, "events"))
   .filter((fileName) => fileName.endsWith(".ndjson"))
   .map((fileName) => path.join(telemetryRoot, "events", fileName));

@@ -1395,16 +1395,18 @@ namespace RevitMCPCommandSet.Commands.View
         {
             try
             {
-                FamilyInstance instance = element as FamilyInstance;
-                if (instance != null && instance.Symbol != null && instance.Symbol.Family != null)
+                if (element == null) return "";
+
+                ElementType type = element as ElementType;
+                if (type != null)
                 {
-                    return instance.Symbol.Family.Name ?? "";
+                    return type.FamilyName ?? "";
                 }
 
-                FamilySymbol symbol = element as FamilySymbol;
-                if (symbol != null && symbol.Family != null)
+                FamilyInstance instance = element as FamilyInstance;
+                if (instance != null && instance.Symbol != null)
                 {
-                    return symbol.Family.Name ?? "";
+                    return instance.Symbol.FamilyName ?? "";
                 }
             }
             catch
@@ -1468,15 +1470,17 @@ namespace RevitMCPCommandSet.Commands.View
                     {
                         foreach (object item in ids)
                         {
-                            ElementId hostId = TryReadElementIdProperty(item, "HostElementId");
-                            if (hostId != null && hostId != ElementId.InvalidElementId)
-                            {
-                                return hostId;
-                            }
                             ElementId linkedId = TryReadElementIdProperty(item, "LinkedElementId");
                             if (linkedId != null && linkedId != ElementId.InvalidElementId)
                             {
                                 AddOnce(warnings, "viewport_tag_linked_element_unresolved");
+                                continue;
+                            }
+
+                            ElementId hostId = TryReadElementIdProperty(item, "HostElementId");
+                            if (hostId != null && hostId != ElementId.InvalidElementId)
+                            {
+                                return hostId;
                             }
                         }
                     }
