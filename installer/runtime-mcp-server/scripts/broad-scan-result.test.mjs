@@ -58,6 +58,14 @@ assert.equal(normalized.lastReadRow, 2);
 assert.equal(normalized.lastReadColumn, 3);
 assert.equal(normalized.lastReadViewId, null);
 
+const elapsedNull = normalizeBroadScanResult({
+  success: true,
+  elapsedMs: null,
+}, {
+  action: "inspect_schedules",
+});
+assert.equal(elapsedNull.elapsedMs, null);
+
 const tools = new Map();
 const server = {
   tool(name, description, schema, handler) {
@@ -90,6 +98,8 @@ assert.equal(sheetPayload.lastReadItemId, null);
 
 const scheduleGuard = await tools.get("inspect_schedules").handler({
   includeCells: true,
+  maxRowsPerSection: 0,
+  maxColumnsPerSection: 0,
 });
 const schedulePayload = JSON.parse(scheduleGuard.content[0].text);
 assert.equal(schedulePayload.success, true);
@@ -100,6 +110,8 @@ assert.equal(schedulePayload.partial, false);
 assert.equal(schedulePayload.scanStoppedReason, "needs_scope");
 assert.equal(Array.isArray(schedulePayload.suggestedNextScopes), true);
 assert.equal(typeof schedulePayload.scanPolicy, "object");
+assert.equal(schedulePayload.scanPolicy.maxRowsPerSection, 0);
+assert.equal(schedulePayload.scanPolicy.maxColumnsPerSection, 0);
 assert.equal(typeof schedulePayload.summary, "object");
 assert.equal(Array.isArray(schedulePayload.evidenceRows), true);
 assert.equal(schedulePayload.evidenceRows.length, 0);

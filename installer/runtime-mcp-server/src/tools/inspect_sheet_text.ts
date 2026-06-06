@@ -120,8 +120,8 @@ function buildSheetTextEvidenceRows(payload: JsonObject) {
     return matches
         .filter((row: unknown): row is JsonObject => Boolean(row) && typeof row === "object" && !Array.isArray(row))
         .map((row) => ({
-            sourceType: sourceTypeForSheetEvidence(row),
             ...row,
+            sourceType: sourceTypeForSheetEvidence(row),
         }));
 }
 

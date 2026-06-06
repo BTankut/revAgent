@@ -100,8 +100,8 @@ function buildSheetTextEvidenceRows(payload) {
     return matches
         .filter((row) => Boolean(row) && typeof row === "object" && !Array.isArray(row))
         .map((row) => ({
-        sourceType: sourceTypeForSheetEvidence(row),
         ...row,
+        sourceType: sourceTypeForSheetEvidence(row),
     }));
 }
 function buildSheetTextSummary(payload) {

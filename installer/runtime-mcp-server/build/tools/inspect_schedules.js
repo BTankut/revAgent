@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { connectionOptionsFromArgs, connectionTargetSchema, csharpIntArray, csharpString, csharpStringArray, executeRevitCode, formatJsonContent, taskMetadataSchema, taskOptionsFromArgs, } from "../utils/revitToolHelpers.js";
 import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, } from "../utils/broadScanResult.js";
+function clampIntArg(value, fallback, min, max) {
+    const parsed = Number.parseInt(String(value ?? ""), 10);
+    if (!Number.isFinite(parsed)) {
+        return fallback;
+    }
+    return Math.max(min, Math.min(max, parsed));
+}
 function uniqueSections(values) {
     const requested = Array.isArray(values) && values.length > 0 ? values : ["header", "body"];
     return [...new Set(requested.map((value) => String(value || "").toLowerCase()))]
@@ -15,10 +22,10 @@ function buildInspectSchedulesCode(args) {
     const scanCells = args.scanCells === true || Boolean(args.cellQuery) ? "true" : "false";
     const nameQuery = csharpString(args.nameQuery || args.query || "");
     const cellQuery = csharpString(args.cellQuery || "");
-    const maxSchedules = Math.max(1, Math.min(200, Number.parseInt(String(args.maxSchedules || 50), 10) || 50));
-    const maxRowsPerSection = Math.max(0, Math.min(1000, Number.parseInt(String(args.maxRowsPerSection || 80), 10) || 80));
-    const maxColumnsPerSection = Math.max(0, Math.min(200, Number.parseInt(String(args.maxColumnsPerSection || 30), 10) || 30));
-    const maxCellTextChars = Math.max(20, Math.min(1000, Number.parseInt(String(args.maxCellTextChars || 180), 10) || 180));
+    const maxSchedules = clampIntArg(args.maxSchedules, 50, 1, 200);
+    const maxRowsPerSection = clampIntArg(args.maxRowsPerSection, 80, 0, 1000);
+    const maxColumnsPerSection = clampIntArg(args.maxColumnsPerSection, 30, 0, 200);
+    const maxCellTextChars = clampIntArg(args.maxCellTextChars, 180, 20, 1000);
     return `
 int[] requestedScheduleIds = ${csharpIntArray(scheduleIds)};
 string[] requestedSections = ${csharpStringArray(sections)};
@@ -399,10 +406,10 @@ function buildScheduleScanPolicy(args) {
         includeCells: args.includeCells === true,
         scanCells: args.scanCells === true || Boolean(args.cellQuery),
         sections: uniqueSections(args.sections),
-        maxSchedules: Math.max(1, Math.min(200, Number.parseInt(String(args.maxSchedules || 50), 10) || 50)),
-        maxRowsPerSection: Math.max(0, Math.min(1000, Number.parseInt(String(args.maxRowsPerSection || 80), 10) || 80)),
-        maxColumnsPerSection: Math.max(0, Math.min(200, Number.parseInt(String(args.maxColumnsPerSection || 30), 10) || 30)),
-        timeoutMs: Math.max(1000, Math.min(120000, Number.parseInt(String(args.timeoutMs || 120000), 10) || 120000)),
+        maxSchedules: clampIntArg(args.maxSchedules, 50, 1, 200),
+        maxRowsPerSection: clampIntArg(args.maxRowsPerSection, 80, 0, 1000),
+        maxColumnsPerSection: clampIntArg(args.maxColumnsPerSection, 30, 0, 200),
+        timeoutMs: clampIntArg(args.timeoutMs, 120000, 1000, 120000),
     };
 }
 function normalizeScheduleResult(payload, args, elapsedMs) {

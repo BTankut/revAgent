@@ -104,6 +104,17 @@ function normalizeBoolean(value: unknown, fallback = false) {
     return fallback;
 }
 
+function finiteNumberOrNull(value: unknown): number | null {
+    if (value === null || value === undefined) {
+        return null;
+    }
+    if (typeof value === "string" && value.trim().length === 0) {
+        return null;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
 export function normalizeBroadScanStopReason(value: unknown, fallback: BroadScanStopReason = "completed"): BroadScanStopReason {
     const raw = cleanString(value).toLowerCase();
     if (!raw) {
@@ -166,9 +177,8 @@ export function normalizeBroadScanResult(payload: any, options: BroadScanNormali
     result.suggestedNextScopes = cleanStringArray(readCasedField(result, "suggestedNextScopes")).length > 0
         ? cleanStringArray(readCasedField(result, "suggestedNextScopes"))
         : cleanStringArray(options.suggestedNextScopes);
-    result.elapsedMs = Number.isFinite(Number(readCasedField(result, "elapsedMs")))
-        ? Number(readCasedField(result, "elapsedMs"))
-        : (Number.isFinite(Number(options.elapsedMs)) ? Number(options.elapsedMs) : null);
+    result.elapsedMs = finiteNumberOrNull(readCasedField(result, "elapsedMs"))
+        ?? finiteNumberOrNull(options.elapsedMs);
     result.warnings = cleanStringArray(readCasedField(result, "warnings")).concat(cleanStringArray(options.warnings));
     result.notices = cleanStringArray(readCasedField(result, "notices")).concat(cleanStringArray(options.notices));
 
