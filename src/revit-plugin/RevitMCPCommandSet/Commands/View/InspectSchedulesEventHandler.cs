@@ -3,11 +3,9 @@ using Autodesk.Revit.UI;
 using RevitMCPSDK.API.Interfaces;
 using RevitMCPCommandSet.Extensions;
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Text;
 using System.Threading;
 
 namespace RevitMCPCommandSet.Commands.View
@@ -120,8 +118,8 @@ namespace RevitMCPCommandSet.Commands.View
             _request = request ?? new InspectSchedulesRequest();
             if (_request.ScheduleIds == null) _request.ScheduleIds = new List<int>();
             if (_request.Sections == null || _request.Sections.Count == 0) _request.Sections = new List<string> { "header", "body" };
-            _request.NormalizedNameQuery = NormalizeForSearch(_request.NameQuery);
-            _request.NormalizedCellQuery = NormalizeForSearch(_request.CellQuery);
+            _request.NormalizedNameQuery = AnnotationEvidenceHelpers.NormalizeForSearch(_request.NameQuery);
+            _request.NormalizedCellQuery = AnnotationEvidenceHelpers.NormalizeForSearch(_request.CellQuery);
             TaskCompleted = false;
             ResultInfo = null;
             _resetEvent.Reset();
@@ -179,7 +177,7 @@ namespace RevitMCPCommandSet.Commands.View
                 {
                     if (StopIfNeeded(deadlineUtc, state)) break;
 
-                    bool nameMatches = !hasNameQuery || ContainsNormalized(schedule.Name, _request.NormalizedNameQuery);
+                    bool nameMatches = !hasNameQuery || AnnotationEvidenceHelpers.ContainsPreNormalized(schedule.Name, _request.NormalizedNameQuery);
                     if (!hasExplicitIds && hasNameQuery && !nameMatches)
                     {
                         continue;
@@ -216,7 +214,7 @@ namespace RevitMCPCommandSet.Commands.View
                     if (!includeSchedule) continue;
                     if (scheduleMatchCount > 0) state.CellMatchedScheduleCount++;
 
-                    Dictionary<string, object> scheduleRecord = BuildScheduleRecord(schedule, nameMatches, scheduleMatchCount, sectionResults);
+                    Dictionary<string, object> scheduleRecord = AnnotationEvidenceHelpers.BuildScheduleRecord(schedule, nameMatches, scheduleMatchCount, sectionResults);
                     state.LastReadItemId = schedule.Id.GetIdValue();
                     if (!AddRecordIfWithinResponseBudget(scheduleRecord, state)) break;
                     schedules.Add(scheduleRecord);
@@ -254,7 +252,7 @@ namespace RevitMCPCommandSet.Commands.View
                     LastReadViewId = null,
                     LastReadViewportId = null,
                     LastReadItemId = state.LastReadItemId,
-                    SuggestedNextScopes = BuildSuggestedNextScopes(),
+                    SuggestedNextScopes = AnnotationEvidenceHelpers.BuildScheduleSuggestedNextScopes(),
                     Warnings = warnings,
                     Notices = notices,
                     Schedules = new List<Dictionary<string, object>>(),
@@ -273,8 +271,8 @@ namespace RevitMCPCommandSet.Commands.View
             out int matchCount)
         {
             matchCount = 0;
-            string normalizedSection = NormalizeSectionName(sectionName);
-            SectionType sectionType = SectionTypeForName(normalizedSection);
+            string normalizedSection = AnnotationEvidenceHelpers.NormalizeSectionName(sectionName);
+            SectionType sectionType = AnnotationEvidenceHelpers.SectionTypeForName(normalizedSection);
             List<Dictionary<string, object>> rows = new List<Dictionary<string, object>>();
             List<Dictionary<string, object>> matches = new List<Dictionary<string, object>>();
             int rowCount = 0;
@@ -324,8 +322,8 @@ namespace RevitMCPCommandSet.Commands.View
                             break;
                         }
 
-                        string text = ReadCell(schedule, sectionType, row, column);
-                        string trimmed = TrimCellText(text);
+                        string text = AnnotationEvidenceHelpers.ReadScheduleCell(schedule, sectionType, row, column);
+                        string trimmed = AnnotationEvidenceHelpers.TrimText(text, _request.MaxCellTextChars);
                         state.ScannedCellCount++;
                         scannedCells++;
                         rowColumnsScanned++;
@@ -344,14 +342,14 @@ namespace RevitMCPCommandSet.Commands.View
                             cells.Add(cellRecord);
                         }
 
-                        if (!string.IsNullOrWhiteSpace(_request.CellQuery) && ContainsNormalized(text, _request.NormalizedCellQuery))
+                        if (!string.IsNullOrWhiteSpace(_request.CellQuery) && AnnotationEvidenceHelpers.ContainsPreNormalized(text, _request.NormalizedCellQuery))
                         {
                             Dictionary<string, object> match = new Dictionary<string, object>();
                             match["section"] = normalizedSection;
                             match["row"] = row;
                             match["column"] = column;
                             match["text"] = trimmed;
-                            Dictionary<string, object> flatMatch = BuildFlatMatch(schedule, match);
+                            Dictionary<string, object> flatMatch = AnnotationEvidenceHelpers.BuildScheduleCellEvidenceRow(schedule, match);
                             if (!AddRecordIfWithinResponseBudget(match, state)) break;
                             if (!AddRecordIfWithinResponseBudget(flatMatch, state)) break;
                             matches.Add(match);
@@ -476,7 +474,7 @@ namespace RevitMCPCommandSet.Commands.View
                 Partial = false,
                 ScanStoppedReason = reason,
                 ScanPolicy = BuildScanPolicy(),
-                SuggestedNextScopes = BuildSuggestedNextScopes(),
+                SuggestedNextScopes = AnnotationEvidenceHelpers.BuildScheduleSuggestedNextScopes(),
                 ScannedScheduleCount = state.ScannedScheduleCount,
                 ScannedSectionCount = state.ScannedSectionCount,
                 ScannedRowCount = state.ScannedRowCount,
@@ -527,7 +525,7 @@ namespace RevitMCPCommandSet.Commands.View
                 Partial = state.Partial,
                 ScanStoppedReason = state.Partial ? state.ScanStoppedReason : "completed",
                 ScanPolicy = BuildScanPolicy(),
-                SuggestedNextScopes = BuildSuggestedNextScopes(),
+                SuggestedNextScopes = AnnotationEvidenceHelpers.BuildScheduleSuggestedNextScopes(),
                 ScannedScheduleCount = state.ScannedScheduleCount,
                 ScannedSectionCount = state.ScannedSectionCount,
                 ScannedRowCount = state.ScannedRowCount,
@@ -595,51 +593,6 @@ namespace RevitMCPCommandSet.Commands.View
             };
         }
 
-        private static List<string> BuildSuggestedNextScopes()
-        {
-            return new List<string>
-            {
-                "nameQuery",
-                "scheduleIds",
-                "sections",
-                "startRow",
-                "startColumn",
-                "maxRowsPerSection",
-                "maxColumnsPerSection",
-                "maxCells",
-                "maxResponseBytes",
-                "maxElapsedMs",
-                "allowExpensiveSearch"
-            };
-        }
-
-        private Dictionary<string, object> BuildScheduleRecord(ViewSchedule schedule, bool nameMatches, int matchCount, List<Dictionary<string, object>> sections)
-        {
-            Dictionary<string, object> record = new Dictionary<string, object>();
-            record["id"] = schedule.Id.GetIdValue();
-            record["uniqueId"] = schedule.UniqueId;
-            record["name"] = schedule.Name;
-            record["viewType"] = schedule.ViewType.ToString();
-            record["isTemplate"] = schedule.IsTemplate;
-            record["nameMatched"] = nameMatches;
-            record["cellMatchCount"] = matchCount;
-            record["sections"] = sections;
-            return record;
-        }
-
-        private Dictionary<string, object> BuildFlatMatch(ViewSchedule schedule, Dictionary<string, object> match)
-        {
-            Dictionary<string, object> flat = new Dictionary<string, object>();
-            flat["kind"] = "scheduleCell";
-            flat["scheduleId"] = schedule.Id.GetIdValue();
-            flat["scheduleName"] = schedule.Name;
-            flat["section"] = match.ContainsKey("section") ? match["section"] : "";
-            flat["row"] = match.ContainsKey("row") ? match["row"] : null;
-            flat["column"] = match.ContainsKey("column") ? match["column"] : null;
-            flat["text"] = match.ContainsKey("text") ? match["text"] : "";
-            return flat;
-        }
-
         private bool StopIfNeeded(DateTime deadlineUtc, ScheduleScanState state)
         {
             if (state.Partial) return true;
@@ -653,7 +606,7 @@ namespace RevitMCPCommandSet.Commands.View
 
         private bool AddRecordIfWithinResponseBudget(object record, ScheduleScanState state)
         {
-            int bytes = EstimateRecordBytes(record);
+            int bytes = AnnotationEvidenceHelpers.EstimateObjectBytes(record, AnnotationEvidenceByteEstimateKind.Schedule);
             if (state.EstimatedResponseBytes + bytes > _request.MaxResponseBytes)
             {
                 state.Stop("max_bytes");
@@ -662,114 +615,6 @@ namespace RevitMCPCommandSet.Commands.View
 
             state.EstimatedResponseBytes += bytes;
             return true;
-        }
-
-        private static int EstimateRecordBytes(object record)
-        {
-            if (record == null) return 4;
-            string stringValue = record as string;
-            if (stringValue != null) return (stringValue.Length * 2) + 8;
-            if (record is bool) return 5;
-            if (record is int || record is long || record is double || record is float || record is decimal) return 16;
-            IDictionary dictionary = record as IDictionary;
-            if (dictionary != null)
-            {
-                int sum = 16;
-                foreach (DictionaryEntry entry in dictionary)
-                {
-                    string key = entry.Key != null ? entry.Key.ToString() : "";
-                    sum += (key.Length * 2) + EstimateRecordBytes(entry.Value) + 12;
-                }
-                return sum;
-            }
-
-            IEnumerable enumerable = record as IEnumerable;
-            if (enumerable != null)
-            {
-                int sum = 16;
-                foreach (object item in enumerable)
-                {
-                    sum += EstimateRecordBytes(item) + 4;
-                }
-                return sum;
-            }
-
-            return 128;
-        }
-
-        private static SectionType SectionTypeForName(string sectionName)
-        {
-            string normalized = NormalizeSectionName(sectionName);
-            if (normalized == "footer") return SectionType.Footer;
-            if (normalized == "body") return SectionType.Body;
-            return SectionType.Header;
-        }
-
-        private static string NormalizeSectionName(string sectionName)
-        {
-            string normalized = (sectionName ?? "").Trim().ToLowerInvariant();
-            if (normalized == "footer" || normalized == "body" || normalized == "header")
-            {
-                return normalized;
-            }
-            return "header";
-        }
-
-        private static string ReadCell(ViewSchedule schedule, SectionType sectionType, int row, int column)
-        {
-            try
-            {
-                return schedule.GetCellText(sectionType, row, column) ?? "";
-            }
-            catch
-            {
-                return "";
-            }
-        }
-
-        private string TrimCellText(string value)
-        {
-            if (value == null) return "";
-            value = value.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim();
-            if (value.Length <= _request.MaxCellTextChars) return value;
-            return value.Substring(0, _request.MaxCellTextChars) + "...";
-        }
-
-        private static bool ContainsNormalized(string value, string normalizedQuery)
-        {
-            if (string.IsNullOrWhiteSpace(normalizedQuery)) return true;
-            return NormalizeForSearch(value).Contains(normalizedQuery);
-        }
-
-        private static string NormalizeForSearch(string value)
-        {
-            if (value == null) return "";
-            string replaced = value
-                .Replace('\u0423', 'Y')
-                .Replace('\u0443', 'y')
-                .Replace('\u011E', 'G')
-                .Replace('\u011F', 'g')
-                .Replace('\u00DC', 'U')
-                .Replace('\u00FC', 'u')
-                .Replace('\u0130', 'I')
-                .Replace('\u0131', 'i')
-                .Replace('\u015E', 'S')
-                .Replace('\u015F', 's')
-                .Replace('\u00C7', 'C')
-                .Replace('\u00E7', 'c')
-                .Replace('\u00D6', 'O')
-                .Replace('\u00F6', 'o');
-            string form = replaced.Normalize(NormalizationForm.FormD);
-            StringBuilder sb = new StringBuilder();
-            foreach (char ch in form)
-            {
-                UnicodeCategory category = CharUnicodeInfo.GetUnicodeCategory(ch);
-                if (category != UnicodeCategory.NonSpacingMark)
-                {
-                    sb.Append(ch);
-                }
-            }
-            return sb.ToString().ToLowerInvariant();
         }
 
         private void Complete(InspectSchedulesResult result)

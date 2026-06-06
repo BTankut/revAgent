@@ -219,6 +219,7 @@ try {
         "src\revit-plugin\RevitMCPCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\AnnotationEvidenceHelpers.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsCommand.cs",
@@ -435,6 +436,7 @@ try {
     $findHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsEventHandler.cs")
     $inspectSheetTextCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSheetTextCommand.cs")
     $inspectSheetTextHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSheetTextEventHandler.cs")
+    $annotationEvidenceHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\AnnotationEvidenceHelpers.cs")
     $findToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\find_elements.ts")
     $searchPolicyCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\searchPolicy.ts")
     $broadScanResultCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\broadScanResult.ts")
@@ -615,7 +617,9 @@ try {
     Assert-True ($inspectSheetTextHandlerCode -match 'ShouldGuardNeedsScope' -and $inspectSheetTextHandlerCode -match 'reason' -and $inspectSheetTextHandlerCode -match 'needs_scope') "inspect_sheet_text native handler must own broad-search guard policy."
     Assert-True ($inspectSheetTextHandlerCode -match 'DateTime deadlineUtc' -and $inspectSheetTextHandlerCode -match 'max_elapsed' -and $inspectSheetTextHandlerCode -match 'Partial' -and $inspectSheetTextHandlerCode -match 'ScanStoppedReason') "inspect_sheet_text native handler must enforce elapsed budgets and return partial metadata."
     Assert-True ($inspectSheetTextHandlerCode -match 'MaxResponseBytes' -and $inspectSheetTextHandlerCode -match 'max_bytes' -and $inspectSheetTextHandlerCode -match 'EstimatedResponseBytes') "inspect_sheet_text native handler must stop before oversized bridge responses."
-    Assert-True ($inspectSheetTextHandlerCode -match 'System\.Collections\.IDictionary' -and $inspectSheetTextHandlerCode -match 'System\.Collections\.DictionaryEntry') "inspect_sheet_text response-size estimates must handle generic and non-generic dictionaries."
+    Assert-True ($annotationEvidenceHelpersCode -match 'IDictionary' -and $annotationEvidenceHelpersCode -match 'DictionaryEntry') "inspect_sheet_text response-size estimates must handle generic and non-generic dictionaries."
+    Assert-True ($inspectSheetTextHandlerCode -match 'NormalizedTextQuery' -and $inspectSheetTextHandlerCode -match 'ContainsPreNormalized') "inspect_sheet_text must pre-normalize repeated query text before scan loops."
+    Assert-True ($annotationEvidenceHelpersCode -match 'EstimateObjectBytes\(object value, AnnotationEvidenceByteEstimateKind kind\)' -and $inspectSheetTextHandlerCode -match 'AnnotationEvidenceByteEstimateKind\.SheetText' -and $inspectSchedulesHandlerCode -match 'AnnotationEvidenceByteEstimateKind\.Schedule') "sheet and schedule scans must share the annotation evidence byte estimator."
     Assert-True ($inspectSheetTextHandlerCode -match 'TableData tableData = schedule\.GetTableData\(\)' -and $inspectSheetTextHandlerCode -match 'Schedule body section data is not available') "inspect_sheet_text schedule cell scans must guard schedules without body section data."
     Assert-True ($inspectSheetTextHandlerCode -match '!hasExplicitIds && candidateCount > _request\.MaxSheets') "inspect_sheet_text must not truncate exact sheetIds with the broad maxSheets cap."
     Assert-True ($inspectSheetTextHandlerCode -match '!requestedIds\.Add\(id\)') "inspect_sheet_text must deduplicate exact sheetIds before Revit sheet lookup."
