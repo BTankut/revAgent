@@ -112,6 +112,7 @@ namespace RevitMCPCommandSet.Commands.View
         public int EstimatedResponseBytes = 2048;
         public int TotalTextNoteMatches;
         public int TotalViewportTextNoteMatches;
+        public int TotalViewportTagMatches;
         public int TotalScheduleCellMatches;
         public int TotalScheduleInstanceMatches;
 
@@ -169,24 +170,6 @@ namespace RevitMCPCommandSet.Commands.View
                     return;
                 }
 
-                bool tagScanDeferred = _request.IncludeViewportTags;
-                if (tagScanDeferred)
-                {
-                    state.ScannedTagCount = 0;
-                    warnings.Add("viewport_tags_deferred");
-                    notices.Add("Viewport tag scanning is opt-in but deferred in this hotfix until tag API behavior is characterized across production models.");
-                    if (IsTagOnlyRequest())
-                    {
-                        Complete(BuildGuardedResult(
-                            "viewport_tags_deferred",
-                            "Viewport tag scanning is currently deferred; sheet text, viewport text notes, and schedule evidence remain available.",
-                            state,
-                            warnings,
-                            notices));
-                        return;
-                    }
-                }
-
                 List<ViewSheet> sourceSheets = ResolveSourceSheets(document, warnings, deadlineUtc, state);
                 if (state.Partial)
                 {
@@ -227,7 +210,7 @@ namespace RevitMCPCommandSet.Commands.View
                     }
 
                     bool includeSheet = hasExplicitIds || sheetMatches || sheetResult.TextNotes.Count > 0 ||
-                        sheetResult.ScheduleInstances.Count > 0 || HasViewportTextNotes(sheetResult) || !hasTextQuery;
+                        sheetResult.ScheduleInstances.Count > 0 || HasViewportEvidence(sheetResult) || !hasTextQuery;
                     if (includeSheet)
                     {
                         sheets.Add(sheetResult);
@@ -301,7 +284,7 @@ namespace RevitMCPCommandSet.Commands.View
                 if (state.Partial && IsHardStop(state.ScanStoppedReason)) return result;
             }
 
-            if (_request.IncludeViewportTextNotes)
+            if (_request.IncludeViewportTextNotes || _request.IncludeViewportTags)
             {
                 ScanViewports(document, sheet, result, deadlineUtc, state, warnings, flatMatches);
             }
@@ -582,80 +565,195 @@ namespace RevitMCPCommandSet.Commands.View
                     if (!AddRecordIfWithinResponseBudget(viewportRecord, state)) return;
 
                     List<Dictionary<string, object>> textNotes = new List<Dictionary<string, object>>();
+                    List<Dictionary<string, object>> tags = new List<Dictionary<string, object>>();
                     int textNoteCount = 0;
                     int textNoteReturned = 0;
+                    int tagCount = 0;
+                    int tagReturned = 0;
                     bool textNotesTruncated = false;
+                    bool tagsTruncated = false;
 
                     if (!CanIterateViewElements(document, view, warnings, sheet, viewport))
                     {
-                        viewportRecord["textNoteScanSkipped"] = true;
-                        viewportRecord["textNoteScanSkippedReason"] = "view_not_valid_for_element_iteration";
+                        if (_request.IncludeViewportTextNotes)
+                        {
+                            viewportRecord["textNoteScanSkipped"] = true;
+                            viewportRecord["textNoteScanSkippedReason"] = "view_not_valid_for_element_iteration";
+                        }
+                        if (_request.IncludeViewportTags)
+                        {
+                            viewportRecord["tagScanSkipped"] = true;
+                            viewportRecord["tagScanSkippedReason"] = "view_not_valid_for_element_iteration";
+                        }
                         viewportRecord["textNoteCount"] = 0;
                         viewportRecord["textNoteReturned"] = 0;
                         viewportRecord["textNotesTruncated"] = false;
                         viewportRecord["textNotes"] = textNotes;
+                        viewportRecord["tagCount"] = 0;
+                        viewportRecord["tagReturned"] = 0;
+                        viewportRecord["tagsTruncated"] = false;
+                        viewportRecord["tags"] = tags;
                         result.Viewports.Add(viewportRecord);
                         result.ViewportReturned = result.Viewports.Count;
                         continue;
                     }
 
-                    if (state.ScannedTextNoteCount >= _request.MaxTextNotesScanned)
+                    if (_request.IncludeViewportTextNotes)
                     {
-                        state.Stop("max_text_notes");
-                        return;
+                        ScanViewportTextNotes(document, sheet, viewport, view, deadlineUtc, state, flatMatches, textNotes, out textNoteCount, out textNoteReturned, out textNotesTruncated);
+                        if (state.Partial && IsHardStop(state.ScanStoppedReason)) return;
                     }
 
-                    using (FilteredElementCollector collector = new FilteredElementCollector(document, view.Id))
+                    if (_request.IncludeViewportTags)
                     {
-                        foreach (Element element in collector.OfClass(typeof(TextNote)).WhereElementIsNotElementType())
-                        {
-                            if (StopIfNeeded(deadlineUtc, state)) return;
-                            if (state.ScannedTextNoteCount >= _request.MaxTextNotesScanned)
-                            {
-                                state.Stop("max_text_notes");
-                                return;
-                            }
-
-                            TextNote textNote = element as TextNote;
-                            if (textNote == null) continue;
-                            state.ScannedTextNoteCount++;
-                            textNoteCount++;
-                            string text = SafeText(textNote);
-                            if (!ContainsNormalized(text, _request.TextQuery)) continue;
-                            if (textNoteReturned >= _request.MaxViewportTextNotesPerView)
-                            {
-                                textNotesTruncated = true;
-                                state.Stop("max_text_notes");
-                                continue;
-                            }
-
-                            Dictionary<string, object> record = BuildTextNoteRecord(
-                                "viewportTextNote",
-                                sheet,
-                                viewport,
-                                view,
-                                textNote,
-                                text,
-                                textNote.get_BoundingBox(view));
-                            if (!AddRecordIfWithinResponseBudget(record, state)) return;
-
-                            textNoteReturned++;
-                            state.TotalViewportTextNoteMatches++;
-                            textNotes.Add(record);
-                            flatMatches.Add(CloneRecord(record));
-                        }
+                        ScanViewportTags(document, sheet, viewport, view, deadlineUtc, state, warnings, flatMatches, tags, out tagCount, out tagReturned, out tagsTruncated);
+                        if (state.Partial && IsHardStop(state.ScanStoppedReason)) return;
                     }
 
                     viewportRecord["textNoteCount"] = textNoteCount;
                     viewportRecord["textNoteReturned"] = textNoteReturned;
                     viewportRecord["textNotesTruncated"] = textNotesTruncated;
                     viewportRecord["textNotes"] = textNotes;
+                    viewportRecord["tagCount"] = tagCount;
+                    viewportRecord["tagReturned"] = tagReturned;
+                    viewportRecord["tagsTruncated"] = tagsTruncated;
+                    viewportRecord["tags"] = tags;
                     result.Viewports.Add(viewportRecord);
                     result.ViewportReturned = result.Viewports.Count;
                 }
                 catch (Exception ex)
                 {
                     warnings.Add("Failed to scan viewport " + viewport.Id.GetIdValue().ToString(CultureInfo.InvariantCulture) + " (view " + view.Id.GetIdValue().ToString(CultureInfo.InvariantCulture) + ") on sheet " + sheet.SheetNumber + ": " + ex.Message);
+                }
+            }
+        }
+
+        private void ScanViewportTextNotes(
+            Document document,
+            ViewSheet sheet,
+            Viewport viewport,
+            Autodesk.Revit.DB.View view,
+            DateTime deadlineUtc,
+            SheetAnnotationScanState state,
+            List<Dictionary<string, object>> flatMatches,
+            List<Dictionary<string, object>> textNotes,
+            out int textNoteCount,
+            out int textNoteReturned,
+            out bool textNotesTruncated)
+        {
+            textNoteCount = 0;
+            textNoteReturned = 0;
+            textNotesTruncated = false;
+
+            if (state.ScannedTextNoteCount >= _request.MaxTextNotesScanned)
+            {
+                state.Stop("max_text_notes");
+                return;
+            }
+
+            using (FilteredElementCollector collector = new FilteredElementCollector(document, view.Id))
+            {
+                foreach (Element element in collector.OfClass(typeof(TextNote)).WhereElementIsNotElementType())
+                {
+                    if (StopIfNeeded(deadlineUtc, state)) return;
+                    if (state.ScannedTextNoteCount >= _request.MaxTextNotesScanned)
+                    {
+                        state.Stop("max_text_notes");
+                        return;
+                    }
+
+                    TextNote textNote = element as TextNote;
+                    if (textNote == null) continue;
+                    state.ScannedTextNoteCount++;
+                    textNoteCount++;
+                    string text = SafeText(textNote);
+                    if (!ContainsNormalized(text, _request.TextQuery)) continue;
+                    if (textNoteReturned >= _request.MaxViewportTextNotesPerView)
+                    {
+                        textNotesTruncated = true;
+                        state.Stop("max_text_notes");
+                        break;
+                    }
+
+                    Dictionary<string, object> record = BuildTextNoteRecord(
+                        "viewportTextNote",
+                        sheet,
+                        viewport,
+                        view,
+                        textNote,
+                        text,
+                        textNote.get_BoundingBox(view));
+                    if (!AddRecordIfWithinResponseBudget(record, state)) return;
+
+                    textNoteReturned++;
+                    state.TotalViewportTextNoteMatches++;
+                    textNotes.Add(record);
+                    flatMatches.Add(CloneRecord(record));
+                }
+            }
+        }
+
+        private void ScanViewportTags(
+            Document document,
+            ViewSheet sheet,
+            Viewport viewport,
+            Autodesk.Revit.DB.View view,
+            DateTime deadlineUtc,
+            SheetAnnotationScanState state,
+            List<string> warnings,
+            List<Dictionary<string, object>> flatMatches,
+            List<Dictionary<string, object>> tags,
+            out int tagCount,
+            out int tagReturned,
+            out bool tagsTruncated)
+        {
+            tagCount = 0;
+            tagReturned = 0;
+            tagsTruncated = false;
+
+            if (state.ScannedTagCount >= _request.MaxTagsScanned)
+            {
+                state.Stop("max_items");
+                return;
+            }
+
+            using (FilteredElementCollector collector = new FilteredElementCollector(document, view.Id))
+            {
+                foreach (Element element in collector.OfClass(typeof(IndependentTag)).WhereElementIsNotElementType())
+                {
+                    if (StopIfNeeded(deadlineUtc, state)) return;
+                    if (state.ScannedTagCount >= _request.MaxTagsScanned)
+                    {
+                        state.Stop("max_items");
+                        return;
+                    }
+
+                    IndependentTag tag = element as IndependentTag;
+                    if (tag == null) continue;
+                    state.ScannedTagCount++;
+                    tagCount++;
+
+                    string tagText = SafeTagText(tag, warnings);
+                    if (string.IsNullOrWhiteSpace(tagText))
+                    {
+                        AddOnce(warnings, "viewport_tag_text_unavailable");
+                        continue;
+                    }
+                    if (!ContainsNormalized(tagText, _request.TextQuery)) continue;
+                    if (tagReturned >= _request.MaxViewportTagsPerView)
+                    {
+                        tagsTruncated = true;
+                        state.Stop("max_items");
+                        break;
+                    }
+
+                    Dictionary<string, object> record = BuildViewportTagRecord(document, sheet, viewport, view, tag, tagText, warnings);
+                    if (!AddRecordIfWithinResponseBudget(record, state)) return;
+
+                    tagReturned++;
+                    state.TotalViewportTagMatches++;
+                    tags.Add(record);
+                    flatMatches.Add(CloneRecord(record));
                 }
             }
         }
@@ -680,7 +778,7 @@ namespace RevitMCPCommandSet.Commands.View
                 return false;
             }
 
-            warnings.Add("Skipped viewport text-note scan because the placed view is not valid for element iteration on sheet " + sheet.SheetNumber + ", viewport " + viewport.Id.GetIdValue().ToString(CultureInfo.InvariantCulture) + ".");
+            warnings.Add("Skipped viewport annotation scan because the placed view is not valid for element iteration on sheet " + sheet.SheetNumber + ", viewport " + viewport.Id.GetIdValue().ToString(CultureInfo.InvariantCulture) + ".");
             return false;
         }
 
@@ -738,14 +836,6 @@ namespace RevitMCPCommandSet.Commands.View
             }
 
             return hasTextQuery || _request.IncludeViewportTextNotes || _request.ScanScheduleCells || _request.IncludeViewportTags;
-        }
-
-        private bool IsTagOnlyRequest()
-        {
-            return _request.IncludeViewportTags &&
-                !_request.IncludeViewportTextNotes &&
-                !_request.IncludeTextNotes &&
-                !_request.IncludeScheduleInstances;
         }
 
         private InspectSheetTextResult BuildGuardedResult(
@@ -849,10 +939,13 @@ namespace RevitMCPCommandSet.Commands.View
             scan["maxRowsPerSchedule"] = _request.MaxRowsPerSchedule;
             scan["maxColumnsPerSchedule"] = _request.MaxColumnsPerSchedule;
             scan["maxViewportsPerSheet"] = _request.MaxViewportsPerSheet;
+            scan["maxViewports"] = _request.MaxViewportsPerSheet;
             scan["maxViewportTextNotesPerView"] = _request.MaxViewportTextNotesPerView;
             scan["maxViewportTagsPerView"] = _request.MaxViewportTagsPerView;
+            scan["maxTags"] = _request.MaxTagsScanned;
             scan["totalTextNoteMatches"] = state.TotalTextNoteMatches;
             scan["totalViewportTextNoteMatches"] = state.TotalViewportTextNoteMatches;
+            scan["totalViewportTagMatches"] = state.TotalViewportTagMatches;
             scan["totalScheduleCellMatches"] = state.TotalScheduleCellMatches;
             scan["totalScheduleInstanceMatches"] = state.TotalScheduleInstanceMatches;
             return scan;
@@ -866,7 +959,9 @@ namespace RevitMCPCommandSet.Commands.View
             policy["maxElapsedMs"] = _request.MaxElapsedMs;
             policy["timeoutMs"] = _request.TimeoutMs;
             policy["maxSheets"] = _request.MaxSheets;
+            policy["maxViewports"] = _request.MaxViewportsPerSheet;
             policy["maxTextNotesScanned"] = _request.MaxTextNotesScanned;
+            policy["maxTags"] = _request.MaxTagsScanned;
             policy["maxTagsScanned"] = _request.MaxTagsScanned;
             policy["maxScheduleInstancesScanned"] = _request.MaxScheduleInstancesScanned;
             policy["maxScheduleCellsScanned"] = _request.MaxScheduleCellsScanned;
@@ -959,6 +1054,65 @@ namespace RevitMCPCommandSet.Commands.View
             return record;
         }
 
+        private Dictionary<string, object> BuildViewportTagRecord(
+            Document document,
+            ViewSheet sheet,
+            Viewport viewport,
+            Autodesk.Revit.DB.View view,
+            IndependentTag tag,
+            string tagText,
+            List<string> warnings)
+        {
+            Dictionary<string, object> record = new Dictionary<string, object>();
+            record["kind"] = "viewportTag";
+            record["id"] = tag.Id.GetIdValue();
+            record["elementId"] = tag.Id.GetIdValue();
+            record["tagId"] = tag.Id.GetIdValue();
+            record["uniqueId"] = tag.UniqueId;
+            record["sheetId"] = sheet.Id.GetIdValue();
+            record["sheetNumber"] = sheet.SheetNumber;
+            record["sheetName"] = sheet.Name;
+            record["viewportId"] = viewport.Id.GetIdValue();
+            record["viewId"] = view.Id.GetIdValue();
+            record["viewName"] = view.Name;
+            record["viewType"] = view.ViewType.ToString();
+            record["tagText"] = TrimText(tagText);
+            record["tagTextNormalized"] = NormalizeForSearch(tagText);
+            record["text"] = TrimText(tagText);
+            record["textNormalized"] = NormalizeForSearch(tagText);
+            record["box"] = BoxInfo(SafeBoundingBox(tag, view));
+
+            Element tagType = SafeGetElement(document, tag.GetTypeId());
+            if (tagType != null)
+            {
+                record["tagFamilyName"] = FamilyNameForElement(tagType);
+                record["tagTypeName"] = SafeElementName(tagType);
+            }
+
+            ElementId taggedElementId = ResolveTaggedLocalElementId(tag, warnings);
+            if (taggedElementId == null || taggedElementId == ElementId.InvalidElementId)
+            {
+                record["taggedElementResolved"] = false;
+                AddOnce(warnings, "viewport_tag_tagged_element_unresolved");
+                return record;
+            }
+
+            record["taggedElementId"] = taggedElementId.GetIdValue();
+            Element taggedElement = SafeGetElement(document, taggedElementId);
+            if (taggedElement == null)
+            {
+                record["taggedElementResolved"] = false;
+                AddOnce(warnings, "viewport_tag_tagged_element_not_found");
+                return record;
+            }
+
+            record["taggedElementResolved"] = true;
+            record["taggedCategory"] = taggedElement.Category != null ? taggedElement.Category.Name : "";
+            record["taggedFamilyName"] = FamilyNameForElement(taggedElement);
+            record["taggedTypeName"] = TypeNameForElement(document, taggedElement);
+            return record;
+        }
+
         private static Dictionary<string, object> BuildScheduleCellScan(
             int scannedRows,
             int scannedColumns,
@@ -1020,7 +1174,7 @@ namespace RevitMCPCommandSet.Commands.View
                 string.Equals(reason, "max_schedule_cells", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static bool HasViewportTextNotes(InspectSheetTextSheetResult sheet)
+        private static bool HasViewportEvidence(InspectSheetTextSheetResult sheet)
         {
             if (sheet == null || sheet.Viewports == null) return false;
             foreach (Dictionary<string, object> viewport in sheet.Viewports)
@@ -1030,6 +1184,16 @@ namespace RevitMCPCommandSet.Commands.View
                 {
                     List<Dictionary<string, object>> textNotes = textNotesObj as List<Dictionary<string, object>>;
                     if (textNotes != null && textNotes.Count > 0)
+                    {
+                        return true;
+                    }
+                }
+
+                object tagsObj;
+                if (viewport.TryGetValue("tags", out tagsObj))
+                {
+                    List<Dictionary<string, object>> tags = tagsObj as List<Dictionary<string, object>>;
+                    if (tags != null && tags.Count > 0)
                     {
                         return true;
                     }
@@ -1187,6 +1351,183 @@ namespace RevitMCPCommandSet.Commands.View
             catch
             {
                 return false;
+            }
+        }
+
+        private static Element SafeGetElement(Document document, ElementId id)
+        {
+            try
+            {
+                if (document == null || id == null || id == ElementId.InvalidElementId) return null;
+                return document.GetElement(id);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static BoundingBoxXYZ SafeBoundingBox(Element element, Autodesk.Revit.DB.View view)
+        {
+            try
+            {
+                return element != null ? element.get_BoundingBox(view) : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string SafeElementName(Element element)
+        {
+            try
+            {
+                return element != null ? element.Name ?? "" : "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static string FamilyNameForElement(Element element)
+        {
+            try
+            {
+                if (element == null) return "";
+
+                ElementType type = element as ElementType;
+                if (type != null)
+                {
+                    return type.FamilyName ?? "";
+                }
+
+                FamilyInstance instance = element as FamilyInstance;
+                if (instance != null && instance.Symbol != null)
+                {
+                    return instance.Symbol.FamilyName ?? "";
+                }
+            }
+            catch
+            {
+                return "";
+            }
+
+            return "";
+        }
+
+        private static string TypeNameForElement(Document document, Element element)
+        {
+            try
+            {
+                if (document == null || element == null) return "";
+                ElementId typeId = element.GetTypeId();
+                Element typeElement = SafeGetElement(document, typeId);
+                return SafeElementName(typeElement);
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static ElementId ResolveTaggedLocalElementId(IndependentTag tag, List<string> warnings)
+        {
+            if (tag == null) return null;
+
+            try
+            {
+                System.Reflection.MethodInfo method = tag.GetType().GetMethod("GetTaggedLocalElementIds", Type.EmptyTypes);
+                if (method != null)
+                {
+                    System.Collections.IEnumerable ids = method.Invoke(tag, null) as System.Collections.IEnumerable;
+                    if (ids != null)
+                    {
+                        foreach (object item in ids)
+                        {
+                            ElementId id = item as ElementId;
+                            if (id != null && id != ElementId.InvalidElementId)
+                            {
+                                return id;
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                AddOnce(warnings, "viewport_tag_tagged_local_element_ids_read_failed");
+            }
+
+            try
+            {
+                System.Reflection.MethodInfo method = tag.GetType().GetMethod("GetTaggedElementIds", Type.EmptyTypes);
+                if (method != null)
+                {
+                    System.Collections.IEnumerable ids = method.Invoke(tag, null) as System.Collections.IEnumerable;
+                    if (ids != null)
+                    {
+                        foreach (object item in ids)
+                        {
+                            ElementId linkedId = TryReadElementIdProperty(item, "LinkedElementId");
+                            if (linkedId != null && linkedId != ElementId.InvalidElementId)
+                            {
+                                AddOnce(warnings, "viewport_tag_linked_element_unresolved");
+                                continue;
+                            }
+
+                            ElementId hostId = TryReadElementIdProperty(item, "HostElementId");
+                            if (hostId != null && hostId != ElementId.InvalidElementId)
+                            {
+                                return hostId;
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                AddOnce(warnings, "viewport_tag_tagged_element_ids_read_failed");
+            }
+
+            return null;
+        }
+
+        private static ElementId TryReadElementIdProperty(object value, string propertyName)
+        {
+            try
+            {
+                if (value == null) return null;
+                System.Reflection.PropertyInfo property = value.GetType().GetProperty(propertyName);
+                if (property == null) return null;
+                return property.GetValue(value, null) as ElementId;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string SafeTagText(IndependentTag tag, List<string> warnings)
+        {
+            try
+            {
+                return tag != null ? tag.TagText ?? "" : "";
+            }
+            catch
+            {
+                AddOnce(warnings, "viewport_tag_text_read_failed");
+                return "";
+            }
+        }
+
+        private static void AddOnce(List<string> values, string value)
+        {
+            if (values == null || string.IsNullOrWhiteSpace(value)) return;
+            if (!values.Contains(value))
+            {
+                values.Add(value);
             }
         }
 

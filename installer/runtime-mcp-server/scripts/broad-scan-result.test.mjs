@@ -109,6 +109,37 @@ assert.equal(nativeSheetTextPayload.lastReadSheetId, 1001);
 assert.equal(nativeSheetTextPayload.lastReadRow, 4);
 assert.equal(nativeSheetTextPayload.lastReadColumn, 2);
 
+const nativeViewportTagPayload = normalizeSheetTextResult({
+  Success: true,
+  Action: "inspect_sheet_text",
+  Partial: false,
+  ScanStoppedReason: "completed",
+  ScannedSheetCount: 1,
+  ScannedViewportCount: 1,
+  ScannedTagCount: 1,
+  Matches: [{
+    Kind: "viewportTag",
+    SheetId: 1001,
+    SheetNumber: "M701",
+    SheetName: "Mechanical Schedules",
+    ViewportId: 3003,
+    ViewId: 4004,
+    ViewName: "Level 08 HVAC",
+    TagId: 5005,
+    ElementId: 5005,
+    TagText: "QHK 310.001",
+    TaggedElementId: 6006,
+  }],
+}, 12);
+assert.equal(nativeViewportTagPayload.evidenceRows.length, 1);
+assert.equal(nativeViewportTagPayload.evidenceRows[0].sourceType, "viewportTag");
+assert.equal(nativeViewportTagPayload.evidenceRows[0].TagText, "QHK 310.001");
+assert.equal(nativeViewportTagPayload.summary.matchCount, 1);
+assert.equal(nativeViewportTagPayload.summary.scannedTagCount, 1);
+assert.equal(nativeViewportTagPayload.lastReadViewportId, 3003);
+assert.equal(nativeViewportTagPayload.lastReadViewId, 4004);
+assert.equal(nativeViewportTagPayload.lastReadItemId, 5005);
+
 const nativeScheduleFailurePayload = normalizeScheduleResult({
   Success: false,
   Action: "inspect_schedules",

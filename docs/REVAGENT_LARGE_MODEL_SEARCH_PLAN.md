@@ -376,8 +376,9 @@ Policy:
   sheets and requires bounded sheet scope or explicit expensive approval.
 - `scanScheduleCells=true` requires bounded sheet scope or explicit expensive
   approval.
-- `includeViewportTags=true` stays opt-in; until native tag support is
-  characterized it returns the stable `viewport_tags_deferred` response.
+- `includeViewportTags=true` stays opt-in and uses the same sheet/view scope,
+  elapsed, scan-count, and response-size budgets as other sheet annotation
+  evidence.
 - The tool should suggest sheet number/name/view scope when it guards.
 
 ### 7. User-Facing Response Pattern

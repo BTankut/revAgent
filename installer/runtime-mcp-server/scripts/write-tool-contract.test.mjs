@@ -14,6 +14,10 @@ function assertContains(source, text, message) {
   assert.ok(source.includes(text), message);
 }
 
+function assertDoesNotContain(source, text, message) {
+  assert.equal(source.includes(text), false, message);
+}
+
 const setElementParameter = readSource("src/tools/set_element_parameter.ts");
 assertContains(setElementParameter, "[PRODUCTION_PARAMETER_WRITE]", "set_element_parameter must stay marked as a production write tool.");
 assertContains(setElementParameter, "runtimeGuarded", "set_element_parameter must use the shared runtime guarded result contract for JS-side guards.");
@@ -66,8 +70,11 @@ assertContains(inspectSheetText, "readNativeResultArray(payload, \"matches\")", 
 assertContains(inspectSheetText, "export function normalizeSheetTextResult", "inspect_sheet_text native-result normalization must be directly fixture-testable.");
 assert.match(inspectSheetText, /\.\.\.row,[\s\S]*sourceType: sourceTypeForSheetEvidence\(row\)/, "inspect_sheet_text evidence rows must apply normalized sourceType after spreading raw row fields.");
 assertContains(inspectSheetText, "includeViewportTextNotes", "inspect_sheet_text must expose viewport text-note inspection.");
+assertContains(inspectSheetText, "includeViewportTags", "inspect_sheet_text must expose viewport tag inspection.");
+assertContains(inspectSheetText, "maxTags", "inspect_sheet_text must expose a bounded viewport tag cap.");
+assertContains(inspectSheetText, "maxViewports", "inspect_sheet_text must expose the roadmap viewport cap alias.");
 assertContains(inspectSheetText, "maxResponseBytes", "inspect_sheet_text must expose the native response-size guard.");
-assertContains(inspectSheetText, "viewport_tags_deferred", "inspect_sheet_text must document the stable viewport tag defer reason.");
+assertDoesNotContain(inspectSheetText, "viewport_tags_deferred", "inspect_sheet_text must not regress viewport tags to the old deferred contract.");
 
 const inspectSchedules = readSource("src/tools/inspect_schedules.ts");
 assertContains(inspectSchedules, "[SCHEDULE_INSPECTION_READ_ONLY]", "inspect_schedules must stay marked as a read-only schedule inspection tool.");

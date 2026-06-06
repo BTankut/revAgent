@@ -107,7 +107,7 @@ tools:
 - `inspect_schedules` should return controlled partial results instead of
   leaving the user with a transport timeout.
 - `inspect_sheet_text` should support real viewport tag evidence instead of
-  returning only `viewport_tags_deferred`.
+  returning only a deferred tag response.
 - A general annotation inventory/count tool should cover sheet/view/tag/text
   and placed schedule code counting without project-specific hardcoding.
 - A schedule-to-Excel reconciliation tool should match rows, explain
@@ -235,10 +235,10 @@ pattern:
 ### Problem
 
 `inspect_sheet_text` has matured for sheet text notes, placed schedules, and
-viewport text notes. However, `includeViewportTags=true` still returns
-`viewport_tags_deferred`. Live validation showed readable
+viewport text notes. Before Workstream 1, `includeViewportTags=true` still
+returned a deferred response. Live validation showed readable
 `IndependentTag.TagText` values in production models. The tag data is reachable;
-the product surface is still deferred.
+the product surface must return real evidence instead of deferring.
 
 ### Desired Behavior
 
@@ -280,7 +280,7 @@ the product surface is still deferred.
   only lightweight parameter validation/normalization.
 - Existing sheet text, viewport text, and placed schedule behavior remains a
   backward-compatible strict superset.
-- CI-safe tests characterize opt-in tag parameters, default caps, deferred
+- CI-safe tests characterize opt-in tag parameters, default caps, defer
   removal, notices, partial stop reasons, and response fields.
 - DLL changes require payload rebuild, manifest refresh, pre-merge live Revit
   gate, and Revit-closed deploy loop.
@@ -750,8 +750,8 @@ Priority: Hotfix prerequisite
 
 ### Title: Implement viewport tag evidence in `inspect_sheet_text`
 
-Evidence: `includeViewportTags=true` currently returns deferred behavior while
-live models expose readable tag text.
+Evidence: `includeViewportTags=true` previously returned deferred behavior
+while live models expose readable tag text.
 
 Why it matters: Sheet and placed-view annotation verification is a recurring
 production workflow.

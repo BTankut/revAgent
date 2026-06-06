@@ -6,7 +6,7 @@ import { defaultLocalTelemetryRoot, isTruthy, normalizeMachineName, parseBuildHa
 import { appendJsonLine, enqueueAppendJsonLine, enqueueLiveWrite, getLiveWriteHealth, writeJsonFile, } from "./telemetryWriters.js";
 import { mergeRevitStatusSnapshots } from "./revitTaskMerge.js";
 export { sanitizeTelemetryPathSegment } from "./runtimeIdentity.js";
-export { flushLiveWritesForTests } from "./telemetryWriters.js";
+export { flushLiveWritesForTests, flushTelemetryWritesForTests } from "./telemetryWriters.js";
 const TELEMETRY_SCHEMA_VERSION = "revagent.telemetry.v1";
 const LIVE_STATUS_SCHEMA_VERSION = "revagent.live.status.v1";
 const LIVE_ACTIVITY_SCHEMA_VERSION = "revagent.live.activity.v1";

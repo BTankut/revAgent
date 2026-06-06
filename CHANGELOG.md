@@ -23,9 +23,10 @@ All notable revAgent workstation deployment changes are tracked here.
   text notes, placed schedule instances/cells, and viewport-linked text notes,
   with Revit-side elapsed budgets, scan caps, partial results, and response-size
   stops before socket timeout.
-- Kept viewport tag scanning opt-in but returned a stable documented
-  `viewport_tags_deferred` response until tag behavior is characterized across
-  production models.
+- Added bounded native viewport tag evidence for `inspect_sheet_text` when
+  `includeViewportTags=true`, returning readable `IndependentTag.TagText` rows
+  as `viewportTag` evidence while reporting tag API limitations through
+  warnings or notices.
 - Bumped the runtime tool surface version to
   `revit-mcp-runtime-tools.35` for verified plan visibility and native sheet
   annotation inspection behavior.

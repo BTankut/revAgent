@@ -18,6 +18,7 @@ import {
   sanitizeTelemetryPathSegment,
   summarizeTelemetryParams,
   summarizeTelemetryResponse,
+  flushTelemetryWritesForTests,
 } from "../build/utils/telemetry.js";
 import {
   buildFindElementsSearchPolicy,
@@ -126,7 +127,10 @@ assert.match(inspectSheetTextDescription, /allowExpensiveSearch=true/);
 assert.match(inspectSheetTextDescription, /generic send_code_to_revit/);
 const inspectSheetTextSchema = tools.get("inspect_sheet_text").schema;
 assert.equal("includeViewportTextNotes" in inspectSheetTextSchema, true);
+assert.equal("includeViewportTags" in inspectSheetTextSchema, true);
 assert.equal("viewNameQuery" in inspectSheetTextSchema, true);
+assert.equal("maxTags" in inspectSheetTextSchema, true);
+assert.equal("maxViewports" in inspectSheetTextSchema, true);
 assert.equal("maxElapsedMs" in inspectSheetTextSchema, true);
 assert.equal("maxResponseBytes" in inspectSheetTextSchema, true);
 const setScheduleCellsDescription = tools.get("set_schedule_cells").description;
@@ -517,7 +521,7 @@ const rejectionPayload = JSON.parse(rejection.content[0].text);
 assert.equal(rejectionPayload.success, false);
 assert.equal(rejectionPayload.guarded, true);
 assert.match(rejectionPayload.error, /does not support writeCommit/);
-await new Promise((resolve) => setTimeout(resolve, 150));
+await flushTelemetryWritesForTests();
 const telemetryFiles = fs.readdirSync(path.join(telemetryRoot, "events"))
   .filter((fileName) => fileName.endsWith(".ndjson"))
   .map((fileName) => path.join(telemetryRoot, "events", fileName));

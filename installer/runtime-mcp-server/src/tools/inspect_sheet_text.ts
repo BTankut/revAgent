@@ -65,6 +65,8 @@ function buildGuardedNeedsScope(args: JsonObject, budget: ReturnType<typeof reso
             includeViewportTextNotes: args.includeViewportTextNotes === true,
             includeViewportTags: args.includeViewportTags === true,
             scanScheduleCells: args.scanScheduleCells === true,
+            maxTags: args.maxTags ?? args.maxTagsScanned,
+            maxViewports: args.maxViewports ?? args.maxViewportsPerSheet,
         },
         summary: {
             sheetQuery: args.sheetQuery ?? args.query ?? null,
@@ -97,8 +99,10 @@ function buildNativeParams(args: JsonObject, budget: ReturnType<typeof resolveBu
         maxColumnsPerSchedule: args.maxColumnsPerSchedule,
         maxTextChars: args.maxTextChars,
         maxViewportsPerSheet: args.maxViewportsPerSheet,
+        maxViewports: args.maxViewports,
         maxViewportTextNotesPerView: args.maxViewportTextNotesPerView,
         maxViewportTagsPerView: args.maxViewportTagsPerView,
+        maxTags: args.maxTags,
         maxTextNotesScanned: args.maxTextNotesScanned,
         maxTagsScanned: args.maxTagsScanned,
         maxScheduleInstancesScanned: args.maxScheduleInstancesScanned,
@@ -186,7 +190,7 @@ export function normalizeSheetTextResult(payload: JsonObject, elapsedMs: number)
 }
 
 export function registerInspectSheetTextTool(server: ToolServer) {
-    server.tool("inspect_sheet_text", "[SHEET_TEXT_INSPECTION_READ_ONLY] Read-only native sheet + viewport annotation inspection for DrawingSheet text notes, placed schedule instances, bounded schedule cells, and viewport-linked text notes. Prefer this over generic send_code_to_revit for sheet and plan annotation searches in large projects. Use sheetQuery/sheetIds first; project-wide text, viewport, tag, or placed-schedule cell scans require allowExpensiveSearch=true.", {
+    server.tool("inspect_sheet_text", "[SHEET_TEXT_INSPECTION_READ_ONLY] Read-only native sheet + viewport annotation inspection for DrawingSheet text notes, placed schedule instances, bounded schedule cells, viewport-linked text notes, and viewport tags. Prefer this over generic send_code_to_revit for sheet and plan annotation searches in large projects. Use sheetQuery/sheetIds first; project-wide text, viewport, tag, or placed-schedule cell scans require allowExpensiveSearch=true.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Alias for sheetQuery. Matches sheet number and sheet name with Turkish/diacritic/Cyrillic-U normalization."),
@@ -200,7 +204,7 @@ export function registerInspectSheetTextTool(server: ToolServer) {
         searchBudget: z.enum(["fast", "balanced", "deep"]).optional().describe("Native Revit-side scan budget preset. fast is default; deep still respects maxElapsedMs and response-size caps."),
         maxElapsedMs: z.number().int().positive().max(119000).optional().describe("Native Revit-side elapsed budget. It is clamped below timeoutMs so partial results can return before transport timeout."),
         includeViewportTextNotes: z.boolean().optional().describe("Include bounded TextNote results from views placed on matching sheets. Defaults false."),
-        includeViewportTags: z.boolean().optional().describe("Opt-in viewport tag scan. Currently returns stable viewport_tags_deferred unless a later native tag scanner is enabled."),
+        includeViewportTags: z.boolean().optional().describe("Include bounded IndependentTag evidence from views placed on matching sheets. Defaults false."),
         viewNameQuery: z.string().optional().describe("Optional placed-view name filter used before viewport text-note inspection."),
         maxSheets: z.number().int().positive().max(200).optional().describe("Maximum sheets to inspect/return. Defaults 30."),
         maxTextNotesPerSheet: z.number().int().min(0).max(1000).optional().describe("Maximum matching sheet text notes returned per sheet. Defaults 200."),
@@ -209,10 +213,12 @@ export function registerInspectSheetTextTool(server: ToolServer) {
         maxColumnsPerSchedule: z.number().int().min(0).max(100).optional().describe("Maximum schedule body columns to scan when scanScheduleCells=true. Defaults 30."),
         maxTextChars: z.number().int().min(20).max(1000).optional().describe("Maximum characters retained per returned text value. Defaults 240."),
         maxViewportsPerSheet: z.number().int().min(0).max(200).optional().describe("Maximum placed viewports inspected per sheet. Defaults 20."),
+        maxViewports: z.number().int().min(0).max(200).optional().describe("Alias for maxViewportsPerSheet. Maximum placed viewports inspected per sheet."),
         maxViewportTextNotesPerView: z.number().int().min(0).max(1000).optional().describe("Maximum matching viewport text notes returned per placed view. Defaults 200."),
-        maxViewportTagsPerView: z.number().int().min(0).max(500).optional().describe("Reserved cap for opt-in viewport tag scanning. Defaults 100."),
+        maxViewportTagsPerView: z.number().int().min(0).max(500).optional().describe("Maximum matching viewport tags returned per placed view. Defaults 100."),
         maxTextNotesScanned: z.number().int().positive().max(200000).optional().describe("Global native cap across sheet and viewport text notes."),
-        maxTagsScanned: z.number().int().positive().max(100000).optional().describe("Global native cap for future opt-in tag scanning."),
+        maxTags: z.number().int().positive().max(100000).optional().describe("Alias for maxTagsScanned. Global native cap across viewport tags."),
+        maxTagsScanned: z.number().int().positive().max(100000).optional().describe("Global native cap across viewport tags."),
         maxScheduleInstancesScanned: z.number().int().positive().max(100000).optional().describe("Global native cap across placed schedule instances."),
         maxScheduleCellsScanned: z.number().int().positive().max(500000).optional().describe("Global native cap across placed schedule body cells."),
         maxResponseBytes: z.number().int().min(4096).max(16 * 1024 * 1024).optional().describe("Advanced response-size budget. The native handler stops with scanStoppedReason=max_bytes before the bridge response becomes too large."),

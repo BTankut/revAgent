@@ -23,7 +23,7 @@ import { mergeRevitStatusSnapshots } from "./revitTaskMerge.js";
 import type { ToolServer } from "../tools/types.js";
 
 export { sanitizeTelemetryPathSegment } from "./runtimeIdentity.js";
-export { flushLiveWritesForTests } from "./telemetryWriters.js";
+export { flushLiveWritesForTests, flushTelemetryWritesForTests } from "./telemetryWriters.js";
 
 type JsonObject = Record<string, any>;
 type JsonArray = any[];

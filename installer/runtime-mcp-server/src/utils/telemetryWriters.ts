@@ -91,3 +91,13 @@ export async function flushLiveWritesForTests(timeoutMs = 2000): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, 20));
     }
 }
+
+export async function flushTelemetryWritesForTests(timeoutMs = 2000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (telemetryWriteQueues.size > 0 && Date.now() < deadline) {
+        await Promise.allSettled(Array.from(telemetryWriteQueues.values()));
+        if (telemetryWriteQueues.size > 0) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+    }
+}

@@ -56,11 +56,11 @@ namespace RevitMCPCommandSet.Commands.View
             request.MaxRowsPerSchedule = ReadInt(parameters, "maxRowsPerSchedule", 80, 0, 500);
             request.MaxColumnsPerSchedule = ReadInt(parameters, "maxColumnsPerSchedule", 30, 0, 100);
             request.MaxTextChars = ReadInt(parameters, "maxTextChars", 240, 20, 1000);
-            request.MaxViewportsPerSheet = ReadInt(parameters, "maxViewportsPerSheet", 20, 0, 200);
+            request.MaxViewportsPerSheet = ReadInt(parameters, "maxViewportsPerSheet", ReadInt(parameters, "maxViewports", 20, 0, 200), 0, 200);
             request.MaxViewportTextNotesPerView = ReadInt(parameters, "maxViewportTextNotesPerView", 200, 0, 1000);
             request.MaxViewportTagsPerView = ReadInt(parameters, "maxViewportTagsPerView", 100, 0, 500);
             request.MaxTextNotesScanned = ReadInt(parameters, "maxTextNotesScanned", DefaultGlobalCap(request.SearchBudget, 1000, 5000, 20000), 1, 200000);
-            request.MaxTagsScanned = ReadInt(parameters, "maxTagsScanned", DefaultGlobalCap(request.SearchBudget, 500, 2500, 10000), 1, 100000);
+            request.MaxTagsScanned = ReadInt(parameters, "maxTagsScanned", ReadInt(parameters, "maxTags", DefaultGlobalCap(request.SearchBudget, 500, 2500, 10000), 1, 100000), 1, 100000);
             request.MaxScheduleInstancesScanned = ReadInt(parameters, "maxScheduleInstancesScanned", DefaultGlobalCap(request.SearchBudget, 500, 2500, 10000), 1, 100000);
             request.MaxScheduleCellsScanned = ReadInt(parameters, "maxScheduleCellsScanned", DefaultGlobalCap(request.SearchBudget, 5000, 25000, 100000), 1, 500000);
             request.MaxResponseBytes = ReadInt(parameters, "maxResponseBytes", 4 * 1024 * 1024, 4096, 16 * 1024 * 1024);
