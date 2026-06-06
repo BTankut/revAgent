@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { connectionOptionsFromArgs, connectionTargetSchema, csharpIntArray, csharpString, csharpStringArray, executeRevitCode, formatJsonContent, taskMetadataSchema, taskOptionsFromArgs, } from "../utils/revitToolHelpers.js";
-import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, } from "../utils/broadScanResult.js";
+import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, readNativeResultArray, readNativeResultField, readNativeResultObject, } from "../utils/broadScanResult.js";
 function clampIntArg(value, fallback, min, max) {
+    if (value === undefined || value === null || value === "") {
+        return fallback;
+    }
     const parsed = Number.parseInt(String(value ?? ""), 10);
     if (!Number.isFinite(parsed)) {
         return fallback;
@@ -319,89 +322,93 @@ function isObject(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 function scheduleSections(payload) {
-    const schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
+    const schedules = readNativeResultArray(payload, "schedules");
     return schedules.filter(isObject).flatMap((schedule) => {
-        const sections = Array.isArray(schedule.sections) ? schedule.sections.filter(isObject) : [];
+        const sections = readNativeResultArray(schedule, "sections");
         return sections.map((section) => ({ schedule, section }));
     });
 }
 function buildScheduleEvidenceRows(payload) {
     return scheduleSections(payload).flatMap(({ schedule, section }) => {
-        const matches = Array.isArray(section.matches) ? section.matches : [];
+        const matches = readNativeResultArray(section, "matches");
         return matches
             .filter(isObject)
             .map((match) => ({
             sourceType: "scheduleCell",
-            scheduleId: schedule.id,
-            scheduleName: schedule.name,
-            section: match.section ?? section.section,
-            row: match.row,
-            column: match.column,
-            text: match.text,
+            scheduleId: readNativeResultField(schedule, "id"),
+            scheduleName: readNativeResultField(schedule, "name"),
+            section: readNativeResultField(match, "section") ?? readNativeResultField(section, "section"),
+            row: readNativeResultField(match, "row"),
+            column: readNativeResultField(match, "column"),
+            text: readNativeResultField(match, "text"),
         }));
     });
 }
 function inferSchedulePartial(payload) {
-    if (payload.partial === true || payload.truncated === true) {
+    if (readNativeResultField(payload, "partial") === true || readNativeResultField(payload, "truncated") === true) {
         return true;
     }
-    return scheduleSections(payload).some(({ section }) => section.rowsTruncated === true || section.columnsTruncated === true);
+    return scheduleSections(payload).some(({ section }) => readNativeResultField(section, "rowsTruncated") === true || readNativeResultField(section, "columnsTruncated") === true);
 }
 function inferScheduleStopReason(payload) {
+    if (readNativeResultField(payload, "success") === false || String(readNativeResultField(payload, "state") || "").toLowerCase() === "failed" || readNativeResultField(payload, "error")) {
+        return "read_failed";
+    }
     if (!inferSchedulePartial(payload)) {
         return "completed";
     }
-    if (payload.truncated === true) {
+    if (readNativeResultField(payload, "truncated") === true) {
         return "max_items";
     }
     for (const { section } of scheduleSections(payload)) {
-        if (section.rowsTruncated === true)
+        if (readNativeResultField(section, "rowsTruncated") === true)
             return "max_rows";
-        if (section.columnsTruncated === true)
+        if (readNativeResultField(section, "columnsTruncated") === true)
             return "max_columns";
     }
     return "max_cells";
 }
 function buildScheduleSummary(payload) {
-    const scan = isObject(payload.scan) ? payload.scan : {};
-    const evidenceRows = Array.isArray(payload.evidenceRows)
-        ? payload.evidenceRows
+    const scan = readNativeResultObject(payload, "scan") || {};
+    const schedules = readNativeResultArray(payload, "schedules");
+    const evidenceRows = readNativeResultArray(payload, "evidenceRows").length > 0
+        ? readNativeResultArray(payload, "evidenceRows")
         : buildScheduleEvidenceRows(payload);
     return {
-        query: payload.query ?? null,
-        nameQuery: payload.nameQuery ?? null,
-        cellQuery: payload.cellQuery ?? null,
-        totalSchedules: payload.totalSchedules ?? null,
-        candidateCount: payload.candidateCount ?? null,
-        returnedCount: payload.returnedCount ?? (Array.isArray(payload.schedules) ? payload.schedules.length : null),
+        query: readNativeResultField(payload, "query") ?? null,
+        nameQuery: readNativeResultField(payload, "nameQuery") ?? null,
+        cellQuery: readNativeResultField(payload, "cellQuery") ?? null,
+        totalSchedules: readNativeResultField(payload, "totalSchedules") ?? null,
+        candidateCount: readNativeResultField(payload, "candidateCount") ?? null,
+        returnedCount: readNativeResultField(payload, "returnedCount") ?? (schedules.length > 0 ? schedules.length : null),
         matchCount: evidenceRows.length,
-        totalCellMatches: scan.totalCellMatches ?? evidenceRows.length,
-        scannedScheduleCount: scan.scannedScheduleCount ?? null,
-        partial: payload.partial === true,
-        scanStoppedReason: payload.scanStoppedReason ?? "completed",
+        totalCellMatches: readNativeResultField(scan, "totalCellMatches") ?? evidenceRows.length,
+        scannedScheduleCount: readNativeResultField(scan, "scannedScheduleCount") ?? null,
+        partial: readNativeResultField(payload, "partial") === true,
+        scanStoppedReason: readNativeResultField(payload, "scanStoppedReason") ?? "completed",
     };
 }
 function inferScheduleLastRead(payload) {
-    const evidenceRows = Array.isArray(payload.evidenceRows)
-        ? payload.evidenceRows
+    const evidenceRows = readNativeResultArray(payload, "evidenceRows").length > 0
+        ? readNativeResultArray(payload, "evidenceRows")
         : buildScheduleEvidenceRows(payload);
     const lastEvidence = evidenceRows.length > 0 ? evidenceRows[evidenceRows.length - 1] : null;
     const sections = scheduleSections(payload);
     const lastSection = sections.length > 0 ? sections[sections.length - 1].section : null;
-    const schedules = Array.isArray(payload.schedules) ? payload.schedules.filter(isObject) : [];
+    const schedules = readNativeResultArray(payload, "schedules");
     const lastSchedule = sections.length > 0
         ? sections[sections.length - 1].schedule
         : schedules.length > 0 ? schedules[schedules.length - 1] : null;
-    const returnedRows = Number(lastSection?.returnedRows ?? lastSection?.scannedRows ?? 0);
-    const returnedColumns = Number(lastSection?.returnedColumns ?? lastSection?.scannedColumns ?? 0);
+    const returnedRows = Number(readNativeResultField(lastSection, "returnedRows") ?? readNativeResultField(lastSection, "scannedRows") ?? 0);
+    const returnedColumns = Number(readNativeResultField(lastSection, "returnedColumns") ?? readNativeResultField(lastSection, "scannedColumns") ?? 0);
     return {
-        lastReadSection: lastEvidence?.section ?? lastSection?.section ?? null,
-        lastReadRow: lastEvidence?.row ?? (returnedRows > 0 ? returnedRows - 1 : null),
-        lastReadColumn: lastEvidence?.column ?? (returnedColumns > 0 ? returnedColumns - 1 : null),
+        lastReadSection: readNativeResultField(lastEvidence, "section") ?? readNativeResultField(lastSection, "section") ?? null,
+        lastReadRow: readNativeResultField(lastEvidence, "row") ?? (returnedRows > 0 ? returnedRows - 1 : null),
+        lastReadColumn: readNativeResultField(lastEvidence, "column") ?? (returnedColumns > 0 ? returnedColumns - 1 : null),
         lastReadSheetId: null,
         lastReadViewId: null,
         lastReadViewportId: null,
-        lastReadItemId: lastEvidence?.scheduleId ?? lastSchedule?.id ?? null,
+        lastReadItemId: readNativeResultField(lastEvidence, "scheduleId") ?? readNativeResultField(lastSchedule, "id") ?? null,
     };
 }
 function buildScheduleScanPolicy(args) {
@@ -416,13 +423,13 @@ function buildScheduleScanPolicy(args) {
         timeoutMs: clampIntArg(args.timeoutMs, 120000, 1000, 120000),
     };
 }
-function normalizeScheduleResult(payload, args, elapsedMs) {
+export function normalizeScheduleResult(payload, args, elapsedMs) {
     const partial = inferSchedulePartial(payload);
     return normalizeBroadScanResult(payload, {
         action: "inspect_schedules",
         elapsedMs,
         partial,
-        scanStoppedReason: payload.scanStoppedReason ?? inferScheduleStopReason(payload),
+        scanStoppedReason: readNativeResultField(payload, "scanStoppedReason") ?? inferScheduleStopReason(payload),
         scanPolicy: buildScheduleScanPolicy(args),
         suggestedNextScopes: ["nameQuery", "scheduleIds", "sections", "maxRowsPerSection", "maxColumnsPerSection", "allowExpensiveSearch"],
         summary: buildScheduleSummary,

@@ -62,6 +62,8 @@ assertContains(inspectSheetText, "[SHEET_TEXT_INSPECTION_READ_ONLY]", "inspect_s
 assertContains(inspectSheetText, 'sendRevitCommand("inspect_sheet_text"', "inspect_sheet_text must call the native commandset command.");
 assertContains(inspectSheetText, "normalizeBroadScanResult", "inspect_sheet_text must normalize through the shared broad-scan result contract.");
 assertContains(inspectSheetText, "buildBroadScanGuardedResult", "inspect_sheet_text guarded paths must use the shared broad-scan result contract.");
+assertContains(inspectSheetText, "readNativeResultArray(payload, \"matches\")", "inspect_sheet_text must read native Matches/matches through the shared casing-robust ingest helper.");
+assertContains(inspectSheetText, "export function normalizeSheetTextResult", "inspect_sheet_text native-result normalization must be directly fixture-testable.");
 assert.match(inspectSheetText, /\.\.\.row,[\s\S]*sourceType: sourceTypeForSheetEvidence\(row\)/, "inspect_sheet_text evidence rows must apply normalized sourceType after spreading raw row fields.");
 assertContains(inspectSheetText, "includeViewportTextNotes", "inspect_sheet_text must expose viewport text-note inspection.");
 assertContains(inspectSheetText, "maxResponseBytes", "inspect_sheet_text must expose the native response-size guard.");
@@ -72,14 +74,18 @@ assertContains(inspectSchedules, "[SCHEDULE_INSPECTION_READ_ONLY]", "inspect_sch
 assertContains(inspectSchedules, "normalizeBroadScanResult", "inspect_schedules must normalize through the shared broad-scan result contract.");
 assertContains(inspectSchedules, "buildBroadScanGuardedResult", "inspect_schedules guarded paths must use the shared broad-scan result contract.");
 assertContains(inspectSchedules, "buildScheduleEvidenceRows", "inspect_schedules must expose assistant-readable schedule evidence rows.");
+assertContains(inspectSchedules, "export function normalizeScheduleResult", "inspect_schedules native-result normalization must be directly fixture-testable.");
+assertContains(inspectSchedules, "readNativeResultField(payload, \"success\") === false", "inspect_schedules failed native payloads must stop as read_failed.");
 assertContains(inspectSchedules, "schedules.filter(isObject)", "inspect_schedules must ignore non-object schedule entries before reading sections.");
-assertContains(inspectSchedules, "schedule.sections.filter(isObject)", "inspect_schedules must ignore non-object section entries before reading matches.");
-assertContains(inspectSchedules, "lastEvidence?.scheduleId ?? lastSchedule?.id ?? null", "inspect_schedules must keep last scanned schedule id when no cell evidence matched.");
+assertContains(inspectSchedules, "readNativeResultArray(schedule, \"sections\")", "inspect_schedules must ignore non-object section entries before reading matches.");
+assertContains(inspectSchedules, "readNativeResultField(lastEvidence, \"scheduleId\") ?? readNativeResultField(lastSchedule, \"id\") ?? null", "inspect_schedules must keep last scanned schedule id when no cell evidence matched.");
 assertContains(inspectSchedules, "clampIntArg(args.maxRowsPerSection, 80, 0, 1000)", "inspect_schedules must preserve valid zero row limits.");
 assertContains(inspectSchedules, "clampIntArg(args.maxColumnsPerSection, 30, 0, 200)", "inspect_schedules must preserve valid zero column limits.");
 
 const broadScanResult = readSource("src/utils/broadScanResult.ts");
 assertContains(broadScanResult, "finiteNumberOrNull", "Shared broad-scan contract must not coerce null elapsedMs to zero.");
+assertContains(broadScanResult, "readNativeResultField", "Shared broad-scan contract must own casing-robust native result ingest.");
+assertContains(broadScanResult, "readNativeResultArray", "Shared broad-scan contract must expose casing-robust native array reads.");
 for (const reason of ["completed", "max_elapsed", "max_rows", "max_columns", "max_cells", "max_items", "max_bytes", "read_failed", "needs_scope"]) {
   assertContains(broadScanResult, `"${reason}"`, `Shared broad-scan stop reason '${reason}' must stay defined in one place.`);
 }

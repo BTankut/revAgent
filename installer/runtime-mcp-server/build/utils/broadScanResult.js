@@ -51,9 +51,30 @@ function cleanStringArray(value) {
         .map((item) => cleanString(item))
         .filter((item) => item.length > 0);
 }
-function readCasedField(payload, camelName) {
+export function readNativeResultField(payload, camelName) {
+    if (!isJsonObject(payload)) {
+        return undefined;
+    }
     const pascalName = camelName.charAt(0).toUpperCase() + camelName.slice(1);
-    return payload[camelName] ?? payload[pascalName];
+    if (Object.prototype.hasOwnProperty.call(payload, camelName)) {
+        return payload[camelName];
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, pascalName)) {
+        return payload[pascalName];
+    }
+    const normalized = camelName.toLowerCase();
+    const matchingKey = Object.keys(payload).find((key) => key.toLowerCase() === normalized);
+    return matchingKey ? payload[matchingKey] : undefined;
+}
+export function readNativeResultArray(payload, camelName) {
+    const value = readNativeResultField(payload, camelName);
+    return Array.isArray(value)
+        ? value.filter((item) => isJsonObject(item))
+        : [];
+}
+export function readNativeResultObject(payload, camelName) {
+    const value = readNativeResultField(payload, camelName);
+    return isJsonObject(value) ? value : null;
 }
 function normalizeBoolean(value, fallback = false) {
     if (typeof value === "boolean") {
@@ -112,15 +133,16 @@ function resolveValue(value, payload, fallback) {
 }
 export function normalizeBroadScanResult(payload, options) {
     const result = isJsonObject(payload) ? { ...payload } : { value: payload };
-    const rawState = cleanString(readCasedField(result, "state"));
-    const rawError = cleanString(readCasedField(result, "error"));
-    const guarded = normalizeBoolean(readCasedField(result, "guarded"), false);
-    const success = typeof readCasedField(result, "success") === "boolean"
-        ? Boolean(readCasedField(result, "success"))
+    const rawState = cleanString(readNativeResultField(result, "state"));
+    const rawError = cleanString(readNativeResultField(result, "error"));
+    const guarded = normalizeBoolean(readNativeResultField(result, "guarded"), false);
+    const rawSuccess = readNativeResultField(result, "success");
+    const success = typeof rawSuccess === "boolean"
+        ? Boolean(rawSuccess)
         : rawError.length === 0;
     const state = rawState || (guarded ? "guarded" : success ? "completed" : "failed");
-    const partial = options.partial ?? normalizeBoolean(readCasedField(result, "partial"), false);
-    const rawStopReason = cleanString(options.scanStoppedReason ?? readCasedField(result, "scanStoppedReason"));
+    const partial = options.partial ?? normalizeBoolean(readNativeResultField(result, "partial"), false);
+    const rawStopReason = cleanString(options.scanStoppedReason ?? readNativeResultField(result, "scanStoppedReason"));
     const fallbackStopReason = defaultStopReason(result, partial, guarded, state);
     const scanStoppedReason = normalizeBroadScanStopReason(rawStopReason, fallbackStopReason);
     result.success = success;
@@ -132,27 +154,31 @@ export function normalizeBroadScanResult(payload, options) {
     if (rawStopReason && rawStopReason !== scanStoppedReason && result.rawScanStoppedReason === undefined) {
         result.rawScanStoppedReason = rawStopReason;
     }
-    result.scanPolicy = isJsonObject(readCasedField(result, "scanPolicy"))
-        ? readCasedField(result, "scanPolicy")
+    const scanPolicy = readNativeResultObject(result, "scanPolicy");
+    result.scanPolicy = scanPolicy
+        ? scanPolicy
         : (options.scanPolicy || {});
-    result.suggestedNextScopes = cleanStringArray(readCasedField(result, "suggestedNextScopes")).length > 0
-        ? cleanStringArray(readCasedField(result, "suggestedNextScopes"))
+    const suggestedNextScopes = cleanStringArray(readNativeResultField(result, "suggestedNextScopes"));
+    result.suggestedNextScopes = suggestedNextScopes.length > 0
+        ? suggestedNextScopes
         : cleanStringArray(options.suggestedNextScopes);
-    result.elapsedMs = finiteNumberOrNull(readCasedField(result, "elapsedMs"))
+    result.elapsedMs = finiteNumberOrNull(readNativeResultField(result, "elapsedMs"))
         ?? finiteNumberOrNull(options.elapsedMs);
-    result.warnings = cleanStringArray(readCasedField(result, "warnings")).concat(cleanStringArray(options.warnings));
-    result.notices = cleanStringArray(readCasedField(result, "notices")).concat(cleanStringArray(options.notices));
+    result.warnings = cleanStringArray(readNativeResultField(result, "warnings")).concat(cleanStringArray(options.warnings));
+    result.notices = cleanStringArray(readNativeResultField(result, "notices")).concat(cleanStringArray(options.notices));
     const evidenceRows = resolveValue(options.evidenceRows, result, []);
-    result.evidenceRows = Array.isArray(readCasedField(result, "evidenceRows"))
-        ? readCasedField(result, "evidenceRows")
+    const nativeEvidenceRows = readNativeResultArray(result, "evidenceRows");
+    result.evidenceRows = nativeEvidenceRows.length > 0
+        ? nativeEvidenceRows
         : (Array.isArray(evidenceRows) ? evidenceRows : []);
     const summary = resolveValue(options.summary, result, {});
-    result.summary = isJsonObject(readCasedField(result, "summary"))
-        ? readCasedField(result, "summary")
+    const nativeSummary = readNativeResultObject(result, "summary");
+    result.summary = nativeSummary
+        ? nativeSummary
         : (isJsonObject(summary) ? summary : {});
     const lastRead = resolveValue(options.lastRead, result, {});
     for (const field of BROAD_SCAN_CONTINUATION_FIELDS) {
-        const current = readCasedField(result, field);
+        const current = readNativeResultField(result, field);
         result[field] = current !== undefined ? current : lastRead[field] ?? null;
     }
     return result;

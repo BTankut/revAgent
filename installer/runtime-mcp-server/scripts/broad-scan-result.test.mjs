@@ -5,6 +5,12 @@ import {
   normalizeBroadScanResult,
   normalizeBroadScanStopReason,
 } from "../build/utils/broadScanResult.js";
+import {
+  normalizeSheetTextResult,
+} from "../build/tools/inspect_sheet_text.js";
+import {
+  normalizeScheduleResult,
+} from "../build/tools/inspect_schedules.js";
 import { registerTools } from "../build/tools/register.js";
 
 const expectedStopReasons = [
@@ -71,6 +77,48 @@ const evidenceBeforeSummary = normalizeBroadScanResult({
 });
 assert.equal(summarySawResolvedEvidence, true);
 assert.equal(evidenceBeforeSummary.summary.evidenceCount, 1);
+
+const nativeSheetTextPayload = normalizeSheetTextResult({
+  Success: true,
+  Action: "inspect_sheet_text",
+  SheetQuery: "M701",
+  TextQuery: "QHK",
+  Partial: false,
+  ScanStoppedReason: "completed",
+  TotalSheets: 2,
+  CandidateCount: 1,
+  ReturnedCount: 1,
+  ScannedSheetCount: 1,
+  Matches: [{
+    Kind: "scheduleCell",
+    SheetId: 1001,
+    SheetNumber: "M701",
+    SheetName: "Mechanical Schedules",
+    ScheduleId: 2002,
+    Section: "body",
+    Row: 4,
+    Column: 2,
+    Text: "QHK 310.001",
+    sourceType: "raw_untrusted",
+  }],
+}, 14);
+assert.equal(nativeSheetTextPayload.evidenceRows.length, 1);
+assert.equal(nativeSheetTextPayload.summary.matchCount, 1);
+assert.equal(nativeSheetTextPayload.evidenceRows[0].sourceType, "placedScheduleCell");
+assert.equal(nativeSheetTextPayload.lastReadSheetId, 1001);
+assert.equal(nativeSheetTextPayload.lastReadRow, 4);
+assert.equal(nativeSheetTextPayload.lastReadColumn, 2);
+
+const nativeScheduleFailurePayload = normalizeScheduleResult({
+  Success: false,
+  Action: "inspect_schedules",
+  Error: "Autodesk.Revit.Exceptions.InvalidOperationException: section read failed",
+}, {}, 9);
+assert.equal(nativeScheduleFailurePayload.success, false);
+assert.equal(nativeScheduleFailurePayload.state, "failed");
+assert.equal(nativeScheduleFailurePayload.partial, false);
+assert.equal(nativeScheduleFailurePayload.scanStoppedReason, "read_failed");
+assert.equal(nativeScheduleFailurePayload.summary.scanStoppedReason, "read_failed");
 
 const elapsedNull = normalizeBroadScanResult({
   success: true,

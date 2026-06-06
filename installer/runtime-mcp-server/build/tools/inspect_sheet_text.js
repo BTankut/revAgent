@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
-import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, } from "../utils/broadScanResult.js";
+import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, readNativeResultArray, readNativeResultField, } from "../utils/broadScanResult.js";
 const budgetDefaults = {
     fast: { maxElapsedMs: 4500, timeoutMs: 12000 },
     balanced: { maxElapsedMs: 15000, timeoutMs: 30000 },
@@ -88,7 +88,7 @@ function buildNativeParams(args, budget) {
     };
 }
 function sourceTypeForSheetEvidence(row) {
-    const kind = String(row.kind || row.sourceType || "");
+    const kind = String(readNativeResultField(row, "kind") || readNativeResultField(row, "sourceType") || "");
     if (kind === "scheduleCell")
         return "placedScheduleCell";
     if (kind === "scheduleInstance")
@@ -96,7 +96,7 @@ function sourceTypeForSheetEvidence(row) {
     return kind || "sheetTextNote";
 }
 function buildSheetTextEvidenceRows(payload) {
-    const matches = Array.isArray(payload.matches) ? payload.matches : [];
+    const matches = readNativeResultArray(payload, "matches");
     return matches
         .filter((row) => Boolean(row) && typeof row === "object" && !Array.isArray(row))
         .map((row) => ({
@@ -105,44 +105,51 @@ function buildSheetTextEvidenceRows(payload) {
     }));
 }
 function buildSheetTextSummary(payload) {
-    const evidenceRows = Array.isArray(payload.evidenceRows)
-        ? payload.evidenceRows
+    const evidenceRows = readNativeResultArray(payload, "evidenceRows").length > 0
+        ? readNativeResultArray(payload, "evidenceRows")
         : buildSheetTextEvidenceRows(payload);
+    const sheets = readNativeResultArray(payload, "sheets");
     return {
-        sheetQuery: payload.sheetQuery ?? null,
-        textQuery: payload.textQuery ?? null,
-        totalSheets: payload.totalSheets ?? null,
-        candidateCount: payload.candidateCount ?? null,
-        returnedCount: payload.returnedCount ?? (Array.isArray(payload.sheets) ? payload.sheets.length : null),
+        sheetQuery: readNativeResultField(payload, "sheetQuery") ?? null,
+        textQuery: readNativeResultField(payload, "textQuery") ?? null,
+        totalSheets: readNativeResultField(payload, "totalSheets") ?? null,
+        candidateCount: readNativeResultField(payload, "candidateCount") ?? null,
+        returnedCount: readNativeResultField(payload, "returnedCount") ?? (sheets.length > 0 ? sheets.length : null),
         matchCount: evidenceRows.length,
-        partial: payload.partial === true,
-        scanStoppedReason: payload.scanStoppedReason ?? "completed",
-        scannedSheetCount: payload.scannedSheetCount ?? null,
-        scannedViewportCount: payload.scannedViewportCount ?? null,
-        scannedTextNoteCount: payload.scannedTextNoteCount ?? null,
-        scannedTagCount: payload.scannedTagCount ?? null,
-        scannedScheduleInstanceCount: payload.scannedScheduleInstanceCount ?? null,
-        scannedScheduleCellCount: payload.scannedScheduleCellCount ?? null,
+        partial: readNativeResultField(payload, "partial") === true,
+        scanStoppedReason: readNativeResultField(payload, "scanStoppedReason") ?? "completed",
+        scannedSheetCount: readNativeResultField(payload, "scannedSheetCount") ?? null,
+        scannedViewportCount: readNativeResultField(payload, "scannedViewportCount") ?? null,
+        scannedTextNoteCount: readNativeResultField(payload, "scannedTextNoteCount") ?? null,
+        scannedTagCount: readNativeResultField(payload, "scannedTagCount") ?? null,
+        scannedScheduleInstanceCount: readNativeResultField(payload, "scannedScheduleInstanceCount") ?? null,
+        scannedScheduleCellCount: readNativeResultField(payload, "scannedScheduleCellCount") ?? null,
     };
 }
 function inferSheetTextLastRead(payload) {
-    const evidenceRows = Array.isArray(payload.evidenceRows)
-        ? payload.evidenceRows
+    const evidenceRows = readNativeResultArray(payload, "evidenceRows").length > 0
+        ? readNativeResultArray(payload, "evidenceRows")
         : buildSheetTextEvidenceRows(payload);
     const lastEvidence = evidenceRows.length > 0 ? evidenceRows[evidenceRows.length - 1] : null;
-    const sheets = Array.isArray(payload.sheets) ? payload.sheets : [];
+    const sheets = readNativeResultArray(payload, "sheets");
     const lastSheet = sheets.length > 0 ? sheets[sheets.length - 1] : null;
     return {
-        lastReadSection: lastEvidence?.section ?? null,
-        lastReadRow: lastEvidence?.row ?? null,
-        lastReadColumn: lastEvidence?.column ?? null,
-        lastReadSheetId: lastEvidence?.sheetId ?? lastSheet?.id ?? null,
-        lastReadViewId: lastEvidence?.viewId ?? null,
-        lastReadViewportId: lastEvidence?.viewportId ?? null,
-        lastReadItemId: lastEvidence?.elementId ?? lastEvidence?.tagId ?? lastEvidence?.instanceId ?? lastEvidence?.id ?? null,
+        lastReadSection: lastEvidence ? readNativeResultField(lastEvidence, "section") ?? null : null,
+        lastReadRow: lastEvidence ? readNativeResultField(lastEvidence, "row") ?? null : null,
+        lastReadColumn: lastEvidence ? readNativeResultField(lastEvidence, "column") ?? null : null,
+        lastReadSheetId: lastEvidence ? readNativeResultField(lastEvidence, "sheetId") ?? readNativeResultField(lastSheet, "id") ?? null : readNativeResultField(lastSheet, "id") ?? null,
+        lastReadViewId: lastEvidence ? readNativeResultField(lastEvidence, "viewId") ?? null : null,
+        lastReadViewportId: lastEvidence ? readNativeResultField(lastEvidence, "viewportId") ?? null : null,
+        lastReadItemId: lastEvidence
+            ? readNativeResultField(lastEvidence, "elementId")
+                ?? readNativeResultField(lastEvidence, "tagId")
+                ?? readNativeResultField(lastEvidence, "instanceId")
+                ?? readNativeResultField(lastEvidence, "id")
+                ?? null
+            : null,
     };
 }
-function normalizeSheetTextResult(payload, elapsedMs) {
+export function normalizeSheetTextResult(payload, elapsedMs) {
     return normalizeBroadScanResult(payload, {
         action: "inspect_sheet_text",
         elapsedMs,

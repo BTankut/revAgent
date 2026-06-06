@@ -7,6 +7,9 @@ All notable revAgent workstation deployment changes are tracked here.
 - Added a shared broad-scan result contract for `inspect_sheet_text` and
   `inspect_schedules`, including canonical stop reasons, `summary`,
   `evidenceRows`, `suggestedNextScopes`, and `lastRead*` continuation fields.
+- Hardened broad-scan normalization against native result casing and failure
+  paths so `Matches` evidence is preserved and failed schedule reads report
+  `scanStoppedReason=read_failed`.
 - Hardened `find_elements` verified plan visibility so broad verified requests
   require exact element ids or explicit expensive-search approval, with Revit
   bridge fallback to metadata ranking when direct calls bypass the runtime

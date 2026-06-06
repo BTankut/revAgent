@@ -76,7 +76,8 @@ explicit gates.
 
 ### Binding Execution Order
 
-0. Step 0 shared contract -> PR -> CI -> merge.
+0. Step 0 shared contract, canonical native-result ingest, and real-shape
+   fixture tests -> PR -> CI -> merge.
 1. Workstream 1 viewport tags -> PR -> CI -> operator live Revit test -> merge.
 2. Workstream 2 schedules partial -> PR -> CI -> operator live Revit test ->
    merge.
@@ -184,10 +185,23 @@ Allowed stop reasons should be stable and reusable:
 
 - `inspect_sheet_text` and `inspect_schedules` use the same field names and
   stop-reason vocabulary.
+- Step 0 includes the shared contract definition, one canonical casing-robust
+  native-result ingest/normalizer, and fixture tests that exercise that ingest
+  path directly. Step 0 is not only a field-name list.
 - Existing successful responses remain backward-compatible supersets.
 - Broad scans can distinguish no match from partial scan stop.
 - Another assistant can read `summary`, `evidenceRows`, and
   `suggestedNextScopes` without tool-specific interpretation.
+- Failed native reads and wrapper exceptions return `scanStoppedReason` of
+  `read_failed`; failure paths are never labeled `completed`.
+- Contract/characterization tests are fed by the producer's real output shape,
+  including native handler serialization and dictionary-key casing such as
+  PascalCase `Matches`. Idealized lowercase-only fixtures are not sufficient.
+- Failure-path fixtures are required, including at least one `read_failed`
+  schedule or annotation read scenario.
+- Runtime wrappers must pass native bridge results through the shared
+  casing-robust ingest/normalizer before reading contract fields. Wrappers must
+  not directly read raw `payload.<field>` values for contract fields.
 
 ## Standard Native Workstream Discipline
 
@@ -198,9 +212,16 @@ pattern:
 - Native handler owns budget, partial state, guard policy, deadline checks, and
   byte/response budgeting.
 - TypeScript runtime code is a thin MCP wrapper and response normalizer.
+- TypeScript wrappers use the shared casing-robust native-result ingest point
+  for contract fields and native evidence collections. This applies the #37
+  "one module" lesson to native-result casing instead of relying on reviewers
+  or future assistants to remember casing edge cases.
 - Output is a backward-compatible strict superset of the existing tool shape.
 - CI-safe characterization tests cover schema, default caps, guard behavior,
   partial behavior, and representative stop reasons.
+- CI-safe characterization tests must include producer-shaped native fixtures,
+  including dictionary-key/PascalCase casing and `read_failed` failure paths.
+  Lowercase-only fixtures cannot be the only contract proof.
 - If a DLL changes, rebuild and commit the payload DLLs.
 - If command payload changes, refresh `installer/revit-payload-manifest.json`.
 - Before merge, run a live Revit validation gate for the changed behavior.
@@ -669,7 +690,8 @@ exists and absent or weak-marked when evidence is thin.
 Use the `Execution Directive` above as the binding sequence and gate policy.
 This is not a suggestion.
 
-0. Step 0 shared result contract in one place -> PR -> CI -> merge.
+0. Step 0 shared result contract, canonical casing-robust native ingest
+   normalizer, and real-shape fixture tests -> PR -> CI -> merge.
 1. Workstream 1 `inspect_sheet_text` viewport tag hotfix -> PR -> CI ->
    operator live Revit test -> merge.
 2. Workstream 2 `inspect_schedules` partial/stop-reason hotfix -> PR -> CI ->
