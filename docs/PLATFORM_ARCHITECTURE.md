@@ -106,6 +106,14 @@ It provides bounded schedule-name discovery and bounded header/body/footer cell
 reads/scans so agents do not have to generate broad ad hoc C# loops over every
 schedule and every cell. Broad cell scans without `nameQuery` or exact
 `scheduleIds` require explicit `allowExpensiveSearch=true`.
+Both broad scan tools are normalized through the shared runtime broad-scan
+result contract in `installer/runtime-mcp-server/src/utils/broadScanResult.ts`.
+Their top-level result uses the same fields for `partial`, `scanStoppedReason`,
+`scanPolicy`, `suggestedNextScopes`, `elapsedMs`, `summary`, `evidenceRows`,
+and `lastRead*` continuation state. Canonical stop reasons are `completed`,
+`max_elapsed`, `max_rows`, `max_columns`, `max_cells`, `max_items`,
+`max_bytes`, `read_failed`, and `needs_scope`; wrapper normalization preserves
+legacy native stop reasons as raw diagnostics when needed.
 `set_schedule_cells` is the paired write path for known
 schedule cells: it never resolves by schedule name, defaults to dry-run, blocks
 stale cells with `expectedCurrentText` unless explicitly allowed, commits

@@ -60,9 +60,25 @@ assertContains(sendCodeSafe, "runtimeFailure", "send_code_to_revit_safe must rep
 const inspectSheetText = readSource("src/tools/inspect_sheet_text.ts");
 assertContains(inspectSheetText, "[SHEET_TEXT_INSPECTION_READ_ONLY]", "inspect_sheet_text must stay marked as a read-only sheet text inspection tool.");
 assertContains(inspectSheetText, 'sendRevitCommand("inspect_sheet_text"', "inspect_sheet_text must call the native commandset command.");
+assertContains(inspectSheetText, "normalizeBroadScanResult", "inspect_sheet_text must normalize through the shared broad-scan result contract.");
+assertContains(inspectSheetText, "buildBroadScanGuardedResult", "inspect_sheet_text guarded paths must use the shared broad-scan result contract.");
 assertContains(inspectSheetText, "includeViewportTextNotes", "inspect_sheet_text must expose viewport text-note inspection.");
 assertContains(inspectSheetText, "maxResponseBytes", "inspect_sheet_text must expose the native response-size guard.");
 assertContains(inspectSheetText, "viewport_tags_deferred", "inspect_sheet_text must document the stable viewport tag defer reason.");
+
+const inspectSchedules = readSource("src/tools/inspect_schedules.ts");
+assertContains(inspectSchedules, "[SCHEDULE_INSPECTION_READ_ONLY]", "inspect_schedules must stay marked as a read-only schedule inspection tool.");
+assertContains(inspectSchedules, "normalizeBroadScanResult", "inspect_schedules must normalize through the shared broad-scan result contract.");
+assertContains(inspectSchedules, "buildBroadScanGuardedResult", "inspect_schedules guarded paths must use the shared broad-scan result contract.");
+assertContains(inspectSchedules, "buildScheduleEvidenceRows", "inspect_schedules must expose assistant-readable schedule evidence rows.");
+
+const broadScanResult = readSource("src/utils/broadScanResult.ts");
+for (const reason of ["completed", "max_elapsed", "max_rows", "max_columns", "max_cells", "max_items", "max_bytes", "read_failed", "needs_scope"]) {
+  assertContains(broadScanResult, `"${reason}"`, `Shared broad-scan stop reason '${reason}' must stay defined in one place.`);
+}
+for (const field of ["summary", "evidenceRows", "lastReadSection", "lastReadRow", "lastReadColumn", "lastReadSheetId", "lastReadViewId", "lastReadViewportId", "lastReadItemId"]) {
+  assertContains(broadScanResult, `"${field}"`, `Shared broad-scan field '${field}' must stay defined in one place.`);
+}
 
 const exportViewImage = readSource("src/tools/export_revit_view_image.ts");
 assertContains(exportViewImage, "runtimeFailure", "export_revit_view_image must report JS-side runtime failures through the shared result contract.");

@@ -7,6 +7,11 @@ import {
     sendRevitCommand,
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
+import {
+    buildBroadScanFailureResult,
+    buildBroadScanGuardedResult,
+    normalizeBroadScanResult,
+} from "../utils/broadScanResult.js";
 
 type JsonObject = Record<string, any>;
 
@@ -44,15 +49,10 @@ function hasSheetScope(args: JsonObject) {
 }
 
 function buildGuardedNeedsScope(args: JsonObject, budget: ReturnType<typeof resolveBudget>) {
-    return {
-        success: true,
-        guarded: true,
-        state: "guarded",
+    return buildBroadScanGuardedResult({
         action: "inspect_sheet_text",
         reason: "needs_scope",
         message: "Project-wide sheet annotation, viewport text, tag, or placed schedule-cell scans can be expensive in large models. First pass sheetQuery/sheetIds, or set allowExpensiveSearch=true with bounded caps.",
-        partial: false,
-        scanStoppedReason: "needs_scope",
         suggestedNextScopes: ["sheetQuery", "sheetIds", "viewNameQuery", "maxSheets", "allowExpensiveSearch", "searchBudget=deep"],
         scanPolicy: {
             searchBudget: budget.searchBudget,
@@ -64,9 +64,13 @@ function buildGuardedNeedsScope(args: JsonObject, budget: ReturnType<typeof reso
             includeViewportTags: args.includeViewportTags === true,
             scanScheduleCells: args.scanScheduleCells === true,
         },
-        warnings: [],
-        notices: [],
-    };
+        summary: {
+            sheetQuery: args.sheetQuery ?? args.query ?? null,
+            textQuery: args.textQuery ?? null,
+            returnedCount: 0,
+            matchCount: 0,
+        },
+    });
 }
 
 function buildNativeParams(args: JsonObject, budget: ReturnType<typeof resolveBudget>) {
@@ -104,6 +108,74 @@ function buildNativeParams(args: JsonObject, budget: ReturnType<typeof resolveBu
     };
 }
 
+function sourceTypeForSheetEvidence(row: JsonObject) {
+    const kind = String(row.kind || row.sourceType || "");
+    if (kind === "scheduleCell") return "placedScheduleCell";
+    if (kind === "scheduleInstance") return "placedScheduleInstance";
+    return kind || "sheetTextNote";
+}
+
+function buildSheetTextEvidenceRows(payload: JsonObject) {
+    const matches = Array.isArray(payload.matches) ? payload.matches : [];
+    return matches
+        .filter((row: unknown): row is JsonObject => Boolean(row) && typeof row === "object" && !Array.isArray(row))
+        .map((row) => ({
+            sourceType: sourceTypeForSheetEvidence(row),
+            ...row,
+        }));
+}
+
+function buildSheetTextSummary(payload: JsonObject) {
+    const evidenceRows = Array.isArray(payload.evidenceRows)
+        ? payload.evidenceRows
+        : buildSheetTextEvidenceRows(payload);
+    return {
+        sheetQuery: payload.sheetQuery ?? null,
+        textQuery: payload.textQuery ?? null,
+        totalSheets: payload.totalSheets ?? null,
+        candidateCount: payload.candidateCount ?? null,
+        returnedCount: payload.returnedCount ?? (Array.isArray(payload.sheets) ? payload.sheets.length : null),
+        matchCount: evidenceRows.length,
+        partial: payload.partial === true,
+        scanStoppedReason: payload.scanStoppedReason ?? "completed",
+        scannedSheetCount: payload.scannedSheetCount ?? null,
+        scannedViewportCount: payload.scannedViewportCount ?? null,
+        scannedTextNoteCount: payload.scannedTextNoteCount ?? null,
+        scannedTagCount: payload.scannedTagCount ?? null,
+        scannedScheduleInstanceCount: payload.scannedScheduleInstanceCount ?? null,
+        scannedScheduleCellCount: payload.scannedScheduleCellCount ?? null,
+    };
+}
+
+function inferSheetTextLastRead(payload: JsonObject) {
+    const evidenceRows = Array.isArray(payload.evidenceRows)
+        ? payload.evidenceRows
+        : buildSheetTextEvidenceRows(payload);
+    const lastEvidence = evidenceRows.length > 0 ? evidenceRows[evidenceRows.length - 1] : null;
+    const sheets = Array.isArray(payload.sheets) ? payload.sheets : [];
+    const lastSheet = sheets.length > 0 ? sheets[sheets.length - 1] : null;
+    return {
+        lastReadSection: lastEvidence?.section ?? null,
+        lastReadRow: lastEvidence?.row ?? null,
+        lastReadColumn: lastEvidence?.column ?? null,
+        lastReadSheetId: lastEvidence?.sheetId ?? lastSheet?.id ?? null,
+        lastReadViewId: lastEvidence?.viewId ?? null,
+        lastReadViewportId: lastEvidence?.viewportId ?? null,
+        lastReadItemId: lastEvidence?.elementId ?? lastEvidence?.tagId ?? lastEvidence?.instanceId ?? lastEvidence?.id ?? null,
+    };
+}
+
+function normalizeSheetTextResult(payload: JsonObject, elapsedMs: number) {
+    return normalizeBroadScanResult(payload, {
+        action: "inspect_sheet_text",
+        elapsedMs,
+        summary: buildSheetTextSummary,
+        evidenceRows: buildSheetTextEvidenceRows,
+        lastRead: inferSheetTextLastRead,
+        suggestedNextScopes: ["sheetQuery", "sheetIds", "viewNameQuery", "maxSheets", "allowExpensiveSearch", "searchBudget=deep"],
+    });
+}
+
 export function registerInspectSheetTextTool(server: ToolServer) {
     server.tool("inspect_sheet_text", "[SHEET_TEXT_INSPECTION_READ_ONLY] Read-only native sheet + viewport annotation inspection for DrawingSheet text notes, placed schedule instances, bounded schedule cells, and viewport-linked text notes. Prefer this over generic send_code_to_revit for sheet and plan annotation searches in large projects. Use sheetQuery/sheetIds first; project-wide text, viewport, tag, or placed-schedule cell scans require allowExpensiveSearch=true.", {
         ...connectionTargetSchema(z),
@@ -137,6 +209,7 @@ export function registerInspectSheetTextTool(server: ToolServer) {
         maxResponseBytes: z.number().int().min(4096).max(16 * 1024 * 1024).optional().describe("Advanced response-size budget. The native handler stops with scanStoppedReason=max_bytes before the bridge response becomes too large."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Socket timeout in milliseconds. Defaults from searchBudget with headroom above maxElapsedMs."),
     }, async (args) => {
+        const startedAtMs = Date.now();
         try {
             const budget = resolveBudget(args);
             const scoped = hasSheetScope(args);
@@ -155,16 +228,15 @@ export function registerInspectSheetTextTool(server: ToolServer) {
                 }, "Inspect Revit sheet annotations"),
                 toolName: "inspect_sheet_text",
             });
-            return formatJsonContent(response && response.result ? response.result : response);
+            return formatJsonContent(normalizeSheetTextResult(response && response.result ? response.result : response, Date.now() - startedAtMs));
         }
         catch (error) {
-            return formatJsonContent({
-                success: false,
-                guarded: false,
-                state: "failed",
+            return formatJsonContent(buildBroadScanFailureResult({
                 action: "inspect_sheet_text",
                 error: error instanceof Error ? error.message : String(error),
-            });
+                elapsedMs: Date.now() - startedAtMs,
+                suggestedNextScopes: ["sheetQuery", "sheetIds", "viewNameQuery", "maxSheets", "allowExpensiveSearch", "searchBudget=deep"],
+            }));
         }
     });
 }

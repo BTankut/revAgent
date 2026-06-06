@@ -168,6 +168,15 @@ optional `error`, `reason`, `warnings`, and `notices`. Treat `guarded=true` as
 protected behavior, not as a failed model operation. Do not assume every
 successful operation committed model data; inspect fields such as `state`,
 `committed`, `mode`, and tool-specific verification fields.
+Broad scan tools such as `inspect_sheet_text` and `inspect_schedules` also use
+the shared scan result contract: `partial`, `scanStoppedReason`, `scanPolicy`,
+`suggestedNextScopes`, `elapsedMs`, `summary`, `evidenceRows`,
+`lastReadSection`, `lastReadRow`, `lastReadColumn`, `lastReadSheetId`,
+`lastReadViewId`, `lastReadViewportId`, and `lastReadItemId`. The canonical
+stop reasons are `completed`, `max_elapsed`, `max_rows`, `max_columns`,
+`max_cells`, `max_items`, `max_bytes`, `read_failed`, and `needs_scope`.
+Legacy native stop reasons may appear as diagnostic raw fields, but
+`scanStoppedReason` should use the canonical vocabulary.
 Normalized bridge responses also expose `resultContractVersion` inside the
 JSON-RPC `result` object. Use it as a per-response capability signal, not a
 process-global switch; older DLLs and raw dynamic snippets still depend on the

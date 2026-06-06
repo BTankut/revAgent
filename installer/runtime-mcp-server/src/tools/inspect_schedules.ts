@@ -11,6 +11,11 @@ import {
     taskMetadataSchema,
     taskOptionsFromArgs,
 } from "../utils/revitToolHelpers.js";
+import {
+    buildBroadScanFailureResult,
+    buildBroadScanGuardedResult,
+    normalizeBroadScanResult,
+} from "../utils/broadScanResult.js";
 
 type JsonObject = Record<string, any>;
 
@@ -323,6 +328,124 @@ catch (Exception ex)
 }`;
 }
 
+function isObject(value: unknown): value is JsonObject {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function scheduleSections(payload: JsonObject) {
+    const schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
+    return schedules.flatMap((schedule: JsonObject) => {
+        const sections = Array.isArray(schedule.sections) ? schedule.sections : [];
+        return sections.map((section: JsonObject) => ({ schedule, section }));
+    });
+}
+
+function buildScheduleEvidenceRows(payload: JsonObject) {
+    return scheduleSections(payload).flatMap(({ schedule, section }) => {
+        const matches = Array.isArray(section.matches) ? section.matches : [];
+        return matches
+            .filter(isObject)
+            .map((match) => ({
+                sourceType: "scheduleCell",
+                scheduleId: schedule.id,
+                scheduleName: schedule.name,
+                section: match.section ?? section.section,
+                row: match.row,
+                column: match.column,
+                text: match.text,
+            }));
+    });
+}
+
+function inferSchedulePartial(payload: JsonObject) {
+    if (payload.partial === true || payload.truncated === true) {
+        return true;
+    }
+    return scheduleSections(payload).some(({ section }) => section.rowsTruncated === true || section.columnsTruncated === true);
+}
+
+function inferScheduleStopReason(payload: JsonObject) {
+    if (!inferSchedulePartial(payload)) {
+        return "completed";
+    }
+    if (payload.truncated === true) {
+        return "max_items";
+    }
+    for (const { section } of scheduleSections(payload)) {
+        if (section.rowsTruncated === true) return "max_rows";
+        if (section.columnsTruncated === true) return "max_columns";
+    }
+    return "max_cells";
+}
+
+function buildScheduleSummary(payload: JsonObject) {
+    const scan = isObject(payload.scan) ? payload.scan : {};
+    const evidenceRows = Array.isArray(payload.evidenceRows)
+        ? payload.evidenceRows
+        : buildScheduleEvidenceRows(payload);
+    return {
+        query: payload.query ?? null,
+        nameQuery: payload.nameQuery ?? null,
+        cellQuery: payload.cellQuery ?? null,
+        totalSchedules: payload.totalSchedules ?? null,
+        candidateCount: payload.candidateCount ?? null,
+        returnedCount: payload.returnedCount ?? (Array.isArray(payload.schedules) ? payload.schedules.length : null),
+        matchCount: evidenceRows.length,
+        totalCellMatches: scan.totalCellMatches ?? evidenceRows.length,
+        scannedScheduleCount: scan.scannedScheduleCount ?? null,
+        partial: payload.partial === true,
+        scanStoppedReason: payload.scanStoppedReason ?? "completed",
+    };
+}
+
+function inferScheduleLastRead(payload: JsonObject) {
+    const evidenceRows = Array.isArray(payload.evidenceRows)
+        ? payload.evidenceRows
+        : buildScheduleEvidenceRows(payload);
+    const lastEvidence = evidenceRows.length > 0 ? evidenceRows[evidenceRows.length - 1] : null;
+    const sections = scheduleSections(payload);
+    const lastSection = sections.length > 0 ? sections[sections.length - 1].section : null;
+    const returnedRows = Number(lastSection?.returnedRows ?? lastSection?.scannedRows ?? 0);
+    const returnedColumns = Number(lastSection?.returnedColumns ?? lastSection?.scannedColumns ?? 0);
+    return {
+        lastReadSection: lastEvidence?.section ?? lastSection?.section ?? null,
+        lastReadRow: lastEvidence?.row ?? (returnedRows > 0 ? returnedRows - 1 : null),
+        lastReadColumn: lastEvidence?.column ?? (returnedColumns > 0 ? returnedColumns - 1 : null),
+        lastReadSheetId: null,
+        lastReadViewId: null,
+        lastReadViewportId: null,
+        lastReadItemId: lastEvidence?.scheduleId ?? null,
+    };
+}
+
+function buildScheduleScanPolicy(args: JsonObject) {
+    return {
+        allowExpensiveSearch: args.allowExpensiveSearch === true,
+        includeCells: args.includeCells === true,
+        scanCells: args.scanCells === true || Boolean(args.cellQuery),
+        sections: uniqueSections(args.sections),
+        maxSchedules: Math.max(1, Math.min(200, Number.parseInt(String(args.maxSchedules || 50), 10) || 50)),
+        maxRowsPerSection: Math.max(0, Math.min(1000, Number.parseInt(String(args.maxRowsPerSection || 80), 10) || 80)),
+        maxColumnsPerSection: Math.max(0, Math.min(200, Number.parseInt(String(args.maxColumnsPerSection || 30), 10) || 30)),
+        timeoutMs: Math.max(1000, Math.min(120000, Number.parseInt(String(args.timeoutMs || 120000), 10) || 120000)),
+    };
+}
+
+function normalizeScheduleResult(payload: JsonObject, args: JsonObject, elapsedMs: number) {
+    const partial = inferSchedulePartial(payload);
+    return normalizeBroadScanResult(payload, {
+        action: "inspect_schedules",
+        elapsedMs,
+        partial,
+        scanStoppedReason: payload.scanStoppedReason ?? inferScheduleStopReason(payload),
+        scanPolicy: buildScheduleScanPolicy(args),
+        suggestedNextScopes: ["nameQuery", "scheduleIds", "sections", "maxRowsPerSection", "maxColumnsPerSection", "allowExpensiveSearch"],
+        summary: buildScheduleSummary,
+        evidenceRows: buildScheduleEvidenceRows,
+        lastRead: inferScheduleLastRead,
+    });
+}
+
 export function registerInspectSchedulesTool(server: ToolServer) {
     server.tool("inspect_schedules", "[SCHEDULE_INSPECTION_READ_ONLY] Read-only Revit schedule discovery and bounded cell inspection for large models. Prefer this over generic send_code_to_revit when finding schedules or reading schedule cells. For large models, use nameQuery/scheduleIds first; broad cell scans require allowExpensiveSearch=true.", {
         ...connectionTargetSchema(z),
@@ -341,6 +464,7 @@ export function registerInspectSchedulesTool(server: ToolServer) {
         maxCellTextChars: z.number().int().min(20).max(1000).optional().describe("Maximum characters retained per returned cell text. Defaults 180."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Socket timeout in milliseconds. Defaults 120000."),
     }, async (args) => {
+        const startedAtMs = Date.now();
         try {
             const hasScheduleScope = Boolean(
                 (Array.isArray(args.scheduleIds) && args.scheduleIds.length > 0) ||
@@ -348,20 +472,20 @@ export function registerInspectSchedulesTool(server: ToolServer) {
             );
             const wantsCells = Boolean(args.includeCells === true || args.scanCells === true || String(args.cellQuery || "").trim());
             if (wantsCells && !hasScheduleScope && args.allowExpensiveSearch !== true) {
-                return formatJsonContent({
-                    success: true,
-                    guarded: true,
-                    state: "guarded",
+                return formatJsonContent(buildBroadScanGuardedResult({
                     action: "inspect_schedules",
                     reason: "needs_scope",
                     message: "Schedule cell scanning without scheduleIds/nameQuery can be expensive in large models. First discover schedules by name, pass exact scheduleIds, or set allowExpensiveSearch=true.",
-                    suggestedNextScopes: ["nameQuery", "scheduleIds", "maxRowsPerSection", "maxColumnsPerSection", "allowExpensiveSearch"],
-                    scanPolicy: {
-                        allowExpensiveSearch: false,
-                        includeCells: args.includeCells === true,
-                        scanCells: args.scanCells === true || Boolean(args.cellQuery),
+                    suggestedNextScopes: ["nameQuery", "scheduleIds", "sections", "maxRowsPerSection", "maxColumnsPerSection", "allowExpensiveSearch"],
+                    scanPolicy: buildScheduleScanPolicy(args),
+                    elapsedMs: Date.now() - startedAtMs,
+                    summary: {
+                        nameQuery: args.nameQuery ?? args.query ?? null,
+                        cellQuery: args.cellQuery ?? null,
+                        returnedCount: 0,
+                        matchCount: 0,
                     },
-                });
+                }));
             }
             const response = await executeRevitCode(buildInspectSchedulesCode(args), {
                 ...connectionOptionsFromArgs(args),
@@ -369,14 +493,16 @@ export function registerInspectSchedulesTool(server: ToolServer) {
                 toolName: "inspect_schedules",
                 transactionMode: "none",
             });
-            return formatJsonContent(response && response.result ? response.result : response);
+            return formatJsonContent(normalizeScheduleResult(response && response.result ? response.result : response, args, Date.now() - startedAtMs));
         }
         catch (error) {
-            return formatJsonContent({
-                success: false,
+            return formatJsonContent(buildBroadScanFailureResult({
                 action: "inspect_schedules",
                 error: error instanceof Error ? error.message : String(error),
-            });
+                elapsedMs: Date.now() - startedAtMs,
+                scanPolicy: buildScheduleScanPolicy(args),
+                suggestedNextScopes: ["nameQuery", "scheduleIds", "sections", "maxRowsPerSection", "maxColumnsPerSection", "allowExpensiveSearch"],
+            }));
         }
     });
 }

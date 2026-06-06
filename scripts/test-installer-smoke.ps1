@@ -434,6 +434,7 @@ try {
     $inspectSheetTextHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSheetTextEventHandler.cs")
     $findToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\find_elements.ts")
     $searchPolicyCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\searchPolicy.ts")
+    $broadScanResultCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\broadScanResult.ts")
     $inspectElementsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_elements.ts")
     $showPlan3dToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\show_element_in_plan_and_3d.ts")
     $sessionContextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_revit_session_context.ts")
@@ -596,6 +597,7 @@ try {
     Assert-True ($inspectElementsToolCode -match 'int\? connectorCount = null') "inspect_elements must leave connectorCount null when connector counting is disabled."
     Assert-True ($inspectElementsToolCode -match 'int\? openConnectorCount = null') "inspect_elements must leave openConnectorCount null when connector counting is disabled."
     Assert-True ($inspectSheetTextToolCode -match 'SHEET_TEXT_INSPECTION_READ_ONLY') "inspect_sheet_text must identify itself as a read-only sheet text inspection tool."
+    Assert-True ($inspectSheetTextToolCode -match 'normalizeBroadScanResult' -and $inspectSheetTextToolCode -match 'buildBroadScanGuardedResult') "inspect_sheet_text must use the shared broad-scan result contract."
     Assert-True ($inspectSheetTextToolCode -match 'maxTextNotesPerSheet') "inspect_sheet_text must bound text-note reads by sheet."
     Assert-True ($inspectSheetTextToolCode -match 'scanScheduleCells') "inspect_sheet_text must keep placed schedule cell scanning explicit."
     Assert-True ($inspectSheetTextToolCode -match 'includeViewportTextNotes' -and $inspectSheetTextToolCode -match 'viewNameQuery') "inspect_sheet_text must expose viewport-linked text-note inspection parameters."
@@ -617,10 +619,17 @@ try {
     Assert-True ($inspectSheetTextHandlerCode -match 'IsViewValidForElementIteration' -and $inspectSheetTextHandlerCode -match 'view_not_valid_for_element_iteration' -and $inspectSheetTextHandlerCode -match 'Failed to scan viewport') "inspect_sheet_text native handler must skip viewport views that cannot be iterated instead of failing the full scan."
     Assert-True ($inspectSheetTextHandlerCode -match 'viewport_tags_deferred') "inspect_sheet_text must expose a stable documented tag-scan defer reason."
     Assert-True ($inspectSchedulesToolCode -match 'SCHEDULE_INSPECTION_READ_ONLY') "inspect_schedules must identify itself as a read-only schedule inspection tool."
+    Assert-True ($inspectSchedulesToolCode -match 'normalizeBroadScanResult' -and $inspectSchedulesToolCode -match 'buildBroadScanGuardedResult') "inspect_schedules must use the shared broad-scan result contract."
     Assert-True ($inspectSchedulesToolCode -match 'maxRowsPerSection') "inspect_schedules must bound schedule cell reads by row limit."
     Assert-True ($inspectSchedulesToolCode -match 'maxColumnsPerSection') "inspect_schedules must bound schedule cell reads by column limit."
     Assert-True ($inspectSchedulesToolCode -match 'allowExpensiveSearch' -and $inspectSchedulesToolCode -match 'reason: "needs_scope"') "inspect_schedules must guard broad cell scans without explicit approval."
     Assert-True ($inspectSchedulesToolCode -match 'Cell scan is bounded') "inspect_schedules must warn when broad cell scan is requested."
+    foreach ($reason in @("completed", "max_elapsed", "max_rows", "max_columns", "max_cells", "max_items", "max_bytes", "read_failed", "needs_scope")) {
+        Assert-True ($broadScanResultCode -match [regex]::Escape('"' + $reason + '"')) "Shared broad-scan result contract is missing stop reason '$reason'."
+    }
+    foreach ($field in @("summary", "evidenceRows", "lastReadSection", "lastReadRow", "lastReadColumn", "lastReadSheetId", "lastReadViewId", "lastReadViewportId", "lastReadItemId")) {
+        Assert-True ($broadScanResultCode -match [regex]::Escape('"' + $field + '"')) "Shared broad-scan result contract is missing field '$field'."
+    }
     Assert-True ($setScheduleCellsToolCode -match 'PRODUCTION_SCHEDULE_CELL_WRITE') "set_schedule_cells must identify itself as a production schedule-cell write tool."
     Assert-True ($setScheduleCellsToolCode -match 'Defaults to dryRun') "set_schedule_cells must default to dry-run behavior."
     Assert-True ($setScheduleCellsToolCode -match 'expectedCurrentText') "set_schedule_cells must support expected current value preflight."
