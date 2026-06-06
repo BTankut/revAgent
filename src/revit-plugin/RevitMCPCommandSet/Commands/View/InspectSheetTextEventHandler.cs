@@ -1436,23 +1436,6 @@ namespace RevitMCPCommandSet.Commands.View
 
             try
             {
-                System.Reflection.PropertyInfo property = tag.GetType().GetProperty("TaggedLocalElementId");
-                if (property != null)
-                {
-                    ElementId id = property.GetValue(tag, null) as ElementId;
-                    if (id != null && id != ElementId.InvalidElementId)
-                    {
-                        return id;
-                    }
-                }
-            }
-            catch
-            {
-                AddOnce(warnings, "viewport_tag_tagged_local_element_id_read_failed");
-            }
-
-            try
-            {
                 System.Reflection.MethodInfo method = tag.GetType().GetMethod("GetTaggedLocalElementIds", Type.EmptyTypes);
                 if (method != null)
                 {

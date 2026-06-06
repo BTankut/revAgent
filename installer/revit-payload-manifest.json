@@ -135,7 +135,7 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/revit-plugin/revit_mcp_plugin/RevitMCPPlugin.dll",
-                                                  "sha256":  "89adacce6a5e7347413e007885efda12e5142991d9596af1e6a76905522f5c2a",
+                                                  "sha256":  "2cdbc8e9ca6fcfe6de6d3ac4eb400f0c1261bff91c3ef4e9c81a30f2162932a4",
                                                   "sizeBytes":  93184
                                               }
                                           ]
@@ -244,7 +244,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/InspectSheetTextEventHandler.cs",
-                                                "gitBlobSha":  "98c0834b351245c58dab4894329182e04d3b3524"
+                                                "gitBlobSha":  "bb575649c27674aabba6ea5610e4361e6ddd9429"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ListOpenViewsCommand.cs",
@@ -310,12 +310,12 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/command-payload/RevitMCPCommandSet.dll",
-                                                  "sha256":  "c113213114a807090c075b1d89d0e77fcca1de81e9c17b6767d1436f34bcb2cd",
+                                                  "sha256":  "46b91408c8db0a2501e091f437ee6b6cd5dafc5a231b90051172f00d30b28028",
                                                   "sizeBytes":  189440
                                               },
                                               {
                                                   "path":  "installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPCommandSet/2022/RevitMCPCommandSet.dll",
-                                                  "sha256":  "c113213114a807090c075b1d89d0e77fcca1de81e9c17b6767d1436f34bcb2cd",
+                                                  "sha256":  "46b91408c8db0a2501e091f437ee6b6cd5dafc5a231b90051172f00d30b28028",
                                                   "sizeBytes":  189440
                                               }
                                           ]
