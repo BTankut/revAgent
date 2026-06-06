@@ -27,9 +27,12 @@ All notable revAgent workstation deployment changes are tracked here.
   `includeViewportTags=true`, returning readable `IndependentTag.TagText` rows
   as `viewportTag` evidence while reporting tag API limitations through
   warnings or notices.
+- Added native partial-result handling for `inspect_schedules`, with
+  Revit-side `maxElapsedMs`, `maxCells`, and `maxResponseBytes` budgets plus
+  `lastReadSection`/`lastReadRow`/`lastReadColumn` continuation state.
 - Bumped the runtime tool surface version to
-  `revit-mcp-runtime-tools.35` for verified plan visibility and native sheet
-  annotation inspection behavior.
+  `revit-mcp-runtime-tools.36` for verified plan visibility, native sheet
+  annotation inspection, and native schedule partial-result behavior.
 
 ## 2026.06.03.267-ee433485
 

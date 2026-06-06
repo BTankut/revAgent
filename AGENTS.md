@@ -198,7 +198,12 @@ For schedule lookup or schedule cell reading in large projects, use
 `inspect_schedules` before raw dynamic C# loops. Start with `nameQuery` or
 exact `scheduleIds`, keep row/column limits bounded, and avoid scanning all
 schedule cells unless the operator explicitly needs that broad search and
-`allowExpensiveSearch=true` is passed.
+`allowExpensiveSearch=true` is passed. Schedule reads are native-budgeted by
+`maxElapsedMs`, `maxCells`, and `maxResponseBytes`; when a read stops early,
+use `partial`, `scanStoppedReason`, `lastReadSection`, `lastReadRow`,
+`lastReadColumn`, and `lastReadItemId` to narrow the next call with exact
+`scheduleIds`, `sections`, `startRow`, `startColumn`, or lower row/column/cell
+limits.
 For element discovery in large projects, use `find_elements` as a progressive
 MEP-aware search rather than a full-model free-text scan. Let it infer obvious
 engineering scope first: fan coil/FCU maps to Mechanical Equipment, valve/vana

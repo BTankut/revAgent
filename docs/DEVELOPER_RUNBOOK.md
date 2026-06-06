@@ -396,9 +396,11 @@ native `inspect_sheet_text` guards no-scope viewport scans before expensive
 work, scoped sheet/viewport text-note evidence stays bounded, response pressure
 returns `scanStoppedReason="max_bytes"`, schedule-cell caps return
 `max_schedule_cells`, viewport tag requests return bounded `viewportTag`
-evidence when tag text is readable, and `needs_scope` is emitted as
-`state="guarded"` with `reason="needs_scope"` rather than a new incompatible
-state.
+evidence when tag text is readable, native `inspect_schedules` returns
+controlled `partial=true` results for `max_cells`/`max_bytes` pressure with
+`lastReadSection`/`lastReadRow`/`lastReadColumn` continuation state, and
+`needs_scope` is emitted as `state="guarded"` with `reason="needs_scope"` rather
+than a new incompatible state.
 
 API-level level prefiltering for MEP elements is intentionally deferred to a
 separate change. It must prove correctness for duct, pipe, flex, and other

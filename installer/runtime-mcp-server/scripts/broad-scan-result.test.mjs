@@ -151,6 +151,168 @@ assert.equal(nativeScheduleFailurePayload.partial, false);
 assert.equal(nativeScheduleFailurePayload.scanStoppedReason, "read_failed");
 assert.equal(nativeScheduleFailurePayload.summary.scanStoppedReason, "read_failed");
 
+const nativeScheduleElapsedPayload = normalizeScheduleResult({
+  Success: true,
+  Action: "inspect_schedules",
+  Partial: true,
+  ScanStoppedReason: "max_elapsed",
+  Schedules: [{
+    Id: 7001,
+    Name: "Mechanical Schedule",
+    Sections: [{
+      Section: "body",
+      StartRow: 10,
+      StartColumn: 2,
+      ReturnedRows: 2,
+      ReturnedColumns: 3,
+      ScannedRows: 2,
+      ScannedColumns: 3,
+      LastReadRow: 11,
+      LastReadColumn: 4,
+      RowsTruncated: true,
+      ColumnsTruncated: false,
+      Matches: [{
+        Section: "body",
+        Row: 11,
+        Column: 4,
+        Text: "QHK 310.001",
+      }],
+    }],
+  }],
+}, {
+  startRow: 10,
+  startColumn: 2,
+  maxElapsedMs: 1,
+}, 33);
+assert.equal(nativeScheduleElapsedPayload.partial, true);
+assert.equal(nativeScheduleElapsedPayload.scanStoppedReason, "max_elapsed");
+assert.equal(nativeScheduleElapsedPayload.evidenceRows.length, 1);
+assert.equal(nativeScheduleElapsedPayload.summary.matchCount, 1);
+assert.equal(nativeScheduleElapsedPayload.lastReadSection, "body");
+assert.equal(nativeScheduleElapsedPayload.lastReadRow, 11);
+assert.equal(nativeScheduleElapsedPayload.lastReadColumn, 4);
+assert.equal(nativeScheduleElapsedPayload.lastReadItemId, 7001);
+assert.equal(nativeScheduleElapsedPayload.scanPolicy.maxElapsedMs, 1);
+
+const nativeScheduleCellCapPayload = normalizeScheduleResult({
+  Success: true,
+  Action: "inspect_schedules",
+  Partial: true,
+  ScanStoppedReason: "max_cells",
+  Schedules: [{
+    Id: 7002,
+    Name: "Capped Schedule",
+    Sections: [{
+      Section: "body",
+      StartRow: 0,
+      StartColumn: 0,
+      ScannedRows: 1,
+      ScannedColumns: 2,
+      LastReadRow: 0,
+      LastReadColumn: 1,
+      Matches: [],
+    }],
+  }],
+}, { maxCells: 2 }, 18);
+assert.equal(nativeScheduleCellCapPayload.partial, true);
+assert.equal(nativeScheduleCellCapPayload.scanStoppedReason, "max_cells");
+assert.equal(nativeScheduleCellCapPayload.lastReadRow, 0);
+assert.equal(nativeScheduleCellCapPayload.lastReadColumn, 1);
+assert.equal(nativeScheduleCellCapPayload.lastReadItemId, 7002);
+assert.equal(nativeScheduleCellCapPayload.scanPolicy.maxCells, 2);
+
+const nativeScheduleByteCapPayload = normalizeScheduleResult({
+  Success: true,
+  Action: "inspect_schedules",
+  Partial: true,
+  ScanStoppedReason: "max_bytes",
+  EstimatedResponseBytes: 4096,
+  MaxResponseBytes: 4096,
+  Schedules: [{
+    Id: 7003,
+    Name: "Byte Capped Schedule",
+    Sections: [{
+      Section: "header",
+      StartRow: 0,
+      StartColumn: 0,
+      ScannedRows: 1,
+      ScannedColumns: 1,
+      LastReadRow: 0,
+      LastReadColumn: 0,
+      Matches: [],
+    }],
+  }],
+}, { maxResponseBytes: 4096 }, 21);
+assert.equal(nativeScheduleByteCapPayload.partial, true);
+assert.equal(nativeScheduleByteCapPayload.scanStoppedReason, "max_bytes");
+assert.equal(nativeScheduleByteCapPayload.scanPolicy.maxResponseBytes, 4096);
+
+const nativeScheduleSmallPayload = normalizeScheduleResult({
+  Success: true,
+  Action: "inspect_schedules",
+  Partial: false,
+  ScanStoppedReason: "completed",
+  TotalSchedules: 1,
+  CandidateCount: 1,
+  ReturnedCount: 1,
+  Schedules: [{
+    Id: 7004,
+    Name: "Small Schedule",
+    Sections: [{
+      Section: "body",
+      RowCount: 1,
+      ColumnCount: 1,
+      ReturnedRows: 1,
+      ReturnedColumns: 1,
+      RowsTruncated: false,
+      ColumnsTruncated: false,
+      ScannedRows: 1,
+      ScannedColumns: 1,
+      LastReadRow: 0,
+      LastReadColumn: 0,
+      Matches: [],
+    }],
+  }],
+}, {}, 7);
+assert.equal(nativeScheduleSmallPayload.success, true);
+assert.equal(nativeScheduleSmallPayload.partial, false);
+assert.equal(nativeScheduleSmallPayload.scanStoppedReason, "completed");
+assert.equal(nativeScheduleSmallPayload.summary.returnedCount, 1);
+assert.equal(nativeScheduleSmallPayload.lastReadItemId, 7004);
+assert.equal(nativeScheduleSmallPayload.totalSchedules, 1);
+assert.equal(Array.isArray(nativeScheduleSmallPayload.schedules), true);
+assert.equal(nativeScheduleSmallPayload.schedules[0].name, "Small Schedule");
+assert.equal(nativeScheduleSmallPayload.schedules[0].sections[0].section, "body");
+assert.equal(nativeScheduleSmallPayload.schedules[0].sections[0].rowCount, 1);
+
+const nativeScheduleRowTruncatedPayload = normalizeScheduleResult({
+  Success: true,
+  Action: "inspect_schedules",
+  Partial: false,
+  ScanStoppedReason: "completed",
+  Schedules: [{
+    Id: 7005,
+    Name: "Row Truncated Schedule",
+    Sections: [{
+      Section: "body",
+      RowCount: 3,
+      ColumnCount: 1,
+      ReturnedRows: 1,
+      ReturnedColumns: 1,
+      RowsTruncated: true,
+      ColumnsTruncated: false,
+      ScannedRows: 1,
+      ScannedColumns: 1,
+      LastReadRow: 0,
+      LastReadColumn: 0,
+      Matches: [],
+    }],
+  }],
+}, { maxRowsPerSection: 1 }, 8);
+assert.equal(nativeScheduleRowTruncatedPayload.partial, true);
+assert.equal(nativeScheduleRowTruncatedPayload.scanStoppedReason, "max_rows");
+assert.equal(nativeScheduleRowTruncatedPayload.summary.scanStoppedReason, "max_rows");
+
 const elapsedNull = normalizeBroadScanResult({
   success: true,
   elapsedMs: null,

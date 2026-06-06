@@ -200,9 +200,14 @@ normalizer.
   inspection. Use `nameQuery` or exact `scheduleIds` first in large projects,
   then add `cellQuery`, `includeCells`, row/column limits, and section selection
   as needed. Broad cell scans without schedule scope require
-  `allowExpensiveSearch=true`. It uses the same broad scan result contract as
-  `inspect_sheet_text`, including canonical `scanStoppedReason`, `summary`,
-  `evidenceRows`, `suggestedNextScopes`, and `lastRead*` continuation fields.
+  `allowExpensiveSearch=true`. Native schedule reads honor `maxElapsedMs`,
+  `maxCells`, and `maxResponseBytes`, and can return controlled
+  `partial=true` responses before transport timeout. It uses the same broad
+  scan result contract as `inspect_sheet_text`, including canonical
+  `scanStoppedReason`, `summary`, `evidenceRows`, `suggestedNextScopes`, and
+  `lastRead*` continuation fields. Use `lastReadSection`, `lastReadRow`,
+  `lastReadColumn`, and `lastReadItemId` to narrow the next call with exact
+  `scheduleIds`, `sections`, `startRow`, `startColumn`, or smaller limits.
   Prefer this over broad custom C# loops when finding schedules or reading
   schedule cells.
 - `inspect_parameter_schema` - parameter schema for element ids or category
