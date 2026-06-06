@@ -320,8 +320,8 @@ function isObject(value) {
 }
 function scheduleSections(payload) {
     const schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
-    return schedules.flatMap((schedule) => {
-        const sections = Array.isArray(schedule.sections) ? schedule.sections : [];
+    return schedules.filter(isObject).flatMap((schedule) => {
+        const sections = Array.isArray(schedule.sections) ? schedule.sections.filter(isObject) : [];
         return sections.map((section) => ({ schedule, section }));
     });
 }

@@ -108,11 +108,18 @@ function finiteNumberOrNull(value: unknown): number | null {
     if (value === null || value === undefined) {
         return null;
     }
-    if (typeof value === "string" && value.trim().length === 0) {
-        return null;
+    if (typeof value === "number") {
+        return Number.isFinite(value) ? value : null;
     }
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed.length === 0) {
+            return null;
+        }
+        const parsed = Number(trimmed);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
 }
 
 export function normalizeBroadScanStopReason(value: unknown, fallback: BroadScanStopReason = "completed"): BroadScanStopReason {

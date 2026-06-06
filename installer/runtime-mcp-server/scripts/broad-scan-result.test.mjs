@@ -66,6 +66,14 @@ const elapsedNull = normalizeBroadScanResult({
 });
 assert.equal(elapsedNull.elapsedMs, null);
 
+const elapsedFalse = normalizeBroadScanResult({
+  success: true,
+  elapsedMs: false,
+}, {
+  action: "inspect_schedules",
+});
+assert.equal(elapsedFalse.elapsedMs, null);
+
 const tools = new Map();
 const server = {
   tool(name, description, schema, handler) {
