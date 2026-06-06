@@ -187,16 +187,22 @@ normalizer.
   of the evidence. Project-wide sheet text, viewport text, tag, or
   placed-schedule cell scans require `allowExpensiveSearch=true` and remain
   budgeted. Treat `partial=true` with `scanStoppedReason` such as
-  `max_elapsed`, `max_bytes`, or `max_schedule_cells` as useful bounded
-  evidence, not a socket failure. `includeViewportTags` is opt-in and currently
-  returns the stable `viewport_tags_deferred` response. Prefer this over broad
-  custom C# sheet or placed-view loops.
+  `max_elapsed`, `max_bytes`, `max_cells`, or `max_items` as useful bounded
+  evidence, not a socket failure. Broad scan responses also expose
+  `summary`, `evidenceRows`, `suggestedNextScopes`, and `lastRead*` continuation
+  fields. Legacy native stop reasons may be preserved as raw diagnostics, but
+  `scanStoppedReason` uses the shared canonical vocabulary. `includeViewportTags`
+  is opt-in and currently returns the stable `viewport_tags_deferred` response.
+  Prefer this over broad custom C# sheet or placed-view loops.
 - `inspect_schedules` - read-only schedule discovery and bounded cell
   inspection. Use `nameQuery` or exact `scheduleIds` first in large projects,
   then add `cellQuery`, `includeCells`, row/column limits, and section selection
   as needed. Broad cell scans without schedule scope require
-  `allowExpensiveSearch=true`. Prefer this over broad custom C# loops when
-  finding schedules or reading schedule cells.
+  `allowExpensiveSearch=true`. It uses the same broad scan result contract as
+  `inspect_sheet_text`, including canonical `scanStoppedReason`, `summary`,
+  `evidenceRows`, `suggestedNextScopes`, and `lastRead*` continuation fields.
+  Prefer this over broad custom C# loops when finding schedules or reading
+  schedule cells.
 - `inspect_parameter_schema` - parameter schema for element ids or category
   samples: user-facing BIP display name/id first, raw enum alias as diagnostic
   data, alias note, storage type, unit, shared/read-only, raw/display values.

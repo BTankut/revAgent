@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
+import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, readNativeResultArray, readNativeResultField, } from "../utils/broadScanResult.js";
 const budgetDefaults = {
     fast: { maxElapsedMs: 4500, timeoutMs: 12000 },
     balanced: { maxElapsedMs: 15000, timeoutMs: 30000 },
@@ -29,15 +30,10 @@ function hasSheetScope(args) {
         String(args.sheetQuery || args.query || "").trim());
 }
 function buildGuardedNeedsScope(args, budget) {
-    return {
-        success: true,
-        guarded: true,
-        state: "guarded",
+    return buildBroadScanGuardedResult({
         action: "inspect_sheet_text",
         reason: "needs_scope",
         message: "Project-wide sheet annotation, viewport text, tag, or placed schedule-cell scans can be expensive in large models. First pass sheetQuery/sheetIds, or set allowExpensiveSearch=true with bounded caps.",
-        partial: false,
-        scanStoppedReason: "needs_scope",
         suggestedNextScopes: ["sheetQuery", "sheetIds", "viewNameQuery", "maxSheets", "allowExpensiveSearch", "searchBudget=deep"],
         scanPolicy: {
             searchBudget: budget.searchBudget,
@@ -49,9 +45,13 @@ function buildGuardedNeedsScope(args, budget) {
             includeViewportTags: args.includeViewportTags === true,
             scanScheduleCells: args.scanScheduleCells === true,
         },
-        warnings: [],
-        notices: [],
-    };
+        summary: {
+            sheetQuery: args.sheetQuery ?? args.query ?? null,
+            textQuery: args.textQuery ?? null,
+            returnedCount: 0,
+            matchCount: 0,
+        },
+    });
 }
 function buildNativeParams(args, budget) {
     return {
@@ -87,6 +87,78 @@ function buildNativeParams(args, budget) {
         taskId: args.taskId,
     };
 }
+function sourceTypeForSheetEvidence(row) {
+    const kind = String(readNativeResultField(row, "kind") || readNativeResultField(row, "sourceType") || "");
+    if (kind === "scheduleCell")
+        return "placedScheduleCell";
+    if (kind === "scheduleInstance")
+        return "placedScheduleInstance";
+    return kind || "sheetTextNote";
+}
+function buildSheetTextEvidenceRows(payload) {
+    const matches = readNativeResultArray(payload, "matches");
+    return matches
+        .filter((row) => Boolean(row) && typeof row === "object" && !Array.isArray(row))
+        .map((row) => ({
+        ...row,
+        sourceType: sourceTypeForSheetEvidence(row),
+    }));
+}
+function buildSheetTextSummary(payload) {
+    const evidenceRows = readNativeResultArray(payload, "evidenceRows").length > 0
+        ? readNativeResultArray(payload, "evidenceRows")
+        : buildSheetTextEvidenceRows(payload);
+    const sheets = readNativeResultArray(payload, "sheets");
+    return {
+        sheetQuery: readNativeResultField(payload, "sheetQuery") ?? null,
+        textQuery: readNativeResultField(payload, "textQuery") ?? null,
+        totalSheets: readNativeResultField(payload, "totalSheets") ?? null,
+        candidateCount: readNativeResultField(payload, "candidateCount") ?? null,
+        returnedCount: readNativeResultField(payload, "returnedCount") ?? (sheets.length > 0 ? sheets.length : null),
+        matchCount: evidenceRows.length,
+        partial: readNativeResultField(payload, "partial") === true,
+        scanStoppedReason: readNativeResultField(payload, "scanStoppedReason") ?? "completed",
+        scannedSheetCount: readNativeResultField(payload, "scannedSheetCount") ?? null,
+        scannedViewportCount: readNativeResultField(payload, "scannedViewportCount") ?? null,
+        scannedTextNoteCount: readNativeResultField(payload, "scannedTextNoteCount") ?? null,
+        scannedTagCount: readNativeResultField(payload, "scannedTagCount") ?? null,
+        scannedScheduleInstanceCount: readNativeResultField(payload, "scannedScheduleInstanceCount") ?? null,
+        scannedScheduleCellCount: readNativeResultField(payload, "scannedScheduleCellCount") ?? null,
+    };
+}
+function inferSheetTextLastRead(payload) {
+    const evidenceRows = readNativeResultArray(payload, "evidenceRows").length > 0
+        ? readNativeResultArray(payload, "evidenceRows")
+        : buildSheetTextEvidenceRows(payload);
+    const lastEvidence = evidenceRows.length > 0 ? evidenceRows[evidenceRows.length - 1] : null;
+    const sheets = readNativeResultArray(payload, "sheets");
+    const lastSheet = sheets.length > 0 ? sheets[sheets.length - 1] : null;
+    return {
+        lastReadSection: lastEvidence ? readNativeResultField(lastEvidence, "section") ?? null : null,
+        lastReadRow: lastEvidence ? readNativeResultField(lastEvidence, "row") ?? null : null,
+        lastReadColumn: lastEvidence ? readNativeResultField(lastEvidence, "column") ?? null : null,
+        lastReadSheetId: lastEvidence ? readNativeResultField(lastEvidence, "sheetId") ?? readNativeResultField(lastSheet, "id") ?? null : readNativeResultField(lastSheet, "id") ?? null,
+        lastReadViewId: lastEvidence ? readNativeResultField(lastEvidence, "viewId") ?? null : null,
+        lastReadViewportId: lastEvidence ? readNativeResultField(lastEvidence, "viewportId") ?? null : null,
+        lastReadItemId: lastEvidence
+            ? readNativeResultField(lastEvidence, "elementId")
+                ?? readNativeResultField(lastEvidence, "tagId")
+                ?? readNativeResultField(lastEvidence, "instanceId")
+                ?? readNativeResultField(lastEvidence, "id")
+                ?? null
+            : null,
+    };
+}
+export function normalizeSheetTextResult(payload, elapsedMs) {
+    return normalizeBroadScanResult(payload, {
+        action: "inspect_sheet_text",
+        elapsedMs,
+        summary: buildSheetTextSummary,
+        evidenceRows: buildSheetTextEvidenceRows,
+        lastRead: inferSheetTextLastRead,
+        suggestedNextScopes: ["sheetQuery", "sheetIds", "viewNameQuery", "maxSheets", "allowExpensiveSearch", "searchBudget=deep"],
+    });
+}
 export function registerInspectSheetTextTool(server) {
     server.tool("inspect_sheet_text", "[SHEET_TEXT_INSPECTION_READ_ONLY] Read-only native sheet + viewport annotation inspection for DrawingSheet text notes, placed schedule instances, bounded schedule cells, and viewport-linked text notes. Prefer this over generic send_code_to_revit for sheet and plan annotation searches in large projects. Use sheetQuery/sheetIds first; project-wide text, viewport, tag, or placed-schedule cell scans require allowExpensiveSearch=true.", {
         ...connectionTargetSchema(z),
@@ -120,6 +192,7 @@ export function registerInspectSheetTextTool(server) {
         maxResponseBytes: z.number().int().min(4096).max(16 * 1024 * 1024).optional().describe("Advanced response-size budget. The native handler stops with scanStoppedReason=max_bytes before the bridge response becomes too large."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Socket timeout in milliseconds. Defaults from searchBudget with headroom above maxElapsedMs."),
     }, async (args) => {
+        const startedAtMs = Date.now();
         try {
             const budget = resolveBudget(args);
             const scoped = hasSheetScope(args);
@@ -137,16 +210,15 @@ export function registerInspectSheetTextTool(server) {
                 }, "Inspect Revit sheet annotations"),
                 toolName: "inspect_sheet_text",
             });
-            return formatJsonContent(response && response.result ? response.result : response);
+            return formatJsonContent(normalizeSheetTextResult(response && response.result ? response.result : response, Date.now() - startedAtMs));
         }
         catch (error) {
-            return formatJsonContent({
-                success: false,
-                guarded: false,
-                state: "failed",
+            return formatJsonContent(buildBroadScanFailureResult({
                 action: "inspect_sheet_text",
                 error: error instanceof Error ? error.message : String(error),
-            });
+                elapsedMs: Date.now() - startedAtMs,
+                suggestedNextScopes: ["sheetQuery", "sheetIds", "viewNameQuery", "maxSheets", "allowExpensiveSearch", "searchBudget=deep"],
+            }));
         }
     });
 }
