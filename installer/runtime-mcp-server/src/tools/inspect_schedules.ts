@@ -413,6 +413,10 @@ function inferScheduleLastRead(payload: JsonObject) {
     const lastEvidence = evidenceRows.length > 0 ? evidenceRows[evidenceRows.length - 1] : null;
     const sections = scheduleSections(payload);
     const lastSection = sections.length > 0 ? sections[sections.length - 1].section : null;
+    const schedules = Array.isArray(payload.schedules) ? payload.schedules.filter(isObject) : [];
+    const lastSchedule = sections.length > 0
+        ? sections[sections.length - 1].schedule
+        : schedules.length > 0 ? schedules[schedules.length - 1] : null;
     const returnedRows = Number(lastSection?.returnedRows ?? lastSection?.scannedRows ?? 0);
     const returnedColumns = Number(lastSection?.returnedColumns ?? lastSection?.scannedColumns ?? 0);
     return {
@@ -422,7 +426,7 @@ function inferScheduleLastRead(payload: JsonObject) {
         lastReadSheetId: null,
         lastReadViewId: null,
         lastReadViewportId: null,
-        lastReadItemId: lastEvidence?.scheduleId ?? null,
+        lastReadItemId: lastEvidence?.scheduleId ?? lastSchedule?.id ?? null,
     };
 }
 

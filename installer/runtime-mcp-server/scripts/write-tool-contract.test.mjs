@@ -74,6 +74,7 @@ assertContains(inspectSchedules, "buildBroadScanGuardedResult", "inspect_schedul
 assertContains(inspectSchedules, "buildScheduleEvidenceRows", "inspect_schedules must expose assistant-readable schedule evidence rows.");
 assertContains(inspectSchedules, "schedules.filter(isObject)", "inspect_schedules must ignore non-object schedule entries before reading sections.");
 assertContains(inspectSchedules, "schedule.sections.filter(isObject)", "inspect_schedules must ignore non-object section entries before reading matches.");
+assertContains(inspectSchedules, "lastEvidence?.scheduleId ?? lastSchedule?.id ?? null", "inspect_schedules must keep last scanned schedule id when no cell evidence matched.");
 assertContains(inspectSchedules, "clampIntArg(args.maxRowsPerSection, 80, 0, 1000)", "inspect_schedules must preserve valid zero row limits.");
 assertContains(inspectSchedules, "clampIntArg(args.maxColumnsPerSection, 30, 0, 200)", "inspect_schedules must preserve valid zero column limits.");
 

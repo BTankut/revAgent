@@ -58,6 +58,20 @@ assert.equal(normalized.lastReadRow, 2);
 assert.equal(normalized.lastReadColumn, 3);
 assert.equal(normalized.lastReadViewId, null);
 
+let summarySawResolvedEvidence = false;
+const evidenceBeforeSummary = normalizeBroadScanResult({
+  success: true,
+}, {
+  action: "inspect_sheet_text",
+  evidenceRows: () => [{ sourceType: "sheetTextNote", id: 1 }],
+  summary: (payload) => {
+    summarySawResolvedEvidence = Array.isArray(payload.evidenceRows) && payload.evidenceRows.length === 1;
+    return { evidenceCount: payload.evidenceRows.length };
+  },
+});
+assert.equal(summarySawResolvedEvidence, true);
+assert.equal(evidenceBeforeSummary.summary.evidenceCount, 1);
+
 const elapsedNull = normalizeBroadScanResult({
   success: true,
   elapsedMs: null,

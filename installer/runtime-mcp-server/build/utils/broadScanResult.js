@@ -142,14 +142,14 @@ export function normalizeBroadScanResult(payload, options) {
         ?? finiteNumberOrNull(options.elapsedMs);
     result.warnings = cleanStringArray(readCasedField(result, "warnings")).concat(cleanStringArray(options.warnings));
     result.notices = cleanStringArray(readCasedField(result, "notices")).concat(cleanStringArray(options.notices));
-    const summary = resolveValue(options.summary, result, {});
     const evidenceRows = resolveValue(options.evidenceRows, result, []);
-    result.summary = isJsonObject(readCasedField(result, "summary"))
-        ? readCasedField(result, "summary")
-        : (isJsonObject(summary) ? summary : {});
     result.evidenceRows = Array.isArray(readCasedField(result, "evidenceRows"))
         ? readCasedField(result, "evidenceRows")
         : (Array.isArray(evidenceRows) ? evidenceRows : []);
+    const summary = resolveValue(options.summary, result, {});
+    result.summary = isJsonObject(readCasedField(result, "summary"))
+        ? readCasedField(result, "summary")
+        : (isJsonObject(summary) ? summary : {});
     const lastRead = resolveValue(options.lastRead, result, {});
     for (const field of BROAD_SCAN_CONTINUATION_FIELDS) {
         const current = readCasedField(result, field);
