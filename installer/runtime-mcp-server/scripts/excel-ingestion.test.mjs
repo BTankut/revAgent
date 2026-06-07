@@ -30,10 +30,12 @@ await writeWorkbook(workbookPath, [{
     ["FCU-02", "", 2],
     ["", "", ""],
     ["FCU-03", "Terminal unit", 3],
+    ["FCU-04", "", 4],
   ],
   configure(sheet) {
     sheet.getCell("B3").value = { formula: "CONCAT(\"Cached\", \" value\")", result: "Cached value" };
     sheet.getCell("B5").value = { formula: "CONCAT(\"No\", \" cache\")" };
+    sheet.getCell("B6").value = { richText: [{ text: "Fan " }, { text: "coil" }] };
   },
 }]);
 
@@ -49,10 +51,11 @@ assert.equal(xlsxResult.success, true);
 assert.equal(xlsxResult.guarded, false);
 assert.equal(xlsxResult.partial, false);
 assert.equal(xlsxResult.scanStoppedReason, "completed");
-assert.equal(xlsxResult.excelRecords.length, 3);
+assert.equal(xlsxResult.excelRecords.length, 4);
 assert.equal(xlsxResult.excelRecords[0].excelRowId, "Items!2");
 assert.equal(xlsxResult.excelRecords[1].comparisonText, "Cached value");
 assert.equal(xlsxResult.excelRecords[2].comparisonText, "");
+assert.equal(xlsxResult.excelRecords[3].comparisonText, "Fan coil");
 assert.equal(xlsxResult.summary.emptyExcelRows, 1);
 assert.equal(xlsxResult.summary.formulaCachedValueCount, 1);
 assert.equal(xlsxResult.summary.formulaWithoutCachedValueCount, 1);
@@ -110,6 +113,24 @@ const tsvResult = await ingestExcelSource({
 assert.equal(tsvResult.success, true);
 assert.equal(tsvResult.excelRecords[0].comparisonText, "Tab quoted");
 
+const largeCsvPath = path.join(tempRoot, "large.csv");
+await fs.writeFile(
+  largeCsvPath,
+  ["Identity,Description"].concat(Array.from({ length: 20 }, (_, index) => `R-${index + 1},Row ${index + 1}`)).join("\n"),
+  "utf8",
+);
+const csvBudgetResult = await ingestExcelSource({
+  kind: "file",
+  path: largeCsvPath,
+  format: "csv",
+  columnMapping: { identity: "Identity", comparisonText: "Description" },
+  budgets: { maxRows: 2 },
+});
+assert.equal(csvBudgetResult.success, true);
+assert.equal(csvBudgetResult.partial, true);
+assert.equal(csvBudgetResult.scanStoppedReason, "max_rows");
+assert.equal(csvBudgetResult.excelRecords.length, 2);
+
 const xlsResult = await ingestExcelSource({
   kind: "file",
   path: path.join(tempRoot, "legacy.xls"),
@@ -129,6 +150,17 @@ const mappingGuard = await ingestExcelSource({
 assert.equal(mappingGuard.success, true);
 assert.equal(mappingGuard.guarded, true);
 assert.equal(mappingGuard.reason, "excel_column_mapping_required");
+
+const disambiguationResult = await ingestExcelSource({
+  kind: "rows",
+  sheetName: "Rows",
+  rows: [{ Name: "FCU-01", Description: "Fan coil unit" }],
+});
+assert.equal(disambiguationResult.success, true);
+assert.equal(disambiguationResult.guarded, false);
+assert.equal(disambiguationResult.excelRecords.length, 1);
+assert.equal(disambiguationResult.excelRecords[0].identityText, "FCU-01");
+assert.equal(disambiguationResult.excelRecords[0].comparisonText, "Fan coil unit");
 
 const rowsBudget = await ingestExcelSource({
   kind: "rows",

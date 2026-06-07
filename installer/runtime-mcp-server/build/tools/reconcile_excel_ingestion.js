@@ -305,7 +305,7 @@ function cellValueToText(value) {
     if (typeof value === "object") {
         const objectValue = value;
         if (Array.isArray(objectValue.richText)) {
-            return objectValue.richText.map((part) => cleanText(part.text)).join("");
+            return cleanText(objectValue.richText.map((part) => String(part.text ?? "")).join(""));
         }
         if (objectValue.text !== undefined) {
             return cleanText(objectValue.text);
@@ -356,6 +356,7 @@ function resolveColumnMapping(headers, startColumn, explicitMapping) {
     const warnings = [];
     const notices = [];
     const mapping = {};
+    const assignedIndices = new Set();
     for (const role of ALL_ROLES) {
         const explicit = explicitMapping?.[role];
         if (explicit !== undefined) {
@@ -364,14 +365,24 @@ function resolveColumnMapping(headers, startColumn, explicitMapping) {
                 return { error: { role, reason: "unresolved_column_ref", value: explicit } };
             }
             mapping[role] = resolved;
+            assignedIndices.add(resolved);
+        }
+    }
+    for (const role of ALL_ROLES) {
+        if (mapping[role] !== undefined) {
             continue;
         }
-        const resolved = resolveColumnAlias(role, headers);
-        if (resolved.kind === "ambiguous") {
-            return { error: { role, reason: "ambiguous_alias", candidates: resolved.candidates } };
+        const matches = findAllColumnAliases(role, headers);
+        if (matches.length === 0) {
+            continue;
         }
-        if (resolved.kind === "resolved") {
-            mapping[role] = resolved.index;
+        const selected = selectAliasMatch(matches, assignedIndices);
+        if (selected.kind === "ambiguous") {
+            return { error: { role, reason: "ambiguous_alias", candidates: selected.candidates } };
+        }
+        if (selected.kind === "resolved") {
+            mapping[role] = selected.match.index;
+            assignedIndices.add(selected.match.index);
         }
     }
     for (const role of REQUIRED_ROLES) {
@@ -380,6 +391,31 @@ function resolveColumnMapping(headers, startColumn, explicitMapping) {
         }
     }
     return { mapping, warnings, notices };
+}
+function getAliasPriority(role, header) {
+    const normalized = normalizeAlias(header);
+    const aliases = ROLE_ALIASES[role];
+    for (let index = 0; index < aliases.length; index++) {
+        if (normalizeAlias(aliases[index]) === normalized) {
+            return index;
+        }
+    }
+    return Number.POSITIVE_INFINITY;
+}
+function findAllColumnAliases(role, headers) {
+    return headers
+        .map((header, index) => ({ header, index, priority: getAliasPriority(role, header) }))
+        .filter((match) => Number.isFinite(match.priority));
+}
+function selectAliasMatch(matches, assignedIndices) {
+    const unassignedMatches = matches.filter((match) => !assignedIndices.has(match.index));
+    const candidates = unassignedMatches.length > 0 ? unassignedMatches : matches;
+    const bestPriority = Math.min(...candidates.map((match) => match.priority));
+    const bestCandidates = candidates.filter((match) => match.priority === bestPriority);
+    if (bestCandidates.length === 1) {
+        return { kind: "resolved", match: bestCandidates[0] };
+    }
+    return { kind: "ambiguous", candidates: bestCandidates.map((match) => match.header) };
 }
 function resolveColumnRef(ref, headers, startColumn) {
     if (typeof ref === "number") {
@@ -400,19 +436,6 @@ function resolveColumnRef(ref, headers, startColumn) {
         return index >= 0 && index < headers.length ? index : null;
     }
     return null;
-}
-function resolveColumnAlias(role, headers) {
-    const aliases = new Set(ROLE_ALIASES[role].map(normalizeAlias));
-    const matches = headers
-        .map((header, index) => ({ header, index }))
-        .filter((item) => aliases.has(normalizeAlias(item.header)));
-    if (matches.length === 0) {
-        return { kind: "missing" };
-    }
-    if (matches.length > 1) {
-        return { kind: "ambiguous", candidates: matches.map((match) => match.header) };
-    }
-    return { kind: "resolved", index: matches[0].index };
 }
 function buildRecords(table, mapping) {
     const records = [];
@@ -523,14 +546,31 @@ function findWorksheetBounds(worksheet) {
 }
 async function loadDelimitedTable(source, budgets, startedAt, format) {
     const text = await fs.readFile(source.path, "utf8");
+    const limit = delimitedRecordLimit(source.selection || {}, budgets);
     const rows = parseCsvSync(text, {
         bom: true,
         delimiter: format === "tsv" ? "\t" : ",",
         relax_column_count: true,
         skip_empty_lines: false,
+        to: limit.recordLimit + 1,
     });
+    const prelimited = rows.length > limit.recordLimit
+        ? { partial: true, scanStoppedReason: limit.scanStoppedReason }
+        : undefined;
+    const limitedRows = prelimited ? rows.slice(0, limit.recordLimit) : rows;
     const sheetName = source.selection?.sheetName || (format === "tsv" ? "TSV" : "CSV");
-    return readMatrixTable(rows, sheetName, source.selection || {}, budgets, startedAt);
+    return readMatrixTable(limitedRows, sheetName, source.selection || {}, budgets, startedAt, prelimited);
+}
+function delimitedRecordLimit(selection, budgets) {
+    const headerRow = selection.headerRow || 1;
+    const dataStartRow = selection.dataStartRow || headerRow + 1;
+    const maxRowsByCells = Math.max(0, Math.floor(Math.max(0, budgets.maxCells - budgets.maxColumns) / budgets.maxColumns));
+    const dataRowsByBudget = Math.min(budgets.maxRows, maxRowsByCells);
+    const scanStoppedReason = dataRowsByBudget < budgets.maxRows ? "max_cells" : "max_rows";
+    return {
+        recordLimit: Math.max(headerRow, dataStartRow + dataRowsByBudget - 1),
+        scanStoppedReason,
+    };
 }
 function loadRowsTable(source, budgets, startedAt) {
     const sheetName = source.sheetName || "Rows";
@@ -563,7 +603,7 @@ function collectRowKeys(rows) {
     }
     return keys;
 }
-function readMatrixTable(matrix, sheetName, selection, budgets, startedAt) {
+function readMatrixTable(matrix, sheetName, selection, budgets, startedAt, prelimited) {
     const maxColumns = matrix.reduce((max, row) => Math.max(max, row.length), 1);
     const fallbackRange = {
         startRow: 1,
@@ -577,6 +617,7 @@ function readMatrixTable(matrix, sheetName, selection, budgets, startedAt) {
         selection,
         budgets,
         startedAt,
+        prelimited,
         readCell: (rowNumber, columnNumber) => readMatrixCell(matrix[rowNumber - 1]?.[columnNumber - 1], rowNumber, columnNumber, sheetName),
     });
 }
@@ -591,8 +632,8 @@ function readTabularCells(options) {
         throw new Error("dataStartRow must be greater than headerRow.");
     }
     let endColumn = parsedRange.endColumn;
-    let partial = false;
-    let scanStoppedReason = "completed";
+    let partial = options.prelimited?.partial || false;
+    let scanStoppedReason = options.prelimited?.scanStoppedReason || "completed";
     if (endColumn - parsedRange.startColumn + 1 > options.budgets.maxColumns) {
         endColumn = parsedRange.startColumn + options.budgets.maxColumns - 1;
         partial = true;

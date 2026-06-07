@@ -146,6 +146,17 @@ type ResolvedMapping = {
     notices: string[];
 };
 
+type AliasMatch = {
+    header: string;
+    index: number;
+    priority: number;
+};
+
+type PrelimitedRows = {
+    partial: boolean;
+    scanStoppedReason: BroadScanStopReason;
+};
+
 function cleanText(value: unknown): string {
     return String(value ?? "").replace(/\s+/g, " ").trim();
 }
@@ -394,7 +405,7 @@ function cellValueToText(value: unknown): string {
     if (typeof value === "object") {
         const objectValue = value as JsonObject;
         if (Array.isArray(objectValue.richText)) {
-            return objectValue.richText.map((part: JsonObject) => cleanText(part.text)).join("");
+            return cleanText(objectValue.richText.map((part: JsonObject) => String(part.text ?? "")).join(""));
         }
         if (objectValue.text !== undefined) {
             return cleanText(objectValue.text);
@@ -449,6 +460,7 @@ function resolveColumnMapping(headers: string[], startColumn: number, explicitMa
     const warnings: string[] = [];
     const notices: string[] = [];
     const mapping: Partial<Record<ColumnRole, number>> = {};
+    const assignedIndices = new Set<number>();
 
     for (const role of ALL_ROLES) {
         const explicit = explicitMapping?.[role];
@@ -458,14 +470,25 @@ function resolveColumnMapping(headers: string[], startColumn: number, explicitMa
                 return { error: { role, reason: "unresolved_column_ref", value: explicit } };
             }
             mapping[role] = resolved;
+            assignedIndices.add(resolved);
+        }
+    }
+
+    for (const role of ALL_ROLES) {
+        if (mapping[role] !== undefined) {
             continue;
         }
-        const resolved = resolveColumnAlias(role, headers);
-        if (resolved.kind === "ambiguous") {
-            return { error: { role, reason: "ambiguous_alias", candidates: resolved.candidates } };
+        const matches = findAllColumnAliases(role, headers);
+        if (matches.length === 0) {
+            continue;
         }
-        if (resolved.kind === "resolved") {
-            mapping[role] = resolved.index;
+        const selected = selectAliasMatch(matches, assignedIndices);
+        if (selected.kind === "ambiguous") {
+            return { error: { role, reason: "ambiguous_alias", candidates: selected.candidates } };
+        }
+        if (selected.kind === "resolved") {
+            mapping[role] = selected.match.index;
+            assignedIndices.add(selected.match.index);
         }
     }
 
@@ -476,6 +499,34 @@ function resolveColumnMapping(headers: string[], startColumn: number, explicitMa
     }
 
     return { mapping, warnings, notices };
+}
+
+function getAliasPriority(role: ColumnRole, header: string): number {
+    const normalized = normalizeAlias(header);
+    const aliases = ROLE_ALIASES[role];
+    for (let index = 0; index < aliases.length; index++) {
+        if (normalizeAlias(aliases[index]) === normalized) {
+            return index;
+        }
+    }
+    return Number.POSITIVE_INFINITY;
+}
+
+function findAllColumnAliases(role: ColumnRole, headers: string[]): AliasMatch[] {
+    return headers
+        .map((header, index) => ({ header, index, priority: getAliasPriority(role, header) }))
+        .filter((match) => Number.isFinite(match.priority));
+}
+
+function selectAliasMatch(matches: AliasMatch[], assignedIndices: Set<number>): { kind: "resolved"; match: AliasMatch } | { kind: "ambiguous"; candidates: string[] } {
+    const unassignedMatches = matches.filter((match) => !assignedIndices.has(match.index));
+    const candidates = unassignedMatches.length > 0 ? unassignedMatches : matches;
+    const bestPriority = Math.min(...candidates.map((match) => match.priority));
+    const bestCandidates = candidates.filter((match) => match.priority === bestPriority);
+    if (bestCandidates.length === 1) {
+        return { kind: "resolved", match: bestCandidates[0] };
+    }
+    return { kind: "ambiguous", candidates: bestCandidates.map((match) => match.header) };
 }
 
 function resolveColumnRef(ref: ColumnRef, headers: string[], startColumn: number): number | null {
@@ -497,20 +548,6 @@ function resolveColumnRef(ref: ColumnRef, headers: string[], startColumn: number
         return index >= 0 && index < headers.length ? index : null;
     }
     return null;
-}
-
-function resolveColumnAlias(role: ColumnRole, headers: string[]): { kind: "missing" } | { kind: "resolved"; index: number } | { kind: "ambiguous"; candidates: string[] } {
-    const aliases = new Set(ROLE_ALIASES[role].map(normalizeAlias));
-    const matches = headers
-        .map((header, index) => ({ header, index }))
-        .filter((item) => aliases.has(normalizeAlias(item.header)));
-    if (matches.length === 0) {
-        return { kind: "missing" };
-    }
-    if (matches.length > 1) {
-        return { kind: "ambiguous", candidates: matches.map((match) => match.header) };
-    }
-    return { kind: "resolved", index: matches[0].index };
 }
 
 function buildRecords(table: TableData, mapping: Partial<Record<ColumnRole, number>>) {
@@ -629,14 +666,32 @@ function findWorksheetBounds(worksheet: ExcelJS.Worksheet) {
 
 async function loadDelimitedTable(source: z.infer<typeof excelFileSourceSchema>, budgets: ExcelIngestionBudgets, startedAt: number, format: "csv" | "tsv"): Promise<TableData> {
     const text = await fs.readFile(source.path, "utf8");
+    const limit = delimitedRecordLimit(source.selection || {}, budgets);
     const rows = parseCsvSync(text, {
         bom: true,
         delimiter: format === "tsv" ? "\t" : ",",
         relax_column_count: true,
         skip_empty_lines: false,
+        to: limit.recordLimit + 1,
     }) as unknown[][];
+    const prelimited = rows.length > limit.recordLimit
+        ? { partial: true, scanStoppedReason: limit.scanStoppedReason }
+        : undefined;
+    const limitedRows = prelimited ? rows.slice(0, limit.recordLimit) : rows;
     const sheetName = source.selection?.sheetName || (format === "tsv" ? "TSV" : "CSV");
-    return readMatrixTable(rows, sheetName, source.selection || {}, budgets, startedAt);
+    return readMatrixTable(limitedRows, sheetName, source.selection || {}, budgets, startedAt, prelimited);
+}
+
+function delimitedRecordLimit(selection: z.infer<typeof excelSelectionSchema>, budgets: ExcelIngestionBudgets): { recordLimit: number; scanStoppedReason: BroadScanStopReason } {
+    const headerRow = selection.headerRow || 1;
+    const dataStartRow = selection.dataStartRow || headerRow + 1;
+    const maxRowsByCells = Math.max(0, Math.floor(Math.max(0, budgets.maxCells - budgets.maxColumns) / budgets.maxColumns));
+    const dataRowsByBudget = Math.min(budgets.maxRows, maxRowsByCells);
+    const scanStoppedReason: BroadScanStopReason = dataRowsByBudget < budgets.maxRows ? "max_cells" : "max_rows";
+    return {
+        recordLimit: Math.max(headerRow, dataStartRow + dataRowsByBudget - 1),
+        scanStoppedReason,
+    };
 }
 
 function loadRowsTable(source: z.infer<typeof excelRowsSourceSchema>, budgets: ExcelIngestionBudgets, startedAt: number): TableData {
@@ -672,7 +727,7 @@ function collectRowKeys(rows: Array<Record<string, unknown>>): string[] {
     return keys;
 }
 
-function readMatrixTable(matrix: unknown[][], sheetName: string, selection: z.infer<typeof excelSelectionSchema>, budgets: ExcelIngestionBudgets, startedAt: number): TableData {
+function readMatrixTable(matrix: unknown[][], sheetName: string, selection: z.infer<typeof excelSelectionSchema>, budgets: ExcelIngestionBudgets, startedAt: number, prelimited?: PrelimitedRows): TableData {
     const maxColumns = matrix.reduce((max, row) => Math.max(max, row.length), 1);
     const fallbackRange = {
         startRow: 1,
@@ -686,6 +741,7 @@ function readMatrixTable(matrix: unknown[][], sheetName: string, selection: z.in
         selection,
         budgets,
         startedAt,
+        prelimited,
         readCell: (rowNumber, columnNumber) => readMatrixCell(matrix[rowNumber - 1]?.[columnNumber - 1], rowNumber, columnNumber, sheetName),
     });
 }
@@ -696,6 +752,7 @@ function readTabularCells(options: {
     selection: z.infer<typeof excelSelectionSchema>;
     budgets: ExcelIngestionBudgets;
     startedAt: number;
+    prelimited?: PrelimitedRows;
     readCell: (rowNumber: number, columnNumber: number) => TableCell;
 }): TableData {
     const parsedRange = parseRange(options.selection.range, options.fallbackRange);
@@ -709,8 +766,8 @@ function readTabularCells(options: {
     }
 
     let endColumn = parsedRange.endColumn;
-    let partial = false;
-    let scanStoppedReason: BroadScanStopReason = "completed";
+    let partial = options.prelimited?.partial || false;
+    let scanStoppedReason: BroadScanStopReason = options.prelimited?.scanStoppedReason || "completed";
     if (endColumn - parsedRange.startColumn + 1 > options.budgets.maxColumns) {
         endColumn = parsedRange.startColumn + options.budgets.maxColumns - 1;
         partial = true;
