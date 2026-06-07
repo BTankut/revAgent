@@ -30,10 +30,21 @@ namespace RevitMCPCommandSet.Commands.View
         public string Action { get; set; }
         public string Message { get; set; }
         public string Error { get; set; }
+        public bool Guarded { get; set; }
+        public string State { get; set; }
+        public string Reason { get; set; }
         public bool Requested { get; set; }
         public bool Deferred { get; set; }
         public bool Changed { get; set; }
         public bool Closed { get; set; }
+        public bool DryRun { get; set; }
+        public bool Deleted { get; set; }
+        public bool ConfirmDelete { get; set; }
+        public bool TargetIsReviewView { get; set; }
+        public List<string> ReviewSignals { get; set; }
+        public List<string> Warnings { get; set; }
+        public List<string> SuggestedNextScopes { get; set; }
+        public int DeletedElementCount { get; set; }
         public ViewSummary ActiveViewBefore { get; set; }
         public ViewSummary BeforeView { get; set; }
         public ViewSummary AfterView { get; set; }

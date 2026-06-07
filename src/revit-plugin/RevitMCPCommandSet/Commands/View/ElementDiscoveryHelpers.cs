@@ -286,6 +286,7 @@ namespace RevitMCPCommandSet.Commands.View
             AddFieldMatch(result, "type", GetTypeName(document, element), trimmedQuery, 600, 240);
             AddFieldMatch(result, "comments", GetParameterString(element, "Comments"), trimmedQuery, 250, 120);
             AddTokenMatches(document, element, result, trimmedQuery);
+            AddValveAccessorySignal(element, result, trimmedQuery);
 
             result.Matches = result.Fields.Count > 0 && result.Fields.Any(f => !string.Equals(f, "categoryFilter", StringComparison.OrdinalIgnoreCase));
             result.Confidence = BuildMatchConfidence(result.Score);
@@ -664,6 +665,41 @@ namespace RevitMCPCommandSet.Commands.View
                 result.Score += containsScore;
                 result.Fields.Add(fieldName + ":contains");
             }
+        }
+
+        private static void AddValveAccessorySignal(Element element, SearchMatchSummary result, string query)
+        {
+            if (!IsValveSearch(query) || element == null || result == null)
+            {
+                return;
+            }
+
+            string category = element.Category != null ? element.Category.Name : "";
+            if (category.IndexOf("Pipe Accessories", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                result.Score += 430;
+                if (!result.Fields.Contains("mepValveAccessoryCategory"))
+                {
+                    result.Fields.Add("mepValveAccessoryCategory");
+                }
+            }
+        }
+
+        private static bool IsValveSearch(string query)
+        {
+            string normalized = NormalizeSearchText(query);
+            string padded = " " + normalized + " ";
+            return normalized == "valve" ||
+                normalized == "vana" ||
+                padded.Contains(" valve ") ||
+                padded.Contains(" vana ");
+        }
+
+        private static string NormalizeSearchText(string value)
+        {
+            string normalized = (value ?? "").Trim().ToLowerInvariant();
+            normalized = normalized.Replace("\u0131", "i").Replace("\u0130", "i");
+            return normalized;
         }
 
         private static void AddTokenMatches(Document document, Element element, SearchMatchSummary result, string query)

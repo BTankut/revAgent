@@ -55,7 +55,7 @@ structural, and electrical modules should add module-specific MCP tools in the
 runtime layer while reusing this shared Revit bridge for common execution,
 context, selection, view, and navigation operations.
 
-The current runtime server registers 28 tools:
+The current runtime server registers 30 tools:
 
 - status and targeting: `list_revit_instances`, `get_revit_mcp_status`
 - dynamic execution: `send_code_to_revit`, `send_code_to_revit_safe`
@@ -69,10 +69,11 @@ The current runtime server registers 28 tools:
   text writes by schedule id/section/row/column, and
   `set_schedule_cells_by_text` for bounded row-text-driven schedule edits
 - live view workflows: `list_open_views`, `activate_view`, `close_view`,
-  `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`,
+  `clear_selection`, `get_ui_state`, `find_elements`,
+  `open_existing_plan_for_element_level`,
   `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements`
 - project view-data operations: `section_box_elements`,
-  `create_3d_view_for_elements`
+  `create_3d_view_for_elements`, `delete_review_view`
 - image evidence: `export_revit_view_image`,
   `export_revit_coordination_image`
 

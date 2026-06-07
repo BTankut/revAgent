@@ -58,6 +58,8 @@ Mandatory routing examples:
 - Element parameter writes go through `set_element_parameter`.
 - Live Revit navigation uses live navigation tools; evidence images use export
   tools.
+- Selection cleanup goes through `clear_selection`; revAgent/Revit MCP review
+  3D view cleanup goes through guarded `delete_review_view`.
 
 Usage-intelligence promotion fields are human-review evidence only. Repeated
 raw/safe code patterns, timeout or partial-result friction, annotation counting,
@@ -240,6 +242,10 @@ duct/pipe/sprinkler/diffuser/pump/AHU terms to their MEP categories. Keep
 `planCandidateMode="none"` for the first pass, prefer host/active-view/category
 scope, and only use linked, verified, or deep searches after the operator
 accepts the cost with `allowExpensiveSearch=true` or an explicit deep budget.
+For valve/vana searches, treat Pipe Accessories/name/family/type signals as the
+primary evidence and broad Pipe Fittings rows as fallback only when they have
+text evidence; elbow/transition-like fitting rows should not be treated as
+strong valve matches merely because the category was scanned.
 Verified plan visibility is materially slower than metadata plan ranking: use
 `planCandidateMode="metadata"` for ordinary discovery, and reserve
 `planCandidateMode="verified"` for exact element ids or explicit expensive
@@ -257,6 +263,11 @@ cell text. It guards non-writable standard schedule body cells as
 `set_schedule_cells_by_text` after bounding the search by sheet or schedule; it
 previews matches, blocks ambiguous rows by default, and verifies committed cell
 text. It uses the same standard schedule body-cell guard.
+For cleanup after live QA or test workflows, use `clear_selection` to leave the
+UI with no selected elements. Use `delete_review_view` only for explicit
+revAgent/Revit MCP review/focus/coordination 3D views; it defaults to dry-run,
+blocks production/active/open views, and requires `mode="commit"` plus
+`confirmDelete=true` for deletion.
 
 ## Dynamic Execution Transaction Discipline
 

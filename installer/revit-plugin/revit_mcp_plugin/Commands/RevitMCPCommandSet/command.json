@@ -44,6 +44,16 @@
       "assemblyPath": "RevitMCPCommandSet.dll"
     },
     {
+      "commandName": "clear_selection",
+      "description": "Clear the current Revit UI selection without opening a transaction",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "delete_review_view",
+      "description": "Dry-run or delete an explicit revAgent/Revit MCP review 3D view with guarded production-view protection",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
       "commandName": "get_ui_state",
       "description": "Read active view, open views, selection, and document UI state",
       "assemblyPath": "RevitMCPCommandSet.dll"

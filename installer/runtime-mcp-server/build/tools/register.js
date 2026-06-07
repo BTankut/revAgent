@@ -5,6 +5,8 @@ import { registerGetActiveViewContextTool } from "./get_active_view_context.js";
 import { registerListOpenViewsTool } from "./list_open_views.js";
 import { registerActivateViewTool } from "./activate_view.js";
 import { registerCloseViewTool } from "./close_view.js";
+import { registerClearSelectionTool } from "./clear_selection.js";
+import { registerDeleteReviewViewTool } from "./delete_review_view.js";
 import { registerGetUiStateTool } from "./get_ui_state.js";
 import { registerFindElementsTool } from "./find_elements.js";
 import { registerOpenExistingPlanForElementLevelTool } from "./open_existing_plan_for_element_level.js";
@@ -38,6 +40,8 @@ export async function registerTools(server) {
     registerListOpenViewsTool(telemetryServer);
     registerActivateViewTool(telemetryServer);
     registerCloseViewTool(telemetryServer);
+    registerClearSelectionTool(telemetryServer);
+    registerDeleteReviewViewTool(telemetryServer);
     registerGetUiStateTool(telemetryServer);
     registerFindElementsTool(telemetryServer);
     registerOpenExistingPlanForElementLevelTool(telemetryServer);
@@ -57,5 +61,5 @@ export async function registerTools(server) {
     registerSetElementParameterTool(telemetryServer);
     registerSetScheduleCellsTool(telemetryServer);
     registerSetScheduleCellsByTextTool(telemetryServer);
-    console.error("Registered 28 Revit MCP tools");
+    console.error("Registered 30 Revit MCP tools");
 }
