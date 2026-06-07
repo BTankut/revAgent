@@ -202,6 +202,10 @@ namespace RevitMCPCommandSet.Commands.View
             try
             {
                 UIDocument uiDocument = app.ActiveUIDocument;
+                if (uiDocument == null)
+                {
+                    throw new InvalidOperationException("No active document found in Revit.");
+                }
                 Document document = uiDocument.Document;
 
                 if (HasInvalidSource())
