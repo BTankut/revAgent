@@ -16,6 +16,7 @@
     "runtime-result-test": "node scripts/runtime-result.test.mjs",
     "broad-scan-result-test": "node scripts/broad-scan-result.test.mjs",
     "excel-ingestion-test": "node scripts/excel-ingestion.test.mjs",
+    "schedule-adapter-test": "node scripts/schedule-adapter.test.mjs",
     "write-tool-contract-test": "node scripts/write-tool-contract.test.mjs",
     "bridge-result-contract-test": "node scripts/bridge-result-contract.test.mjs",
     "casing-member-access-test": "node scripts/casing-member-access.test.mjs",
@@ -24,7 +25,7 @@
     "live-feed-test": "node scripts/live-feed.test.mjs",
     "socket-test": "node scripts/socket-client.test.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "npm run build && npm run guard-test && npm run runtime-result-test && npm run broad-scan-result-test && npm run excel-ingestion-test && npm run write-tool-contract-test && npm run bridge-result-contract-test && npm run casing-member-access-test && npm run tool-inference-test && npm run revit-task-merge-test && npm run live-feed-test && npm run socket-test && npm run smoke"
+    "test": "npm run build && npm run guard-test && npm run runtime-result-test && npm run broad-scan-result-test && npm run excel-ingestion-test && npm run schedule-adapter-test && npm run write-tool-contract-test && npm run bridge-result-contract-test && npm run casing-member-access-test && npm run tool-inference-test && npm run revit-task-merge-test && npm run live-feed-test && npm run socket-test && npm run smoke"
   },
   "files": [
     "build",

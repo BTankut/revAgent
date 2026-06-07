@@ -10,9 +10,19 @@ import {
     normalizeBroadScanResult,
     type BroadScanStopReason,
 } from "../utils/broadScanResult.js";
+import {
+    buildReconciliationTokenProfile,
+    cleanReconciliationText,
+    normalizeReconciliationAlias,
+    normalizeReconciliationHeader,
+    RECONCILIATION_ALL_ROLES,
+    RECONCILIATION_REQUIRED_ROLES,
+    RECONCILIATION_ROLE_ALIASES,
+    type ReconciliationColumnRole,
+} from "./reconcile_normalization.js";
 
 type JsonObject = Record<string, any>;
-type ColumnRole = "identity" | "comparisonText" | "code" | "description" | "quantity" | "unit" | "system" | "discipline" | "notes";
+type ColumnRole = ReconciliationColumnRole;
 type ColumnRef = string | number;
 
 const ACTION = "reconcile_schedule_excel";
@@ -36,20 +46,9 @@ const HARD_BUDGETS = {
     maxElapsedMs: 119000,
 };
 
-const REQUIRED_ROLES: ColumnRole[] = ["identity", "comparisonText"];
-const ALL_ROLES: ColumnRole[] = ["identity", "comparisonText", "code", "description", "quantity", "unit", "system", "discipline", "notes"];
-
-const ROLE_ALIASES: Record<ColumnRole, string[]> = {
-    identity: ["identity", "id", "key", "name", "item", "row", "code", "type", "mark", "tag", "poz", "kod", "ad", "isim"],
-    comparisonText: ["comparisontext", "comparison text", "text", "name", "description", "desc", "item", "type", "mark", "tag", "ad", "isim", "aciklama"],
-    code: ["code", "kod", "type code", "mark", "tag", "poz"],
-    description: ["description", "desc", "text", "aciklama"],
-    quantity: ["quantity", "qty", "count", "adet", "miktar"],
-    unit: ["unit", "units", "birim"],
-    system: ["system", "sistem"],
-    discipline: ["discipline", "disiplin"],
-    notes: ["notes", "note", "remarks", "remark", "not"],
-};
+const REQUIRED_ROLES = RECONCILIATION_REQUIRED_ROLES;
+const ALL_ROLES = RECONCILIATION_ALL_ROLES;
+const ROLE_ALIASES = RECONCILIATION_ROLE_ALIASES;
 
 export const excelSelectionSchema = z.object({
     sheetName: z.string().min(1).optional(),
@@ -158,29 +157,15 @@ type PrelimitedRows = {
 };
 
 function cleanText(value: unknown): string {
-    return String(value ?? "").replace(/\s+/g, " ").trim();
+    return cleanReconciliationText(value);
 }
 
 function normalizeHeader(value: unknown): string {
-    return cleanText(value)
-        .replace(/\u0131/g, "i")
-        .replace(/\u0130/g, "I")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, " ")
-        .trim();
+    return normalizeReconciliationHeader(value);
 }
 
 function normalizeAlias(value: string): string {
-    return normalizeHeader(value).replace(/\s+/g, "");
-}
-
-function buildIngestKey(identityText: string, comparisonText: string): string {
-    return [identityText, comparisonText]
-        .map((item) => cleanText(item).toUpperCase())
-        .filter((item, index, items) => item.length > 0 && items.indexOf(item) === index)
-        .join(" | ");
+    return normalizeReconciliationAlias(value);
 }
 
 function resolveBudgets(input?: z.infer<typeof excelIngestionBudgetsSchema>): ExcelIngestionBudgets {
@@ -576,7 +561,8 @@ function buildRecords(table: TableData, mapping: Partial<Record<ColumnRole, numb
         }
         const identityText = cleanText(mappedValues.identity);
         const comparisonText = cleanText(mappedValues.comparisonText);
-        const normalizedKey = buildIngestKey(identityText, comparisonText);
+        const tokenProfile = buildReconciliationTokenProfile([identityText, comparisonText]);
+        const normalizedKey = tokenProfile.normalizedKey;
         const excelRowId = `${table.sheetName}!${row.rowNumber}`;
         records.push({
             excelRowId,
@@ -588,12 +574,7 @@ function buildRecords(table: TableData, mapping: Partial<Record<ColumnRole, numb
             identityText,
             comparisonText,
             normalizedKey,
-            tokenProfile: {
-                profileVersion: 0,
-                status: "not_tokenized_pr1",
-                normalizedKey,
-                tokens: [],
-            },
+            tokenProfile,
         });
     }
     return records;
