@@ -55,6 +55,7 @@ function Set-RevitMcpTomlScalar {
         [Parameter(Mandatory = $true)]
         [string]$Content,
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string]$Section,
         [Parameter(Mandatory = $true)]
         [string]$Key,
@@ -62,8 +63,34 @@ function Set-RevitMcpTomlScalar {
         [string]$Value
     )
 
-    $sectionPattern = "(?ms)^\[$([regex]::Escape($Section))\]\s*.*?(?=^\[|\z)"
     $keyPattern = "(?m)^(\s*)$([regex]::Escape($Key))\s*=.*$"
+    if ([string]::IsNullOrWhiteSpace($Section)) {
+        $firstTableMatch = [regex]::Match($Content, "(?m)^\s*\[")
+        $rootContent = if ($firstTableMatch.Success) {
+            $Content.Substring(0, $firstTableMatch.Index)
+        }
+        else {
+            $Content
+        }
+        $tableContent = if ($firstTableMatch.Success) {
+            $Content.Substring($firstTableMatch.Index)
+        }
+        else {
+            ""
+        }
+
+        if ($rootContent -match $keyPattern) {
+            return [regex]::Replace($rootContent, $keyPattern, "`$1$Key = $Value") + $tableContent
+        }
+
+        if ([string]::IsNullOrWhiteSpace($rootContent)) {
+            return "$Key = $Value`r`n" + $tableContent
+        }
+
+        return $rootContent.TrimEnd() + "`r`n$Key = $Value`r`n" + $tableContent
+    }
+
+    $sectionPattern = "(?ms)^\[$([regex]::Escape($Section))\]\s*.*?(?=^\[|\z)"
     if ($Content -match $sectionPattern) {
         return [regex]::Replace($Content, $sectionPattern, [System.Text.RegularExpressions.MatchEvaluator]{
             param($match)
@@ -78,6 +105,16 @@ function Set-RevitMcpTomlScalar {
 
     $prefix = if ([string]::IsNullOrWhiteSpace($Content)) { "" } else { $Content.TrimEnd() + "`r`n`r`n" }
     return $prefix + "[$Section]`r`n$Key = $Value`r`n"
+}
+
+function Normalize-RevitMcpCodexServiceTier {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Content
+    )
+
+    $content = [regex]::Replace($Content, '(?m)^(\s*service_tier\s*=\s*)"priority"\s*$', '${1}"fast"')
+    return Set-RevitMcpTomlScalar -Content $content -Section "" -Key "service_tier" -Value '"fast"'
 }
 
 function Set-RevitMcpCodexMemoryConfig {
@@ -99,6 +136,7 @@ function Set-RevitMcpCodexMemoryConfig {
     }
     $original = $content
 
+    $content = Normalize-RevitMcpCodexServiceTier -Content $content
     $content = Set-RevitMcpTomlScalar -Content $content -Section "features" -Key "memories" -Value "true"
     $content = Set-RevitMcpTomlScalar -Content $content -Section "features" -Key "chronicle" -Value "false"
     $content = Set-RevitMcpTomlScalar -Content $content -Section "memories" -Key "disable_on_external_context" -Value "true"
