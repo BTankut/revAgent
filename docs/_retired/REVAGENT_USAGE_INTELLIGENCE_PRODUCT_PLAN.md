@@ -44,6 +44,11 @@ Completed on 2026-06-07 through Step 0 and Workstreams 1-5.
   package. The WS5 delta is telemetry/edge/reporting documentation and
   summarizer/dashboard behavior; it does not add a new native Revit tool or
   require a Revit-closed DLL install loop.
+- WS5's telemetry -> summarizer -> published summary -> dashboard/report smoke
+  was validated through `scripts/test-usage-intelligence.ps1` and the local
+  non-Revit `scripts/test-all.ps1` flow before publish. That smoke remains a
+  local deterministic gate rather than part of the protected GitHub
+  `Engineering gates` job, whose CI-safe scope is `scripts/test-ci.ps1`.
 
 ## Execution Directive
 
