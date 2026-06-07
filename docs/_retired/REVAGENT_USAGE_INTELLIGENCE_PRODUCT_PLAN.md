@@ -640,7 +640,7 @@ Writing to Revit or Excel should be a separate, confirmed step.
 Do not implement reconciliation before this design spike is complete.
 
 Design-spike decisions are recorded in
-`docs/REVAGENT_WS4_SCHEDULE_EXCEL_RECONCILIATION_DESIGN_SPIKE.md`. That
+`docs/_retired/REVAGENT_WS4_SCHEDULE_EXCEL_RECONCILIATION_DESIGN_SPIKE.md`. That
 artifact is binding for WS4 implementation PRs after approval; it resolves the
 Excel ingestion path, schedule ingestion path, matching/scoring algorithm, and
 review output contract without leaving open implementation questions.
