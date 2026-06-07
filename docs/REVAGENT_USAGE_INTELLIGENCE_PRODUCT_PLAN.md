@@ -60,6 +60,21 @@ explicit gates.
 - Do not bypass this gate.
 - Do not autonomously merge or deploy a DLL/payload PR.
 
+### Deployment Batching
+
+- Pre-merge operator live gates remain mandatory for every PR that changes a
+  DLL or command payload.
+- Stable deploy is not a per-PR action. Batch stable deploy until the
+  workstream is complete, then deploy once cumulatively after explicit operator
+  deploy approval.
+- A Revit-closed branch-payload install for live validation is not a stable
+  deploy.
+- For Workstream 3 specifically, WS3 PR 3 (`placed_schedule_cells` plus the
+  batched per-sheet guard) and WS3 PR 4 (docs/release readiness) may be merged
+  after their required gates, but must not be stable-deployed individually.
+- When Workstream 3 is complete, perform one cumulative stable deploy for the
+  whole workstream.
+
 ### Planning Gates For Workstream 3 And Workstream 4
 
 - Do not code Workstream 3 directly.
@@ -86,7 +101,7 @@ explicit gates.
    merge.
 3. Workstream 3 annotation inventory/count -> Implementation Decisions in this
    roadmap section -> approval -> implementation PRs, each with the required
-   live gate.
+   live gate -> one cumulative stable deploy after the workstream is complete.
 4. Workstream 4 schedule-to-Excel reconciliation -> design spike -> plan ->
    implementation PRs.
 5. Workstream 5 usage-intelligence promotion tracking -> final roadmap step,
@@ -99,6 +114,9 @@ responsible workstream is clear, which is the lesson from #36, #37, and #38.
 Every DLL/payload step depends on an operator live gate. Earlier real-world
 validation should feed later workstream design instead of being discovered
 after several features are already bundled together.
+Pre-merge live validation and stable deployment are separate gates: validate
+each DLL/payload PR before merge, but publish stable payloads once per
+workstream unless the operator explicitly approves an emergency deploy.
 
 ## Goal
 
@@ -229,8 +247,9 @@ pattern:
 - If a DLL changes, rebuild and commit the payload DLLs.
 - If command payload changes, refresh `installer/revit-payload-manifest.json`.
 - Before merge, run a live Revit validation gate for the changed behavior.
-- Before deploy, run the Revit-closed install/deploy loop required for payload
-  replacement.
+- At the workstream deployment point, run the Revit-closed install/deploy loop
+  required for payload replacement. Do not treat per-PR live-validation installs
+  as stable deploys.
 - Docs, `SKILL.md`, and `AGENTS.md` are updated when tool routing or operator
   behavior changes.
 
@@ -466,9 +485,15 @@ as an example profile or validation scenario.
    approved, split implementation into focused PRs: shared helper extraction
    with no behavior change, core read-only annotation inventory/count for sheet
    text and viewport tag evidence, placed schedule-cell integration and
-   continuation polish, then docs/release readiness. Every PR that changes a
-   DLL or command payload has its own CI, bot review, operator live gate, and
-   merge approval.
+   continuation polish, then docs/release readiness. The placed schedule-cell
+   integration PR also batches the per-sheet scan guard deferred from the
+   core-count review cycle: wrap the per-sheet scan body once, return one
+   warning for a corrupt/problem sheet, and continue. Do not open a solo PR or
+   solo live-gate cycle only for that guard. Every PR that changes a DLL or
+   command payload has its own CI, bot review, operator live gate, and merge
+   approval. Stable deploy is batched: WS3 PR 3 and WS3 PR 4 may merge after
+   their gates, but neither is deployed individually; deploy WS3 once
+   cumulatively after the workstream is complete.
 5. The core inventory/count implementation PR covers `sheet_text_notes` and
    `viewport_tags` only. `placed_schedule_cells` remains in the later
    integration/continuation PR so this PR can lock the four count semantics and
@@ -484,7 +509,7 @@ as an example profile or validation scenario.
 - CI-safe characterization tests cover source selection, match modes, grouping,
   count semantics, partial stops, and response budget behavior.
 - DLL changes require payload rebuild, manifest refresh, pre-merge live Revit
-  gate, and Revit-closed deploy loop.
+  gate. Stable deploy waits until the end of the Workstream 3 batch.
 
 ### Inputs
 
@@ -556,8 +581,10 @@ Counting modes:
   implementation.
 - DLL/payload change expected: refresh manifest and run live Revit validation
   before merge.
-- Revit must be closed for install/deploy validation when payload files are
-  replaced.
+- Revit must be closed for branch-payload install/live validation when payload
+  files are replaced.
+- Stable deploy is batched to the end of Workstream 3; WS3 PR 3 and WS3 PR 4
+  merge without individual deploys.
 
 ## Workstream 4 - Planned Project: Schedule-to-Excel Reconciliation
 
@@ -745,7 +772,8 @@ This is not a suggestion.
    operator live Revit test -> merge.
 3. Workstream 3 general annotation inventory/count -> Implementation Decisions
    in this roadmap section -> approval -> implementation PRs, each with the
-   required live gate.
+   required live gate -> one cumulative stable deploy after the workstream is
+   complete.
 4. Workstream 4 schedule-to-Excel reconciliation -> mandatory design spike ->
    plan -> implementation PRs.
 5. Workstream 5 usage-intelligence promotion tracking -> deterministic smoke
