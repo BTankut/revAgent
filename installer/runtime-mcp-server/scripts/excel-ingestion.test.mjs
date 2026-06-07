@@ -89,6 +89,27 @@ assert.equal(multiSheetResult.guarded, true);
 assert.equal(multiSheetResult.reason, "excel_sheet_selection_required");
 assert.equal(multiSheetResult.scanStoppedReason, "needs_scope");
 
+const manyBlankSheetsPath = path.join(tempRoot, "many-blank-sheets.xlsx");
+const manyBlankWorkbook = new ExcelJS.Workbook();
+for (let index = 1; index <= 6; index++) {
+  manyBlankWorkbook.addWorksheet(`Blank ${index}`);
+}
+const populated = manyBlankWorkbook.addWorksheet("Only Data");
+populated.addRow(["Identity", "Description"]);
+populated.addRow(["ONLY-1", "Only populated sheet"]);
+await manyBlankWorkbook.xlsx.writeFile(manyBlankSheetsPath);
+const manyBlankResult = await ingestExcelSource({
+  kind: "file",
+  path: manyBlankSheetsPath,
+  format: "xlsx",
+  columnMapping: { identity: "Identity", comparisonText: "Description" },
+  budgets: { maxSheets: 2 },
+});
+assert.equal(manyBlankResult.success, true);
+assert.equal(manyBlankResult.guarded, false);
+assert.equal(manyBlankResult.excelRecords[0].excelRowId, "Only Data!2");
+assert.match(manyBlankResult.notices.join("\n"), /only non-empty worksheet/);
+
 const csvPath = path.join(tempRoot, "quoted.csv");
 await fs.writeFile(csvPath, "Identity,Description\n\"FCU, 1\",\"Desc \"\"Quoted\"\"\"\n", "utf8");
 const csvResult = await ingestExcelSource({
@@ -143,6 +164,29 @@ const rangeClampResult = await ingestExcelSource({
 assert.equal(rangeClampResult.success, true);
 assert.equal(rangeClampResult.excelRecords.length, 2);
 assert.equal(rangeClampResult.excelRecords[0].identityText, "IN-1");
+
+const rangeStartLimitPath = path.join(tempRoot, "range-start-limit.csv");
+await fs.writeFile(
+  rangeStartLimitPath,
+  Array.from({ length: 9 }, (_, index) => `SKIP-${index + 1},Skip ${index + 1}`)
+    .concat(["Identity,Description", "RANGE-1,Inside range 1", "RANGE-2,Inside range 2", "RANGE-3,Outside budget"])
+    .join("\n"),
+  "utf8",
+);
+const rangeStartLimitResult = await ingestExcelSource({
+  kind: "file",
+  path: rangeStartLimitPath,
+  format: "csv",
+  selection: { range: "A10:B13" },
+  columnMapping: { identity: "Identity", comparisonText: "Description" },
+  budgets: { maxRows: 2 },
+});
+assert.equal(rangeStartLimitResult.success, true);
+assert.equal(rangeStartLimitResult.guarded, false);
+assert.equal(rangeStartLimitResult.partial, true);
+assert.equal(rangeStartLimitResult.scanStoppedReason, "max_rows");
+assert.equal(rangeStartLimitResult.excelRecords.length, 2);
+assert.equal(rangeStartLimitResult.excelRecords[0].identityText, "RANGE-1");
 
 const xlsResult = await ingestExcelSource({
   kind: "file",

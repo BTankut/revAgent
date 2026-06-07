@@ -599,11 +599,11 @@ async function loadXlsxTable(source: z.infer<typeof excelFileSourceSchema>, budg
     const selection = source.selection || {};
     const exactSheetSelected = Boolean(selection.sheetName || selection.sheetIndex);
     const nonEmptySheets = sheets.filter((sheet) => sheet.actualRowCount > 0 || sheet.actualColumnCount > 0);
-    if (!exactSheetSelected && sheets.length > budgets.maxSheets) {
-        return buildGuardedResult("max_items", "Workbook sheet count exceeds maxSheets. Provide sheetName or sheetIndex to scope ingestion.", {
+    if (!exactSheetSelected && sheets.length > budgets.maxSheets && nonEmptySheets.length !== 1) {
+        return buildGuardedResult("max_items", "Workbook sheet count exceeds maxSheets and cannot be auto-scoped to one non-empty sheet. Provide sheetName or sheetIndex.", {
             partial: true,
             scanStoppedReason: "max_items",
-            summary: { workbookSheets: sheets.length, maxSheets: budgets.maxSheets },
+            summary: { workbookSheets: sheets.length, nonEmptySheets: nonEmptySheets.length, maxSheets: budgets.maxSheets },
             scanPolicy: { budgets },
         });
     }
@@ -683,13 +683,15 @@ async function loadDelimitedTable(source: z.infer<typeof excelFileSourceSchema>,
 }
 
 function delimitedRecordLimit(selection: z.infer<typeof excelSelectionSchema>, budgets: ExcelIngestionBudgets): { recordLimit: number; scanStoppedReason: BroadScanStopReason } {
-    const headerRow = selection.headerRow || 1;
+    const parsedRange = parseRange(selection.range, { startRow: 1, startColumn: 1, endRow: 1, endColumn: 1 });
+    const rangeStartRow = parsedRange?.startRow || 1;
+    const headerRow = selection.headerRow || rangeStartRow;
     const dataStartRow = selection.dataStartRow || headerRow + 1;
     const maxRowsByCells = Math.max(0, Math.floor(Math.max(0, budgets.maxCells - budgets.maxColumns) / budgets.maxColumns));
     const dataRowsByBudget = Math.min(budgets.maxRows, maxRowsByCells);
     const scanStoppedReason: BroadScanStopReason = dataRowsByBudget < budgets.maxRows ? "max_cells" : "max_rows";
     return {
-        recordLimit: Math.max(headerRow, dataStartRow + dataRowsByBudget - 1),
+        recordLimit: Math.max(rangeStartRow, headerRow, dataStartRow + dataRowsByBudget - 1),
         scanStoppedReason,
     };
 }
