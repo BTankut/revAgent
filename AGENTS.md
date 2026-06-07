@@ -59,6 +59,12 @@ Mandatory routing examples:
 - Live Revit navigation uses live navigation tools; evidence images use export
   tools.
 
+Usage-intelligence promotion fields are human-review evidence only. Repeated
+raw/safe code patterns, timeout or partial-result friction, annotation counting,
+schedule-spreadsheet reconciliation, and manual transaction/write-guard signals
+should surface as candidates without automatically escalating priority or
+authorizing model/workbook writes.
+
 ## Revit MCP Coordination - Hard Rule
 
 Before every non-status Revit MCP runtime task, run a short status check:

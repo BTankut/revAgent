@@ -4,6 +4,17 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Backfilled documentation alignment for the completed usage-intelligence
+  roadmap, including the plan completion record and operator-facing promotion
+  guidance.
+
+## 2026.06.07.318-4ca1c36e
+
+- Published stable deploy at 2026-06-07T17:49:50.2070328Z from commit
+  `4ca1c36e`.
+- Released the completed Step 0 plus Workstreams 1-5 usage-intelligence
+  roadmap, including native sheet/schedule hardening, annotation inventory,
+  schedule-to-Excel reconciliation, and deterministic promotion tracking.
 - Added a shared broad-scan result contract for `inspect_sheet_text` and
   `inspect_schedules`, including canonical stop reasons, `summary`,
   `evidenceRows`, `suggestedNextScopes`, and `lastRead*` continuation fields.

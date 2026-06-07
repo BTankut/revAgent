@@ -67,6 +67,13 @@ If you still choose raw `send_code_to_revit`, state the missing capability or
 unsupported edge case first, keep the snippet small, and return to the
 dedicated tools as soon as the missing bridge is resolved.
 
+Usage-intelligence promotion signals are review evidence, not permission to
+change the model or an automatic priority escalation. Repeated raw/safe code,
+timeout or partial-result friction, annotation counting requests,
+schedule-spreadsheet reconciliation requests, and manual transaction/write
+guards should be surfaced as human-reviewed candidates while the agent still
+uses the dedicated production tools above whenever they cover the task.
+
 **Runtime server (`revit-mcp`)** - dynamic execution plus read-only context:
 
 This runtime surface is intentionally reusable: live Revit execution, model

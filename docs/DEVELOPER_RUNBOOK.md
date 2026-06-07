@@ -444,6 +444,7 @@ compare file mtimes.
 | Production write tools keep guard/verification contracts | runtime `write-tool-contract-test` via `npm test` | `Engineering gates` | - |
 | Tool argument schema inference does not collapse to `any` | runtime `tool-inference-test` via `npm test` | `Engineering gates` | - |
 | Runtime tools do not reintroduce raw PascalCase bridge response member-access | runtime `casing-member-access-test` via `npm test` | `Engineering gates` | Compatibility helpers may still read legacy casing through string-literal helper calls. |
+| Usage-intelligence promotion summary and dashboard brief stay deterministic | `scripts/test-usage-intelligence.ps1` or `scripts/test-all.ps1` | No | Runs without Revit or NAS, but remains outside the protected `Engineering gates` job. |
 | Live commandset behavior is valid in Revit | `scripts/test-commandset-live.ps1` | No | Requires Revit 2022 open with an active document. |
 | Live dashboard helpers and publish backfill are valid | `scripts/test-live-dashboard.ps1` or `scripts/test-all.ps1` | No | Local-only; not part of the CI-safe gate. |
 | NAS publish/update/install behavior is valid | `installer\nas\publish-nas-release.ps1`, updater tools, and manual workstation verification | No | Requires human-approved deployment flow and NAS access. |
