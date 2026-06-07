@@ -69,8 +69,8 @@ explicit gates.
   deploy approval.
 - A Revit-closed branch-payload install for live validation is not a stable
   deploy.
-- For Workstream 3 specifically, PR #3 (`placed_schedule_cells` plus the
-  batched per-sheet guard) and PR #4 (docs/release readiness) may be merged
+- For Workstream 3 specifically, WS3 PR 3 (`placed_schedule_cells` plus the
+  batched per-sheet guard) and WS3 PR 4 (docs/release readiness) may be merged
   after their required gates, but must not be stable-deployed individually.
 - When Workstream 3 is complete, perform one cumulative stable deploy for the
   whole workstream.
@@ -491,9 +491,9 @@ as an example profile or validation scenario.
    warning for a corrupt/problem sheet, and continue. Do not open a solo PR or
    solo live-gate cycle only for that guard. Every PR that changes a DLL or
    command payload has its own CI, bot review, operator live gate, and merge
-   approval. Stable deploy is batched: PR #3 and PR #4 may merge after their
-   gates, but neither is deployed individually; deploy WS3 once cumulatively
-   after the workstream is complete.
+   approval. Stable deploy is batched: WS3 PR 3 and WS3 PR 4 may merge after
+   their gates, but neither is deployed individually; deploy WS3 once
+   cumulatively after the workstream is complete.
 5. The core inventory/count implementation PR covers `sheet_text_notes` and
    `viewport_tags` only. `placed_schedule_cells` remains in the later
    integration/continuation PR so this PR can lock the four count semantics and
@@ -583,8 +583,8 @@ Counting modes:
   before merge.
 - Revit must be closed for branch-payload install/live validation when payload
   files are replaced.
-- Stable deploy is batched to the end of Workstream 3; PR #3 and PR #4 merge
-  without individual deploys.
+- Stable deploy is batched to the end of Workstream 3; WS3 PR 3 and WS3 PR 4
+  merge without individual deploys.
 
 ## Workstream 4 - Planned Project: Schedule-to-Excel Reconciliation
 
