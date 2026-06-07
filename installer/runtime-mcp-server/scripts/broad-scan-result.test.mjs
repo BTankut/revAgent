@@ -287,6 +287,45 @@ assert.equal(Array.isArray(nativeScheduleSmallPayload.schedules), true);
 assert.equal(nativeScheduleSmallPayload.schedules[0].name, "Small Schedule");
 assert.equal(nativeScheduleSmallPayload.schedules[0].sections[0].section, "body");
 assert.equal(nativeScheduleSmallPayload.schedules[0].sections[0].rowCount, 1);
+assert.equal(nativeScheduleSmallPayload.responseMode, "compact");
+
+function scheduleCellsFixture() {
+  return {
+    Success: true,
+    Action: "inspect_schedules",
+    Partial: false,
+    ScanStoppedReason: "completed",
+    Schedules: [{
+      Id: 7010,
+      Name: "Cell Snapshot Schedule",
+      Sections: [{
+        Section: "body",
+        RowCount: 1,
+        ColumnCount: 2,
+        ReturnedRows: 1,
+        ReturnedColumns: 2,
+        Cells: [{
+          Row: 0,
+          Cells: [
+            { Column: 0, Text: "FCU-101" },
+            { Column: 1, Text: "Fan coil" },
+          ],
+        }],
+      }],
+    }],
+  };
+}
+
+const compactScheduleCellsPayload = normalizeScheduleResult(scheduleCellsFixture(), {}, 7);
+assert.equal(compactScheduleCellsPayload.responseMode, "compact");
+assert.equal(compactScheduleCellsPayload.schedules[0].sections[0].cellsOmitted, true);
+assert.equal(compactScheduleCellsPayload.schedules[0].sections[0].cellRowCount, 1);
+assert.equal("cells" in compactScheduleCellsPayload.schedules[0].sections[0], false);
+assert.match(compactScheduleCellsPayload.notices.join("\n"), /responseMode="full"/);
+
+const fullScheduleCellsPayload = normalizeScheduleResult(scheduleCellsFixture(), { responseMode: "full" }, 7);
+assert.equal(fullScheduleCellsPayload.responseMode, "full");
+assert.equal(fullScheduleCellsPayload.schedules[0].sections[0].cells.length, 1);
 
 const nativeScheduleRowTruncatedPayload = normalizeScheduleResult({
   Success: true,

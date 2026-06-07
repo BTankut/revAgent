@@ -116,26 +116,38 @@ const findElementsDescription = tools.get("find_elements").description;
 assert.match(findElementsDescription, /MEP-aware progressive discovery/);
 assert.match(findElementsDescription, /fan coil\/FCU -> Mechanical Equipment/);
 assert.match(findElementsDescription, /allowExpensiveSearch/);
+assert.match(findElementsDescription, /responseMode=compact/);
+const findElementsSchema = tools.get("find_elements").schema;
+assert.equal("responseMode" in findElementsSchema, true);
+assert.equal("maxResultRows" in findElementsSchema, true);
 const inspectSchedulesDescription = tools.get("inspect_schedules").description;
 assert.match(inspectSchedulesDescription, /SCHEDULE_INSPECTION_READ_ONLY/);
 assert.match(inspectSchedulesDescription, /large models/);
 assert.match(inspectSchedulesDescription, /allowExpensiveSearch=true/);
 assert.match(inspectSchedulesDescription, /generic send_code_to_revit/);
+assert.match(inspectSchedulesDescription, /responseMode=compact/);
 const inspectSchedulesSchema = tools.get("inspect_schedules").schema;
 assert.equal("maxElapsedMs" in inspectSchedulesSchema, true);
 assert.equal("maxCells" in inspectSchedulesSchema, true);
 assert.equal("maxResponseBytes" in inspectSchedulesSchema, true);
 assert.equal("startRow" in inspectSchedulesSchema, true);
 assert.equal("startColumn" in inspectSchedulesSchema, true);
+assert.equal("responseMode" in inspectSchedulesSchema, true);
+assert.equal("maxResultRows" in inspectSchedulesSchema, true);
+assert.equal("maxEvidenceRows" in inspectSchedulesSchema, true);
 const reconcileScheduleExcelDescription = tools.get("reconcile_schedule_excel").description;
 assert.match(reconcileScheduleExcelDescription, /SCHEDULE_EXCEL_RECONCILIATION_REVIEW_ONLY/);
 assert.match(reconcileScheduleExcelDescription, /Review-first\/write-free/);
 assert.match(reconcileScheduleExcelDescription, /reviewRows\/reviewTable/);
 assert.match(reconcileScheduleExcelDescription, /Does not write Revit or workbook data/);
+assert.match(reconcileScheduleExcelDescription, /columnMapping\.identity/);
 const reconcileScheduleExcelSchema = tools.get("reconcile_schedule_excel").schema;
 assert.equal("excel" in reconcileScheduleExcelSchema, true);
 assert.equal("schedule" in reconcileScheduleExcelSchema, true);
 assert.equal("config" in reconcileScheduleExcelSchema, true);
+assert.equal("responseMode" in reconcileScheduleExcelSchema, true);
+assert.equal("maxReviewRows" in reconcileScheduleExcelSchema, true);
+assert.equal("maxCandidateRows" in reconcileScheduleExcelSchema, true);
 const inspectSheetTextDescription = tools.get("inspect_sheet_text").description;
 assert.match(inspectSheetTextDescription, /SHEET_TEXT_INSPECTION_READ_ONLY/);
 assert.match(inspectSheetTextDescription, /DrawingSheet/);
@@ -171,6 +183,9 @@ const setScheduleCellsByTextDescription = tools.get("set_schedule_cells_by_text"
 assert.match(setScheduleCellsByTextDescription, /PRODUCTION_SCHEDULE_CELL_WRITE_BY_TEXT/);
 assert.match(setScheduleCellsByTextDescription, /row text/);
 assert.match(setScheduleCellsByTextDescription, /generic send_code_to_revit/);
+const setScheduleCellsByTextSchema = tools.get("set_schedule_cells_by_text").schema;
+assert.equal("responseMode" in setScheduleCellsByTextSchema, true);
+assert.equal("maxResultRows" in setScheduleCellsByTextSchema, true);
 
 const autoStyleExpectations = {
   raw_evidence: "raw",

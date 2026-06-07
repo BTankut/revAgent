@@ -375,6 +375,15 @@ try
     string beforeRaw = RawValue(target);
     string beforeValueString = ValueString(target);
     bool beforeHasValue = target.HasValue;
+    bool rollbackTrueNoValueMayBeUnsupported = !clearOperation && !beforeHasValue && !target.IsShared;
+    string rollbackWarning = "prior_no_value_state_may_not_be_restorable_for_non_shared_parameter";
+    object rollbackSafety = new {
+        priorHasValue = beforeHasValue,
+        trueNoValueRestoreMayBeUnsupported = rollbackTrueNoValueMayBeUnsupported,
+        restoreOperation = "clear",
+        clearApi = "Parameter.ClearValue",
+        warning = rollbackTrueNoValueMayBeUnsupported ? rollbackWarning : null
+    };
 
     if (hasExpectedCurrentRaw && !string.Equals(beforeRaw, expectedCurrentRaw, StringComparison.Ordinal))
     {
@@ -422,6 +431,10 @@ try
         {
             dryRunWarnings.Add("empty_string_set_does_not_guarantee_revit_has_value_false_use_operation_clear_when_supported");
         }
+        if (rollbackTrueNoValueMayBeUnsupported)
+        {
+            dryRunWarnings.Add(rollbackWarning);
+        }
 
         return new {
             success = true,
@@ -464,6 +477,7 @@ try
                 wouldVerifyAfterWrite = true,
                 verificationMode = clearOperation ? "hasValue false after ClearValue" : expectedRaw == null ? "SetValueString readback" : "raw readback"
             },
+            rollbackSafety = rollbackSafety,
             warnings = dryRunWarnings.ToArray()
         };
     }
@@ -513,6 +527,10 @@ try
     {
         warnings.Add("empty_string_set_does_not_guarantee_revit_has_value_false_use_operation_clear_when_supported");
     }
+    if (rollbackTrueNoValueMayBeUnsupported)
+    {
+        warnings.Add(rollbackWarning);
+    }
 
     return new {
         success = true,
@@ -558,6 +576,7 @@ try
             verificationMode = clearOperation ? "hasValue false after ClearValue" : expectedRaw == null ? "SetValueString readback" : "raw readback",
             setApiReturned = setSucceeded
         },
+        rollbackSafety = rollbackSafety,
         warnings = warnings.ToArray()
     };
 }

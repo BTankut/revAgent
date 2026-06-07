@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, readCasedField as readField, sendRevitCommand, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
 import { buildFindElementsSearchPolicy, buildGuardedNeedsScopePayload, } from "../utils/searchPolicy.js";
+import { boundedPositiveInt, compactObjectRows, isDetailedResponseMode, responseModeSchema, } from "../utils/responseMode.js";
+const DEFAULT_COMPACT_RESULT_ROWS = 25;
 function addWriteSafetyGuidance(payload) {
     if (!payload || typeof payload !== "object")
         return payload;
@@ -34,8 +36,68 @@ function addWriteSafetyGuidance(payload) {
     }
     return payload;
 }
+function elementKey(row) {
+    return String(row.id ?? row.Id ?? row.uniqueId ?? row.UniqueId ?? row.elementId ?? row.ElementId ?? "");
+}
+function compactPlanCandidates(element, limit) {
+    const fieldName = Array.isArray(element.planCandidates)
+        ? "planCandidates"
+        : Array.isArray(element.PlanCandidates) ? "PlanCandidates" : null;
+    if (!fieldName) {
+        return element;
+    }
+    const candidates = compactObjectRows(element[fieldName], { limit });
+    return {
+        ...element,
+        [fieldName]: candidates.rows,
+        planCandidateCount: candidates.totalCount,
+        returnedPlanCandidateCount: candidates.returnedCount,
+        omittedPlanCandidateCount: candidates.omittedCount,
+    };
+}
+function compactFindElementsResult(payload, args) {
+    const responseMode = args.responseMode || "compact";
+    if (!payload || typeof payload !== "object" || isDetailedResponseMode(responseMode)) {
+        return {
+            ...payload,
+            responseMode,
+        };
+    }
+    const elementField = Array.isArray(payload.elements)
+        ? "elements"
+        : Array.isArray(payload.Elements) ? "Elements" : null;
+    if (!elementField) {
+        return {
+            ...payload,
+            responseMode: "compact",
+        };
+    }
+    const limit = boundedPositiveInt(args.maxResultRows ?? args.limit, DEFAULT_COMPACT_RESULT_ROWS, 200);
+    const planLimit = boundedPositiveInt(args.maxPlanCandidates, 3, 25);
+    const elements = compactObjectRows(payload[elementField], {
+        limit,
+        key: elementKey,
+    });
+    return {
+        ...payload,
+        responseMode: "compact",
+        [elementField]: elements.rows.map((element) => compactPlanCandidates(element, planLimit)),
+        summary: {
+            ...(payload.summary || payload.Summary || {}),
+            compactResponse: true,
+            elementRowCount: elements.totalCount,
+            returnedElementRowCount: elements.returnedCount,
+            omittedElementRowCount: elements.omittedCount,
+            duplicateElementRowCount: elements.duplicateCount,
+        },
+        notices: [
+            ...(Array.isArray(payload.notices) ? payload.notices : []),
+            "Compact response bounds element rows and nested plan candidates. Use responseMode=\"full\" for all discovery details.",
+        ],
+    };
+}
 export function registerFindElementsTool(server) {
-    server.tool("find_elements", "Find Revit elements by MEP-aware progressive discovery. The tool infers obvious engineering scope first, e.g. fan coil/FCU -> Mechanical Equipment, uses API-level category/view filters plus safe in-memory level filters in the Revit bridge, keeps planCandidateMode=none by default, and asks for allowExpensiveSearch/searchBudget=deep before broad, linked, or verified visibility scans. Discovery-only: inspect exact elements and parameter schema before writes.", {
+    server.tool("find_elements", "Find Revit elements by MEP-aware progressive discovery. The tool infers obvious engineering scope first, e.g. fan coil/FCU -> Mechanical Equipment, uses API-level category/view filters plus safe in-memory level filters in the Revit bridge, keeps planCandidateMode=none by default, and asks for allowExpensiveSearch/searchBudget=deep before broad, linked, or verified visibility scans. Default responseMode=compact bounds element rows and nested plan candidates; use responseMode=full for all discovery details. Discovery-only: inspect exact elements and parameter schema before writes.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Text to search in id, unique id, name, category, family, type, mark, and comments."),
@@ -69,6 +131,8 @@ export function registerFindElementsTool(server) {
         maxPlanCandidates: z.number().int().min(0).max(25).optional().describe("Maximum ranked plan candidates per element when planCandidateMode is metadata/verified or includePlanCandidates=true. Defaults 3."),
         planNameContains: z.string().optional().describe("Optional plan name preference used when ranking plan candidates."),
         limit: z.number().int().positive().max(200).optional().describe("Maximum elements to return. Defaults 20."),
+        responseMode: responseModeSchema,
+        maxResultRows: z.number().int().positive().max(200).optional().describe("Compact-mode cap for returned element rows. Defaults to limit or 25; full/debug returns all native rows within limit."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Socket timeout in milliseconds. Defaults from searchBudget with headroom above maxElapsedMs."),
     }, async (args) => {
         try {
@@ -127,7 +191,7 @@ export function registerFindElementsTool(server) {
                 payload.suggestedNextScopes = payload.suggestedNextScopes || policy.suggestedNextScopes;
                 payload.warnings = [...new Set([...(Array.isArray(payload.warnings) ? payload.warnings : []), ...policy.warnings])];
             }
-            return formatJsonContent(addWriteSafetyGuidance(payload));
+            return formatJsonContent(compactFindElementsResult(addWriteSafetyGuidance(payload), args));
         }
         catch (error) {
             return formatJsonContent({

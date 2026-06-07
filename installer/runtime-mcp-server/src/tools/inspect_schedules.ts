@@ -15,8 +15,16 @@ import {
     readNativeResultField,
     readNativeResultObject,
 } from "../utils/broadScanResult.js";
+import {
+    boundedPositiveInt,
+    compactObjectRows,
+    isDetailedResponseMode,
+    responseModeSchema,
+} from "../utils/responseMode.js";
 
 type JsonObject = Record<string, any>;
+const DEFAULT_COMPACT_RESULT_ROWS = 25;
+const DEFAULT_COMPACT_MATCH_ROWS = 50;
 
 function clampIntArg(value: unknown, fallback: number, min: number, max: number) {
     if (value === undefined || value === null || value === "") {
@@ -92,6 +100,12 @@ function buildNativeParams(args: JsonObject, budget: ReturnType<typeof resolveBu
 
 function isObject(value: unknown): value is JsonObject {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function cleanStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+        ? value.map((item) => String(item ?? "").trim()).filter((item) => item.length > 0)
+        : [];
 }
 
 function scheduleSections(payload: JsonObject) {
@@ -288,9 +302,78 @@ function preserveScheduleCompatibilityFields(result: JsonObject) {
     return result;
 }
 
+function scheduleKey(schedule: JsonObject): string {
+    return String(readNativeResultField(schedule, "id") ?? readNativeResultField(schedule, "uniqueId") ?? readNativeResultField(schedule, "name") ?? "");
+}
+
+function compactScheduleSection(section: JsonObject, maxMatchRows: number) {
+    const cells = readNativeResultArray(section, "cells");
+    const matches = compactObjectRows(readNativeResultArray(section, "matches"), {
+        limit: maxMatchRows,
+    });
+    const { cells: _cells, Cells: _pascalCells, matches: _matches, Matches: _pascalMatches, ...rest } = section;
+    return {
+        ...rest,
+        matches: matches.rows,
+        matchCount: matches.totalCount,
+        returnedMatchCount: matches.returnedCount,
+        omittedMatchCount: matches.omittedCount,
+        duplicateMatchCount: matches.duplicateCount,
+        cellsOmitted: cells.length > 0,
+        cellRowCount: cells.length,
+        fullResponseHint: cells.length > 0 ? "Use responseMode=\"full\" when downstream schedule adapters need section.cells/body rows." : undefined,
+    };
+}
+
+function compactSchedules(result: JsonObject, args: JsonObject): JsonObject {
+    const responseMode = args.responseMode || "compact";
+    if (isDetailedResponseMode(responseMode)) {
+        return {
+            ...result,
+            responseMode,
+        };
+    }
+
+    const scheduleLimit = boundedPositiveInt(args.maxResultRows, DEFAULT_COMPACT_RESULT_ROWS, 200);
+    const matchLimit = boundedPositiveInt(args.maxEvidenceRows, DEFAULT_COMPACT_MATCH_ROWS, 1000);
+    const scheduleRows = compactObjectRows(readNativeResultArray(result, "schedules"), {
+        limit: scheduleLimit,
+        key: scheduleKey,
+    });
+    const evidenceRows = compactObjectRows(readNativeResultArray(result, "evidenceRows"), {
+        limit: matchLimit,
+    });
+    return {
+        ...result,
+        responseMode: "compact",
+        schedules: scheduleRows.rows.map((schedule) => ({
+            ...schedule,
+            sections: readNativeResultArray(schedule, "sections")
+                .filter(isObject)
+                .map((section) => compactScheduleSection(section, matchLimit)),
+        })),
+        evidenceRows: evidenceRows.rows,
+        summary: {
+            ...(result.summary || {}),
+            compactResponse: true,
+            scheduleRowCount: scheduleRows.totalCount,
+            returnedScheduleRowCount: scheduleRows.returnedCount,
+            omittedScheduleRowCount: scheduleRows.omittedCount,
+            duplicateScheduleRowCount: scheduleRows.duplicateCount,
+            evidenceRowCount: evidenceRows.totalCount,
+            returnedEvidenceRowCount: evidenceRows.returnedCount,
+            omittedEvidenceRowCount: evidenceRows.omittedCount,
+        },
+        notices: [
+            ...cleanStringArray(result.notices),
+            "Compact response omits section.cells and bounds evidence rows. Use responseMode=\"full\" for full schedule cell bodies.",
+        ],
+    };
+}
+
 export function normalizeScheduleResult(payload: JsonObject, args: JsonObject, elapsedMs: number) {
     const partial = inferSchedulePartial(payload);
-    return preserveScheduleCompatibilityFields(normalizeBroadScanResult(payload, {
+    return compactSchedules(preserveScheduleCompatibilityFields(normalizeBroadScanResult(payload, {
         action: "inspect_schedules",
         elapsedMs,
         partial,
@@ -300,11 +383,12 @@ export function normalizeScheduleResult(payload: JsonObject, args: JsonObject, e
         summary: buildScheduleSummary,
         evidenceRows: buildScheduleEvidenceRows,
         lastRead: inferScheduleLastRead,
-    }));
+    })), args);
 }
 
 export function registerInspectSchedulesTool(server: ToolServer) {
-    server.tool("inspect_schedules", "[SCHEDULE_INSPECTION_READ_ONLY] Read-only native Revit schedule discovery and bounded cell inspection with partial-result continuation state. Prefer this over generic send_code_to_revit when finding schedules or reading schedule cells. For large models, use nameQuery/scheduleIds first; broad cell scans require allowExpensiveSearch=true.", {
+    server.tool("inspect_schedules", "[SCHEDULE_INSPECTION_READ_ONLY] Read-only native Revit schedule discovery and bounded cell inspection with partial-result continuation state. Prefer this over generic send_code_to_revit when finding schedules or reading schedule cells. For large models, use nameQuery/scheduleIds first; broad cell scans require allowExpensiveSearch=true. Default responseMode=compact omits bulky section.cells; use responseMode=full when the next step needs raw schedule body rows, such as reconcile_schedule_excel schedule adaptation.",
+ {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Alias for nameQuery. Matches schedule names with Turkish/diacritic/Cyrillic-U normalization."),
@@ -325,6 +409,9 @@ export function registerInspectSchedulesTool(server: ToolServer) {
         maxCells: z.number().int().positive().max(500000).optional().describe("Global native cap across schedule cells read or scanned. Defaults by searchBudget."),
         maxResponseBytes: z.number().int().min(4096).max(16 * 1024 * 1024).optional().describe("Approximate native response-size cap. Defaults 4 MB."),
         maxCellTextChars: z.number().int().min(20).max(1000).optional().describe("Maximum characters retained per returned cell text. Defaults 180."),
+        responseMode: responseModeSchema,
+        maxResultRows: z.number().int().positive().max(200).optional().describe("Compact-mode cap for returned schedule entries. Defaults 25; full/debug returns all native rows within maxSchedules."),
+        maxEvidenceRows: z.number().int().positive().max(1000).optional().describe("Compact-mode cap for evidenceRows and per-section matches. Defaults 50."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Socket timeout in milliseconds. Defaults 120000."),
     }, async (args) => {
         const startedAtMs = Date.now();

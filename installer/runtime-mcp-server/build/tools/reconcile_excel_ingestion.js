@@ -109,7 +109,7 @@ function inferFormat(filePath, explicitFormat) {
     return "unsupported";
 }
 function buildGuardedResult(reason, message, extra = {}) {
-    const { warnings = [], notices = [], ...extraWithoutMessages } = extra;
+    const { warnings = [], notices = [], suggestedNextScopes = [], ...extraWithoutMessages } = extra;
     return buildBroadScanGuardedResult({
         action: ACTION,
         reason,
@@ -122,6 +122,7 @@ function buildGuardedResult(reason, message, extra = {}) {
         summary: extra.summary || {},
         evidenceRows: [],
         scanPolicy: extra.scanPolicy || {},
+        suggestedNextScopes,
         warnings,
         notices,
     });
@@ -472,6 +473,7 @@ async function loadXlsxTable(source, budgets, startedAt) {
             scanStoppedReason: "max_items",
             summary: { workbookSheets: sheets.length, nonEmptySheets: nonEmptySheets.length, maxSheets: budgets.maxSheets },
             scanPolicy: { budgets },
+            suggestedNextScopes: ["excel.selection.sheetName", "excel.selection.sheetIndex", "excel.budgets.maxSheets"],
         });
     }
     const selectedSheet = selectWorksheet(workbook, selection, nonEmptySheets);
@@ -479,6 +481,7 @@ async function loadXlsxTable(source, budgets, startedAt) {
         return buildGuardedResult("excel_sheet_selection_required", "Select a worksheet with sheetName or 1-based sheetIndex.", {
             summary: { workbookSheets: sheets.length, sheetNames: sheets.map((sheet) => sheet.name) },
             scanPolicy: { budgets, selection },
+            suggestedNextScopes: ["excel.selection.sheetName", "excel.selection.sheetIndex"],
         });
     }
     const table = readWorksheetTable(selectedSheet, selection, budgets, startedAt);
@@ -700,7 +703,8 @@ export async function ingestExcelSource(rawInput) {
     const parsed = excelIngestionSourceSchema.safeParse(rawInput);
     if (!parsed.success) {
         return buildGuardedResult("needs_scope", "Excel ingestion input failed schema validation.", {
-            validationIssues: parsed.error.issues.map((issue) => issue.message),
+            validationIssues: parsed.error.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`),
+            suggestedNextScopes: ["excel.kind", "excel.rows", "excel.path", "excel.selection", "excel.columnMapping.identity", "excel.columnMapping.comparisonText"],
         });
     }
     const source = parsed.data;
@@ -720,6 +724,7 @@ export async function ingestExcelSource(rawInput) {
                     headers: table.headers,
                 },
                 scanPolicy: { budgets },
+                suggestedNextScopes: ["excel.columnMapping.identity", "excel.columnMapping.comparisonText"],
                 warnings: table.warnings,
                 notices: table.notices,
             });
@@ -752,12 +757,14 @@ async function loadTableForSource(source, budgets, startedAt) {
         return buildGuardedResult("unsupported_excel_format", ".xls is not supported. Save the workbook as .xlsx, .csv, or .tsv.", {
             format,
             scanPolicy: { budgets },
+            suggestedNextScopes: ["excel.path", "excel.format"],
         });
     }
     if (format === "unsupported") {
         return buildGuardedResult("unsupported_excel_format", "Unsupported spreadsheet format. Use .xlsx, .csv, or .tsv.", {
             format,
             scanPolicy: { budgets },
+            suggestedNextScopes: ["excel.path", "excel.format"],
         });
     }
     const stat = await fs.stat(source.path);
@@ -768,6 +775,7 @@ async function loadTableForSource(source, budgets, startedAt) {
             scanStoppedReason: "max_bytes",
             summary: { workbookBytes: stat.size, maxWorkbookBytes: budgets.maxWorkbookBytes },
             scanPolicy: { budgets },
+            suggestedNextScopes: ["excel.budgets.maxWorkbookBytes", "excel.selection.sheetName", "excel.selection.range"],
         });
     }
     if (format === "xlsx") {

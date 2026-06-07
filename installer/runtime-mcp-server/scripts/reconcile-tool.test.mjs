@@ -103,8 +103,9 @@ assert.match(reconcileTool.description, /write-free/);
 assert.equal("excel" in reconcileTool.schema, true);
 assert.equal("schedule" in reconcileTool.schema, true);
 assert.equal("config" in reconcileTool.schema, true);
+assert.equal("responseMode" in reconcileTool.schema, true);
 
-const dryRunPayload = parseToolResult(await reconcileTool.handler({
+const representativeInput = {
   excel: {
     kind: "file",
     path: csvPath,
@@ -122,13 +123,16 @@ const dryRunPayload = parseToolResult(await reconcileTool.handler({
     kind: "inspect_schedules_result",
     result: representativeSchedule,
   },
-}));
+};
+
+const dryRunPayload = parseToolResult(await reconcileTool.handler(representativeInput));
 
 assert.equal(dryRunPayload.success, true);
 assert.equal(dryRunPayload.guarded, false);
 assert.equal(dryRunPayload.state, "review_ready");
 assert.equal(dryRunPayload.action, "reconcile_schedule_excel");
 assert.equal(dryRunPayload.reconciliationContractVersion, 1);
+assert.equal(dryRunPayload.responseMode, "compact");
 assert.equal(dryRunPayload.sourceResults.excel.format, "csv");
 assert.equal(dryRunPayload.sourceResults.schedule.visibilityBasis, "displayedScheduleCells");
 assert.equal(dryRunPayload.sourceSummary.excel.excelRecordCount, 6);
@@ -146,6 +150,45 @@ assert.equal(dryRunPayload.scoringConfig.thresholds.highConfidenceMin, 86);
 assert.equal(dryRunPayload.scoringConfig.thresholds.candidateGap, 8);
 assert.equal(Boolean(byReason(dryRunPayload, "schedule_row_already_claimed")), true);
 assert.equal(Boolean(byReason(dryRunPayload, "shared_key_tokens_with_description_change")), true);
+
+const compactLimitedPayload = parseToolResult(await reconcileTool.handler({
+  ...representativeInput,
+  responseMode: "compact",
+  maxReviewRows: 2,
+  maxCandidateRows: 1,
+}));
+assert.equal(compactLimitedPayload.responseMode, "compact");
+assert.equal(compactLimitedPayload.reviewRows.length, 2);
+assert.equal(compactLimitedPayload.reviewTable.rows.length, 2);
+assert.equal(compactLimitedPayload.summary.reviewRowCount, dryRunPayload.summary.reviewRowCount);
+assert.equal(compactLimitedPayload.summary.returnedReviewRowCount, 2);
+assert.equal(compactLimitedPayload.summary.omittedReviewRowCount > 0, true);
+assert.equal(compactLimitedPayload.reviewRows.every((row) => row.candidateRows.length <= 1), true);
+assert.match(compactLimitedPayload.notices.join("\n"), /responseMode="full"/);
+
+const fullPayload = parseToolResult(await reconcileTool.handler({
+  ...representativeInput,
+  responseMode: "full",
+}));
+assert.equal(fullPayload.responseMode, "full");
+assert.equal(fullPayload.reviewRows.length, dryRunPayload.summary.reviewRowCount);
+assert.equal(fullPayload.reviewTable.rows.length, fullPayload.reviewRows.length);
+
+const invalidShapePayload = await reconcileScheduleExcel({
+  excel: {
+    kind: "rows",
+    rows: { Identity: "not-an-array" },
+  },
+  schedule: {
+    kind: "inspect_schedules_result",
+    result: representativeSchedule,
+  },
+});
+assert.equal(invalidShapePayload.guarded, true);
+assert.equal(invalidShapePayload.reason, "reconciliation_input_required");
+assert.equal(Array.isArray(invalidShapePayload.suggestedNextScopes), true);
+assert.equal(typeof invalidShapePayload.schemaExamples.rowsSource.excel, "object");
+assert.equal(invalidShapePayload.requiredColumnMapping.requiredRoles.includes("identity"), true);
 
 const workbookPath = path.join(tempRoot, "representative-reconciliation.xlsx");
 const workbook = new ExcelJS.Workbook();
