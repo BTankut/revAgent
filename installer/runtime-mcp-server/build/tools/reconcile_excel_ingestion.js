@@ -5,6 +5,7 @@ import ExcelJS from "exceljs";
 import { parse as parseCsvSync } from "csv-parse/sync";
 import { z } from "zod";
 import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, } from "../utils/broadScanResult.js";
+import { buildReconciliationTokenProfile, cleanReconciliationText, normalizeReconciliationAlias, normalizeReconciliationHeader, RECONCILIATION_ALL_ROLES, RECONCILIATION_REQUIRED_ROLES, RECONCILIATION_ROLE_ALIASES, } from "./reconcile_normalization.js";
 const ACTION = "reconcile_schedule_excel";
 const INGESTION_STAGE = "excel_ingestion";
 const DEFAULT_BUDGETS = {
@@ -23,19 +24,9 @@ const HARD_BUDGETS = {
     maxCells: 1000000,
     maxElapsedMs: 119000,
 };
-const REQUIRED_ROLES = ["identity", "comparisonText"];
-const ALL_ROLES = ["identity", "comparisonText", "code", "description", "quantity", "unit", "system", "discipline", "notes"];
-const ROLE_ALIASES = {
-    identity: ["identity", "id", "key", "name", "item", "row", "code", "type", "mark", "tag", "poz", "kod", "ad", "isim"],
-    comparisonText: ["comparisontext", "comparison text", "text", "name", "description", "desc", "item", "type", "mark", "tag", "ad", "isim", "aciklama"],
-    code: ["code", "kod", "type code", "mark", "tag", "poz"],
-    description: ["description", "desc", "text", "aciklama"],
-    quantity: ["quantity", "qty", "count", "adet", "miktar"],
-    unit: ["unit", "units", "birim"],
-    system: ["system", "sistem"],
-    discipline: ["discipline", "disiplin"],
-    notes: ["notes", "note", "remarks", "remark", "not"],
-};
+const REQUIRED_ROLES = RECONCILIATION_REQUIRED_ROLES;
+const ALL_ROLES = RECONCILIATION_ALL_ROLES;
+const ROLE_ALIASES = RECONCILIATION_ROLE_ALIASES;
 export const excelSelectionSchema = z.object({
     sheetName: z.string().min(1).optional(),
     sheetIndex: z.number().int().positive().optional(),
@@ -86,26 +77,13 @@ export const excelIngestionSourceSchema = z.discriminatedUnion("kind", [
     excelRowsSourceSchema,
 ]);
 function cleanText(value) {
-    return String(value ?? "").replace(/\s+/g, " ").trim();
+    return cleanReconciliationText(value);
 }
 function normalizeHeader(value) {
-    return cleanText(value)
-        .replace(/\u0131/g, "i")
-        .replace(/\u0130/g, "I")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, " ")
-        .trim();
+    return normalizeReconciliationHeader(value);
 }
 function normalizeAlias(value) {
-    return normalizeHeader(value).replace(/\s+/g, "");
-}
-function buildIngestKey(identityText, comparisonText) {
-    return [identityText, comparisonText]
-        .map((item) => cleanText(item).toUpperCase())
-        .filter((item, index, items) => item.length > 0 && items.indexOf(item) === index)
-        .join(" | ");
+    return normalizeReconciliationAlias(value);
 }
 function resolveBudgets(input) {
     return {
@@ -463,7 +441,8 @@ function buildRecords(table, mapping) {
         }
         const identityText = cleanText(mappedValues.identity);
         const comparisonText = cleanText(mappedValues.comparisonText);
-        const normalizedKey = buildIngestKey(identityText, comparisonText);
+        const tokenProfile = buildReconciliationTokenProfile([identityText, comparisonText]);
+        const normalizedKey = tokenProfile.normalizedKey;
         const excelRowId = `${table.sheetName}!${row.rowNumber}`;
         records.push({
             excelRowId,
@@ -475,12 +454,7 @@ function buildRecords(table, mapping) {
             identityText,
             comparisonText,
             normalizedKey,
-            tokenProfile: {
-                profileVersion: 0,
-                status: "not_tokenized_pr1",
-                normalizedKey,
-                tokens: [],
-            },
+            tokenProfile,
         });
     }
     return records;
