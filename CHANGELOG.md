@@ -30,6 +30,13 @@ All notable revAgent workstation deployment changes are tracked here.
 - Added native partial-result handling for `inspect_schedules`, with
   Revit-side `maxElapsedMs`, `maxCells`, and `maxResponseBytes` budgets plus
   `lastReadSection`/`lastReadRow`/`lastReadColumn` continuation state.
+- Added `count_annotations` as the read-only native annotation inventory/count
+  tool for DrawingSheet text notes, placed schedule cells, and viewport tags,
+  with profile-based matching, bounded regex execution, grouping, and explicit
+  `occurrence`, `uniqueText`, `uniqueTag`, and `uniqueTaggedElement` semantics.
+- Added placed schedule-cell continuation and cap reporting to
+  `count_annotations`, including canonical `max_rows`, `max_columns`, and
+  `max_cells` partial stop reasons.
 - Bumped the runtime tool surface version to
   `revit-mcp-runtime-tools.36` for verified plan visibility, native sheet
   annotation inspection, and native schedule partial-result behavior.

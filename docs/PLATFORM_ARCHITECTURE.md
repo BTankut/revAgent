@@ -113,11 +113,14 @@ is owned by the native commandset handler and is bounded by `maxElapsedMs`,
 `scanStoppedReason`, and `lastReadSection`/`lastReadRow`/`lastReadColumn`
 continuation state instead of relying on socket timeout behavior.
 `count_annotations` is a read-only native commandset workflow for general
-annotation inventory/count work. Its core surface counts DrawingSheet text-note
-and viewport tag evidence with explicit profiles, bounded regex matching,
-grouping, and stable count semantics (`occurrence`, `uniqueText`, `uniqueTag`,
-and `uniqueTaggedElement`). Broad counts without `sheetQuery` or exact
-`sheetIds` require explicit `allowExpensiveSearch=true`.
+annotation inventory/count work. Its surface counts DrawingSheet text-note,
+placed schedule-cell, and viewport tag evidence with explicit profiles,
+bounded regex matching, grouping, and stable count semantics (`occurrence`,
+`uniqueText`, `uniqueTag`, and `uniqueTaggedElement`). Broad counts without
+`sheetQuery` or exact `sheetIds` require explicit `allowExpensiveSearch=true`.
+Placed schedule-cell traversal is bounded by schedule instance, row, column,
+and cell caps, and capped reads report canonical partial stop reasons instead
+of returning a silent `completed` result.
 Both broad scan tools are normalized through the shared runtime broad-scan
 result contract in `installer/runtime-mcp-server/src/utils/broadScanResult.ts`.
 Their top-level result uses the same fields for `partial`, `scanStoppedReason`,
