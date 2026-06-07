@@ -741,6 +741,26 @@ Assert-Equal ([string]$countUniqueTag.countMode) "uniqueTag" "Scoped native uniq
 Assert-True (@($countUniqueTag.scanPolicy.sources) -contains "viewport_tags") "uniqueTag without explicit sources should default to viewport_tags."
 Assert-True (-not (@($countUniqueTag.scanPolicy.sources) -contains "sheet_text_notes")) "uniqueTag without explicit sources should not default to sheet_text_notes."
 
+Write-Host "Test native count_annotations viewport query skips do not consume viewport budget"
+$countViewportQueryNoMatch = Invoke-CountAnnotations `
+    -TaskName "$prefix annotation count viewport query no match" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        sources = @("viewport_tags")
+        viewNameQuery = "__revagent_live_no_matching_view_" + (Get-Date -Format "HHmmssfff")
+        countMode = "occurrence"
+        searchBudget = "fast"
+        maxViewports = 1
+        maxTags = 25
+        maxMatches = 25
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$countViewportQueryNoMatch.success) $true "Viewport-query no-match annotation count should succeed."
+Assert-Equal ([bool]$countViewportQueryNoMatch.guarded) $false "Viewport-query no-match annotation count should not be guarded."
+Assert-Equal ([int]$countViewportQueryNoMatch.scannedViewportCount) 0 "Viewports skipped by viewNameQuery must not consume the scanned viewport budget."
+Assert-Equal ([int]$countViewportQueryNoMatch.summary.count) 0 "Viewport-query no-match annotation count should report zero count."
+
 Write-Host "Test find_elements linkedOnly exact-id guard"
 $linkedOnlyExactProbe = Invoke-FindElements `
     -TaskName "$prefix find linked exact guard" `

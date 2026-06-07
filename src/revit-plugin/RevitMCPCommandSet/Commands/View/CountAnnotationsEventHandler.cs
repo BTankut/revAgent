@@ -400,9 +400,6 @@ namespace RevitMCPCommandSet.Commands.View
 
                 Viewport viewport = document.GetElement(viewportId) as Viewport;
                 if (viewport == null) continue;
-                considered++;
-                state.ScannedViewportCount++;
-                state.LastReadViewportId = viewport.Id.GetIdValue();
 
                 Autodesk.Revit.DB.View view = document.GetElement(viewport.ViewId) as Autodesk.Revit.DB.View;
                 if (view == null)
@@ -410,7 +407,6 @@ namespace RevitMCPCommandSet.Commands.View
                     warnings.Add("Viewport view not found on sheet " + sheet.SheetNumber + ": " + viewport.Id.GetIdValue().ToString(CultureInfo.InvariantCulture));
                     continue;
                 }
-                state.LastReadViewId = view.Id.GetIdValue();
                 if (!string.IsNullOrWhiteSpace(_request.ViewNameQuery) && !AnnotationEvidenceHelpers.ContainsPreNormalized(view.Name, _request.NormalizedViewNameQuery))
                 {
                     continue;
@@ -419,6 +415,11 @@ namespace RevitMCPCommandSet.Commands.View
                 {
                     continue;
                 }
+
+                considered++;
+                state.ScannedViewportCount++;
+                state.LastReadViewportId = viewport.Id.GetIdValue();
+                state.LastReadViewId = view.Id.GetIdValue();
 
                 using (FilteredElementCollector collector = new FilteredElementCollector(document, view.Id))
                 {
