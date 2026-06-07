@@ -357,13 +357,14 @@ const uniqueTextCountPayload = normalizeCountAnnotationsResult({
   Partial: false,
   ScanStoppedReason: "completed",
   EvidenceRows: [
-    { Kind: "sheetTextNote", Id: 10, SheetId: 1001, MatchedTextNormalized: "qhk 310.001" },
-    { Kind: "viewportTag", TagId: 20, Id: 20, SheetId: 1001, MatchedTextNormalized: "qhk 310.001" },
-    { Kind: "viewportTag", TagId: 21, Id: 21, SheetId: 1002, MatchedTextNormalized: "qhk 310.002" },
+    { Kind: "sheetTextNote", Id: 10, SheetId: 1001, ProfileName: "codes", MatchedTextNormalized: "qhk 310.001" },
+    { Kind: "viewportTag", TagId: 20, Id: 20, SheetId: 1001, ProfileName: "codes", MatchedTextNormalized: "qhk 310.001" },
+    { Kind: "viewportTag", TagId: 21, Id: 21, SheetId: 1002, ProfileName: "codes", MatchedTextNormalized: "qhk 310.002" },
+    { Kind: "sheetTextNote", Id: 11, SheetId: 1002, ProfileName: "asset-codes", MatchedTextNormalized: "qhk 310.001" },
   ],
 }, { countMode: "uniqueText" }, 13);
-assert.equal(uniqueTextCountPayload.summary.count, 2);
-assert.equal(uniqueTextCountPayload.evidenceRows.filter((row) => row.counted).length, 2);
+assert.equal(uniqueTextCountPayload.summary.count, 3);
+assert.equal(uniqueTextCountPayload.evidenceRows.filter((row) => row.counted).length, 3);
 
 const uniqueTagCountPayload = normalizeCountAnnotationsResult({
   Success: true,
@@ -388,11 +389,13 @@ const uniqueTaggedElementPayload = normalizeCountAnnotationsResult({
     { Kind: "viewportTag", TagId: 20, TaggedElementId: 300, TaggedElementResolved: true, SheetId: 1001, MatchedTextNormalized: "qhk" },
     { Kind: "viewportTag", TagId: 21, TaggedElementId: 300, TaggedElementResolved: true, SheetId: 1001, MatchedTextNormalized: "qhk" },
     { Kind: "viewportTag", TagId: 22, TaggedElementResolved: false, SheetId: 1001, MatchedTextNormalized: "qhk" },
+    { Kind: "viewportTag", TagId: 23, TaggedElementId: 301, SheetId: 1001, MatchedTextNormalized: "qhk" },
   ],
 }, { countMode: "uniqueTaggedElement", groupBy: ["sheet"] }, 19);
 assert.equal(uniqueTaggedElementPayload.summary.count, 1);
 assert.equal(uniqueTaggedElementPayload.evidenceRows.filter((row) => row.counted).length, 1);
 assert.equal(uniqueTaggedElementPayload.evidenceRows[2].counted, false);
+assert.equal(uniqueTaggedElementPayload.evidenceRows[3].counted, false);
 
 const elapsedNull = normalizeBroadScanResult({
   success: true,

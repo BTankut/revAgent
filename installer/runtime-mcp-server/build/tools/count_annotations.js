@@ -231,7 +231,7 @@ function countTokenForRow(row, countMode) {
         return "";
     }
     if (countMode === "uniqueText") {
-        return `text:${String(readNativeResultField(row, "matchedTextNormalized") ?? readNativeResultField(row, "textNormalized") ?? "").trim()}`;
+        return `profile:${String(readNativeResultField(row, "profileName") ?? "").trim()}|text:${String(readNativeResultField(row, "matchedTextNormalized") ?? readNativeResultField(row, "textNormalized") ?? "").trim()}`;
     }
     if (countMode === "uniqueTag") {
         if (sourceType !== "viewportTag")
@@ -244,7 +244,7 @@ function countTokenForRow(row, countMode) {
             return "";
         const resolved = readNativeResultField(row, "taggedElementResolved");
         const taggedElementId = String(readNativeResultField(row, "taggedElementId") ?? "").trim();
-        if (resolved === false || !taggedElementId)
+        if (!resolved || !taggedElementId)
             return "";
         return `taggedElement:${taggedElementId}`;
     }

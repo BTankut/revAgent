@@ -254,7 +254,7 @@ function countTokenForRow(row: JsonObject, countMode: string) {
         return "";
     }
     if (countMode === "uniqueText") {
-        return `text:${String(readNativeResultField(row, "matchedTextNormalized") ?? readNativeResultField(row, "textNormalized") ?? "").trim()}`;
+        return `profile:${String(readNativeResultField(row, "profileName") ?? "").trim()}|text:${String(readNativeResultField(row, "matchedTextNormalized") ?? readNativeResultField(row, "textNormalized") ?? "").trim()}`;
     }
     if (countMode === "uniqueTag") {
         if (sourceType !== "viewportTag") return "";
@@ -265,7 +265,7 @@ function countTokenForRow(row: JsonObject, countMode: string) {
         if (sourceType !== "viewportTag") return "";
         const resolved = readNativeResultField(row, "taggedElementResolved");
         const taggedElementId = String(readNativeResultField(row, "taggedElementId") ?? "").trim();
-        if (resolved === false || !taggedElementId) return "";
+        if (!resolved || !taggedElementId) return "";
         return `taggedElement:${taggedElementId}`;
     }
     return "";

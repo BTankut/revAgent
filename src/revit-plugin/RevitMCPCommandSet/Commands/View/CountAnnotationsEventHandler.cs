@@ -350,6 +350,10 @@ namespace RevitMCPCommandSet.Commands.View
                 state.Stop("max_items");
                 return;
             }
+            if (!CanIterateSheetElements(document, sheet, warnings))
+            {
+                return;
+            }
 
             using (FilteredElementCollector collector = new FilteredElementCollector(document, sheet.Id))
             {
@@ -590,7 +594,7 @@ namespace RevitMCPCommandSet.Commands.View
             }
             if (_request.CountMode == "uniqueText")
             {
-                return "text:" + ReadString(row, "matchedTextNormalized");
+                return "profile:" + ReadString(row, "profileName") + "|text:" + ReadString(row, "matchedTextNormalized");
             }
             if (_request.CountMode == "uniqueTag")
             {
@@ -779,12 +783,12 @@ namespace RevitMCPCommandSet.Commands.View
                 if (string.IsNullOrWhiteSpace(profile.ProfileName)) profile.ProfileName = "anonymous";
                 foreach (AnnotationCountPattern pattern in profile.Patterns)
                 {
-                    if (string.IsNullOrWhiteSpace(pattern.PatternName)) pattern.PatternName = profile.ProfileName + "." + pattern.MatchMode;
                     if (string.IsNullOrWhiteSpace(pattern.MatchMode)) pattern.MatchMode = "contains";
                     if (!(pattern.MatchMode == "exact" || pattern.MatchMode == "contains" || pattern.MatchMode == "startsWith" || pattern.MatchMode == "regex" || pattern.MatchMode == "normalizedRegex"))
                     {
                         pattern.MatchMode = "contains";
                     }
+                    if (string.IsNullOrWhiteSpace(pattern.PatternName)) pattern.PatternName = profile.ProfileName + "." + pattern.MatchMode;
                     pattern.Value = pattern.Value ?? "";
                     pattern.NormalizedValue = AnnotationEvidenceHelpers.NormalizeForSearch(pattern.Value);
                     if ((pattern.MatchMode == "regex" || pattern.MatchMode == "normalizedRegex") && pattern.Value.Length > _request.MaxRegexPatternLength)
@@ -977,6 +981,28 @@ namespace RevitMCPCommandSet.Commands.View
             }
 
             warnings.Add("Skipped viewport annotation scan because the placed view is not valid for element iteration on sheet " + sheet.SheetNumber + ", viewport " + viewport.Id.GetIdValue().ToString(CultureInfo.InvariantCulture) + ".");
+            return false;
+        }
+
+        private static bool CanIterateSheetElements(
+            Document document,
+            ViewSheet sheet,
+            List<string> warnings)
+        {
+            try
+            {
+                if (FilteredElementCollector.IsViewValidForElementIteration(document, sheet.Id))
+                {
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                warnings.Add("Sheet text note iteration check failed on sheet " + sheet.SheetNumber + ": " + ex.Message);
+                return false;
+            }
+
+            warnings.Add("Skipped sheet text note scan because the sheet is not valid for element iteration: " + sheet.SheetNumber);
             return false;
         }
 
