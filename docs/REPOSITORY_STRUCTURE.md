@@ -140,6 +140,9 @@ Planning, migration, spike, and handoff documents are not active
 source-of-truth files. Keep them under the ignored `docs/_retired/` folder,
 including proposed hotfix plans that need PR review. Copy durable decisions
 into the active docs above before treating them as product behavior.
+Because `docs/_retired/` is ignored to prevent accidental archive churn, any
+new planning file that must be reviewed in a PR must be intentionally staged
+with an explicit force-add; moved tracked plans should use `git mv`.
 
 `scripts/test-commandset-live.ps1` is the optional live Revit commandset gate.
 It is not part of `test-all` because it requires a running Revit session, but it
