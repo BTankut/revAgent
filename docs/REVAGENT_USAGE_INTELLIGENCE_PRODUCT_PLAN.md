@@ -513,15 +513,15 @@ as an example profile or validation scenario.
 
 ### Implementation Status
 
-- WS3 implementation PRs #43, #44, and #46 have landed the shared helpers,
+- WS3 implementation PRs PR 43, PR 44, and PR 46 have landed the shared helpers,
   core count semantics, viewport tag evidence, placed schedule-cell source, and
   per-sheet guard batching.
-- WS3 PR #4 is docs/release readiness only. It must not change DLL or runtime
+- WS3 PR 4 is docs/release readiness only. It must not change DLL or runtime
   command payload behavior, does not require a live Revit gate if it stays
   documentation-only, and still merges without individual stable deploy.
-- After WS3 PR #4 merges, Workstream 3 is ready for one cumulative stable deploy
-  covering #43, #44, #46, and PR #4, but that deploy requires a separate human
-  approval.
+- After WS3 PR 4 merges, Workstream 3 is ready for one cumulative stable deploy
+  covering PR 43, PR 44, PR 46, and PR 4, but that deploy requires a separate
+  human approval.
 
 ### Inputs
 
