@@ -653,6 +653,8 @@ try {
     Assert-True ($countAnnotationsToolCode -match 'normalizeBroadScanResult' -and $countAnnotationsToolCode -match 'readNativeResultArray\(payload, "evidenceRows"\)') "count_annotations must normalize native results through casing-robust ingest."
     Assert-True ($countAnnotationsToolCode -match 'invalid_count_mode_for_sources' -and $countAnnotationsToolCode -match 'uniqueTaggedElement') "count_annotations must enforce tag-count source semantics."
     Assert-True ($countAnnotationsToolCode -match 'maxRegexPatternLength' -and $countAnnotationsToolCode -match 'regexTimeoutMs') "count_annotations must expose bounded regex profile controls."
+    Assert-True ($countAnnotationsHandlerCode -match 'Failed to scan viewport' -and $countAnnotationsHandlerCode -match 'new FilteredElementCollector\(document, view\.Id\)') "count_annotations viewport tag scans must isolate per-viewport scan failures instead of failing the full command."
+    Assert-True ($countAnnotationsHandlerCode -match 'SheetIds\.Distinct\(\)' -and $countAnnotationsHandlerCode -match 'sheet == null \|\| sheet\.IsTemplate') "count_annotations must deduplicate exact sheetIds and skip template sheets before scanning."
     Assert-True ($commandSetRegistryCode -match '"commandName": "count_annotations"') "Command payload registry must include native count_annotations."
     foreach ($reason in @("completed", "max_elapsed", "max_rows", "max_columns", "max_cells", "max_items", "max_bytes", "read_failed", "needs_scope")) {
         Assert-True ($broadScanResultCode -match [regex]::Escape('"' + $reason + '"')) "Shared broad-scan result contract is missing stop reason '$reason'."

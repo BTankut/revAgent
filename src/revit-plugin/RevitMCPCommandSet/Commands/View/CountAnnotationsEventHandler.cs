@@ -417,42 +417,49 @@ namespace RevitMCPCommandSet.Commands.View
                     continue;
                 }
 
-                considered++;
-                state.ScannedViewportCount++;
-                state.LastReadViewportId = viewport.Id.GetIdValue();
-                state.LastReadViewId = view.Id.GetIdValue();
-
-                using (FilteredElementCollector collector = new FilteredElementCollector(document, view.Id))
+                try
                 {
-                    foreach (Element element in collector.OfClass(typeof(IndependentTag)).WhereElementIsNotElementType())
+                    considered++;
+                    state.ScannedViewportCount++;
+                    state.LastReadViewportId = viewport.Id.GetIdValue();
+                    state.LastReadViewId = view.Id.GetIdValue();
+
+                    using (FilteredElementCollector collector = new FilteredElementCollector(document, view.Id))
                     {
-                        if (StopIfNeeded(deadlineUtc, state)) return;
-                        if (state.ScannedTagCount >= _request.MaxTagsScanned)
+                        foreach (Element element in collector.OfClass(typeof(IndependentTag)).WhereElementIsNotElementType())
                         {
-                            state.Stop("max_items");
-                            return;
-                        }
+                            if (StopIfNeeded(deadlineUtc, state)) return;
+                            if (state.ScannedTagCount >= _request.MaxTagsScanned)
+                            {
+                                state.Stop("max_items");
+                                return;
+                            }
 
-                        IndependentTag tag = element as IndependentTag;
-                        if (tag == null) continue;
-                        state.ScannedTagCount++;
-                        state.LastReadItemId = tag.Id.GetIdValue();
-                        if (!AnnotationEvidenceHelpers.IsAnnotationElementVisibleInViewCrop(view, tag, warnings, "viewport_tag"))
-                        {
-                            continue;
-                        }
+                            IndependentTag tag = element as IndependentTag;
+                            if (tag == null) continue;
+                            state.ScannedTagCount++;
+                            state.LastReadItemId = tag.Id.GetIdValue();
+                            if (!AnnotationEvidenceHelpers.IsAnnotationElementVisibleInViewCrop(view, tag, warnings, "viewport_tag"))
+                            {
+                                continue;
+                            }
 
-                        string tagText = AnnotationEvidenceHelpers.TrimText(AnnotationEvidenceHelpers.SafeTagText(tag, warnings), _request.MaxTextChars);
-                        if (string.IsNullOrWhiteSpace(tagText))
-                        {
-                            AnnotationEvidenceHelpers.AddOnce(warnings, "viewport_tag_text_unavailable");
-                            continue;
-                        }
+                            string tagText = AnnotationEvidenceHelpers.TrimText(AnnotationEvidenceHelpers.SafeTagText(tag, warnings), _request.MaxTextChars);
+                            if (string.IsNullOrWhiteSpace(tagText))
+                            {
+                                AnnotationEvidenceHelpers.AddOnce(warnings, "viewport_tag_text_unavailable");
+                                continue;
+                            }
 
-                        Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildViewportTagRecord(document, sheet, viewport, view, tag, tagText, _request.MaxTextChars, warnings);
-                        AddPatternEvidence(record, "viewportTag", tagText, state, warnings, evidenceRows);
-                        if (state.Partial) return;
+                            Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildViewportTagRecord(document, sheet, viewport, view, tag, tagText, _request.MaxTextChars, warnings);
+                            AddPatternEvidence(record, "viewportTag", tagText, state, warnings, evidenceRows);
+                            if (state.Partial) return;
+                        }
                     }
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add("Failed to scan viewport " + viewport.Id.GetIdValue().ToString(CultureInfo.InvariantCulture) + " (view " + view.Id.GetIdValue().ToString(CultureInfo.InvariantCulture) + ") on sheet " + sheet.SheetNumber + ": " + ex.Message);
                 }
             }
         }
@@ -703,13 +710,13 @@ namespace RevitMCPCommandSet.Commands.View
             List<ViewSheet> sourceSheets = new List<ViewSheet>();
             if (_request.SheetIds.Count > 0)
             {
-                foreach (int id in _request.SheetIds)
+                foreach (int id in _request.SheetIds.Distinct())
                 {
                     if (StopIfNeeded(deadlineUtc, state)) break;
                     ViewSheet sheet = document.GetElement(new ElementId(id)) as ViewSheet;
-                    if (sheet == null)
+                    if (sheet == null || sheet.IsTemplate)
                     {
-                        warnings.Add("Requested sheetId not found: " + id.ToString(CultureInfo.InvariantCulture));
+                        warnings.Add("Sheet not found or is a template: " + id.ToString(CultureInfo.InvariantCulture));
                         continue;
                     }
                     sourceSheets.Add(sheet);
@@ -722,6 +729,7 @@ namespace RevitMCPCommandSet.Commands.View
                 foreach (ViewSheet sheet in collector.OfClass(typeof(ViewSheet)).Cast<ViewSheet>())
                 {
                     if (StopIfNeeded(deadlineUtc, state)) break;
+                    if (sheet == null || sheet.IsTemplate) continue;
                     sourceSheets.Add(sheet);
                 }
             }
