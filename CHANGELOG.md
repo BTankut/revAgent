@@ -41,6 +41,11 @@ All notable revAgent workstation deployment changes are tracked here.
   write-free schedule-to-Excel reconciliation tool that ingests explicit
   Excel/CSV/rows data plus normalized `inspect_schedules` evidence, then
   returns deterministic match buckets, `reviewRows`, and `reviewTable`.
+- Added deterministic usage-intelligence promotion tracking for native-tool,
+  hotfix, schedule-spreadsheet reconciliation, annotation inventory, and
+  general manual-transaction/write-guard candidates, with evidence snippets,
+  session/tool context, weak-evidence marking, and human-review-required
+  output.
 - Bumped the runtime tool surface version to
   `revit-mcp-runtime-tools.37` for verified plan visibility, native sheet
   annotation inspection, native schedule partial-result behavior, annotation

@@ -38,14 +38,31 @@ function Assert-Equal {
     }
 }
 
+function Assert-CandidateEvidenceContext {
+    param(
+        [object]$Candidate,
+        [string]$Message
+    )
+
+    Assert-True ($null -ne $Candidate) "$Message Candidate was missing."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$Candidate.evidenceSnippet)) "$Message Evidence snippet missing."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$Candidate.sessionContext.sessionId)) "$Message Session context missing."
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string]$Candidate.toolContext.toolName)) "$Message Tool context missing."
+    Assert-True ($Candidate.humanReviewRequired -eq $true) "$Message Human review flag must be true."
+    Assert-True ($null -eq $Candidate.PSObject.Properties["priority"]) "$Message Candidate must not auto-escalate priority."
+    Assert-True ($null -eq $Candidate.PSObject.Properties["priorityEscalated"]) "$Message Candidate must not report automatic priority escalation."
+}
+
 $tempRoot = Join-Path $env:TEMP ("revagent-usage-smoke-" + [Guid]::NewGuid().ToString("N"))
 $reportsRoot = Join-Path $tempRoot "reports"
 $machineRoot = Join-Path $reportsRoot "machines\TEST-PC"
 $rawOnlyEventRoot = Join-Path $reportsRoot "events\2026\05\26\TEST-PC"
 $eventRoot = Join-Path $reportsRoot "events\2026\05\27\TEST-PC"
+$promotionEventRoot = Join-Path $reportsRoot "events\2026\05\28\TEST-PC"
 New-Item -ItemType Directory -Path $machineRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $rawOnlyEventRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $eventRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $promotionEventRoot -Force | Out-Null
 $turkishTaskName = "Raw-only sheet text scan with Turkish dotless $([char]0x0131), cell $([char]0x00FC), view $([char]0x00F6)"
 
 try {
@@ -276,6 +293,262 @@ try {
     $eventPath = Join-Path $eventRoot "session-1.ndjson"
     $events | ForEach-Object { ($_ | ConvertTo-Json -Depth 20 -Compress) } | Set-Content -LiteralPath $eventPath -Encoding UTF8
 
+    $promotionEvents = @(
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-native-1"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-28T08:01:00.000Z"
+            sessionId = "session-promotion"
+            sequence = 1
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            toolName = "send_code_to_revit_safe"
+            taskName = "Repeated raw code pattern for sheet note lookup"
+            durationMs = 110
+            result = [ordered]@{ success = $true; guarded = $false; state = "completed"; responseKeys = @("success") }
+            params = [ordered]@{
+                code = [ordered]@{
+                    hash = "native-repeat"
+                    length = 80
+                    lineCount = 4
+                    hasManualTransaction = $false
+                    writePatterns = @()
+                    preview = "FilteredElementCollector(document).OfClass(typeof(TextNote));"
+                }
+            }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-native-2"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-28T08:02:00.000Z"
+            sessionId = "session-promotion"
+            sequence = 2
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            toolName = "send_code_to_revit"
+            taskName = "Repeated raw code pattern for sheet note lookup"
+            durationMs = 120
+            result = [ordered]@{ success = $true; guarded = $false; state = "completed"; responseKeys = @("success") }
+            params = [ordered]@{
+                code = [ordered]@{
+                    hash = "native-repeat"
+                    length = 82
+                    lineCount = 4
+                    hasManualTransaction = $false
+                    writePatterns = @()
+                    preview = "FilteredElementCollector(document).OfClass(typeof(TextNote));"
+                }
+            }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-manual-1"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-28T08:03:00.000Z"
+            sessionId = "session-promotion"
+            sequence = 3
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            toolName = "send_code_to_revit_safe"
+            taskName = "Manual transaction write guard attempt"
+            durationMs = 0
+            result = [ordered]@{ success = $false; guarded = $true; state = "guarded"; responseKeys = @("guarded", "state") }
+            params = [ordered]@{
+                code = [ordered]@{
+                    hash = "manual-repeat"
+                    length = 140
+                    lineCount = 6
+                    hasManualTransaction = $true
+                    writePatterns = @("Manual Transaction", "Schedule.SetCellText")
+                    preview = "using (var t = new Transaction(document, ""manual"")) { t.Start(); section.SetCellText(1, 1, ""X""); }"
+                }
+            }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-manual-2"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-28T08:04:00.000Z"
+            sessionId = "session-promotion"
+            sequence = 4
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            toolName = "send_code_to_revit"
+            taskName = "Manual transaction write guard attempt"
+            durationMs = 0
+            result = [ordered]@{ success = $false; guarded = $true; state = "guarded"; responseKeys = @("guarded", "state") }
+            params = [ordered]@{
+                code = [ordered]@{
+                    hash = "manual-repeat"
+                    length = 142
+                    lineCount = 6
+                    hasManualTransaction = $true
+                    writePatterns = @("Manual Transaction", "Schedule.SetCellText")
+                    preview = "using (var t = new Transaction(document, ""manual"")) { t.Start(); section.SetCellText(1, 1, ""X""); }"
+                }
+            }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-hotfix-1"
+            eventType = "production.context"
+            timestampUtc = "2026-05-28T08:05:00.000Z"
+            sessionId = "session-promotion"
+            sequence = 5
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            contextSchemaVersion = "revagent.production.context.v1"
+            related = [ordered]@{ sourceEventType = "mcp.tool"; toolName = "inspect_schedules" }
+            runId = "run-hotfix-1"
+            operation = [ordered]@{ taskName = "Broad schedule scan hit elapsed budget"; durationMs = 5000; success = $true; guarded = $false }
+            project = [ordered]@{ documentTitle = "Office Tower" }
+            view = [ordered]@{ active = [ordered]@{ id = 40; name = "M601 Schedules"; type = "Schedule" } }
+            location = [ordered]@{}
+            elements = [ordered]@{ categories = @("Schedules"); disciplineHint = "schedule_documentation"; samples = @() }
+            outputs = [ordered]@{ files = @() }
+            search = [ordered]@{ partial = $true; scanStoppedReason = "max_elapsed"; scannedElementCount = 5000; searchBudget = "bounded" }
+            response = [ordered]@{ responseKeys = @("partial", "scanStoppedReason") }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-hotfix-2"
+            eventType = "production.context"
+            timestampUtc = "2026-05-28T08:06:00.000Z"
+            sessionId = "session-promotion"
+            sequence = 6
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            contextSchemaVersion = "revagent.production.context.v1"
+            related = [ordered]@{ sourceEventType = "mcp.tool"; toolName = "inspect_schedules" }
+            runId = "run-hotfix-2"
+            operation = [ordered]@{ taskName = "Broad schedule scan hit elapsed budget again"; durationMs = 5100; success = $true; guarded = $false }
+            project = [ordered]@{ documentTitle = "Office Tower" }
+            view = [ordered]@{ active = [ordered]@{ id = 41; name = "M602 Schedules"; type = "Schedule" } }
+            location = [ordered]@{}
+            elements = [ordered]@{ categories = @("Schedules"); disciplineHint = "schedule_documentation"; samples = @() }
+            outputs = [ordered]@{ files = @() }
+            search = [ordered]@{ partial = $true; scanStoppedReason = "max_elapsed"; scannedElementCount = 5200; searchBudget = "bounded" }
+            response = [ordered]@{ responseKeys = @("partial", "scanStoppedReason") }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-weak-hotfix"
+            eventType = "production.context"
+            timestampUtc = "2026-05-28T08:07:00.000Z"
+            sessionId = "session-promotion"
+            sequence = 7
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            contextSchemaVersion = "revagent.production.context.v1"
+            related = [ordered]@{ sourceEventType = "mcp.tool"; toolName = "inspect_sheet_text" }
+            runId = "run-weak-hotfix"
+            operation = [ordered]@{ taskName = "One sheet text scan hit byte budget"; durationMs = 400; success = $true; guarded = $false }
+            project = [ordered]@{ documentTitle = "Office Tower" }
+            view = [ordered]@{ active = [ordered]@{ id = 50; name = "A101"; type = "DrawingSheet" } }
+            location = [ordered]@{}
+            elements = [ordered]@{ categories = @("TextNotes"); disciplineHint = "schedule_documentation"; samples = @() }
+            outputs = [ordered]@{ files = @() }
+            search = [ordered]@{ partial = $true; scanStoppedReason = "max_bytes"; scannedElementCount = 900; searchBudget = "bounded" }
+            response = [ordered]@{ responseKeys = @("partial", "scanStoppedReason") }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-annotation-1"
+            eventType = "production.context"
+            timestampUtc = "2026-05-28T08:08:00.000Z"
+            sessionId = "session-promotion"
+            sequence = 8
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            contextSchemaVersion = "revagent.production.context.v1"
+            related = [ordered]@{ sourceEventType = "mcp.tool"; toolName = "count_annotations" }
+            runId = "run-annotation-1"
+            operation = [ordered]@{ taskName = "Count sheet annotations by tag"; durationMs = 200; success = $true; guarded = $false }
+            project = [ordered]@{ documentTitle = "Office Tower" }
+            view = [ordered]@{ active = [ordered]@{ id = 60; name = "A102"; type = "DrawingSheet" } }
+            location = [ordered]@{}
+            elements = [ordered]@{ categories = @("TextNotes", "Tags"); disciplineHint = "schedule_documentation"; samples = @() }
+            outputs = [ordered]@{ files = @() }
+            response = [ordered]@{ responseKeys = @("summary", "evidenceRows") }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-annotation-2"
+            eventType = "production.context"
+            timestampUtc = "2026-05-28T08:09:00.000Z"
+            sessionId = "session-promotion"
+            sequence = 9
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            contextSchemaVersion = "revagent.production.context.v1"
+            related = [ordered]@{ sourceEventType = "mcp.tool"; toolName = "count_annotations" }
+            runId = "run-annotation-2"
+            operation = [ordered]@{ taskName = "Count sheet annotations by tag again"; durationMs = 210; success = $true; guarded = $false }
+            project = [ordered]@{ documentTitle = "Office Tower" }
+            view = [ordered]@{ active = [ordered]@{ id = 61; name = "A103"; type = "DrawingSheet" } }
+            location = [ordered]@{}
+            elements = [ordered]@{ categories = @("TextNotes", "Tags"); disciplineHint = "schedule_documentation"; samples = @() }
+            outputs = [ordered]@{ files = @() }
+            response = [ordered]@{ responseKeys = @("summary", "evidenceRows") }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-reconcile-1"
+            eventType = "production.context"
+            timestampUtc = "2026-05-28T08:10:00.000Z"
+            sessionId = "session-promotion"
+            sequence = 10
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            contextSchemaVersion = "revagent.production.context.v1"
+            related = [ordered]@{ sourceEventType = "mcp.tool"; toolName = "reconcile_schedule_excel" }
+            runId = "run-reconcile-1"
+            operation = [ordered]@{ taskName = "Reconcile schedule against Excel workbook"; durationMs = 340; success = $true; guarded = $false }
+            project = [ordered]@{ documentTitle = "Office Tower" }
+            view = [ordered]@{ active = [ordered]@{ id = 70; name = "M701"; type = "Schedule" } }
+            location = [ordered]@{}
+            elements = [ordered]@{ categories = @("Schedules"); disciplineHint = "schedule_documentation"; samples = @() }
+            outputs = [ordered]@{ files = @() }
+            response = [ordered]@{ responseKeys = @("reviewRows", "reviewTable") }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-reconcile-2"
+            eventType = "production.context"
+            timestampUtc = "2026-05-28T08:11:00.000Z"
+            sessionId = "session-promotion"
+            sequence = 11
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            contextSchemaVersion = "revagent.production.context.v1"
+            related = [ordered]@{ sourceEventType = "mcp.tool"; toolName = "reconcile_schedule_excel" }
+            runId = "run-reconcile-2"
+            operation = [ordered]@{ taskName = "Reconcile schedule against CSV export"; durationMs = 350; success = $true; guarded = $false }
+            project = [ordered]@{ documentTitle = "Office Tower" }
+            view = [ordered]@{ active = [ordered]@{ id = 71; name = "M702"; type = "Schedule" } }
+            location = [ordered]@{}
+            elements = [ordered]@{ categories = @("Schedules"); disciplineHint = "schedule_documentation"; samples = @() }
+            outputs = [ordered]@{ files = @() }
+            response = [ordered]@{ responseKeys = @("reviewRows", "reviewTable") }
+        }
+    )
+
+    $promotionEventPath = Join-Path $promotionEventRoot "session-promotion.ndjson"
+    $promotionEvents | ForEach-Object { ($_ | ConvertTo-Json -Depth 20 -Compress) } | Set-Content -LiteralPath $promotionEventPath -Encoding UTF8
+
     $outputPath = Join-Path $tempRoot "summary.json"
     & (Join-Path $RepoRoot "scripts\summarize-usage-intelligence.ps1") `
         -ReportsRoot $reportsRoot `
@@ -372,6 +645,84 @@ try {
     Assert-True ($rawOnlyMarkdown -match '## Failed Operations') "Markdown failed operation section missing."
     Assert-True ($rawOnlyMarkdown -match 'No data.') "Raw-only empty rollups must render as No data."
     Assert-True ($rawOnlyMarkdown -notmatch '\| \s*\| 0 \| 0 \| 0 \| 0 \| 0 \| 0 \|') "Markdown must not render blank zero metric rows."
+
+    $promotionOutputPath = Join-Path $tempRoot "promotion-summary.json"
+    & (Join-Path $RepoRoot "scripts\summarize-usage-intelligence.ps1") `
+        -ReportsRoot $reportsRoot `
+        -DateUtc "2026-05-28" `
+        -OutputPath $promotionOutputPath `
+        -Top 10
+
+    $promotionSummary = Get-Content -Raw -Encoding UTF8 -LiteralPath $promotionOutputPath | ConvertFrom-Json
+    Assert-Equal $promotionSummary.source.eventCount 11 "Promotion fixture event count mismatch."
+    Assert-Equal $promotionSummary.evidenceStrength "medium" "Promotion summary should surface medium aggregate evidence."
+    Assert-Equal ([bool]$promotionSummary.humanReviewRequired) $true "Promotion summary must require human review."
+
+    $nativeRepeatCandidate = @($promotionSummary.nativeToolCandidates | Where-Object { $_.hash -eq "native-repeat" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $nativeRepeatCandidate -Message "Native tool candidate"
+    Assert-Equal $nativeRepeatCandidate.signal "repeated_raw_safe_code_pattern" "Native candidate signal mismatch."
+    Assert-Equal $nativeRepeatCandidate.count 2 "Native candidate repeat count mismatch."
+    Assert-Equal $nativeRepeatCandidate.evidenceStrength "medium" "Native candidate evidence strength mismatch."
+
+    $manualPromotionCandidate = @($promotionSummary.promotionCandidates | Where-Object { $_.hash -eq "manual-repeat" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $manualPromotionCandidate -Message "Manual transaction promotion candidate"
+    Assert-Equal $manualPromotionCandidate.signal "manual_transaction_write_guard" "Manual transaction candidate signal mismatch."
+    Assert-True (@($manualPromotionCandidate.promotionReasons | Where-Object { $_ -eq "manual_transaction" }).Count -eq 1) "Manual transaction reason missing."
+
+    $hotfixCandidate = @($promotionSummary.hotfixCandidates | Where-Object { $_.scanStoppedReason -eq "max_elapsed" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $hotfixCandidate -Message "Hotfix candidate"
+    Assert-Equal $hotfixCandidate.signal "repeated_timeout_partial_result_friction" "Hotfix candidate signal mismatch."
+    Assert-Equal $hotfixCandidate.count 2 "Hotfix candidate repeat count mismatch."
+
+    $weakHotfixCandidate = @($promotionSummary.hotfixCandidates | Where-Object { $_.scanStoppedReason -eq "max_bytes" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $weakHotfixCandidate -Message "Weak hotfix candidate"
+    Assert-Equal $weakHotfixCandidate.evidenceStrength "weak" "Thin evidence must be weak-marked."
+    Assert-Equal ([bool]$weakHotfixCandidate.humanReviewRequired) $true "Weak evidence must still require human review."
+
+    $annotationCandidate = @($promotionSummary.annotationInventoryCandidates | Where-Object { $_.toolName -eq "count_annotations" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $annotationCandidate -Message "Annotation inventory candidate"
+    Assert-Equal $annotationCandidate.signal "repeated_annotation_counting_request" "Annotation candidate signal mismatch."
+    Assert-Equal $annotationCandidate.count 2 "Annotation candidate repeat count mismatch."
+
+    $reconciliationCandidate = @($promotionSummary.reconciliationCandidates | Where-Object { $_.toolName -eq "reconcile_schedule_excel" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $reconciliationCandidate -Message "Reconciliation candidate"
+    Assert-Equal $reconciliationCandidate.signal "repeated_schedule_spreadsheet_reconciliation_request" "Reconciliation candidate signal mismatch."
+    Assert-Equal $reconciliationCandidate.count 2 "Reconciliation candidate repeat count mismatch."
+
+    $promotionPublishOutput = & (Join-Path $RepoRoot "scripts\publish-usage-summary.ps1") `
+        -ReportsRoot $reportsRoot `
+        -DateUtc "2026-05-28" `
+        -OutputRoot $summaryRoot `
+        -Top 10
+    $promotionPublishReport = $promotionPublishOutput | ConvertFrom-Json
+    Assert-Equal $promotionPublishReport.latestDateUtc "2026-05-28" "Promotion publish latest date mismatch."
+
+    $publishedPromotionSummary = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $summaryRoot "latest.json") | ConvertFrom-Json
+    Assert-Equal $publishedPromotionSummary.dateUtc "2026-05-28" "Published promotion latest date mismatch."
+    $publishedNativeCandidate = @($publishedPromotionSummary.nativeToolCandidates | Where-Object { $_.hash -eq "native-repeat" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $publishedNativeCandidate -Message "Published native tool candidate"
+    Assert-Equal ([bool]$publishedPromotionSummary.humanReviewRequired) $true "Published promotion summary must require human review."
+
+    Push-Location $RepoRoot
+    try {
+        $dashboardBriefJson = node --input-type=module -e "import { buildDashboardBrief, loadDashboardData } from './dashboard/server.mjs'; const data = loadDashboardData({ reportsRoot: process.argv[1], releaseRoot: process.argv[2], staleSeconds: 60, offlineSeconds: 300, activityLimit: 20 }); console.log(JSON.stringify(buildDashboardBrief(data)));" $reportsRoot $tempRoot
+    }
+    finally {
+        Pop-Location
+    }
+    $dashboardBrief = $dashboardBriefJson | ConvertFrom-Json
+    Assert-Equal $dashboardBrief.schemaVersion "revagent.dashboard.brief.v1" "Promotion dashboard brief schema mismatch."
+    Assert-Equal $dashboardBrief.summaryDateUtc "2026-05-28" "Dashboard brief must consume the published promotion summary."
+    $dashboardNativeCandidate = @($dashboardBrief.nativeToolCandidates | Where-Object { $_.hash -eq "native-repeat" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $dashboardNativeCandidate -Message "Dashboard native tool candidate"
+    Assert-True (@($dashboardNativeCandidate.toolNames).Count -ge 1) "Dashboard native tool candidate must preserve toolNames."
+    Assert-Equal $dashboardNativeCandidate.maxLength 82 "Dashboard native tool candidate must preserve maxLength."
+    $dashboardManualCandidate = @($dashboardBrief.promotionCandidates | Where-Object { $_.hash -eq "manual-repeat" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $dashboardManualCandidate -Message "Dashboard manual promotion candidate"
+    Assert-True (@($dashboardManualCandidate.writePatterns | Where-Object { $_.name -eq "Schedule.SetCellText" }).Count -eq 1) "Dashboard manual candidate must preserve writePatterns."
+    Assert-Equal $dashboardManualCandidate.maxLineCount 6 "Dashboard manual candidate must preserve maxLineCount."
+    Assert-Equal $dashboardBrief.evidenceStrength "medium" "Dashboard brief evidence strength mismatch."
+    Assert-Equal ([bool]$dashboardBrief.humanReviewRequired) $true "Dashboard brief must preserve human review."
 
     $publishScriptText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-usage-summary.ps1")
     Assert-True ($publishScriptText -match 'publish\.lock') "Publish script must use a lock file."
