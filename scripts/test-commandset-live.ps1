@@ -706,6 +706,49 @@ Assert-True ([int]$countScoped.summary.count -ge 0) "Scoped native annotation co
 Assert-True ($countScoped.evidenceRows -is [array] -or $null -ne $countScoped.evidenceRows) "Scoped native annotation count should expose evidenceRows."
 Assert-True ($countScoped.groups -is [array] -or $null -ne $countScoped.groups) "Scoped native annotation count should expose groups."
 
+Write-Host "Test native count_annotations placed schedule-cell source"
+$countPlacedScheduleCells = Invoke-CountAnnotations `
+    -TaskName "$prefix annotation count placed schedule cells" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        sources = @("placed_schedule_cells")
+        profiles = @(
+            [ordered]@{
+                profileName = "non-empty-schedule-cells"
+                patterns = @(
+                    [ordered]@{
+                        patternName = "non-empty-schedule-cell-regex"
+                        matchMode = "regex"
+                        value = ".+"
+                    }
+                )
+            }
+        )
+        countMode = "occurrence"
+        groupBy = @("sourceType")
+        searchBudget = "fast"
+        maxScheduleInstancesPerSheet = 5
+        maxRowsPerSchedule = 10
+        maxColumnsPerSchedule = 10
+        maxScheduleInstancesScanned = 25
+        maxScheduleCellsScanned = 50
+        maxMatches = 100
+        maxResponseBytes = 120000
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$countPlacedScheduleCells.success) $true "Scoped native placed schedule-cell annotation count should succeed."
+Assert-Equal ([bool]$countPlacedScheduleCells.guarded) $false "Scoped native placed schedule-cell annotation count should not be guarded."
+Assert-True (@($countPlacedScheduleCells.scanPolicy.sources) -contains "placed_schedule_cells") "Placed schedule-cell count should report placed_schedule_cells in scan policy."
+Assert-True (-not (@($countPlacedScheduleCells.scanPolicy.sources) -contains "viewport_tags")) "Explicit placed schedule-cell count should not add viewport_tags."
+Assert-True ([int]$countPlacedScheduleCells.summary.scannedScheduleCellCount -ge 0) "Placed schedule-cell count should report scannedScheduleCellCount."
+if (@($countPlacedScheduleCells.evidenceRows).Count -gt 0) {
+    $firstScheduleCellRow = @($countPlacedScheduleCells.evidenceRows)[0]
+    Assert-Equal ([string]$firstScheduleCellRow.sourceType) "placedScheduleCell" "Placed schedule-cell evidence should expose placedScheduleCell sourceType."
+    Assert-True ($null -ne $firstScheduleCellRow.scheduleId) "Placed schedule-cell evidence should include scheduleId."
+    Assert-True ($null -ne $firstScheduleCellRow.row -and $null -ne $firstScheduleCellRow.column) "Placed schedule-cell evidence should include row and column."
+}
+
 Write-Host "Test native count_annotations tag count source validation"
 $countInvalidTagMode = Invoke-CountAnnotations `
     -TaskName "$prefix annotation count invalid tag mode" `

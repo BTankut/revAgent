@@ -30,6 +30,11 @@ namespace RevitMCPCommandSet.Commands.View
         public int MaxViewportsPerSheet { get; set; }
         public int MaxTextNotesScanned { get; set; }
         public int MaxTagsScanned { get; set; }
+        public int MaxScheduleInstancesPerSheet { get; set; }
+        public int MaxRowsPerSchedule { get; set; }
+        public int MaxColumnsPerSchedule { get; set; }
+        public int MaxScheduleInstancesScanned { get; set; }
+        public int MaxScheduleCellsScanned { get; set; }
         public int MaxMatches { get; set; }
         public int MaxTextChars { get; set; }
         public int MaxRegexPatternLength { get; set; }
@@ -86,6 +91,8 @@ namespace RevitMCPCommandSet.Commands.View
         public int ScannedViewportCount { get; set; }
         public int ScannedTextNoteCount { get; set; }
         public int ScannedTagCount { get; set; }
+        public int ScannedScheduleInstanceCount { get; set; }
+        public int ScannedScheduleCellCount { get; set; }
         public int MatchedOccurrenceCount { get; set; }
         public int EstimatedResponseBytes { get; set; }
         public int MaxResponseBytes { get; set; }
@@ -131,6 +138,8 @@ namespace RevitMCPCommandSet.Commands.View
         public int ScannedViewportCount;
         public int ScannedTextNoteCount;
         public int ScannedTagCount;
+        public int ScannedScheduleInstanceCount;
+        public int ScannedScheduleCellCount;
         public int MatchedOccurrenceCount;
         public int Count;
         public int EstimatedResponseBytes = 2048;
@@ -138,6 +147,9 @@ namespace RevitMCPCommandSet.Commands.View
         public int? LastReadViewId;
         public int? LastReadViewportId;
         public int? LastReadItemId;
+        public string LastReadSection;
+        public int? LastReadRow;
+        public int? LastReadColumn;
         public Dictionary<string, AnnotationCountGroup> Groups = new Dictionary<string, AnnotationCountGroup>();
         public HashSet<string> CountedKeys = new HashSet<string>();
 
@@ -163,7 +175,7 @@ namespace RevitMCPCommandSet.Commands.View
         {
             _request = request ?? new AnnotationCountRequest();
             if (_request.SheetIds == null) _request.SheetIds = new List<int>();
-            if (_request.Sources == null || _request.Sources.Count == 0) _request.Sources = new List<string> { "sheet_text_notes", "viewport_tags" };
+            if (_request.Sources == null || _request.Sources.Count == 0) _request.Sources = new List<string> { "sheet_text_notes", "placed_schedule_cells", "viewport_tags" };
             if (_request.GroupBy == null) _request.GroupBy = new List<string>();
             if (_request.Profiles == null || _request.Profiles.Count == 0)
             {
@@ -213,7 +225,7 @@ namespace RevitMCPCommandSet.Commands.View
                 {
                     Complete(BuildGuardedResult(
                         "invalid_source",
-                        "count_annotations currently supports sheet_text_notes and viewport_tags sources.",
+                        "count_annotations currently supports sheet_text_notes, placed_schedule_cells, and viewport_tags sources.",
                         state,
                         warnings,
                         notices));
@@ -290,6 +302,12 @@ namespace RevitMCPCommandSet.Commands.View
                         if (state.Partial && IsHardStop(state.ScanStoppedReason)) break;
                     }
 
+                    if (_request.Sources.Contains("placed_schedule_cells"))
+                    {
+                        ScanPlacedScheduleCells(document, sheet, deadlineUtc, state, warnings, evidenceRows);
+                        if (state.Partial && IsHardStop(state.ScanStoppedReason)) break;
+                    }
+
                     if (_request.Sources.Contains("viewport_tags"))
                     {
                         ScanViewportTags(document, sheet, deadlineUtc, state, warnings, evidenceRows);
@@ -322,6 +340,8 @@ namespace RevitMCPCommandSet.Commands.View
                     ScannedViewportCount = state.ScannedViewportCount,
                     ScannedTextNoteCount = state.ScannedTextNoteCount,
                     ScannedTagCount = state.ScannedTagCount,
+                    ScannedScheduleInstanceCount = state.ScannedScheduleInstanceCount,
+                    ScannedScheduleCellCount = state.ScannedScheduleCellCount,
                     MatchedOccurrenceCount = state.MatchedOccurrenceCount,
                     EstimatedResponseBytes = state.EstimatedResponseBytes,
                     MaxResponseBytes = _request.MaxResponseBytes,
@@ -329,9 +349,9 @@ namespace RevitMCPCommandSet.Commands.View
                     LastReadViewId = state.LastReadViewId,
                     LastReadViewportId = state.LastReadViewportId,
                     LastReadItemId = state.LastReadItemId,
-                    LastReadSection = null,
-                    LastReadRow = null,
-                    LastReadColumn = null,
+                    LastReadSection = state.LastReadSection,
+                    LastReadRow = state.LastReadRow,
+                    LastReadColumn = state.LastReadColumn,
                     Warnings = warnings,
                     Notices = notices
                 });
@@ -356,27 +376,155 @@ namespace RevitMCPCommandSet.Commands.View
                 return;
             }
 
-            using (FilteredElementCollector collector = new FilteredElementCollector(document, sheet.Id))
+            try
             {
-                foreach (Element element in collector.OfClass(typeof(TextNote)).WhereElementIsNotElementType())
+                using (FilteredElementCollector collector = new FilteredElementCollector(document, sheet.Id))
                 {
-                    if (StopIfNeeded(deadlineUtc, state)) return;
-                    if (state.ScannedTextNoteCount >= _request.MaxTextNotesScanned)
+                    foreach (Element element in collector.OfClass(typeof(TextNote)).WhereElementIsNotElementType())
                     {
-                        state.Stop("max_items");
-                        return;
+                        if (StopIfNeeded(deadlineUtc, state)) return;
+                        if (state.ScannedTextNoteCount >= _request.MaxTextNotesScanned)
+                        {
+                            state.Stop("max_items");
+                            return;
+                        }
+
+                        TextNote textNote = element as TextNote;
+                        if (textNote == null) continue;
+                        state.ScannedTextNoteCount++;
+                        state.LastReadItemId = textNote.Id.GetIdValue();
+
+                        string text = AnnotationEvidenceHelpers.TrimText(AnnotationEvidenceHelpers.SafeText(textNote), _request.MaxTextChars);
+                        Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildTextNoteRecord("sheetTextNote", sheet, null, null, textNote, text, _request.MaxTextChars);
+                        AddPatternEvidence(record, "sheetTextNote", text, state, warnings, evidenceRows);
+                        if (state.Partial) return;
                     }
-
-                    TextNote textNote = element as TextNote;
-                    if (textNote == null) continue;
-                    state.ScannedTextNoteCount++;
-                    state.LastReadItemId = textNote.Id.GetIdValue();
-
-                    string text = AnnotationEvidenceHelpers.TrimText(AnnotationEvidenceHelpers.SafeText(textNote), _request.MaxTextChars);
-                    Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildTextNoteRecord("sheetTextNote", sheet, null, null, textNote, text, _request.MaxTextChars);
-                    AddPatternEvidence(record, "sheetTextNote", text, state, warnings, evidenceRows);
-                    if (state.Partial) return;
                 }
+            }
+            catch (Exception ex)
+            {
+                warnings.Add("Failed to scan text notes on sheet " + sheet.SheetNumber + ": " + ex.Message);
+            }
+        }
+
+        private void ScanPlacedScheduleCells(
+            Document document,
+            ViewSheet sheet,
+            DateTime deadlineUtc,
+            AnnotationCountScanState state,
+            List<string> warnings,
+            List<Dictionary<string, object>> evidenceRows)
+        {
+            if (state.ScannedScheduleInstanceCount >= _request.MaxScheduleInstancesScanned)
+            {
+                state.Stop("max_items");
+                return;
+            }
+            if (state.ScannedScheduleCellCount >= _request.MaxScheduleCellsScanned)
+            {
+                state.Stop("max_cells");
+                return;
+            }
+            if (!CanIterateSheetElements(document, sheet, warnings))
+            {
+                return;
+            }
+
+            int considered = 0;
+            try
+            {
+                using (FilteredElementCollector collector = new FilteredElementCollector(document, sheet.Id))
+                {
+                    foreach (Element element in collector.OfClass(typeof(ScheduleSheetInstance)).WhereElementIsNotElementType())
+                    {
+                        if (StopIfNeeded(deadlineUtc, state)) return;
+                        if (considered >= _request.MaxScheduleInstancesPerSheet)
+                        {
+                            state.Stop("max_items");
+                            return;
+                        }
+                        if (state.ScannedScheduleInstanceCount >= _request.MaxScheduleInstancesScanned)
+                        {
+                            state.Stop("max_items");
+                            return;
+                        }
+
+                        ScheduleSheetInstance instance = element as ScheduleSheetInstance;
+                        if (instance == null) continue;
+                        considered++;
+                        state.ScannedScheduleInstanceCount++;
+                        state.LastReadItemId = instance.Id.GetIdValue();
+
+                        ViewSchedule schedule = document.GetElement(instance.ScheduleId) as ViewSchedule;
+                        if (schedule == null || schedule.IsTemplate)
+                        {
+                            warnings.Add("Placed schedule not found or is a template on sheet " + sheet.SheetNumber + ", schedule instance " + instance.Id.GetIdValue().ToString(CultureInfo.InvariantCulture) + ".");
+                            continue;
+                        }
+
+                        ScanPlacedScheduleBodyCells(schedule, sheet, instance, deadlineUtc, state, warnings, evidenceRows);
+                        if (state.Partial) return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                warnings.Add("Failed to scan placed schedules on sheet " + sheet.SheetNumber + ": " + ex.Message);
+            }
+        }
+
+        private void ScanPlacedScheduleBodyCells(
+            ViewSchedule schedule,
+            ViewSheet sheet,
+            ScheduleSheetInstance instance,
+            DateTime deadlineUtc,
+            AnnotationCountScanState state,
+            List<string> warnings,
+            List<Dictionary<string, object>> evidenceRows)
+        {
+            try
+            {
+                TableData tableData = schedule.GetTableData();
+                TableSectionData section = tableData != null ? tableData.GetSectionData(SectionType.Body) : null;
+                if (section == null)
+                {
+                    warnings.Add("Schedule body section data is not available for placed schedule " + schedule.Name + " on sheet " + sheet.SheetNumber + ".");
+                    return;
+                }
+
+                int rowLimit = Math.Min(section.NumberOfRows, _request.MaxRowsPerSchedule);
+                int columnLimit = Math.Min(section.NumberOfColumns, _request.MaxColumnsPerSchedule);
+                for (int row = 0; row < rowLimit; row++)
+                {
+                    for (int column = 0; column < columnLimit; column++)
+                    {
+                        if (StopIfNeeded(deadlineUtc, state)) return;
+                        if (state.ScannedScheduleCellCount >= _request.MaxScheduleCellsScanned)
+                        {
+                            state.Stop("max_cells");
+                            return;
+                        }
+
+                        state.ScannedScheduleCellCount++;
+                        state.LastReadItemId = instance.Id.GetIdValue();
+                        state.LastReadSection = "body";
+                        state.LastReadRow = row;
+                        state.LastReadColumn = column;
+
+                        string text = AnnotationEvidenceHelpers.ReadScheduleCell(schedule, SectionType.Body, row, column);
+                        if (string.IsNullOrWhiteSpace(text))
+                        {
+                            continue;
+                        }
+                        Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildPlacedScheduleCellEvidenceRow(sheet, instance, schedule, row, column, text, _request.MaxTextChars);
+                        AddPatternEvidence(record, "placedScheduleCell", text, state, warnings, evidenceRows);
+                        if (state.Partial) return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                warnings.Add("Failed to scan placed schedule cells on sheet " + sheet.SheetNumber + ", schedule " + schedule.Name + ": " + ex.Message);
             }
         }
 
@@ -773,7 +921,7 @@ namespace RevitMCPCommandSet.Commands.View
         {
             foreach (string source in _request.Sources)
             {
-                if (source != "sheet_text_notes" && source != "viewport_tags")
+                if (source != "sheet_text_notes" && source != "viewport_tags" && source != "placed_schedule_cells")
                 {
                     return true;
                 }
@@ -862,6 +1010,8 @@ namespace RevitMCPCommandSet.Commands.View
                 ScannedViewportCount = state.ScannedViewportCount,
                 ScannedTextNoteCount = state.ScannedTextNoteCount,
                 ScannedTagCount = state.ScannedTagCount,
+                ScannedScheduleInstanceCount = state.ScannedScheduleInstanceCount,
+                ScannedScheduleCellCount = state.ScannedScheduleCellCount,
                 MatchedOccurrenceCount = state.MatchedOccurrenceCount,
                 EstimatedResponseBytes = state.EstimatedResponseBytes,
                 MaxResponseBytes = _request.MaxResponseBytes,
@@ -869,9 +1019,9 @@ namespace RevitMCPCommandSet.Commands.View
                 LastReadViewId = state.LastReadViewId,
                 LastReadViewportId = state.LastReadViewportId,
                 LastReadItemId = state.LastReadItemId,
-                LastReadSection = null,
-                LastReadRow = null,
-                LastReadColumn = null,
+                LastReadSection = state.LastReadSection,
+                LastReadRow = state.LastReadRow,
+                LastReadColumn = state.LastReadColumn,
                 Warnings = warnings,
                 Notices = notices
             };
@@ -906,6 +1056,8 @@ namespace RevitMCPCommandSet.Commands.View
                 ScannedViewportCount = state.ScannedViewportCount,
                 ScannedTextNoteCount = state.ScannedTextNoteCount,
                 ScannedTagCount = state.ScannedTagCount,
+                ScannedScheduleInstanceCount = state.ScannedScheduleInstanceCount,
+                ScannedScheduleCellCount = state.ScannedScheduleCellCount,
                 MatchedOccurrenceCount = state.MatchedOccurrenceCount,
                 EstimatedResponseBytes = state.EstimatedResponseBytes,
                 MaxResponseBytes = _request.MaxResponseBytes,
@@ -913,9 +1065,9 @@ namespace RevitMCPCommandSet.Commands.View
                 LastReadViewId = state.LastReadViewId,
                 LastReadViewportId = state.LastReadViewportId,
                 LastReadItemId = state.LastReadItemId,
-                LastReadSection = null,
-                LastReadRow = null,
-                LastReadColumn = null,
+                LastReadSection = state.LastReadSection,
+                LastReadRow = state.LastReadRow,
+                LastReadColumn = state.LastReadColumn,
                 Warnings = warnings,
                 Notices = notices
             };
@@ -940,6 +1092,8 @@ namespace RevitMCPCommandSet.Commands.View
             summary["scannedViewportCount"] = state.ScannedViewportCount;
             summary["scannedTextNoteCount"] = state.ScannedTextNoteCount;
             summary["scannedTagCount"] = state.ScannedTagCount;
+            summary["scannedScheduleInstanceCount"] = state.ScannedScheduleInstanceCount;
+            summary["scannedScheduleCellCount"] = state.ScannedScheduleCellCount;
             summary["partial"] = state.Partial;
             summary["scanStoppedReason"] = state.Partial ? state.ScanStoppedReason : "completed";
             summary["sources"] = _request.Sources;
@@ -970,6 +1124,11 @@ namespace RevitMCPCommandSet.Commands.View
             policy["maxViewportsPerSheet"] = _request.MaxViewportsPerSheet;
             policy["maxTextNotesScanned"] = _request.MaxTextNotesScanned;
             policy["maxTagsScanned"] = _request.MaxTagsScanned;
+            policy["maxScheduleInstancesPerSheet"] = _request.MaxScheduleInstancesPerSheet;
+            policy["maxRowsPerSchedule"] = _request.MaxRowsPerSchedule;
+            policy["maxColumnsPerSchedule"] = _request.MaxColumnsPerSchedule;
+            policy["maxScheduleInstancesScanned"] = _request.MaxScheduleInstancesScanned;
+            policy["maxScheduleCellsScanned"] = _request.MaxScheduleCellsScanned;
             policy["maxMatches"] = _request.MaxMatches;
             policy["maxTextChars"] = _request.MaxTextChars;
             policy["maxRegexPatternLength"] = _request.MaxRegexPatternLength;
@@ -1017,17 +1176,17 @@ namespace RevitMCPCommandSet.Commands.View
             }
             catch (Exception ex)
             {
-                warnings.Add("Sheet text note iteration check failed on sheet " + sheet.SheetNumber + ": " + ex.Message);
+                warnings.Add("Sheet annotation iteration check failed on sheet " + sheet.SheetNumber + ": " + ex.Message);
                 return false;
             }
 
-            warnings.Add("Skipped sheet text note scan because the sheet is not valid for element iteration: " + sheet.SheetNumber);
+            warnings.Add("Skipped sheet annotation scan because the sheet is not valid for element iteration: " + sheet.SheetNumber);
             return false;
         }
 
         private static bool IsHardStop(string reason)
         {
-            return reason == "max_elapsed" || reason == "max_bytes" || reason == "max_items";
+            return reason == "max_elapsed" || reason == "max_bytes" || reason == "max_items" || reason == "max_cells";
         }
 
         private void Complete(CountAnnotationsResult result)

@@ -135,7 +135,7 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/revit-plugin/revit_mcp_plugin/RevitMCPPlugin.dll",
-                                                  "sha256":  "97ec8fa95ae732c5e11456042cb9220e2adb8b3caae107e8cd711230a4e36783",
+                                                  "sha256":  "1dac9c026ffdedc4bb1048b2b4d42eb5a93eb4107fc1218a49824a50882d8a3b",
                                                   "sizeBytes":  93184
                                               }
                                           ]
@@ -160,7 +160,7 @@
                              "inputs":  [
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/command.json",
-                                                "gitBlobSha":  "d5d5df23c1b869c8c5c0672cee3ce1b4ccd671a3"
+                                                "gitBlobSha":  "37033579d85cbcb477eba98b3bf7d9168e4e820b"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/Access/GetCurrentViewElementsCommand.cs",
@@ -192,7 +192,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/AnnotationEvidenceHelpers.cs",
-                                                "gitBlobSha":  "51a18300e7ea24057b70552e034c7d300cb0c448"
+                                                "gitBlobSha":  "9015cb08a228df23f3d573174504827584bb1874"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/CloseViewCommand.cs",
@@ -204,11 +204,11 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/CountAnnotationsCommand.cs",
-                                                "gitBlobSha":  "541b66943e9a4ab2c9f004a8dc80b08a2e9c4925"
+                                                "gitBlobSha":  "83f939fcd481f224142ad373e673ccebb7e8787b"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/CountAnnotationsEventHandler.cs",
-                                                "gitBlobSha":  "e9a1633145d51e345f838a9c674fcac0ff22ea51"
+                                                "gitBlobSha":  "c1a77f37b60cc8a39dd475a45e1641f9bb5a24df"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/Create3DViewForElementsCommand.cs",
@@ -330,13 +330,13 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/command-payload/RevitMCPCommandSet.dll",
-                                                  "sha256":  "c95fd0e1850090e9efb8d51e2b9711e4a5c25c162e05729c71adbc1e96442255",
-                                                  "sizeBytes":  253440
+                                                  "sha256":  "bd1d2b02517266dc6b900f0f942dcc5d6bfb02060fedba1e72c9b0c0ddad7e89",
+                                                  "sizeBytes":  257536
                                               },
                                               {
                                                   "path":  "installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPCommandSet/2022/RevitMCPCommandSet.dll",
-                                                  "sha256":  "c95fd0e1850090e9efb8d51e2b9711e4a5c25c162e05729c71adbc1e96442255",
-                                                  "sizeBytes":  253440
+                                                  "sha256":  "bd1d2b02517266dc6b900f0f942dcc5d6bfb02060fedba1e72c9b0c0ddad7e89",
+                                                  "sizeBytes":  257536
                                               }
                                           ]
                          }
