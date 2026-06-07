@@ -264,7 +264,7 @@ namespace RevitMCPCommandSet.Commands.View
                 bool hasSheetQuery = !string.IsNullOrWhiteSpace(_request.SheetQuery);
                 int candidateCount = 0;
 
-                foreach (ViewSheet sheet in sourceSheets.OrderBy(s => s.SheetNumber).ThenBy(s => s.Name))
+                foreach (ViewSheet sheet in sourceSheets.OrderBy(s => s.SheetNumber ?? "").ThenBy(s => s.Name ?? ""))
                 {
                     if (StopIfNeeded(deadlineUtc, state)) break;
 
@@ -537,6 +537,10 @@ namespace RevitMCPCommandSet.Commands.View
             if (mode == "regex" || mode == "normalizedRegex")
             {
                 string candidate = mode == "normalizedRegex" ? normalizedCandidate : candidateText;
+                if (pattern.CompiledRegex == null)
+                {
+                    return matches;
+                }
                 try
                 {
                     MatchCollection regexMatches = pattern.CompiledRegex.Matches(candidate);
@@ -726,7 +730,7 @@ namespace RevitMCPCommandSet.Commands.View
 
             using (FilteredElementCollector collector = new FilteredElementCollector(document))
             {
-                foreach (ViewSheet sheet in collector.OfClass(typeof(ViewSheet)).Cast<ViewSheet>())
+                foreach (ViewSheet sheet in collector.OfClass(typeof(ViewSheet)).OfType<ViewSheet>())
                 {
                     if (StopIfNeeded(deadlineUtc, state)) break;
                     if (sheet == null || sheet.IsTemplate) continue;

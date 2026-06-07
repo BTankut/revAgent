@@ -651,7 +651,7 @@ namespace RevitMCPCommandSet.Commands.View
         private static CropOutline2D ProjectBoundingBoxToViewOutline(BoundingBoxXYZ box, Transform toView)
         {
             CropOutline2D outline = new CropOutline2D();
-            if (box == null) return outline;
+            if (box == null || box.Min == null || box.Max == null) return outline;
 
             Transform boxTransform = box.Transform ?? Transform.Identity;
             Transform viewTransform = toView ?? Transform.Identity;

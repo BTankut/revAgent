@@ -362,7 +362,7 @@ namespace RevitMCPCommandSet.Commands.View
             foreach (JToken token in array)
             {
                 int value;
-                if (int.TryParse(token.ToString(), out value) && value > 0 && !values.Contains(value))
+                if (token != null && int.TryParse(token.ToString(), out value) && value > 0 && !values.Contains(value))
                 {
                     values.Add(value);
                 }
