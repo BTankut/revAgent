@@ -95,6 +95,17 @@ assertContains(inspectSchedules, "maxResponseBytes", "inspect_schedules must exp
 assertContains(inspectSchedules, "startRow", "inspect_schedules must expose row continuation scope.");
 assertContains(inspectSchedules, "startColumn", "inspect_schedules must expose column continuation scope.");
 
+const countAnnotations = readSource("src/tools/count_annotations.ts");
+assertContains(countAnnotations, "[ANNOTATION_COUNT_READ_ONLY]", "count_annotations must stay marked as a read-only annotation count tool.");
+assertContains(countAnnotations, 'sendRevitCommand("count_annotations"', "count_annotations must call the native commandset command.");
+assertContains(countAnnotations, "normalizeBroadScanResult", "count_annotations must normalize through the shared broad-scan result contract.");
+assertContains(countAnnotations, "readNativeResultArray(payload, \"evidenceRows\")", "count_annotations must read native EvidenceRows/evidenceRows through the shared casing-robust ingest helper.");
+assertContains(countAnnotations, "export function normalizeCountAnnotationsResult", "count_annotations native-result normalization must be directly fixture-testable.");
+assertContains(countAnnotations, "invalid_count_mode_for_sources", "count_annotations must guard tag-specific count modes when non-tag sources are explicit.");
+assertContains(countAnnotations, "maxRegexPatternLength", "count_annotations must bound regex profile size.");
+assertContains(countAnnotations, "regexTimeoutMs", "count_annotations must expose per-candidate bounded regex matching.");
+assertContains(countAnnotations, "computeFallbackCounts", "count_annotations must keep count semantics fixture-testable through the canonical normalizer.");
+
 const broadScanResult = readSource("src/utils/broadScanResult.ts");
 assertContains(broadScanResult, "finiteNumberOrNull", "Shared broad-scan contract must not coerce null elapsedMs to zero.");
 assertContains(broadScanResult, "readNativeResultField", "Shared broad-scan contract must own casing-robust native result ingest.");

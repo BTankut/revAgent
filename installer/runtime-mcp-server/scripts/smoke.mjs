@@ -90,6 +90,7 @@ const expectedTools = [
   "inspect_elements",
   "inspect_sheet_text",
   "inspect_schedules",
+  "count_annotations",
   "inspect_parameter_schema",
   "set_element_parameter",
   "set_schedule_cells",
@@ -139,6 +140,17 @@ assert.equal("maxTags" in inspectSheetTextSchema, true);
 assert.equal("maxViewports" in inspectSheetTextSchema, true);
 assert.equal("maxElapsedMs" in inspectSheetTextSchema, true);
 assert.equal("maxResponseBytes" in inspectSheetTextSchema, true);
+const countAnnotationsDescription = tools.get("count_annotations").description;
+assert.match(countAnnotationsDescription, /ANNOTATION_COUNT_READ_ONLY/);
+assert.match(countAnnotationsDescription, /sheetQuery\/sheetIds/);
+assert.match(countAnnotationsDescription, /uniqueTaggedElement/);
+assert.match(countAnnotationsDescription, /allowExpensiveSearch=true/);
+const countAnnotationsSchema = tools.get("count_annotations").schema;
+assert.equal("profiles" in countAnnotationsSchema, true);
+assert.equal("countMode" in countAnnotationsSchema, true);
+assert.equal("groupBy" in countAnnotationsSchema, true);
+assert.equal("regexTimeoutMs" in countAnnotationsSchema, true);
+assert.equal("maxResponseBytes" in countAnnotationsSchema, true);
 const setScheduleCellsDescription = tools.get("set_schedule_cells").description;
 assert.match(setScheduleCellsDescription, /PRODUCTION_SCHEDULE_CELL_WRITE/);
 assert.match(setScheduleCellsDescription, /scheduleId/);

@@ -47,6 +47,25 @@ namespace RevitMCPCommandSet.Commands.View
             };
         }
 
+        public static List<string> BuildAnnotationCountSuggestedNextScopes()
+        {
+            return new List<string>
+            {
+                "sheetQuery",
+                "sheetIds",
+                "viewNameQuery",
+                "sources",
+                "profiles",
+                "countMode",
+                "groupBy",
+                "maxSheets",
+                "maxViewports",
+                "maxMatches",
+                "maxResponseBytes",
+                "allowExpensiveSearch"
+            };
+        }
+
         public static Dictionary<string, object> BuildTextNoteRecord(
             string kind,
             ViewSheet sheet,

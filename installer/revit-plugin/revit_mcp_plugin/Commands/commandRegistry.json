@@ -166,6 +166,21 @@
                          "description":  "Inspect Revit schedules with native budgeted partial results and continuation state"
                      },
                      {
+                         "commandName":  "count_annotations",
+                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Count and group Revit sheet text-note and viewport tag annotations with bounded native evidence"
+                     },
+                     {
                          "commandName":  "open_existing_plan_for_element_level",
                          "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,

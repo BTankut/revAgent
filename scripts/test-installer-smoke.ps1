@@ -203,6 +203,7 @@ try {
     Assert-True ($liveCommandsetTest -match 'Mechanical Equipment' -and $liveCommandsetTest -match 'scanPolicy\.searchBudget') "Live commandset integration gate must cover category-bounded find_elements search policy metadata."
     Assert-True ($liveCommandsetTest -match 'scanStoppedReason' -and $liveCommandsetTest -match 'max_scanned') "Live commandset integration gate must cover bounded find_elements partial metadata."
     Assert-True ($liveCommandsetTest -match 'inspect_sheet_text' -and $liveCommandsetTest -match 'includeViewportTextNotes' -and $liveCommandsetTest -match 'includeViewportTags' -and $liveCommandsetTest -match 'viewportTag') "Live commandset integration gate must cover native sheet viewport text and tag evidence behavior."
+    Assert-True ($liveCommandsetTest -match 'count_annotations' -and $liveCommandsetTest -match 'invalid_count_mode_for_sources' -and $liveCommandsetTest -match 'uniqueTag') "Live commandset integration gate must cover native annotation count inventory and tag count validation behavior."
     Assert-True ($liveCommandsetTest -match 'max_elapsed' -and $liveCommandsetTest -match 'max_bytes' -and $liveCommandsetTest -match 'max_schedule_cells') "Live commandset integration gate must cover native sheet annotation budget stop reasons."
     Assert-True ($liveCommandsetTest -match 'inspect_schedules' -and $liveCommandsetTest -match 'maxCells' -and $liveCommandsetTest -match 'lastReadRow' -and $liveCommandsetTest -match 'max_bytes') "Live commandset integration gate must cover native schedule partial and continuation behavior."
     Assert-True ($liveCommandsetTest -match 'MTL fan coil' -and $liveCommandsetTest -match 'live broad MTL guard proof') "Live commandset integration gate must cover runtime MEP inference and broad-query guard behavior."
@@ -222,6 +223,8 @@ try {
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\AnnotationEvidenceHelpers.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\CountAnnotationsCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\CountAnnotationsEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementDiscoveryHelpers.cs",
@@ -454,6 +457,7 @@ try {
     $parameterSchemaToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_parameter_schema.ts")
     $inspectSheetTextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_sheet_text.ts")
     $inspectSchedulesToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_schedules.ts")
+    $countAnnotationsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\count_annotations.ts")
     $inspectSchedulesHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSchedulesEventHandler.cs")
     $commandSetRegistryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\command.json")
     $setParameterToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_element_parameter.ts")
@@ -641,6 +645,12 @@ try {
     Assert-True ($inspectSchedulesHandlerCode -match 'lastReadRow' -and $inspectSchedulesHandlerCode -match 'lastReadColumn') "Native inspect_schedules handler must expose schedule continuation position."
     Assert-True ($inspectSchedulesToolCode -match 'allowExpensiveSearch' -and $inspectSchedulesToolCode -match 'reason: "needs_scope"') "inspect_schedules must guard broad cell scans without explicit approval."
     Assert-True (($inspectSchedulesToolCode -match 'Cell scan is bounded') -or ($inspectSchedulesHandlerCode -match 'Cell scan is bounded')) "inspect_schedules must warn when broad cell scan is requested."
+    Assert-True ($countAnnotationsToolCode -match 'ANNOTATION_COUNT_READ_ONLY') "count_annotations must identify itself as a read-only annotation count tool."
+    Assert-True ($countAnnotationsToolCode -match 'sendRevitCommand\("count_annotations"') "count_annotations must call the native commandset bridge."
+    Assert-True ($countAnnotationsToolCode -match 'normalizeBroadScanResult' -and $countAnnotationsToolCode -match 'readNativeResultArray\(payload, "evidenceRows"\)') "count_annotations must normalize native results through casing-robust ingest."
+    Assert-True ($countAnnotationsToolCode -match 'invalid_count_mode_for_sources' -and $countAnnotationsToolCode -match 'uniqueTaggedElement') "count_annotations must enforce tag-count source semantics."
+    Assert-True ($countAnnotationsToolCode -match 'maxRegexPatternLength' -and $countAnnotationsToolCode -match 'regexTimeoutMs') "count_annotations must expose bounded regex profile controls."
+    Assert-True ($commandSetRegistryCode -match '"commandName": "count_annotations"') "Command payload registry must include native count_annotations."
     foreach ($reason in @("completed", "max_elapsed", "max_rows", "max_columns", "max_cells", "max_items", "max_bytes", "read_failed", "needs_scope")) {
         Assert-True ($broadScanResultCode -match [regex]::Escape('"' + $reason + '"')) "Shared broad-scan result contract is missing stop reason '$reason'."
     }

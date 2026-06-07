@@ -64,6 +64,11 @@
       "assemblyPath": "RevitMCPCommandSet.dll"
     },
     {
+      "commandName": "count_annotations",
+      "description": "Count and group Revit sheet text-note and viewport tag annotations with bounded native evidence",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
       "commandName": "open_existing_plan_for_element_level",
       "description": "Open an existing plan view for an element's level and focus the element without creating a new view",
       "assemblyPath": "RevitMCPCommandSet.dll"
