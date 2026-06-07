@@ -257,6 +257,19 @@ function Invoke-InspectSchedules {
     return Invoke-RevitMcpRequest -Method "inspect_schedules" -Params $Params
 }
 
+function Invoke-CountAnnotations {
+    param(
+        [object]$Params,
+        [string]$TaskName
+    )
+
+    Assert-RevitMcpReady -NextCommand "count_annotations" | Out-Null
+    if ($Params -is [System.Collections.IDictionary]) {
+        $Params["taskName"] = $TaskName
+    }
+    return Invoke-RevitMcpRequest -Method "count_annotations" -Params $Params
+}
+
 function Assert-SuccessfulCodeResult {
     param(
         [object]$Result,
@@ -638,6 +651,115 @@ if ($tagRows.Count -gt 0) {
     Assert-True (-not [string]::IsNullOrWhiteSpace([string]$firstTag.tagTextNormalized)) "Viewport tag evidence must include normalized tag text."
     Assert-True ([int]$firstTag.sheetId -eq $firstSheetId) "Viewport tag evidence should stay scoped to the requested sheet."
 }
+
+Write-Host "Test native count_annotations guarded no-scope contract"
+$countNoScope = Invoke-CountAnnotations `
+    -TaskName "$prefix annotation count no scope guard" `
+    -Params ([ordered]@{
+        query = "QHK"
+        sources = @("sheet_text_notes", "viewport_tags")
+        countMode = "occurrence"
+        searchBudget = "fast"
+        maxElapsedMs = 1000
+        timeoutMs = 5000
+    })
+Assert-Equal ([bool]$countNoScope.success) $true "No-scope annotation count should return a protected result, not a transport failure."
+Assert-Equal ([bool]$countNoScope.guarded) $true "No-scope annotation count should be guarded."
+Assert-Equal ([string]$countNoScope.state) "guarded" "No-scope annotation count guard state changed."
+Assert-Equal ([string]$countNoScope.reason) "needs_scope" "No-scope annotation count reason changed."
+Assert-Equal ([int]$countNoScope.scannedSheetCount) 0 "No-scope annotation count guard should not scan Revit sheets."
+
+Write-Host "Test native count_annotations scoped occurrence contract"
+$countScoped = Invoke-CountAnnotations `
+    -TaskName "$prefix annotation count scoped" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        sources = @("sheet_text_notes", "viewport_tags")
+        profiles = @(
+            [ordered]@{
+                profileName = "non-empty"
+                patterns = @(
+                    [ordered]@{
+                        patternName = "non-empty-regex"
+                        matchMode = "regex"
+                        value = ".+"
+                    }
+                )
+            }
+        )
+        countMode = "occurrence"
+        groupBy = @("sourceType")
+        searchBudget = "fast"
+        maxViewports = 5
+        maxTags = 250
+        maxMatches = 500
+        maxResponseBytes = 120000
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$countScoped.success) $true "Scoped native annotation count should succeed."
+Assert-Equal ([bool]$countScoped.guarded) $false "Scoped native annotation count should not be guarded."
+Assert-Equal ([string]$countScoped.action) "count_annotations" "Scoped native annotation count action changed."
+Assert-True ([int]$countScoped.scannedSheetCount -le 1) "Scoped native annotation count should stay on the requested sheet."
+Assert-True ($countScoped.scanPolicy.maxElapsedMs -lt $countScoped.scanPolicy.timeoutMs) "Native annotation count budget must stay below socket timeout."
+Assert-True ([int]$countScoped.summary.count -ge 0) "Scoped native annotation count should report a summary count."
+Assert-True ($countScoped.evidenceRows -is [array] -or $null -ne $countScoped.evidenceRows) "Scoped native annotation count should expose evidenceRows."
+Assert-True ($countScoped.groups -is [array] -or $null -ne $countScoped.groups) "Scoped native annotation count should expose groups."
+
+Write-Host "Test native count_annotations tag count source validation"
+$countInvalidTagMode = Invoke-CountAnnotations `
+    -TaskName "$prefix annotation count invalid tag mode" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        sources = @("sheet_text_notes")
+        countMode = "uniqueTag"
+        searchBudget = "fast"
+        maxElapsedMs = 1000
+        timeoutMs = 5000
+    })
+Assert-Equal ([bool]$countInvalidTagMode.success) $true "Invalid tag count source mix should return a protected result, not a transport failure."
+Assert-Equal ([bool]$countInvalidTagMode.guarded) $true "Invalid tag count source mix should be guarded."
+Assert-Equal ([string]$countInvalidTagMode.reason) "invalid_count_mode_for_sources" "Invalid tag count source mix reason changed."
+
+Write-Host "Test native count_annotations uniqueTag default source contract"
+$countUniqueTag = Invoke-CountAnnotations `
+    -TaskName "$prefix annotation count unique tag default" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        countMode = "uniqueTag"
+        groupBy = @("sheet")
+        searchBudget = "fast"
+        maxViewports = 5
+        maxTags = 250
+        maxMatches = 500
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$countUniqueTag.success) $true "Scoped native uniqueTag annotation count should succeed."
+Assert-Equal ([bool]$countUniqueTag.guarded) $false "Scoped native uniqueTag annotation count should not be guarded."
+Assert-Equal ([string]$countUniqueTag.countMode) "uniqueTag" "Scoped native uniqueTag count mode changed."
+Assert-True (@($countUniqueTag.scanPolicy.sources) -contains "viewport_tags") "uniqueTag without explicit sources should default to viewport_tags."
+Assert-True (-not (@($countUniqueTag.scanPolicy.sources) -contains "sheet_text_notes")) "uniqueTag without explicit sources should not default to sheet_text_notes."
+
+Write-Host "Test native count_annotations viewport query skips do not consume viewport budget"
+$countViewportQueryNoMatch = Invoke-CountAnnotations `
+    -TaskName "$prefix annotation count viewport query no match" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        sources = @("viewport_tags")
+        viewNameQuery = "__revagent_live_no_matching_view_" + (Get-Date -Format "HHmmssfff")
+        countMode = "occurrence"
+        searchBudget = "fast"
+        maxViewports = 1
+        maxTags = 25
+        maxMatches = 25
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$countViewportQueryNoMatch.success) $true "Viewport-query no-match annotation count should succeed."
+Assert-Equal ([bool]$countViewportQueryNoMatch.guarded) $false "Viewport-query no-match annotation count should not be guarded."
+Assert-Equal ([int]$countViewportQueryNoMatch.scannedViewportCount) 0 "Viewports skipped by viewNameQuery must not consume the scanned viewport budget."
+Assert-Equal ([int]$countViewportQueryNoMatch.summary.count) 0 "Viewport-query no-match annotation count should report zero count."
 
 Write-Host "Test find_elements linkedOnly exact-id guard"
 $linkedOnlyExactProbe = Invoke-FindElements `

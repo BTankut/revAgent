@@ -51,6 +51,8 @@ Hard routing rules:
 - Sheet text lookup: use `inspect_sheet_text` before any custom sheet loop.
 - Schedule discovery/cell reading: use `inspect_schedules` before any custom
   schedule loop.
+- Annotation inventory/count: use `count_annotations` before any custom
+  sheet/view/tag counting loop.
 - Schedule edit with exact row/column: use `set_schedule_cells`.
 - Schedule edit by visible row text plus sheet/schedule filter: use
   `set_schedule_cells_by_text`.
@@ -210,6 +212,16 @@ normalizer.
   `scheduleIds`, `sections`, `startRow`, `startColumn`, or smaller limits.
   Prefer this over broad custom C# loops when finding schedules or reading
   schedule cells.
+- `count_annotations` - read-only native annotation inventory/count for
+  DrawingSheet text notes and viewport tags. Use `sheetQuery` or exact
+  `sheetIds` first; project-wide counts require `allowExpensiveSearch=true`.
+  Profiles can use `exact`, `contains`, `startsWith`, `regex`, or
+  `normalizedRegex`, with regex length and per-candidate timeout bounds.
+  Count modes are `occurrence`, `uniqueText`, `uniqueTag`, and
+  `uniqueTaggedElement`. Tag-specific count modes use `viewport_tags` by
+  default when sources are omitted, and explicit non-tag source mixes return
+  guarded `invalid_count_mode_for_sources`.
+  Prefer this over custom C# loops for annotation counts.
 - `inspect_parameter_schema` - parameter schema for element ids or category
   samples: user-facing BIP display name/id first, raw enum alias as diagnostic
   data, alias note, storage type, unit, shared/read-only, raw/display values.

@@ -55,13 +55,13 @@ structural, and electrical modules should add module-specific MCP tools in the
 runtime layer while reusing this shared Revit bridge for common execution,
 context, selection, view, and navigation operations.
 
-The current runtime server registers 26 tools:
+The current runtime server registers 27 tools:
 
 - status and targeting: `list_revit_instances`, `get_revit_mcp_status`
 - dynamic execution: `send_code_to_revit`, `send_code_to_revit_safe`
 - model/session context: `get_revit_session_context`,
   `get_active_view_context`, `inspect_elements`, `inspect_sheet_text`,
-  `inspect_schedules`, `inspect_parameter_schema`
+  `inspect_schedules`, `count_annotations`, `inspect_parameter_schema`
 - controlled data writes: `set_element_parameter` for exact-schema
   parameter set/clear operations, `set_schedule_cells` for exact schedule cell
   text writes by schedule id/section/row/column, and
@@ -112,6 +112,12 @@ is owned by the native commandset handler and is bounded by `maxElapsedMs`,
 `maxCells`, and `maxResponseBytes`; early stops return `partial=true`,
 `scanStoppedReason`, and `lastReadSection`/`lastReadRow`/`lastReadColumn`
 continuation state instead of relying on socket timeout behavior.
+`count_annotations` is a read-only native commandset workflow for general
+annotation inventory/count work. Its core surface counts DrawingSheet text-note
+and viewport tag evidence with explicit profiles, bounded regex matching,
+grouping, and stable count semantics (`occurrence`, `uniqueText`, `uniqueTag`,
+and `uniqueTaggedElement`). Broad counts without `sheetQuery` or exact
+`sheetIds` require explicit `allowExpensiveSearch=true`.
 Both broad scan tools are normalized through the shared runtime broad-scan
 result contract in `installer/runtime-mcp-server/src/utils/broadScanResult.ts`.
 Their top-level result uses the same fields for `partial`, `scanStoppedReason`,

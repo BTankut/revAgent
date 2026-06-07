@@ -11,6 +11,9 @@ import {
 import {
   normalizeScheduleResult,
 } from "../build/tools/inspect_schedules.js";
+import {
+  normalizeCountAnnotationsResult,
+} from "../build/tools/count_annotations.js";
 import { registerTools } from "../build/tools/register.js";
 
 const expectedStopReasons = [
@@ -313,6 +316,87 @@ assert.equal(nativeScheduleRowTruncatedPayload.partial, true);
 assert.equal(nativeScheduleRowTruncatedPayload.scanStoppedReason, "max_rows");
 assert.equal(nativeScheduleRowTruncatedPayload.summary.scanStoppedReason, "max_rows");
 
+const occurrenceCountPayload = normalizeCountAnnotationsResult({
+  Success: true,
+  Action: "count_annotations",
+  Partial: false,
+  ScanStoppedReason: "completed",
+  EvidenceRows: [
+    {
+      Kind: "sheetTextNote",
+      Id: 10,
+      SheetId: 1001,
+      Text: "QHK 310.001 QHK 310.002",
+      MatchedText: "QHK 310.001",
+      MatchedTextNormalized: "qhk 310.001",
+      ProfileName: "codes",
+      PatternName: "qhk-code",
+      MatchIndex: 0,
+    },
+    {
+      Kind: "sheetTextNote",
+      Id: 10,
+      SheetId: 1001,
+      Text: "QHK 310.001 QHK 310.002",
+      MatchedText: "QHK 310.002",
+      MatchedTextNormalized: "qhk 310.002",
+      ProfileName: "codes",
+      PatternName: "qhk-code",
+      MatchIndex: 1,
+    },
+  ],
+}, { countMode: "occurrence", groupBy: ["sheet"] }, 11);
+assert.equal(occurrenceCountPayload.action, "count_annotations");
+assert.equal(occurrenceCountPayload.summary.count, 2);
+assert.equal(occurrenceCountPayload.groups[0].count, 2);
+assert.equal(occurrenceCountPayload.evidenceRows.every((row) => row.counted === true), true);
+
+const uniqueTextCountPayload = normalizeCountAnnotationsResult({
+  Success: true,
+  Action: "count_annotations",
+  Partial: false,
+  ScanStoppedReason: "completed",
+  EvidenceRows: [
+    { Kind: "sheetTextNote", Id: 10, SheetId: 1001, ProfileName: "codes", MatchedTextNormalized: "qhk 310.001" },
+    { Kind: "viewportTag", TagId: 20, Id: 20, SheetId: 1001, ProfileName: "codes", MatchedTextNormalized: "qhk 310.001" },
+    { Kind: "viewportTag", TagId: 21, Id: 21, SheetId: 1002, ProfileName: "codes", MatchedTextNormalized: "qhk 310.002" },
+    { Kind: "sheetTextNote", Id: 11, SheetId: 1002, ProfileName: "asset-codes", MatchedTextNormalized: "qhk 310.001" },
+  ],
+}, { countMode: "uniqueText" }, 13);
+assert.equal(uniqueTextCountPayload.summary.count, 3);
+assert.equal(uniqueTextCountPayload.evidenceRows.filter((row) => row.counted).length, 3);
+
+const uniqueTagCountPayload = normalizeCountAnnotationsResult({
+  Success: true,
+  Action: "count_annotations",
+  Partial: false,
+  ScanStoppedReason: "completed",
+  EvidenceRows: [
+    { Kind: "viewportTag", TagId: 20, Id: 20, SheetId: 1001, MatchedTextNormalized: "qhk 310.001" },
+    { Kind: "viewportTag", TagId: 20, Id: 20, SheetId: 1001, MatchedTextNormalized: "qhk 310.001" },
+    { Kind: "viewportTag", TagId: 21, Id: 21, SheetId: 1001, MatchedTextNormalized: "qhk 310.001" },
+  ],
+}, { countMode: "uniqueTag", groupBy: ["sheet"] }, 17);
+assert.equal(uniqueTagCountPayload.summary.count, 2);
+assert.equal(uniqueTagCountPayload.groups[0].count, 2);
+
+const uniqueTaggedElementPayload = normalizeCountAnnotationsResult({
+  Success: true,
+  Action: "count_annotations",
+  Partial: false,
+  ScanStoppedReason: "completed",
+  EvidenceRows: [
+    { Kind: "viewportTag", TagId: 20, TaggedElementId: 300, TaggedElementResolved: true, SheetId: 1001, MatchedTextNormalized: "qhk" },
+    { Kind: "viewportTag", TagId: 21, TaggedElementId: 300, TaggedElementResolved: true, SheetId: 1001, MatchedTextNormalized: "qhk" },
+    { Kind: "viewportTag", TagId: 22, TaggedElementResolved: false, SheetId: 1001, MatchedTextNormalized: "qhk" },
+    { Kind: "viewportTag", TagId: 23, TaggedElementId: 301, SheetId: 1001, MatchedTextNormalized: "qhk" },
+  ],
+}, { countMode: "uniqueTaggedElement", groupBy: ["sheet"] }, 19);
+assert.equal(uniqueTaggedElementPayload.summary.count, 1);
+assert.equal(uniqueTaggedElementPayload.evidenceRows.filter((row) => row.counted).length, 1);
+assert.equal(uniqueTaggedElementPayload.evidenceRows[2].counted, false);
+assert.equal(uniqueTaggedElementPayload.evidenceRows[3].counted, false);
+
 const elapsedNull = normalizeBroadScanResult({
   success: true,
   elapsedMs: null,
@@ -380,5 +464,28 @@ assert.equal(Array.isArray(schedulePayload.evidenceRows), true);
 assert.equal(schedulePayload.evidenceRows.length, 0);
 assert.equal(schedulePayload.lastReadSection, null);
 assert.equal(schedulePayload.lastReadItemId, null);
+
+const countNoScopeGuard = await tools.get("count_annotations").handler({
+  query: "QHK",
+});
+const countNoScopePayload = JSON.parse(countNoScopeGuard.content[0].text);
+assert.equal(countNoScopePayload.success, true);
+assert.equal(countNoScopePayload.guarded, true);
+assert.equal(countNoScopePayload.state, "guarded");
+assert.equal(countNoScopePayload.action, "count_annotations");
+assert.equal(countNoScopePayload.partial, false);
+assert.equal(countNoScopePayload.scanStoppedReason, "needs_scope");
+assert.equal(countNoScopePayload.summary.count, 0);
+
+const invalidTagModeGuard = await tools.get("count_annotations").handler({
+  sheetIds: [1001],
+  sources: ["sheet_text_notes"],
+  countMode: "uniqueTag",
+});
+const invalidTagModePayload = JSON.parse(invalidTagModeGuard.content[0].text);
+assert.equal(invalidTagModePayload.success, true);
+assert.equal(invalidTagModePayload.guarded, true);
+assert.equal(invalidTagModePayload.reason, "invalid_count_mode_for_sources");
+assert.equal(invalidTagModePayload.scanStoppedReason, "needs_scope");
 
 console.log("broad scan result contract tests passed");

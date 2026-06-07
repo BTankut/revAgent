@@ -423,12 +423,8 @@ This is a separate project-scale workstream, not a hotfix add-on. It needs an
 approved implementation-decision checkpoint, PR sequence, live validation
 model, and release notes.
 
-Add a general, parameterized annotation inventory/count surface. The final tool
-name can be decided during implementation; candidate names:
-
-- `inspect_annotations`
-- `count_annotations`
-- `inventory_annotations`
+Add a general, parameterized annotation inventory/count surface. The selected
+tool name for implementation is `count_annotations`.
 
 The tool must not hardcode `Q/QHK 310.xxx`. That code family can be used only
 as an example profile or validation scenario.
@@ -473,6 +469,10 @@ as an example profile or validation scenario.
    continuation polish, then docs/release readiness. Every PR that changes a
    DLL or command payload has its own CI, bot review, operator live gate, and
    merge approval.
+5. The core inventory/count implementation PR covers `sheet_text_notes` and
+   `viewport_tags` only. `placed_schedule_cells` remains in the later
+   integration/continuation PR so this PR can lock the four count semantics and
+   bounded profile model without expanding source traversal.
 
 ### Native Discipline
 

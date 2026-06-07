@@ -18,6 +18,7 @@ import { registerSmartFocusElementsTool } from "./smart_focus_elements.js";
 import { registerInspectElementsTool } from "./inspect_elements.js";
 import { registerInspectSheetTextTool } from "./inspect_sheet_text.js";
 import { registerInspectSchedulesTool } from "./inspect_schedules.js";
+import { registerCountAnnotationsTool } from "./count_annotations.js";
 import { registerInspectParameterSchemaTool } from "./inspect_parameter_schema.js";
 import { registerSetElementParameterTool } from "./set_element_parameter.js";
 import { registerSetScheduleCellsTool } from "./set_schedule_cells.js";
@@ -49,9 +50,10 @@ export async function registerTools(server) {
     registerInspectElementsTool(telemetryServer);
     registerInspectSheetTextTool(telemetryServer);
     registerInspectSchedulesTool(telemetryServer);
+    registerCountAnnotationsTool(telemetryServer);
     registerInspectParameterSchemaTool(telemetryServer);
     registerSetElementParameterTool(telemetryServer);
     registerSetScheduleCellsTool(telemetryServer);
     registerSetScheduleCellsByTextTool(telemetryServer);
-    console.error("Registered 26 Revit MCP tools");
+    console.error("Registered 27 Revit MCP tools");
 }
