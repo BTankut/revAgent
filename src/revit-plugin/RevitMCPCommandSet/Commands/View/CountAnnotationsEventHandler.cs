@@ -808,7 +808,7 @@ namespace RevitMCPCommandSet.Commands.View
                     {
                         try
                         {
-                            pattern.CompiledRegex = new Regex(pattern.Value, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled, TimeSpan.FromMilliseconds(_request.RegexTimeoutMs));
+                            pattern.CompiledRegex = new Regex(pattern.Value, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(_request.RegexTimeoutMs));
                         }
                         catch (Exception ex)
                         {
