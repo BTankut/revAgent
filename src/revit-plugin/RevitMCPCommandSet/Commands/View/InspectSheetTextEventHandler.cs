@@ -719,6 +719,10 @@ namespace RevitMCPCommandSet.Commands.View
                     IndependentTag tag = element as IndependentTag;
                     if (tag == null) continue;
                     state.ScannedTagCount++;
+                    if (!AnnotationEvidenceHelpers.IsAnnotationElementVisibleInViewCrop(view, tag, warnings, "viewport_tag"))
+                    {
+                        continue;
+                    }
                     tagCount++;
 
                     string tagText = AnnotationEvidenceHelpers.SafeTagText(tag, warnings);

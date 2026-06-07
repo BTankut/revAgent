@@ -437,6 +437,10 @@ namespace RevitMCPCommandSet.Commands.View
                         if (tag == null) continue;
                         state.ScannedTagCount++;
                         state.LastReadItemId = tag.Id.GetIdValue();
+                        if (!AnnotationEvidenceHelpers.IsAnnotationElementVisibleInViewCrop(view, tag, warnings, "viewport_tag"))
+                        {
+                            continue;
+                        }
 
                         string tagText = AnnotationEvidenceHelpers.TrimText(AnnotationEvidenceHelpers.SafeTagText(tag, warnings), _request.MaxTextChars);
                         if (string.IsNullOrWhiteSpace(tagText))

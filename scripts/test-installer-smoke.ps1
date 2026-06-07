@@ -458,6 +458,7 @@ try {
     $inspectSheetTextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_sheet_text.ts")
     $inspectSchedulesToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_schedules.ts")
     $countAnnotationsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\count_annotations.ts")
+    $countAnnotationsHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\CountAnnotationsEventHandler.cs")
     $inspectSchedulesHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSchedulesEventHandler.cs")
     $commandSetRegistryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\command.json")
     $setParameterToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_element_parameter.ts")
@@ -632,6 +633,8 @@ try {
     Assert-True ($inspectSheetTextHandlerCode -match 'new FilteredElementCollector\(document, view\.Id\)' -and $inspectSheetTextHandlerCode -match 'viewportTextNote') "inspect_sheet_text native handler must scan viewport-linked view text notes."
     Assert-True ($inspectSheetTextHandlerCode -match 'IndependentTag' -and $inspectSheetTextHandlerCode -match 'TagText' -and $inspectSheetTextHandlerCode -match 'viewportTag') "inspect_sheet_text native handler must scan viewport-linked IndependentTag evidence."
     Assert-True ($inspectSheetTextHandlerCode -match 'IsViewValidForElementIteration' -and $inspectSheetTextHandlerCode -match 'view_not_valid_for_element_iteration' -and $inspectSheetTextHandlerCode -match 'Failed to scan viewport') "inspect_sheet_text native handler must skip viewport views that cannot be iterated instead of failing the full scan."
+    Assert-True ($annotationEvidenceHelpersCode -match 'IsAnnotationElementVisibleInViewCrop' -and $annotationEvidenceHelpersCode -match 'GetAnnotationCropShape' -and $annotationEvidenceHelpersCode -match 'VIEWER_ANNOTATION_CROP_ACTIVE') "Viewport tag evidence must use a shared crop/annotation-crop visibility helper."
+    Assert-True ($inspectSheetTextHandlerCode -match 'IsAnnotationElementVisibleInViewCrop\(view, tag' -and $countAnnotationsHandlerCode -match 'IsAnnotationElementVisibleInViewCrop\(view, tag') "Viewport tag evidence/count paths must filter tags against the placed view crop before returning rows."
     Assert-True ($inspectSheetTextHandlerCode -notmatch 'viewport_tags_deferred') "inspect_sheet_text must not regress viewport tags to the old deferred contract."
     Assert-True ($inspectSchedulesToolCode -match 'SCHEDULE_INSPECTION_READ_ONLY') "inspect_schedules must identify itself as a read-only schedule inspection tool."
     Assert-True ($inspectSchedulesToolCode -match 'normalizeBroadScanResult' -and $inspectSchedulesToolCode -match 'buildBroadScanGuardedResult') "inspect_schedules must use the shared broad-scan result contract."

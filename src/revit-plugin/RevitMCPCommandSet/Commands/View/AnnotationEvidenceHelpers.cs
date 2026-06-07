@@ -384,6 +384,51 @@ namespace RevitMCPCommandSet.Commands.View
             }
         }
 
+        public static bool IsAnnotationElementVisibleInViewCrop(Autodesk.Revit.DB.View view, Element element, List<string> warnings, string warningPrefix)
+        {
+            if (view == null || element == null) return false;
+
+            try
+            {
+                IList<CurveLoop> cropLoops = ActiveAnnotationCropLoops(view, warnings, warningPrefix);
+                if (cropLoops == null || cropLoops.Count == 0)
+                {
+                    return true;
+                }
+
+                BoundingBoxXYZ elementBox = SafeBoundingBox(element, view);
+                if (elementBox == null)
+                {
+                    AddOnce(warnings, warningPrefix + "_crop_visibility_bbox_unavailable");
+                    return true;
+                }
+
+                CropOutline2D elementOutline = ProjectBoundingBoxToViewOutline(elementBox, SafeViewCropInverseTransform(view));
+                if (!elementOutline.IsValid)
+                {
+                    AddOnce(warnings, warningPrefix + "_crop_visibility_bbox_unavailable");
+                    return true;
+                }
+
+                foreach (CurveLoop cropLoop in cropLoops)
+                {
+                    CropOutline2D cropOutline = CropLoopToOutline(cropLoop);
+                    if (cropOutline.IsValid && OutlinesIntersect(cropOutline, elementOutline))
+                    {
+                        return true;
+                    }
+                }
+
+                AddOnce(warnings, warningPrefix + "_outside_view_crop_skipped");
+                return false;
+            }
+            catch
+            {
+                AddOnce(warnings, warningPrefix + "_crop_visibility_check_failed");
+                return true;
+            }
+        }
+
         public static void AddOnce(List<string> values, string value)
         {
             if (values == null || string.IsNullOrWhiteSpace(value)) return;
@@ -522,6 +567,282 @@ namespace RevitMCPCommandSet.Commands.View
             catch
             {
                 return false;
+            }
+        }
+
+        private static IList<CurveLoop> ActiveAnnotationCropLoops(Autodesk.Revit.DB.View view, List<string> warnings, string warningPrefix)
+        {
+            if (view == null || !SafeCropBoxActive(view)) return new List<CurveLoop>();
+
+            try
+            {
+                ViewCropRegionShapeManager manager = view.GetCropRegionShapeManager();
+                if (manager == null) return new List<CurveLoop>();
+
+                if (SafeAnnotationCropActive(view) && SafeCanHaveAnnotationCrop(manager))
+                {
+                    CurveLoop annotationCrop = manager.GetAnnotationCropShape();
+                    if (annotationCrop != null)
+                    {
+                        return new List<CurveLoop> { annotationCrop };
+                    }
+                }
+
+                IList<CurveLoop> cropLoops = manager.GetCropShape();
+                return cropLoops ?? new List<CurveLoop>();
+            }
+            catch
+            {
+                AddOnce(warnings, warningPrefix + "_crop_shape_read_failed");
+                return new List<CurveLoop>();
+            }
+        }
+
+        private static bool SafeCropBoxActive(Autodesk.Revit.DB.View view)
+        {
+            try
+            {
+                return view != null && view.CropBoxActive;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool SafeAnnotationCropActive(Autodesk.Revit.DB.View view)
+        {
+            try
+            {
+                Parameter parameter = view != null ? view.get_Parameter(BuiltInParameter.VIEWER_ANNOTATION_CROP_ACTIVE) : null;
+                return parameter != null && parameter.AsInteger() != 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool SafeCanHaveAnnotationCrop(ViewCropRegionShapeManager manager)
+        {
+            try
+            {
+                return manager != null && manager.CanHaveAnnotationCrop;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static Transform SafeViewCropInverseTransform(Autodesk.Revit.DB.View view)
+        {
+            try
+            {
+                BoundingBoxXYZ cropBox = view != null ? view.CropBox : null;
+                return cropBox != null && cropBox.Transform != null ? cropBox.Transform.Inverse : Transform.Identity;
+            }
+            catch
+            {
+                return Transform.Identity;
+            }
+        }
+
+        private static CropOutline2D ProjectBoundingBoxToViewOutline(BoundingBoxXYZ box, Transform toView)
+        {
+            CropOutline2D outline = new CropOutline2D();
+            if (box == null) return outline;
+
+            Transform boxTransform = box.Transform ?? Transform.Identity;
+            Transform viewTransform = toView ?? Transform.Identity;
+            for (int ix = 0; ix <= 1; ix++)
+            {
+                for (int iy = 0; iy <= 1; iy++)
+                {
+                    for (int iz = 0; iz <= 1; iz++)
+                    {
+                        XYZ local = new XYZ(
+                            ix == 0 ? box.Min.X : box.Max.X,
+                            iy == 0 ? box.Min.Y : box.Max.Y,
+                            iz == 0 ? box.Min.Z : box.Max.Z);
+                        outline.Add(viewTransform.OfPoint(boxTransform.OfPoint(local)));
+                    }
+                }
+            }
+            return outline;
+        }
+
+        private static CropOutline2D CropLoopToOutline(CurveLoop cropLoop)
+        {
+            CropOutline2D outline = new CropOutline2D();
+            if (cropLoop == null) return outline;
+
+            foreach (Curve curve in cropLoop)
+            {
+                IList<XYZ> points = null;
+                try
+                {
+                    points = curve != null ? curve.Tessellate() : null;
+                }
+                catch
+                {
+                    points = null;
+                }
+
+                if (points != null && points.Count > 0)
+                {
+                    foreach (XYZ point in points)
+                    {
+                        outline.Add(point);
+                    }
+                }
+                else if (curve != null)
+                {
+                    outline.Add(curve.GetEndPoint(0));
+                    outline.Add(curve.GetEndPoint(1));
+                }
+            }
+            return outline;
+        }
+
+        private static bool OutlinesIntersect(CropOutline2D crop, CropOutline2D element)
+        {
+            if (crop == null || element == null || !crop.IsValid || !element.IsValid) return false;
+            const double tolerance = 1e-9;
+            if (element.MaxX < crop.MinX - tolerance || element.MinX > crop.MaxX + tolerance ||
+                element.MaxY < crop.MinY - tolerance || element.MinY > crop.MaxY + tolerance)
+            {
+                return false;
+            }
+
+            foreach (XYZ corner in element.RectangleCorners())
+            {
+                if (PointInPolygon2D(corner, crop.Points, tolerance))
+                {
+                    return true;
+                }
+            }
+
+            foreach (XYZ point in crop.Points)
+            {
+                if (PointInRectangle(point, element, tolerance))
+                {
+                    return true;
+                }
+            }
+
+            IList<XYZ> rectangle = element.RectangleCorners();
+            for (int i = 0; i < crop.Points.Count; i++)
+            {
+                XYZ a = crop.Points[i];
+                XYZ b = crop.Points[(i + 1) % crop.Points.Count];
+                for (int j = 0; j < rectangle.Count; j++)
+                {
+                    XYZ c = rectangle[j];
+                    XYZ d = rectangle[(j + 1) % rectangle.Count];
+                    if (SegmentsIntersect2D(a, b, c, d, tolerance))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static bool PointInPolygon2D(XYZ point, IList<XYZ> polygon, double tolerance)
+        {
+            if (point == null || polygon == null || polygon.Count < 3) return false;
+
+            bool inside = false;
+            for (int i = 0, j = polygon.Count - 1; i < polygon.Count; j = i++)
+            {
+                XYZ pi = polygon[i];
+                XYZ pj = polygon[j];
+                if (PointOnSegment2D(point, pj, pi, tolerance))
+                {
+                    return true;
+                }
+
+                bool crosses = ((pi.Y > point.Y) != (pj.Y > point.Y)) &&
+                    (point.X < (pj.X - pi.X) * (point.Y - pi.Y) / (pj.Y - pi.Y) + pi.X);
+                if (crosses)
+                {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        private static bool PointInRectangle(XYZ point, CropOutline2D rectangle, double tolerance)
+        {
+            return point != null && rectangle != null && rectangle.IsValid &&
+                point.X >= rectangle.MinX - tolerance && point.X <= rectangle.MaxX + tolerance &&
+                point.Y >= rectangle.MinY - tolerance && point.Y <= rectangle.MaxY + tolerance;
+        }
+
+        private static bool SegmentsIntersect2D(XYZ a, XYZ b, XYZ c, XYZ d, double tolerance)
+        {
+            if (a == null || b == null || c == null || d == null) return false;
+            if (PointOnSegment2D(a, c, d, tolerance) || PointOnSegment2D(b, c, d, tolerance) ||
+                PointOnSegment2D(c, a, b, tolerance) || PointOnSegment2D(d, a, b, tolerance))
+            {
+                return true;
+            }
+
+            double d1 = Cross2D(a, b, c);
+            double d2 = Cross2D(a, b, d);
+            double d3 = Cross2D(c, d, a);
+            double d4 = Cross2D(c, d, b);
+            return ((d1 > tolerance && d2 < -tolerance) || (d1 < -tolerance && d2 > tolerance)) &&
+                   ((d3 > tolerance && d4 < -tolerance) || (d3 < -tolerance && d4 > tolerance));
+        }
+
+        private static bool PointOnSegment2D(XYZ point, XYZ a, XYZ b, double tolerance)
+        {
+            if (point == null || a == null || b == null) return false;
+            if (Math.Abs(Cross2D(a, b, point)) > tolerance) return false;
+            return point.X >= Math.Min(a.X, b.X) - tolerance && point.X <= Math.Max(a.X, b.X) + tolerance &&
+                   point.Y >= Math.Min(a.Y, b.Y) - tolerance && point.Y <= Math.Max(a.Y, b.Y) + tolerance;
+        }
+
+        private static double Cross2D(XYZ a, XYZ b, XYZ c)
+        {
+            return (b.X - a.X) * (c.Y - a.Y) - (b.Y - a.Y) * (c.X - a.X);
+        }
+
+        private sealed class CropOutline2D
+        {
+            public readonly List<XYZ> Points = new List<XYZ>();
+            public double MinX = double.PositiveInfinity;
+            public double MinY = double.PositiveInfinity;
+            public double MaxX = double.NegativeInfinity;
+            public double MaxY = double.NegativeInfinity;
+
+            public bool IsValid
+            {
+                get { return Points.Count >= 3 && MinX <= MaxX && MinY <= MaxY; }
+            }
+
+            public void Add(XYZ point)
+            {
+                if (point == null) return;
+                Points.Add(point);
+                MinX = Math.Min(MinX, point.X);
+                MinY = Math.Min(MinY, point.Y);
+                MaxX = Math.Max(MaxX, point.X);
+                MaxY = Math.Max(MaxY, point.Y);
+            }
+
+            public IList<XYZ> RectangleCorners()
+            {
+                return new List<XYZ>
+                {
+                    new XYZ(MinX, MinY, 0),
+                    new XYZ(MaxX, MinY, 0),
+                    new XYZ(MaxX, MaxY, 0),
+                    new XYZ(MinX, MaxY, 0)
+                };
             }
         }
 
