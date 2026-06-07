@@ -1,6 +1,7 @@
 # revAgent Usage Intelligence Product Roadmap
 
-Status: draft roadmap
+Status: completed roadmap; Step 0 and Workstreams 1-5 shipped, with stable
+publish `2026.06.07.318-4ca1c36e`.
 Owner: revAgent product + Revit commandset + runtime wrapper
 Source signal: usage-intelligence findings and operator feedback from production workflows.
 
@@ -29,6 +30,20 @@ gate. They must not be folded into the hotfix PRs.
 The roadmap should keep the original product intent intact while respecting the
 repo delivery model: small PRs, clear gates, and no merge/deploy without the
 normal review and approval path.
+
+## Completion Record
+
+Completed on 2026-06-07 through Step 0 and Workstreams 1-5.
+
+- `SKILL.md` and `AGENTS.md` carry the operator-facing tool routing and safety
+  rules for the shipped surfaces.
+- `README.md`, `docs/PLATFORM_ARCHITECTURE.md`, and
+  `docs/REVAGENT_USAGE_INTELLIGENCE.md` carry the durable tool-surface,
+  architecture, summary-schema, and dashboard/reporting documentation.
+- Stable publish `2026.06.07.318-4ca1c36e` shipped the cumulative repository
+  package. The WS5 delta is telemetry/edge/reporting documentation and
+  summarizer/dashboard behavior; it does not add a new native Revit tool or
+  require a Revit-closed DLL install loop.
 
 ## Execution Directive
 

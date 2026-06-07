@@ -307,6 +307,13 @@ The deterministic daily reader is
 `reports\machines\<machine>\latest.json` with one UTC day of
 `reports\events` into `revagent.usage.summary.v1` JSON for dashboards and
 future master-LLM review.
+The same summary includes deterministic promotion candidate buckets for
+repeated raw/safe code patterns, timeout or partial-result friction, annotation
+counting requests, schedule-spreadsheet reconciliation requests, and manual
+transaction/write-guard signals. Candidate objects carry bounded evidence
+snippets plus session/tool context, `evidenceStrength`, and
+`humanReviewRequired=true`; weak evidence is marked for human review instead of
+automatically escalating priority.
 `scripts/publish-usage-summary.ps1` is the publishing wrapper that writes the
 daily JSON/Markdown files and refreshes `reports\summaries\latest.json`.
 `scripts/install-usage-summary-task.ps1` installs the single-machine scheduled

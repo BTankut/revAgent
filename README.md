@@ -850,6 +850,13 @@ The first reader layer is `scripts/summarize-usage-intelligence.ps1`. It reads
 `revagent.usage.summary.v1` JSON with machine health, tool usage, project and
 discipline rollups, guarded/failed/slow operation samples, generated-output
 counts, and dynamic-code pattern summaries for dashboard and master-LLM review.
+It also surfaces deterministic promotion candidate buckets:
+`promotionCandidates`, `nativeToolCandidates`, `hotfixCandidates`,
+`reconciliationCandidates`, and `annotationInventoryCandidates`, each with
+bounded evidence snippets plus session/tool context. Weak or small-sample
+evidence is marked through `evidenceStrength`, and `humanReviewRequired`
+remains true; the summary never performs automatic priority escalation or
+authorizes writes.
 `scripts/publish-usage-summary.ps1` publishes that summary under
 `reports\summaries\daily` and refreshes `reports\summaries\latest.json` plus a
 short Markdown support view.
@@ -880,13 +887,17 @@ repeated raw-code patterns into native runtime tools.
 
 - call `get_revit_mcp_status` before every non-status Revit MCP runtime task
 - use dedicated runtime tools before raw dynamic code
-- use `inspect_sheet_text`, `inspect_schedules`, `set_schedule_cells`,
+- use `inspect_sheet_text`, `inspect_schedules`, `count_annotations`,
+  `reconcile_schedule_excel`, `set_schedule_cells`,
   `set_schedule_cells_by_text`, and `set_element_parameter` for their covered
   workflows
 - use `resolve_api_symbols_bulk` before non-trivial raw snippets
 - use `send_code_to_revit_safe` for read-only probes and previews
 - keep raw `send_code_to_revit` as the explicit broad-control escape hatch
-- promote repeated raw-code patterns into native runtime tools
+- promote repeated raw-code patterns into human-reviewed native runtime tool
+  candidates
+- keep usage-intelligence promotion candidates evidence-only; weak evidence
+  must stay marked and must not auto-escalate priority
 - keep visual QA, export, usage intelligence, and deployment guidance aligned
   with the current runtime surface
 
