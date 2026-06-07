@@ -51,6 +51,8 @@ Hard routing rules:
 - Sheet text lookup: use `inspect_sheet_text` before any custom sheet loop.
 - Schedule discovery/cell reading: use `inspect_schedules` before any custom
   schedule loop.
+- Schedule-to-Excel reconciliation/review: use `reconcile_schedule_excel` after
+  bounded schedule evidence is available.
 - Annotation inventory/count: use `count_annotations` before any custom
   sheet/view/tag counting loop.
 - Schedule edit with exact row/column: use `set_schedule_cells`.
@@ -212,6 +214,16 @@ normalizer.
   `scheduleIds`, `sections`, `startRow`, `startColumn`, or smaller limits.
   Prefer this over broad custom C# loops when finding schedules or reading
   schedule cells.
+- `reconcile_schedule_excel` - runtime-only schedule-to-Excel reconciliation.
+  It ingests explicit `.xlsx`, `.csv`, `.tsv`, or `rows` input plus a normalized
+  `inspect_schedules` result, normalizes records, applies deterministic scoring,
+  and returns `reviewRows` and `reviewTable`. It is review-first and write-free:
+  it does not write Revit schedule cells or workbook data. Use
+  `kind: "inspect_schedules_result"` for the schedule source in this runtime;
+  `kind: "revit_schedule"` is guarded until the live bridge path is wired.
+  Accepted follow-up writes must route through `set_schedule_cells`,
+  `set_schedule_cells_by_text`, or a separate workbook workflow after human
+  review.
 - `count_annotations` - read-only native annotation inventory/count for
   DrawingSheet text notes, placed schedule cells, and viewport tags. Use
   `sheetQuery` or exact `sheetIds` first; project-wide counts require
@@ -316,6 +328,10 @@ Default workflow for every Revit runtime task:
    `scheduleIds` unless the user explicitly accepts the cost with
    `allowExpensiveSearch=true`; keep `maxRowsPerSection` and
    `maxColumnsPerSection` bounded.
+   For schedule-to-Excel reconciliation, call `reconcile_schedule_excel` with an
+   explicit Excel/CSV/rows source and a bounded `inspect_schedules` result. Treat
+   its buckets and `reviewTable` as human-review output only; it does not write
+   either side.
    For exact schedule text edits after row/column discovery, use
    `set_schedule_cells` with `expectedCurrentText`. If the target is known by
    sheet/schedule plus row text, use `set_schedule_cells_by_text` to preview

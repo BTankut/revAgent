@@ -37,9 +37,14 @@ All notable revAgent workstation deployment changes are tracked here.
 - Added placed schedule-cell continuation and cap reporting to
   `count_annotations`, including canonical `max_rows`, `max_columns`, and
   `max_cells` partial stop reasons.
+- Added `reconcile_schedule_excel` as a runtime-only, review-first,
+  write-free schedule-to-Excel reconciliation tool that ingests explicit
+  Excel/CSV/rows data plus normalized `inspect_schedules` evidence, then
+  returns deterministic match buckets, `reviewRows`, and `reviewTable`.
 - Bumped the runtime tool surface version to
-  `revit-mcp-runtime-tools.36` for verified plan visibility, native sheet
-  annotation inspection, and native schedule partial-result behavior.
+  `revit-mcp-runtime-tools.37` for verified plan visibility, native sheet
+  annotation inspection, native schedule partial-result behavior, annotation
+  counts, and schedule-to-Excel reconciliation.
 
 ## 2026.06.03.267-ee433485
 
