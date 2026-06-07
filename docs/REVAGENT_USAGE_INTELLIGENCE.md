@@ -77,6 +77,10 @@ The summary schema is `revagent.usage.summary.v1`. It includes:
 - guarded, failed, and slow operation samples
 - `send_code_to_revit` / `send_code_to_revit_safe` code-preview summaries,
   write-pattern counts, and manual transaction counts
+- promotion tracking fields: `promotionCandidates`, `nativeToolCandidates`,
+  `hotfixCandidates`, `reconciliationCandidates`,
+  `annotationInventoryCandidates`, `evidenceStrength`, and
+  `humanReviewRequired`
 
 This layer intentionally does not call an LLM. It prepares a bounded,
 dashboard-ready and LLM-ready evidence packet from the office-internal event
@@ -96,6 +100,17 @@ characters, the daily JSON/Markdown should preserve the original text rather
 than mojibake such as `Ã¼` or `Ä±`. Dynamic-code write-pattern detection also
 recognizes schedule cell edits such as `SetCellText` and schedule table edits,
 so repeated schedule-write snippets can be promoted into native tools.
+
+Promotion tracking is deterministic and review-first. The summarizer maps
+repeated raw/safe code patterns to `nativeToolCandidates`, repeated
+timeout/partial-result friction to `hotfixCandidates`, repeated annotation
+counting requests to `annotationInventoryCandidates`, repeated
+schedule-spreadsheet reconciliation requests to `reconciliationCandidates`, and
+manual transaction/write-guard patterns to the general `promotionCandidates`.
+Each candidate carries an `evidenceSnippet`, `sessionContext`, `toolContext`,
+`evidenceStrength`, and `humanReviewRequired=true`. Weak or small-sample
+evidence is marked as `evidenceStrength: "weak"` instead of being escalated
+automatically; promotion only surfaces a candidate for human review.
 
 The publish wrapper is `scripts/publish-usage-summary.ps1`. It runs the
 summarizer and writes stable NAS outputs:

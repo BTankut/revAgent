@@ -760,6 +760,33 @@ function compactSendCode(sendCode) {
   };
 }
 
+function compactCandidateList(items, limit = 50) {
+  return (Array.isArray(items) ? items : [])
+    .slice(0, limit)
+    .map((item) => ({
+      category: item?.category || "",
+      signal: item?.signal || "",
+      title: item?.title || "",
+      count: item?.count || 0,
+      promotionReasons: Array.isArray(item?.promotionReasons) ? item.promotionReasons : [],
+      candidateAction: item?.candidateAction || "",
+      evidenceStrength: item?.evidenceStrength || "",
+      humanReviewRequired: item?.humanReviewRequired === true,
+      evidenceSnippet: item?.evidenceSnippet || "",
+      sessionContext: item?.sessionContext || {},
+      toolContext: item?.toolContext || {},
+      hash: item?.hash || "",
+      toolName: item?.toolName || "",
+      scanStoppedReason: item?.scanStoppedReason || "",
+      hasManualTransaction: item?.hasManualTransaction === true,
+      toolNames: Array.isArray(item?.toolNames) ? item.toolNames : [],
+      taskNames: Array.isArray(item?.taskNames) ? item.taskNames : [],
+      writePatterns: Array.isArray(item?.writePatterns) ? item.writePatterns : [],
+      maxLength: typeof item?.maxLength === "number" ? item.maxLength : 0,
+      maxLineCount: typeof item?.maxLineCount === "number" ? item.maxLineCount : 0,
+    }));
+}
+
 function compactSummary(summary) {
   if (!summary || typeof summary !== "object") {
     return summary || null;
@@ -776,6 +803,13 @@ function compactSummary(summary) {
     totals: summary.totals || {},
     production: summary.production || {},
     sendCode: compactSendCode(summary.sendCode),
+    promotionCandidates: compactCandidateList(summary.promotionCandidates),
+    nativeToolCandidates: compactCandidateList(summary.nativeToolCandidates),
+    hotfixCandidates: compactCandidateList(summary.hotfixCandidates),
+    reconciliationCandidates: compactCandidateList(summary.reconciliationCandidates),
+    annotationInventoryCandidates: compactCandidateList(summary.annotationInventoryCandidates),
+    evidenceStrength: summary.evidenceStrength || "none",
+    humanReviewRequired: summary.humanReviewRequired === true,
     toolUsage: Array.isArray(summary.toolUsage) ? summary.toolUsage.slice(0, 50) : [],
     commandUsage: Array.isArray(summary.commandUsage) ? summary.commandUsage.slice(0, 50) : [],
     friction: {
@@ -916,6 +950,13 @@ export function buildDashboardBrief(data) {
     })),
     recentActivity: (snapshot.activity || []).slice(0, 80).map(compactTask),
     toolUsage: Array.isArray(snapshot.summary?.toolUsage) ? snapshot.summary.toolUsage.slice(0, 20) : [],
+    promotionCandidates: Array.isArray(snapshot.summary?.promotionCandidates) ? snapshot.summary.promotionCandidates.slice(0, 20) : [],
+    nativeToolCandidates: Array.isArray(snapshot.summary?.nativeToolCandidates) ? snapshot.summary.nativeToolCandidates.slice(0, 20) : [],
+    hotfixCandidates: Array.isArray(snapshot.summary?.hotfixCandidates) ? snapshot.summary.hotfixCandidates.slice(0, 20) : [],
+    reconciliationCandidates: Array.isArray(snapshot.summary?.reconciliationCandidates) ? snapshot.summary.reconciliationCandidates.slice(0, 20) : [],
+    annotationInventoryCandidates: Array.isArray(snapshot.summary?.annotationInventoryCandidates) ? snapshot.summary.annotationInventoryCandidates.slice(0, 20) : [],
+    evidenceStrength: snapshot.summary?.evidenceStrength || "none",
+    humanReviewRequired: snapshot.summary?.humanReviewRequired === true,
     friction: {
       failed: Array.isArray(friction.failed) ? friction.failed.slice(0, 20) : [],
       guarded: Array.isArray(friction.guarded) ? friction.guarded.slice(0, 20) : [],

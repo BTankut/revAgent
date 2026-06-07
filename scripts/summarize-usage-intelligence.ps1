@@ -628,6 +628,289 @@ function New-OperationBrief {
     }
 }
 
+function Get-PromotionEvidenceStrength {
+    param(
+        [int]$Count,
+        [int]$RepeatThreshold = 2
+    )
+
+    $threshold = [Math]::Max(2, $RepeatThreshold)
+    if ($Count -ge [Math]::Max(4, $threshold * 2)) {
+        return "strong"
+    }
+    if ($Count -ge $threshold) {
+        return "medium"
+    }
+    return "weak"
+}
+
+function Get-EvidenceStrengthRank {
+    param([string]$Value)
+
+    switch ([string]$Value) {
+        "strong" { return 3 }
+        "medium" { return 2 }
+        "weak" { return 1 }
+        default { return 0 }
+    }
+}
+
+function Get-AggregateEvidenceStrength {
+    param([object[]]$Candidates)
+
+    $best = "none"
+    $bestRank = 0
+    foreach ($candidate in @($Candidates)) {
+        $rank = Get-EvidenceStrengthRank -Value ([string](Get-ReportValue -Object $candidate -Name "evidenceStrength"))
+        if ($rank -gt $bestRank) {
+            $bestRank = $rank
+            $best = [string](Get-ReportValue -Object $candidate -Name "evidenceStrength")
+        }
+    }
+
+    return $best
+}
+
+function Get-PromotionEventText {
+    param([object]$Event)
+
+    $operation = Get-EventOperationObject -Event $Event
+    $search = Get-ReportValue -Object $Event -Name "search"
+    $parts = @(
+        [string](Get-ReportValue -Object $Event -Name "toolName"),
+        [string](Get-ReportValue -Object $Event -Name "commandName"),
+        [string](Get-ReportValue -Object $Event -Name "logicalToolName"),
+        [string](Get-ReportValue -Object $Event -Name "taskName"),
+        [string](Get-ReportValue -Object $operation -Name "taskName"),
+        [string](Get-ReportValue -Object $operation -Name "action"),
+        [string](Get-ReportValue -Object $operation -Name "query"),
+        [string](Get-ReportValue -Object $operation -Name "errorMessage"),
+        [string](Get-ReportValue -Object $search -Name "scanStoppedReason")
+    )
+
+    return ((@($parts | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join " ").ToLowerInvariant())
+}
+
+function Get-PromotionEvidenceSnippet {
+    param([object]$Event)
+
+    if ($null -eq $Event) {
+        return ""
+    }
+
+    $operation = Get-EventOperationObject -Event $Event
+    $search = Get-ReportValue -Object $Event -Name "search"
+    $result = Get-ReportValue -Object $Event -Name "result"
+    $taskName = [string](Get-ReportValue -Object $Event -Name "taskName")
+    if ([string]::IsNullOrWhiteSpace($taskName)) {
+        $taskName = [string](Get-ReportValue -Object $operation -Name "taskName")
+    }
+
+    $partial = Get-ReportValue -Object $search -Name "partial"
+    if ($null -eq $partial) {
+        $partial = Get-ReportValue -Object $result -Name "partial"
+    }
+    $scanStoppedReason = [string](Get-ReportValue -Object $search -Name "scanStoppedReason")
+    if ([string]::IsNullOrWhiteSpace($scanStoppedReason)) {
+        $scanStoppedReason = [string](Get-ReportValue -Object $result -Name "scanStoppedReason")
+    }
+
+    $preview = [string](Get-NestedReportValue -Object $Event -Path @("params", "code", "preview"))
+    $errorMessage = [string](Get-ReportValue -Object $operation -Name "errorMessage")
+    if ([string]::IsNullOrWhiteSpace($errorMessage)) {
+        $errorMessage = [string](Get-ReportValue -Object $result -Name "errorMessage")
+    }
+
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($taskName)) {
+        [void]$parts.Add("task: $taskName")
+    }
+    $toolName = [string](Get-EventToolName -Event $Event)
+    if (-not [string]::IsNullOrWhiteSpace($toolName)) {
+        [void]$parts.Add("tool: $toolName")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($scanStoppedReason)) {
+        [void]$parts.Add("stop: $scanStoppedReason")
+    }
+    if ($null -ne $partial -and -not [string]::IsNullOrWhiteSpace([string]$partial)) {
+        [void]$parts.Add("partial: $partial")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($errorMessage)) {
+        [void]$parts.Add("error: $errorMessage")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($preview)) {
+        [void]$parts.Add("code: $preview")
+    }
+    if ($parts.Count -eq 0) {
+        [void]$parts.Add("event: $([string](Get-ReportValue -Object $Event -Name "eventId"))")
+    }
+
+    $snippet = $parts -join " | "
+    if ($snippet.Length -gt 260) {
+        return $snippet.Substring(0, 257) + "..."
+    }
+    return $snippet
+}
+
+function New-PromotionEvidenceContext {
+    param([object]$Event)
+
+    if ($null -eq $Event) {
+        return [ordered]@{
+            sessionContext = [ordered]@{}
+            toolContext = [ordered]@{}
+        }
+    }
+
+    $operation = Get-EventOperationObject -Event $Event
+    $sourceEventType = [string](Get-ReportValue -Object $Event -Name "eventType")
+    $taskName = [string](Get-ReportValue -Object $Event -Name "taskName")
+    if ([string]::IsNullOrWhiteSpace($taskName)) {
+        $taskName = [string](Get-ReportValue -Object $operation -Name "taskName")
+    }
+
+    return [ordered]@{
+        sessionContext = [ordered]@{
+            sessionId = Get-ReportValue -Object $Event -Name "sessionId"
+            eventId = Get-ReportValue -Object $Event -Name "eventId"
+            runId = Get-ReportValue -Object $Event -Name "runId"
+            timestampUtc = Get-ReportValue -Object $Event -Name "timestampUtc"
+            machineName = Get-ReportValue -Object $Event -Name "machineName"
+            userName = Get-ReportValue -Object $Event -Name "userName"
+        }
+        toolContext = [ordered]@{
+            toolName = Get-EventToolName -Event $Event
+            sourceEventType = $sourceEventType
+            taskName = $taskName
+            commandName = Get-ReportValue -Object $Event -Name "commandName"
+            logicalToolName = Get-ReportValue -Object $Event -Name "logicalToolName"
+        }
+    }
+}
+
+function New-PromotionCandidate {
+    param(
+        [string]$Category,
+        [string]$Signal,
+        [string]$Title,
+        [int]$Count,
+        [object[]]$Events,
+        [string[]]$Reasons,
+        [string]$CandidateAction = "surface_for_human_review",
+        [int]$RepeatThreshold = 2,
+        [object]$Extra = $null
+    )
+
+    $sampleEvent = @($Events | Where-Object { $null -ne $_ } |
+        Sort-Object @{ Expression = { [string](Get-ReportValue -Object $_ -Name "timestampUtc") } } |
+        Select-Object -First 1)
+    $sample = if ($sampleEvent.Count -gt 0) { $sampleEvent[0] } else { $null }
+    $context = New-PromotionEvidenceContext -Event $sample
+    $candidate = [ordered]@{
+        category = $Category
+        signal = $Signal
+        title = $Title
+        count = $Count
+        promotionReasons = @($Reasons)
+        candidateAction = $CandidateAction
+        evidenceStrength = Get-PromotionEvidenceStrength -Count $Count -RepeatThreshold $RepeatThreshold
+        humanReviewRequired = $true
+        evidenceSnippet = Get-PromotionEvidenceSnippet -Event $sample
+        sessionContext = $context.sessionContext
+        toolContext = $context.toolContext
+    }
+
+    if ($null -ne $Extra) {
+        if ($Extra -is [System.Collections.IDictionary]) {
+            foreach ($key in $Extra.Keys) {
+                $candidate[$key] = $Extra[$key]
+            }
+        }
+        else {
+            foreach ($property in @($Extra.PSObject.Properties)) {
+                $candidate[$property.Name] = $property.Value
+            }
+        }
+    }
+
+    return $candidate
+}
+
+function Get-ScanStopReasonForPromotion {
+    param([object]$Event)
+
+    $operation = Get-EventOperationObject -Event $Event
+    $search = Get-ReportValue -Object $Event -Name "search"
+    $result = Get-ReportValue -Object $Event -Name "result"
+    $reason = [string](Get-ReportValue -Object $search -Name "scanStoppedReason")
+    if ([string]::IsNullOrWhiteSpace($reason)) {
+        $reason = [string](Get-ReportValue -Object $result -Name "scanStoppedReason")
+    }
+    if ([string]::IsNullOrWhiteSpace($reason)) {
+        $reason = [string](Get-ReportValue -Object $operation -Name "scanStoppedReason")
+    }
+    if ([string]::IsNullOrWhiteSpace($reason)) {
+        $error = [string](Get-ReportValue -Object $operation -Name "errorMessage")
+        if ([string]::IsNullOrWhiteSpace($error)) {
+            $error = [string](Get-ReportValue -Object $result -Name "errorMessage")
+        }
+        if ($error -match '(?i)timeout|timed out|max elapsed') {
+            return "max_elapsed"
+        }
+    }
+    return $reason
+}
+
+function Test-PartialOrTimeoutFriction {
+    param([object]$Event)
+
+    $operation = Get-EventOperationObject -Event $Event
+    $search = Get-ReportValue -Object $Event -Name "search"
+    $result = Get-ReportValue -Object $Event -Name "result"
+    $partial = Get-BooleanOrNull (Get-ReportValue -Object $search -Name "partial")
+    if ($null -eq $partial) {
+        $partial = Get-BooleanOrNull (Get-ReportValue -Object $result -Name "partial")
+    }
+    $reason = Get-ScanStopReasonForPromotion -Event $Event
+    $error = [string](Get-ReportValue -Object $operation -Name "errorMessage")
+    if ([string]::IsNullOrWhiteSpace($error)) {
+        $error = [string](Get-ReportValue -Object $result -Name "errorMessage")
+    }
+
+    return (
+        $partial -eq $true -or
+        $reason -match '^(max_elapsed|max_rows|max_columns|max_cells|max_items|max_bytes|read_failed)$' -or
+        $error -match '(?i)timeout|timed out|max elapsed'
+    )
+}
+
+function Add-PromotionSignalEvent {
+    param(
+        [hashtable]$Map,
+        [string]$Key,
+        [string]$ToolName,
+        [string]$Reason,
+        [object]$Event
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Key)) {
+        return
+    }
+    if (-not $Map.ContainsKey($Key)) {
+        $Map[$Key] = [ordered]@{
+            key = $Key
+            toolName = $ToolName
+            reason = $Reason
+            count = 0
+            events = [System.Collections.Generic.List[object]]::new()
+        }
+    }
+
+    $entry = $Map[$Key]
+    $entry.count++
+    [void]$entry.events.Add($Event)
+}
+
 function Select-ProductionContextEvents {
     param([object[]]$Events)
 
@@ -1060,11 +1343,13 @@ foreach ($event in $sendCodeEvents) {
             maxLength = 0
             maxLineCount = 0
             preview = ""
+            events = [System.Collections.Generic.List[object]]::new()
         }
     }
 
     $entry = $sendCodePatternGroups[$hash]
     $entry.count++
+    [void]$entry.events.Add($event)
     Add-Count -Map $entry.toolNames -Key ([string](Get-ReportValue -Object $event -Name "toolName"))
     Add-Count -Map $entry.taskNames -Key ([string](Get-ReportValue -Object $event -Name "taskName"))
     foreach ($pattern in Get-CodeWritePatterns -Code $code) {
@@ -1103,11 +1388,8 @@ $sendCodePromotionCandidates = @($sendCodePatternGroups.Values |
         }
         $registryMatch = Resolve-DynamicPromotionRegistryMatch -Reasons $reasons.ToArray() -Registry $promotionRegistry
 
-        [ordered]@{
+        $extra = [ordered]@{
             hash = $_.hash
-            count = $_.count
-            promotionReasons = $reasons.ToArray()
-            candidateAction = $registryMatch.candidateAction
             registryMatches = @($registryMatch.registryMatches)
             toolNames = @(Convert-CountMapToRows -Map $_.toolNames -Limit 5)
             taskNames = @(Convert-CountMapToRows -Map $_.taskNames -Limit 5)
@@ -1117,10 +1399,195 @@ $sendCodePromotionCandidates = @($sendCodePatternGroups.Values |
             maxLineCount = $_.maxLineCount
             preview = $_.preview
         }
+
+        New-PromotionCandidate `
+            -Category "send_code" `
+            -Signal "dynamic_code_pattern" `
+            -Title ("Dynamic code pattern {0}" -f $_.hash) `
+            -Count $_.count `
+            -Events @($_.events.ToArray()) `
+            -Reasons $reasons.ToArray() `
+            -CandidateAction $registryMatch.candidateAction `
+            -RepeatThreshold $promotionRepeatThreshold `
+            -Extra $extra
     } |
     Where-Object { $null -ne $_ } |
     Sort-Object @{ Expression = { $_.count }; Descending = $true }, hash |
     Select-Object -First $Top)
+
+$nativeToolCandidates = @($sendCodePatternGroups.Values |
+    Where-Object { $_.count -ge $promotionRepeatThreshold } |
+    ForEach-Object {
+        $reasons = @("repeated_raw_safe_code_pattern")
+        $registryMatch = Resolve-DynamicPromotionRegistryMatch -Reasons @("repeated_hash") -Registry $promotionRegistry
+        $extra = [ordered]@{
+            hash = $_.hash
+            toolNames = @(Convert-CountMapToRows -Map $_.toolNames -Limit 5)
+            taskNames = @(Convert-CountMapToRows -Map $_.taskNames -Limit 5)
+            writePatterns = @(Convert-CountMapToRows -Map $_.writePatterns -Limit 10)
+            hasManualTransaction = $_.hasManualTransaction
+            maxLength = $_.maxLength
+            maxLineCount = $_.maxLineCount
+        }
+
+        New-PromotionCandidate `
+            -Category "native_tool_candidate" `
+            -Signal "repeated_raw_safe_code_pattern" `
+            -Title ("Repeated raw/safe code pattern {0}" -f $_.hash) `
+            -Count $_.count `
+            -Events @($_.events.ToArray()) `
+            -Reasons $reasons `
+            -CandidateAction $registryMatch.candidateAction `
+            -RepeatThreshold $promotionRepeatThreshold `
+            -Extra $extra
+    } |
+    Sort-Object @{ Expression = { $_.count }; Descending = $true }, title |
+    Select-Object -First $Top)
+
+$promotionCandidates = @($sendCodePatternGroups.Values |
+    Where-Object { $_.hasManualTransaction -eq $true -or $_.writePatterns.Count -gt 0 } |
+    ForEach-Object {
+        $reasons = [System.Collections.Generic.List[string]]::new()
+        if ($_.hasManualTransaction -eq $true) {
+            [void]$reasons.Add("manual_transaction")
+        }
+        if ($_.writePatterns.Count -gt 0) {
+            [void]$reasons.Add("write_guard_or_write_pattern")
+        }
+        $registryMatch = Resolve-DynamicPromotionRegistryMatch -Reasons $reasons.ToArray() -Registry $promotionRegistry
+        $extra = [ordered]@{
+            hash = $_.hash
+            toolNames = @(Convert-CountMapToRows -Map $_.toolNames -Limit 5)
+            taskNames = @(Convert-CountMapToRows -Map $_.taskNames -Limit 5)
+            writePatterns = @(Convert-CountMapToRows -Map $_.writePatterns -Limit 10)
+            hasManualTransaction = $_.hasManualTransaction
+            maxLength = $_.maxLength
+            maxLineCount = $_.maxLineCount
+        }
+
+        New-PromotionCandidate `
+            -Category "promotion_candidate" `
+            -Signal "manual_transaction_write_guard" `
+            -Title ("Manual transaction/write guard pattern {0}" -f $_.hash) `
+            -Count $_.count `
+            -Events @($_.events.ToArray()) `
+            -Reasons $reasons.ToArray() `
+            -CandidateAction $registryMatch.candidateAction `
+            -RepeatThreshold $promotionRepeatThreshold `
+            -Extra $extra
+    } |
+    Sort-Object @{ Expression = { $_.count }; Descending = $true }, title |
+    Select-Object -First $Top)
+
+$partialFrictionGroups = @{}
+$annotationRequestGroups = @{}
+$reconciliationRequestGroups = @{}
+foreach ($event in $operationSampleEvents) {
+    $toolName = [string](Get-EventToolName -Event $event)
+    if ([string]::IsNullOrWhiteSpace($toolName)) {
+        $toolName = "unknown_tool"
+    }
+    $eventText = Get-PromotionEventText -Event $event
+
+    if (Test-PartialOrTimeoutFriction -Event $event) {
+        $reason = Get-ScanStopReasonForPromotion -Event $event
+        if ([string]::IsNullOrWhiteSpace($reason)) {
+            $reason = "partial_or_timeout"
+        }
+        Add-PromotionSignalEvent `
+            -Map $partialFrictionGroups `
+            -Key ("{0}|{1}" -f $toolName, $reason) `
+            -ToolName $toolName `
+            -Reason $reason `
+            -Event $event
+    }
+
+    $isAnnotationRequest = (
+        $toolName -eq "count_annotations" -or
+        ($eventText -match '(annotation|count_annotations|text note|viewport tag|tag|etiket|metin)' -and
+            $eventText -match '(count|inventory|adet|sayim|sayım)')
+    )
+    if ($isAnnotationRequest) {
+        Add-PromotionSignalEvent `
+            -Map $annotationRequestGroups `
+            -Key ("annotation_inventory|{0}" -f $toolName) `
+            -ToolName $toolName `
+            -Reason "repeated_annotation_counting_request" `
+            -Event $event
+    }
+
+    $isReconciliationRequest = (
+        $toolName -eq "reconcile_schedule_excel" -or
+        (($eventText -match '(schedule|çizelge|cizelge|metraj)') -and
+            ($eventText -match '(excel|spreadsheet|xlsx|xls|csv|workbook)'))
+    )
+    if ($isReconciliationRequest) {
+        Add-PromotionSignalEvent `
+            -Map $reconciliationRequestGroups `
+            -Key ("schedule_spreadsheet_reconciliation|{0}" -f $toolName) `
+            -ToolName $toolName `
+            -Reason "repeated_schedule_spreadsheet_reconciliation_request" `
+            -Event $event
+    }
+}
+
+$hotfixCandidates = @($partialFrictionGroups.Values |
+    ForEach-Object {
+        New-PromotionCandidate `
+            -Category "hotfix_candidate" `
+            -Signal "repeated_timeout_partial_result_friction" `
+            -Title ("Repeated {0} friction in {1}" -f $_.reason, $_.toolName) `
+            -Count $_.count `
+            -Events @($_.events.ToArray()) `
+            -Reasons @("timeout_or_partial_result_friction", $_.reason) `
+            -CandidateAction "review_hotfix_or_budget_tuning" `
+            -RepeatThreshold $promotionRepeatThreshold `
+            -Extra ([ordered]@{ toolName = $_.toolName; scanStoppedReason = $_.reason })
+    } |
+    Sort-Object @{ Expression = { $_.count }; Descending = $true }, title |
+    Select-Object -First $Top)
+
+$annotationInventoryCandidates = @($annotationRequestGroups.Values |
+    ForEach-Object {
+        New-PromotionCandidate `
+            -Category "annotation_inventory_candidate" `
+            -Signal "repeated_annotation_counting_request" `
+            -Title ("Repeated annotation counting requests via {0}" -f $_.toolName) `
+            -Count $_.count `
+            -Events @($_.events.ToArray()) `
+            -Reasons @($_.reason) `
+            -CandidateAction "review_annotation_inventory_workflow" `
+            -RepeatThreshold $promotionRepeatThreshold `
+            -Extra ([ordered]@{ toolName = $_.toolName })
+    } |
+    Sort-Object @{ Expression = { $_.count }; Descending = $true }, title |
+    Select-Object -First $Top)
+
+$reconciliationCandidates = @($reconciliationRequestGroups.Values |
+    ForEach-Object {
+        New-PromotionCandidate `
+            -Category "reconciliation_candidate" `
+            -Signal "repeated_schedule_spreadsheet_reconciliation_request" `
+            -Title ("Repeated schedule-spreadsheet reconciliation via {0}" -f $_.toolName) `
+            -Count $_.count `
+            -Events @($_.events.ToArray()) `
+            -Reasons @($_.reason) `
+            -CandidateAction "review_reconciliation_workflow" `
+            -RepeatThreshold $promotionRepeatThreshold `
+            -Extra ([ordered]@{ toolName = $_.toolName })
+    } |
+    Sort-Object @{ Expression = { $_.count }; Descending = $true }, title |
+    Select-Object -First $Top)
+
+$allPromotionTrackingCandidates = @(
+    @($promotionCandidates) +
+    @($nativeToolCandidates) +
+    @($hotfixCandidates) +
+    @($reconciliationCandidates) +
+    @($annotationInventoryCandidates)
+)
+$summaryEvidenceStrength = Get-AggregateEvidenceStrength -Candidates $allPromotionTrackingCandidates
+$summaryHumanReviewRequired = $allPromotionTrackingCandidates.Count -gt 0
 
 $taskNameSamples = @($taskNameCounts.GetEnumerator() |
     Sort-Object @{ Expression = { $_.Value }; Descending = $true }, Name |
@@ -1179,6 +1646,13 @@ $summary = [ordered]@{
     }
     toolUsage = @(Convert-MetricMapToRows -Map $toolMetrics -Limit $Top)
     commandUsage = @(Convert-MetricMapToRows -Map $commandMetrics -Limit $Top)
+    promotionCandidates = @($promotionCandidates)
+    nativeToolCandidates = @($nativeToolCandidates)
+    hotfixCandidates = @($hotfixCandidates)
+    reconciliationCandidates = @($reconciliationCandidates)
+    annotationInventoryCandidates = @($annotationInventoryCandidates)
+    evidenceStrength = $summaryEvidenceStrength
+    humanReviewRequired = $summaryHumanReviewRequired
     production = [ordered]@{
         operationCount = $productionEvents.Count
         byMachineUser = @(Convert-MetricMapToRows -Map $machineUserMetrics -Limit $Top)
