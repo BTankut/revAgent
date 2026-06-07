@@ -904,8 +904,11 @@ try {
     Assert-Equal (ConvertTo-RevitMcpProxyUrl -Value "192.168.90.10 6588") "http://192.168.90.10:6588" "Proxy URL normalization failed."
     Assert-Equal (ConvertTo-RevitMcpWinHttpProxyServer -Value "http://192.168.90.10:6588") "192.168.90.10:6588" "WinHTTP proxy normalization failed."
     $codexConfig = Join-Path $tempRoot "config.toml"
+    Set-Content -LiteralPath $codexConfig -Value "model = `"gpt-5.5`"`r`nservice_tier = `"priority`"`r`n" -Encoding UTF8
     Register-RevitMcpCodexMcpServersInConfig -ConfigPath $codexConfig -NodePath "node.exe" -RuntimeServerPath "runtime\build\index.js" -DocsServerPath "docs\build\index.js" | Out-Null
     $codexText = Get-Content -Raw -LiteralPath $codexConfig
+    Assert-True ($codexText -match '(?m)^service_tier\s*=\s*"fast"\s*$') "Codex service_tier must be normalized to the current Codex CLI-supported fast tier."
+    Assert-True ($codexText -notmatch '(?m)^service_tier\s*=\s*"priority"\s*$') "Codex service_tier must not keep the obsolete priority value."
     Assert-True ($codexText -match '\[mcp_servers\.revit-mcp\]') "Codex runtime MCP section was not written."
     Assert-True ($codexText -match '\[mcp_servers\.revit-api-docs\]') "Codex docs MCP section was not written."
     Assert-True ($codexText -match '(?m)^\[features\]\s*$') "Codex features section was not written."
@@ -917,9 +920,22 @@ try {
     Assert-True ($codexText -match '(?m)^use_memories\s*=\s*true\s*$') "Codex memory use was not enabled."
     Register-RevitMcpCodexMcpServersInConfig -ConfigPath $codexConfig -NodePath "node.exe" -RuntimeServerPath "runtime\build\index.js" -DocsServerPath "docs\build\index.js" | Out-Null
     $codexTextAfterSecondWrite = Get-Content -Raw -LiteralPath $codexConfig
+    Assert-Equal ([regex]::Matches($codexTextAfterSecondWrite, '(?m)^service_tier\s*=\s*"fast"\s*$').Count) 1 "Codex service_tier must not be duplicated."
     Assert-Equal ([regex]::Matches($codexTextAfterSecondWrite, '(?m)^\[features\]\s*$').Count) 1 "Codex features section must not be duplicated."
     Assert-Equal ([regex]::Matches($codexTextAfterSecondWrite, '(?m)^\[memories\]\s*$').Count) 1 "Codex memories section must not be duplicated."
     Assert-Equal ([regex]::Matches($codexTextAfterSecondWrite, '(?m)^memories\s*=\s*true\s*$').Count) 1 "Codex memories feature must not be duplicated."
+    $codexProfileConfig = Join-Path $tempRoot "profile-config.toml"
+    Set-Content -LiteralPath $codexProfileConfig -Value "[profiles.lite]`r`nservice_tier = `"flex`"`r`n" -Encoding UTF8
+    Register-RevitMcpCodexMcpServersInConfig -ConfigPath $codexProfileConfig -NodePath "node.exe" -RuntimeServerPath "runtime\build\index.js" -DocsServerPath "docs\build\index.js" | Out-Null
+    $codexProfileText = Get-Content -Raw -LiteralPath $codexProfileConfig
+    Assert-Equal ([regex]::Matches($codexProfileText, '(?m)^service_tier\s*=\s*"fast"\s*$').Count) 1 "Codex top-level service_tier must be added when only profile service_tier values exist."
+    Assert-True ($codexProfileText -match '(?ms)^\[profiles\.lite\]\s*.*?^service_tier\s*=\s*"flex"\s*$') "Codex profile-specific service_tier override must be preserved."
+    $codexStaleProfileConfig = Join-Path $tempRoot "stale-profile-config.toml"
+    Set-Content -LiteralPath $codexStaleProfileConfig -Value "[profiles.legacy]`r`nservice_tier = `"priority`"`r`n" -Encoding UTF8
+    Register-RevitMcpCodexMcpServersInConfig -ConfigPath $codexStaleProfileConfig -NodePath "node.exe" -RuntimeServerPath "runtime\build\index.js" -DocsServerPath "docs\build\index.js" | Out-Null
+    $codexStaleProfileText = Get-Content -Raw -LiteralPath $codexStaleProfileConfig
+    Assert-True ($codexStaleProfileText -notmatch '(?m)^service_tier\s*=\s*"priority"\s*$') "Codex stale profile service_tier=priority must be normalized."
+    Assert-True ($codexStaleProfileText -match '(?ms)^\[profiles\.legacy\]\s*.*?^service_tier\s*=\s*"fast"\s*$') "Codex stale profile service_tier must be normalized to fast."
     Assert-True ($updaterText -match 'Set-RevitMcpCodexMemoryConfig') "Updater must enforce Codex memory config, including fast/no-op update paths."
     Assert-True ($updaterText -match 'Remove-CodexProfileBackupArtifacts') "Updater must clean old Codex profile backup artifacts."
     $installerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\install-self-contained.ps1")

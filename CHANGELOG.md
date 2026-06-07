@@ -14,6 +14,9 @@ All notable revAgent workstation deployment changes are tracked here.
 - Separated `inspect_sheet_text` inventory-only placed schedules from evidence
   matches, made sheet-scan stop diagnostics explicit, and extended
   `count_annotations` to include viewport text-note sources.
+- Normalized Codex `service_tier` to the current CLI-supported `fast` value
+  during install/update config hygiene so MCP registration does not fail on
+  stale `priority` profiles.
 
 ## 2026.06.07.318-4ca1c36e
 

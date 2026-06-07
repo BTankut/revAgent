@@ -742,9 +742,10 @@ under that admin profile instead of the operator profile. Prefer approving UAC
 with the same Windows user when possible.
 
 When user-profile Codex integration is enabled, install/update writes the
-standard Codex memory settings to `%USERPROFILE%\.codex\config.toml`
-idempotently. The helper reuses existing `[features]` and `[memories]` sections
-and must not append duplicate blocks on repeated runs.
+standard Codex memory settings and normalizes `service_tier = "fast"` in
+`%USERPROFILE%\.codex\config.toml` idempotently. The helper reuses existing
+top-level keys plus `[features]` and `[memories]` sections, and must not append
+duplicate blocks on repeated runs.
 
 Background updater notifications:
 

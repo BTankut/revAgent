@@ -31,9 +31,10 @@ Claude Code prepends `mcp__revit-mcp__`). Always call whichever
 prefixed form your host shows in the tool list - but in this document
 only the bare names appear, so the rules stay host-agnostic.
 
-Office install/update standardizes Codex memory settings idempotently in
-`%USERPROFILE%\.codex\config.toml` and must not create timestamped `.codex`
-backup artifacts during normal operation.
+Office install/update standardizes Codex memory settings and normalizes
+`service_tier = "fast"` idempotently in `%USERPROFILE%\.codex\config.toml`.
+It must not create timestamped `.codex` backup artifacts during normal
+operation.
 
 ## Tool Selection Authority - Hard Rule
 

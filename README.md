@@ -615,7 +615,7 @@ After the script finishes:
 
 ## Host compatibility
 
-The office installation flow registers MCP servers through the current user's installed Codex Desktop command on Windows, with a direct `config.toml` update fallback when that command helper is missing. It also writes the standard Codex memory configuration idempotently under `%USERPROFILE%\.codex\config.toml`. The skill itself is host-agnostic: any MCP/skill-capable LLM host can use it if both MCP servers are registered:
+The office installation flow registers MCP servers through the current user's installed Codex Desktop command on Windows, with a direct `config.toml` update fallback when that command helper is missing. It also writes the standard Codex memory configuration and normalizes `service_tier = "fast"` idempotently under `%USERPROFILE%\.codex\config.toml`. The skill itself is host-agnostic: any MCP/skill-capable LLM host can use it if both MCP servers are registered:
 
 - `revit-mcp` for live Revit execution and inspection
 - `revit-api-docs` for required API class/member lookup
