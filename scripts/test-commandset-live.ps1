@@ -1002,6 +1002,79 @@ Assert-Equal ([bool]$deleteCommit.success) $true "delete_review_view commit shou
 Assert-Equal ([bool]$deleteCommit.deleted) $true "delete_review_view commit should verify deletion."
 Assert-Equal ([bool]$deleteCommit.changed) $true "delete_review_view commit should report changed=true."
 
+Write-Host "Test delete_review_view blocks sheet-placed review views"
+$placedReviewViewName = "3D - Focus revAgent Placed Delete Guard " + (Get-Date -Format "HHmmssfff")
+$placedReviewProbe = Invoke-RevitCode `
+    -TransactionMode "auto" `
+    -TaskName "$prefix create placed temporary review view" `
+    -Code @"
+var viewFamilyType = new FilteredElementCollector(document)
+    .OfClass(typeof(ViewFamilyType))
+    .Cast<ViewFamilyType>()
+    .FirstOrDefault(v => v.ViewFamily == ViewFamily.ThreeDimensional);
+var titleBlockType = new FilteredElementCollector(document)
+    .OfCategory(BuiltInCategory.OST_TitleBlocks)
+    .WhereElementIsElementType()
+    .FirstOrDefault();
+if (viewFamilyType == null || titleBlockType == null)
+{
+    return Newtonsoft.Json.JsonConvert.SerializeObject(new { caseName = "placed_review_view_setup_skipped", reason = "missing_3d_view_type_or_title_block" });
+}
+var view = View3D.CreateIsometric(document, viewFamilyType.Id);
+view.Name = "$placedReviewViewName";
+var sheet = ViewSheet.Create(document, titleBlockType.Id);
+sheet.Name = "revAgent delete_review_view guard sheet";
+sheet.SheetNumber = "RA-DEL-" + DateTime.UtcNow.ToString("HHmmssfff");
+var viewport = Viewport.Create(document, sheet.Id, view.Id, new XYZ(0, 0, 0));
+return Newtonsoft.Json.JsonConvert.SerializeObject(new {
+    caseName = "placed_review_view_created",
+    viewId = view.Id.IntegerValue,
+    sheetId = sheet.Id.IntegerValue,
+    viewportId = viewport.Id.IntegerValue
+});
+"@
+Assert-SuccessfulCodeResult -Result $placedReviewProbe -CaseName "placed temporary review view creation"
+$placedReviewPayload = ConvertFrom-RevitJsonLike -Value $placedReviewProbe.result
+if ([string]$placedReviewPayload.caseName -eq "placed_review_view_created") {
+    $placedReviewViewId = [int]$placedReviewPayload.viewId
+    $placedReviewSheetId = [int]$placedReviewPayload.sheetId
+    $placedDeleteGuard = Invoke-DeleteReviewView `
+        -TaskName "$prefix delete_review_view placed guard" `
+        -Params ([ordered]@{
+            viewId = $placedReviewViewId
+            mode = "commit"
+            confirmDelete = $true
+            timeoutMs = 15000
+        })
+    Assert-Equal ([bool]$placedDeleteGuard.success) $true "Placed review view delete should return a guarded result."
+    Assert-Equal ([bool]$placedDeleteGuard.guarded) $true "Placed review view delete should be guarded."
+    Assert-Equal ([string]$placedDeleteGuard.reason) "placed_review_view_delete_blocked" "Placed review view guard reason changed."
+    $cleanupPlacedReview = Invoke-RevitCode `
+        -TransactionMode "auto" `
+        -TaskName "$prefix cleanup placed delete guard artifacts" `
+        -Code @"
+var ids = new List<ElementId> { new ElementId($placedReviewSheetId), new ElementId($placedReviewViewId) };
+var deleted = new List<int>();
+foreach (var id in ids)
+{
+    var element = document.GetElement(id);
+    if (element == null) continue;
+    foreach (var deletedId in document.Delete(id))
+    {
+        deleted.Add(deletedId.IntegerValue);
+    }
+}
+return Newtonsoft.Json.JsonConvert.SerializeObject(new {
+    caseName = "placed_review_view_cleanup",
+    deletedCount = deleted.Count
+});
+"@
+    Assert-SuccessfulCodeResult -Result $cleanupPlacedReview -CaseName "placed review view cleanup"
+}
+else {
+    Assert-Equal ([string]$placedReviewPayload.caseName) "placed_review_view_setup_skipped" "Unexpected placed review setup case."
+}
+
 Write-Host "Test transactionMode none and Newtonsoft.Json compile"
 $noneProbe = Invoke-RevitCode `
     -TransactionMode "none" `

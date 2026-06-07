@@ -111,6 +111,15 @@ namespace RevitMCPCommandSet.Commands.View
                     return;
                 }
 
+                int placedViewportCount = CountPlacedViewports(document, targetView.Id);
+                if (placedViewportCount > 0)
+                {
+                    ViewOperationResult guarded = BuildGuarded(document, uiDocument, targetSummary, "placed_review_view_delete_blocked", "This review view is placed on a sheet. Deleting it would remove sheet viewport layout, so cleanup is blocked.", reviewSignals);
+                    guarded.Warnings = new List<string> { "placedViewportCount=" + placedViewportCount };
+                    Complete(guarded);
+                    return;
+                }
+
                 bool dryRun = !string.Equals(_mode, "commit", StringComparison.OrdinalIgnoreCase);
                 if (dryRun)
                 {
@@ -180,6 +189,22 @@ namespace RevitMCPCommandSet.Commands.View
                     Action = "delete_review_view",
                     Error = ex.Message
                 });
+            }
+        }
+
+        private int CountPlacedViewports(Document document, ElementId viewId)
+        {
+            if (document == null || viewId == null)
+            {
+                return 0;
+            }
+
+            using (FilteredElementCollector collector = new FilteredElementCollector(document))
+            {
+                return collector
+                    .OfClass(typeof(Viewport))
+                    .Cast<Viewport>()
+                    .Count(viewport => viewport != null && viewport.ViewId.GetIdValue() == viewId.GetIdValue());
             }
         }
 
