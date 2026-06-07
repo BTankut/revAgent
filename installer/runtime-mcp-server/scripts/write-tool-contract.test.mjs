@@ -124,6 +124,17 @@ for (const field of ["summary", "evidenceRows", "lastReadSection", "lastReadRow"
   assertContains(broadScanResult, `"${field}"`, `Shared broad-scan field '${field}' must stay defined in one place.`);
 }
 
+const revitToolHelpers = readSource("src/utils/revitToolHelpers.ts");
+assertContains(revitToolHelpers, "parentTaskName", "Runtime Revit helper must preserve parent task names for wrapper sub-operations.");
+assertContains(revitToolHelpers, "parentTaskId", "Runtime Revit helper must preserve parent task ids for wrapper sub-operations.");
+assertContains(revitToolHelpers, "applyParentTaskMetadata", "Runtime Revit helper must centralize parent task propagation.");
+assertContains(revitToolHelpers, "commandParams.parentTaskName", "Wrapper subcalls must forward parent task names to live telemetry/bridge params.");
+
+const telemetry = readSource("src/utils/telemetry.ts");
+assertContains(telemetry, "guardSource", "Telemetry/live feed must expose guardSource for client/runtime guarded records.");
+assertContains(telemetry, "normalizeGuardSource", "Telemetry/live feed must normalize guardSource values.");
+assertContains(telemetry, "parentTaskName", "Telemetry/live feed must expose parent task names.");
+
 const exportViewImage = readSource("src/tools/export_revit_view_image.ts");
 assertContains(exportViewImage, "runtimeFailure", "export_revit_view_image must report JS-side runtime failures through the shared result contract.");
 assertContains(exportViewImage, 'action = "export_revit_view_image"', "export_revit_view_image C# responses must carry the shared action field.");

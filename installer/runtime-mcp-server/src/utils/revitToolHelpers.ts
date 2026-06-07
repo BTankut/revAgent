@@ -17,6 +17,8 @@ interface ConnectionArgs extends JsonObject {
     timeoutMs?: number;
     taskName?: string;
     taskId?: string;
+    parentTaskName?: string;
+    parentTaskId?: string;
 }
 
 interface TrimPlanCandidatesOptions {
@@ -54,6 +56,8 @@ export function taskMetadataSchema(z: any) {
     return {
         taskName: z.string().optional().describe("Optional display name shown in Revit while this MCP task is running."),
         taskId: z.string().optional().describe("Optional client task identifier forwarded to Revit status history."),
+        parentTaskName: z.string().optional().describe("Optional parent workflow display name. Wrappers set this on nested sub-operations so live feed/history preserves the operator-visible parent task."),
+        parentTaskId: z.string().optional().describe("Optional parent workflow identifier. Wrappers set this on nested sub-operations so live feed/history preserves the operator-visible parent task id."),
     };
 }
 
@@ -78,6 +82,8 @@ export function taskOptionsFromArgs(args: ConnectionArgs = {}, defaultTaskName: 
     return {
         taskName: args.taskName || defaultTaskName,
         taskId: args.taskId,
+        parentTaskName: args.parentTaskName,
+        parentTaskId: args.parentTaskId,
     };
 }
 
@@ -86,6 +92,23 @@ export function executionOptionsFromArgs(args: ConnectionArgs = {}, defaultTaskN
         ...connectionOptionsFromArgs(args),
         ...taskOptionsFromArgs(args, defaultTaskName),
     };
+}
+
+function applyParentTaskMetadata(commandParams: JsonObject, options: ConnectionArgs) {
+    const parentTaskName = options.parentTaskName ||
+        (options.taskName && commandParams.taskName && commandParams.taskName !== options.taskName
+            ? options.taskName
+            : undefined);
+    const parentTaskId = options.parentTaskId ||
+        (options.taskId && commandParams.taskName && commandParams.taskName !== options.taskName
+            ? options.taskId
+            : undefined);
+    if (parentTaskName && !commandParams.parentTaskName) {
+        commandParams.parentTaskName = parentTaskName;
+    }
+    if (parentTaskId && !commandParams.parentTaskId) {
+        commandParams.parentTaskId = parentTaskId;
+    }
 }
 
 export function normalizeSuccessCasing(payload: any) {
@@ -303,6 +326,7 @@ export async function executeRevitCode(code: string, options: ExecuteRevitCodeOp
     if (options.taskId) {
         params.taskId = options.taskId;
     }
+    applyParentTaskMetadata(params, options);
     const startedAtMs = Date.now();
     const liveTask = recordLiveActivityStarted({
         scope: "revit.command",
@@ -311,6 +335,8 @@ export async function executeRevitCode(code: string, options: ExecuteRevitCodeOp
         executionKind: "dynamicCode",
         taskName: params.taskName,
         taskId: params.taskId,
+        parentTaskName: params.parentTaskName,
+        parentTaskId: params.parentTaskId,
         params,
         startedAtMs,
     });
@@ -383,6 +409,7 @@ export async function sendRevitCommand(command: string, params: JsonObject = {},
     if (!commandParams.taskName) {
         commandParams.taskName = options.taskName || command;
     }
+    applyParentTaskMetadata(commandParams, options);
     if (options.taskId && !commandParams.taskId) {
         commandParams.taskId = options.taskId;
     }
@@ -394,6 +421,8 @@ export async function sendRevitCommand(command: string, params: JsonObject = {},
         executionKind: "bridgeCommand",
         taskName: commandParams.taskName,
         taskId: commandParams.taskId,
+        parentTaskName: commandParams.parentTaskName,
+        parentTaskId: commandParams.parentTaskId,
         params: commandParams,
         startedAtMs,
     });

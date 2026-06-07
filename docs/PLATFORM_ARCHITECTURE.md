@@ -233,6 +233,15 @@ total Revit-side duration, and request size. Guarded safety blocks are displayed
 as warning states with `!` in recent history rather than red failures. Detailed
 metrics are written to the add-in log under the installed payload `Logs\` folder.
 
+Runtime/client-side guards are not inserted into Revit-side
+`mcp_status.recentTasks` when the command never reached the add-in. They are
+instead exposed through runtime telemetry and the live feed as compact activity
+records with `state="guarded"` and `guardSource` set to `runtime` or `client`.
+Wrapper workflows that run nested Revit commands preserve the operator-visible
+parent task with `parentTaskName` and `parentTaskId` while each sub-operation
+keeps its own focused `taskName`. This keeps dashboard/history attribution
+clear without pretending client-side guards were Revit status-window tasks.
+
 ## Usage Intelligence
 
 The runtime MCP server also emits silent usage-intelligence events for product

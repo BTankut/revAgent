@@ -205,6 +205,13 @@ function getValueCaseInsensitive(object, names) {
     }
     return undefined;
 }
+function normalizeGuardSource(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "runtime" || normalized === "client") {
+        return normalized;
+    }
+    return null;
+}
 export function summarizeTelemetryResponse(response, error = null) {
     if (error) {
         return {
@@ -220,6 +227,7 @@ export function summarizeTelemetryResponse(response, error = null) {
     const action = isObject ? getValueCaseInsensitive(target, ["action", "Action"]) : undefined;
     const errorValue = isObject ? getValueCaseInsensitive(target, ["error", "Error", "errorMessage", "ErrorMessage"]) : undefined;
     const messageValue = isObject ? getValueCaseInsensitive(target, ["message", "Message"]) : undefined;
+    const explicitGuardSource = isObject ? getValueCaseInsensitive(target, ["guardSource", "GuardSource"]) : undefined;
     const responseText = typeof target === "string" ? target : "";
     const errorLikeText = /^\s*ERROR\s*:/i.test(responseText) ? responseText : "";
     const guarded = String(state || "").toLowerCase() === "guarded" ||
@@ -228,6 +236,7 @@ export function summarizeTelemetryResponse(response, error = null) {
     return {
         success: typeof successValue === "boolean" ? successValue : !errorValue && !errorLikeText,
         guarded,
+        guardSource: guarded ? normalizeGuardSource(explicitGuardSource) || "runtime" : null,
         state: state || null,
         action: action || null,
         responseKind: Array.isArray(target) ? "array" : target === null ? "null" : typeof target,
@@ -847,7 +856,10 @@ function publicLiveTask(task) {
         executionKind: task.executionKind || null,
         taskName: task.taskName || null,
         taskIdPresent: Boolean(task.taskId),
+        parentTaskName: task.parentTaskName || null,
+        parentTaskIdPresent: Boolean(task.parentTaskId),
         state: task.state,
+        guardSource: task.guardSource || null,
         startedAtUtc: task.startedAtUtc,
         finishedAtUtc: task.finishedAtUtc || null,
         durationMs: task.durationMs ?? null,
@@ -991,6 +1003,9 @@ function rememberLiveActivity(event) {
         executionKind: event.executionKind,
         taskName: event.taskName,
         taskId: event.taskId,
+        parentTaskName: event.parentTaskName,
+        parentTaskId: event.parentTaskId,
+        guardSource: event.guardSource,
         state: event.state,
         startedAtUtc: event.startedAtUtc,
         finishedAtUtc: event.finishedAtUtc,
@@ -1013,6 +1028,9 @@ function rememberLiveActivity(event) {
         logicalToolName: event.logicalToolName || null,
         executionKind: event.executionKind || null,
         taskName: event.taskName || null,
+        parentTaskName: event.parentTaskName || null,
+        parentTaskIdPresent: Boolean(event.parentTaskId),
+        guardSource: event.guardSource || null,
         startedAtUtc: event.startedAtUtc,
         finishedAtUtc: event.finishedAtUtc || null,
         durationMs: event.durationMs ?? null,
@@ -1066,6 +1084,9 @@ export function recordLiveActivityStarted(details = {}) {
         taskName: details.taskName || null,
         taskId: details.taskId || null,
         taskIdPresent: Boolean(details.taskId),
+        parentTaskName: details.parentTaskName || null,
+        parentTaskId: details.parentTaskId || null,
+        parentTaskIdPresent: Boolean(details.parentTaskId),
         startedAtUtc,
         params: summarizeTelemetryParams(details.params),
     });
@@ -1079,6 +1100,9 @@ export function recordLiveActivityStarted(details = {}) {
         executionKind: event.executionKind,
         taskName: event.taskName,
         taskId: event.taskId,
+        parentTaskName: event.parentTaskName,
+        parentTaskId: event.parentTaskId,
+        guardSource: event.guardSource,
         startedAtMs,
         startedAtUtc,
     };
@@ -1091,6 +1115,9 @@ export function recordLiveActivityFinished(task, details = {}) {
     const durationMs = details.durationMs ?? Math.max(0, finishedAtMs - (task.startedAtMs || finishedAtMs));
     const result = details.responseSummary || summarizeTelemetryResponse(details.response, details.error);
     const state = result.guarded ? "guarded" : result.success === false ? "failed" : "completed";
+    const guardSource = result.guarded
+        ? normalizeGuardSource(details.guardSource || task.guardSource || result.guardSource) || "runtime"
+        : null;
     const event = buildTelemetryEvent({
         schemaVersion: LIVE_ACTIVITY_SCHEMA_VERSION,
         eventType: "live.activity",
@@ -1105,6 +1132,10 @@ export function recordLiveActivityFinished(task, details = {}) {
         taskName: task.taskName || details.taskName || null,
         taskId: task.taskId || details.taskId || null,
         taskIdPresent: Boolean(task.taskId || details.taskId),
+        parentTaskName: task.parentTaskName || details.parentTaskName || null,
+        parentTaskId: task.parentTaskId || details.parentTaskId || null,
+        parentTaskIdPresent: Boolean(task.parentTaskId || details.parentTaskId),
+        guardSource,
         startedAtUtc: task.startedAtUtc || null,
         finishedAtUtc: new Date(finishedAtMs).toISOString(),
         durationMs,
@@ -1177,6 +1208,8 @@ export function recordRevitCommandTelemetry(details = {}) {
         executionKind: details.executionKind || "bridgeCommand",
         taskName: details.params?.taskName || details.options?.taskName || null,
         taskIdPresent: Boolean(details.params?.taskId || details.options?.taskId),
+        parentTaskName: details.params?.parentTaskName || details.options?.parentTaskName || null,
+        parentTaskIdPresent: Boolean(details.params?.parentTaskId || details.options?.parentTaskId),
         transactionMode: details.params?.transactionMode || details.options?.transactionMode || null,
         connection: {
             targetPresent: Boolean(details.options?.target),
@@ -1194,6 +1227,8 @@ export function recordRevitCommandTelemetry(details = {}) {
         responseSummary,
         taskName: details.params?.taskName || details.options?.taskName || null,
         taskId: details.params?.taskId || details.options?.taskId || null,
+        parentTaskName: details.params?.parentTaskName || details.options?.parentTaskName || null,
+        parentTaskId: details.params?.parentTaskId || details.options?.parentTaskId || null,
     });
 }
 function shouldRecordMcpTool(name) {
@@ -1223,6 +1258,8 @@ export function wrapServerWithTelemetry(server) {
                         toolName: name,
                         taskName: args?.taskName || null,
                         taskId: args?.taskId || null,
+                        parentTaskName: args?.parentTaskName || null,
+                        parentTaskId: args?.parentTaskId || null,
                         params: args,
                         startedAtMs,
                     })
@@ -1237,6 +1274,8 @@ export function wrapServerWithTelemetry(server) {
                             toolName: name,
                             taskName: args?.taskName || null,
                             taskIdPresent: Boolean(args?.taskId),
+                            parentTaskName: args?.parentTaskName || null,
+                            parentTaskIdPresent: Boolean(args?.parentTaskId),
                             durationMs,
                             params: summarizeTelemetryParams(args),
                             result: responseSummary,
@@ -1246,6 +1285,8 @@ export function wrapServerWithTelemetry(server) {
                             toolName: name,
                             taskName: args?.taskName || null,
                             taskId: args?.taskId || null,
+                            parentTaskName: args?.parentTaskName || null,
+                            parentTaskId: args?.parentTaskId || null,
                             params: args,
                             response: result,
                             durationMs,
@@ -1269,6 +1310,8 @@ export function wrapServerWithTelemetry(server) {
                             toolName: name,
                             taskName: args?.taskName || null,
                             taskIdPresent: Boolean(args?.taskId),
+                            parentTaskName: args?.parentTaskName || null,
+                            parentTaskIdPresent: Boolean(args?.parentTaskId),
                             durationMs,
                             params: summarizeTelemetryParams(args),
                             result: responseSummary,
@@ -1278,6 +1321,8 @@ export function wrapServerWithTelemetry(server) {
                             toolName: name,
                             taskName: args?.taskName || null,
                             taskId: args?.taskId || null,
+                            parentTaskName: args?.parentTaskName || null,
+                            parentTaskId: args?.parentTaskId || null,
                             params: args,
                             error,
                             durationMs,

@@ -10,7 +10,7 @@ const localRoot = path.join(tempRoot, "local-telemetry");
 process.env.REVAGENT_REPORTS_ROOT = reportsRoot;
 process.env.REVAGENT_TELEMETRY_ROOT = localRoot;
 process.env.REVAGENT_LIVE_STATUS_HEARTBEAT_MS = "0";
-process.env.REVAGENT_LIVE_STATUS_MAX_IN_FLIGHT = "8";
+process.env.REVAGENT_LIVE_STATUS_MAX_IN_FLIGHT = "16";
 process.env.COMPUTERNAME = "LIVE-TEST";
 process.env.USERNAME = "TESTUSER";
 
@@ -36,6 +36,31 @@ try {
       state: "completed",
     },
     durationMs: 123,
+  });
+
+  const guardedTask = telemetry.recordLiveActivityStarted({
+    scope: "mcp.tool",
+    toolName: "inspect_sheet_text",
+    taskName: "Runtime guarded sheet search",
+    taskId: "guarded-task-1",
+    parentTaskName: "Operator live feedback audit",
+    parentTaskId: "operator-parent-1",
+    params: {
+      textQuery: "PIPING",
+      taskName: "Runtime guarded sheet search",
+    },
+  });
+
+  telemetry.recordLiveActivityFinished(guardedTask, {
+    responseSummary: {
+      success: true,
+      guarded: true,
+      guardSource: "client",
+      state: "guarded",
+      action: "inspect_sheet_text",
+      errorMessage: "needs_scope",
+    },
+    durationMs: 7,
   });
 
   await telemetry.flushLiveWritesForTests();
@@ -77,6 +102,12 @@ try {
   assert.equal(status.activeTasks.length, 0);
   assert.ok(Array.isArray(status.recentActivity));
   assert.ok(status.recentActivity.some((item) => item.taskName === "Find live dashboard ducts" && item.phase === "completed"));
+  const guardedActivity = status.recentActivity.find((item) => item.taskName === "Runtime guarded sheet search" && item.phase === "guarded");
+  assert.equal(Boolean(guardedActivity), true);
+  assert.equal(guardedActivity.guardSource, "client");
+  assert.equal(guardedActivity.parentTaskName, "Operator live feedback audit");
+  assert.equal(guardedActivity.parentTaskIdPresent, true);
+  assert.equal(guardedActivity.result.guardSource, "client");
   assert.equal(status.revitStatus.recentTasks[0].taskName, "Status window aligned task");
   assert.equal(status.revitStatus.recentTasks[0].state, "failed");
   assert.equal(status.revitStatus.recentTasks[0].responseBytes, 222);
@@ -154,11 +185,15 @@ try {
   assert.equal(fallbackLifecycleTasks[0].responseBytes, 666);
 
   const lines = fs.readFileSync(activityPath, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
-  assert.equal(lines.length, 2);
+  assert.equal(lines.length, 4);
   assert.equal(lines[0].schemaVersion, "revagent.live.activity.v1");
   assert.equal(lines[0].phase, "started");
-  assert.equal(lines[1].phase, "completed");
-  assert.equal(lines[1].durationMs, 123);
+  assert.ok(lines.some((line) => line.phase === "completed" && line.durationMs === 123));
+  const guardedLine = lines.find((line) => line.phase === "guarded" && line.taskName === "Runtime guarded sheet search");
+  assert.equal(Boolean(guardedLine), true);
+  assert.equal(guardedLine.guardSource, "client");
+  assert.equal(guardedLine.parentTaskName, "Operator live feedback audit");
+  assert.equal(guardedLine.parentTaskIdPresent, true);
 
   const localStatusPath = path.join(localRoot, "live", "machines", "LIVE-TEST", "status.json");
   assert.ok(fs.existsSync(localStatusPath), "Local live status mirror was not written.");
