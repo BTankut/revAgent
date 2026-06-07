@@ -482,49 +482,54 @@ namespace RevitMCPCommandSet.Commands.View
             List<string> warnings,
             List<Dictionary<string, object>> evidenceRows)
         {
-            try
+            TableData tableData = schedule.GetTableData();
+            TableSectionData section = tableData != null ? tableData.GetSectionData(SectionType.Body) : null;
+            if (section == null)
             {
-                TableData tableData = schedule.GetTableData();
-                TableSectionData section = tableData != null ? tableData.GetSectionData(SectionType.Body) : null;
-                if (section == null)
-                {
-                    warnings.Add("Schedule body section data is not available for placed schedule " + schedule.Name + " on sheet " + sheet.SheetNumber + ".");
-                    return;
-                }
+                warnings.Add("Schedule body section data is not available for placed schedule " + schedule.Name + " on sheet " + sheet.SheetNumber + ".");
+                return;
+            }
 
-                int rowLimit = Math.Min(section.NumberOfRows, _request.MaxRowsPerSchedule);
-                int columnLimit = Math.Min(section.NumberOfColumns, _request.MaxColumnsPerSchedule);
-                for (int row = 0; row < rowLimit; row++)
+            int rowLimit = Math.Min(section.NumberOfRows, _request.MaxRowsPerSchedule);
+            int columnLimit = Math.Min(section.NumberOfColumns, _request.MaxColumnsPerSchedule);
+            bool rowsTruncated = section.NumberOfRows > rowLimit;
+            bool columnsTruncated = section.NumberOfColumns > columnLimit;
+            for (int row = 0; row < rowLimit; row++)
+            {
+                for (int column = 0; column < columnLimit; column++)
                 {
-                    for (int column = 0; column < columnLimit; column++)
+                    if (StopIfNeeded(deadlineUtc, state)) return;
+                    if (state.ScannedScheduleCellCount >= _request.MaxScheduleCellsScanned)
                     {
-                        if (StopIfNeeded(deadlineUtc, state)) return;
-                        if (state.ScannedScheduleCellCount >= _request.MaxScheduleCellsScanned)
-                        {
-                            state.Stop("max_cells");
-                            return;
-                        }
-
-                        state.ScannedScheduleCellCount++;
-                        state.LastReadItemId = instance.Id.GetIdValue();
-                        state.LastReadSection = "body";
-                        state.LastReadRow = row;
-                        state.LastReadColumn = column;
-
-                        string text = AnnotationEvidenceHelpers.ReadScheduleCell(schedule, SectionType.Body, row, column);
-                        if (string.IsNullOrWhiteSpace(text))
-                        {
-                            continue;
-                        }
-                        Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildPlacedScheduleCellEvidenceRow(sheet, instance, schedule, row, column, text, _request.MaxTextChars);
-                        AddPatternEvidence(record, "placedScheduleCell", text, state, warnings, evidenceRows);
-                        if (state.Partial) return;
+                        state.Stop("max_cells");
+                        return;
                     }
+
+                    state.ScannedScheduleCellCount++;
+                    state.LastReadItemId = instance.Id.GetIdValue();
+                    state.LastReadSection = "body";
+                    state.LastReadRow = row;
+                    state.LastReadColumn = column;
+
+                    string text = AnnotationEvidenceHelpers.ReadScheduleCell(schedule, SectionType.Body, row, column);
+                    if (string.IsNullOrWhiteSpace(text))
+                    {
+                        continue;
+                    }
+                    Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildPlacedScheduleCellEvidenceRow(sheet, instance, schedule, row, column, text, _request.MaxTextChars);
+                    AddPatternEvidence(record, "placedScheduleCell", text, state, warnings, evidenceRows);
+                    if (state.Partial) return;
                 }
             }
-            catch (Exception ex)
+
+            if (rowsTruncated)
             {
-                warnings.Add("Failed to scan placed schedule cells on sheet " + sheet.SheetNumber + ", schedule " + schedule.Name + ": " + ex.Message);
+                state.Stop("max_rows");
+                return;
+            }
+            if (columnsTruncated)
+            {
+                state.Stop("max_columns");
             }
         }
 
@@ -1186,7 +1191,7 @@ namespace RevitMCPCommandSet.Commands.View
 
         private static bool IsHardStop(string reason)
         {
-            return reason == "max_elapsed" || reason == "max_bytes" || reason == "max_items" || reason == "max_cells";
+            return reason == "max_elapsed" || reason == "max_bytes" || reason == "max_items" || reason == "max_cells" || reason == "max_rows" || reason == "max_columns";
         }
 
         private void Complete(CountAnnotationsResult result)

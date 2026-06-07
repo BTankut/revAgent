@@ -408,6 +408,26 @@ assert.equal(placedScheduleCellCountPayload.lastReadRow, 3);
 assert.equal(placedScheduleCellCountPayload.lastReadColumn, 2);
 assert.equal(placedScheduleCellCountPayload.lastReadItemId, 2001);
 
+const placedScheduleRowCapPayload = normalizeCountAnnotationsResult({
+  Success: true,
+  Action: "count_annotations",
+  Partial: true,
+  ScanStoppedReason: "max_rows",
+  ScannedSheetCount: 1,
+  ScannedScheduleInstanceCount: 1,
+  ScannedScheduleCellCount: 10,
+  LastReadSection: "body",
+  LastReadRow: 249,
+  LastReadColumn: 19,
+  EvidenceRows: [],
+}, { countMode: "occurrence", sources: ["placed_schedule_cells"], maxRowsPerSchedule: 250, maxColumnsPerSchedule: 20 }, 15);
+assert.equal(placedScheduleRowCapPayload.partial, true);
+assert.equal(placedScheduleRowCapPayload.scanStoppedReason, "max_rows");
+assert.equal(placedScheduleRowCapPayload.summary.scanStoppedReason, "max_rows");
+assert.equal(placedScheduleRowCapPayload.summary.scannedScheduleCellCount, 10);
+assert.equal(placedScheduleRowCapPayload.lastReadRow, 249);
+assert.equal(placedScheduleRowCapPayload.lastReadColumn, 19);
+
 const uniqueTagCountPayload = normalizeCountAnnotationsResult({
   Success: true,
   Action: "count_annotations",
