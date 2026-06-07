@@ -194,17 +194,18 @@ Normalization pipeline:
    `U+0430`, `U+0435`, `U+0432`, `U+043A`, `U+043C`, `U+043D`, `U+043E`,
    `U+0440`, `U+0441`, `U+0442`, `U+0445`, `U+0443`, mapped visually to
    `A`, `B`, `E`, `K`, `M`, `H`, `O`, `P`, `C`, `T`, `X`, and `Y`.
-6. Normalize diameter markers `U+00D8`, `U+00F8`, and Cyrillic ef `U+0424`
+6. Convert the whole normalized string to invariant uppercase.
+7. Normalize diameter markers `U+00D8`, `U+00F8`, and Cyrillic ef `U+0424`
    to `DN`.
-7. Normalize recognized unit patterns such as `L/S`, `M3/H`, `KCAL/H`, and
+8. Normalize recognized unit patterns such as `L/S`, `M3/H`, `KCAL/H`, and
    diameter expressions before generic separator replacement.
-8. Convert decimal comma between digits to decimal dot.
-9. Normalize separators, dash variants, underscores, slashes, punctuation, and
+9. Convert decimal comma between digits to decimal dot.
+10. Normalize separators, dash variants, underscores, slashes, punctuation, and
    parentheses to spaces unless they are part of a decimal number or an already
    canonical unit token.
-10. Normalize unit spellings: `MM`, `M`, `CM`, `DN`, `L/S`, `M3/H`, `KW`, and
+11. Normalize unit spellings: `MM`, `M`, `CM`, `DN`, `L/S`, `M3/H`, `KW`, and
    `KCAL/H` become canonical unit tokens.
-11. Collapse whitespace and trim.
+12. Collapse whitespace and trim.
 
 Tokenization:
 
@@ -251,9 +252,8 @@ Confidence buckets:
   beats the second candidate by at least 8 points.
 - `possibleRenames`: score at least 86 with matching code or dimension tokens
   but differing descriptive tokens, or score 72 to 85 with no hard conflict.
-- `ambiguousMatches`: best score at least 65 but top candidate gap under 8
-  points, duplicate exact keys, or multiple candidates sharing the same best
-  score.
+- `ambiguousMatches`: score 65 to 71, top candidate gap under 8 points,
+  duplicate exact keys, or multiple candidates sharing the same best score.
 - `missingInSchedule`: Excel row has no schedule candidate at score 65 or
   higher.
 - `missingInExcel`: schedule row has no Excel candidate at score 65 or higher.
