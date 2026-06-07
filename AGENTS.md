@@ -196,12 +196,17 @@ inspection. Treat readable tag rows as `viewportTag` evidence; tag API
 limitations should surface as warnings or notices without failing the whole
 sheet inspection.
 For general annotation inventory/count workflows, use `count_annotations`
-instead of raw sheet/view/tag loops. The core read-only surface counts
-DrawingSheet text notes and viewport tag evidence with bounded native traversal,
-profile-based matching, grouping, and count modes `occurrence`, `uniqueText`,
-`uniqueTag`, and `uniqueTaggedElement`. Tag-specific count modes default to
-`viewport_tags` when sources are omitted and guard explicit non-tag source mixes
-as `invalid_count_mode_for_sources`.
+instead of raw sheet/view/tag/schedule-cell loops. The read-only surface counts
+DrawingSheet text notes, placed schedule cells, and viewport tag evidence with
+bounded native traversal, profile-based matching, grouping, and count modes
+`occurrence`, `uniqueText`, `uniqueTag`, and `uniqueTaggedElement`.
+`sheet_text_notes`, `placed_schedule_cells`, and `viewport_tags` are the default
+sources except tag-specific count modes, which default to `viewport_tags` when
+sources are omitted. Explicit non-tag source mixes with tag-specific count modes
+are guarded as `invalid_count_mode_for_sources`. Placed schedule-cell scans are
+bounded by schedule instance, row, column, and cell caps; capped scans should
+return canonical partial stop reasons such as `max_rows`, `max_columns`, or
+`max_cells`.
 For schedule lookup or schedule cell reading in large projects, use
 `inspect_schedules` before raw dynamic C# loops. Start with `nameQuery` or
 exact `scheduleIds`, keep row/column limits bounded, and avoid scanning all

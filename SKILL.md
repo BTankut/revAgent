@@ -213,14 +213,19 @@ normalizer.
   Prefer this over broad custom C# loops when finding schedules or reading
   schedule cells.
 - `count_annotations` - read-only native annotation inventory/count for
-  DrawingSheet text notes and viewport tags. Use `sheetQuery` or exact
-  `sheetIds` first; project-wide counts require `allowExpensiveSearch=true`.
-  Profiles can use `exact`, `contains`, `startsWith`, `regex`, or
-  `normalizedRegex`, with regex length and per-candidate timeout bounds.
-  Count modes are `occurrence`, `uniqueText`, `uniqueTag`, and
-  `uniqueTaggedElement`. Tag-specific count modes use `viewport_tags` by
-  default when sources are omitted, and explicit non-tag source mixes return
-  guarded `invalid_count_mode_for_sources`.
+  DrawingSheet text notes, placed schedule cells, and viewport tags. Use
+  `sheetQuery` or exact `sheetIds` first; project-wide counts require
+  `allowExpensiveSearch=true`. Sources default to `sheet_text_notes`,
+  `placed_schedule_cells`, and `viewport_tags` except tag-specific count modes,
+  which default to `viewport_tags` when sources are omitted. Profiles can use
+  `exact`, `contains`, `startsWith`, `regex`, or `normalizedRegex`, with regex
+  length and per-candidate timeout bounds. Count modes are `occurrence`,
+  `uniqueText`, `uniqueTag`, and `uniqueTaggedElement`. Explicit non-tag source
+  mixes with tag-specific count modes return guarded
+  `invalid_count_mode_for_sources`. Placed schedule-cell scans are bounded by
+  schedule instance, row, column, and cell caps, and capped scans return
+  canonical partial stop reasons such as `max_rows`, `max_columns`, and
+  `max_cells`.
   Prefer this over custom C# loops for annotation counts.
 - `inspect_parameter_schema` - parameter schema for element ids or category
   samples: user-facing BIP display name/id first, raw enum alias as diagnostic

@@ -511,6 +511,18 @@ as an example profile or validation scenario.
 - DLL changes require payload rebuild, manifest refresh, pre-merge live Revit
   gate. Stable deploy waits until the end of the Workstream 3 batch.
 
+### Implementation Status
+
+- WS3 implementation PRs #43, #44, and #46 have landed the shared helpers,
+  core count semantics, viewport tag evidence, placed schedule-cell source, and
+  per-sheet guard batching.
+- WS3 PR #4 is docs/release readiness only. It must not change DLL or runtime
+  command payload behavior, does not require a live Revit gate if it stays
+  documentation-only, and still merges without individual stable deploy.
+- After WS3 PR #4 merges, Workstream 3 is ready for one cumulative stable deploy
+  covering #43, #44, #46, and PR #4, but that deploy requires a separate human
+  approval.
+
 ### Inputs
 
 Scope:
