@@ -147,8 +147,9 @@ namespace RevitMCPCommandSet.Commands.View
                     return;
                 }
 
-                int deletedCount = DeleteView(document, targetView.Id);
-                Autodesk.Revit.DB.View afterView = document.GetElement(targetView.Id) as Autodesk.Revit.DB.View;
+                ElementId targetViewId = targetView.Id;
+                int deletedCount = DeleteView(document, targetViewId);
+                Autodesk.Revit.DB.View afterView = document.GetElement(targetViewId) as Autodesk.Revit.DB.View;
                 Complete(new ViewOperationResult
                 {
                     Success = afterView == null,
