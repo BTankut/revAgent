@@ -55,13 +55,15 @@ structural, and electrical modules should add module-specific MCP tools in the
 runtime layer while reusing this shared Revit bridge for common execution,
 context, selection, view, and navigation operations.
 
-The current runtime server registers 27 tools:
+The current runtime server registers 28 tools:
 
 - status and targeting: `list_revit_instances`, `get_revit_mcp_status`
 - dynamic execution: `send_code_to_revit`, `send_code_to_revit_safe`
 - model/session context: `get_revit_session_context`,
   `get_active_view_context`, `inspect_elements`, `inspect_sheet_text`,
   `inspect_schedules`, `count_annotations`, `inspect_parameter_schema`
+- review/reconciliation: `reconcile_schedule_excel` for deterministic,
+  write-free schedule-to-Excel review output
 - controlled data writes: `set_element_parameter` for exact-schema
   parameter set/clear operations, `set_schedule_cells` for exact schedule cell
   text writes by schedule id/section/row/column, and
@@ -112,6 +114,13 @@ is owned by the native commandset handler and is bounded by `maxElapsedMs`,
 `maxCells`, and `maxResponseBytes`; early stops return `partial=true`,
 `scanStoppedReason`, and `lastReadSection`/`lastReadRow`/`lastReadColumn`
 continuation state instead of relying on socket timeout behavior.
+`reconcile_schedule_excel` is the runtime-only schedule-to-Excel reconciliation
+surface. It consumes explicit Excel/CSV/rows input and normalized
+`inspect_schedules` evidence, normalizes/tokenizes both sides, applies
+deterministic scoring, and returns review buckets plus `reviewRows` and
+`reviewTable`. It is review-first and write-free; accepted corrections are
+separate confirmed workflows through schedule-cell write tools or workbook
+editing paths.
 `count_annotations` is a read-only native commandset workflow for general
 annotation inventory/count work. Its surface counts DrawingSheet text-note,
 placed schedule-cell, and viewport tag evidence with explicit profiles,

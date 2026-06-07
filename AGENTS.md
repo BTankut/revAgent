@@ -51,6 +51,7 @@ Mandatory routing examples:
 
 - Sheet text lookup goes through `inspect_sheet_text`.
 - Schedule discovery and cell reading go through `inspect_schedules`.
+- Schedule-to-Excel reconciliation/review goes through `reconcile_schedule_excel`.
 - Annotation inventory/count work goes through `count_annotations`.
 - Exact schedule cell writes go through `set_schedule_cells`.
 - Row-text-driven schedule writes go through `set_schedule_cells_by_text`.
@@ -217,6 +218,13 @@ use `partial`, `scanStoppedReason`, `lastReadSection`, `lastReadRow`,
 `lastReadColumn`, and `lastReadItemId` to narrow the next call with exact
 `scheduleIds`, `sections`, `startRow`, `startColumn`, or lower row/column/cell
 limits.
+For schedule-to-Excel reconciliation, use `reconcile_schedule_excel` after
+collecting bounded schedule evidence with `inspect_schedules` and selecting an
+explicit Excel/CSV/rows source. The tool is review-first and write-free: it
+returns deterministic match buckets, `reviewRows`, and `reviewTable`, but it
+does not write Revit schedule cells or workbook data. Treat accepted follow-up
+edits as separate confirmed workflows through `set_schedule_cells`,
+`set_schedule_cells_by_text`, or a workbook-specific tool.
 For element discovery in large projects, use `find_elements` as a progressive
 MEP-aware search rather than a full-model free-text scan. Let it infer obvious
 engineering scope first: fan coil/FCU maps to Mechanical Equipment, valve/vana

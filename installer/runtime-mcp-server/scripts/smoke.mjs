@@ -90,6 +90,7 @@ const expectedTools = [
   "inspect_elements",
   "inspect_sheet_text",
   "inspect_schedules",
+  "reconcile_schedule_excel",
   "count_annotations",
   "inspect_parameter_schema",
   "set_element_parameter",
@@ -126,6 +127,15 @@ assert.equal("maxCells" in inspectSchedulesSchema, true);
 assert.equal("maxResponseBytes" in inspectSchedulesSchema, true);
 assert.equal("startRow" in inspectSchedulesSchema, true);
 assert.equal("startColumn" in inspectSchedulesSchema, true);
+const reconcileScheduleExcelDescription = tools.get("reconcile_schedule_excel").description;
+assert.match(reconcileScheduleExcelDescription, /SCHEDULE_EXCEL_RECONCILIATION_REVIEW_ONLY/);
+assert.match(reconcileScheduleExcelDescription, /Review-first\/write-free/);
+assert.match(reconcileScheduleExcelDescription, /reviewRows\/reviewTable/);
+assert.match(reconcileScheduleExcelDescription, /Does not write Revit or workbook data/);
+const reconcileScheduleExcelSchema = tools.get("reconcile_schedule_excel").schema;
+assert.equal("excel" in reconcileScheduleExcelSchema, true);
+assert.equal("schedule" in reconcileScheduleExcelSchema, true);
+assert.equal("config" in reconcileScheduleExcelSchema, true);
 const inspectSheetTextDescription = tools.get("inspect_sheet_text").description;
 assert.match(inspectSheetTextDescription, /SHEET_TEXT_INSPECTION_READ_ONLY/);
 assert.match(inspectSheetTextDescription, /DrawingSheet/);
