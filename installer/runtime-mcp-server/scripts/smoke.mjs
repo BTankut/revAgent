@@ -418,6 +418,7 @@ const safeRejectionSummary = summarizeTelemetryResponse({
   error: "Rejected write-looking code for intent 'writePreview'.",
 });
 assert.equal(safeRejectionSummary.guarded, true);
+assert.equal(safeRejectionSummary.guardSource, "runtime");
 
 const productionContext = extractProductionContext({
   sourceEventType: "revit.command",

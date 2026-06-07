@@ -7,6 +7,10 @@ All notable revAgent workstation deployment changes are tracked here.
 - Backfilled documentation alignment for the completed usage-intelligence
   roadmap, including the plan completion record and operator-facing promotion
   guidance.
+- Added runtime/live-feed guard history fields so MCP-side guarded operations
+  surface `guardSource` without being misrepresented as Revit-side
+  `mcp_status.recentTasks`, and preserved wrapper parent task id/name across
+  nested Revit sub-operations.
 
 ## 2026.06.07.318-4ca1c36e
 
