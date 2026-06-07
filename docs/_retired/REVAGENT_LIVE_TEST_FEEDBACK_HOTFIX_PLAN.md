@@ -166,7 +166,9 @@ Scope:
 
 Gate:
 
-- native fixture/contract tests;
+- native fixture/contract tests plus installer smoke contract assertions for
+  exposed source aliases such as `placed_schedule_cell`, `schedule_cell`, and
+  `viewport_text_notes`;
 - `npm test`;
 - `scripts/test-ci.ps1`;
 - operator live Revit gate before merge, because this changes native traversal
