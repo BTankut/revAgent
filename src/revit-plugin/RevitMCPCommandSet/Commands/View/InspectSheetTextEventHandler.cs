@@ -76,6 +76,7 @@ namespace RevitMCPCommandSet.Commands.View
         public object Scan { get; set; }
         public List<InspectSheetTextSheetResult> Sheets { get; set; }
         public List<Dictionary<string, object>> Matches { get; set; }
+        public List<Dictionary<string, object>> InventoryRows { get; set; }
         public List<string> Warnings { get; set; }
         public List<string> Notices { get; set; }
     }
@@ -178,7 +179,7 @@ namespace RevitMCPCommandSet.Commands.View
                 List<ViewSheet> sourceSheets = ResolveSourceSheets(document, warnings, deadlineUtc, state);
                 if (state.Partial)
                 {
-                    Complete(BuildCompletedResult(sourceSheets.Count, 0, new List<InspectSheetTextSheetResult>(), new List<Dictionary<string, object>>(), state, warnings, notices));
+                    Complete(BuildCompletedResult(sourceSheets.Count, 0, new List<InspectSheetTextSheetResult>(), new List<Dictionary<string, object>>(), new List<Dictionary<string, object>>(), state, warnings, notices));
                     return;
                 }
 
@@ -188,6 +189,7 @@ namespace RevitMCPCommandSet.Commands.View
                 int candidateCount = 0;
                 List<InspectSheetTextSheetResult> sheets = new List<InspectSheetTextSheetResult>();
                 List<Dictionary<string, object>> matches = new List<Dictionary<string, object>>();
+                List<Dictionary<string, object>> inventoryRows = new List<Dictionary<string, object>>();
 
                 foreach (ViewSheet sheet in sourceSheets.OrderBy(s => s.SheetNumber).ThenBy(s => s.Name))
                 {
@@ -208,7 +210,7 @@ namespace RevitMCPCommandSet.Commands.View
                     }
 
                     state.ScannedSheetCount++;
-                    InspectSheetTextSheetResult sheetResult = ScanSheet(document, sheet, sheetMatches, hasTextQuery, deadlineUtc, state, warnings, matches);
+                    InspectSheetTextSheetResult sheetResult = ScanSheet(document, sheet, sheetMatches, hasTextQuery, deadlineUtc, state, warnings, matches, inventoryRows);
                     if (sheetResult == null)
                     {
                         break;
@@ -222,7 +224,7 @@ namespace RevitMCPCommandSet.Commands.View
                     }
                 }
 
-                Complete(BuildCompletedResult(sourceSheets.Count, candidateCount, sheets, matches, state, warnings, notices));
+                Complete(BuildCompletedResult(sourceSheets.Count, candidateCount, sheets, matches, inventoryRows, state, warnings, notices));
             }
             catch (Exception ex)
             {
@@ -250,7 +252,8 @@ namespace RevitMCPCommandSet.Commands.View
                     Warnings = warnings,
                     Notices = notices,
                     Sheets = new List<InspectSheetTextSheetResult>(),
-                    Matches = new List<Dictionary<string, object>>()
+                    Matches = new List<Dictionary<string, object>>(),
+                    InventoryRows = new List<Dictionary<string, object>>()
                 });
             }
         }
@@ -263,7 +266,8 @@ namespace RevitMCPCommandSet.Commands.View
             DateTime deadlineUtc,
             SheetAnnotationScanState state,
             List<string> warnings,
-            List<Dictionary<string, object>> flatMatches)
+            List<Dictionary<string, object>> flatMatches,
+            List<Dictionary<string, object>> inventoryRows)
         {
             InspectSheetTextSheetResult result = new InspectSheetTextSheetResult
             {
@@ -285,7 +289,7 @@ namespace RevitMCPCommandSet.Commands.View
 
             if (_request.IncludeScheduleInstances)
             {
-                ScanScheduleInstances(document, sheet, result, hasTextQuery, deadlineUtc, state, warnings, flatMatches);
+                ScanScheduleInstances(document, sheet, result, hasTextQuery, deadlineUtc, state, warnings, flatMatches, inventoryRows);
                 if (state.Partial && IsHardStop(state.ScanStoppedReason)) return result;
             }
 
@@ -365,7 +369,8 @@ namespace RevitMCPCommandSet.Commands.View
             DateTime deadlineUtc,
             SheetAnnotationScanState state,
             List<string> warnings,
-            List<Dictionary<string, object>> flatMatches)
+            List<Dictionary<string, object>> flatMatches,
+            List<Dictionary<string, object>> inventoryRows)
         {
             if (state.ScannedScheduleInstanceCount >= _request.MaxScheduleInstancesScanned)
             {
@@ -409,20 +414,30 @@ namespace RevitMCPCommandSet.Commands.View
                         }
                     }
 
+                    bool matchedTextQuery = !hasTextQuery || (_request.ScanScheduleCells && scheduleCellMatchCount > 0);
                     bool includeSchedule = !hasTextQuery || !_request.ScanScheduleCells || scheduleCellMatchCount > 0;
                     if (!includeSchedule) continue;
 
                     Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildScheduleInstanceRecord(sheet, instance, schedule, cellScan);
+                    record["matchedTextQuery"] = matchedTextQuery;
+                    record["inventoryOnly"] = !matchedTextQuery;
                     if (!AddRecordIfWithinResponseBudget(record, state)) return;
 
                     returned++;
-                    state.TotalScheduleInstanceMatches++;
                     result.ScheduleInstanceReturned = returned;
                     result.ScheduleInstances.Add(record);
 
                     Dictionary<string, object> flat = AnnotationEvidenceHelpers.CloneRecord(record);
                     flat["kind"] = "scheduleInstance";
-                    flatMatches.Add(flat);
+                    if (matchedTextQuery)
+                    {
+                        state.TotalScheduleInstanceMatches++;
+                        flatMatches.Add(flat);
+                    }
+                    else
+                    {
+                        inventoryRows.Add(flat);
+                    }
                 }
             }
         }
@@ -863,6 +878,7 @@ namespace RevitMCPCommandSet.Commands.View
                 Scan = BuildScanSummary(state),
                 Sheets = new List<InspectSheetTextSheetResult>(),
                 Matches = new List<Dictionary<string, object>>(),
+                InventoryRows = new List<Dictionary<string, object>>(),
                 Warnings = warnings,
                 Notices = notices
             };
@@ -873,6 +889,7 @@ namespace RevitMCPCommandSet.Commands.View
             int candidateCount,
             List<InspectSheetTextSheetResult> sheets,
             List<Dictionary<string, object>> matches,
+            List<Dictionary<string, object>> inventoryRows,
             SheetAnnotationScanState state,
             List<string> warnings,
             List<string> notices)
@@ -913,6 +930,7 @@ namespace RevitMCPCommandSet.Commands.View
                 Scan = BuildScanSummary(state),
                 Sheets = sheets,
                 Matches = matches,
+                InventoryRows = inventoryRows,
                 Warnings = warnings,
                 Notices = notices
             };

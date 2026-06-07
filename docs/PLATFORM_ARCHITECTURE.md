@@ -101,10 +101,12 @@ and optional viewport-linked text notes from views placed on matching sheets so
 agents do not have to generate broad ad hoc C# sheet or viewport collectors.
 Project-wide sheet text, viewport text, tag, or placed schedule-cell scans
 require explicit `allowExpensiveSearch=true`; native elapsed, scan-count, and
-response-size budgets return partial evidence before transport timeout. Viewport
-tag scanning is opt-in and returns bounded native `viewportTag` evidence when
-tag text is readable; tag API limitations are reported through warnings or
-notices without failing the whole sheet inspection.
+response-size budgets return partial evidence before transport timeout. Placed
+schedule instances that do not match the requested text remain inventory rows
+instead of top-level evidence matches. Viewport tag scanning is opt-in and
+returns bounded native `viewportTag` evidence when tag text is readable; tag
+API limitations are reported through warnings or notices without failing the
+whole sheet inspection.
 `inspect_schedules` is a read-only runtime tool for large-project schedule work.
 It provides bounded schedule-name discovery and bounded header/body/footer cell
 reads/scans so agents do not have to generate broad ad hoc C# loops over every
@@ -123,13 +125,14 @@ separate confirmed workflows through schedule-cell write tools or workbook
 editing paths.
 `count_annotations` is a read-only native commandset workflow for general
 annotation inventory/count work. Its surface counts DrawingSheet text-note,
-placed schedule-cell, and viewport tag evidence with explicit profiles,
-bounded regex matching, grouping, and stable count semantics (`occurrence`,
-`uniqueText`, `uniqueTag`, and `uniqueTaggedElement`). Broad counts without
-`sheetQuery` or exact `sheetIds` require explicit `allowExpensiveSearch=true`.
-Placed schedule-cell traversal is bounded by schedule instance, row, column,
-and cell caps, and capped reads report canonical partial stop reasons instead
-of returning a silent `completed` result.
+viewport text-note, placed schedule-cell, and viewport tag evidence with
+explicit profiles, bounded regex matching, grouping, and stable count semantics
+(`occurrence`, `uniqueText`, `uniqueTag`, and `uniqueTaggedElement`). Broad
+counts without `sheetQuery` or exact `sheetIds` require explicit
+`allowExpensiveSearch=true`. Placed schedule-cell traversal is bounded by
+schedule instance, row, column, and cell caps, and capped reads report
+canonical partial stop reasons instead of returning a silent `completed`
+result.
 Both broad scan tools are normalized through the shared runtime broad-scan
 result contract in `installer/runtime-mcp-server/src/utils/broadScanResult.ts`.
 Their top-level result uses the same fields for `partial`, `scanStoppedReason`,

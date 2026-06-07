@@ -241,6 +241,7 @@ namespace RevitMCPCommandSet.Commands.View
                 else
                 {
                     sources.Add("sheet_text_notes");
+                    sources.Add("viewport_text_notes");
                     sources.Add("placed_schedule_cells");
                     sources.Add("viewport_tags");
                 }
@@ -263,6 +264,15 @@ namespace RevitMCPCommandSet.Commands.View
                 string.Equals(normalized, "viewport_tags", StringComparison.OrdinalIgnoreCase))
             {
                 return "viewport_tags";
+            }
+            if (string.Equals(normalized, "viewportTextNotes", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "viewportTextNote", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "viewport_text_notes", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "viewport_text_note", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "view_text_notes", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "viewTextNotes", StringComparison.OrdinalIgnoreCase))
+            {
+                return "viewport_text_notes";
             }
             if (string.Equals(normalized, "placedScheduleCells", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(normalized, "placedScheduleCell", StringComparison.OrdinalIgnoreCase) ||

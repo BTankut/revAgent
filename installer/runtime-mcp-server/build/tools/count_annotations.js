@@ -52,6 +52,9 @@ function normalizeSource(value) {
     if (/^viewport_?tags?$/i.test(normalized) || /^viewportTags?$/i.test(normalized)) {
         return "viewport_tags";
     }
+    if (/^viewport_?text_?notes?$/i.test(normalized) || /^viewportTextNotes?$/i.test(normalized) || /^view_?text_?notes?$/i.test(normalized) || /^viewTextNotes?$/i.test(normalized)) {
+        return "viewport_text_notes";
+    }
     if (/^placed_?schedule_?cells?$/i.test(normalized) || /^placedScheduleCells?$/i.test(normalized) || /^schedule_?cells?$/i.test(normalized) || /^scheduleCells?$/i.test(normalized)) {
         return "placed_schedule_cells";
     }
@@ -86,7 +89,7 @@ function resolveSources(args) {
     }
     return isTagCountMode(countMode)
         ? ["viewport_tags"]
-        : ["sheet_text_notes", "placed_schedule_cells", "viewport_tags"];
+        : ["sheet_text_notes", "viewport_text_notes", "placed_schedule_cells", "viewport_tags"];
 }
 function hasExplicitSources(args) {
     return Array.isArray(args.sources) && args.sources.length > 0;
@@ -166,6 +169,8 @@ function sourceTypeForAnnotationEvidence(row) {
     const candidates = [rawSourceType, kind];
     if (candidates.some((candidate) => candidate === "viewportTag" || candidate === "viewport_tags"))
         return "viewportTag";
+    if (candidates.some((candidate) => candidate === "viewportTextNote" || candidate === "viewport_text_notes"))
+        return "viewportTextNote";
     if (candidates.some((candidate) => candidate === "sheetTextNote" || candidate === "sheet_text_notes"))
         return "sheetTextNote";
     if (candidates.some((candidate) => candidate === "placedScheduleCell" || candidate === "placed_schedule_cells" || candidate === "scheduleCell"))
@@ -433,7 +438,7 @@ function buildGuardedInvalidCountMode(args) {
     });
 }
 export function registerCountAnnotationsTool(server) {
-    server.tool("count_annotations", "[ANNOTATION_COUNT_READ_ONLY] Read-only native Revit annotation inventory/count for DrawingSheet text notes, placed schedule cells, and viewport tag evidence. Use sheetQuery/sheetIds first; project-wide annotation counts require allowExpensiveSearch=true. Supports occurrence, uniqueText, uniqueTag, and uniqueTaggedElement count modes with bounded regex profiles.", {
+    server.tool("count_annotations", "[ANNOTATION_COUNT_READ_ONLY] Read-only native Revit annotation inventory/count for DrawingSheet text notes, viewport text notes, placed schedule cells, and viewport tag evidence. Use sheetQuery/sheetIds first; project-wide annotation counts require allowExpensiveSearch=true. Supports occurrence, uniqueText, uniqueTag, and uniqueTaggedElement count modes with bounded regex profiles.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Anonymous text query. Defaults to contains matching unless matchMode is supplied."),
@@ -445,7 +450,7 @@ export function registerCountAnnotationsTool(server) {
         sheetQuery: z.string().optional().describe("Sheet number/name scope. Use this first in large projects."),
         sheetIds: z.array(z.union([z.number(), z.string()])).optional().describe("Exact ViewSheet element ids to inspect. Preferred when known."),
         viewNameQuery: z.string().optional().describe("Optional placed-view name filter before viewport tag inspection."),
-        sources: z.array(z.enum(["sheet_text_notes", "placed_schedule_cells", "placed_schedule_cell", "viewport_tags", "sheetTextNotes", "placedScheduleCells", "placedScheduleCell", "schedule_cells", "schedule_cell", "scheduleCells", "scheduleCell", "viewportTags"])).optional().describe("Annotation sources. Defaults to sheet_text_notes + placed_schedule_cells + viewport_tags except tag-specific count modes, which default to viewport_tags."),
+        sources: z.array(z.enum(["sheet_text_notes", "viewport_text_notes", "viewport_text_note", "placed_schedule_cells", "placed_schedule_cell", "viewport_tags", "sheetTextNotes", "viewportTextNotes", "viewportTextNote", "view_text_notes", "viewTextNotes", "placedScheduleCells", "placedScheduleCell", "schedule_cells", "schedule_cell", "scheduleCells", "scheduleCell", "viewportTags"])).optional().describe("Annotation sources. Defaults to sheet_text_notes + viewport_text_notes + placed_schedule_cells + viewport_tags except tag-specific count modes, which default to viewport_tags."),
         countMode: z.enum(["occurrence", "uniqueText", "uniqueTag", "uniqueTaggedElement"]).optional().describe("Count semantics. Tag-specific modes require viewport_tags as the only explicit source."),
         groupBy: z.array(z.enum(["sheet", "view", "sourceType", "profile", "profileName", "pattern", "patternName", "matchedText", "matchedCode", "tagFamilyType", "taggedElement", "taggedElementId"])).optional().describe("Optional grouping dimensions for count rows."),
         allowExpensiveSearch: z.boolean().optional().describe("Explicit approval for project-wide sheet and placed-view annotation counting without sheetIds/sheetQuery. Defaults false."),

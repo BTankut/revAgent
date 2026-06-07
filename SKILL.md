@@ -202,10 +202,11 @@ normalizer.
   evidence, not a socket failure. Broad scan responses also expose
   `summary`, `evidenceRows`, `suggestedNextScopes`, and `lastRead*` continuation
   fields. Legacy native stop reasons may be preserved as raw diagnostics, but
-  `scanStoppedReason` uses the shared canonical vocabulary. `includeViewportTags`
-  is opt-in and performs bounded native `IndependentTag` inspection, returning
-  readable tags as `viewportTag` evidence while reporting tag API limitations
-  through warnings or notices.
+  `scanStoppedReason` uses the shared canonical vocabulary. Placed schedule
+  instances that do not match `textQuery` are inventory rows, not evidence
+  matches. `includeViewportTags` is opt-in and performs bounded native
+  `IndependentTag` inspection, returning readable tags as `viewportTag`
+  evidence while reporting tag API limitations through warnings or notices.
   Prefer this over broad custom C# sheet or placed-view loops.
 - `inspect_schedules` - read-only schedule discovery and bounded cell
   inspection. Use `nameQuery` or exact `scheduleIds` first in large projects,
@@ -232,11 +233,13 @@ normalizer.
   `set_schedule_cells_by_text`, or a separate workbook workflow after human
   review.
 - `count_annotations` - read-only native annotation inventory/count for
-  DrawingSheet text notes, placed schedule cells, and viewport tags. Use
+  DrawingSheet text notes, viewport text notes, placed schedule cells, and
+  viewport tags. Use
   `sheetQuery` or exact `sheetIds` first; project-wide counts require
   `allowExpensiveSearch=true`. Sources default to `sheet_text_notes`,
-  `placed_schedule_cells`, and `viewport_tags` except tag-specific count modes,
-  which default to `viewport_tags` when sources are omitted. Profiles can use
+  `viewport_text_notes`, `placed_schedule_cells`, and `viewport_tags` except
+  tag-specific count modes, which default to `viewport_tags` when sources are
+  omitted. Profiles can use
   `exact`, `contains`, `startsWith`, `regex`, or `normalizedRegex`, with regex
   length and per-candidate timeout bounds. Count modes are `occurrence`,
   `uniqueText`, `uniqueTag`, and `uniqueTaggedElement`. Explicit non-tag source

@@ -395,8 +395,10 @@ plan visibility requires exact targets or explicit expensive-search approval,
 native `inspect_sheet_text` guards no-scope viewport scans before expensive
 work, scoped sheet/viewport text-note evidence stays bounded, response pressure
 returns `scanStoppedReason="max_bytes"`, schedule-cell caps return
-`max_schedule_cells`, viewport tag requests return bounded `viewportTag`
-evidence when tag text is readable, native `inspect_schedules` returns
+canonical `scanStoppedReason="max_cells"` with legacy native aliases preserved
+only as raw diagnostics, viewport tag requests return bounded `viewportTag`
+evidence when tag text is readable, `count_annotations` can count
+`viewport_text_notes` evidence from placed views, native `inspect_schedules` returns
 controlled `partial=true` results for `max_cells`/`max_bytes` pressure with
 `lastReadSection`/`lastReadRow`/`lastReadColumn` continuation state, and
 `needs_scope` is emitted as `state="guarded"` with `reason="needs_scope"` rather

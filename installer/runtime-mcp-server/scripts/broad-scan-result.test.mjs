@@ -143,6 +143,55 @@ assert.equal(nativeViewportTagPayload.lastReadViewportId, 3003);
 assert.equal(nativeViewportTagPayload.lastReadViewId, 4004);
 assert.equal(nativeViewportTagPayload.lastReadItemId, 5005);
 
+const nativeSheetTextInventoryOnlyPayload = normalizeSheetTextResult({
+  Success: true,
+  Action: "inspect_sheet_text",
+  SheetQuery: "M701",
+  TextQuery: "PIPING",
+  Partial: true,
+  ScanStoppedReason: "max_sheets",
+  TotalSheets: 12,
+  CandidateCount: 31,
+  ReturnedCount: 1,
+  ScannedSheetCount: 30,
+  Matches: [{
+    Kind: "scheduleInstance",
+    SheetId: 1001,
+    SheetNumber: "M701",
+    SheetName: "Mechanical Schedules",
+    InstanceId: 2101,
+    ScheduleId: 3101,
+    ScheduleName: "Revision Schedule",
+    IsTitleblockRevisionSchedule: true,
+    MatchedTextQuery: false,
+    InventoryOnly: true,
+  }],
+  InventoryRows: [{
+    Kind: "scheduleInstance",
+    SheetId: 1001,
+    SheetNumber: "M701",
+    SheetName: "Mechanical Schedules",
+    InstanceId: 2101,
+    ScheduleId: 3101,
+    ScheduleName: "Revision Schedule",
+    IsTitleblockRevisionSchedule: true,
+    MatchedTextQuery: false,
+    InventoryOnly: true,
+  }],
+}, 16);
+assert.equal(nativeSheetTextInventoryOnlyPayload.partial, true);
+assert.equal(nativeSheetTextInventoryOnlyPayload.scanStoppedReason, "max_items");
+assert.equal(nativeSheetTextInventoryOnlyPayload.rawScanStoppedReason, "max_sheets");
+assert.equal(nativeSheetTextInventoryOnlyPayload.summary.scanStopDetail.canonicalReason, "max_items");
+assert.equal(nativeSheetTextInventoryOnlyPayload.summary.scanStopDetail.nativeReason, "max_sheets");
+assert.equal(nativeSheetTextInventoryOnlyPayload.summary.scanStopDetail.nativeLimitField, "maxSheets");
+assert.equal(nativeSheetTextInventoryOnlyPayload.evidenceRows.length, 0);
+assert.equal(nativeSheetTextInventoryOnlyPayload.summary.matchCount, 0);
+assert.equal(nativeSheetTextInventoryOnlyPayload.inventoryRows.length, 1);
+assert.equal(nativeSheetTextInventoryOnlyPayload.summary.inventoryRowCount, 1);
+assert.equal(nativeSheetTextInventoryOnlyPayload.inventoryRows[0].sourceType, "placedScheduleInstance");
+assert.equal(nativeSheetTextInventoryOnlyPayload.inventoryRows[0].matchedTextQuery, false);
+
 const nativeScheduleFailurePayload = normalizeScheduleResult({
   Success: false,
   Action: "inspect_schedules",
@@ -404,6 +453,45 @@ const uniqueTextCountPayload = normalizeCountAnnotationsResult({
 }, { countMode: "uniqueText" }, 13);
 assert.equal(uniqueTextCountPayload.summary.count, 3);
 assert.equal(uniqueTextCountPayload.evidenceRows.filter((row) => row.counted).length, 3);
+
+const viewportTextNoteCountPayload = normalizeCountAnnotationsResult({
+  Success: true,
+  Action: "count_annotations",
+  Partial: false,
+  ScanStoppedReason: "completed",
+  ScannedSheetCount: 1,
+  ScannedViewportCount: 1,
+  ScannedTextNoteCount: 1,
+  LastReadSheetId: 1001,
+  LastReadViewId: 4004,
+  LastReadViewportId: 3003,
+  LastReadItemId: 5006,
+  EvidenceRows: [
+    {
+      Kind: "viewportTextNote",
+      Id: 5006,
+      ElementId: 5006,
+      SheetId: 1001,
+      SheetNumber: "M701",
+      ViewportId: 3003,
+      ViewId: 4004,
+      ViewName: "Level 08 HVAC",
+      Text: "PIPING VANA",
+      TextNormalized: "piping vana",
+      ProfileName: "viewport-text",
+      PatternName: "contains-vana",
+      MatchedText: "vana",
+      MatchedTextNormalized: "vana",
+    },
+  ],
+}, { countMode: "occurrence", sources: ["viewport_text_notes"], groupBy: ["sourceType"] }, 14);
+assert.equal(viewportTextNoteCountPayload.summary.count, 1);
+assert.equal(viewportTextNoteCountPayload.summary.scannedTextNoteCount, 1);
+assert.equal(viewportTextNoteCountPayload.evidenceRows[0].sourceType, "viewportTextNote");
+assert.equal(viewportTextNoteCountPayload.groups[0].sourceType, "viewportTextNote");
+assert.equal(viewportTextNoteCountPayload.lastReadViewId, 4004);
+assert.equal(viewportTextNoteCountPayload.lastReadViewportId, 3003);
+assert.equal(viewportTextNoteCountPayload.lastReadItemId, 5006);
 
 const placedScheduleCellCountPayload = normalizeCountAnnotationsResult({
   Success: true,
