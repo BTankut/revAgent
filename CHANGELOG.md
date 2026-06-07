@@ -11,6 +11,9 @@ All notable revAgent workstation deployment changes are tracked here.
   surface `guardSource` without being misrepresented as Revit-side
   `mcp_status.recentTasks`, and preserved wrapper parent task id/name across
   nested Revit sub-operations.
+- Separated `inspect_sheet_text` inventory-only placed schedules from evidence
+  matches, made sheet-scan stop diagnostics explicit, and extended
+  `count_annotations` to include viewport text-note sources.
 
 ## 2026.06.07.318-4ca1c36e
 

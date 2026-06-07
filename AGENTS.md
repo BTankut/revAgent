@@ -204,13 +204,14 @@ limitations should surface as warnings or notices without failing the whole
 sheet inspection.
 For general annotation inventory/count workflows, use `count_annotations`
 instead of raw sheet/view/tag/schedule-cell loops. The read-only surface counts
-DrawingSheet text notes, placed schedule cells, and viewport tag evidence with
-bounded native traversal, profile-based matching, grouping, and count modes
-`occurrence`, `uniqueText`, `uniqueTag`, and `uniqueTaggedElement`.
-`sheet_text_notes`, `placed_schedule_cells`, and `viewport_tags` are the default
-sources except tag-specific count modes, which default to `viewport_tags` when
-sources are omitted. Explicit non-tag source mixes with tag-specific count modes
-are guarded as `invalid_count_mode_for_sources`. Placed schedule-cell scans are
+DrawingSheet text notes, viewport text notes, placed schedule cells, and
+viewport tag evidence with bounded native traversal, profile-based matching,
+grouping, and count modes `occurrence`, `uniqueText`, `uniqueTag`, and
+`uniqueTaggedElement`. `sheet_text_notes`, `viewport_text_notes`,
+`placed_schedule_cells`, and `viewport_tags` are the default sources except
+tag-specific count modes, which default to `viewport_tags` when sources are
+omitted. Explicit non-tag source mixes with tag-specific count modes are
+guarded as `invalid_count_mode_for_sources`. Placed schedule-cell scans are
 bounded by schedule instance, row, column, and cell caps; capped scans should
 return canonical partial stop reasons such as `max_rows`, `max_columns`, or
 `max_cells`.

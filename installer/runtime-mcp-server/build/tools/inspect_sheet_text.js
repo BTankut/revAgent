@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
-import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, readNativeResultArray, readNativeResultField, } from "../utils/broadScanResult.js";
+import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, normalizeBroadScanStopReason, readNativeResultArray, readNativeResultField, } from "../utils/broadScanResult.js";
 const budgetDefaults = {
     fast: { maxElapsedMs: 4500, timeoutMs: 12000 },
     balanced: { maxElapsedMs: 15000, timeoutMs: 30000 },
@@ -99,19 +99,79 @@ function sourceTypeForSheetEvidence(row) {
         return "placedScheduleInstance";
     return kind || "sheetTextNote";
 }
+function isMatchedSheetTextEvidence(row) {
+    const matchedTextQuery = readNativeResultField(row, "matchedTextQuery");
+    const inventoryOnly = readNativeResultField(row, "inventoryOnly");
+    if (inventoryOnly === true || String(inventoryOnly).trim().toLowerCase() === "true") {
+        return false;
+    }
+    if (matchedTextQuery === false || String(matchedTextQuery).trim().toLowerCase() === "false") {
+        return false;
+    }
+    return true;
+}
 function buildSheetTextEvidenceRows(payload) {
-    const matches = readNativeResultArray(payload, "matches");
-    return matches
+    const nativeEvidenceRows = readNativeResultArray(payload, "evidenceRows");
+    const sourceRows = nativeEvidenceRows.length > 0
+        ? nativeEvidenceRows
+        : readNativeResultArray(payload, "matches");
+    return sourceRows
         .filter((row) => Boolean(row) && typeof row === "object" && !Array.isArray(row))
+        .filter(isMatchedSheetTextEvidence)
         .map((row) => ({
         ...row,
         sourceType: sourceTypeForSheetEvidence(row),
     }));
 }
+function buildSheetTextInventoryRows(payload) {
+    const inventoryRows = readNativeResultArray(payload, "inventoryRows");
+    const nativeEvidenceRows = readNativeResultArray(payload, "evidenceRows");
+    const legacyInventoryRows = [...nativeEvidenceRows, ...readNativeResultArray(payload, "matches")]
+        .filter((row) => !isMatchedSheetTextEvidence(row));
+    const seen = new Set();
+    return [...inventoryRows, ...legacyInventoryRows]
+        .filter((row) => Boolean(row) && typeof row === "object" && !Array.isArray(row))
+        .map((row) => ({
+        ...row,
+        sourceType: sourceTypeForSheetEvidence(row),
+        matchedTextQuery: false,
+        inventoryOnly: true,
+    }))
+        .filter((row) => {
+        const key = [
+            readNativeResultField(row, "sourceType") ?? "",
+            readNativeResultField(row, "sheetId") ?? "",
+            readNativeResultField(row, "instanceId") ?? readNativeResultField(row, "elementId") ?? readNativeResultField(row, "id") ?? "",
+            readNativeResultField(row, "scheduleId") ?? "",
+        ].join("|");
+        if (seen.has(key)) {
+            return false;
+        }
+        seen.add(key);
+        return true;
+    });
+}
+function stopDetailForSheetText(payload) {
+    const canonicalReason = normalizeBroadScanStopReason(readNativeResultField(payload, "scanStoppedReason"));
+    const nativeReason = String(readNativeResultField(payload, "rawScanStoppedReason") ?? readNativeResultField(payload, "scanStoppedReason") ?? canonicalReason).trim() || canonicalReason;
+    const nativeLimitField = {
+        max_sheets: "maxSheets",
+        max_text_notes: "maxTextNotesScanned",
+        max_viewports: "maxViewports",
+        max_scanned: "maxScheduleInstancesScanned",
+        max_schedule_instances: "maxScheduleInstancesScanned",
+        max_schedule_cells: "maxScheduleCellsScanned",
+        max_tags: "maxTagsScanned",
+    };
+    return {
+        canonicalReason,
+        nativeReason,
+        nativeLimitField: nativeLimitField[nativeReason] ?? null,
+    };
+}
 function buildSheetTextSummary(payload) {
-    const evidenceRows = readNativeResultArray(payload, "evidenceRows").length > 0
-        ? readNativeResultArray(payload, "evidenceRows")
-        : buildSheetTextEvidenceRows(payload);
+    const evidenceRows = buildSheetTextEvidenceRows(payload);
+    const inventoryRows = buildSheetTextInventoryRows(payload);
     const sheets = readNativeResultArray(payload, "sheets");
     return {
         sheetQuery: readNativeResultField(payload, "sheetQuery") ?? null,
@@ -120,8 +180,11 @@ function buildSheetTextSummary(payload) {
         candidateCount: readNativeResultField(payload, "candidateCount") ?? null,
         returnedCount: readNativeResultField(payload, "returnedCount") ?? (sheets.length > 0 ? sheets.length : null),
         matchCount: evidenceRows.length,
+        inventoryRowCount: inventoryRows.length,
         partial: readNativeResultField(payload, "partial") === true,
         scanStoppedReason: readNativeResultField(payload, "scanStoppedReason") ?? "completed",
+        rawScanStoppedReason: readNativeResultField(payload, "rawScanStoppedReason") ?? null,
+        scanStopDetail: stopDetailForSheetText(payload),
         scannedSheetCount: readNativeResultField(payload, "scannedSheetCount") ?? null,
         scannedViewportCount: readNativeResultField(payload, "scannedViewportCount") ?? null,
         scannedTextNoteCount: readNativeResultField(payload, "scannedTextNoteCount") ?? null,
@@ -154,7 +217,7 @@ function inferSheetTextLastRead(payload) {
     };
 }
 export function normalizeSheetTextResult(payload, elapsedMs) {
-    return normalizeBroadScanResult(payload, {
+    const normalized = normalizeBroadScanResult(payload, {
         action: "inspect_sheet_text",
         elapsedMs,
         summary: buildSheetTextSummary,
@@ -162,6 +225,14 @@ export function normalizeSheetTextResult(payload, elapsedMs) {
         lastRead: inferSheetTextLastRead,
         suggestedNextScopes: ["sheetQuery", "sheetIds", "viewNameQuery", "maxSheets", "allowExpensiveSearch", "searchBudget=deep"],
     });
+    normalized.evidenceRows = buildSheetTextEvidenceRows(normalized);
+    normalized.inventoryRows = buildSheetTextInventoryRows(normalized);
+    normalized.summary = {
+        ...(normalized.summary || {}),
+        inventoryRowCount: normalized.inventoryRows.length,
+        scanStopDetail: stopDetailForSheetText(normalized),
+    };
+    return normalized;
 }
 export function registerInspectSheetTextTool(server) {
     server.tool("inspect_sheet_text", "[SHEET_TEXT_INSPECTION_READ_ONLY] Read-only native sheet + viewport annotation inspection for DrawingSheet text notes, placed schedule instances, bounded schedule cells, viewport-linked text notes, and viewport tags. Prefer this over generic send_code_to_revit for sheet and plan annotation searches in large projects. Use sheetQuery/sheetIds first; project-wide text, viewport, tag, or placed-schedule cell scans require allowExpensiveSearch=true.", {

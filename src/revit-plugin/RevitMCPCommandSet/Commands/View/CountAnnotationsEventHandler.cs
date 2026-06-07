@@ -175,7 +175,7 @@ namespace RevitMCPCommandSet.Commands.View
         {
             _request = request ?? new AnnotationCountRequest();
             if (_request.SheetIds == null) _request.SheetIds = new List<int>();
-            if (_request.Sources == null || _request.Sources.Count == 0) _request.Sources = new List<string> { "sheet_text_notes", "placed_schedule_cells", "viewport_tags" };
+            if (_request.Sources == null || _request.Sources.Count == 0) _request.Sources = new List<string> { "sheet_text_notes", "viewport_text_notes", "placed_schedule_cells", "viewport_tags" };
             if (_request.GroupBy == null) _request.GroupBy = new List<string>();
             if (_request.Profiles == null || _request.Profiles.Count == 0)
             {
@@ -225,7 +225,7 @@ namespace RevitMCPCommandSet.Commands.View
                 {
                     Complete(BuildGuardedResult(
                         "invalid_source",
-                        "count_annotations currently supports sheet_text_notes, placed_schedule_cells, and viewport_tags sources.",
+                        "count_annotations currently supports sheet_text_notes, viewport_text_notes, placed_schedule_cells, and viewport_tags sources.",
                         state,
                         warnings,
                         notices));
@@ -308,9 +308,9 @@ namespace RevitMCPCommandSet.Commands.View
                         if (state.Partial && IsHardStop(state.ScanStoppedReason)) break;
                     }
 
-                    if (_request.Sources.Contains("viewport_tags"))
+                    if (_request.Sources.Contains("viewport_text_notes") || _request.Sources.Contains("viewport_tags"))
                     {
-                        ScanViewportTags(document, sheet, deadlineUtc, state, warnings, evidenceRows);
+                        ScanViewportAnnotations(document, sheet, deadlineUtc, state, warnings, evidenceRows);
                         if (state.Partial && IsHardStop(state.ScanStoppedReason)) break;
                     }
                 }
@@ -533,7 +533,7 @@ namespace RevitMCPCommandSet.Commands.View
             }
         }
 
-        private void ScanViewportTags(
+        private void ScanViewportAnnotations(
             Document document,
             ViewSheet sheet,
             DateTime deadlineUtc,
@@ -577,36 +577,74 @@ namespace RevitMCPCommandSet.Commands.View
                     state.LastReadViewportId = viewport.Id.GetIdValue();
                     state.LastReadViewId = view.Id.GetIdValue();
 
-                    using (FilteredElementCollector collector = new FilteredElementCollector(document, view.Id))
+                    if (_request.Sources.Contains("viewport_text_notes"))
                     {
-                        foreach (Element element in collector.OfClass(typeof(IndependentTag)).WhereElementIsNotElementType())
+                        using (FilteredElementCollector collector = new FilteredElementCollector(document, view.Id))
                         {
-                            if (StopIfNeeded(deadlineUtc, state)) return;
-                            if (state.ScannedTagCount >= _request.MaxTagsScanned)
+                            foreach (Element element in collector.OfClass(typeof(TextNote)).WhereElementIsNotElementType())
                             {
-                                state.Stop("max_items");
-                                return;
-                            }
+                                if (StopIfNeeded(deadlineUtc, state)) return;
+                                if (state.ScannedTextNoteCount >= _request.MaxTextNotesScanned)
+                                {
+                                    state.Stop("max_items");
+                                    return;
+                                }
 
-                            IndependentTag tag = element as IndependentTag;
-                            if (tag == null) continue;
-                            state.ScannedTagCount++;
-                            state.LastReadItemId = tag.Id.GetIdValue();
-                            if (!AnnotationEvidenceHelpers.IsAnnotationElementVisibleInViewCrop(view, tag, warnings, "viewport_tag"))
+                                TextNote textNote = element as TextNote;
+                                if (textNote == null) continue;
+                                state.ScannedTextNoteCount++;
+                                state.LastReadItemId = textNote.Id.GetIdValue();
+                                if (!AnnotationEvidenceHelpers.IsAnnotationElementVisibleInViewCrop(view, textNote, warnings, "viewport_text_note"))
+                                {
+                                    continue;
+                                }
+
+                                string text = AnnotationEvidenceHelpers.TrimText(AnnotationEvidenceHelpers.SafeText(textNote), _request.MaxTextChars);
+                                if (string.IsNullOrWhiteSpace(text))
+                                {
+                                    continue;
+                                }
+
+                                Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildTextNoteRecord("viewportTextNote", sheet, viewport, view, textNote, text, _request.MaxTextChars);
+                                AddPatternEvidence(record, "viewportTextNote", text, state, warnings, evidenceRows);
+                                if (state.Partial) return;
+                            }
+                        }
+                    }
+
+                    if (_request.Sources.Contains("viewport_tags"))
+                    {
+                        using (FilteredElementCollector collector = new FilteredElementCollector(document, view.Id))
+                        {
+                            foreach (Element element in collector.OfClass(typeof(IndependentTag)).WhereElementIsNotElementType())
                             {
-                                continue;
-                            }
+                                if (StopIfNeeded(deadlineUtc, state)) return;
+                                if (state.ScannedTagCount >= _request.MaxTagsScanned)
+                                {
+                                    state.Stop("max_items");
+                                    return;
+                                }
 
-                            string tagText = AnnotationEvidenceHelpers.TrimText(AnnotationEvidenceHelpers.SafeTagText(tag, warnings), _request.MaxTextChars);
-                            if (string.IsNullOrWhiteSpace(tagText))
-                            {
-                                AnnotationEvidenceHelpers.AddOnce(warnings, "viewport_tag_text_unavailable");
-                                continue;
-                            }
+                                IndependentTag tag = element as IndependentTag;
+                                if (tag == null) continue;
+                                state.ScannedTagCount++;
+                                state.LastReadItemId = tag.Id.GetIdValue();
+                                if (!AnnotationEvidenceHelpers.IsAnnotationElementVisibleInViewCrop(view, tag, warnings, "viewport_tag"))
+                                {
+                                    continue;
+                                }
 
-                            Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildViewportTagRecord(document, sheet, viewport, view, tag, tagText, _request.MaxTextChars, warnings);
-                            AddPatternEvidence(record, "viewportTag", tagText, state, warnings, evidenceRows);
-                            if (state.Partial) return;
+                                string tagText = AnnotationEvidenceHelpers.TrimText(AnnotationEvidenceHelpers.SafeTagText(tag, warnings), _request.MaxTextChars);
+                                if (string.IsNullOrWhiteSpace(tagText))
+                                {
+                                    AnnotationEvidenceHelpers.AddOnce(warnings, "viewport_tag_text_unavailable");
+                                    continue;
+                                }
+
+                                Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildViewportTagRecord(document, sheet, viewport, view, tag, tagText, _request.MaxTextChars, warnings);
+                                AddPatternEvidence(record, "viewportTag", tagText, state, warnings, evidenceRows);
+                                if (state.Partial) return;
+                            }
                         }
                     }
                 }
@@ -926,7 +964,7 @@ namespace RevitMCPCommandSet.Commands.View
         {
             foreach (string source in _request.Sources)
             {
-                if (source != "sheet_text_notes" && source != "viewport_tags" && source != "placed_schedule_cells")
+                if (source != "sheet_text_notes" && source != "viewport_text_notes" && source != "viewport_tags" && source != "placed_schedule_cells")
                 {
                     return true;
                 }

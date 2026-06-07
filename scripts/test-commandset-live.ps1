@@ -706,6 +706,46 @@ Assert-True ([int]$countScoped.summary.count -ge 0) "Scoped native annotation co
 Assert-True ($countScoped.evidenceRows -is [array] -or $null -ne $countScoped.evidenceRows) "Scoped native annotation count should expose evidenceRows."
 Assert-True ($countScoped.groups -is [array] -or $null -ne $countScoped.groups) "Scoped native annotation count should expose groups."
 
+Write-Host "Test native count_annotations viewport text-note source"
+$countViewportTextNotes = Invoke-CountAnnotations `
+    -TaskName "$prefix annotation count viewport text notes" `
+    -Params ([ordered]@{
+        sheetIds = @($firstSheetId)
+        sources = @("viewport_text_notes")
+        profiles = @(
+            [ordered]@{
+                profileName = "non-empty-viewport-text"
+                patterns = @(
+                    [ordered]@{
+                        patternName = "non-empty-viewport-text-regex"
+                        matchMode = "regex"
+                        value = ".+"
+                    }
+                )
+            }
+        )
+        countMode = "occurrence"
+        groupBy = @("sourceType")
+        searchBudget = "fast"
+        maxViewports = 5
+        maxTextNotesScanned = 250
+        maxMatches = 500
+        maxResponseBytes = 120000
+        maxElapsedMs = 5000
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$countViewportTextNotes.success) $true "Scoped native viewport text-note annotation count should succeed."
+Assert-Equal ([bool]$countViewportTextNotes.guarded) $false "Scoped native viewport text-note annotation count should not be guarded."
+Assert-True (@($countViewportTextNotes.scanPolicy.sources) -contains "viewport_text_notes") "Viewport text-note count should report viewport_text_notes in scan policy."
+Assert-True (-not (@($countViewportTextNotes.scanPolicy.sources) -contains "sheet_text_notes")) "Explicit viewport text-note count should not add sheet_text_notes."
+Assert-True ([int]$countViewportTextNotes.summary.scannedTextNoteCount -ge 0) "Viewport text-note count should report scannedTextNoteCount."
+if (@($countViewportTextNotes.evidenceRows).Count -gt 0) {
+    $firstViewportTextNote = @($countViewportTextNotes.evidenceRows)[0]
+    Assert-Equal ([string]$firstViewportTextNote.sourceType) "viewportTextNote" "Viewport text-note evidence should expose viewportTextNote sourceType."
+    Assert-True ($null -ne $firstViewportTextNote.viewId) "Viewport text-note evidence should include viewId."
+    Assert-True ($null -ne $firstViewportTextNote.viewportId) "Viewport text-note evidence should include viewportId."
+}
+
 Write-Host "Test native count_annotations placed schedule-cell source"
 $countPlacedScheduleCells = Invoke-CountAnnotations `
     -TaskName "$prefix annotation count placed schedule cells" `

@@ -112,6 +112,8 @@ assertContains(countAnnotations, "invalid_count_mode_for_sources", "count_annota
 assertContains(countAnnotations, "maxRegexPatternLength", "count_annotations must bound regex profile size.");
 assertContains(countAnnotations, "regexTimeoutMs", "count_annotations must expose per-candidate bounded regex matching.");
 assertContains(countAnnotations, "computeFallbackCounts", "count_annotations must keep count semantics fixture-testable through the canonical normalizer.");
+assertContains(countAnnotations, "viewport_text_notes", "count_annotations must expose viewport text-note source aliases.");
+assertContains(countAnnotations, "viewportTextNote", "count_annotations wrapper must normalize viewport text-note evidence source types.");
 
 const broadScanResult = readSource("src/utils/broadScanResult.ts");
 assertContains(broadScanResult, "finiteNumberOrNull", "Shared broad-scan contract must not coerce null elapsedMs to zero.");

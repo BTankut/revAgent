@@ -165,6 +165,7 @@ assert.equal("maxResponseBytes" in inspectSheetTextSchema, true);
 const countAnnotationsDescription = tools.get("count_annotations").description;
 assert.match(countAnnotationsDescription, /ANNOTATION_COUNT_READ_ONLY/);
 assert.match(countAnnotationsDescription, /sheetQuery\/sheetIds/);
+assert.match(countAnnotationsDescription, /viewport text notes/);
 assert.match(countAnnotationsDescription, /placed schedule cells/);
 assert.match(countAnnotationsDescription, /uniqueTaggedElement/);
 assert.match(countAnnotationsDescription, /allowExpensiveSearch=true/);
