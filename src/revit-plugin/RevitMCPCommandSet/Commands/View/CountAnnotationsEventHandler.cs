@@ -3,6 +3,7 @@ using Autodesk.Revit.UI;
 using RevitMCPSDK.API.Interfaces;
 using RevitMCPCommandSet.Extensions;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -575,7 +576,7 @@ namespace RevitMCPCommandSet.Commands.View
 
             group.OccurrenceCount++;
             group.EvidenceRowCount++;
-            string countToken = ResolveCountToken(row, sourceType, warnings);
+            string countToken = ResolveCountToken(row, sourceType, state, warnings);
             bool counted = !string.IsNullOrWhiteSpace(countToken) && state.CountedKeys.Add(groupKey + "||" + countToken);
             row["groupKey"] = groupKey;
             row["countKey"] = countToken;
@@ -587,11 +588,11 @@ namespace RevitMCPCommandSet.Commands.View
             }
         }
 
-        private string ResolveCountToken(Dictionary<string, object> row, string sourceType, List<string> warnings)
+        private string ResolveCountToken(IDictionary row, string sourceType, AnnotationCountScanState state, List<string> warnings)
         {
             if (_request.CountMode == "occurrence")
             {
-                return "occurrence:" + Guid.NewGuid().ToString("N");
+                return "occurrence:" + state.MatchedOccurrenceCount.ToString(CultureInfo.InvariantCulture);
             }
             if (_request.CountMode == "uniqueText")
             {
@@ -782,6 +783,7 @@ namespace RevitMCPCommandSet.Commands.View
             foreach (AnnotationCountProfile profile in _request.Profiles)
             {
                 if (string.IsNullOrWhiteSpace(profile.ProfileName)) profile.ProfileName = "anonymous";
+                if (profile.Patterns == null) profile.Patterns = new List<AnnotationCountPattern>();
                 foreach (AnnotationCountPattern pattern in profile.Patterns)
                 {
                     if (string.IsNullOrWhiteSpace(pattern.MatchMode)) pattern.MatchMode = "contains";
@@ -802,7 +804,7 @@ namespace RevitMCPCommandSet.Commands.View
                     {
                         try
                         {
-                            pattern.CompiledRegex = new Regex(pattern.Value, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(_request.RegexTimeoutMs));
+                            pattern.CompiledRegex = new Regex(pattern.Value, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled, TimeSpan.FromMilliseconds(_request.RegexTimeoutMs));
                         }
                         catch (Exception ex)
                         {
@@ -1024,19 +1026,18 @@ namespace RevitMCPCommandSet.Commands.View
             return "CountAnnotationsEventHandler";
         }
 
-        private static object ReadObject(Dictionary<string, object> row, string key)
+        private static object ReadObject(IDictionary row, string key)
         {
-            object value;
-            return row != null && row.TryGetValue(key, out value) ? value : null;
+            return row != null && row.Contains(key) ? row[key] : null;
         }
 
-        private static string ReadString(Dictionary<string, object> row, string key)
+        private static string ReadString(IDictionary row, string key)
         {
             object value = ReadObject(row, key);
             return value != null ? Convert.ToString(value, CultureInfo.InvariantCulture) ?? "" : "";
         }
 
-        private static bool ReadBool(Dictionary<string, object> row, string key)
+        private static bool ReadBool(IDictionary row, string key)
         {
             object value = ReadObject(row, key);
             if (value is bool) return (bool)value;
