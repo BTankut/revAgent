@@ -270,6 +270,45 @@ function Invoke-CountAnnotations {
     return Invoke-RevitMcpRequest -Method "count_annotations" -Params $Params
 }
 
+function Invoke-FocusElements {
+    param(
+        [object]$Params,
+        [string]$TaskName
+    )
+
+    Assert-RevitMcpReady -NextCommand "focus_elements" | Out-Null
+    if ($Params -is [System.Collections.IDictionary]) {
+        $Params["taskName"] = $TaskName
+    }
+    return Invoke-RevitMcpRequest -Method "focus_elements" -Params $Params
+}
+
+function Invoke-ClearSelection {
+    param(
+        [object]$Params,
+        [string]$TaskName
+    )
+
+    Assert-RevitMcpReady -NextCommand "clear_selection" | Out-Null
+    if ($Params -is [System.Collections.IDictionary]) {
+        $Params["taskName"] = $TaskName
+    }
+    return Invoke-RevitMcpRequest -Method "clear_selection" -Params $Params
+}
+
+function Invoke-DeleteReviewView {
+    param(
+        [object]$Params,
+        [string]$TaskName
+    )
+
+    Assert-RevitMcpReady -NextCommand "delete_review_view" | Out-Null
+    if ($Params -is [System.Collections.IDictionary]) {
+        $Params["taskName"] = $TaskName
+    }
+    return Invoke-RevitMcpRequest -Method "delete_review_view" -Params $Params
+}
+
 function Assert-SuccessfulCodeResult {
     param(
         [object]$Result,
@@ -864,6 +903,177 @@ Assert-Equal ([int]$linkedOnlyExactProbe.scannedElementCount) 0 "linkedOnly exac
 
 Write-Host "Test runtime MEP-aware find_elements policy"
 Assert-RuntimeFindElementsPolicy
+
+Write-Host "Test clear_selection live cleanup"
+$selectionSeed = Invoke-FindElements `
+    -TaskName "$prefix selection cleanup seed" `
+    -Params ([ordered]@{
+        categoryNames = @("Mechanical Equipment", "Ducts", "Pipes", "Air Terminals")
+        planCandidateMode = "none"
+        searchBudget = "fast"
+        maxElementsScanned = 5000
+        maxElapsedMs = 3000
+        timeoutMs = 8000
+        limit = 1
+    })
+Assert-Equal ([bool]$selectionSeed.success) $true "Selection cleanup seed search should succeed."
+Assert-True ([int]$selectionSeed.count -gt 0) "Selection cleanup live gate requires at least one MEP element in the test model."
+$selectionTargetId = [int]$selectionSeed.elements[0].id
+$selectionFocus = Invoke-FocusElements `
+    -TaskName "$prefix select before clear_selection" `
+    -Params ([ordered]@{
+        elementIds = @($selectionTargetId)
+        select = $true
+        zoom = $false
+        fitToScreen = $false
+        allowPartial = $false
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$selectionFocus.success) $true "Focus before clear_selection should succeed."
+Assert-Equal ([bool]$selectionFocus.selected) $true "Focus before clear_selection should select the target."
+$clearSelectionProbe = Invoke-ClearSelection `
+    -TaskName "$prefix clear_selection" `
+    -Params ([ordered]@{
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$clearSelectionProbe.success) $true "clear_selection should succeed."
+Assert-Equal ([string]$clearSelectionProbe.state) "completed" "clear_selection state changed."
+Assert-True ([int]$clearSelectionProbe.selectionCountBefore -ge 1) "clear_selection should report a non-empty selection before cleanup."
+Assert-Equal ([int]$clearSelectionProbe.selectionCountAfter) 0 "clear_selection should leave no selected elements."
+Assert-Equal ([bool]$clearSelectionProbe.cleared) $true "clear_selection should report cleared=true."
+
+Write-Host "Test delete_review_view dry-run and commit"
+$reviewViewName = "3D - Focus revAgent DeleteReviewView Live Gate " + (Get-Date -Format "HHmmssfff")
+$createReviewViewProbe = Invoke-RevitCode `
+    -TransactionMode "auto" `
+    -TaskName "$prefix create temporary review view" `
+    -Code @"
+var viewFamilyType = new FilteredElementCollector(document)
+    .OfClass(typeof(ViewFamilyType))
+    .Cast<ViewFamilyType>()
+    .FirstOrDefault(v => v.ViewFamily == ViewFamily.ThreeDimensional);
+if (viewFamilyType == null)
+{
+    return Newtonsoft.Json.JsonConvert.SerializeObject(new { caseName = "temporary_review_view_create_failed", error = "three_dimensional_view_family_type_not_found" });
+}
+var view = View3D.CreateIsometric(document, viewFamilyType.Id);
+view.Name = "$reviewViewName";
+return Newtonsoft.Json.JsonConvert.SerializeObject(new {
+    caseName = "temporary_review_view_created",
+    viewId = view.Id.IntegerValue,
+    viewName = view.Name
+});
+"@
+Assert-SuccessfulCodeResult -Result $createReviewViewProbe -CaseName "temporary review view creation"
+$reviewViewPayload = ConvertFrom-RevitJsonLike -Value $createReviewViewProbe.result
+Assert-Equal ([string]$reviewViewPayload.caseName) "temporary_review_view_created" "Temporary review view creation case changed."
+$reviewViewId = [int]$reviewViewPayload.viewId
+$deleteDryRun = Invoke-DeleteReviewView `
+    -TaskName "$prefix delete_review_view dry-run" `
+    -Params ([ordered]@{
+        viewId = $reviewViewId
+        mode = "dryRun"
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$deleteDryRun.success) $true "delete_review_view dry-run should succeed."
+Assert-Equal ([bool]$deleteDryRun.dryRun) $true "delete_review_view dry-run should report dryRun=true."
+Assert-Equal ([bool]$deleteDryRun.deleted) $false "delete_review_view dry-run must not delete the view."
+Assert-Equal ([bool]$deleteDryRun.targetIsReviewView) $true "delete_review_view should recognize the temporary review view."
+$deleteNeedsConfirm = Invoke-DeleteReviewView `
+    -TaskName "$prefix delete_review_view confirm guard" `
+    -Params ([ordered]@{
+        viewId = $reviewViewId
+        mode = "commit"
+        confirmDelete = $false
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$deleteNeedsConfirm.success) $true "delete_review_view missing-confirm should return a guarded result."
+Assert-Equal ([bool]$deleteNeedsConfirm.guarded) $true "delete_review_view missing-confirm should be guarded."
+Assert-Equal ([string]$deleteNeedsConfirm.reason) "delete_confirmation_required" "delete_review_view confirmation guard reason changed."
+$deleteCommit = Invoke-DeleteReviewView `
+    -TaskName "$prefix delete_review_view commit" `
+    -Params ([ordered]@{
+        viewId = $reviewViewId
+        mode = "commit"
+        confirmDelete = $true
+        timeoutMs = 15000
+    })
+Assert-Equal ([bool]$deleteCommit.success) $true "delete_review_view commit should succeed."
+Assert-Equal ([bool]$deleteCommit.deleted) $true "delete_review_view commit should verify deletion."
+Assert-Equal ([bool]$deleteCommit.changed) $true "delete_review_view commit should report changed=true."
+
+Write-Host "Test delete_review_view blocks sheet-placed review views"
+$placedReviewViewName = "3D - Focus revAgent Placed Delete Guard " + (Get-Date -Format "HHmmssfff")
+$placedReviewProbe = Invoke-RevitCode `
+    -TransactionMode "auto" `
+    -TaskName "$prefix create placed temporary review view" `
+    -Code @"
+var viewFamilyType = new FilteredElementCollector(document)
+    .OfClass(typeof(ViewFamilyType))
+    .Cast<ViewFamilyType>()
+    .FirstOrDefault(v => v.ViewFamily == ViewFamily.ThreeDimensional);
+var titleBlockType = new FilteredElementCollector(document)
+    .OfCategory(BuiltInCategory.OST_TitleBlocks)
+    .WhereElementIsElementType()
+    .FirstOrDefault();
+if (viewFamilyType == null || titleBlockType == null)
+{
+    return Newtonsoft.Json.JsonConvert.SerializeObject(new { caseName = "placed_review_view_setup_skipped", reason = "missing_3d_view_type_or_title_block" });
+}
+var view = View3D.CreateIsometric(document, viewFamilyType.Id);
+view.Name = "$placedReviewViewName";
+var sheet = ViewSheet.Create(document, titleBlockType.Id);
+sheet.Name = "revAgent delete_review_view guard sheet";
+sheet.SheetNumber = "RA-DEL-" + DateTime.UtcNow.ToString("HHmmssfff");
+var viewport = Viewport.Create(document, sheet.Id, view.Id, new XYZ(0, 0, 0));
+return Newtonsoft.Json.JsonConvert.SerializeObject(new {
+    caseName = "placed_review_view_created",
+    viewId = view.Id.IntegerValue,
+    sheetId = sheet.Id.IntegerValue,
+    viewportId = viewport.Id.IntegerValue
+});
+"@
+Assert-SuccessfulCodeResult -Result $placedReviewProbe -CaseName "placed temporary review view creation"
+$placedReviewPayload = ConvertFrom-RevitJsonLike -Value $placedReviewProbe.result
+if ([string]$placedReviewPayload.caseName -eq "placed_review_view_created") {
+    $placedReviewViewId = [int]$placedReviewPayload.viewId
+    $placedReviewSheetId = [int]$placedReviewPayload.sheetId
+    $placedDeleteGuard = Invoke-DeleteReviewView `
+        -TaskName "$prefix delete_review_view placed guard" `
+        -Params ([ordered]@{
+            viewId = $placedReviewViewId
+            mode = "commit"
+            confirmDelete = $true
+            timeoutMs = 15000
+        })
+    Assert-Equal ([bool]$placedDeleteGuard.success) $true "Placed review view delete should return a guarded result."
+    Assert-Equal ([bool]$placedDeleteGuard.guarded) $true "Placed review view delete should be guarded."
+    Assert-Equal ([string]$placedDeleteGuard.reason) "placed_review_view_delete_blocked" "Placed review view guard reason changed."
+    $cleanupPlacedReview = Invoke-RevitCode `
+        -TransactionMode "auto" `
+        -TaskName "$prefix cleanup placed delete guard artifacts" `
+        -Code @"
+var ids = new List<ElementId> { new ElementId($placedReviewSheetId), new ElementId($placedReviewViewId) };
+var deleted = new List<int>();
+foreach (var id in ids)
+{
+    var element = document.GetElement(id);
+    if (element == null) continue;
+    foreach (var deletedId in document.Delete(id))
+    {
+        deleted.Add(deletedId.IntegerValue);
+    }
+}
+return Newtonsoft.Json.JsonConvert.SerializeObject(new {
+    caseName = "placed_review_view_cleanup",
+    deletedCount = deleted.Count
+});
+"@
+    Assert-SuccessfulCodeResult -Result $cleanupPlacedReview -CaseName "placed review view cleanup"
+}
+else {
+    Assert-Equal ([string]$placedReviewPayload.caseName) "placed_review_view_setup_skipped" "Unexpected placed review setup case."
+}
 
 Write-Host "Test transactionMode none and Newtonsoft.Json compile"
 $noneProbe = Invoke-RevitCode `

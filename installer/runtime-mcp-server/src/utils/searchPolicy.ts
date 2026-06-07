@@ -63,6 +63,7 @@ interface ConceptMapping {
     concept: string;
     terms: string[];
     categories: string[];
+    preserveQueryWhenFullyStripped?: boolean;
 }
 
 const CONCEPT_MAPPINGS: ConceptMapping[] = [
@@ -85,6 +86,7 @@ const CONCEPT_MAPPINGS: ConceptMapping[] = [
         concept: "valve",
         terms: ["valve", "vana"],
         categories: ["Pipe Accessories", "Pipe Fittings"],
+        preserveQueryWhenFullyStripped: true,
     },
     {
         concept: "damper",
@@ -228,6 +230,7 @@ function inferScopeFromQuery(query: string) {
     const matchedConcepts: JsonObject[] = [];
     const matchedTerms: string[] = [];
     const categories: string[] = [];
+    let preserveQueryWhenFullyStripped = false;
 
     for (const mapping of CONCEPT_MAPPINGS) {
         const terms = mapping.terms.filter((term) => normalizedQuery.includes(normalizeText(term)));
@@ -236,16 +239,19 @@ function inferScopeFromQuery(query: string) {
             concept: mapping.concept,
             terms,
             categories: mapping.categories,
+            preserveQueryWhenFullyStripped: mapping.preserveQueryWhenFullyStripped === true,
         });
         matchedTerms.push(...terms);
         categories.push(...mapping.categories);
+        preserveQueryWhenFullyStripped = preserveQueryWhenFullyStripped || mapping.preserveQueryWhenFullyStripped === true;
     }
+    const strippedQuery = stripConceptTerms(query, matchedTerms);
 
     return {
         matchedConcepts,
         matchedTerms,
         categories: uniqueStrings(categories),
-        effectiveQuery: stripConceptTerms(query, matchedTerms),
+        effectiveQuery: strippedQuery || (preserveQueryWhenFullyStripped ? query.trim() : ""),
     };
 }
 

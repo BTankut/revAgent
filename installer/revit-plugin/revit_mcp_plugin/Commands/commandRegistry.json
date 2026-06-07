@@ -106,6 +106,36 @@
                          "description":  "Close an open Revit UI view without opening a transaction"
                      },
                      {
+                         "commandName":  "clear_selection",
+                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Clear the current Revit UI selection without opening a transaction"
+                     },
+                     {
+                         "commandName":  "delete_review_view",
+                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "mcp-servers-for-revit",
+                                           "email":  "",
+                                           "website":  "",
+                                           "organization":  "mcp-servers-for-revit"
+                                       },
+                         "description":  "Dry-run or delete an explicit revAgent/Revit MCP review 3D view with guarded production-view protection"
+                     },
+                     {
                          "commandName":  "get_ui_state",
                          "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,

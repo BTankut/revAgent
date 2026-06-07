@@ -464,7 +464,7 @@ Expected MCP servers:
 
 11. If the installer stops with a Roslyn runtime error, repair the Revit 2022 installation first. Do not try to fix a normal end-user install by adding NuGet packages into the deployed bundle.
 
-Expected bundled runtime commands: 28 tools registered by the runtime server.
+Expected bundled runtime commands: 30 tools registered by the runtime server.
 
 - `list_revit_instances`
 - `get_revit_mcp_status`
@@ -475,6 +475,8 @@ Expected bundled runtime commands: 28 tools registered by the runtime server.
 - `list_open_views`
 - `activate_view`
 - `close_view`
+- `clear_selection`
+- `delete_review_view`
 - `get_ui_state`
 - `find_elements`
 - `open_existing_plan_for_element_level`
@@ -628,7 +630,7 @@ Host-specific notes:
 
 ## Bundled runtime tool surface
 
-The runtime MCP server registers 28 tools in
+The runtime MCP server registers 30 tools in
 `installer/runtime-mcp-server/src/tools/register.ts`. They intentionally cover a
 small production surface instead of many narrow one-off commands.
 
@@ -639,8 +641,8 @@ small production surface instead of many narrow one-off commands.
 | Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_sheet_text`, `inspect_schedules`, `count_annotations`, `inspect_parameter_schema` | Read-only model/session/element/sheet/schedule/annotation/parameter inspection before engineering decisions or writes. `get_revit_session_context` defaults to `detailLevel="minimal"` so document checks do not perform heavy category or linked room/space counts. `get_active_view_context` reports both sheet `viewports` and `scheduleSheetInstances`. `inspect_sheet_text` is the native bounded DrawingSheet text-note, placed-schedule, and viewport-linked text-note inspection path for large projects and should be used instead of broad custom C# sheet or placed-view scans. `inspect_schedules` is the bounded schedule name/cell inspection path for large projects and should be used instead of broad custom C# schedule scans. `count_annotations` is the native bounded annotation count/inventory path for sheet text-note, viewport text-note, placed schedule-cell, and viewport tag evidence. |
 | Review and reconciliation | `reconcile_schedule_excel` | Runtime-only, review-first, and write-free. It ingests explicit `.xlsx`, `.csv`, `.tsv`, or `rows` input plus normalized `inspect_schedules` evidence, applies deterministic matching/scoring, and returns `reviewRows`/`reviewTable`. Accepted edits route separately through `set_schedule_cells`, `set_schedule_cells_by_text`, or a workbook-specific workflow after human review. |
 | Controlled data writes | `set_element_parameter`, `set_schedule_cells`, `set_schedule_cells_by_text` | `set_element_parameter` is the production-safe single-parameter set/clear path. It defaults to `mode="dryRun"` and `operation="set"`, performs exact `inspect_parameter_schema`-style identity resolution, blocks duplicate display names/read-only parameters/type writes without explicit approval, commits only with `mode="commit"`, and verifies the value by reading it back. `operation="clear"` attempts Revit `Parameter.ClearValue` for a true no-value state and reports `clear_value_not_supported` instead of faking clear with an empty string when Revit does not support it. `set_schedule_cells` writes exact schedule cells only by `scheduleId`, `section`, `row`, and `column`; it defaults to dry-run, can require `expectedCurrentText`, guards non-writable standard schedule body cells as `non_writable_standard_body_cell`, commits through the wrapper transaction, and verifies committed cell text. `set_schedule_cells_by_text` is the higher-level schedule workflow for bounded sheet/schedule scope plus row-text matching; it blocks ambiguous matches by default, supports `expectedCurrentText`, defaults to dry-run, guards the same standard body-cell restriction, and verifies commit readback. |
-| Live view navigation | `list_open_views`, `activate_view`, `close_view`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. |
-| View-data writes | `section_box_elements`, `create_3d_view_for_elements` | Can modify project view data by applying section boxes or creating/reusing 3D review views. Use explicit intent and verify afterward. |
+| Live view navigation | `list_open_views`, `activate_view`, `close_view`, `clear_selection`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. `clear_selection` only clears the current UI selection and opens no transaction. |
+| View-data writes | `section_box_elements`, `create_3d_view_for_elements`, `delete_review_view` | Can modify project view data by applying section boxes, creating/reusing 3D review views, or deleting guarded revAgent/Revit MCP review views. `delete_review_view` defaults to dry-run, blocks production/active/open views, and requires `mode="commit"` plus `confirmDelete=true`. Use explicit intent and verify afterward. |
 | Image artifacts | `export_revit_view_image`, `export_revit_coordination_image` | `export_revit_view_image` supports active/requested views, DrawingSheet export, and direct Schedule export through a temporary sheet that is deleted before the wrapper transaction commits. Ordinary view/sheet exports are read-only. `export_revit_coordination_image` writes only review view settings and image export settings, never ducts, pipes, fittings, terminals, or other physical model elements; if requested `elementIds` are all missing it returns guarded `no_requested_elements_found` unless `allowFullViewFallback=true` is explicit. `cleanupAfterExport=true` deletes a review view created by that export after the image file is produced. It can still leave Revit's document dirty flag set because temporary review view data was created/deleted inside a transaction. |
 
 The Revit add-in command payload still provides the low-level dynamic execution
@@ -673,6 +675,9 @@ before the first search. The Revit bridge uses API-level category/view filters
 when available, keeps level filters in the correctness-safe in-memory
 post-filter path, tracks `scannedElementCount`, and can return partial results
 before the socket timeout.
+For valve/vana searches, `Pipe Accessories` evidence is preferred and broad
+`Pipe Fittings` fallback rows need name/family/type/text evidence instead of
+matching only because the category was in the inferred scope.
 Keep `planCandidateMode="none"` for broad first-pass discovery; use `metadata`
 for quick same-level plan ranking. Use `verified` only for exact element ids or
 after the operator explicitly accepts the expensive visibility check with

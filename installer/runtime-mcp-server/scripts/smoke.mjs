@@ -77,6 +77,8 @@ const expectedTools = [
   "list_open_views",
   "activate_view",
   "close_view",
+  "clear_selection",
+  "delete_review_view",
   "get_ui_state",
   "find_elements",
   "open_existing_plan_for_element_level",
@@ -103,11 +105,18 @@ assert.deepEqual([...tools.keys()], expectedTools);
 const create3dDescription = tools.get("create_3d_view_for_elements").description;
 const showPlan3dDescription = tools.get("show_element_in_plan_and_3d").description;
 const coordinationDescription = tools.get("export_revit_coordination_image").description;
+const clearSelectionDescription = tools.get("clear_selection").description;
+const deleteReviewViewDescription = tools.get("delete_review_view").description;
 assert.match(create3dDescription, /LIVE_VIEW_NAVIGATION_PRIMITIVE/);
 assert.match(showPlan3dDescription, /LIVE_VIEW_WORKFLOW_WRAPPER/);
 assert.match(coordinationDescription, /VISUAL_ARTIFACT_EXPORT_ONLY/);
 assert.match(coordinationDescription, /Do not use this as the primary tool for live view navigation/);
 assert.match(coordinationDescription, /Use qa_high_contrast explicitly/);
+assert.match(clearSelectionDescription, /LIVE_UI_SELECTION_CLEANUP/);
+assert.match(clearSelectionDescription, /does not modify model elements/);
+assert.match(deleteReviewViewDescription, /REVIEW_VIEW_CLEANUP_GUARDED/);
+assert.match(deleteReviewViewDescription, /mode="commit"/);
+assert.equal("confirmDelete" in tools.get("delete_review_view").schema, true);
 const setParameterDescription = tools.get("set_element_parameter").description;
 assert.match(setParameterDescription, /PRODUCTION_PARAMETER_WRITE/);
 assert.match(setParameterDescription, /Never writes by visible display name alone/);
@@ -255,6 +264,12 @@ const compactPumpPolicy = buildFindElementsSearchPolicy({ query: "PUMP1" });
 assert.equal(compactPumpPolicy.guarded, false);
 assert.equal(compactPumpPolicy.effectiveQuery, "PUMP1");
 assert.deepEqual(compactPumpPolicy.effectiveCategoryNames, ["Mechanical Equipment"]);
+
+const valvePolicy = buildFindElementsSearchPolicy({ query: "vana" });
+assert.equal(valvePolicy.guarded, false);
+assert.equal(valvePolicy.effectiveQuery, "vana");
+assert.deepEqual(valvePolicy.effectiveCategoryNames, ["Pipe Accessories", "Pipe Fittings"]);
+assert.equal(valvePolicy.inferredScope.concepts[0].preserveQueryWhenFullyStripped, true);
 
 const linkedUniqueIdPolicy = buildFindElementsSearchPolicy({
   uniqueIds: ["linked-element-uid"],

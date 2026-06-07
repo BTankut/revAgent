@@ -116,13 +116,20 @@ normalizer.
 - `activate_view` - activate an existing plan, 3D, sheet, schedule, section,
   elevation, drafting, or legend view without opening a transaction
 - `close_view` - close an open Revit UI view tab without opening a transaction
+- `clear_selection` - clear the current Revit UI selection without opening a
+  transaction or modifying model/view data
+- `delete_review_view` - dry-run or delete an explicit revAgent/Revit MCP
+  review 3D view. It blocks production, active, and open views; commit requires
+  `mode: "commit"` and `confirmDelete: true`.
 - `get_ui_state` - read active view, open UI views, selected element ids and
   summaries, section box flags, and document writable state
 - `find_elements` - MEP-aware progressive element discovery. It can infer
   obvious engineering scope before searching, for example fan coil/FCU to
   `Mechanical Equipment`, valve/vana to pipe accessory/fitting categories, and
   duct/pipe/sprinkler/damper/diffuser/pump/AHU terms to bounded MEP category
-  scopes. Use `searchBudget="fast"` for first-pass discovery, then add
+  scopes. Valve/vana searches prefer `Pipe Accessories` and keep broad
+  `Pipe Fittings` rows as fallback only when name/family/type/text evidence is
+  present. Use `searchBudget="fast"` for first-pass discovery, then add
   `levelNames`, `activeViewOnly`, `familyName`, `typeName`, `systemName`,
   workset filters, link scope, or `allowExpensiveSearch=true` only when the
   operator intentionally accepts a broader search. Existing plan candidates are
@@ -518,6 +525,11 @@ Use this playbook for common view and focus requests:
   deliberate 3D angle or surrounding context without clipping. Apply clipping
   only when the user asks for clipping/isolation or the workflow explicitly
   needs it.
+- When the user asks to clean up after a live test, use `clear_selection` for
+  selected elements and `delete_review_view` for explicit revAgent/Revit MCP
+  review 3D views. Do not use raw C# just to clear selection or delete a test
+  review view. Keep `delete_review_view` in dry-run until the target and guard
+  reason are visible, then commit only with explicit confirmation.
 - When the user asks for the whole common flow, such as "find this equipment,
   show it in plan, and open a 3D view", prefer `show_element_in_plan_and_3d`.
   Leave `allowAmbiguous` false unless the user explicitly accepts the top match.

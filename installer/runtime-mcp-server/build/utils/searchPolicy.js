@@ -39,6 +39,7 @@ const CONCEPT_MAPPINGS = [
         concept: "valve",
         terms: ["valve", "vana"],
         categories: ["Pipe Accessories", "Pipe Fittings"],
+        preserveQueryWhenFullyStripped: true,
     },
     {
         concept: "damper",
@@ -172,6 +173,7 @@ function inferScopeFromQuery(query) {
     const matchedConcepts = [];
     const matchedTerms = [];
     const categories = [];
+    let preserveQueryWhenFullyStripped = false;
     for (const mapping of CONCEPT_MAPPINGS) {
         const terms = mapping.terms.filter((term) => normalizedQuery.includes(normalizeText(term)));
         if (terms.length === 0)
@@ -180,15 +182,18 @@ function inferScopeFromQuery(query) {
             concept: mapping.concept,
             terms,
             categories: mapping.categories,
+            preserveQueryWhenFullyStripped: mapping.preserveQueryWhenFullyStripped === true,
         });
         matchedTerms.push(...terms);
         categories.push(...mapping.categories);
+        preserveQueryWhenFullyStripped = preserveQueryWhenFullyStripped || mapping.preserveQueryWhenFullyStripped === true;
     }
+    const strippedQuery = stripConceptTerms(query, matchedTerms);
     return {
         matchedConcepts,
         matchedTerms,
         categories: uniqueStrings(categories),
-        effectiveQuery: stripConceptTerms(query, matchedTerms),
+        effectiveQuery: strippedQuery || (preserveQueryWhenFullyStripped ? query.trim() : ""),
     };
 }
 function buildSuggestedNextScopes(args = {}) {

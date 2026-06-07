@@ -19,7 +19,7 @@ import {
 
 const RUNTIME_PROCESS_STARTED_AT_UTC = new Date().toISOString();
 const STATUS_SCHEMA_VERSION = "revit-mcp-status.v3";
-const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.37";
+const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.38";
 
 function readPackageMetadata() {
     const packageJson = readJsonFile(path.join(getRuntimeRoot(), "package.json"));

@@ -207,6 +207,8 @@ try {
     Assert-True ($liveCommandsetTest -match 'max_elapsed' -and $liveCommandsetTest -match 'max_bytes' -and $liveCommandsetTest -match 'max_schedule_cells') "Live commandset integration gate must cover native sheet annotation budget stop reasons."
     Assert-True ($liveCommandsetTest -match 'inspect_schedules' -and $liveCommandsetTest -match 'maxCells' -and $liveCommandsetTest -match 'lastReadRow' -and $liveCommandsetTest -match 'max_bytes') "Live commandset integration gate must cover native schedule partial and continuation behavior."
     Assert-True ($liveCommandsetTest -match 'MTL fan coil' -and $liveCommandsetTest -match 'live broad MTL guard proof') "Live commandset integration gate must cover runtime MEP inference and broad-query guard behavior."
+    Assert-True ($liveCommandsetTest -match 'clear_selection' -and $liveCommandsetTest -match 'selectionCountAfter') "Live commandset integration gate must cover clear_selection cleanup behavior."
+    Assert-True ($liveCommandsetTest -match 'delete_review_view' -and $liveCommandsetTest -match 'delete_confirmation_required' -and $liveCommandsetTest -match 'deleted') "Live commandset integration gate must cover guarded review-view delete dry-run and commit behavior."
     Assert-NoLocalizedRevitPluginSourceText -Root $RepoRoot
     $commandSetSourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet") -Recurse -File -Filter *.cs |
         Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } |
@@ -221,12 +223,16 @@ try {
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\AnnotationEvidenceHelpers.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ClearSelectionCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ClearSelectionEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\CountAnnotationsCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\CountAnnotationsEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsCommand.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsEventHandler.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\DeleteReviewViewCommand.cs",
+        "src\revit-plugin\RevitMCPCommandSet\Commands\View\DeleteReviewViewEventHandler.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementDiscoveryHelpers.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementFocusHelpers.cs",
         "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsCommand.cs",
@@ -431,6 +437,10 @@ try {
     $smartFocusToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\smart_focus_elements.ts")
     $sendCodeToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit.ts")
     $closeViewCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewEventHandler.cs")
+    $clearSelectionToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\clear_selection.ts")
+    $clearSelectionHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ClearSelectionEventHandler.cs")
+    $deleteReviewViewToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\delete_review_view.ts")
+    $deleteReviewViewHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\DeleteReviewViewEventHandler.cs")
     $create3dHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsEventHandler.cs")
     $sectionBoxHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\SectionBoxElementsEventHandler.cs")
     $viewHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ViewCommandHelpers.cs")
@@ -509,6 +519,13 @@ try {
     Assert-True ($findHandlerCode -match 'SearchLinkedUniqueIds') "find_elements bridge must preserve exact linked uniqueId lookups."
     Assert-True ($findHandlerCode -notmatch 'GetElement\(new ElementId\(id\)\)[\s\S]{0,200}linkDocument') "find_elements bridge must not apply host numeric element ids inside linked documents."
     Assert-True ($findHandlerCode -match 'WorksetTable table = document\.GetWorksetTable\(\)' -and $findHandlerCode -match 'if \(table == null\) return ""') "find_elements bridge must avoid exception-driven workset checks in non-workshared models."
+    Assert-True ($searchPolicyCode -match 'preserveQueryWhenFullyStripped' -and $searchPolicyCode -match 'concept: "valve"') "Valve/vana search policy must preserve pure concept queries so fitting fallback cannot match by category alone."
+    Assert-True ($discoveryCode -match 'AddValveAccessorySignal' -and $discoveryCode -match 'mepValveAccessoryCategory') "Element discovery must prioritize valve/vana Pipe Accessories category evidence."
+    Assert-True ($commandSetRegistryCode -match '"commandName": "clear_selection"' -and $commandSetRegistryCode -match '"commandName": "delete_review_view"') "Commandset registry must expose clear_selection and delete_review_view."
+    Assert-True ($clearSelectionToolCode -match 'LIVE_UI_SELECTION_CLEANUP' -and $clearSelectionHandlerCode -match 'SelectionCountBefore' -and $clearSelectionHandlerCode -match 'SetElementIds\(new List<ElementId>\(\)\)') "clear_selection must be a dedicated no-transaction selection cleanup tool."
+    Assert-True ($deleteReviewViewToolCode -match 'REVIEW_VIEW_CLEANUP_GUARDED' -and $deleteReviewViewToolCode -match 'confirmDelete' -and $deleteReviewViewHandlerCode -match 'non_review_view_delete_blocked') "delete_review_view must default to guarded review-view cleanup with explicit confirmation."
+    Assert-True ($deleteReviewViewHandlerCode -match 'mode=commit' -and $deleteReviewViewHandlerCode -match 'active_view_delete_blocked' -and $deleteReviewViewHandlerCode -match 'open_view_delete_blocked') "delete_review_view must guard active/open views and expose commit guidance."
+    Assert-True ($deleteReviewViewHandlerCode -match 'CountPlacedViewports' -and $deleteReviewViewHandlerCode -match 'placed_review_view_delete_blocked') "delete_review_view must block deletion of sheet-placed review views."
     Assert-True ($searchPolicyCode -match 'riskLevel' -and $searchPolicyCode -match 'recommendedFirstScope' -and $searchPolicyCode -match 'requiresUserControl') "Search policy must expose risk level, first-scope recommendation, and user-control flag."
     Assert-True ($searchPolicyCode -match 'verified_visibility_expensive' -and $searchPolicyCode -match 'verified_visibility_requires_exact_targets_or_approval') "Search policy must require user control for broad verified plan visibility."
     Assert-True ($searchPolicyCode -match 'normalizeWithSourceIndex' -and $searchPolicyCode -match '\(\?<\!\[\\\\p\{L\}\\\\p\{N\}\]\)' -and $searchPolicyCode -match '\(\?!\[\\\\p\{L\}\\\\p\{N\}\]\)') "Search policy concept stripping must use index-aligned normalization and avoid stripping terms inside compact element tags."
@@ -558,7 +575,7 @@ try {
     Assert-True ($statusToolCode -match 'runtimeVersion') "Status output must include the active runtime version."
     Assert-True ($statusToolCode -match 'schemaVersion') "Status output must include the status/schema version."
     Assert-True ($statusToolCode -match 'toolSurfaceVersion') "Status output must include the registered tool surface version."
-    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.37') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
+    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.38') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
     Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
     Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
