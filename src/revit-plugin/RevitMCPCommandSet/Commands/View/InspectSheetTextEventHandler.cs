@@ -6,7 +6,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Text;
 using System.Threading;
 
 namespace RevitMCPCommandSet.Commands.View
@@ -41,6 +40,9 @@ namespace RevitMCPCommandSet.Commands.View
         public int MaxScheduleCellsScanned { get; set; }
         public int MaxResponseBytes { get; set; }
         public int TimeoutMs { get; set; }
+        public string NormalizedSheetQuery { get; set; }
+        public string NormalizedTextQuery { get; set; }
+        public string NormalizedViewNameQuery { get; set; }
     }
 
     public class InspectSheetTextResult
@@ -137,6 +139,9 @@ namespace RevitMCPCommandSet.Commands.View
         public void SetRequest(InspectSheetTextRequest request)
         {
             _request = request ?? new InspectSheetTextRequest();
+            _request.NormalizedSheetQuery = AnnotationEvidenceHelpers.NormalizeForSearch(_request.SheetQuery);
+            _request.NormalizedTextQuery = AnnotationEvidenceHelpers.NormalizeForSearch(_request.TextQuery);
+            _request.NormalizedViewNameQuery = AnnotationEvidenceHelpers.NormalizeForSearch(_request.ViewNameQuery);
             TaskCompleted = false;
             ResultInfo = null;
             _resetEvent.Reset();
@@ -189,7 +194,7 @@ namespace RevitMCPCommandSet.Commands.View
                     if (StopIfNeeded(deadlineUtc, state)) break;
 
                     string sheetLabel = ((sheet.SheetNumber ?? "") + " " + (sheet.Name ?? "")).Trim();
-                    bool sheetMatches = !hasSheetQuery || ContainsNormalized(sheetLabel, _request.SheetQuery);
+                    bool sheetMatches = !hasSheetQuery || AnnotationEvidenceHelpers.ContainsPreNormalized(sheetLabel, _request.NormalizedSheetQuery);
                     if (!hasExplicitIds && hasSheetQuery && !sheetMatches)
                     {
                         continue;
@@ -241,7 +246,7 @@ namespace RevitMCPCommandSet.Commands.View
                     ScannedScheduleCellCount = state.ScannedScheduleCellCount,
                     EstimatedResponseBytes = state.EstimatedResponseBytes,
                     MaxResponseBytes = _request.MaxResponseBytes,
-                    SuggestedNextScopes = BuildSuggestedNextScopes(),
+                    SuggestedNextScopes = AnnotationEvidenceHelpers.BuildSheetTextSuggestedNextScopes(),
                     Warnings = warnings,
                     Notices = notices,
                     Sheets = new List<InspectSheetTextSheetResult>(),
@@ -323,8 +328,8 @@ namespace RevitMCPCommandSet.Commands.View
 
                     state.ScannedTextNoteCount++;
                     result.TextNoteCount++;
-                    string text = SafeText(textNote);
-                    if (!ContainsNormalized(text, _request.TextQuery)) continue;
+                    string text = AnnotationEvidenceHelpers.SafeText(textNote);
+                    if (!AnnotationEvidenceHelpers.ContainsPreNormalized(text, _request.NormalizedTextQuery)) continue;
 
                     if (returned >= _request.MaxTextNotesPerSheet)
                     {
@@ -333,21 +338,21 @@ namespace RevitMCPCommandSet.Commands.View
                         continue;
                     }
 
-                    Dictionary<string, object> record = BuildTextNoteRecord(
+                    Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildTextNoteRecord(
                         "sheetTextNote",
                         sheet,
                         null,
                         null,
                         textNote,
                         text,
-                        textNote.get_BoundingBox(sheet));
+                        _request.MaxTextChars);
                     if (!AddRecordIfWithinResponseBudget(record, state)) return;
 
                     returned++;
                     state.TotalTextNoteMatches++;
                     result.TextNoteReturned = returned;
                     result.TextNotes.Add(record);
-                    flatMatches.Add(CloneRecord(record));
+                    flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
                 }
             }
         }
@@ -407,7 +412,7 @@ namespace RevitMCPCommandSet.Commands.View
                     bool includeSchedule = !hasTextQuery || !_request.ScanScheduleCells || scheduleCellMatchCount > 0;
                     if (!includeSchedule) continue;
 
-                    Dictionary<string, object> record = BuildScheduleInstanceRecord(sheet, instance, schedule, cellScan);
+                    Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildScheduleInstanceRecord(sheet, instance, schedule, cellScan);
                     if (!AddRecordIfWithinResponseBudget(record, state)) return;
 
                     returned++;
@@ -415,7 +420,7 @@ namespace RevitMCPCommandSet.Commands.View
                     result.ScheduleInstanceReturned = returned;
                     result.ScheduleInstances.Add(record);
 
-                    Dictionary<string, object> flat = CloneRecord(record);
+                    Dictionary<string, object> flat = AnnotationEvidenceHelpers.CloneRecord(record);
                     flat["kind"] = "scheduleInstance";
                     flatMatches.Add(flat);
                 }
@@ -440,7 +445,7 @@ namespace RevitMCPCommandSet.Commands.View
             if (state.ScannedScheduleCellCount >= _request.MaxScheduleCellsScanned)
             {
                 state.Stop("max_schedule_cells");
-                return BuildScheduleCellScan(0, 0, true, matches, readFailed, readError);
+                return AnnotationEvidenceHelpers.BuildScheduleCellScan(0, 0, true, matches, readFailed, readError);
             }
 
             try
@@ -451,7 +456,7 @@ namespace RevitMCPCommandSet.Commands.View
                 {
                     readFailed = true;
                     readError = "Schedule body section data is not available.";
-                    return BuildScheduleCellScan(0, 0, false, matches, readFailed, readError);
+                    return AnnotationEvidenceHelpers.BuildScheduleCellScan(0, 0, false, matches, readFailed, readError);
                 }
 
                 int rowLimit = Math.Min(section.NumberOfRows, _request.MaxRowsPerSchedule);
@@ -467,46 +472,29 @@ namespace RevitMCPCommandSet.Commands.View
                         if (StopIfNeeded(deadlineUtc, state))
                         {
                             truncated = true;
-                            return BuildScheduleCellScan(scannedRows, scannedColumns, truncated, matches, readFailed, readError);
+                            return AnnotationEvidenceHelpers.BuildScheduleCellScan(scannedRows, scannedColumns, truncated, matches, readFailed, readError);
                         }
                         if (state.ScannedScheduleCellCount >= _request.MaxScheduleCellsScanned)
                         {
                             state.Stop("max_schedule_cells");
                             truncated = true;
-                            return BuildScheduleCellScan(scannedRows, scannedColumns, truncated, matches, readFailed, readError);
+                            return AnnotationEvidenceHelpers.BuildScheduleCellScan(scannedRows, scannedColumns, truncated, matches, readFailed, readError);
                         }
 
                         state.ScannedScheduleCellCount++;
-                        string text = ReadScheduleCell(schedule, SectionType.Body, row, column);
-                        if (!string.IsNullOrWhiteSpace(_request.TextQuery) && ContainsNormalized(text, _request.TextQuery))
+                        string text = AnnotationEvidenceHelpers.ReadScheduleCell(schedule, SectionType.Body, row, column);
+                        if (!string.IsNullOrWhiteSpace(_request.TextQuery) && AnnotationEvidenceHelpers.ContainsPreNormalized(text, _request.NormalizedTextQuery))
                         {
-                            Dictionary<string, object> cell = new Dictionary<string, object>();
-                            cell["section"] = "body";
-                            cell["row"] = row;
-                            cell["column"] = column;
-                            cell["text"] = TrimText(text);
+                            Dictionary<string, object> cell = AnnotationEvidenceHelpers.BuildScheduleCellMatch("body", row, column, text, _request.MaxTextChars);
                             if (!AddRecordIfWithinResponseBudget(cell, state))
                             {
                                 truncated = true;
-                                return BuildScheduleCellScan(scannedRows, scannedColumns, truncated, matches, readFailed, readError);
+                                return AnnotationEvidenceHelpers.BuildScheduleCellScan(scannedRows, scannedColumns, truncated, matches, readFailed, readError);
                             }
 
                             matches.Add(cell);
                             state.TotalScheduleCellMatches++;
-
-                            Dictionary<string, object> flat = new Dictionary<string, object>();
-                            flat["kind"] = "scheduleCell";
-                            flat["sheetId"] = sheet.Id.GetIdValue();
-                            flat["sheetNumber"] = sheet.SheetNumber;
-                            flat["sheetName"] = sheet.Name;
-                            flat["scheduleInstanceId"] = instance.Id.GetIdValue();
-                            flat["scheduleId"] = schedule.Id.GetIdValue();
-                            flat["scheduleName"] = schedule.Name;
-                            flat["section"] = "body";
-                            flat["row"] = row;
-                            flat["column"] = column;
-                            flat["text"] = TrimText(text);
-                            flat["textNormalized"] = NormalizeForSearch(text);
+                            Dictionary<string, object> flat = AnnotationEvidenceHelpers.BuildPlacedScheduleCellEvidenceRow(sheet, instance, schedule, row, column, text, _request.MaxTextChars);
                             flatMatches.Add(flat);
                         }
                     }
@@ -518,7 +506,7 @@ namespace RevitMCPCommandSet.Commands.View
                 readError = ex.Message;
             }
 
-            return BuildScheduleCellScan(scannedRows, scannedColumns, truncated, matches, readFailed, readError);
+            return AnnotationEvidenceHelpers.BuildScheduleCellScan(scannedRows, scannedColumns, truncated, matches, readFailed, readError);
         }
 
         private void ScanViewports(
@@ -554,14 +542,14 @@ namespace RevitMCPCommandSet.Commands.View
                     warnings.Add("Viewport view not found on sheet " + sheet.SheetNumber + ": " + viewport.Id.GetIdValue().ToString(CultureInfo.InvariantCulture));
                     continue;
                 }
-                if (!string.IsNullOrWhiteSpace(_request.ViewNameQuery) && !ContainsNormalized(view.Name, _request.ViewNameQuery))
+                if (!string.IsNullOrWhiteSpace(_request.ViewNameQuery) && !AnnotationEvidenceHelpers.ContainsPreNormalized(view.Name, _request.NormalizedViewNameQuery))
                 {
                     continue;
                 }
 
                 try
                 {
-                    Dictionary<string, object> viewportRecord = BuildViewportRecord(sheet, viewport, view);
+                    Dictionary<string, object> viewportRecord = AnnotationEvidenceHelpers.BuildViewportRecord(sheet, viewport, view);
                     if (!AddRecordIfWithinResponseBudget(viewportRecord, state)) return;
 
                     List<Dictionary<string, object>> textNotes = new List<Dictionary<string, object>>();
@@ -666,8 +654,8 @@ namespace RevitMCPCommandSet.Commands.View
                     if (textNote == null) continue;
                     state.ScannedTextNoteCount++;
                     textNoteCount++;
-                    string text = SafeText(textNote);
-                    if (!ContainsNormalized(text, _request.TextQuery)) continue;
+                    string text = AnnotationEvidenceHelpers.SafeText(textNote);
+                    if (!AnnotationEvidenceHelpers.ContainsPreNormalized(text, _request.NormalizedTextQuery)) continue;
                     if (textNoteReturned >= _request.MaxViewportTextNotesPerView)
                     {
                         textNotesTruncated = true;
@@ -675,20 +663,20 @@ namespace RevitMCPCommandSet.Commands.View
                         break;
                     }
 
-                    Dictionary<string, object> record = BuildTextNoteRecord(
+                    Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildTextNoteRecord(
                         "viewportTextNote",
                         sheet,
                         viewport,
                         view,
                         textNote,
                         text,
-                        textNote.get_BoundingBox(view));
+                        _request.MaxTextChars);
                     if (!AddRecordIfWithinResponseBudget(record, state)) return;
 
                     textNoteReturned++;
                     state.TotalViewportTextNoteMatches++;
                     textNotes.Add(record);
-                    flatMatches.Add(CloneRecord(record));
+                    flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
                 }
             }
         }
@@ -733,13 +721,13 @@ namespace RevitMCPCommandSet.Commands.View
                     state.ScannedTagCount++;
                     tagCount++;
 
-                    string tagText = SafeTagText(tag, warnings);
+                    string tagText = AnnotationEvidenceHelpers.SafeTagText(tag, warnings);
                     if (string.IsNullOrWhiteSpace(tagText))
                     {
-                        AddOnce(warnings, "viewport_tag_text_unavailable");
+                        AnnotationEvidenceHelpers.AddOnce(warnings, "viewport_tag_text_unavailable");
                         continue;
                     }
-                    if (!ContainsNormalized(tagText, _request.TextQuery)) continue;
+                    if (!AnnotationEvidenceHelpers.ContainsPreNormalized(tagText, _request.NormalizedTextQuery)) continue;
                     if (tagReturned >= _request.MaxViewportTagsPerView)
                     {
                         tagsTruncated = true;
@@ -747,13 +735,13 @@ namespace RevitMCPCommandSet.Commands.View
                         break;
                     }
 
-                    Dictionary<string, object> record = BuildViewportTagRecord(document, sheet, viewport, view, tag, tagText, warnings);
+                    Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildViewportTagRecord(document, sheet, viewport, view, tag, tagText, _request.MaxTextChars, warnings);
                     if (!AddRecordIfWithinResponseBudget(record, state)) return;
 
                     tagReturned++;
                     state.TotalViewportTagMatches++;
                     tags.Add(record);
-                    flatMatches.Add(CloneRecord(record));
+                    flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
                 }
             }
         }
@@ -859,7 +847,7 @@ namespace RevitMCPCommandSet.Commands.View
                 Partial = false,
                 ScanStoppedReason = reason,
                 ScanPolicy = BuildScanPolicy(),
-                SuggestedNextScopes = BuildSuggestedNextScopes(),
+                SuggestedNextScopes = AnnotationEvidenceHelpers.BuildSheetTextSuggestedNextScopes(),
                 ScannedSheetCount = state.ScannedSheetCount,
                 ScannedViewportCount = state.ScannedViewportCount,
                 ScannedTextNoteCount = state.ScannedTextNoteCount,
@@ -909,7 +897,7 @@ namespace RevitMCPCommandSet.Commands.View
                 Partial = state.Partial,
                 ScanStoppedReason = state.ScanStoppedReason,
                 ScanPolicy = BuildScanPolicy(),
-                SuggestedNextScopes = BuildSuggestedNextScopes(),
+                SuggestedNextScopes = AnnotationEvidenceHelpers.BuildSheetTextSuggestedNextScopes(),
                 ScannedSheetCount = state.ScannedSheetCount,
                 ScannedViewportCount = state.ScannedViewportCount,
                 ScannedTextNoteCount = state.ScannedTextNoteCount,
@@ -969,172 +957,9 @@ namespace RevitMCPCommandSet.Commands.View
             return policy;
         }
 
-        private List<string> BuildSuggestedNextScopes()
-        {
-            return new List<string>
-            {
-                "sheetQuery",
-                "sheetIds",
-                "viewNameQuery",
-                "maxSheets",
-                "allowExpensiveSearch",
-                "searchBudget=deep"
-            };
-        }
-
-        private Dictionary<string, object> BuildTextNoteRecord(
-            string kind,
-            ViewSheet sheet,
-            Viewport viewport,
-            Autodesk.Revit.DB.View view,
-            TextNote textNote,
-            string text,
-            BoundingBoxXYZ box)
-        {
-            Dictionary<string, object> record = new Dictionary<string, object>();
-            record["kind"] = kind;
-            record["id"] = textNote.Id.GetIdValue();
-            record["elementId"] = textNote.Id.GetIdValue();
-            record["uniqueId"] = textNote.UniqueId;
-            record["sheetId"] = sheet.Id.GetIdValue();
-            record["sheetNumber"] = sheet.SheetNumber;
-            record["sheetName"] = sheet.Name;
-            if (viewport != null)
-            {
-                record["viewportId"] = viewport.Id.GetIdValue();
-            }
-            if (view != null)
-            {
-                record["viewId"] = view.Id.GetIdValue();
-                record["viewName"] = view.Name;
-                record["viewType"] = view.ViewType.ToString();
-            }
-            record["text"] = TrimText(text);
-            record["textNormalized"] = NormalizeForSearch(text);
-            record["point"] = PointInfo(textNote.Coord);
-            record["box"] = BoxInfo(box);
-            return record;
-        }
-
-        private Dictionary<string, object> BuildScheduleInstanceRecord(
-            ViewSheet sheet,
-            ScheduleSheetInstance instance,
-            ViewSchedule schedule,
-            Dictionary<string, object> cellScan)
-        {
-            Dictionary<string, object> record = new Dictionary<string, object>();
-            record["kind"] = "scheduleInstance";
-            record["sheetId"] = sheet.Id.GetIdValue();
-            record["sheetNumber"] = sheet.SheetNumber;
-            record["sheetName"] = sheet.Name;
-            record["instanceId"] = instance.Id.GetIdValue();
-            record["uniqueId"] = instance.UniqueId;
-            record["scheduleId"] = instance.ScheduleId.GetIdValue();
-            record["scheduleName"] = schedule != null ? schedule.Name : "";
-            record["isTitleblockRevisionSchedule"] = IsRevisionScheduleInstance(instance);
-            record["point"] = ScheduleInstancePointInfo(instance);
-            record["box"] = BoxInfo(instance.get_BoundingBox(sheet));
-            record["cellScan"] = cellScan;
-            return record;
-        }
-
-        private Dictionary<string, object> BuildViewportRecord(ViewSheet sheet, Viewport viewport, Autodesk.Revit.DB.View view)
-        {
-            Dictionary<string, object> record = new Dictionary<string, object>();
-            record["sheetId"] = sheet.Id.GetIdValue();
-            record["sheetNumber"] = sheet.SheetNumber;
-            record["sheetName"] = sheet.Name;
-            record["viewportId"] = viewport.Id.GetIdValue();
-            record["viewId"] = view.Id.GetIdValue();
-            record["viewName"] = view.Name;
-            record["viewType"] = view.ViewType.ToString();
-            record["scale"] = view.Scale;
-            record["boxCenter"] = PointInfo(SafeViewportBoxCenter(viewport));
-            record["box"] = SafeViewportBox(viewport);
-            return record;
-        }
-
-        private Dictionary<string, object> BuildViewportTagRecord(
-            Document document,
-            ViewSheet sheet,
-            Viewport viewport,
-            Autodesk.Revit.DB.View view,
-            IndependentTag tag,
-            string tagText,
-            List<string> warnings)
-        {
-            Dictionary<string, object> record = new Dictionary<string, object>();
-            record["kind"] = "viewportTag";
-            record["id"] = tag.Id.GetIdValue();
-            record["elementId"] = tag.Id.GetIdValue();
-            record["tagId"] = tag.Id.GetIdValue();
-            record["uniqueId"] = tag.UniqueId;
-            record["sheetId"] = sheet.Id.GetIdValue();
-            record["sheetNumber"] = sheet.SheetNumber;
-            record["sheetName"] = sheet.Name;
-            record["viewportId"] = viewport.Id.GetIdValue();
-            record["viewId"] = view.Id.GetIdValue();
-            record["viewName"] = view.Name;
-            record["viewType"] = view.ViewType.ToString();
-            record["tagText"] = TrimText(tagText);
-            record["tagTextNormalized"] = NormalizeForSearch(tagText);
-            record["text"] = TrimText(tagText);
-            record["textNormalized"] = NormalizeForSearch(tagText);
-            record["box"] = BoxInfo(SafeBoundingBox(tag, view));
-
-            Element tagType = SafeGetElement(document, tag.GetTypeId());
-            if (tagType != null)
-            {
-                record["tagFamilyName"] = FamilyNameForElement(tagType);
-                record["tagTypeName"] = SafeElementName(tagType);
-            }
-
-            ElementId taggedElementId = ResolveTaggedLocalElementId(tag, warnings);
-            if (taggedElementId == null || taggedElementId == ElementId.InvalidElementId)
-            {
-                record["taggedElementResolved"] = false;
-                AddOnce(warnings, "viewport_tag_tagged_element_unresolved");
-                return record;
-            }
-
-            record["taggedElementId"] = taggedElementId.GetIdValue();
-            Element taggedElement = SafeGetElement(document, taggedElementId);
-            if (taggedElement == null)
-            {
-                record["taggedElementResolved"] = false;
-                AddOnce(warnings, "viewport_tag_tagged_element_not_found");
-                return record;
-            }
-
-            record["taggedElementResolved"] = true;
-            record["taggedCategory"] = taggedElement.Category != null ? taggedElement.Category.Name : "";
-            record["taggedFamilyName"] = FamilyNameForElement(taggedElement);
-            record["taggedTypeName"] = TypeNameForElement(document, taggedElement);
-            return record;
-        }
-
-        private static Dictionary<string, object> BuildScheduleCellScan(
-            int scannedRows,
-            int scannedColumns,
-            bool truncated,
-            List<Dictionary<string, object>> matches,
-            bool readFailed,
-            string readError)
-        {
-            Dictionary<string, object> scan = new Dictionary<string, object>();
-            scan["scannedRows"] = scannedRows;
-            scan["scannedColumns"] = scannedColumns;
-            scan["truncated"] = truncated;
-            scan["matchCount"] = matches.Count;
-            scan["matches"] = matches;
-            scan["readFailed"] = readFailed;
-            scan["readError"] = readError;
-            return scan;
-        }
-
         private bool AddRecordIfWithinResponseBudget(Dictionary<string, object> record, SheetAnnotationScanState state)
         {
-            int estimate = EstimateObjectBytes(record);
+            int estimate = AnnotationEvidenceHelpers.EstimateObjectBytes(record, AnnotationEvidenceByteEstimateKind.SheetText);
             if (state.EstimatedResponseBytes + estimate > _request.MaxResponseBytes)
             {
                 state.Stop("max_bytes");
@@ -1200,367 +1025,6 @@ namespace RevitMCPCommandSet.Commands.View
                 }
             }
             return false;
-        }
-
-        private static Dictionary<string, object> CloneRecord(Dictionary<string, object> record)
-        {
-            return new Dictionary<string, object>(record);
-        }
-
-        private string TrimText(string value)
-        {
-            if (value == null) return "";
-            value = value.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim();
-            if (value.Length <= _request.MaxTextChars) return value;
-            return value.Substring(0, _request.MaxTextChars) + "...";
-        }
-
-        private static string SafeText(TextNote textNote)
-        {
-            try
-            {
-                return textNote.Text ?? "";
-            }
-            catch
-            {
-                return "";
-            }
-        }
-
-        private static string ReadScheduleCell(ViewSchedule schedule, SectionType sectionType, int row, int column)
-        {
-            try
-            {
-                return schedule.GetCellText(sectionType, row, column) ?? "";
-            }
-            catch
-            {
-                return "";
-            }
-        }
-
-        private static bool ContainsNormalized(string value, string query)
-        {
-            if (string.IsNullOrWhiteSpace(query)) return true;
-            return NormalizeForSearch(value).Contains(NormalizeForSearch(query));
-        }
-
-        private static string NormalizeForSearch(string value)
-        {
-            if (value == null) return "";
-            string replaced = value
-                .Replace('\u0423', 'Y')
-                .Replace('\u0443', 'y')
-                .Replace('\u011E', 'G')
-                .Replace('\u011F', 'g')
-                .Replace('\u00DC', 'U')
-                .Replace('\u00FC', 'u')
-                .Replace('\u0130', 'I')
-                .Replace('\u0131', 'i')
-                .Replace('\u015E', 'S')
-                .Replace('\u015F', 's')
-                .Replace('\u00C7', 'C')
-                .Replace('\u00E7', 'c')
-                .Replace('\u00D6', 'O')
-                .Replace('\u00F6', 'o');
-            string form = replaced.Normalize(NormalizationForm.FormD);
-            StringBuilder builder = new StringBuilder();
-            foreach (char ch in form)
-            {
-                UnicodeCategory category = CharUnicodeInfo.GetUnicodeCategory(ch);
-                if (category != UnicodeCategory.NonSpacingMark)
-                {
-                    builder.Append(ch);
-                }
-            }
-            return builder.ToString().ToLowerInvariant();
-        }
-
-        private static Dictionary<string, object> PointInfo(XYZ point)
-        {
-            if (point == null) return null;
-            Dictionary<string, object> result = new Dictionary<string, object>();
-            result["x"] = Math.Round(point.X, 6);
-            result["y"] = Math.Round(point.Y, 6);
-            result["z"] = Math.Round(point.Z, 6);
-            return result;
-        }
-
-        private static Dictionary<string, object> BoxInfo(BoundingBoxXYZ box)
-        {
-            if (box == null) return null;
-            return BoxFromPoints(box.Min, box.Max);
-        }
-
-        private static Dictionary<string, object> BoxFromPoints(XYZ min, XYZ max)
-        {
-            Dictionary<string, object> result = new Dictionary<string, object>();
-            result["min"] = PointInfo(min);
-            result["max"] = PointInfo(max);
-            return result;
-        }
-
-        private static XYZ SafeViewportBoxCenter(Viewport viewport)
-        {
-            try
-            {
-                return viewport.GetBoxCenter();
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static Dictionary<string, object> SafeViewportBox(Viewport viewport)
-        {
-            try
-            {
-                Outline outline = viewport.GetBoxOutline();
-                return BoxFromPoints(outline.MinimumPoint, outline.MaximumPoint);
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static Dictionary<string, object> ScheduleInstancePointInfo(ScheduleSheetInstance instance)
-        {
-            try
-            {
-                System.Reflection.PropertyInfo pointProperty = instance.GetType().GetProperty("Point");
-                if (pointProperty == null) return null;
-                return PointInfo(pointProperty.GetValue(instance, null) as XYZ);
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static bool IsRevisionScheduleInstance(ScheduleSheetInstance instance)
-        {
-            try
-            {
-                System.Reflection.PropertyInfo revisionProperty = instance.GetType().GetProperty("IsTitleblockRevisionSchedule");
-                if (revisionProperty == null) return false;
-                object value = revisionProperty.GetValue(instance, null);
-                return value is bool && (bool)value;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static Element SafeGetElement(Document document, ElementId id)
-        {
-            try
-            {
-                if (document == null || id == null || id == ElementId.InvalidElementId) return null;
-                return document.GetElement(id);
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static BoundingBoxXYZ SafeBoundingBox(Element element, Autodesk.Revit.DB.View view)
-        {
-            try
-            {
-                return element != null ? element.get_BoundingBox(view) : null;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static string SafeElementName(Element element)
-        {
-            try
-            {
-                return element != null ? element.Name ?? "" : "";
-            }
-            catch
-            {
-                return "";
-            }
-        }
-
-        private static string FamilyNameForElement(Element element)
-        {
-            try
-            {
-                if (element == null) return "";
-
-                ElementType type = element as ElementType;
-                if (type != null)
-                {
-                    return type.FamilyName ?? "";
-                }
-
-                FamilyInstance instance = element as FamilyInstance;
-                if (instance != null && instance.Symbol != null)
-                {
-                    return instance.Symbol.FamilyName ?? "";
-                }
-            }
-            catch
-            {
-                return "";
-            }
-
-            return "";
-        }
-
-        private static string TypeNameForElement(Document document, Element element)
-        {
-            try
-            {
-                if (document == null || element == null) return "";
-                ElementId typeId = element.GetTypeId();
-                Element typeElement = SafeGetElement(document, typeId);
-                return SafeElementName(typeElement);
-            }
-            catch
-            {
-                return "";
-            }
-        }
-
-        private static ElementId ResolveTaggedLocalElementId(IndependentTag tag, List<string> warnings)
-        {
-            if (tag == null) return null;
-
-            try
-            {
-                System.Reflection.MethodInfo method = tag.GetType().GetMethod("GetTaggedLocalElementIds", Type.EmptyTypes);
-                if (method != null)
-                {
-                    System.Collections.IEnumerable ids = method.Invoke(tag, null) as System.Collections.IEnumerable;
-                    if (ids != null)
-                    {
-                        foreach (object item in ids)
-                        {
-                            ElementId id = item as ElementId;
-                            if (id != null && id != ElementId.InvalidElementId)
-                            {
-                                return id;
-                            }
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                AddOnce(warnings, "viewport_tag_tagged_local_element_ids_read_failed");
-            }
-
-            try
-            {
-                System.Reflection.MethodInfo method = tag.GetType().GetMethod("GetTaggedElementIds", Type.EmptyTypes);
-                if (method != null)
-                {
-                    System.Collections.IEnumerable ids = method.Invoke(tag, null) as System.Collections.IEnumerable;
-                    if (ids != null)
-                    {
-                        foreach (object item in ids)
-                        {
-                            ElementId linkedId = TryReadElementIdProperty(item, "LinkedElementId");
-                            if (linkedId != null && linkedId != ElementId.InvalidElementId)
-                            {
-                                AddOnce(warnings, "viewport_tag_linked_element_unresolved");
-                                continue;
-                            }
-
-                            ElementId hostId = TryReadElementIdProperty(item, "HostElementId");
-                            if (hostId != null && hostId != ElementId.InvalidElementId)
-                            {
-                                return hostId;
-                            }
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                AddOnce(warnings, "viewport_tag_tagged_element_ids_read_failed");
-            }
-
-            return null;
-        }
-
-        private static ElementId TryReadElementIdProperty(object value, string propertyName)
-        {
-            try
-            {
-                if (value == null) return null;
-                System.Reflection.PropertyInfo property = value.GetType().GetProperty(propertyName);
-                if (property == null) return null;
-                return property.GetValue(value, null) as ElementId;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static string SafeTagText(IndependentTag tag, List<string> warnings)
-        {
-            try
-            {
-                return tag != null ? tag.TagText ?? "" : "";
-            }
-            catch
-            {
-                AddOnce(warnings, "viewport_tag_text_read_failed");
-                return "";
-            }
-        }
-
-        private static void AddOnce(List<string> values, string value)
-        {
-            if (values == null || string.IsNullOrWhiteSpace(value)) return;
-            if (!values.Contains(value))
-            {
-                values.Add(value);
-            }
-        }
-
-        private static int EstimateObjectBytes(object value)
-        {
-            if (value == null) return 4;
-            string text = value as string;
-            if (text != null) return 16 + (text.Length * 2);
-            if (value is bool || value is int || value is long || value is double || value is decimal) return 32;
-
-            System.Collections.IDictionary dictionary = value as System.Collections.IDictionary;
-            if (dictionary != null)
-            {
-                int total = 32;
-                foreach (System.Collections.DictionaryEntry entry in dictionary)
-                {
-                    total += 8 + EstimateObjectBytes(entry.Key) + EstimateObjectBytes(entry.Value);
-                }
-                return total;
-            }
-
-            System.Collections.IEnumerable enumerable = value as System.Collections.IEnumerable;
-            if (enumerable != null)
-            {
-                int total = 32;
-                foreach (object item in enumerable)
-                {
-                    total += EstimateObjectBytes(item);
-                }
-                return total;
-            }
-
-            return 64 + (Convert.ToString(value, CultureInfo.InvariantCulture) ?? "").Length * 2;
         }
 
         private void Complete(InspectSheetTextResult result)
