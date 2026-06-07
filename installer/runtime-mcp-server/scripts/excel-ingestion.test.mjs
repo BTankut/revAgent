@@ -131,6 +131,19 @@ assert.equal(csvBudgetResult.partial, true);
 assert.equal(csvBudgetResult.scanStoppedReason, "max_rows");
 assert.equal(csvBudgetResult.excelRecords.length, 2);
 
+const rangeClampPath = path.join(tempRoot, "range-clamp.csv");
+await fs.writeFile(rangeClampPath, "Identity,Description\nOUT,Outside\nIN-1,Inside 1\nIN-2,Inside 2\n", "utf8");
+const rangeClampResult = await ingestExcelSource({
+  kind: "file",
+  path: rangeClampPath,
+  format: "csv",
+  selection: { range: "A3:B4", headerRow: 1, dataStartRow: 2 },
+  columnMapping: { identity: "Identity", comparisonText: "Description" },
+});
+assert.equal(rangeClampResult.success, true);
+assert.equal(rangeClampResult.excelRecords.length, 2);
+assert.equal(rangeClampResult.excelRecords[0].identityText, "IN-1");
+
 const xlsResult = await ingestExcelSource({
   kind: "file",
   path: path.join(tempRoot, "legacy.xls"),
@@ -161,6 +174,26 @@ assert.equal(disambiguationResult.guarded, false);
 assert.equal(disambiguationResult.excelRecords.length, 1);
 assert.equal(disambiguationResult.excelRecords[0].identityText, "FCU-01");
 assert.equal(disambiguationResult.excelRecords[0].comparisonText, "Fan coil unit");
+
+const aliasPriorityResult = await ingestExcelSource({
+  kind: "rows",
+  sheetName: "Rows",
+  rows: [{ Id: "ID-01", Name: "Fan coil name", Description: "Fan coil description" }],
+});
+assert.equal(aliasPriorityResult.success, true);
+assert.equal(aliasPriorityResult.guarded, false);
+assert.equal(aliasPriorityResult.excelRecords[0].identityText, "ID-01");
+assert.equal(aliasPriorityResult.excelRecords[0].comparisonText, "Fan coil name");
+
+const invalidDateResult = await ingestExcelSource({
+  kind: "rows",
+  sheetName: "Rows",
+  rows: [{ Identity: "D-01", Description: new Date("not-a-date") }],
+  columnMapping: { identity: "Identity", comparisonText: "Description" },
+});
+assert.equal(invalidDateResult.success, true);
+assert.equal(invalidDateResult.guarded, false);
+assert.equal(invalidDateResult.excelRecords[0].comparisonText, "");
 
 const rowsBudget = await ingestExcelSource({
   kind: "rows",

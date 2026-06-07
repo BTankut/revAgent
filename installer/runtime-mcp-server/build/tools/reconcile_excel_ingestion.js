@@ -300,7 +300,7 @@ function cellValueToText(value) {
         return "";
     }
     if (value instanceof Date) {
-        return value.toISOString();
+        return Number.isNaN(value.getTime()) ? "" : value.toISOString();
     }
     if (typeof value === "object") {
         const objectValue = value;
@@ -660,7 +660,8 @@ function readTabularCells(options) {
     const rows = [];
     let lastReadRow = null;
     let lastReadColumn = null;
-    for (let rowNumber = dataStartRow; rowNumber <= parsedRange.endRow; rowNumber++) {
+    const firstDataRow = Math.max(dataStartRow, parsedRange.startRow);
+    for (let rowNumber = firstDataRow; rowNumber <= parsedRange.endRow; rowNumber++) {
         if (rows.length >= options.budgets.maxRows) {
             partial = true;
             scanStoppedReason = scanStoppedReason === "completed" ? "max_rows" : scanStoppedReason;
