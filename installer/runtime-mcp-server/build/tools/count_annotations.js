@@ -52,6 +52,9 @@ function normalizeSource(value) {
     if (/^viewport_?tags?$/i.test(normalized) || /^viewportTags?$/i.test(normalized)) {
         return "viewport_tags";
     }
+    if (/^placed_?schedule_?cells?$/i.test(normalized) || /^placedScheduleCells?$/i.test(normalized) || /^schedule_?cells?$/i.test(normalized) || /^scheduleCells?$/i.test(normalized)) {
+        return "placed_schedule_cells";
+    }
     return normalized;
 }
 function normalizeCountMode(value) {
@@ -67,6 +70,13 @@ function normalizeCountMode(value) {
 function isTagCountMode(countMode) {
     return countMode === "uniqueTag" || countMode === "uniqueTaggedElement";
 }
+function defaultGlobalCap(searchBudget, fast, balanced, deep) {
+    if (searchBudget === "deep")
+        return deep;
+    if (searchBudget === "balanced")
+        return balanced;
+    return fast;
+}
 function resolveSources(args) {
     const countMode = normalizeCountMode(args.countMode);
     const rawSources = Array.isArray(args.sources) ? args.sources : [];
@@ -76,7 +86,7 @@ function resolveSources(args) {
     }
     return isTagCountMode(countMode)
         ? ["viewport_tags"]
-        : ["sheet_text_notes", "viewport_tags"];
+        : ["sheet_text_notes", "placed_schedule_cells", "viewport_tags"];
 }
 function hasExplicitSources(args) {
     return Array.isArray(args.sources) && args.sources.length > 0;
@@ -97,8 +107,13 @@ function buildCountScanPolicy(args) {
         timeoutMs: budget.timeoutMs,
         maxSheets: clampIntArg(args.maxSheets, 30, 1, 200),
         maxViewportsPerSheet: clampIntArg(args.maxViewportsPerSheet ?? args.maxViewports, 20, 0, 200),
-        maxTextNotesScanned: clampIntArg(args.maxTextNotesScanned, 1000, 1, 200000),
-        maxTagsScanned: clampIntArg(args.maxTagsScanned ?? args.maxTags, 500, 1, 100000),
+        maxTextNotesScanned: clampIntArg(args.maxTextNotesScanned, defaultGlobalCap(budget.searchBudget, 1000, 5000, 20000), 1, 200000),
+        maxTagsScanned: clampIntArg(args.maxTagsScanned ?? args.maxTags, defaultGlobalCap(budget.searchBudget, 500, 2500, 10000), 1, 100000),
+        maxScheduleInstancesPerSheet: clampIntArg(args.maxScheduleInstancesPerSheet, 20, 0, 200),
+        maxRowsPerSchedule: clampIntArg(args.maxRowsPerSchedule, 250, 1, 2000),
+        maxColumnsPerSchedule: clampIntArg(args.maxColumnsPerSchedule, 20, 1, 200),
+        maxScheduleInstancesScanned: clampIntArg(args.maxScheduleInstancesScanned, defaultGlobalCap(budget.searchBudget, 200, 1000, 5000), 1, 20000),
+        maxScheduleCellsScanned: clampIntArg(args.maxScheduleCellsScanned, defaultGlobalCap(budget.searchBudget, 1000, 5000, 20000), 1, 200000),
         maxMatches: budget.maxMatches,
         maxTextChars: clampIntArg(args.maxTextChars, 240, 1, 1000),
         maxRegexPatternLength: clampIntArg(args.maxRegexPatternLength, 240, 1, 1000),
@@ -130,6 +145,11 @@ function buildNativeParams(args, budget) {
         maxTextNotesScanned: args.maxTextNotesScanned,
         maxTagsScanned: args.maxTagsScanned,
         maxTags: args.maxTags,
+        maxScheduleInstancesPerSheet: args.maxScheduleInstancesPerSheet,
+        maxRowsPerSchedule: args.maxRowsPerSchedule,
+        maxColumnsPerSchedule: args.maxColumnsPerSchedule,
+        maxScheduleInstancesScanned: args.maxScheduleInstancesScanned,
+        maxScheduleCellsScanned: args.maxScheduleCellsScanned,
         maxMatches: budget.maxMatches,
         maxTextChars: args.maxTextChars,
         maxRegexPatternLength: args.maxRegexPatternLength,
@@ -141,12 +161,16 @@ function buildNativeParams(args, budget) {
     };
 }
 function sourceTypeForAnnotationEvidence(row) {
-    const kind = String(readNativeResultField(row, "sourceType") || readNativeResultField(row, "kind") || "");
-    if (kind === "viewportTag" || kind === "viewport_tags")
+    const rawSourceType = String(readNativeResultField(row, "sourceType") || "");
+    const kind = String(readNativeResultField(row, "kind") || "");
+    const candidates = [rawSourceType, kind];
+    if (candidates.some((candidate) => candidate === "viewportTag" || candidate === "viewport_tags"))
         return "viewportTag";
-    if (kind === "sheetTextNote" || kind === "sheet_text_notes")
+    if (candidates.some((candidate) => candidate === "sheetTextNote" || candidate === "sheet_text_notes"))
         return "sheetTextNote";
-    return kind || "annotation";
+    if (candidates.some((candidate) => candidate === "placedScheduleCell" || candidate === "placed_schedule_cells" || candidate === "scheduleCell"))
+        return "placedScheduleCell";
+    return rawSourceType || kind || "annotation";
 }
 function buildCountEvidenceRows(payload) {
     const nativeEvidenceRows = readNativeResultArray(payload, "evidenceRows");
@@ -321,6 +345,8 @@ function buildCountSummary(payload, args) {
         scannedViewportCount: readNativeResultField(payload, "scannedViewportCount") ?? null,
         scannedTextNoteCount: readNativeResultField(payload, "scannedTextNoteCount") ?? null,
         scannedTagCount: readNativeResultField(payload, "scannedTagCount") ?? null,
+        scannedScheduleInstanceCount: readNativeResultField(payload, "scannedScheduleInstanceCount") ?? null,
+        scannedScheduleCellCount: readNativeResultField(payload, "scannedScheduleCellCount") ?? null,
         partial: readNativeResultField(payload, "partial") === true,
         scanStoppedReason: readNativeResultField(payload, "scanStoppedReason") ?? "completed",
     };
@@ -337,6 +363,8 @@ function inferCountLastRead(payload) {
         lastReadViewportId: readNativeResultField(lastEvidence, "viewportId") ?? readNativeResultField(payload, "lastReadViewportId") ?? null,
         lastReadItemId: readNativeResultField(lastEvidence, "tagId")
             ?? readNativeResultField(lastEvidence, "elementId")
+            ?? readNativeResultField(lastEvidence, "scheduleInstanceId")
+            ?? readNativeResultField(lastEvidence, "scheduleId")
             ?? readNativeResultField(lastEvidence, "id")
             ?? readNativeResultField(payload, "lastReadItemId")
             ?? null,
@@ -405,7 +433,7 @@ function buildGuardedInvalidCountMode(args) {
     });
 }
 export function registerCountAnnotationsTool(server) {
-    server.tool("count_annotations", "[ANNOTATION_COUNT_READ_ONLY] Read-only native Revit annotation inventory/count for DrawingSheet text notes and viewport tag evidence. Use sheetQuery/sheetIds first; project-wide annotation counts require allowExpensiveSearch=true. Supports occurrence, uniqueText, uniqueTag, and uniqueTaggedElement count modes with bounded regex profiles.", {
+    server.tool("count_annotations", "[ANNOTATION_COUNT_READ_ONLY] Read-only native Revit annotation inventory/count for DrawingSheet text notes, placed schedule cells, and viewport tag evidence. Use sheetQuery/sheetIds first; project-wide annotation counts require allowExpensiveSearch=true. Supports occurrence, uniqueText, uniqueTag, and uniqueTaggedElement count modes with bounded regex profiles.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Anonymous text query. Defaults to contains matching unless matchMode is supplied."),
@@ -417,7 +445,7 @@ export function registerCountAnnotationsTool(server) {
         sheetQuery: z.string().optional().describe("Sheet number/name scope. Use this first in large projects."),
         sheetIds: z.array(z.union([z.number(), z.string()])).optional().describe("Exact ViewSheet element ids to inspect. Preferred when known."),
         viewNameQuery: z.string().optional().describe("Optional placed-view name filter before viewport tag inspection."),
-        sources: z.array(z.enum(["sheet_text_notes", "viewport_tags", "sheetTextNotes", "viewportTags"])).optional().describe("Annotation sources. Defaults to sheet_text_notes + viewport_tags except tag-specific count modes, which default to viewport_tags."),
+        sources: z.array(z.enum(["sheet_text_notes", "placed_schedule_cells", "placed_schedule_cell", "viewport_tags", "sheetTextNotes", "placedScheduleCells", "placedScheduleCell", "schedule_cells", "schedule_cell", "scheduleCells", "scheduleCell", "viewportTags"])).optional().describe("Annotation sources. Defaults to sheet_text_notes + placed_schedule_cells + viewport_tags except tag-specific count modes, which default to viewport_tags."),
         countMode: z.enum(["occurrence", "uniqueText", "uniqueTag", "uniqueTaggedElement"]).optional().describe("Count semantics. Tag-specific modes require viewport_tags as the only explicit source."),
         groupBy: z.array(z.enum(["sheet", "view", "sourceType", "profile", "profileName", "pattern", "patternName", "matchedText", "matchedCode", "tagFamilyType", "taggedElement", "taggedElementId"])).optional().describe("Optional grouping dimensions for count rows."),
         allowExpensiveSearch: z.boolean().optional().describe("Explicit approval for project-wide sheet and placed-view annotation counting without sheetIds/sheetQuery. Defaults false."),
@@ -427,6 +455,11 @@ export function registerCountAnnotationsTool(server) {
         maxViewportsPerSheet: z.number().int().min(0).max(200).optional().describe("Maximum placed viewports inspected per sheet. Defaults 20."),
         maxViewports: z.number().int().min(0).max(200).optional().describe("Alias for maxViewportsPerSheet."),
         maxTextNotesScanned: z.number().int().positive().max(200000).optional().describe("Global native cap across sheet text notes."),
+        maxScheduleInstancesPerSheet: z.number().int().min(0).max(200).optional().describe("Maximum placed schedule instances inspected per sheet. Defaults 20."),
+        maxRowsPerSchedule: z.number().int().positive().max(2000).optional().describe("Maximum body rows scanned per placed schedule. Defaults 250."),
+        maxColumnsPerSchedule: z.number().int().positive().max(200).optional().describe("Maximum body columns scanned per placed schedule. Defaults 20."),
+        maxScheduleInstancesScanned: z.number().int().positive().max(20000).optional().describe("Global native cap across placed schedule instances."),
+        maxScheduleCellsScanned: z.number().int().positive().max(200000).optional().describe("Global native cap across placed schedule body cells before scanStoppedReason=max_cells."),
         maxTags: z.number().int().positive().max(100000).optional().describe("Alias for maxTagsScanned. Global native cap across viewport tags."),
         maxTagsScanned: z.number().int().positive().max(100000).optional().describe("Global native cap across viewport tags."),
         maxMatches: z.number().int().positive().max(200000).optional().describe("Maximum returned matching evidence rows before scanStoppedReason=max_items."),

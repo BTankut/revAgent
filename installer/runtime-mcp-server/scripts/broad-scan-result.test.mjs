@@ -366,6 +366,68 @@ const uniqueTextCountPayload = normalizeCountAnnotationsResult({
 assert.equal(uniqueTextCountPayload.summary.count, 3);
 assert.equal(uniqueTextCountPayload.evidenceRows.filter((row) => row.counted).length, 3);
 
+const placedScheduleCellCountPayload = normalizeCountAnnotationsResult({
+  Success: true,
+  Action: "count_annotations",
+  Partial: true,
+  ScanStoppedReason: "max_cells",
+  ScannedSheetCount: 1,
+  ScannedScheduleInstanceCount: 1,
+  ScannedScheduleCellCount: 2,
+  LastReadSection: "body",
+  LastReadRow: 3,
+  LastReadColumn: 2,
+  EvidenceRows: [
+    {
+      Kind: "scheduleCell",
+      SourceType: "raw_untrusted",
+      SheetId: 1001,
+      SheetNumber: "M701",
+      ScheduleInstanceId: 2001,
+      ScheduleId: 3001,
+      ScheduleName: "Mechanical Schedule",
+      Section: "body",
+      Row: 3,
+      Column: 2,
+      Text: "QHK 310.001",
+      TextNormalized: "qhk 310.001",
+      ProfileName: "codes",
+      PatternName: "qhk-code",
+      MatchedText: "QHK 310.001",
+      MatchedTextNormalized: "qhk 310.001",
+    },
+  ],
+}, { countMode: "uniqueText", sources: ["placed_schedule_cells"], groupBy: ["sourceType"] }, 15);
+assert.equal(placedScheduleCellCountPayload.partial, true);
+assert.equal(placedScheduleCellCountPayload.scanStoppedReason, "max_cells");
+assert.equal(placedScheduleCellCountPayload.evidenceRows[0].sourceType, "placedScheduleCell");
+assert.equal(placedScheduleCellCountPayload.summary.count, 1);
+assert.equal(placedScheduleCellCountPayload.summary.scannedScheduleCellCount, 2);
+assert.equal(placedScheduleCellCountPayload.lastReadSection, "body");
+assert.equal(placedScheduleCellCountPayload.lastReadRow, 3);
+assert.equal(placedScheduleCellCountPayload.lastReadColumn, 2);
+assert.equal(placedScheduleCellCountPayload.lastReadItemId, 2001);
+
+const placedScheduleRowCapPayload = normalizeCountAnnotationsResult({
+  Success: true,
+  Action: "count_annotations",
+  Partial: true,
+  ScanStoppedReason: "max_rows",
+  ScannedSheetCount: 1,
+  ScannedScheduleInstanceCount: 1,
+  ScannedScheduleCellCount: 10,
+  LastReadSection: "body",
+  LastReadRow: 249,
+  LastReadColumn: 19,
+  EvidenceRows: [],
+}, { countMode: "occurrence", sources: ["placed_schedule_cells"], maxRowsPerSchedule: 250, maxColumnsPerSchedule: 20 }, 15);
+assert.equal(placedScheduleRowCapPayload.partial, true);
+assert.equal(placedScheduleRowCapPayload.scanStoppedReason, "max_rows");
+assert.equal(placedScheduleRowCapPayload.summary.scanStoppedReason, "max_rows");
+assert.equal(placedScheduleRowCapPayload.summary.scannedScheduleCellCount, 10);
+assert.equal(placedScheduleRowCapPayload.lastReadRow, 249);
+assert.equal(placedScheduleRowCapPayload.lastReadColumn, 19);
+
 const uniqueTagCountPayload = normalizeCountAnnotationsResult({
   Success: true,
   Action: "count_annotations",

@@ -178,7 +178,7 @@
                                            "website":  "",
                                            "organization":  "mcp-servers-for-revit"
                                        },
-                         "description":  "Count and group Revit sheet text-note and viewport tag annotations with bounded native evidence"
+                         "description":  "Count and group Revit sheet text-note, placed schedule-cell, and viewport tag annotations with bounded native evidence"
                      },
                      {
                          "commandName":  "open_existing_plan_for_element_level",

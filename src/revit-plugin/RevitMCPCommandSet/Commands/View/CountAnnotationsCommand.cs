@@ -53,6 +53,11 @@ namespace RevitMCPCommandSet.Commands.View
             request.MaxViewportsPerSheet = ReadInt(parameters, "maxViewportsPerSheet", ReadInt(parameters, "maxViewports", 20, 0, 200), 0, 200);
             request.MaxTextNotesScanned = ReadInt(parameters, "maxTextNotesScanned", DefaultGlobalCap(request.SearchBudget, 1000, 5000, 20000), 1, 200000);
             request.MaxTagsScanned = ReadInt(parameters, "maxTagsScanned", ReadInt(parameters, "maxTags", DefaultGlobalCap(request.SearchBudget, 500, 2500, 10000), 1, 100000), 1, 100000);
+            request.MaxScheduleInstancesPerSheet = ReadInt(parameters, "maxScheduleInstancesPerSheet", 20, 0, 200);
+            request.MaxRowsPerSchedule = ReadInt(parameters, "maxRowsPerSchedule", 250, 1, 2000);
+            request.MaxColumnsPerSchedule = ReadInt(parameters, "maxColumnsPerSchedule", 20, 1, 200);
+            request.MaxScheduleInstancesScanned = ReadInt(parameters, "maxScheduleInstancesScanned", DefaultGlobalCap(request.SearchBudget, 200, 1000, 5000), 1, 20000);
+            request.MaxScheduleCellsScanned = ReadInt(parameters, "maxScheduleCellsScanned", DefaultGlobalCap(request.SearchBudget, 1000, 5000, 20000), 1, 200000);
             request.MaxMatches = ReadInt(parameters, "maxMatches", DefaultGlobalCap(request.SearchBudget, 1000, 5000, 20000), 1, 200000);
             request.MaxTextChars = ReadInt(parameters, "maxTextChars", 240, 1, 1000);
             request.MaxRegexPatternLength = ReadInt(parameters, "maxRegexPatternLength", 240, 1, 1000);
@@ -236,6 +241,7 @@ namespace RevitMCPCommandSet.Commands.View
                 else
                 {
                     sources.Add("sheet_text_notes");
+                    sources.Add("placed_schedule_cells");
                     sources.Add("viewport_tags");
                 }
             }
@@ -257,6 +263,17 @@ namespace RevitMCPCommandSet.Commands.View
                 string.Equals(normalized, "viewport_tags", StringComparison.OrdinalIgnoreCase))
             {
                 return "viewport_tags";
+            }
+            if (string.Equals(normalized, "placedScheduleCells", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "placedScheduleCell", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "placed_schedule_cells", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "placed_schedule_cell", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "schedule_cells", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "schedule_cell", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "scheduleCells", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "scheduleCell", StringComparison.OrdinalIgnoreCase))
+            {
+                return "placed_schedule_cells";
             }
             return normalized;
         }
