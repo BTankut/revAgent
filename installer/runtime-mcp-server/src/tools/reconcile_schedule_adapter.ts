@@ -107,8 +107,9 @@ export function adaptScheduleSource(rawInput: ScheduleAdapterSource): JsonObject
     const parsed = scheduleAdapterSourceSchema.safeParse(rawInput);
     if (!parsed.success) {
         return buildGuardedResult("needs_scope", "Schedule adapter input failed schema validation.", {
-            validationIssues: parsed.error.issues.map((issue) => issue.message),
+            validationIssues: parsed.error.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`),
             elapsedMs: Date.now() - startedAtMs,
+            suggestedNextScopes: ["schedule.kind", "schedule.result", "schedule.columnMapping.identity", "schedule.columnMapping.comparisonText"],
         });
     }
 
@@ -126,6 +127,7 @@ export function adaptScheduleSource(rawInput: ScheduleAdapterSource): JsonObject
                 visibilityBasis: VISIBILITY_BASIS,
             },
             elapsedMs: Date.now() - startedAtMs,
+            suggestedNextScopes: ["schedule.kind=inspect_schedules_result", "schedule.result"],
         });
     }
 
@@ -150,6 +152,7 @@ function adaptInspectSchedulesResult(source: z.infer<typeof inspectSchedulesResu
             warnings: readNativeStringArray(payload, "warnings"),
             notices: readNativeStringArray(payload, "notices"),
             summary: readNativeResultField(payload, "summary") || {},
+            suggestedNextScopes: ["inspect_schedules responseMode=\"full\"", "schedule.result", "schedule.columnMapping.identity", "schedule.columnMapping.comparisonText"],
         });
     }
 
@@ -182,6 +185,7 @@ function adaptInspectSchedulesResult(source: z.infer<typeof inspectSchedulesResu
                     headers: headerLabels.map((label) => ({ column: label.column, header: label.header })),
                 },
                 scanPolicy: buildScanPolicy(source, sections),
+                suggestedNextScopes: ["schedule.columnMapping.identity", "schedule.columnMapping.comparisonText", "inspect_schedules responseMode=\"full\""],
                 warnings,
                 notices,
             });
@@ -433,7 +437,7 @@ function buildScanPolicy(source: z.infer<typeof inspectSchedulesResultSourceSche
 }
 
 function buildGuardedResult(reason: string, message: string, extra: JsonObject = {}) {
-    const { warnings = [], notices = [], elapsedMs, scanPolicy, summary, ...extraWithoutMessages } = extra;
+    const { warnings = [], notices = [], elapsedMs, scanPolicy, summary, suggestedNextScopes = [], ...extraWithoutMessages } = extra;
     return buildBroadScanGuardedResult({
         action: ACTION,
         reason,
@@ -448,6 +452,7 @@ function buildGuardedResult(reason: string, message: string, extra: JsonObject =
         summary: summary || {},
         evidenceRows: [],
         scanPolicy: scanPolicy || {},
+        suggestedNextScopes,
         warnings,
         notices,
     });

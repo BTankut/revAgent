@@ -28,6 +28,9 @@ assertContains(setElementParameter, "expectedCurrentRaw", "set_element_parameter
 assertContains(setElementParameter, "allowTypeParameterWrite", "set_element_parameter must keep explicit type parameter write approval.");
 assertContains(setElementParameter, "expected_current_raw_mismatch", "set_element_parameter must guard stale current values.");
 assertContains(setElementParameter, "verified = rawVerified", "set_element_parameter must verify committed readback.");
+assertContains(setElementParameter, "rollbackSafety", "set_element_parameter must expose rollback safety metadata.");
+assertContains(setElementParameter, "rollbackTrueNoValueMayBeUnsupported", "set_element_parameter must warn when true no-value rollback may not be supported.");
+assertContains(setElementParameter, "prior_no_value_state_may_not_be_restorable_for_non_shared_parameter", "set_element_parameter must warn before writes that may not restore prior HasValue=false state.");
 
 const setScheduleCells = readSource("src/tools/set_schedule_cells.ts");
 assertContains(setScheduleCells, "[PRODUCTION_SCHEDULE_CELL_WRITE]", "set_schedule_cells must stay marked as a production write tool.");
@@ -55,6 +58,8 @@ assertContains(setScheduleCellsByText, "IsKeySchedule", "set_schedule_cells_by_t
 assertContains(setScheduleCellsByText, "bool standardScheduleBodyCellWriteForbidden = IsStandardScheduleBodyCellWriteForbidden(schedule, sectionType);", "set_schedule_cells_by_text must compute the standard body-cell guard once per schedule.");
 assertContains(setScheduleCellsByText, 'transactionMode: mode === "commit" ? "auto" : "none"', "set_schedule_cells_by_text must only use auto transaction mode for commit.");
 assertContains(setScheduleCellsByText, "Schedule cell verification failed", "set_schedule_cells_by_text must verify committed cell text.");
+assertContains(setScheduleCellsByText, "responseMode", "set_schedule_cells_by_text must expose compact/full response shaping.");
+assertContains(setScheduleCellsByText, "omittedMatchCount", "set_schedule_cells_by_text compact response must report omitted matches.");
 
 const sendCodeSafe = readSource("src/tools/send_code_to_revit_safe.ts");
 assertContains(sendCodeSafe, "runtimeGuarded", "send_code_to_revit_safe must report protected paths through the shared guarded result contract.");
@@ -94,6 +99,8 @@ assertContains(inspectSchedules, "maxCells", "inspect_schedules must expose nati
 assertContains(inspectSchedules, "maxResponseBytes", "inspect_schedules must expose native response-byte budget control.");
 assertContains(inspectSchedules, "startRow", "inspect_schedules must expose row continuation scope.");
 assertContains(inspectSchedules, "startColumn", "inspect_schedules must expose column continuation scope.");
+assertContains(inspectSchedules, "responseMode", "inspect_schedules must expose compact/full response shaping.");
+assertContains(inspectSchedules, "use responseMode=full", "inspect_schedules must tell callers how to request full schedule cells.");
 
 const countAnnotations = readSource("src/tools/count_annotations.ts");
 assertContains(countAnnotations, "[ANNOTATION_COUNT_READ_ONLY]", "count_annotations must stay marked as a read-only annotation count tool.");

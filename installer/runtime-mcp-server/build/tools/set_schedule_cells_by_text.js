@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { connectionOptionsFromArgs, connectionTargetSchema, csharpString, csharpStringArray, executeRevitCode, formatJsonContent, taskMetadataSchema, taskOptionsFromArgs, } from "../utils/revitToolHelpers.js";
+import { boundedPositiveInt, compactObjectRows, isDetailedResponseMode, responseModeSchema, } from "../utils/responseMode.js";
 import { runtimeFailure } from "../utils/runtimeResult.js";
+const DEFAULT_COMPACT_RESULT_ROWS = 25;
 function normalizeIntegerValues(values, maxCount = 100) {
     return (Array.isArray(values) ? values : [])
         .slice(0, maxCount)
@@ -23,6 +25,59 @@ function normalizeTextQueries(args) {
         }
     }
     return [...new Set(queries)].slice(0, 20);
+}
+function compactStringRows(values, limit) {
+    const rows = Array.isArray(values)
+        ? [...new Set(values.map((value) => String(value ?? "").trim()).filter((value) => value.length > 0))]
+        : [];
+    return {
+        rows: rows.slice(0, limit),
+        totalCount: Array.isArray(values) ? values.length : 0,
+        uniqueCount: rows.length,
+        returnedCount: Math.min(rows.length, limit),
+        omittedCount: Math.max(0, rows.length - limit),
+    };
+}
+function compactSetScheduleCellsByTextResult(payload, args) {
+    const responseMode = args.responseMode || "compact";
+    if (!payload || typeof payload !== "object" || isDetailedResponseMode(responseMode)) {
+        return {
+            ...payload,
+            responseMode,
+        };
+    }
+    const limit = boundedPositiveInt(args.maxResultRows, DEFAULT_COMPACT_RESULT_ROWS, 500);
+    const matches = compactObjectRows(payload.matches, { limit });
+    const changes = compactObjectRows(payload.changes, { limit });
+    const errors = compactStringRows(payload.errors, limit);
+    const result = {
+        ...payload,
+        responseMode: "compact",
+        compactResponse: true,
+        maxReturnedRows: limit,
+    };
+    if (Array.isArray(payload.matches)) {
+        result.matches = matches.rows;
+        result.returnedMatchCount = matches.returnedCount;
+        result.omittedMatchCount = matches.omittedCount;
+        result.duplicateMatchCount = matches.duplicateCount;
+    }
+    if (Array.isArray(payload.changes)) {
+        result.changes = changes.rows;
+        result.returnedChangeCount = changes.returnedCount;
+        result.omittedChangeCount = changes.omittedCount;
+        result.duplicateChangeCount = changes.duplicateCount;
+    }
+    if (Array.isArray(payload.errors)) {
+        result.errors = errors.rows;
+        result.returnedErrorCount = errors.returnedCount;
+        result.omittedErrorCount = errors.omittedCount;
+    }
+    result.notices = [
+        ...(Array.isArray(payload.notices) ? payload.notices : []),
+        "Compact response bounds matches/changes/errors. Use responseMode=\"full\" for all row details.",
+    ];
+    return result;
 }
 function buildSetScheduleCellsByTextCode(args) {
     const scheduleIds = normalizeIntegerValues(args.scheduleIds, 200);
@@ -529,6 +584,8 @@ export function registerSetScheduleCellsByTextTool(server) {
         maxRowsPerSchedule: z.number().int().positive().max(2000).optional().describe("Maximum rows scanned per schedule. Defaults 250."),
         maxColumnsPerSchedule: z.number().int().positive().max(300).optional().describe("Maximum columns read when matching row text. Defaults 80."),
         maxMatches: z.number().int().positive().max(500).optional().describe("Maximum matching rows returned or written. Defaults 50."),
+        responseMode: responseModeSchema,
+        maxResultRows: z.number().int().positive().max(500).optional().describe("Compact-mode cap for matches/changes/errors returned to the client. Defaults 25; full/debug returns all rows within maxMatches."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Socket timeout in milliseconds. Defaults 120000."),
     }, async (args) => {
         try {
@@ -540,7 +597,7 @@ export function registerSetScheduleCellsByTextTool(server) {
                 toolName: "set_schedule_cells_by_text",
                 transactionMode: mode === "commit" ? "auto" : "none",
             });
-            return formatJsonContent(response && response.result ? response.result : response);
+            return formatJsonContent(compactSetScheduleCellsByTextResult(response && response.result ? response.result : response, args));
         }
         catch (error) {
             return formatJsonContent(runtimeFailure({

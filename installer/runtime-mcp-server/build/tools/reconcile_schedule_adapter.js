@@ -43,8 +43,9 @@ export function adaptScheduleSource(rawInput) {
     const parsed = scheduleAdapterSourceSchema.safeParse(rawInput);
     if (!parsed.success) {
         return buildGuardedResult("needs_scope", "Schedule adapter input failed schema validation.", {
-            validationIssues: parsed.error.issues.map((issue) => issue.message),
+            validationIssues: parsed.error.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`),
             elapsedMs: Date.now() - startedAtMs,
+            suggestedNextScopes: ["schedule.kind", "schedule.result", "schedule.columnMapping.identity", "schedule.columnMapping.comparisonText"],
         });
     }
     if (parsed.data.kind === "revit_schedule") {
@@ -61,6 +62,7 @@ export function adaptScheduleSource(rawInput) {
                 visibilityBasis: VISIBILITY_BASIS,
             },
             elapsedMs: Date.now() - startedAtMs,
+            suggestedNextScopes: ["schedule.kind=inspect_schedules_result", "schedule.result"],
         });
     }
     return adaptInspectSchedulesResult(parsed.data, Date.now() - startedAtMs);
@@ -83,6 +85,7 @@ function adaptInspectSchedulesResult(source, elapsedMs) {
             warnings: readNativeStringArray(payload, "warnings"),
             notices: readNativeStringArray(payload, "notices"),
             summary: readNativeResultField(payload, "summary") || {},
+            suggestedNextScopes: ["inspect_schedules responseMode=\"full\"", "schedule.result", "schedule.columnMapping.identity", "schedule.columnMapping.comparisonText"],
         });
     }
     const sections = normalizeSections(source.sections);
@@ -113,6 +116,7 @@ function adaptInspectSchedulesResult(source, elapsedMs) {
                     headers: headerLabels.map((label) => ({ column: label.column, header: label.header })),
                 },
                 scanPolicy: buildScanPolicy(source, sections),
+                suggestedNextScopes: ["schedule.columnMapping.identity", "schedule.columnMapping.comparisonText", "inspect_schedules responseMode=\"full\""],
                 warnings,
                 notices,
             });
@@ -348,7 +352,7 @@ function buildScanPolicy(source, sections) {
     };
 }
 function buildGuardedResult(reason, message, extra = {}) {
-    const { warnings = [], notices = [], elapsedMs, scanPolicy, summary, ...extraWithoutMessages } = extra;
+    const { warnings = [], notices = [], elapsedMs, scanPolicy, summary, suggestedNextScopes = [], ...extraWithoutMessages } = extra;
     return buildBroadScanGuardedResult({
         action: ACTION,
         reason,
@@ -363,6 +367,7 @@ function buildGuardedResult(reason, message, extra = {}) {
         summary: summary || {},
         evidenceRows: [],
         scanPolicy: scanPolicy || {},
+        suggestedNextScopes,
         warnings,
         notices,
     });
