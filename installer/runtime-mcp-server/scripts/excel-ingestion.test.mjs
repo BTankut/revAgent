@@ -229,6 +229,16 @@ assert.equal(aliasPriorityResult.guarded, false);
 assert.equal(aliasPriorityResult.excelRecords[0].identityText, "ID-01");
 assert.equal(aliasPriorityResult.excelRecords[0].comparisonText, "Fan coil name");
 
+const turkishHeader = "A\u00e7\u0131klama";
+const turkishAliasResult = await ingestExcelSource({
+  kind: "rows",
+  sheetName: "Rows",
+  rows: [{ Identity: "TR-01", [turkishHeader]: "Turkish description" }],
+});
+assert.equal(turkishAliasResult.success, true);
+assert.equal(turkishAliasResult.guarded, false);
+assert.equal(turkishAliasResult.excelRecords[0].comparisonText, "Turkish description");
+
 const invalidDateResult = await ingestExcelSource({
   kind: "rows",
   sheetName: "Rows",

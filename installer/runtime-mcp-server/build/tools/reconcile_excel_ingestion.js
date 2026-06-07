@@ -89,7 +89,14 @@ function cleanText(value) {
     return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 function normalizeHeader(value) {
-    return cleanText(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    return cleanText(value)
+        .replace(/\u0131/g, "i")
+        .replace(/\u0130/g, "I")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
 }
 function normalizeAlias(value) {
     return normalizeHeader(value).replace(/\s+/g, "");
@@ -566,12 +573,9 @@ function delimitedRecordLimit(selection, budgets) {
     const rangeStartRow = parsedRange?.startRow || 1;
     const headerRow = selection.headerRow || rangeStartRow;
     const dataStartRow = selection.dataStartRow || headerRow + 1;
-    const maxRowsByCells = Math.max(0, Math.floor(Math.max(0, budgets.maxCells - budgets.maxColumns) / budgets.maxColumns));
-    const dataRowsByBudget = Math.min(budgets.maxRows, maxRowsByCells);
-    const scanStoppedReason = dataRowsByBudget < budgets.maxRows ? "max_cells" : "max_rows";
     return {
-        recordLimit: Math.max(rangeStartRow, headerRow, dataStartRow + dataRowsByBudget - 1),
-        scanStoppedReason,
+        recordLimit: Math.max(rangeStartRow, headerRow, dataStartRow + budgets.maxRows - 1),
+        scanStoppedReason: "max_rows",
     };
 }
 function loadRowsTable(source, budgets, startedAt) {
