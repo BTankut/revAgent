@@ -151,6 +151,79 @@ namespace RevitMCPCommandSet.Commands.View
             return beforeView.Id != afterView.Id;
         }
 
+        public static List<string> GetReviewViewSignals(Autodesk.Revit.DB.View view)
+        {
+            List<string> signals = new List<string>();
+            if (view == null || view.IsTemplate || !(view is View3D))
+            {
+                return signals;
+            }
+
+            string name = view.Name ?? "";
+            string normalizedName = NormalizeReviewViewName(name);
+            if (name.StartsWith("3D - Focus ", StringComparison.OrdinalIgnoreCase))
+            {
+                signals.Add("default_focus_view_name");
+            }
+            if (name.StartsWith("Revit MCP 3D Focus", StringComparison.OrdinalIgnoreCase))
+            {
+                signals.Add("revit_mcp_focus_view_name");
+            }
+            if (name.StartsWith("DPE Visual QA - Coordination Export", StringComparison.OrdinalIgnoreCase))
+            {
+                signals.Add("coordination_export_view_name");
+            }
+            if (name.IndexOf("Coordination Export", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                name.IndexOf("QA", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                signals.Add("qa_coordination_view_name");
+            }
+            if (StartsWithReviewBrand(normalizedName) &&
+                (ContainsReviewToken(normalizedName, "review") ||
+                 ContainsReviewToken(normalizedName, "focus") ||
+                 ContainsReviewToken(normalizedName, "qa")))
+            {
+                signals.Add("revagent_review_view_name");
+            }
+
+            return signals.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private static string NormalizeReviewViewName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return "";
+            }
+
+            char[] chars = name.ToLowerInvariant().ToCharArray();
+            for (int i = 0; i < chars.Length; i++)
+            {
+                if (!char.IsLetterOrDigit(chars[i]))
+                {
+                    chars[i] = ' ';
+                }
+            }
+
+            return " " + string.Join(" ", new string(chars).Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)) + " ";
+        }
+
+        private static bool StartsWithReviewBrand(string normalizedName)
+        {
+            return normalizedName.StartsWith(" revagent ", StringComparison.OrdinalIgnoreCase) ||
+                normalizedName.StartsWith(" revit mcp ", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ContainsReviewToken(string normalizedName, string token)
+        {
+            if (string.IsNullOrWhiteSpace(normalizedName) || string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            return normalizedName.IndexOf(" " + token.ToLowerInvariant() + " ", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         public static void PopulateViewTransition(ViewOperationResult result, ViewSummary beforeView, ViewSummary afterView)
         {
             if (result == null)

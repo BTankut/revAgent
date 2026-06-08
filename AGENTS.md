@@ -265,8 +265,9 @@ previews matches, blocks ambiguous rows by default, and verifies committed cell
 text. It uses the same standard schedule body-cell guard.
 For cleanup after live QA or test workflows, use `clear_selection` to leave the
 UI with no selected elements. Use `delete_review_view` only for explicit
-revAgent/Revit MCP review/focus/coordination 3D views; it defaults to dry-run,
-blocks production/active/open views, and requires `mode="commit"` plus
+revAgent/Revit MCP review/focus/coordination/QA 3D views, including
+`revAgent_QA_*` names created by `create_3d_view_for_elements`; it defaults to
+dry-run, blocks production/active/open views, and requires `mode="commit"` plus
 `confirmDelete=true` for deletion.
 
 ## Dynamic Execution Transaction Discipline

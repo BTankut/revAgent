@@ -296,6 +296,19 @@ function Invoke-ClearSelection {
     return Invoke-RevitMcpRequest -Method "clear_selection" -Params $Params
 }
 
+function Invoke-Create3DViewForElements {
+    param(
+        [object]$Params,
+        [string]$TaskName
+    )
+
+    Assert-RevitMcpReady -NextCommand "create_3d_view_for_elements" | Out-Null
+    if ($Params -is [System.Collections.IDictionary]) {
+        $Params["taskName"] = $TaskName
+    }
+    return Invoke-RevitMcpRequest -Method "create_3d_view_for_elements" -Params $Params
+}
+
 function Invoke-DeleteReviewView {
     param(
         [object]$Params,
@@ -1001,6 +1014,46 @@ $deleteCommit = Invoke-DeleteReviewView `
 Assert-Equal ([bool]$deleteCommit.success) $true "delete_review_view commit should succeed."
 Assert-Equal ([bool]$deleteCommit.deleted) $true "delete_review_view commit should verify deletion."
 Assert-Equal ([bool]$deleteCommit.changed) $true "delete_review_view commit should report changed=true."
+
+Write-Host "Test delete_review_view recognizes create_3d_view_for_elements QA names"
+$qaReviewViewName = "revAgent_QA_DELETE_TEST_" + (Get-Date -Format "HHmmssfff")
+$createQaReviewView = Invoke-Create3DViewForElements `
+    -TaskName "$prefix create QA review view via tool" `
+    -Params ([ordered]@{
+        elementIds = @($selectionTargetId)
+        viewName = $qaReviewViewName
+        reuseExisting = $false
+        createIfMissing = $true
+        sectionBox = $false
+        activate = $false
+        select = $false
+        zoom = $false
+        timeoutMs = 15000
+    })
+Assert-Equal ([bool]$createQaReviewView.success) $true "create_3d_view_for_elements QA review view should succeed."
+Assert-Equal ([bool]$createQaReviewView.createdView) $true "create_3d_view_for_elements should create the QA review view."
+$qaReviewViewId = [int]$createQaReviewView.targetView.id
+$deleteQaDryRun = Invoke-DeleteReviewView `
+    -TaskName "$prefix delete_review_view QA dry-run by name" `
+    -Params ([ordered]@{
+        viewName = $qaReviewViewName
+        exactName = $true
+        mode = "dryRun"
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$deleteQaDryRun.success) $true "delete_review_view QA dry-run by name should succeed."
+Assert-Equal ([bool]$deleteQaDryRun.targetIsReviewView) $true "delete_review_view should recognize create_3d_view_for_elements revAgent_QA_* names."
+Assert-True ($deleteQaDryRun.reviewSignals -contains "revagent_review_view_name") "delete_review_view should report the revAgent QA review signal."
+$deleteQaCommit = Invoke-DeleteReviewView `
+    -TaskName "$prefix delete_review_view QA commit by id" `
+    -Params ([ordered]@{
+        viewId = $qaReviewViewId
+        mode = "commit"
+        confirmDelete = $true
+        timeoutMs = 15000
+    })
+Assert-Equal ([bool]$deleteQaCommit.success) $true "delete_review_view QA commit by id should succeed."
+Assert-Equal ([bool]$deleteQaCommit.deleted) $true "delete_review_view QA commit should verify deletion."
 
 Write-Host "Test delete_review_view blocks sheet-placed review views"
 $placedReviewViewName = "3D - Focus revAgent Placed Delete Guard " + (Get-Date -Format "HHmmssfff")

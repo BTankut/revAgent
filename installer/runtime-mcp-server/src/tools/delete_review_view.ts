@@ -9,7 +9,7 @@ import {
 } from "../utils/revitToolHelpers.js";
 
 export function registerDeleteReviewViewTool(server: ToolServer) {
-    server.tool("delete_review_view", "[REVIEW_VIEW_CLEANUP_GUARDED] Dry-run or delete an explicit revAgent/Revit MCP review 3D view. Defaults to dryRun and only permits guarded cleanup of known review/focus/coordination view names; it blocks production views, active views, and open view tabs. Commit requires mode=\"commit\" and confirmDelete=true.", {
+    server.tool("delete_review_view", "[REVIEW_VIEW_CLEANUP_GUARDED] Dry-run or delete an explicit revAgent/Revit MCP review 3D view. Defaults to dryRun and only permits guarded cleanup of known review/focus/coordination/QA view names, including revAgent_QA_* views created by create_3d_view_for_elements; it blocks production views, active views, and open view tabs. Commit requires mode=\"commit\" and confirmDelete=true.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         viewId: z.number().int().positive().optional().describe("ElementId of the review 3D view to inspect or delete."),
