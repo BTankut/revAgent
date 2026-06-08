@@ -296,10 +296,14 @@ function compactTaskInfo(task: any, includeDiagnostics: boolean) {
     if (!task || typeof task !== "object") {
         return task;
     }
+    const commandName = task.commandName || task.method;
+    const toolName = task.wrapperAction || task.logicalToolName || task.toolName || commandName;
     const compact: JsonObject = {
         id: task.id,
         requestId: task.requestId,
-        method: task.method,
+        method: toolName,
+        toolName,
+        commandName,
         wrapperAction: task.wrapperAction,
         logicalToolName: task.logicalToolName,
         taskName: task.taskName,

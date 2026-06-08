@@ -116,11 +116,7 @@ function compactPlanCandidateRow(row: JsonObject, key: string): JsonObject {
 }
 
 function compactPlanCandidateRef(row: JsonObject, key: string): JsonObject {
-    return omitUndefined({
-        ref: key,
-        id: readFirst(row, "id", "Id", "viewId", "ViewId", "elementId", "ElementId"),
-        name: readFirst(row, "name", "Name", "viewName", "ViewName"),
-    });
+    return { ref: key };
 }
 
 function compactElementPlanReferences(

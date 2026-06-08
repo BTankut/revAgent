@@ -67,10 +67,17 @@ try {
 
   const runtimeActivity = telemetry.getLiveRuntimeActivityStatus(10);
   const runtimeGuardedActivity = runtimeActivity.recentActivity.find((item) => item.taskName === "Runtime guarded sheet search" && item.phase === "guarded");
+  assert.equal(runtimeActivity.mode, "summary");
+  assert.equal(runtimeActivity.recentActivity.some((item) => item.phase === "started"), false);
   assert.equal(Boolean(runtimeGuardedActivity), true);
   assert.equal(runtimeGuardedActivity.guardSource, "client");
   assert.equal(runtimeGuardedActivity.parentTaskName, "Operator live feedback audit");
   assert.equal(runtimeGuardedActivity.parentTaskIdPresent, true);
+  assert.equal(Boolean(runtimeGuardedActivity.result?.responseKeys), false);
+
+  const runtimeActivityFull = telemetry.getLiveRuntimeActivityStatus(10, "full");
+  assert.equal(runtimeActivityFull.mode, "full");
+  assert.equal(runtimeActivityFull.recentActivity.some((item) => item.phase === "started"), true);
 
   telemetry.recordLiveRevitStatus({
     activeTask: null,
@@ -120,6 +127,9 @@ try {
   assert.equal(guardedActivity.parentTaskIdPresent, true);
   assert.equal(guardedActivity.result.guardSource, "client");
   assert.equal(status.revitStatus.recentTasks[0].taskName, "Status window aligned task");
+  assert.equal(status.revitStatus.recentTasks[0].method, "set_schedule_cells_by_text");
+  assert.equal(status.revitStatus.recentTasks[0].toolName, "set_schedule_cells_by_text");
+  assert.equal(status.revitStatus.recentTasks[0].commandName, "send_code_to_revit");
   assert.equal(status.revitStatus.recentTasks[0].wrapperAction, "set_schedule_cells_by_text");
   assert.equal(status.revitStatus.recentTasks[0].logicalToolName, "set_schedule_cells_by_text");
   assert.equal(status.revitStatus.recentTasks[0].parentTaskName, "Wrapper schedule edit");

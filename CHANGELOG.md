@@ -12,6 +12,12 @@ All notable revAgent workstation deployment changes are tracked here.
   without being misrepresented as Revit-side `mcp_status.recentTasks`, and
   preserved wrapper action plus parent task id/name across nested Revit
   sub-operations.
+- Polished compact audit output: Revit status history now exposes wrapper tool
+  names as `method`/`toolName` while keeping the bridge command as
+  `commandName`, `runtimeActivity` defaults to a summary mode without
+  started/completed duplication, compact `find_elements` element rows keep only
+  plan candidate refs, and `delete_review_view` groups cleanup diagnostics
+  under `cleanup`.
 - Normalized dynamic-code JSON result handling so `parseJsonResult=true`
   parses JSON-looking nested `result` strings, including double-encoded result
   strings, while disabled or failed parsing preserves the raw text.
