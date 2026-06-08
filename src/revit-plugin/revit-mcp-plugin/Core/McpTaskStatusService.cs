@@ -150,7 +150,7 @@ namespace revit_mcp_plugin.Core
                 Method = methodName,
                 WrapperAction = string.IsNullOrWhiteSpace(wrapperAction) ? null : wrapperAction,
                 LogicalToolName = string.Equals(logicalName, methodName, StringComparison.OrdinalIgnoreCase) ? null : logicalName,
-                TaskName = string.IsNullOrWhiteSpace(taskName) ? method : taskName,
+                TaskName = string.IsNullOrWhiteSpace(taskName) ? methodName : taskName,
                 ParentTaskName = string.IsNullOrWhiteSpace(parentTaskName) ? null : parentTaskName,
                 ParentTaskId = string.IsNullOrWhiteSpace(parentTaskId) ? null : parentTaskId,
                 State = "running",
