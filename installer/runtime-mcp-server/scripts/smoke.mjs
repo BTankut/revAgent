@@ -102,6 +102,11 @@ const expectedTools = [
 
 assert.deepEqual([...tools.keys()], expectedTools);
 
+const statusTool = tools.get("get_revit_mcp_status");
+assert.match(statusTool.description, /runtimeActivity/);
+assert.equal("includeRuntimeActivity" in statusTool.schema, true);
+assert.equal("runtimeActivityLimit" in statusTool.schema, true);
+
 const create3dDescription = tools.get("create_3d_view_for_elements").description;
 const showPlan3dDescription = tools.get("show_element_in_plan_and_3d").description;
 const coordinationDescription = tools.get("export_revit_coordination_image").description;

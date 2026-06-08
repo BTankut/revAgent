@@ -65,6 +65,13 @@ try {
 
   await telemetry.flushLiveWritesForTests();
 
+  const runtimeActivity = telemetry.getLiveRuntimeActivityStatus(10);
+  const runtimeGuardedActivity = runtimeActivity.recentActivity.find((item) => item.taskName === "Runtime guarded sheet search" && item.phase === "guarded");
+  assert.equal(Boolean(runtimeGuardedActivity), true);
+  assert.equal(runtimeGuardedActivity.guardSource, "client");
+  assert.equal(runtimeGuardedActivity.parentTaskName, "Operator live feedback audit");
+  assert.equal(runtimeGuardedActivity.parentTaskIdPresent, true);
+
   telemetry.recordLiveRevitStatus({
     activeTask: null,
     recentTasks: [
@@ -72,7 +79,11 @@ try {
         id: "status-1",
         requestId: "request-1",
         method: "send_code_to_revit",
+        wrapperAction: "set_schedule_cells_by_text",
+        logicalToolName: "set_schedule_cells_by_text",
         taskName: "Status window aligned task",
+        parentTaskName: "Wrapper schedule edit",
+        parentTaskId: "wrapper-parent-1",
         state: "failed",
         startedAtUtc: "2026-05-31T12:00:00.000Z",
         finishedAtUtc: "2026-05-31T12:00:01.000Z",
@@ -109,6 +120,10 @@ try {
   assert.equal(guardedActivity.parentTaskIdPresent, true);
   assert.equal(guardedActivity.result.guardSource, "client");
   assert.equal(status.revitStatus.recentTasks[0].taskName, "Status window aligned task");
+  assert.equal(status.revitStatus.recentTasks[0].wrapperAction, "set_schedule_cells_by_text");
+  assert.equal(status.revitStatus.recentTasks[0].logicalToolName, "set_schedule_cells_by_text");
+  assert.equal(status.revitStatus.recentTasks[0].parentTaskName, "Wrapper schedule edit");
+  assert.equal(status.revitStatus.recentTasks[0].parentTaskIdPresent, true);
   assert.equal(status.revitStatus.recentTasks[0].state, "failed");
   assert.equal(status.revitStatus.recentTasks[0].responseBytes, 222);
   assert.equal(status.writeHealth.dropped, 0);
@@ -174,6 +189,10 @@ try {
   assert.ok(
     mergedStatus.revitStatus.recentTasks.some((item) => item.taskName === "Status window aligned task" && item.id === "status-1" && item.state === "failed" && item.responseBytes === 222),
     "Existing Revit status history must survive another live session snapshot.",
+  );
+  assert.ok(
+    mergedStatus.revitStatus.recentTasks.some((item) => item.taskName === "Status window aligned task" && item.wrapperAction === "set_schedule_cells_by_text" && item.parentTaskName === "Wrapper schedule edit"),
+    "Merged Revit status history must preserve wrapper action and parent task metadata.",
   );
   assert.ok(
     mergedStatus.revitStatus.recentTasks.some((item) => item.taskName === "Other live dashboard session" && item.responseBytes === 444),

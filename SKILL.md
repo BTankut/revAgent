@@ -100,7 +100,8 @@ normalizer.
   `toolSurfaceVersion`, `processStartedAtUtc`, `buildTimestampUtc`, and
   `buildHash`) plus the bridge `resultContractVersion` when the active Revit
   DLL supports it, so agents can confirm which runtime/schema is actually
-  active.
+  active. Default responses also include compact `runtimeActivity` for
+  MCP-side/client-side guarded operations that did not reach Revit.
 - `send_code_to_revit` - raw dynamic execution for explicit, broad control
 - `send_code_to_revit_safe` - read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced

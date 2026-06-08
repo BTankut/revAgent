@@ -995,7 +995,11 @@ function publicRevitStatusTask(task: any) {
         id: task.id || null,
         requestId: task.requestId || null,
         method: task.method || null,
+        wrapperAction: task.wrapperAction || null,
+        logicalToolName: task.logicalToolName || null,
         taskName: task.taskName || null,
+        parentTaskName: task.parentTaskName || null,
+        parentTaskIdPresent: Boolean(task.parentTaskIdPresent || task.parentTaskId),
         state: task.state || null,
         startedAtUtc: task.startedAtUtc || null,
         finishedAtUtc: task.finishedAtUtc || null,
@@ -1004,6 +1008,17 @@ function publicRevitStatusTask(task: any) {
         responseBytes: task.responseBytes ?? null,
         port: task.port || null,
         error: task.error || null,
+    };
+}
+
+export function getLiveRuntimeActivityStatus(limit = 10) {
+    const maxItems = clampTelemetryInt(limit, 10, 0, 100);
+    return {
+        activeTask: publicLiveTask(chooseBestActiveTask()),
+        activeTasks: [...liveActiveTasks.values()].map(publicLiveTask),
+        recentActivity: liveRecentActivity.slice(0, maxItems),
+        recentActivityCount: liveRecentActivity.length,
+        recentActivityCapacity: liveRecentActivityLimit(),
     };
 }
 

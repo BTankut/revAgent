@@ -107,7 +107,11 @@ try {
         {
           id: "status-cleanup",
           method: "send_code_to_revit",
+          wrapperAction: "set_schedule_cells_by_text",
+          logicalToolName: "set_schedule_cells_by_text",
           taskName: "smoke status cleanup",
+          parentTaskName: "smoke wrapper parent",
+          parentTaskIdPresent: true,
           state: "completed",
           startedAtUtc: new Date(now.getTime() + 7000).toISOString(),
           finishedAtUtc: new Date(now.getTime() + 7200).toISOString(),
@@ -482,7 +486,11 @@ try {
   assert.equal(data.activity.length, 9);
   assert.equal(data.activity[0].taskName, "smoke status cleanup");
   assert.equal(data.activity[0].phase, "completed");
-  assert.equal(data.activity[0].toolName, "send_code_to_revit");
+  assert.equal(data.activity[0].toolName, "set_schedule_cells_by_text");
+  assert.equal(data.activity[0].commandName, "send_code_to_revit");
+  assert.equal(data.activity[0].parentTaskName, "smoke wrapper parent");
+  assert.equal(data.activity[0].parentTaskIdPresent, true);
+  assert.equal(data.activity[0].result.action, "set_schedule_cells_by_text");
   assert.equal(data.activity[0].requestBytes, 1700);
   assert.equal(data.activity[0].responseBytes, 2600);
   assert.equal(data.activity.filter((event) => event.taskName === "smoke sheet export").length, 1);

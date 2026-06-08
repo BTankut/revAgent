@@ -78,7 +78,7 @@ export function mergeRevitTask(cachedTask, currentTask) {
         ...(cachedTask || {}),
         ...(currentTask || {}),
     };
-    for (const field of ["id", "requestId", "method", "taskName", "startedAtUtc", "requestBytes", "responseBytes", "port"]) {
+    for (const field of ["id", "requestId", "method", "wrapperAction", "logicalToolName", "taskName", "parentTaskName", "parentTaskId", "startedAtUtc", "requestBytes", "responseBytes", "port"]) {
         merged[field] = coalesceTaskField(currentTask, cachedTask, field);
     }
     merged.state = coalesceValue(stateSource?.state, coalesceTaskField(currentTask, cachedTask, "state"));

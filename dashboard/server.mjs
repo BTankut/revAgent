@@ -492,6 +492,8 @@ function revitStatusTaskToActivity(task, machineName) {
     return null;
   }
   const phase = revitStatusPhase(task);
+  const wrapperAction = task.wrapperAction || task.logicalToolName || "";
+  const displayToolName = wrapperAction || task.method || "";
   return {
     schemaVersion: "revagent.dashboard.revit-status-task.v1",
     eventType: "revit.status.task",
@@ -502,10 +504,12 @@ function revitStatusTaskToActivity(task, machineName) {
     phase,
     state: phase,
     scope: "revit.status",
-    toolName: task.method || "",
+    toolName: displayToolName,
     commandName: task.method || "",
-    logicalToolName: task.method || "",
+    logicalToolName: task.logicalToolName || displayToolName,
     taskName: task.taskName || task.method || "revAgent task",
+    parentTaskName: task.parentTaskName || null,
+    parentTaskIdPresent: Boolean(task.parentTaskIdPresent || task.parentTaskId),
     startedAtUtc: task.startedAtUtc || "",
     finishedAtUtc: task.finishedAtUtc || "",
     durationMs: task.elapsedMs ?? null,
@@ -514,6 +518,7 @@ function revitStatusTaskToActivity(task, machineName) {
     result: {
       success: phase !== "failed",
       guarded: phase === "guarded",
+      action: wrapperAction || task.method || null,
       errorMessage: task.error || null,
     },
     source: "revit.status",
