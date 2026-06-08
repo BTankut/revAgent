@@ -20,6 +20,10 @@ All notable revAgent workstation deployment changes are tracked here.
 - Aligned `delete_review_view` review-view recognition with
   `create_3d_view_for_elements` QA naming so explicit `revAgent_QA_*` review
   views can be dry-run and cleaned up without raw cleanup fallback.
+- Trimmed compact runtime responses for `reconcile_schedule_excel` and
+  `find_elements`: compact reconciliation now returns summary/review table
+  evidence instead of raw review rows, and element discovery deduplicates plan
+  candidates into a shared compact summary.
 
 ## 2026.06.07.318-4ca1c36e
 
