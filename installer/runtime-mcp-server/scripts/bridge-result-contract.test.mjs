@@ -111,6 +111,38 @@ assert.deepEqual(
   canonical,
   "Canonical bridge payloads must stay idempotent and must not parse user string results.",
 );
+const normalizedCanonicalDynamicResult = normalizeRevitExecutionResponse(canonical, { parseResultStrings: true });
+assert.equal(normalizedCanonicalDynamicResult.success, true);
+assert.deepEqual(
+  normalizedCanonicalDynamicResult.result,
+  { success: false, value: 2 },
+  "Dynamic execution parseJsonResult=true must parse canonical nested result JSON strings.",
+);
+
+const nestedCanonical = {
+  resultContractVersion: BRIDGE_RESULT_CONTRACT_VERSION,
+  success: true,
+  result: {
+    result: JSON.stringify(JSON.stringify({ Success: true, nestedValue: 7 })),
+  },
+};
+const normalizedNestedCanonical = normalizeRevitExecutionResponse(nestedCanonical, { parseResultStrings: true });
+assert.deepEqual(
+  normalizedNestedCanonical.result.result,
+  { success: true, nestedValue: 7 },
+  "Dynamic execution parsing must handle nested and double-encoded result strings.",
+);
+
+const malformedCanonical = {
+  resultContractVersion: BRIDGE_RESULT_CONTRACT_VERSION,
+  success: true,
+  result: "{\"success\":",
+};
+assert.equal(
+  normalizeRevitExecutionResponse(malformedCanonical, { parseResultStrings: true }).result,
+  malformedCanonical.result,
+  "Failed dynamic result parsing must preserve the raw string.",
+);
 
 const legacy = {
   Success: true,

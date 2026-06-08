@@ -12,6 +12,9 @@ All notable revAgent workstation deployment changes are tracked here.
   without being misrepresented as Revit-side `mcp_status.recentTasks`, and
   preserved wrapper action plus parent task id/name across nested Revit
   sub-operations.
+- Normalized dynamic-code JSON result handling so `parseJsonResult=true`
+  parses JSON-looking nested `result` strings, including double-encoded result
+  strings, while disabled or failed parsing preserves the raw text.
 - Separated `inspect_sheet_text` inventory-only placed schedules from evidence
   matches, made sheet-scan stop diagnostics explicit, and extended
   `count_annotations` to include viewport text-note sources.

@@ -133,7 +133,7 @@ export function registerSendCodeToRevitTool(server) {
             }, options);
             const normalizedResponse = args.parseJsonResult === false
                 ? response
-                : normalizeRevitExecutionResponse(response);
+                : normalizeRevitExecutionResponse(response, { parseResultStrings: true });
             const durationMs = Math.max(0, Date.now() - startedAtMs);
             recordRevitCommandTelemetry({
                 commandName: "send_code_to_revit",
@@ -149,7 +149,7 @@ export function registerSendCodeToRevitTool(server) {
                 durationMs,
             });
             void refreshLiveRevitStatus(options);
-            const errorLikeResult = args.reportErrorResultAsFailure === false
+            const errorLikeResult = args.parseJsonResult === false || args.reportErrorResultAsFailure === false
                 ? null
                 : findErrorLikeResult(normalizedResponse);
             if (errorLikeResult) {

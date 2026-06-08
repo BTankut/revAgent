@@ -5,7 +5,6 @@ import {
     connectionTargetSchema,
     executeRevitCode,
     formatJsonContent,
-    normalizeRevitExecutionResponse,
     taskMetadataSchema,
     taskOptionsFromArgs,
     truncateText,
@@ -66,10 +65,9 @@ export function registerSendCodeToRevitSafeTool(server: ToolServer) {
                 ...taskOptionsFromArgs(args, "Run safe Revit read"),
                 parameters: args.parameters || [],
                 transactionMode: "none",
+                parseJsonResult: args.parseJsonResult !== false,
             });
-            const normalized = args.parseJsonResult === false
-                ? response
-                : normalizeRevitExecutionResponse(response);
+            const normalized = response;
             const successPayload = runtimeSuccess({
                 action: "send_code_to_revit_safe",
                 extra: {

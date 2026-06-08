@@ -105,7 +105,9 @@ normalizer.
 - `send_code_to_revit` - raw dynamic execution for explicit, broad control
 - `send_code_to_revit_safe` - read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced
-  `transactionMode: "none"`
+  `transactionMode: "none"`. For raw and safe dynamic execution,
+  `parseJsonResult=true` parses JSON-looking nested `result` strings where
+  practical; set it to `false` when the raw wire text is needed.
 - `get_revit_session_context` - first-call context for version/build/culture,
   document state, active view, and selection. It defaults to
   `detailLevel="minimal"` so large-model document checks do not perform MEP

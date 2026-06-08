@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { connectionOptionsFromArgs, connectionTargetSchema, executeRevitCode, formatJsonContent, normalizeRevitExecutionResponse, taskMetadataSchema, taskOptionsFromArgs, truncateText, } from "../utils/revitToolHelpers.js";
+import { connectionOptionsFromArgs, connectionTargetSchema, executeRevitCode, formatJsonContent, taskMetadataSchema, taskOptionsFromArgs, truncateText, } from "../utils/revitToolHelpers.js";
 import { findWritePatterns } from "./send_code_to_revit_safe_guards.js";
 import { runtimeFailure, runtimeGuarded, runtimeSuccess } from "../utils/runtimeResult.js";
 function formatSafetyBlock(error, writePatterns, safetyReason) {
@@ -42,10 +42,9 @@ export function registerSendCodeToRevitSafeTool(server) {
                 ...taskOptionsFromArgs(args, "Run safe Revit read"),
                 parameters: args.parameters || [],
                 transactionMode: "none",
+                parseJsonResult: args.parseJsonResult !== false,
             });
-            const normalized = args.parseJsonResult === false
-                ? response
-                : normalizeRevitExecutionResponse(response);
+            const normalized = response;
             const successPayload = runtimeSuccess({
                 action: "send_code_to_revit_safe",
                 extra: {
