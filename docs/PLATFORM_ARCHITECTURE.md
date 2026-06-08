@@ -120,10 +120,12 @@ continuation state instead of relying on socket timeout behavior.
 `reconcile_schedule_excel` is the runtime-only schedule-to-Excel reconciliation
 surface. It consumes explicit Excel/CSV/rows input and normalized
 `inspect_schedules` evidence, normalizes/tokenizes both sides, applies
-deterministic scoring, and returns review buckets plus `reviewRows` and
-`reviewTable`. It is review-first and write-free; accepted corrections are
-separate confirmed workflows through schedule-cell write tools or workbook
-editing paths.
+deterministic scoring, and returns compact review buckets through
+`reviewTable`, `evidenceRows`, and count metadata by default. Raw
+`reviewRows`, token profiles, raw cells, and nested candidates are reserved for
+`responseMode="full"` or `"debug"`. It is review-first and write-free; accepted
+corrections are separate confirmed workflows through schedule-cell write tools
+or workbook editing paths.
 `count_annotations` is a read-only native commandset workflow for general
 annotation inventory/count work. Its surface counts DrawingSheet text-note,
 viewport text-note, placed schedule-cell, and viewport tag evidence with

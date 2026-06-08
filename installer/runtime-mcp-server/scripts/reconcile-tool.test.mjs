@@ -135,8 +135,9 @@ assert.equal(dryRunPayload.reconciliationContractVersion, 1);
 assert.equal(dryRunPayload.responseMode, "compact");
 assert.equal(dryRunPayload.sourceResults.excel.format, "csv");
 assert.equal(dryRunPayload.sourceResults.schedule.visibilityBasis, "displayedScheduleCells");
-assert.equal(dryRunPayload.sourceSummary.excel.excelRecordCount, 6);
-assert.equal(dryRunPayload.sourceSummary.schedule.scheduleRecordCount, 5);
+assert.equal(dryRunPayload.sourceResults.excel.recordCount, 6);
+assert.equal(dryRunPayload.sourceResults.schedule.recordCount, 5);
+assert.equal("sourceSummary" in dryRunPayload, false);
 assert.match(dryRunPayload.warnings.join("\n"), /representative native PascalCase warning/);
 assert.equal(dryRunPayload.summary.excelRows, 6);
 assert.equal(dryRunPayload.summary.scheduleRows, 5);
@@ -145,11 +146,12 @@ assert.equal(dryRunPayload.summary.possibleRenames >= 1, true);
 assert.equal(dryRunPayload.summary.ambiguousMatches >= 1, true);
 assert.equal(dryRunPayload.summary.missingInSchedule >= 1, true);
 assert.equal(dryRunPayload.summary.missingInExcel >= 1, true);
-assert.equal(dryRunPayload.reviewTable.rows.length, dryRunPayload.reviewRows.length);
-assert.equal(dryRunPayload.scoringConfig.thresholds.highConfidenceMin, 86);
-assert.equal(dryRunPayload.scoringConfig.thresholds.candidateGap, 8);
-assert.equal(Boolean(byReason(dryRunPayload, "schedule_row_already_claimed")), true);
-assert.equal(Boolean(byReason(dryRunPayload, "shared_key_tokens_with_description_change")), true);
+assert.equal("reviewRows" in dryRunPayload, false);
+assert.equal("scoringConfig" in dryRunPayload, false);
+assert.equal(dryRunPayload.reviewTable.rows.length, dryRunPayload.summary.returnedReviewRowCount);
+assert.equal(JSON.stringify(dryRunPayload).includes("tokenProfile"), false);
+assert.equal(JSON.stringify(dryRunPayload).includes("rawCells"), false);
+assert.equal(JSON.stringify(dryRunPayload).includes("candidateRows"), false);
 
 const compactLimitedPayload = parseToolResult(await reconcileTool.handler({
   ...representativeInput,
@@ -158,12 +160,12 @@ const compactLimitedPayload = parseToolResult(await reconcileTool.handler({
   maxCandidateRows: 1,
 }));
 assert.equal(compactLimitedPayload.responseMode, "compact");
-assert.equal(compactLimitedPayload.reviewRows.length, 2);
 assert.equal(compactLimitedPayload.reviewTable.rows.length, 2);
 assert.equal(compactLimitedPayload.summary.reviewRowCount, dryRunPayload.summary.reviewRowCount);
 assert.equal(compactLimitedPayload.summary.returnedReviewRowCount, 2);
 assert.equal(compactLimitedPayload.summary.omittedReviewRowCount > 0, true);
-assert.equal(compactLimitedPayload.reviewRows.every((row) => row.candidateRows.length <= 1), true);
+assert.equal("reviewRows" in compactLimitedPayload, false);
+assert.equal(JSON.stringify(compactLimitedPayload).includes("candidateRows"), false);
 assert.match(compactLimitedPayload.notices.join("\n"), /responseMode="full"/);
 
 const fullPayload = parseToolResult(await reconcileTool.handler({
@@ -173,6 +175,14 @@ const fullPayload = parseToolResult(await reconcileTool.handler({
 assert.equal(fullPayload.responseMode, "full");
 assert.equal(fullPayload.reviewRows.length, dryRunPayload.summary.reviewRowCount);
 assert.equal(fullPayload.reviewTable.rows.length, fullPayload.reviewRows.length);
+assert.equal(fullPayload.sourceSummary.excel.excelRecordCount, 6);
+assert.equal(fullPayload.sourceSummary.schedule.scheduleRecordCount, 5);
+assert.equal(fullPayload.scoringConfig.thresholds.highConfidenceMin, 86);
+assert.equal(fullPayload.scoringConfig.thresholds.candidateGap, 8);
+assert.equal(Boolean(byReason(fullPayload, "schedule_row_already_claimed")), true);
+assert.equal(Boolean(byReason(fullPayload, "shared_key_tokens_with_description_change")), true);
+assert.equal(fullPayload.reviewRows.some((row) => Array.isArray(row.candidateRows)), true);
+assert.equal(JSON.stringify(fullPayload).includes("tokenProfile"), true);
 
 const invalidShapePayload = await reconcileScheduleExcel({
   excel: {

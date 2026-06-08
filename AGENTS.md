@@ -230,10 +230,12 @@ limits.
 For schedule-to-Excel reconciliation, use `reconcile_schedule_excel` after
 collecting bounded schedule evidence with `inspect_schedules` and selecting an
 explicit Excel/CSV/rows source. The tool is review-first and write-free: it
-returns deterministic match buckets, `reviewRows`, and `reviewTable`, but it
-does not write Revit schedule cells or workbook data. Treat accepted follow-up
-edits as separate confirmed workflows through `set_schedule_cells`,
-`set_schedule_cells_by_text`, or a workbook-specific tool.
+returns deterministic match buckets through compact `reviewTable`, evidence
+rows, and count metadata by default, but it does not write Revit schedule cells
+or workbook data. Use `responseMode="full"` or `"debug"` only when raw
+`reviewRows`, token profiles, raw cells, or nested candidates are needed. Treat
+accepted follow-up edits as separate confirmed workflows through
+`set_schedule_cells`, `set_schedule_cells_by_text`, or a workbook-specific tool.
 For element discovery in large projects, use `find_elements` as a progressive
 MEP-aware search rather than a full-model free-text scan. Let it infer obvious
 engineering scope first: fan coil/FCU maps to Mechanical Equipment, valve/vana
@@ -250,7 +252,9 @@ Verified plan visibility is materially slower than metadata plan ranking: use
 `planCandidateMode="metadata"` for ordinary discovery, and reserve
 `planCandidateMode="verified"` for exact element ids or explicit expensive
 search approval. Broad verified requests may return `needs_scope` before Revit
-or be downgraded to metadata by the bridge.
+or be downgraded to metadata by the bridge. Compact responses deduplicate
+repeated plan candidate rows into `planCandidateSummary`; request
+`responseMode="full"` only when per-element candidate details are needed.
 If the tool returns `guarded=true`, `state="guarded"`, and
 `reason="needs_scope"`, treat it as controlled product behavior and ask for or
 derive a better level, active view, system, family/type, sheet, or schedule

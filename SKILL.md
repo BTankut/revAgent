@@ -141,7 +141,9 @@ normalizer.
   element ids or an explicitly approved expensive search when view/crop/callout
   visibility must be proven. Broad verified plan visibility is guarded before
   Revit, and the bridge can downgrade it to metadata if called directly without
-  approval.
+  approval. Compact responses deduplicate repeated plan candidate rows into a
+  shared `planCandidateSummary`; use `responseMode: "full"` when per-element
+  plan candidate details are needed.
 - `open_existing_plan_for_element_level` - choose an existing non-template plan
   for an element's level, or keep the active plan when `planMode=activePlan`,
   then select and zoom to the element. Successful routine calls return compact
@@ -235,7 +237,9 @@ normalizer.
 - `reconcile_schedule_excel` - runtime-only schedule-to-Excel reconciliation.
   It ingests explicit `.xlsx`, `.csv`, `.tsv`, or `rows` input plus a normalized
   `inspect_schedules` result, normalizes records, applies deterministic scoring,
-  and returns `reviewRows` and `reviewTable`. It is review-first and write-free:
+  and returns a compact `reviewTable`, evidence rows, and count metadata by
+  default. Use `responseMode: "full"` or `"debug"` for raw `reviewRows`, token
+  profiles, raw cells, and nested candidates. It is review-first and write-free:
   it does not write Revit schedule cells or workbook data. Use
   `kind: "inspect_schedules_result"` for the schedule source in this runtime;
   `kind: "revit_schedule"` is guarded until the live bridge path is wired.

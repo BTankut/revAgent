@@ -7,14 +7,13 @@ import { reconcileScheduleExcelRecords, reconciliationConfigSchema, } from "./re
 import { boundedPositiveInt, compactObjectRows, isDetailedResponseMode, responseModeSchema, } from "../utils/responseMode.js";
 const ACTION = "reconcile_schedule_excel";
 const DEFAULT_COMPACT_REVIEW_ROWS = 50;
-const DEFAULT_COMPACT_CANDIDATE_ROWS = 3;
 const TOOL_SCHEMA = z.object({
     excel: excelIngestionSourceSchema.describe("Excel/CSV source. Use kind:\"file\" for .xlsx/.csv/.tsv or kind:\"rows\" for deterministic CI/dry-run records."),
     schedule: scheduleAdapterSourceSchema.describe("Schedule source. Use kind:\"inspect_schedules_result\" with a normalized inspect_schedules result; kind:\"revit_schedule\" is currently guarded and does not call Revit."),
     config: reconciliationConfigSchema.optional().describe("Optional scoring/cap/threshold override. Defaults are conservative and can be tuned from real-data dry-runs."),
     responseMode: responseModeSchema,
-    maxReviewRows: z.number().int().positive().max(1000).optional().describe("Compact-mode cap for returned reviewRows/reviewTable rows. Defaults 50; full/debug returns all rows."),
-    maxCandidateRows: z.number().int().positive().max(10).optional().describe("Compact-mode cap for candidateRows nested inside each review row. Defaults 3; full/debug returns all candidates."),
+    maxReviewRows: z.number().int().positive().max(1000).optional().describe("Compact-mode cap for returned reviewTable/evidenceRows rows. Defaults 50; full/debug returns all reviewRows."),
+    maxCandidateRows: z.number().int().positive().max(10).optional().describe("Compatibility input for older callers. Compact mode omits nested candidateRows; full/debug returns all candidates."),
 }).strict();
 function guardedStageResult(stage, reason, message, extra = {}) {
     const { warnings = [], notices = [], scanPolicy = {}, summary = {}, suggestedNextScopes = [], ...rest } = extra;
@@ -141,22 +140,6 @@ function reviewRowKey(row) {
         row.scheduleRow?.scheduleRowId ?? row.scheduleRow?.recordId ?? "",
     ].join("|");
 }
-function compactCandidateRows(row, limit) {
-    const candidateRows = Array.isArray(row.candidateRows) ? row.candidateRows : [];
-    if (candidateRows.length <= limit) {
-        return {
-            ...row,
-            candidateRowCount: candidateRows.length,
-            omittedCandidateRowCount: 0,
-        };
-    }
-    return {
-        ...row,
-        candidateRows: candidateRows.slice(0, limit),
-        candidateRowCount: candidateRows.length,
-        omittedCandidateRowCount: candidateRows.length - limit,
-    };
-}
 function buildCompactReviewTable(rows, originalTable) {
     const columns = Array.isArray(originalTable.columns)
         ? originalTable.columns
@@ -187,7 +170,7 @@ function buildCompactReviewTable(rows, originalTable) {
         })),
     };
 }
-function compactReconciliationResult(result, args) {
+export function compactReconciliationResult(result, args) {
     const responseMode = args.responseMode || "compact";
     if (isDetailedResponseMode(responseMode)) {
         return {
@@ -196,20 +179,18 @@ function compactReconciliationResult(result, args) {
         };
     }
     const reviewLimit = boundedPositiveInt(args.maxReviewRows, DEFAULT_COMPACT_REVIEW_ROWS, 1000);
-    const candidateLimit = boundedPositiveInt(args.maxCandidateRows, DEFAULT_COMPACT_CANDIDATE_ROWS, 10);
     const compactReview = compactObjectRows(result.reviewRows, {
         limit: reviewLimit,
         key: reviewRowKey,
     });
-    const compactRows = compactReview.rows.map((row) => compactCandidateRows(row, candidateLimit));
     const compactEvidence = compactObjectRows(result.evidenceRows, {
         limit: reviewLimit,
     });
+    const { reviewRows: _reviewRows, reviewTable: _reviewTable, scoringConfig: _scoringConfig, sourceSummary: _sourceSummary, ...base } = result;
     return {
-        ...result,
+        ...base,
         responseMode: "compact",
-        reviewRows: compactRows,
-        reviewTable: buildCompactReviewTable(compactRows, result.reviewTable || {}),
+        reviewTable: buildCompactReviewTable(compactReview.rows, result.reviewTable || {}),
         evidenceRows: compactEvidence.rows,
         summary: {
             ...(result.summary || {}),
@@ -224,7 +205,7 @@ function compactReconciliationResult(result, args) {
         },
         notices: [
             ...cleanStringArray(result.notices),
-            "Compact response returned bounded reviewRows/reviewTable rows. Use responseMode=\"full\" for all review rows and nested candidates.",
+            "Compact response returns summary, reviewTable, evidenceRows, and count metadata only. Use responseMode=\"full\" for reviewRows, token profiles, raw cells, and nested candidates.",
         ],
     };
 }
@@ -332,7 +313,7 @@ export async function reconcileScheduleExcel(rawArgs) {
     }, parsed.data);
 }
 export function registerReconcileScheduleExcelTool(server) {
-    server.tool("reconcile_schedule_excel", "[SCHEDULE_EXCEL_RECONCILIATION_REVIEW_ONLY] Review-first/write-free schedule-to-Excel reconciliation. Ingests explicit Excel/CSV data plus normalized inspect_schedules output, normalizes rows, scores deterministic matches, and returns reviewRows/reviewTable only. excel.kind=\"rows\" expects an object with rows:[...] plus columnMapping.identity and columnMapping.comparisonText; file sources use path/format/selection with the same required mapping. Default responseMode=compact bounds reviewRows/reviewTable/candidateRows; use responseMode=full for all rows. Does not write Revit or workbook data; route any accepted follow-up write through set_schedule_cells or set_schedule_cells_by_text after human review.", {
+    server.tool("reconcile_schedule_excel", "[SCHEDULE_EXCEL_RECONCILIATION_REVIEW_ONLY] Review-first/write-free schedule-to-Excel reconciliation. Ingests explicit Excel/CSV data plus normalized inspect_schedules output, normalizes rows, scores deterministic matches, and returns compact review tables by default. excel.kind=\"rows\" expects an object with rows:[...] plus columnMapping.identity and columnMapping.comparisonText; file sources use path/format/selection with the same required mapping. Default responseMode=compact returns summary, reviewTable, evidenceRows, and count metadata only; use responseMode=full/debug for reviewRows, token profiles, raw cells, and nested candidateRows. Does not write Revit or workbook data; route any accepted follow-up write through set_schedule_cells or set_schedule_cells_by_text after human review.", {
         excel: TOOL_SCHEMA.shape.excel,
         schedule: TOOL_SCHEMA.shape.schedule,
         config: TOOL_SCHEMA.shape.config,

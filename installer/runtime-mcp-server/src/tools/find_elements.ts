@@ -17,9 +17,12 @@ import {
     compactObjectRows,
     isDetailedResponseMode,
     responseModeSchema,
+    stableRowKey,
 } from "../utils/responseMode.js";
 
 const DEFAULT_COMPACT_RESULT_ROWS = 25;
+const DEFAULT_COMPACT_PLAN_CANDIDATE_SUMMARY_ROWS = 25;
+type JsonObject = Record<string, any>;
 
 function addWriteSafetyGuidance(payload: any) {
     if (!payload || typeof payload !== "object") return payload;
@@ -59,27 +62,102 @@ function addWriteSafetyGuidance(payload: any) {
 }
 
 function elementKey(row: Record<string, any>): string {
-    return String(row.id ?? row.Id ?? row.uniqueId ?? row.UniqueId ?? row.elementId ?? row.ElementId ?? "");
+    const key = row.id ?? row.Id ?? row.uniqueId ?? row.UniqueId ?? row.elementId ?? row.ElementId;
+    return key !== undefined && key !== null && key !== ""
+        ? String(key)
+        : stableRowKey(row);
 }
 
-function compactPlanCandidates(element: Record<string, any>, limit: number): Record<string, any> {
-    const fieldName = Array.isArray(element.planCandidates)
+function planCandidateFieldName(element: Record<string, any>): "planCandidates" | "PlanCandidates" | null {
+    return Array.isArray(element.planCandidates)
         ? "planCandidates"
         : Array.isArray(element.PlanCandidates) ? "PlanCandidates" : null;
-    if (!fieldName) {
-        return element;
+}
+
+function readFirst(row: JsonObject, ...keys: string[]): unknown {
+    for (const key of keys) {
+        if (row[key] !== undefined && row[key] !== null && row[key] !== "") {
+            return row[key];
+        }
     }
-    const candidates = compactObjectRows(element[fieldName], { limit });
+    return undefined;
+}
+
+function omitUndefined(row: JsonObject): JsonObject {
+    return Object.fromEntries(Object.entries(row).filter(([, value]) => value !== undefined));
+}
+
+function planCandidateKey(row: JsonObject): string {
+    const id = readFirst(row, "id", "Id", "viewId", "ViewId", "elementId", "ElementId");
+    if (id !== undefined) {
+        return String(id);
+    }
+    const name = readFirst(row, "name", "Name", "viewName", "ViewName");
+    const level = readFirst(row, "levelId", "LevelId", "levelName", "LevelName");
+    if (name !== undefined || level !== undefined) {
+        return `${String(name ?? "")}|${String(level ?? "")}`;
+    }
+    return stableRowKey(row);
+}
+
+function compactPlanCandidateRow(row: JsonObject, key: string): JsonObject {
+    return omitUndefined({
+        ref: key,
+        id: readFirst(row, "id", "Id", "viewId", "ViewId", "elementId", "ElementId"),
+        name: readFirst(row, "name", "Name", "viewName", "ViewName"),
+        viewType: readFirst(row, "viewType", "ViewType"),
+        levelId: readFirst(row, "levelId", "LevelId"),
+        levelName: readFirst(row, "levelName", "LevelName"),
+        score: readFirst(row, "score", "Score", "rankScore", "RankScore"),
+        rank: readFirst(row, "rank", "Rank"),
+        elementVisibleInView: readFirst(row, "elementVisibleInView", "ElementVisibleInView"),
+        reason: readFirst(row, "reason", "Reason", "matchReason", "MatchReason"),
+    });
+}
+
+function compactPlanCandidateRef(row: JsonObject, key: string): JsonObject {
+    return omitUndefined({
+        ref: key,
+        id: readFirst(row, "id", "Id", "viewId", "ViewId", "elementId", "ElementId"),
+        name: readFirst(row, "name", "Name", "viewName", "ViewName"),
+    });
+}
+
+function compactElementPlanReferences(
+    element: Record<string, any>,
+    perElementLimit: number,
+    candidateByKey: Map<string, JsonObject>,
+): { element: Record<string, any>; totalCandidateRows: number; omittedCandidateRows: number } {
+    const fieldName = planCandidateFieldName(element);
+    if (!fieldName) {
+        return { element, totalCandidateRows: 0, omittedCandidateRows: 0 };
+    }
+    const rawCandidates = element[fieldName].filter((row: unknown): row is JsonObject => Boolean(row) && typeof row === "object" && !Array.isArray(row));
+    const refs: JsonObject[] = [];
+    for (const row of rawCandidates) {
+        const key = planCandidateKey(row);
+        if (!candidateByKey.has(key)) {
+            candidateByKey.set(key, compactPlanCandidateRow(row, key));
+        }
+        if (refs.length < perElementLimit) {
+            refs.push(compactPlanCandidateRef(row, key));
+        }
+    }
+    const compactElement = { ...element };
+    delete compactElement.planCandidates;
+    delete compactElement.PlanCandidates;
+    compactElement.planCandidateRefs = refs;
+    compactElement.planCandidateCount = rawCandidates.length;
+    compactElement.returnedPlanCandidateRefCount = refs.length;
+    compactElement.omittedPlanCandidateRefCount = Math.max(0, rawCandidates.length - refs.length);
     return {
-        ...element,
-        [fieldName]: candidates.rows,
-        planCandidateCount: candidates.totalCount,
-        returnedPlanCandidateCount: candidates.returnedCount,
-        omittedPlanCandidateCount: candidates.omittedCount,
+        element: compactElement,
+        totalCandidateRows: rawCandidates.length,
+        omittedCandidateRows: Math.max(0, rawCandidates.length - refs.length),
     };
 }
 
-function compactFindElementsResult(payload: any, args: Record<string, any>) {
+export function compactFindElementsResult(payload: any, args: Record<string, any>) {
     const responseMode = args.responseMode || "compact";
     if (!payload || typeof payload !== "object" || isDetailedResponseMode(responseMode)) {
         return {
@@ -98,14 +176,42 @@ function compactFindElementsResult(payload: any, args: Record<string, any>) {
     }
     const limit = boundedPositiveInt(args.maxResultRows ?? args.limit, DEFAULT_COMPACT_RESULT_ROWS, 200);
     const planLimit = boundedPositiveInt(args.maxPlanCandidates, 3, 25);
+    const planSummaryLimit = boundedPositiveInt(
+        args.maxPlanCandidateSummaryRows,
+        Math.max(DEFAULT_COMPACT_PLAN_CANDIDATE_SUMMARY_ROWS, planLimit),
+        100,
+    );
     const elements = compactObjectRows(payload[elementField], {
         limit,
         key: elementKey,
     });
+    const candidateByKey = new Map<string, JsonObject>();
+    let totalPlanCandidateRows = 0;
+    let omittedPlanCandidateRefs = 0;
+    const compactElements = elements.rows.map((element) => {
+        const compacted = compactElementPlanReferences(element, planLimit, candidateByKey);
+        totalPlanCandidateRows += compacted.totalCandidateRows;
+        omittedPlanCandidateRefs += compacted.omittedCandidateRows;
+        return compacted.element;
+    });
+    const uniquePlanCandidates = compactObjectRows(Array.from(candidateByKey.values()), {
+        limit: planSummaryLimit,
+        key: (row) => String(row.ref ?? stableRowKey(row)),
+    });
     return {
         ...payload,
         responseMode: "compact",
-        [elementField]: elements.rows.map((element) => compactPlanCandidates(element, planLimit)),
+        [elementField]: compactElements,
+        planCandidateSummary: {
+            compactResponse: true,
+            candidateRowCount: totalPlanCandidateRows,
+            uniqueCandidateCount: candidateByKey.size,
+            returnedCandidateCount: uniquePlanCandidates.returnedCount,
+            omittedCandidateCount: uniquePlanCandidates.omittedCount,
+            duplicateCandidateRowCount: Math.max(0, totalPlanCandidateRows - candidateByKey.size),
+            omittedElementCandidateRefCount: omittedPlanCandidateRefs,
+            candidates: uniquePlanCandidates.rows,
+        },
         summary: {
             ...(payload.summary || payload.Summary || {}),
             compactResponse: true,
@@ -113,16 +219,20 @@ function compactFindElementsResult(payload: any, args: Record<string, any>) {
             returnedElementRowCount: elements.returnedCount,
             omittedElementRowCount: elements.omittedCount,
             duplicateElementRowCount: elements.duplicateCount,
+            planCandidateRowCount: totalPlanCandidateRows,
+            uniquePlanCandidateCount: candidateByKey.size,
+            returnedPlanCandidateCount: uniquePlanCandidates.returnedCount,
+            omittedPlanCandidateCount: uniquePlanCandidates.omittedCount,
         },
         notices: [
             ...(Array.isArray(payload.notices) ? payload.notices : []),
-            "Compact response bounds element rows and nested plan candidates. Use responseMode=\"full\" for all discovery details.",
+            "Compact response bounds element rows and deduplicates plan candidates into planCandidateSummary. Use responseMode=\"full\" for per-element plan candidate details.",
         ],
     };
 }
 
 export function registerFindElementsTool(server: ToolServer) {
-    server.tool("find_elements", "Find Revit elements by MEP-aware progressive discovery. The tool infers obvious engineering scope first, e.g. fan coil/FCU -> Mechanical Equipment, uses API-level category/view filters plus safe in-memory level filters in the Revit bridge, keeps planCandidateMode=none by default, and asks for allowExpensiveSearch/searchBudget=deep before broad, linked, or verified visibility scans. Default responseMode=compact bounds element rows and nested plan candidates; use responseMode=full for all discovery details. Discovery-only: inspect exact elements and parameter schema before writes.", {
+    server.tool("find_elements", "Find Revit elements by MEP-aware progressive discovery. The tool infers obvious engineering scope first, e.g. fan coil/FCU -> Mechanical Equipment, uses API-level category/view filters plus safe in-memory level filters in the Revit bridge, keeps planCandidateMode=none by default, and asks for allowExpensiveSearch/searchBudget=deep before broad, linked, or verified visibility scans. Default responseMode=compact bounds element rows and deduplicates plan candidates into planCandidateSummary; use responseMode=full for per-element plan candidate details. Discovery-only: inspect exact elements and parameter schema before writes.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Text to search in id, unique id, name, category, family, type, mark, and comments."),
@@ -158,6 +268,7 @@ export function registerFindElementsTool(server: ToolServer) {
         limit: z.number().int().positive().max(200).optional().describe("Maximum elements to return. Defaults 20."),
         responseMode: responseModeSchema,
         maxResultRows: z.number().int().positive().max(200).optional().describe("Compact-mode cap for returned element rows. Defaults to limit or 25; full/debug returns all native rows within limit."),
+        maxPlanCandidateSummaryRows: z.number().int().positive().max(100).optional().describe("Compact-mode cap for the deduplicated top-level planCandidateSummary rows. Defaults 25 so global plan candidates are not capped by the per-element maxPlanCandidates limit."),
         timeoutMs: z.number().int().positive().max(120000).optional().describe("Socket timeout in milliseconds. Defaults from searchBudget with headroom above maxElapsedMs."),
     }, async (args) => {
         try {
