@@ -79,7 +79,7 @@ namespace RevitMCPCommandSet.Commands.View
                     return;
                 }
 
-                List<string> reviewSignals = GetReviewSignals(targetView);
+                List<string> reviewSignals = ViewCommandHelpers.GetReviewViewSignals(targetView);
                 bool isReviewView = reviewSignals.Count > 0;
                 ViewSummary targetSummary = ViewCommandHelpers.BuildViewSummary(
                     document,
@@ -240,43 +240,6 @@ namespace RevitMCPCommandSet.Commands.View
                 OpenViews = ViewCommandHelpers.GetOpenViewSummaries(uiDocument),
                 SuggestedNextScopes = new List<string> { "viewId", "viewName", "mode=commit", "confirmDelete=true", "close_view" }
             };
-        }
-
-        private static List<string> GetReviewSignals(Autodesk.Revit.DB.View view)
-        {
-            List<string> signals = new List<string>();
-            if (view == null || view.IsTemplate || !(view is View3D))
-            {
-                return signals;
-            }
-
-            string name = view.Name ?? "";
-            if (name.StartsWith("3D - Focus ", StringComparison.OrdinalIgnoreCase))
-            {
-                signals.Add("default_focus_view_name");
-            }
-            if (name.StartsWith("Revit MCP 3D Focus", StringComparison.OrdinalIgnoreCase))
-            {
-                signals.Add("revit_mcp_focus_view_name");
-            }
-            if (name.StartsWith("DPE Visual QA - Coordination Export", StringComparison.OrdinalIgnoreCase))
-            {
-                signals.Add("coordination_export_view_name");
-            }
-            if (name.IndexOf("Coordination Export", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                name.IndexOf("QA", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                signals.Add("qa_coordination_view_name");
-            }
-            if (name.StartsWith("revAgent ", StringComparison.OrdinalIgnoreCase) &&
-                (name.IndexOf("review", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                 name.IndexOf("focus", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                 name.IndexOf("qa", StringComparison.OrdinalIgnoreCase) >= 0))
-            {
-                signals.Add("revagent_review_view_name");
-            }
-
-            return signals.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         }
 
         private void Complete(ViewOperationResult result)

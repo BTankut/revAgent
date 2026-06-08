@@ -121,7 +121,9 @@ normalizer.
   transaction or modifying model/view data
 - `delete_review_view` - dry-run or delete an explicit revAgent/Revit MCP
   review 3D view. It blocks production, active, and open views; commit requires
-  `mode: "commit"` and `confirmDelete: true`.
+  `mode: "commit"` and `confirmDelete: true`. It recognizes guarded
+  review/focus/coordination/QA 3D view names, including `revAgent_QA_*` names
+  created by `create_3d_view_for_elements`.
 - `get_ui_state` - read active view, open UI views, selected element ids and
   summaries, section box flags, and document writable state
 - `find_elements` - MEP-aware progressive element discovery. It can infer

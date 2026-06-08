@@ -17,6 +17,9 @@ All notable revAgent workstation deployment changes are tracked here.
 - Normalized Codex `service_tier` to the current CLI-supported `fast` value
   during install/update config hygiene so MCP registration does not fail on
   stale `priority` profiles.
+- Aligned `delete_review_view` review-view recognition with
+  `create_3d_view_for_elements` QA naming so explicit `revAgent_QA_*` review
+  views can be dry-run and cleaned up without raw cleanup fallback.
 
 ## 2026.06.07.318-4ca1c36e
 
