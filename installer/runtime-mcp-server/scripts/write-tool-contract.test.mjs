@@ -130,12 +130,22 @@ const revitToolHelpers = readSource("src/utils/revitToolHelpers.ts");
 assertContains(revitToolHelpers, "parentTaskName", "Runtime Revit helper must preserve parent task names for wrapper sub-operations.");
 assertContains(revitToolHelpers, "parentTaskId", "Runtime Revit helper must preserve parent task ids for wrapper sub-operations.");
 assertContains(revitToolHelpers, "applyParentTaskMetadata", "Runtime Revit helper must centralize parent task propagation.");
+assertContains(revitToolHelpers, "applyWrapperActionMetadata", "Runtime Revit helper must centralize wrapper action propagation.");
+assertContains(revitToolHelpers, "commandParams.wrapperAction", "Wrapper subcalls must forward wrapper action names to bridge params.");
+assertContains(revitToolHelpers, "commandParams.logicalToolName", "Wrapper subcalls must forward logical tool names to bridge params.");
 assertContains(revitToolHelpers, "commandParams.parentTaskName", "Wrapper subcalls must forward parent task names to live telemetry/bridge params.");
 
 const telemetry = readSource("src/utils/telemetry.ts");
 assertContains(telemetry, "guardSource", "Telemetry/live feed must expose guardSource for client/runtime guarded records.");
 assertContains(telemetry, "normalizeGuardSource", "Telemetry/live feed must normalize guardSource values.");
 assertContains(telemetry, "parentTaskName", "Telemetry/live feed must expose parent task names.");
+assertContains(telemetry, "getLiveRuntimeActivityStatus", "Telemetry/live feed must expose compact runtime activity snapshots for status responses.");
+assertContains(telemetry, "wrapperAction", "Telemetry/live feed must preserve wrapper action metadata from Revit status snapshots.");
+
+const getRevitMcpStatus = readSource("src/tools/get_revit_mcp_status.ts");
+assertContains(getRevitMcpStatus, "includeRuntimeActivity", "get_revit_mcp_status must expose client/runtime guarded history controls.");
+assertContains(getRevitMcpStatus, "runtimeActivityLimit", "get_revit_mcp_status must bound runtime activity rows.");
+assertContains(getRevitMcpStatus, "getLiveRuntimeActivityStatus", "get_revit_mcp_status must attach runtime/client activity to status responses.");
 
 const exportViewImage = readSource("src/tools/export_revit_view_image.ts");
 assertContains(exportViewImage, "runtimeFailure", "export_revit_view_image must report JS-side runtime failures through the shared result contract.");

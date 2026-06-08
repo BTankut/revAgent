@@ -111,6 +111,16 @@ function applyParentTaskMetadata(commandParams: JsonObject, options: ConnectionA
     }
 }
 
+function applyWrapperActionMetadata(commandParams: JsonObject, commandName: string, options: ExecuteRevitCodeOptions | SendRevitCommandOptions) {
+    const logicalToolName = options.toolName || commandName;
+    if (logicalToolName && !commandParams.logicalToolName) {
+        commandParams.logicalToolName = logicalToolName;
+    }
+    if (options.toolName && options.toolName !== commandName && !commandParams.wrapperAction) {
+        commandParams.wrapperAction = options.toolName;
+    }
+}
+
 export function normalizeSuccessCasing(payload: any) {
     const contractKeyAliases: Array<[string, string]> = [
         ["Success", "success"],
@@ -260,7 +270,11 @@ function compactTaskInfo(task: any, includeDiagnostics: boolean) {
         id: task.id,
         requestId: task.requestId,
         method: task.method,
+        wrapperAction: task.wrapperAction,
+        logicalToolName: task.logicalToolName,
         taskName: task.taskName,
+        parentTaskName: task.parentTaskName,
+        parentTaskIdPresent: Boolean(task.parentTaskIdPresent || task.parentTaskId),
         state: task.state,
         startedAtUtc: task.startedAtUtc,
         finishedAtUtc: task.finishedAtUtc,
@@ -326,6 +340,7 @@ export async function executeRevitCode(code: string, options: ExecuteRevitCodeOp
     if (options.taskId) {
         params.taskId = options.taskId;
     }
+    applyWrapperActionMetadata(params, "send_code_to_revit", options);
     applyParentTaskMetadata(params, options);
     const startedAtMs = Date.now();
     const liveTask = recordLiveActivityStarted({
@@ -413,6 +428,7 @@ export async function sendRevitCommand(command: string, params: JsonObject = {},
     if (options.taskId && !commandParams.taskId) {
         commandParams.taskId = options.taskId;
     }
+    applyWrapperActionMetadata(commandParams, command, options);
     const startedAtMs = Date.now();
     const liveTask = recordLiveActivityStarted({
         scope: "revit.command",

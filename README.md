@@ -199,7 +199,9 @@ The runtime also exposes `get_revit_mcp_status`. It reports the active task,
 elapsed time, recent completed/guarded/failed tasks, and service port. Routine
 status responses stay compact by default: recent task records are limited to the
 latest few items and transport diagnostics are hidden unless explicitly
-requested. Full-test/debug checks can request up to 100 recent records.
+requested. Full-test/debug checks can request up to 100 recent records. Status
+responses also include compact `runtimeActivity` by default so MCP-side or
+client-side guards that never reached Revit remain visible to the operator.
 `guarded` is an expected safety state for blocked operations such as
 manual Revit transactions submitted inside the wrapper-managed `auto` mode; it
 is not a failed model operation.
@@ -232,6 +234,9 @@ The runtime performs a status preflight before every non-status Revit command.
 If `activeTask` is present, the new command is rejected with a busy message
 instead of being sent into Revit. `get_revit_mcp_status` remains the only tool
 that may be called while another Revit MCP task is running.
+Wrapper tools that send nested dynamic Revit commands preserve
+`wrapperAction`, `logicalToolName`, and parent task metadata so audit surfaces
+can show the public tool name instead of only `send_code_to_revit`.
 
 The bundled Revit add-in starts the socket service automatically when Revit
 becomes idle after startup. It uses the configured port, then auto-increments

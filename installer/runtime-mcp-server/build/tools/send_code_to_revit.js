@@ -76,6 +76,13 @@ export function registerSendCodeToRevitTool(server) {
         if (args.taskId) {
             params.taskId = args.taskId;
         }
+        if (args.parentTaskName) {
+            params.parentTaskName = args.parentTaskName;
+        }
+        if (args.parentTaskId) {
+            params.parentTaskId = args.parentTaskId;
+        }
+        params.logicalToolName = "send_code_to_revit";
         const options = connectionOptionsFromArgs(args);
         const startedAtMs = Date.now();
         const liveTask = recordLiveActivityStarted({
@@ -85,6 +92,8 @@ export function registerSendCodeToRevitTool(server) {
             executionKind: "dynamicCode",
             taskName: params.taskName,
             taskId: params.taskId,
+            parentTaskName: params.parentTaskName,
+            parentTaskId: params.parentTaskId,
             params,
             startedAtMs,
         });

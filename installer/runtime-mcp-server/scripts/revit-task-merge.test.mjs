@@ -113,6 +113,22 @@ function task(overrides = {}) {
 }
 
 {
+  const cached = task({
+    state: "completed",
+    wrapperAction: "set_schedule_cells_by_text",
+    logicalToolName: "set_schedule_cells_by_text",
+    parentTaskName: "Schedule text edit wrapper",
+    parentTaskId: "parent-42",
+  });
+  const current = task({ state: "completed", wrapperAction: null, logicalToolName: null, parentTaskName: null, parentTaskId: null });
+  const merged = mergeRevitTask(cached, current);
+  assert.equal(merged.wrapperAction, "set_schedule_cells_by_text");
+  assert.equal(merged.logicalToolName, "set_schedule_cells_by_text");
+  assert.equal(merged.parentTaskName, "Schedule text edit wrapper");
+  assert.equal(merged.parentTaskId, "parent-42");
+}
+
+{
   const running = task({ state: "running", finishedAtUtc: null, elapsedMs: null });
   const completed = task({ state: "completed", finishedAtUtc, elapsedMs: 5000 });
   assert.equal(revitTaskKey(running), revitTaskKey(completed));

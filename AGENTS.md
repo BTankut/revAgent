@@ -178,6 +178,11 @@ optional `error`, `reason`, `warnings`, and `notices`. Treat `guarded=true` as
 protected behavior, not as a failed model operation. Do not assume every
 successful operation committed model data; inspect fields such as `state`,
 `committed`, `mode`, and tool-specific verification fields.
+`get_revit_mcp_status` includes compact `runtimeActivity` by default; use it
+with Revit `recentTasks` when explaining MCP-side or client-side guards that did
+not reach Revit. Wrapper tools should preserve `wrapperAction`,
+`logicalToolName`, and parent task metadata so audit surfaces show the public
+tool name instead of only `send_code_to_revit`.
 Broad scan tools such as `inspect_sheet_text` and `inspect_schedules` also use
 the shared scan result contract: `partial`, `scanStoppedReason`, `scanPolicy`,
 `suggestedNextScopes`, `elapsedMs`, `summary`, `evidenceRows`,

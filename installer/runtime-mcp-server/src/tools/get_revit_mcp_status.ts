@@ -9,7 +9,7 @@ import {
     formatJsonContent,
     normalizeRevitExecutionResponse,
 } from "../utils/revitToolHelpers.js";
-import { recordLiveRevitStatus } from "../utils/telemetry.js";
+import { getLiveRuntimeActivityStatus, recordLiveRevitStatus } from "../utils/telemetry.js";
 import {
     getRuntimeRoot,
     parseBuildHash,
@@ -49,13 +49,18 @@ function getRuntimeIdentity() {
 }
 
 export function registerGetRevitMcpStatusTool(server: ToolServer) {
-    server.tool("get_revit_mcp_status", "Read the Revit MCP task status without waiting behind the active Revit command lock. Includes runtimeVersion, schemaVersion, toolSurfaceVersion, processStartedAtUtc, buildTimestampUtc, buildHash, and bridge resultContractVersion when available so agents can verify the active runtime identity and bridge contract.", {
+    server.tool("get_revit_mcp_status", "Read the Revit MCP task status without waiting behind the active Revit command lock. Includes runtimeVersion, schemaVersion, toolSurfaceVersion, processStartedAtUtc, buildTimestampUtc, buildHash, bridge resultContractVersion when available, and compact runtimeActivity for MCP-side/client-side guarded operations that may not reach Revit.", {
         ...connectionTargetSchema(z),
         includeRecentTasks: z.boolean().optional().describe("Include recent completed task records. Defaults true, with a compact limit."),
         recentLimit: z.number().int().min(0).max(100).optional().describe("Maximum recent task records to return when includeRecentTasks is true. Defaults 3."),
+        includeRuntimeActivity: z.boolean().optional().describe("Include MCP-side/client-side active and recent activity. Defaults true so guard-only tasks that did not reach Revit remain auditable."),
+        runtimeActivityLimit: z.number().int().min(0).max(100).optional().describe("Maximum runtimeActivity.recentActivity rows to return. Defaults 10."),
         includeDiagnostics: z.boolean().optional().describe("Include transport timing/byte diagnostics on task records. Defaults false."),
         timeoutMs: z.number().int().positive().max(10000).optional().describe("Connection timeout in milliseconds. Defaults 3000."),
     }, async (args) => {
+        const runtimeActivity = args.includeRuntimeActivity === false
+            ? undefined
+            : getLiveRuntimeActivityStatus(args.runtimeActivityLimit ?? 10);
         try {
             const timeoutMs = args.timeoutMs || 3000;
             const response = await withRevitConnection(async (revitClient) => {
@@ -80,6 +85,7 @@ export function registerGetRevitMcpStatusTool(server: ToolServer) {
                 : { status: compactStatus };
             return formatJsonContent({
                 ...statusPayload,
+                ...(runtimeActivity ? { runtimeActivity } : {}),
                 runtimeIdentity: getRuntimeIdentity(),
             });
         }
@@ -87,6 +93,7 @@ export function registerGetRevitMcpStatusTool(server: ToolServer) {
             return formatJsonContent({
                 success: false,
                 error: error instanceof Error ? error.message : String(error),
+                ...(runtimeActivity ? { runtimeActivity } : {}),
                 runtimeIdentity: getRuntimeIdentity(),
             });
         }

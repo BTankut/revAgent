@@ -61,6 +61,15 @@ function applyParentTaskMetadata(commandParams, options) {
         commandParams.parentTaskId = parentTaskId;
     }
 }
+function applyWrapperActionMetadata(commandParams, commandName, options) {
+    const logicalToolName = options.toolName || commandName;
+    if (logicalToolName && !commandParams.logicalToolName) {
+        commandParams.logicalToolName = logicalToolName;
+    }
+    if (options.toolName && options.toolName !== commandName && !commandParams.wrapperAction) {
+        commandParams.wrapperAction = options.toolName;
+    }
+}
 export function normalizeSuccessCasing(payload) {
     const contractKeyAliases = [
         ["Success", "success"],
@@ -195,7 +204,11 @@ function compactTaskInfo(task, includeDiagnostics) {
         id: task.id,
         requestId: task.requestId,
         method: task.method,
+        wrapperAction: task.wrapperAction,
+        logicalToolName: task.logicalToolName,
         taskName: task.taskName,
+        parentTaskName: task.parentTaskName,
+        parentTaskIdPresent: Boolean(task.parentTaskIdPresent || task.parentTaskId),
         state: task.state,
         startedAtUtc: task.startedAtUtc,
         finishedAtUtc: task.finishedAtUtc,
@@ -255,6 +268,7 @@ export async function executeRevitCode(code, options = {}) {
     if (options.taskId) {
         params.taskId = options.taskId;
     }
+    applyWrapperActionMetadata(params, "send_code_to_revit", options);
     applyParentTaskMetadata(params, options);
     const startedAtMs = Date.now();
     const liveTask = recordLiveActivityStarted({
@@ -340,6 +354,7 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
     if (options.taskId && !commandParams.taskId) {
         commandParams.taskId = options.taskId;
     }
+    applyWrapperActionMetadata(commandParams, command, options);
     const startedAtMs = Date.now();
     const liveTask = recordLiveActivityStarted({
         scope: "revit.command",

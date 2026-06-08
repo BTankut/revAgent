@@ -8,9 +8,10 @@ All notable revAgent workstation deployment changes are tracked here.
   roadmap, including the plan completion record and operator-facing promotion
   guidance.
 - Added runtime/live-feed guard history fields so MCP-side guarded operations
-  surface `guardSource` without being misrepresented as Revit-side
-  `mcp_status.recentTasks`, and preserved wrapper parent task id/name across
-  nested Revit sub-operations.
+  surface `guardSource` and appear in `get_revit_mcp_status.runtimeActivity`
+  without being misrepresented as Revit-side `mcp_status.recentTasks`, and
+  preserved wrapper action plus parent task id/name across nested Revit
+  sub-operations.
 - Separated `inspect_sheet_text` inventory-only placed schedules from evidence
   matches, made sheet-scan stop diagnostics explicit, and extended
   `count_annotations` to include viewport text-note sources.
