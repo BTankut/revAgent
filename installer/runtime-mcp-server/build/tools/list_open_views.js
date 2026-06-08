@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
+import { stripViewCleanupFields } from "./view_operation_result.js";
 export function registerListOpenViewsTool(server) {
     server.tool("list_open_views", "List Revit UI view tabs currently open in the active document.", {
         ...connectionTargetSchema(z),
@@ -9,7 +10,7 @@ export function registerListOpenViewsTool(server) {
             const response = await sendRevitCommand("list_open_views", {}, {
                 ...executionOptionsFromArgs(args, "List open Revit views"),
             });
-            return formatJsonContent(response && response.result ? response.result : response);
+            return formatJsonContent(stripViewCleanupFields(response && response.result ? response.result : response));
         }
         catch (error) {
             return formatJsonContent({

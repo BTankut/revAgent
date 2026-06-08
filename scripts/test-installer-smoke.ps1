@@ -413,6 +413,8 @@ try {
     Assert-True ($taskStatusController -match 'ShowGuarded') "Task status controller must route guarded task state to the UI."
     Assert-True ($taskStatusService -match 'GuardTask') "Task status service must support a guarded task state."
     Assert-True ($taskStatusService -match 'MaxRecentTasks = 100') "Task status service must retain enough recent tasks for full-test/debug runs."
+    Assert-True ($taskStatusService -match 'JsonProperty\("wrapperAction"' -and $taskStatusService -match 'JsonProperty\("logicalToolName"') "Task status service must preserve wrapper/logical tool metadata in recentTasks."
+    Assert-True ($socketServiceCode -match 'ExtractRequestParamText\(request, "wrapperAction"\)' -and $socketServiceCode -match 'ExtractRequestParamText\(request, "logicalToolName", "toolName"\)') "Socket service must forward wrapper/logical tool metadata into task status history."
     Assert-True ($taskStatusCode -match 'MaxHistoryItems = 100') "Task status window must keep enough visible history for full-test/debug runs."
     Assert-True ($taskStatusService -notmatch 'NormalizeErrorMessage|ContainsCjk') "Task status service must not hide localized source text with a sanitizer."
     Assert-True ($socketServiceCode -match 'IsCommandResultGuarded') "Socket service must classify expected safety blocks as guarded tasks."
@@ -708,7 +710,9 @@ try {
     Assert-True ($setScheduleCellsByTextToolCode -match 'generic send_code_to_revit') "set_schedule_cells_by_text tool description must steer agents away from raw schedule write snippets."
     Assert-True ($safeCodeGuardsCode -match 'Schedule\.SetCellText') "send_code_to_revit_safe write guards must detect schedule cell text writes."
     $activateViewHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewEventHandler.cs")
+    $viewCommandHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ViewCommandHelpers.cs")
     Assert-True ($activateViewHandlerCode -match 'Changed = true,\s+ActiveViewChanged = true') "activate_view must mark ActiveViewChanged when it successfully changes the active view."
+    Assert-True ($viewCommandHelpersCode -match 'public bool\? DryRun' -and $viewCommandHelpersCode -match 'public bool\? Deleted' -and $viewCommandHelpersCode -match 'NullValueHandling = NullValueHandling.Ignore') "Navigation view results must not leak cleanup-only delete_review_view fields."
     Assert-True ($closeViewCode -match 'Changed = closed \|\| activeViewChanged') "close_view must mark Changed when a view is closed or active view changes."
     Assert-True ($viewImageToolCode -match 'enforcePixelSize') "View image export must expose enforcePixelSize."
     Assert-True ($viewImageToolCode -match 'resizeImageToRequestedPixelSize') "View image export must normalize exported image dimensions after Revit export."

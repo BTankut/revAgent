@@ -164,6 +164,15 @@ assertContains(getRevitMcpStatus, "runtimeActivityLimit", "get_revit_mcp_status 
 assertContains(getRevitMcpStatus, "runtimeActivityMode", "get_revit_mcp_status must let callers request summary or full runtime activity.");
 assertContains(getRevitMcpStatus, "getLiveRuntimeActivityStatus", "get_revit_mcp_status must attach runtime/client activity to status responses.");
 
+const viewOperationResult = readSource("src/tools/view_operation_result.ts");
+for (const field of ["dryRun", "deleted", "confirmDelete", "targetIsReviewView", "reviewSignals", "deletedElementCount"]) {
+  assertContains(viewOperationResult, `"${field}"`, `Navigation view responses must strip cleanup-only field '${field}'.`);
+}
+for (const toolPath of ["src/tools/activate_view.ts", "src/tools/close_view.ts", "src/tools/list_open_views.ts"]) {
+  const source = readSource(toolPath);
+  assertContains(source, "stripViewCleanupFields", `${toolPath} must not leak delete_review_view cleanup-only fields.`);
+}
+
 const deleteReviewView = readSource("src/tools/delete_review_view.ts");
 assertContains(deleteReviewView, "compactDeleteReviewViewResult", "delete_review_view must group cleanup-specific fields in compact responses.");
 assertContains(deleteReviewView, 'responseMode: z.enum(["compact", "full"])', "delete_review_view must expose compact/full response shaping.");

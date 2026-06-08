@@ -7,6 +7,7 @@ import {
     sendRevitCommand,
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
+import { stripViewCleanupFields } from "./view_operation_result.js";
 
 export function registerActivateViewTool(server: ToolServer) {
     server.tool("activate_view", "Activate an existing Revit view tab by id or unique name without opening a transaction. Supports plans, 3D views, sheets, schedules, legends, drafting views, sections, and elevations.", {
@@ -28,7 +29,7 @@ export function registerActivateViewTool(server: ToolServer) {
             }, {
                 ...executionOptionsFromArgs(args, "Activate Revit view"),
             });
-            return formatJsonContent(response && response.result ? response.result : response);
+            return formatJsonContent(stripViewCleanupFields(response && response.result ? response.result : response));
         }
         catch (error) {
             return formatJsonContent({

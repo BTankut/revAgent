@@ -535,6 +535,10 @@ namespace revit_mcp_plugin.Core
                 try
                 {
                     string taskName = ExtractTaskDisplayName(request);
+                    string wrapperAction = ExtractRequestParamText(request, "wrapperAction");
+                    string logicalToolName = ExtractRequestParamText(request, "logicalToolName", "toolName");
+                    string parentTaskName = ExtractRequestParamText(request, "parentTaskName");
+                    string parentTaskId = ExtractRequestParamText(request, "parentTaskId");
                     activeTask = McpTaskStatusService.Instance.BeginTask(
                         request.Id,
                         request.Method,
@@ -543,7 +547,11 @@ namespace revit_mcp_plugin.Core
                         metrics != null ? metrics.Framing : null,
                         metrics != null ? (long?)metrics.RequestBytes : null,
                         metrics != null ? (long?)metrics.ReceiveMs : null,
-                        metrics != null ? (long?)metrics.ParseMs : null);
+                        metrics != null ? (long?)metrics.ParseMs : null,
+                        wrapperAction,
+                        logicalToolName,
+                        parentTaskName,
+                        parentTaskId);
                     McpTaskStatusWindowController.Instance.ShowRunning(activeTask);
 
                     System.Diagnostics.Stopwatch executeTimer = System.Diagnostics.Stopwatch.StartNew();
@@ -666,9 +674,20 @@ namespace revit_mcp_plugin.Core
 
         private string ExtractTaskDisplayName(JsonRPCRequest request)
         {
+            string taskName = ExtractRequestParamText(request, "taskName", "displayName", "operationName");
+            if (!string.IsNullOrWhiteSpace(taskName))
+            {
+                return taskName;
+            }
+
+            return request == null || string.IsNullOrWhiteSpace(request.Method) ? "revAgent task" : request.Method;
+        }
+
+        private JObject GetRequestParamsObject(JsonRPCRequest request)
+        {
             if (request == null)
             {
-                return "revAgent task";
+                return null;
             }
 
             try
@@ -679,31 +698,40 @@ namespace revit_mcp_plugin.Core
                     paramsObject = request.GetParamsObject();
                 }
 
-                if (paramsObject != null)
-                {
-                    string[] keys = { "taskName", "displayName", "operationName" };
-                    foreach (string key in keys)
-                    {
-                        if (paramsObject.TryGetValue(key, StringComparison.OrdinalIgnoreCase, out JToken value) &&
-                            value != null &&
-                            value.Type != JTokenType.Null)
-                        {
-                            string text = value.Type == JTokenType.String
-                                ? value.Value<string>()
-                                : value.ToString(Formatting.None);
-                            if (!string.IsNullOrWhiteSpace(text))
-                            {
-                                return text;
-                            }
-                        }
-                    }
-                }
+                return paramsObject;
             }
             catch
             {
             }
 
-            return string.IsNullOrWhiteSpace(request.Method) ? "revAgent task" : request.Method;
+            return null;
+        }
+
+        private string ExtractRequestParamText(JsonRPCRequest request, params string[] keys)
+        {
+            JObject paramsObject = GetRequestParamsObject(request);
+            if (paramsObject == null || keys == null)
+            {
+                return null;
+            }
+
+            foreach (string key in keys)
+            {
+                if (paramsObject.TryGetValue(key, StringComparison.OrdinalIgnoreCase, out JToken value) &&
+                    value != null &&
+                    value.Type != JTokenType.Null)
+                {
+                    string text = value.Type == JTokenType.String
+                        ? value.Value<string>()
+                        : value.ToString(Formatting.None);
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        return text;
+                    }
+                }
+            }
+
+            return null;
         }
 
         private bool IsCommandResultGuarded(object result, out string reason)

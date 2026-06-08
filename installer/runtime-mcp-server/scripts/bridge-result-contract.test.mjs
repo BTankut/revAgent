@@ -96,6 +96,39 @@ assertContains(
   "return CreateSuccessResponse(request.Id, snapshot)",
   "mcp_status diagnostics must pass through the same resultContractVersion response helper.",
 );
+assertContains(
+  socketService,
+  'ExtractRequestParamText(request, "wrapperAction")',
+  "Native status history must read wrapperAction from request params.",
+);
+assertContains(
+  socketService,
+  'ExtractRequestParamText(request, "logicalToolName", "toolName")',
+  "Native status history must read logicalToolName/toolName from request params.",
+);
+
+const mcpTaskStatusService = readRepo("src/revit-plugin/revit-mcp-plugin/Core/McpTaskStatusService.cs");
+for (const field of ['JsonProperty("wrapperAction"', 'JsonProperty("logicalToolName"', 'JsonProperty("parentTaskName"', 'JsonProperty("parentTaskId"']) {
+  assertContains(
+    mcpTaskStatusService,
+    field,
+    `Native recentTasks must serialize ${field} metadata for public tool identity.`,
+  );
+}
+
+const viewCommandHelpers = readRepo("src/revit-plugin/RevitMCPCommandSet/Commands/View/ViewCommandHelpers.cs");
+for (const field of ["public bool? DryRun", "public bool? Deleted", "public bool? ConfirmDelete", "public bool? TargetIsReviewView", "public int? DeletedElementCount"]) {
+  assertContains(
+    viewCommandHelpers,
+    field,
+    `ViewOperationResult cleanup field must be nullable: ${field}.`,
+  );
+}
+assertContains(
+  viewCommandHelpers,
+  "NullValueHandling = NullValueHandling.Ignore",
+  "ViewOperationResult cleanup-only fields must be omitted unless a cleanup operation sets them.",
+);
 
 const canonical = {
   resultContractVersion: BRIDGE_RESULT_CONTRACT_VERSION,

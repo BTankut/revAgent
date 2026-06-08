@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
+import { stripViewCleanupFields } from "./view_operation_result.js";
 export function registerCloseViewTool(server) {
     server.tool("close_view", "Close an open Revit UI view tab by id or unique name without opening a transaction. If the target is active, another open view is activated first.", {
         ...connectionTargetSchema(z),
@@ -20,7 +21,7 @@ export function registerCloseViewTool(server) {
             }, {
                 ...executionOptionsFromArgs(args, "Close Revit view"),
             });
-            return formatJsonContent(response && response.result ? response.result : response);
+            return formatJsonContent(stripViewCleanupFields(response && response.result ? response.result : response));
         }
         catch (error) {
             return formatJsonContent({
