@@ -352,7 +352,9 @@ helpers, the `@ts-nocheck` policy, both MCP package tests, and MCP/Revit payload
 freshness checks. It also runs bridge result contract characterization checks
 that reject dynamic-result double encoding, bypassed C# camelCase response
 helpers, missing `resultContractVersion`, and non-idempotent canonical
-normalization. It does not run the live Revit commandset gate.
+normalization. Dynamic-code tests also verify that `parseJsonResult=true`
+parses JSON-looking nested `result` strings and failed parsing preserves raw
+text. It does not run the live Revit commandset gate.
 
 When `src/revit-plugin/RevitMCPCommandSet` or `installer/command-payload`
 changes, run the optional live commandset gate on a workstation with Revit 2022
@@ -369,7 +371,10 @@ manual transaction blocking, manual rollback in `none`, and
 `Newtonsoft.Json.JsonConvert` compilation. For bridge result contract changes,
 also verify that dynamic object results are not double-encoded strings, native
 bridge responses emit camelCase `success`, and `resultContractVersion` is
-readable from the response payload and from `mcp_status` diagnostics.
+readable from the response payload and from `mcp_status` diagnostics. For
+runtime-only dynamic result normalization changes, the deterministic
+`bridge-result-contract-test` is the required gate; live Revit is optional
+unless the native bridge payload changed.
 
 Keep `src/revit-plugin/RevitMCPCommandSet` limited to the registered production
 bridge commands: `send_code_to_revit`, `get_current_view_elements`,
@@ -528,7 +533,9 @@ Live smoke test after install:
 9. For bridge result contract changes, confirm dynamic object results are not
    returned as double-encoded strings, native bridge command responses use
    camelCase `success`, and `resultContractVersion` is visible in both the
-   command response payload and `mcp_status`.
+   command response payload and `mcp_status`. For runtime-only dynamic result
+   parsing changes, confirm deterministic tests cover `parseJsonResult=true`
+   nested JSON parsing and raw-string preservation on failed parsing.
 10. Confirm `revit-api-docs` responds to a small search such as
    `FilteredElementCollector`.
 11. For transport-sensitive changes, run a large read-only marker/checksum probe

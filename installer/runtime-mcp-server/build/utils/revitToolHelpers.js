@@ -134,6 +134,22 @@ function parseJsonLike(value, depth = 0) {
         return value;
     }
 }
+function parseJsonResultFields(value) {
+    if (Array.isArray(value)) {
+        return value.map((item) => parseJsonResultFields(item));
+    }
+    if (!value || typeof value !== "object") {
+        return value;
+    }
+    const clone = {};
+    for (const [key, child] of Object.entries(value)) {
+        const candidate = key === "result" || key === "Result"
+            ? parseJsonLike(child)
+            : child;
+        clone[key] = parseJsonResultFields(candidate);
+    }
+    return clone;
+}
 export function getResultContractVersion(payload) {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
         return null;
@@ -146,17 +162,28 @@ export function hasCanonicalBridgeResultContract(payload) {
     const version = getResultContractVersion(payload);
     return version !== null && version >= BRIDGE_RESULT_CONTRACT_VERSION;
 }
-export function normalizeRevitExecutionResponse(response) {
+export function normalizeRevitExecutionResponse(response, options = {}) {
     const parsed = parseJsonLike(response);
     if (hasCanonicalBridgeResultContract(parsed)) {
-        return parsed;
+        return options.parseResultStrings === true
+            ? normalizeSuccessCasing(parseJsonResultFields(parsed))
+            : parsed;
     }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        const cloned = { ...parsed };
-        if ("result" in cloned) {
-            cloned.result = parseJsonLike(cloned.result);
+        let target = parsed;
+        if (options.parseResultStrings === true) {
+            target = parseJsonResultFields(target);
         }
-        return normalizeSuccessCasing(cloned);
+        else if ("result" in target || "Result" in target) {
+            target = { ...target };
+            if ("result" in target) {
+                target.result = parseJsonLike(target.result);
+            }
+            else {
+                target.Result = parseJsonLike(target.Result);
+            }
+        }
+        return normalizeSuccessCasing(target);
     }
     return normalizeSuccessCasing(parsed);
 }
@@ -287,7 +314,9 @@ export async function executeRevitCode(code, options = {}) {
         const response = await withRevitConnection(async (revitClient) => {
             return await revitClient.sendCommand("send_code_to_revit", params, options);
         }, options);
-        const normalizedResponse = normalizeRevitExecutionResponse(response);
+        const normalizedResponse = options.parseJsonResult === false
+            ? response
+            : normalizeRevitExecutionResponse(response, { parseResultStrings: true });
         const durationMs = Math.max(0, Date.now() - startedAtMs);
         recordRevitCommandTelemetry({
             commandName: "send_code_to_revit",

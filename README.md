@@ -430,6 +430,9 @@ so ordinary checkout or merge mtimes do not force a payload refresh.
 The runtime MCP test suite includes bridge result contract characterization
 checks for dynamic-result double encoding, central C# camelCase response
 helpers, `resultContractVersion`, and idempotent legacy normalization.
+It also verifies that dynamic execution with `parseJsonResult=true` parses
+JSON-looking nested `result` strings, while disabled or failed parsing leaves
+the raw text available for debugging.
 
 The protected `main` branch also runs the GitHub Actions `Engineering gates`
 job on pull requests and pushes to `main`. Normal development should happen on
@@ -657,7 +660,10 @@ production tasks can be audited before any broad custom C# write is used.
 The bridge result boundary is intentionally small: Revit DLL payloads emit
 canonical camelCase result objects with `resultContractVersion`, while the
 TypeScript normalizer keeps a legacy path for older DLLs and raw dynamic
-snippet payloads.
+snippet payloads. Raw and safe dynamic-code tools additionally honor
+`parseJsonResult`: the default `true` value parses JSON-looking nested
+`result` strings where practical, including double-encoded result strings, and
+`false` preserves the raw wire text.
 
 Runtime commands perform a lightweight internal `mcp_status` preflight before sending non-status work to Revit and fail fast when another task is active. Agent workflows should still call `get_revit_mcp_status` explicitly before each Revit operation so the user can see what is running and why a command is being delayed.
 

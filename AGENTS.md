@@ -195,7 +195,10 @@ Legacy native stop reasons may appear as diagnostic raw fields, but
 Normalized bridge responses also expose `resultContractVersion` inside the
 JSON-RPC `result` object. Use it as a per-response capability signal, not a
 process-global switch; older DLLs and raw dynamic snippets still depend on the
-runtime compatibility normalizer.
+runtime compatibility normalizer. For raw and safe dynamic execution,
+`parseJsonResult=true` parses JSON-looking nested `result` strings where
+practical, including double-encoded result strings; `parseJsonResult=false` is
+the debugging path for preserving raw wire text.
 
 For DrawingSheet and placed-view annotation lookup in large projects, use
 `inspect_sheet_text` before raw dynamic C# sheet or viewport loops. Start with

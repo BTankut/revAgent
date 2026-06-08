@@ -131,9 +131,20 @@ assertContains(revitToolHelpers, "parentTaskName", "Runtime Revit helper must pr
 assertContains(revitToolHelpers, "parentTaskId", "Runtime Revit helper must preserve parent task ids for wrapper sub-operations.");
 assertContains(revitToolHelpers, "applyParentTaskMetadata", "Runtime Revit helper must centralize parent task propagation.");
 assertContains(revitToolHelpers, "applyWrapperActionMetadata", "Runtime Revit helper must centralize wrapper action propagation.");
+assertContains(revitToolHelpers, "parseJsonResult?: boolean", "Dynamic execution helper must let callers preserve raw results when parsing is disabled.");
+assertContains(revitToolHelpers, "parseJsonResult === false", "Dynamic execution helper must skip result parsing when requested.");
+assertContains(revitToolHelpers, "parseResultStrings: true", "Dynamic execution normalization must parse nested JSON-looking result strings.");
 assertContains(revitToolHelpers, "commandParams.wrapperAction", "Wrapper subcalls must forward wrapper action names to bridge params.");
 assertContains(revitToolHelpers, "commandParams.logicalToolName", "Wrapper subcalls must forward logical tool names to bridge params.");
 assertContains(revitToolHelpers, "commandParams.parentTaskName", "Wrapper subcalls must forward parent task names to live telemetry/bridge params.");
+
+const sendCodeToRevit = readSource("src/tools/send_code_to_revit.ts");
+assertContains(sendCodeToRevit, "parseResultStrings: true", "Raw send_code_to_revit parseJsonResult=true must parse canonical nested result strings.");
+assertContains(sendCodeToRevit, "args.parseJsonResult === false", "Raw send_code_to_revit must preserve raw wire results when parseJsonResult=false.");
+assertContains(sendCodeToRevit, "args.parseJsonResult === false || args.reportErrorResultAsFailure === false", "Raw send_code_to_revit must not re-parse raw results through error-like failure handling when parseJsonResult=false.");
+
+const sendCodeToRevitSafe = readSource("src/tools/send_code_to_revit_safe.ts");
+assertContains(sendCodeToRevitSafe, "parseJsonResult: args.parseJsonResult !== false", "Safe dynamic execution must propagate parseJsonResult=false into the lower helper.");
 
 const telemetry = readSource("src/utils/telemetry.ts");
 assertContains(telemetry, "guardSource", "Telemetry/live feed must expose guardSource for client/runtime guarded records.");
