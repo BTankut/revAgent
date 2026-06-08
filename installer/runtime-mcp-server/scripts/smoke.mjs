@@ -7,10 +7,12 @@ import { fileURLToPath } from "node:url";
 import { registerTools } from "../build/tools/register.js";
 import { resolveAutoTargetVisualStyle } from "../build/tools/export_revit_coordination_image.js";
 import {
+  compactMcpStatusPayload,
   formatJsonContent,
   normalizeRevitExecutionResponse,
   truncateText,
 } from "../build/utils/revitToolHelpers.js";
+import { compactDeleteReviewViewResult } from "../build/tools/delete_review_view.js";
 import {
   recordTelemetryEvent,
   extractProductionContext,
@@ -106,6 +108,7 @@ const statusTool = tools.get("get_revit_mcp_status");
 assert.match(statusTool.description, /runtimeActivity/);
 assert.equal("includeRuntimeActivity" in statusTool.schema, true);
 assert.equal("runtimeActivityLimit" in statusTool.schema, true);
+assert.equal("runtimeActivityMode" in statusTool.schema, true);
 
 const create3dDescription = tools.get("create_3d_view_for_elements").description;
 const showPlan3dDescription = tools.get("show_element_in_plan_and_3d").description;
@@ -122,6 +125,7 @@ assert.match(clearSelectionDescription, /does not modify model elements/);
 assert.match(deleteReviewViewDescription, /REVIEW_VIEW_CLEANUP_GUARDED/);
 assert.match(deleteReviewViewDescription, /mode="commit"/);
 assert.equal("confirmDelete" in tools.get("delete_review_view").schema, true);
+assert.equal("responseMode" in tools.get("delete_review_view").schema, true);
 const setParameterDescription = tools.get("set_element_parameter").description;
 assert.match(setParameterDescription, /PRODUCTION_PARAMETER_WRITE/);
 assert.match(setParameterDescription, /Never writes by visible display name alone/);
@@ -347,6 +351,54 @@ const normalized = normalizeRevitExecutionResponse({
 });
 assert.equal(normalized.result.success, true);
 assert.equal(normalized.result.count, 2);
+
+const compactStatus = compactMcpStatusPayload({
+  activeTask: null,
+  recentTasks: [
+    {
+      id: "status-wrapper",
+      method: "send_code_to_revit",
+      wrapperAction: "set_schedule_cells_by_text",
+      logicalToolName: "set_schedule_cells_by_text",
+      taskName: "Wrapper status task",
+      state: "completed",
+    },
+  ],
+});
+assert.equal(compactStatus.recentTasks[0].method, "set_schedule_cells_by_text");
+assert.equal(compactStatus.recentTasks[0].toolName, "set_schedule_cells_by_text");
+assert.equal(compactStatus.recentTasks[0].commandName, "send_code_to_revit");
+
+const compactDelete = compactDeleteReviewViewResult({
+  success: true,
+  state: "completed",
+  action: "delete_review_view",
+  message: "Review view deleted.",
+  mode: "commit",
+  dryRun: false,
+  changed: true,
+  deleted: true,
+  deletedElementCount: 10,
+  confirmDelete: true,
+  targetIsReviewView: true,
+  reviewSignals: ["revagent_review_view_name"],
+  targetView: { id: 123, name: "revAgent_QA_DELETE_TEST_386031", viewType: "ThreeD" },
+}, {});
+assert.equal(compactDelete.responseMode, "compact");
+assert.equal("deleted" in compactDelete, false);
+assert.equal("confirmDelete" in compactDelete, false);
+assert.equal("targetIsReviewView" in compactDelete, false);
+assert.equal(compactDelete.cleanup.deleted, true);
+assert.equal(compactDelete.cleanup.confirmed, true);
+assert.equal(compactDelete.cleanup.targetIsReviewView, true);
+
+const compactDeleteConfirmFallback = compactDeleteReviewViewResult({ success: true }, { confirmDelete: true });
+assert.equal(compactDeleteConfirmFallback.cleanup.confirmed, true);
+
+const fullDelete = compactDeleteReviewViewResult({ success: true, deleted: true, confirmDelete: true }, { responseMode: "full" });
+assert.equal(fullDelete.responseMode, "full");
+assert.equal(fullDelete.deleted, true);
+assert.equal(fullDelete.confirmDelete, true);
 
 const content = formatJsonContent({ success: true });
 assert.equal(content.content[0].type, "text");

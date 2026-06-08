@@ -131,6 +131,8 @@ assertContains(revitToolHelpers, "parentTaskName", "Runtime Revit helper must pr
 assertContains(revitToolHelpers, "parentTaskId", "Runtime Revit helper must preserve parent task ids for wrapper sub-operations.");
 assertContains(revitToolHelpers, "applyParentTaskMetadata", "Runtime Revit helper must centralize parent task propagation.");
 assertContains(revitToolHelpers, "applyWrapperActionMetadata", "Runtime Revit helper must centralize wrapper action propagation.");
+assertContains(revitToolHelpers, "toolName = task.wrapperAction || task.logicalToolName", "Compact Revit status history must expose wrapper tool names before bridge method names.");
+assertContains(revitToolHelpers, "commandName", "Compact Revit status history must preserve the native bridge method as commandName.");
 assertContains(revitToolHelpers, "parseJsonResult?: boolean", "Dynamic execution helper must let callers preserve raw results when parsing is disabled.");
 assertContains(revitToolHelpers, "parseJsonResult === false", "Dynamic execution helper must skip result parsing when requested.");
 assertContains(revitToolHelpers, "parseResultStrings: true", "Dynamic execution normalization must parse nested JSON-looking result strings.");
@@ -152,11 +154,21 @@ assertContains(telemetry, "normalizeGuardSource", "Telemetry/live feed must norm
 assertContains(telemetry, "parentTaskName", "Telemetry/live feed must expose parent task names.");
 assertContains(telemetry, "getLiveRuntimeActivityStatus", "Telemetry/live feed must expose compact runtime activity snapshots for status responses.");
 assertContains(telemetry, "wrapperAction", "Telemetry/live feed must preserve wrapper action metadata from Revit status snapshots.");
+assertContains(telemetry, "RuntimeActivityMode", "Telemetry/live feed must expose summary/full runtime activity modes.");
+assertContains(telemetry, 'item.phase !== "started"', "Summary runtime activity must omit started rows to avoid start/completed duplication.");
+assertContains(telemetry, "compactRuntimeActivityResult", "Summary runtime activity must trim verbose result payloads such as responseKeys.");
 
 const getRevitMcpStatus = readSource("src/tools/get_revit_mcp_status.ts");
 assertContains(getRevitMcpStatus, "includeRuntimeActivity", "get_revit_mcp_status must expose client/runtime guarded history controls.");
 assertContains(getRevitMcpStatus, "runtimeActivityLimit", "get_revit_mcp_status must bound runtime activity rows.");
+assertContains(getRevitMcpStatus, "runtimeActivityMode", "get_revit_mcp_status must let callers request summary or full runtime activity.");
 assertContains(getRevitMcpStatus, "getLiveRuntimeActivityStatus", "get_revit_mcp_status must attach runtime/client activity to status responses.");
+
+const deleteReviewView = readSource("src/tools/delete_review_view.ts");
+assertContains(deleteReviewView, "compactDeleteReviewViewResult", "delete_review_view must group cleanup-specific fields in compact responses.");
+assertContains(deleteReviewView, 'responseMode: z.enum(["compact", "full"])', "delete_review_view must expose compact/full response shaping.");
+assertContains(deleteReviewView, 'responseMode=\\"full\\"', "delete_review_view compact notices must explain how to request raw cleanup diagnostics.");
+assertContains(deleteReviewView, "args.confirmDelete", "delete_review_view compact cleanup confirmation should fall back to wrapper args.");
 
 const exportViewImage = readSource("src/tools/export_revit_view_image.ts");
 assertContains(exportViewImage, "runtimeFailure", "export_revit_view_image must report JS-side runtime failures through the shared result contract.");

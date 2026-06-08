@@ -178,11 +178,12 @@ optional `error`, `reason`, `warnings`, and `notices`. Treat `guarded=true` as
 protected behavior, not as a failed model operation. Do not assume every
 successful operation committed model data; inspect fields such as `state`,
 `committed`, `mode`, and tool-specific verification fields.
-`get_revit_mcp_status` includes compact `runtimeActivity` by default; use it
+`get_revit_mcp_status` includes summary `runtimeActivity` by default; use it
 with Revit `recentTasks` when explaining MCP-side or client-side guards that did
-not reach Revit. Wrapper tools should preserve `wrapperAction`,
-`logicalToolName`, and parent task metadata so audit surfaces show the public
-tool name instead of only `send_code_to_revit`.
+not reach Revit. Request `runtimeActivityMode="full"` only for debug. Wrapper
+tools should preserve `wrapperAction`, `logicalToolName`, and parent task
+metadata so compact audit surfaces show the public tool name as
+`method`/`toolName` and keep the native bridge command as `commandName`.
 Broad scan tools such as `inspect_sheet_text` and `inspect_schedules` also use
 the shared scan result contract: `partial`, `scanStoppedReason`, `scanPolicy`,
 `suggestedNextScopes`, `elapsedMs`, `summary`, `evidenceRows`,
@@ -261,8 +262,9 @@ Verified plan visibility is materially slower than metadata plan ranking: use
 `planCandidateMode="verified"` for exact element ids or explicit expensive
 search approval. Broad verified requests may return `needs_scope` before Revit
 or be downgraded to metadata by the bridge. Compact responses deduplicate
-repeated plan candidate rows into `planCandidateSummary`; request
-`responseMode="full"` only when per-element candidate details are needed.
+repeated plan candidate rows into `planCandidateSummary`; compact element rows
+only keep lightweight refs to that summary. Request `responseMode="full"` only
+when per-element candidate details are needed.
 If the tool returns `guarded=true`, `state="guarded"`, and
 `reason="needs_scope"`, treat it as controlled product behavior and ask for or
 derive a better level, active view, system, family/type, sheet, or schedule
@@ -280,7 +282,9 @@ UI with no selected elements. Use `delete_review_view` only for explicit
 revAgent/Revit MCP review/focus/coordination/QA 3D views, including
 `revAgent_QA_*` names created by `create_3d_view_for_elements`; it defaults to
 dry-run, blocks production/active/open views, and requires `mode="commit"` plus
-`confirmDelete=true` for deletion.
+`confirmDelete=true` for deletion. Compact responses group delete-specific
+diagnostics under `cleanup`; request `responseMode="full"` only for raw native
+cleanup diagnostics.
 
 ## Dynamic Execution Transaction Discipline
 

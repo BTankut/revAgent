@@ -100,8 +100,11 @@ normalizer.
   `toolSurfaceVersion`, `processStartedAtUtc`, `buildTimestampUtc`, and
   `buildHash`) plus the bridge `resultContractVersion` when the active Revit
   DLL supports it, so agents can confirm which runtime/schema is actually
-  active. Default responses also include compact `runtimeActivity` for
-  MCP-side/client-side guarded operations that did not reach Revit.
+  active. Default responses also include summary `runtimeActivity` for
+  MCP-side/client-side guarded operations that did not reach Revit; request
+  `runtimeActivityMode: "full"` only when started rows and verbose result
+  summaries are needed. Compact Revit status rows use the public wrapper tool
+  name as `method`/`toolName` and keep the native bridge name as `commandName`.
 - `send_code_to_revit` - raw dynamic execution for explicit, broad control
 - `send_code_to_revit_safe` - read/preview execution with write-looking code
   rejection, JSON result parsing, output trimming, and forced
@@ -126,7 +129,9 @@ normalizer.
   review 3D view. It blocks production, active, and open views; commit requires
   `mode: "commit"` and `confirmDelete: true`. It recognizes guarded
   review/focus/coordination/QA 3D view names, including `revAgent_QA_*` names
-  created by `create_3d_view_for_elements`.
+  created by `create_3d_view_for_elements`. Compact responses group cleanup
+  details under `cleanup`; use `responseMode: "full"` for raw native delete
+  diagnostics.
 - `get_ui_state` - read active view, open UI views, selected element ids and
   summaries, section box flags, and document writable state
 - `find_elements` - MEP-aware progressive element discovery. It can infer
@@ -145,8 +150,9 @@ normalizer.
   visibility must be proven. Broad verified plan visibility is guarded before
   Revit, and the bridge can downgrade it to metadata if called directly without
   approval. Compact responses deduplicate repeated plan candidate rows into a
-  shared `planCandidateSummary`; use `responseMode: "full"` when per-element
-  plan candidate details are needed.
+  shared `planCandidateSummary`; element rows contain only lightweight refs to
+  that summary. Use `responseMode: "full"` when per-element plan candidate
+  details are needed.
 - `open_existing_plan_for_element_level` - choose an existing non-template plan
   for an element's level, or keep the active plan when `planMode=activePlan`,
   then select and zoom to the element. Successful routine calls return compact

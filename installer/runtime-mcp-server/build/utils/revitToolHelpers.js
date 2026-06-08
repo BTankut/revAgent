@@ -227,10 +227,14 @@ function compactTaskInfo(task, includeDiagnostics) {
     if (!task || typeof task !== "object") {
         return task;
     }
+    const commandName = task.commandName || task.method;
+    const toolName = task.wrapperAction || task.logicalToolName || task.toolName || commandName;
     const compact = {
         id: task.id,
         requestId: task.requestId,
-        method: task.method,
+        method: toolName,
+        toolName,
+        commandName,
         wrapperAction: task.wrapperAction,
         logicalToolName: task.logicalToolName,
         taskName: task.taskName,

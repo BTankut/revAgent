@@ -56,6 +56,9 @@ assert.equal(compact.summary.uniquePlanCandidateCount, 2);
 assert.equal(compact.Elements.every((element) => !("PlanCandidates" in element) && !("planCandidates" in element)), true);
 assert.equal(compact.Elements.every((element) => Array.isArray(element.planCandidateRefs)), true);
 assert.equal(compact.Elements.every((element) => element.planCandidateRefs.length === 2), true);
+assert.deepEqual(compact.Elements[0].planCandidateRefs, [{ ref: "3101" }, { ref: "3102" }]);
+assert.equal("id" in compact.Elements[0].planCandidateRefs[0], false);
+assert.equal("name" in compact.Elements[0].planCandidateRefs[0], false);
 assert.equal(JSON.stringify(compact).includes("DebugGeometry"), false);
 assert.match(compact.notices.join("\n"), /planCandidateSummary/);
 

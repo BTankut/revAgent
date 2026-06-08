@@ -85,12 +85,8 @@ function compactPlanCandidateRow(row, key) {
         reason: readFirst(row, "reason", "Reason", "matchReason", "MatchReason"),
     });
 }
-function compactPlanCandidateRef(row, key) {
-    return omitUndefined({
-        ref: key,
-        id: readFirst(row, "id", "Id", "viewId", "ViewId", "elementId", "ElementId"),
-        name: readFirst(row, "name", "Name", "viewName", "ViewName"),
-    });
+function compactPlanCandidateRef(_row, key) {
+    return { ref: key };
 }
 function compactElementPlanReferences(element, perElementLimit, candidateByKey) {
     const fieldName = planCandidateFieldName(element);

@@ -200,8 +200,12 @@ elapsed time, recent completed/guarded/failed tasks, and service port. Routine
 status responses stay compact by default: recent task records are limited to the
 latest few items and transport diagnostics are hidden unless explicitly
 requested. Full-test/debug checks can request up to 100 recent records. Status
-responses also include compact `runtimeActivity` by default so MCP-side or
-client-side guards that never reached Revit remain visible to the operator.
+responses also include summary `runtimeActivity` by default so MCP-side or
+client-side guards that never reached Revit remain visible to the operator
+without started/completed duplication or verbose result-key lists; request
+`runtimeActivityMode="full"` only for debug. Compact status rows show the
+public wrapper tool as `method`/`toolName` and keep the native bridge command
+as `commandName`.
 `guarded` is an expected safety state for blocked operations such as
 manual Revit transactions submitted inside the wrapper-managed `auto` mode; it
 is not a failed model operation.
@@ -650,7 +654,7 @@ small production surface instead of many narrow one-off commands.
 | Review and reconciliation | `reconcile_schedule_excel` | Runtime-only, review-first, and write-free. It ingests explicit `.xlsx`, `.csv`, `.tsv`, or `rows` input plus normalized `inspect_schedules` evidence, applies deterministic matching/scoring, and returns compact `reviewTable`, `evidenceRows`, and count metadata by default. Use `responseMode="full"`/`"debug"` for raw `reviewRows`, token profiles, raw cells, and nested candidates. Accepted edits route separately through `set_schedule_cells`, `set_schedule_cells_by_text`, or a workbook-specific workflow after human review. |
 | Controlled data writes | `set_element_parameter`, `set_schedule_cells`, `set_schedule_cells_by_text` | `set_element_parameter` is the production-safe single-parameter set/clear path. It defaults to `mode="dryRun"` and `operation="set"`, performs exact `inspect_parameter_schema`-style identity resolution, blocks duplicate display names/read-only parameters/type writes without explicit approval, commits only with `mode="commit"`, and verifies the value by reading it back. `operation="clear"` attempts Revit `Parameter.ClearValue` for a true no-value state and reports `clear_value_not_supported` instead of faking clear with an empty string when Revit does not support it. `set_schedule_cells` writes exact schedule cells only by `scheduleId`, `section`, `row`, and `column`; it defaults to dry-run, can require `expectedCurrentText`, guards non-writable standard schedule body cells as `non_writable_standard_body_cell`, commits through the wrapper transaction, and verifies committed cell text. `set_schedule_cells_by_text` is the higher-level schedule workflow for bounded sheet/schedule scope plus row-text matching; it blocks ambiguous matches by default, supports `expectedCurrentText`, defaults to dry-run, guards the same standard body-cell restriction, and verifies commit readback. |
 | Live view navigation | `list_open_views`, `activate_view`, `close_view`, `clear_selection`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. `clear_selection` only clears the current UI selection and opens no transaction. |
-| View-data writes | `section_box_elements`, `create_3d_view_for_elements`, `delete_review_view` | Can modify project view data by applying section boxes, creating/reusing 3D review views, or deleting guarded revAgent/Revit MCP review views. `delete_review_view` defaults to dry-run, recognizes guarded review/focus/coordination/QA 3D view names such as `revAgent_QA_*`, blocks production/active/open views, and requires `mode="commit"` plus `confirmDelete=true`. Use explicit intent and verify afterward. |
+| View-data writes | `section_box_elements`, `create_3d_view_for_elements`, `delete_review_view` | Can modify project view data by applying section boxes, creating/reusing 3D review views, or deleting guarded revAgent/Revit MCP review views. `delete_review_view` defaults to dry-run, recognizes guarded review/focus/coordination/QA 3D view names such as `revAgent_QA_*`, blocks production/active/open views, and requires `mode="commit"` plus `confirmDelete=true`. Compact responses group delete-specific diagnostics under `cleanup`; request `responseMode="full"` for the raw native cleanup contract. Use explicit intent and verify afterward. |
 | Image artifacts | `export_revit_view_image`, `export_revit_coordination_image` | `export_revit_view_image` supports active/requested views, DrawingSheet export, and direct Schedule export through a temporary sheet that is deleted before the wrapper transaction commits. Ordinary view/sheet exports are read-only. `export_revit_coordination_image` writes only review view settings and image export settings, never ducts, pipes, fittings, terminals, or other physical model elements; if requested `elementIds` are all missing it returns guarded `no_requested_elements_found` unless `allowFullViewFallback=true` is explicit. `cleanupAfterExport=true` deletes a review view created by that export after the image file is produced. It can still leave Revit's document dirty flag set because temporary review view data was created/deleted inside a transaction. |
 
 The Revit add-in command payload still provides the low-level dynamic execution
@@ -699,8 +703,9 @@ routine discovery, then add `levelNames`, `activeViewOnly`,
 family/type/system/workset filters, or `allowExpensiveSearch=true` for
 deliberate deeper searches. Treat its compact response as insufficient for
 write decisions; compact mode deduplicates repeated plan candidates into
-`planCandidateSummary`, while `responseMode="full"` keeps per-element plan
-candidate details for audit/debug. Before writes, use `inspect_elements` and
+`planCandidateSummary`, and compact element rows keep only lightweight refs to
+that summary. `responseMode="full"` keeps per-element plan candidate details
+for audit/debug. Before writes, use `inspect_elements` and
 `inspect_parameter_schema` have confirmed the exact element and stable
 parameter identity. Use
 `set_element_parameter` for ordinary parameter writes. It may accept a visible

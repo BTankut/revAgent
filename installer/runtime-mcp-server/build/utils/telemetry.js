@@ -843,11 +843,25 @@ function resolveLiveMachineTargets(relativeParts = []) {
     }
     return targets;
 }
-function publicLiveTask(task) {
-    if (!task) {
+function compactRuntimeActivityResult(result) {
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
         return null;
     }
     return {
+        success: typeof result.success === "boolean" ? result.success : null,
+        guarded: result.guarded === true,
+        guardSource: result.guardSource || null,
+        state: result.state || null,
+        action: result.action || null,
+        errorMessage: result.errorMessage || null,
+        messageHash: result.messageHash || null,
+    };
+}
+function publicLiveTask(task, mode = "summary") {
+    if (!task) {
+        return null;
+    }
+    const row = {
         liveTaskId: task.liveTaskId,
         scope: task.scope,
         toolName: task.toolName || null,
@@ -863,17 +877,25 @@ function publicLiveTask(task) {
         startedAtUtc: task.startedAtUtc,
         finishedAtUtc: task.finishedAtUtc || null,
         durationMs: task.durationMs ?? null,
-        result: task.result || null,
+        result: mode === "full" ? task.result || null : compactRuntimeActivityResult(task.result),
     };
+    if (mode !== "full" && !row.result) {
+        delete row.result;
+    }
+    return row;
 }
 function publicRevitStatusTask(task) {
     if (!task || typeof task !== "object") {
         return null;
     }
+    const commandName = task.commandName || task.method || null;
+    const toolName = task.wrapperAction || task.logicalToolName || task.toolName || commandName;
     return {
         id: task.id || null,
         requestId: task.requestId || null,
-        method: task.method || null,
+        method: toolName || null,
+        toolName: toolName || null,
+        commandName,
         wrapperAction: task.wrapperAction || null,
         logicalToolName: task.logicalToolName || null,
         taskName: task.taskName || null,
@@ -889,13 +911,53 @@ function publicRevitStatusTask(task) {
         error: task.error || null,
     };
 }
-export function getLiveRuntimeActivityStatus(limit = 10) {
+function publicRuntimeActivityRow(task, mode) {
+    if (mode === "full") {
+        return task;
+    }
+    const result = compactRuntimeActivityResult(task.result);
+    const row = {
+        timestampUtc: task.timestampUtc || task.finishedAtUtc || task.startedAtUtc || null,
+        phase: task.phase,
+        state: task.state || task.phase || null,
+        scope: task.scope || null,
+        toolName: task.toolName || null,
+        commandName: task.commandName || null,
+        logicalToolName: task.logicalToolName || null,
+        executionKind: task.executionKind || null,
+        taskName: task.taskName || null,
+        parentTaskName: task.parentTaskName || null,
+        parentTaskIdPresent: Boolean(task.parentTaskIdPresent || task.parentTaskId),
+        guardSource: task.guardSource || result?.guardSource || null,
+        startedAtUtc: task.startedAtUtc || null,
+        finishedAtUtc: task.finishedAtUtc || null,
+        durationMs: task.durationMs ?? null,
+    };
+    if (result) {
+        row.success = result.success;
+        row.guarded = result.guarded;
+        row.action = result.action;
+        row.errorMessage = result.errorMessage;
+        row.messageHash = result.messageHash;
+    }
+    return Object.fromEntries(Object.entries(row).filter(([, value]) => value !== undefined && value !== null));
+}
+export function getLiveRuntimeActivityStatus(limit = 10, mode = "summary") {
     const maxItems = clampTelemetryInt(limit, 10, 0, 100);
+    const activityMode = mode === "full" ? "full" : "summary";
+    const sourceRows = activityMode === "full"
+        ? liveRecentActivity
+        : liveRecentActivity.filter((item) => item.phase !== "started");
+    const recentActivity = sourceRows
+        .slice(0, maxItems)
+        .map((item) => publicRuntimeActivityRow(item, activityMode));
     return {
-        activeTask: publicLiveTask(chooseBestActiveTask()),
-        activeTasks: [...liveActiveTasks.values()].map(publicLiveTask),
-        recentActivity: liveRecentActivity.slice(0, maxItems),
-        recentActivityCount: liveRecentActivity.length,
+        mode: activityMode,
+        activeTask: publicLiveTask(chooseBestActiveTask(), activityMode),
+        activeTasks: [...liveActiveTasks.values()].map((item) => publicLiveTask(item, activityMode)),
+        recentActivity,
+        recentActivityCount: recentActivity.length,
+        recentActivityStoredCount: liveRecentActivity.length,
         recentActivityCapacity: liveRecentActivityLimit(),
     };
 }
@@ -963,8 +1025,8 @@ function buildLiveStatusSnapshot(reason = "activity") {
             nodeVersion: process.version,
             startedAtUtc: TELEMETRY_PROCESS_STARTED_AT_UTC,
         },
-        activeTask: publicLiveTask(chooseBestActiveTask()),
-        activeTasks: [...liveActiveTasks.values()].map(publicLiveTask),
+        activeTask: publicLiveTask(chooseBestActiveTask(), "full"),
+        activeTasks: [...liveActiveTasks.values()].map((item) => publicLiveTask(item, "full")),
         recentActivity: liveRecentActivity.slice(0, liveRecentActivityLimit()),
         revitStatus: liveRevitStatus,
         writeHealth: getLiveWriteHealth(liveMaxWriteInFlight()),
