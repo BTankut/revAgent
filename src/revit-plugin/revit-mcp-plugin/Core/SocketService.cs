@@ -723,7 +723,7 @@ namespace revit_mcp_plugin.Core
                 {
                     string text = value.Type == JTokenType.String
                         ? value.Value<string>()
-                        : value.ToString(Formatting.None);
+                        : value.ToString();
                     if (!string.IsNullOrWhiteSpace(text))
                     {
                         return text;
