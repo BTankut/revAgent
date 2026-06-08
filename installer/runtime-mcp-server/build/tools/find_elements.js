@@ -85,7 +85,7 @@ function compactPlanCandidateRow(row, key) {
         reason: readFirst(row, "reason", "Reason", "matchReason", "MatchReason"),
     });
 }
-function compactPlanCandidateRef(row, key) {
+function compactPlanCandidateRef(_row, key) {
     return { ref: key };
 }
 function compactElementPlanReferences(element, perElementLimit, candidateByKey) {

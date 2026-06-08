@@ -392,6 +392,9 @@ assert.equal(compactDelete.cleanup.deleted, true);
 assert.equal(compactDelete.cleanup.confirmed, true);
 assert.equal(compactDelete.cleanup.targetIsReviewView, true);
 
+const compactDeleteConfirmFallback = compactDeleteReviewViewResult({ success: true }, { confirmDelete: true });
+assert.equal(compactDeleteConfirmFallback.cleanup.confirmed, true);
+
 const fullDelete = compactDeleteReviewViewResult({ success: true, deleted: true, confirmDelete: true }, { responseMode: "full" });
 assert.equal(fullDelete.responseMode, "full");
 assert.equal(fullDelete.deleted, true);

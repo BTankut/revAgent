@@ -115,7 +115,7 @@ function compactPlanCandidateRow(row: JsonObject, key: string): JsonObject {
     });
 }
 
-function compactPlanCandidateRef(row: JsonObject, key: string): JsonObject {
+function compactPlanCandidateRef(_row: JsonObject, key: string): JsonObject {
     return { ref: key };
 }
 

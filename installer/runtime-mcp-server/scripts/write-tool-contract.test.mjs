@@ -168,6 +168,7 @@ const deleteReviewView = readSource("src/tools/delete_review_view.ts");
 assertContains(deleteReviewView, "compactDeleteReviewViewResult", "delete_review_view must group cleanup-specific fields in compact responses.");
 assertContains(deleteReviewView, 'responseMode: z.enum(["compact", "full"])', "delete_review_view must expose compact/full response shaping.");
 assertContains(deleteReviewView, 'responseMode=\\"full\\"', "delete_review_view compact notices must explain how to request raw cleanup diagnostics.");
+assertContains(deleteReviewView, "args.confirmDelete", "delete_review_view compact cleanup confirmation should fall back to wrapper args.");
 
 const exportViewImage = readSource("src/tools/export_revit_view_image.ts");
 assertContains(exportViewImage, "runtimeFailure", "export_revit_view_image must report JS-side runtime failures through the shared result contract.");

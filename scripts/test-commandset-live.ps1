@@ -318,6 +318,9 @@ function Invoke-DeleteReviewView {
     Assert-RevitMcpReady -NextCommand "delete_review_view" | Out-Null
     if ($Params -is [System.Collections.IDictionary]) {
         $Params["taskName"] = $TaskName
+        if (-not $Params.Contains("responseMode")) {
+            $Params["responseMode"] = "full"
+        }
     }
     return Invoke-RevitMcpRequest -Method "delete_review_view" -Params $Params
 }

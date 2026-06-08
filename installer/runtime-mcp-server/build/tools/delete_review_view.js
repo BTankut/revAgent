@@ -25,7 +25,7 @@ export function compactDeleteReviewViewResult(payload, args = {}) {
         changed: readField(payload, "Changed", "changed") ?? null,
         deleted: readField(payload, "Deleted", "deleted") ?? null,
         deletedElementCount: readField(payload, "DeletedElementCount", "deletedElementCount") ?? null,
-        confirmed: readField(payload, "ConfirmDelete", "confirmDelete") === true,
+        confirmed: (readField(payload, "ConfirmDelete", "confirmDelete") ?? args.confirmDelete) === true,
         targetIsReviewView: readField(payload, "TargetIsReviewView", "targetIsReviewView") ?? null,
         reviewSignals: readField(payload, "ReviewSignals", "reviewSignals") ?? [],
     };
