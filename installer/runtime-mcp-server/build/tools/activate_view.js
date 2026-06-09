@@ -21,7 +21,9 @@ export function registerActivateViewTool(server) {
             }, {
                 ...executionOptionsFromArgs(args, "Activate Revit view"),
             });
-            return formatJsonContent(stripViewCleanupFields(response && response.result ? response.result : response));
+            return formatJsonContent(stripViewCleanupFields(response && response.result ? response.result : response, {
+                stripCloseOnlyFields: true,
+            }));
         }
         catch (error) {
             return formatJsonContent({

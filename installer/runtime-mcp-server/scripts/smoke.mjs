@@ -405,6 +405,24 @@ const navigationResult = stripViewCleanupFields({
   success: true,
   action: "activate_view",
   changed: true,
+  closed: false,
+  dryRun: false,
+  deleted: false,
+  confirmDelete: false,
+  targetIsReviewView: false,
+  reviewSignals: [],
+  deletedElementCount: 0,
+}, { stripCloseOnlyFields: true });
+assert.equal(navigationResult.changed, true);
+for (const key of ["closed", "dryRun", "deleted", "confirmDelete", "targetIsReviewView", "reviewSignals", "deletedElementCount"]) {
+  assert.equal(key in navigationResult, false);
+}
+
+const closeViewResult = stripViewCleanupFields({
+  success: true,
+  action: "close_view",
+  changed: true,
+  closed: true,
   dryRun: false,
   deleted: false,
   confirmDelete: false,
@@ -412,9 +430,10 @@ const navigationResult = stripViewCleanupFields({
   reviewSignals: [],
   deletedElementCount: 0,
 });
-assert.equal(navigationResult.changed, true);
+assert.equal(closeViewResult.changed, true);
+assert.equal(closeViewResult.closed, true);
 for (const key of ["dryRun", "deleted", "confirmDelete", "targetIsReviewView", "reviewSignals", "deletedElementCount"]) {
-  assert.equal(key in navigationResult, false);
+  assert.equal(key in closeViewResult, false);
 }
 
 const content = formatJsonContent({ success: true });

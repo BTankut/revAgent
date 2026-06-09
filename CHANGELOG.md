@@ -4,6 +4,8 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Hid the `closed` field from `activate_view` runtime responses while keeping
+  it on `close_view`, so navigation responses do not carry close-only state.
 - Closed remaining compact audit leaks: native Revit `recentTasks` now carries
   wrapper/logical tool identity for dynamic wrapper calls such as
   `set_schedule_cells_by_text`, and navigation/view responses no longer expose
