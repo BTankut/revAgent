@@ -412,7 +412,7 @@ const navigationResult = stripViewCleanupFields({
   targetIsReviewView: false,
   reviewSignals: [],
   deletedElementCount: 0,
-}, { stripActivateOnlyFields: true });
+}, { stripCloseOnlyFields: true });
 assert.equal(navigationResult.changed, true);
 for (const key of ["closed", "dryRun", "deleted", "confirmDelete", "targetIsReviewView", "reviewSignals", "deletedElementCount"]) {
   assert.equal(key in navigationResult, false);

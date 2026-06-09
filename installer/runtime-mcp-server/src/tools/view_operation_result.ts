@@ -13,12 +13,12 @@ const CLEANUP_ONLY_FIELDS = [
     "DeletedElementCount",
 ];
 
-const ACTIVATE_VIEW_ONLY_FIELDS = [
+const CLOSE_ONLY_FIELDS = [
     "closed",
     "Closed",
 ];
 
-export function stripViewCleanupFields(payload: any, options: { stripActivateOnlyFields?: boolean } = {}) {
+export function stripViewCleanupFields(payload: any, options: { stripCloseOnlyFields?: boolean } = {}) {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
         return payload;
     }
@@ -27,8 +27,8 @@ export function stripViewCleanupFields(payload: any, options: { stripActivateOnl
     for (const key of CLEANUP_ONLY_FIELDS) {
         delete clone[key];
     }
-    if (options.stripActivateOnlyFields) {
-        for (const key of ACTIVATE_VIEW_ONLY_FIELDS) {
+    if (options.stripCloseOnlyFields) {
+        for (const key of CLOSE_ONLY_FIELDS) {
             delete clone[key];
         }
     }
