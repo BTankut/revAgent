@@ -1,5 +1,6 @@
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using RevitMCPCommandSet.Extensions;
 using System;
@@ -37,14 +38,20 @@ namespace RevitMCPCommandSet.Commands.View
         public bool Deferred { get; set; }
         public bool Changed { get; set; }
         public bool Closed { get; set; }
-        public bool DryRun { get; set; }
-        public bool Deleted { get; set; }
-        public bool ConfirmDelete { get; set; }
-        public bool TargetIsReviewView { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public bool? DryRun { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public bool? Deleted { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public bool? ConfirmDelete { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public bool? TargetIsReviewView { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
         public List<string> ReviewSignals { get; set; }
         public List<string> Warnings { get; set; }
         public List<string> SuggestedNextScopes { get; set; }
-        public int DeletedElementCount { get; set; }
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public int? DeletedElementCount { get; set; }
         public ViewSummary ActiveViewBefore { get; set; }
         public ViewSummary BeforeView { get; set; }
         public ViewSummary AfterView { get; set; }

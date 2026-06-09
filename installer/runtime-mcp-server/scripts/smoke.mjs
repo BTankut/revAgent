@@ -13,6 +13,7 @@ import {
   truncateText,
 } from "../build/utils/revitToolHelpers.js";
 import { compactDeleteReviewViewResult } from "../build/tools/delete_review_view.js";
+import { stripViewCleanupFields } from "../build/tools/view_operation_result.js";
 import {
   recordTelemetryEvent,
   extractProductionContext,
@@ -399,6 +400,22 @@ const fullDelete = compactDeleteReviewViewResult({ success: true, deleted: true,
 assert.equal(fullDelete.responseMode, "full");
 assert.equal(fullDelete.deleted, true);
 assert.equal(fullDelete.confirmDelete, true);
+
+const navigationResult = stripViewCleanupFields({
+  success: true,
+  action: "activate_view",
+  changed: true,
+  dryRun: false,
+  deleted: false,
+  confirmDelete: false,
+  targetIsReviewView: false,
+  reviewSignals: [],
+  deletedElementCount: 0,
+});
+assert.equal(navigationResult.changed, true);
+for (const key of ["dryRun", "deleted", "confirmDelete", "targetIsReviewView", "reviewSignals", "deletedElementCount"]) {
+  assert.equal(key in navigationResult, false);
+}
 
 const content = formatJsonContent({ success: true });
 assert.equal(content.content[0].type, "text");

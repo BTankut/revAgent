@@ -4,6 +4,10 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Closed remaining compact audit leaks: native Revit `recentTasks` now carries
+  wrapper/logical tool identity for dynamic wrapper calls such as
+  `set_schedule_cells_by_text`, and navigation/view responses no longer expose
+  delete-review cleanup-only fields.
 - Backfilled documentation alignment for the completed usage-intelligence
   roadmap, including the plan completion record and operator-facing promotion
   guidance.

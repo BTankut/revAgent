@@ -16,8 +16,20 @@ namespace revit_mcp_plugin.Core
         [JsonProperty("method")]
         public string Method { get; set; }
 
+        [JsonProperty("wrapperAction", NullValueHandling = NullValueHandling.Ignore)]
+        public string WrapperAction { get; set; }
+
+        [JsonProperty("logicalToolName", NullValueHandling = NullValueHandling.Ignore)]
+        public string LogicalToolName { get; set; }
+
         [JsonProperty("taskName")]
         public string TaskName { get; set; }
+
+        [JsonProperty("parentTaskName", NullValueHandling = NullValueHandling.Ignore)]
+        public string ParentTaskName { get; set; }
+
+        [JsonProperty("parentTaskId", NullValueHandling = NullValueHandling.Ignore)]
+        public string ParentTaskId { get; set; }
 
         [JsonProperty("state")]
         public string State { get; set; }
@@ -72,7 +84,11 @@ namespace revit_mcp_plugin.Core
                 Id = Id,
                 RequestId = RequestId,
                 Method = Method,
+                WrapperAction = WrapperAction,
+                LogicalToolName = LogicalToolName,
                 TaskName = TaskName,
+                ParentTaskName = ParentTaskName,
+                ParentTaskId = ParentTaskId,
                 State = State,
                 StartedAtUtc = StartedAtUtc,
                 FinishedAtUtc = FinishedAtUtc,
@@ -118,15 +134,25 @@ namespace revit_mcp_plugin.Core
             string framing = null,
             long? requestBytes = null,
             long? receiveMs = null,
-            long? parseMs = null)
+            long? parseMs = null,
+            string wrapperAction = null,
+            string logicalToolName = null,
+            string parentTaskName = null,
+            string parentTaskId = null)
         {
             DateTime now = DateTime.UtcNow;
+            string methodName = string.IsNullOrWhiteSpace(method) ? "unknown" : method;
+            string logicalName = string.IsNullOrWhiteSpace(logicalToolName) ? methodName : logicalToolName;
             McpTaskInfo task = new McpTaskInfo
             {
                 Id = string.Format("{0}-{1}", now.ToString("yyyyMMdd-HHmmssfff"), Interlocked.Increment(ref _sequence)),
                 RequestId = requestId,
-                Method = string.IsNullOrWhiteSpace(method) ? "unknown" : method,
-                TaskName = string.IsNullOrWhiteSpace(taskName) ? method : taskName,
+                Method = methodName,
+                WrapperAction = string.IsNullOrWhiteSpace(wrapperAction) ? null : wrapperAction,
+                LogicalToolName = string.Equals(logicalName, methodName, StringComparison.OrdinalIgnoreCase) ? null : logicalName,
+                TaskName = string.IsNullOrWhiteSpace(taskName) ? methodName : taskName,
+                ParentTaskName = string.IsNullOrWhiteSpace(parentTaskName) ? null : parentTaskName,
+                ParentTaskId = string.IsNullOrWhiteSpace(parentTaskId) ? null : parentTaskId,
                 State = "running",
                 StartedAtUtc = now,
                 Port = port,
