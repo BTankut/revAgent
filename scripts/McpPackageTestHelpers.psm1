@@ -48,7 +48,12 @@ function Remove-McpPackageWorkCopy {
 
     $tempRoot = [string]$WorkCopy.TempRoot
     if (-not [string]::IsNullOrWhiteSpace($tempRoot) -and (Test-Path -LiteralPath $tempRoot)) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+        try {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            Write-Warning "Failed to remove temporary work copy at ${tempRoot}: $($_.Exception.Message)"
+        }
     }
 }
 

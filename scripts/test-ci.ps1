@@ -47,8 +47,9 @@ try {
     }
 
     foreach ($package in $packageCopies) {
+        $tscPath = Get-McpPackageTscPath -PackageRoot $package.WorkCopy.PackageRoot -PackageRelativePath $package.Path
         Invoke-McpPackageCommand -PackageName "$($package.Name) forced strict" -PackageRoot $package.WorkCopy.PackageRoot -RepoRoot $RepoRoot -Command {
-            & ".\node_modules\.bin\tsc.cmd" `
+            & $tscPath `
                 --noEmit `
                 --strict `
                 --noImplicitAny `

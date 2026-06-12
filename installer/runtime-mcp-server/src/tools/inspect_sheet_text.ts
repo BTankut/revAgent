@@ -187,6 +187,16 @@ function buildSheetTextInventoryRows(payload: JsonObject) {
         });
 }
 
+function copyWithoutKeys(source: JsonObject, keysToOmit: Set<string>) {
+    const target: JsonObject = {};
+    for (const [key, value] of Object.entries(source)) {
+        if (!keysToOmit.has(key)) {
+            target[key] = value;
+        }
+    }
+    return target;
+}
+
 function normalizeSheetTextNestedScheduleInstance(row: JsonObject, hasTextQuery: boolean) {
     const matchedTextQuery = hasTextQuery && isMatchedSheetTextEvidence(row, hasTextQuery);
     return {
@@ -203,13 +213,12 @@ function normalizeSheetTextNestedScheduleInstance(row: JsonObject, hasTextQuery:
 function normalizeSheetTextNestedSheets(payload: JsonObject) {
     const hasTextQuery = hasSheetTextQuery(payload);
     return readNativeResultArray(payload, "sheets").map((sheet) => {
-        const normalizedSheet = { ...sheet };
+        const target = copyWithoutKeys(sheet, new Set(["ScheduleInstances"]));
         const scheduleInstances = readNativeResultArray(sheet, "scheduleInstances");
-        if (scheduleInstances.length > 0) {
-            normalizedSheet.scheduleInstances = scheduleInstances.map((row) => normalizeSheetTextNestedScheduleInstance(row, hasTextQuery));
-            delete normalizedSheet.ScheduleInstances;
-        }
-        return normalizedSheet;
+        return {
+            ...target,
+            scheduleInstances: scheduleInstances.map((row) => normalizeSheetTextNestedScheduleInstance(row, hasTextQuery)),
+        };
     });
 }
 
@@ -291,22 +300,25 @@ export function normalizeSheetTextResult(payload: JsonObject, elapsedMs: number)
         lastRead: inferSheetTextLastRead,
         suggestedNextScopes: ["sheetQuery", "sheetIds", "viewNameQuery", "maxSheets", "allowExpensiveSearch", "searchBudget=deep"],
     });
-    normalized.evidenceRows = buildSheetTextEvidenceRows(normalized);
-    normalized.inventoryRows = buildSheetTextInventoryRows(normalized);
-    normalized.sheets = normalizeSheetTextNestedSheets(normalized);
-    delete normalized.Sheets;
-    if (!hasSheetTextQuery(normalized)) {
-        normalized.matches = [];
-        delete normalized.Matches;
-        normalized.evidenceRows = [];
-        delete normalized.EvidenceRows;
+    const inventoryRows = buildSheetTextInventoryRows(normalized);
+    const hasTextQuery = hasSheetTextQuery(normalized);
+    const omittedTopLevelKeys = new Set(["Sheets"]);
+    if (!hasTextQuery) {
+        omittedTopLevelKeys.add("Matches");
+        omittedTopLevelKeys.add("EvidenceRows");
     }
-    normalized.summary = {
-        ...(normalized.summary || {}),
-        inventoryRowCount: normalized.inventoryRows.length,
-        scanStopDetail: stopDetailForSheetText(normalized),
+    return {
+        ...copyWithoutKeys(normalized, omittedTopLevelKeys),
+        evidenceRows: hasTextQuery ? buildSheetTextEvidenceRows(normalized) : [],
+        inventoryRows,
+        matches: hasTextQuery ? readNativeResultArray(normalized, "matches") : [],
+        sheets: normalizeSheetTextNestedSheets(normalized),
+        summary: {
+            ...(normalized.summary || {}),
+            inventoryRowCount: inventoryRows.length,
+            scanStopDetail: stopDetailForSheetText(normalized),
+        },
     };
-    return normalized;
 }
 
 export function registerInspectSheetTextTool(server: ToolServer) {
