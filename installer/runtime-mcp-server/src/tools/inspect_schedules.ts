@@ -116,7 +116,18 @@ function scheduleSections(payload: JsonObject) {
     });
 }
 
+function hasScheduleCellQuery(payload: JsonObject) {
+    return String(readNativeResultField(payload, "cellQuery") ?? "").trim().length > 0;
+}
+
+function hasScheduleNameQuery(payload: JsonObject) {
+    return String(readNativeResultField(payload, "nameQuery") ?? readNativeResultField(payload, "query") ?? "").trim().length > 0;
+}
+
 function buildScheduleEvidenceRows(payload: JsonObject) {
+    if (!hasScheduleCellQuery(payload)) {
+        return [];
+    }
     return scheduleSections(payload).flatMap(({ schedule, section }) => {
         const matches = readNativeResultArray(section, "matches");
         return matches
@@ -179,6 +190,7 @@ function buildScheduleSummary(payload: JsonObject) {
         totalSchedules: readNativeResultField(payload, "totalSchedules") ?? null,
         candidateCount: readNativeResultField(payload, "candidateCount") ?? null,
         returnedCount: readNativeResultField(payload, "returnedCount") ?? (schedules.length > 0 ? schedules.length : null),
+        inventoryMode: !hasScheduleNameQuery(payload) && !hasScheduleCellQuery(payload),
         matchCount: evidenceRows.length,
         totalCellMatches: readNativeResultField(scan, "totalCellMatches") ?? evidenceRows.length,
         scannedScheduleCount: readNativeResultField(scan, "scannedScheduleCount") ?? null,

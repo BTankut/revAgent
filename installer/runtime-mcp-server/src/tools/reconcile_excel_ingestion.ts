@@ -454,6 +454,7 @@ function resolveColumnMapping(headers: string[], startColumn: number, explicitMa
     const notices: string[] = [];
     const mapping: Partial<Record<ColumnRole, number>> = {};
     const assignedIndices = new Set<number>();
+    const explicitlyMappedRoles = new Set<ColumnRole>();
 
     for (const role of ALL_ROLES) {
         const explicit = explicitMapping?.[role];
@@ -464,6 +465,7 @@ function resolveColumnMapping(headers: string[], startColumn: number, explicitMa
             }
             mapping[role] = resolved;
             assignedIndices.add(resolved);
+            explicitlyMappedRoles.add(role);
         }
     }
 
@@ -491,7 +493,40 @@ function resolveColumnMapping(headers: string[], startColumn: number, explicitMa
         }
     }
 
+    const inferredRequiredRoles = REQUIRED_ROLES.filter((role) => !explicitlyMappedRoles.has(role));
+    if (inferredRequiredRoles.length > 0) {
+        const inferredLabels = inferredRequiredRoles
+            .map((role) => `${role}=${headers[mapping[role] as number] || columnNumberToLetters(startColumn + (mapping[role] as number))}`)
+            .join(", ");
+        notices.push(`column_mapping_inferred_from_headers: ${inferredLabels}. Review or pass explicit columnMapping when first-pass reconciliation looks surprising.`);
+    }
+
     return { mapping, warnings, notices };
+}
+
+function buildColumnMappingSuggestion(headers: string[], startColumn: number): JsonObject {
+    const candidates: JsonObject = {};
+    const example: JsonObject = {};
+    const assignedIndices = new Set<number>();
+    for (const role of REQUIRED_ROLES) {
+        const matches = findAllColumnAliases(role, headers)
+            .filter((match) => !assignedIndices.has(match.index))
+            .sort((left, right) => left.priority - right.priority || left.index - right.index);
+        candidates[role] = matches.map((match) => ({
+            header: match.header,
+            column: columnNumberToLetters(startColumn + match.index),
+            priority: match.priority,
+        }));
+        if (matches.length > 0) {
+            example[role] = matches[0].header;
+            assignedIndices.add(matches[0].index);
+        }
+    }
+    return {
+        requiredRoles: REQUIRED_ROLES,
+        candidates,
+        suggestedColumnMapping: example,
+    };
 }
 
 function getAliasPriority(role: ColumnRole, header: string): number {
@@ -865,6 +900,7 @@ export async function ingestExcelSource(rawInput: ExcelIngestionSource): Promise
         if ("error" in resolvedMapping) {
             return buildGuardedResult("excel_column_mapping_required", "Resolve identity and comparisonText column mapping before ingestion.", {
                 mappingError: resolvedMapping.error,
+                mappingSuggestion: buildColumnMappingSuggestion(table.headers, table.startColumn),
                 summary: {
                     sheetName: table.sheetName,
                     headers: table.headers,

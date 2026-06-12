@@ -172,6 +172,9 @@ const inspectSheetTextDescription = tools.get("inspect_sheet_text").description;
 assert.match(inspectSheetTextDescription, /SHEET_TEXT_INSPECTION_READ_ONLY/);
 assert.match(inspectSheetTextDescription, /DrawingSheet/);
 assert.match(inspectSheetTextDescription, /viewport annotation/);
+assert.match(inspectSheetTextDescription, /sheet text lookup/);
+assert.match(inspectSheetTextDescription, /titleblock\/revision evidence/);
+assert.match(inspectSheetTextDescription, /placed schedule cells/);
 assert.match(inspectSheetTextDescription, /allowExpensiveSearch=true/);
 assert.match(inspectSheetTextDescription, /generic send_code_to_revit/);
 const inspectSheetTextSchema = tools.get("inspect_sheet_text").schema;
@@ -275,6 +278,22 @@ const compactPumpPolicy = buildFindElementsSearchPolicy({ query: "PUMP1" });
 assert.equal(compactPumpPolicy.guarded, false);
 assert.equal(compactPumpPolicy.effectiveQuery, "PUMP1");
 assert.deepEqual(compactPumpPolicy.effectiveCategoryNames, ["Mechanical Equipment"]);
+
+const standalonePumpPolicy = buildFindElementsSearchPolicy({ query: "pump" });
+assert.equal(standalonePumpPolicy.guarded, false);
+assert.equal(standalonePumpPolicy.effectiveQuery, "pump");
+assert.deepEqual(standalonePumpPolicy.effectiveCategoryNames, ["Mechanical Equipment"]);
+
+const standaloneAhuPolicy = buildFindElementsSearchPolicy({ query: "AHU" });
+assert.equal(standaloneAhuPolicy.guarded, false);
+assert.equal(standaloneAhuPolicy.effectiveQuery, "AHU");
+assert.deepEqual(standaloneAhuPolicy.effectiveCategoryNames, ["Mechanical Equipment"]);
+
+const explicitDuctCategoryPolicy = buildFindElementsSearchPolicy({ query: "duct", categoryNames: ["Ducts"] });
+assert.equal(explicitDuctCategoryPolicy.guarded, false);
+assert.equal(explicitDuctCategoryPolicy.effectiveQuery, "duct");
+assert.deepEqual(explicitDuctCategoryPolicy.effectiveCategoryNames, ["Ducts"]);
+assert.equal(explicitDuctCategoryPolicy.warnings.includes("explicit_category_scope_preserved_no_inferred_expansion"), true);
 
 const valvePolicy = buildFindElementsSearchPolicy({ query: "vana" });
 assert.equal(valvePolicy.guarded, false);

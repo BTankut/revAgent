@@ -69,7 +69,16 @@ function Assert-BuildFresh {
     try {
         Push-Location $packageRoot
         try {
-            & npx tsc --outDir $tempRoot
+            $tscCandidates = @(
+                (Join-Path $packageRoot "node_modules\.bin\tsc.cmd"),
+                (Join-Path $packageRoot "node_modules\.bin\tsc")
+            )
+            $tscPath = @($tscCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }) | Select-Object -First 1
+            if ([string]::IsNullOrWhiteSpace($tscPath)) {
+                throw "TypeScript compiler was not found under $packageRoot\node_modules\.bin. Run npm ci for this MCP package before the freshness check."
+            }
+
+            & $tscPath --outDir $tempRoot
             if ($LASTEXITCODE -ne 0) {
                 throw "TypeScript temp build failed for $PackageRelativePath"
             }

@@ -24,16 +24,19 @@ const CONCEPT_MAPPINGS = [
         concept: "fan_coil",
         terms: ["fan coil", "fancoil", "fcu"],
         categories: ["Mechanical Equipment"],
+        preserveQueryWhenFullyStripped: true,
     },
     {
         concept: "air_handling_unit",
         terms: ["ahu", "air handling unit", "klima santrali"],
         categories: ["Mechanical Equipment"],
+        preserveQueryWhenFullyStripped: true,
     },
     {
         concept: "pump",
         terms: ["pump", "pompa"],
         categories: ["Mechanical Equipment"],
+        preserveQueryWhenFullyStripped: true,
     },
     {
         concept: "valve",
@@ -365,7 +368,10 @@ export function buildFindElementsSearchPolicy(args = {}) {
     const originalQuery = String(args.query || "").trim();
     const explicitCategories = uniqueStrings(Array.isArray(args.categoryNames) ? args.categoryNames : []);
     const inferred = inferScopeFromQuery(originalQuery);
-    const effectiveCategoryNames = uniqueStrings([...explicitCategories, ...inferred.categories]);
+    const explicitCategoryScope = explicitCategories.length > 0;
+    const effectiveCategoryNames = explicitCategoryScope
+        ? explicitCategories
+        : uniqueStrings(inferred.categories);
     const effectiveQuery = inferred.effectiveQuery || (effectiveCategoryNames.length > explicitCategories.length ? "" : originalQuery);
     const searchBudget = parseBudget(args.searchBudget);
     const preset = SEARCH_BUDGETS[searchBudget];
@@ -399,6 +405,9 @@ export function buildFindElementsSearchPolicy(args = {}) {
     const warnings = [];
     if (inferred.matchedConcepts.length > 0 && explicitCategories.length === 0) {
         warnings.push("search_scope_inferred_from_mep_terms");
+    }
+    if (inferred.matchedConcepts.length > 0 && explicitCategoryScope && inferred.categories.some((category) => !effectiveCategoryNames.includes(category))) {
+        warnings.push("explicit_category_scope_preserved_no_inferred_expansion");
     }
     if (broadLinkedSearch) {
         warnings.push("linked_model_search_requires_allowExpensiveSearch");

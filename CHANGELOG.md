@@ -4,6 +4,15 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Fixed local gates and live-smoke coverage: installer smoke now checks the
+  current double-encoded JSON parser path, MCP build freshness uses package-local
+  `tsc`, and an optional junk-model smoke package covers safe-code guards,
+  parameter set/restore, schedule body write guards, focus/export/cleanup.
+- Tightened discovery/reconciliation semantics: explicit `find_elements`
+  categories no longer expand through inferred MEP categories, subtype queries
+  such as pump/AHU/FCU keep residual text, empty sheet/schedule queries report
+  inventory mode instead of evidence matches, and reconciliation column
+  inference prefers Description/Açıklama headers for comparison text.
 - Hid the `closed` field from `activate_view` runtime responses while keeping
   it on `close_view`, so navigation responses do not carry close-only state.
 - Closed remaining compact audit leaks: native Revit `recentTasks` now carries

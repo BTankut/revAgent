@@ -99,7 +99,13 @@ function sourceTypeForSheetEvidence(row) {
         return "placedScheduleInstance";
     return kind || "sheetTextNote";
 }
-function isMatchedSheetTextEvidence(row) {
+function hasSheetTextQuery(payload) {
+    return String(readNativeResultField(payload, "textQuery") ?? "").trim().length > 0;
+}
+function isMatchedSheetTextEvidence(row, hasTextQuery = true) {
+    if (!hasTextQuery) {
+        return false;
+    }
     const matchedTextQuery = readNativeResultField(row, "matchedTextQuery");
     const inventoryOnly = readNativeResultField(row, "inventoryOnly");
     if (inventoryOnly === true || String(inventoryOnly).trim().toLowerCase() === "true") {
@@ -115,9 +121,10 @@ function buildSheetTextEvidenceRows(payload) {
     const sourceRows = nativeEvidenceRows.length > 0
         ? nativeEvidenceRows
         : readNativeResultArray(payload, "matches");
+    const hasTextQuery = hasSheetTextQuery(payload);
     return sourceRows
         .filter((row) => Boolean(row) && typeof row === "object" && !Array.isArray(row))
-        .filter(isMatchedSheetTextEvidence)
+        .filter((row) => isMatchedSheetTextEvidence(row, hasTextQuery))
         .map((row) => ({
         ...row,
         sourceType: sourceTypeForSheetEvidence(row),
@@ -126,8 +133,10 @@ function buildSheetTextEvidenceRows(payload) {
 function buildSheetTextInventoryRows(payload) {
     const inventoryRows = readNativeResultArray(payload, "inventoryRows");
     const nativeEvidenceRows = readNativeResultArray(payload, "evidenceRows");
+    const hasTextQuery = hasSheetTextQuery(payload);
     const legacyInventoryRows = [...nativeEvidenceRows, ...readNativeResultArray(payload, "matches")]
-        .filter((row) => !isMatchedSheetTextEvidence(row));
+        .filter((row) => Boolean(row) && typeof row === "object" && !Array.isArray(row))
+        .filter((row) => !isMatchedSheetTextEvidence(row, hasTextQuery));
     const seen = new Set();
     return [...inventoryRows, ...legacyInventoryRows]
         .filter((row) => Boolean(row) && typeof row === "object" && !Array.isArray(row))
@@ -179,6 +188,7 @@ function buildSheetTextSummary(payload) {
         totalSheets: readNativeResultField(payload, "totalSheets") ?? null,
         candidateCount: readNativeResultField(payload, "candidateCount") ?? null,
         returnedCount: readNativeResultField(payload, "returnedCount") ?? (sheets.length > 0 ? sheets.length : null),
+        inventoryMode: !hasSheetTextQuery(payload),
         matchCount: evidenceRows.length,
         inventoryRowCount: inventoryRows.length,
         partial: readNativeResultField(payload, "partial") === true,
@@ -235,7 +245,7 @@ export function normalizeSheetTextResult(payload, elapsedMs) {
     return normalized;
 }
 export function registerInspectSheetTextTool(server) {
-    server.tool("inspect_sheet_text", "[SHEET_TEXT_INSPECTION_READ_ONLY] Read-only native sheet + viewport annotation inspection for DrawingSheet text notes, placed schedule instances, bounded schedule cells, viewport-linked text notes, and viewport tags. Prefer this over generic send_code_to_revit for sheet and plan annotation searches in large projects. Use sheetQuery/sheetIds first; project-wide text, viewport, tag, or placed-schedule cell scans require allowExpensiveSearch=true.", {
+    server.tool("inspect_sheet_text", "[SHEET_TEXT_INSPECTION_READ_ONLY] Read-only native sheet text and annotation inspection for DrawingSheet text notes, titleblock/title block notes, revision schedule instances, placed schedule cells, viewport-linked text notes, viewport plan annotations, and viewport tags. Prefer this dedicated tool over generic send_code_to_revit for sheet text lookup, drawing note searches, plan note searches, titleblock/revision evidence, and large-project sheet or viewport annotation searches. Use sheetQuery/sheetIds first; project-wide text, viewport, tag, or placed-schedule cell scans require allowExpensiveSearch=true.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Alias for sheetQuery. Matches sheet number and sheet name with Turkish/diacritic/Cyrillic-U normalization."),

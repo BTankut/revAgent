@@ -207,6 +207,9 @@ const mappingGuard = await ingestExcelSource({
 assert.equal(mappingGuard.success, true);
 assert.equal(mappingGuard.guarded, true);
 assert.equal(mappingGuard.reason, "excel_column_mapping_required");
+assert.equal(Array.isArray(mappingGuard.mappingSuggestion.requiredRoles), true);
+assert.equal(Array.isArray(mappingGuard.mappingSuggestion.candidates.identity), true);
+assert.equal(typeof mappingGuard.mappingSuggestion.suggestedColumnMapping, "object");
 
 const disambiguationResult = await ingestExcelSource({
   kind: "rows",
@@ -218,6 +221,7 @@ assert.equal(disambiguationResult.guarded, false);
 assert.equal(disambiguationResult.excelRecords.length, 1);
 assert.equal(disambiguationResult.excelRecords[0].identityText, "FCU-01");
 assert.equal(disambiguationResult.excelRecords[0].comparisonText, "Fan coil unit");
+assert.match(disambiguationResult.notices.join("\n"), /column_mapping_inferred_from_headers/);
 
 const aliasPriorityResult = await ingestExcelSource({
   kind: "rows",
@@ -227,7 +231,7 @@ const aliasPriorityResult = await ingestExcelSource({
 assert.equal(aliasPriorityResult.success, true);
 assert.equal(aliasPriorityResult.guarded, false);
 assert.equal(aliasPriorityResult.excelRecords[0].identityText, "ID-01");
-assert.equal(aliasPriorityResult.excelRecords[0].comparisonText, "Fan coil name");
+assert.equal(aliasPriorityResult.excelRecords[0].comparisonText, "Fan coil description");
 
 const turkishHeader = "A\u00e7\u0131klama";
 const turkishAliasResult = await ingestExcelSource({
