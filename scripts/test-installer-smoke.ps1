@@ -361,11 +361,14 @@ try {
     Assert-True ($publishText -match '\.revagent-npm-dependencies\.json') "Release payload fingerprints must ignore npm dependency marker files."
     Assert-True ($publishText -notmatch 'kurulum|legacyEntryPoint|legacyInstaller') "Release publishing must not create the removed legacy kurulum package alias."
     $payloadFreshnessText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-mcp-build-payload-freshness.ps1")
+    $testAllText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-all.ps1")
     $revitPayloadManifestText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\RevitPayloadManifest.psm1")
     $buildRevitPluginText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\build-revit-plugin.ps1")
     $ciText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-ci.ps1")
     Assert-True ($payloadFreshnessText -match 'Assert-RevitPayloadManifestFresh') "Payload freshness gate must validate the Revit manifest."
+    Assert-True ($payloadFreshnessText -match 'function Resolve-PackageTsc' -and $payloadFreshnessText -match 'Invoke-PackageNpmCi') "Payload freshness gate must restore package npm dependencies when the package-local TypeScript compiler is missing."
     Assert-True ($payloadFreshnessText -notmatch 'Get-NewestPayloadSourceFile|Assert-RevitPayloadFresh|LastWriteTimeUtc -gt') "Payload freshness gate must not use Revit source/payload mtimes."
+    Assert-True ($testAllText -match 'npm ci' -and $testAllText -match '\$package\.Name\) dependencies' -and $testAllText -match 'Invoke-PackageCommand -PackageName "\$\(\$package\.Name\) npm test"') "Local test-all gate must restore package npm dependencies before npm tests and payload freshness."
     Assert-True ($revitPayloadManifestText -match 'installer\\revit-payload-manifest\.json') "Revit payload manifest path must be centralized."
     Assert-True ($revitPayloadManifestText -match 'gitBlobSha' -and $revitPayloadManifestText -match 'hash-object' -and $revitPayloadManifestText -match '--path=') "Revit source freshness must use Git blob SHAs."
     Assert-True ($revitPayloadManifestText -match 'System\.Management\.Automation\.ErrorRecord') "Revit payload Git helper must filter stderr warning records from successful output."

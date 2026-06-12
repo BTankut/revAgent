@@ -31,6 +31,9 @@ assertContains(setElementParameter, "verified = rawVerified", "set_element_param
 assertContains(setElementParameter, "rollbackSafety", "set_element_parameter must expose rollback safety metadata.");
 assertContains(setElementParameter, "rollbackTrueNoValueMayBeUnsupported", "set_element_parameter must warn when true no-value rollback may not be supported.");
 assertContains(setElementParameter, "prior_no_value_state_may_not_be_restorable_for_non_shared_parameter", "set_element_parameter must warn before writes that may not restore prior HasValue=false state.");
+assertContains(setElementParameter, "non_shared_clear_will_attempt_parameter_clear_value_without_empty_string_fallback", "set_element_parameter clear dry-run must disclose non-shared ClearValue attempts.");
+assertContains(setElementParameter, "attemptedClearValue = true", "set_element_parameter clear failures must report that ClearValue was actually attempted.");
+assertDoesNotContain(setElementParameter, "clearOperation && !target.IsShared", "set_element_parameter must not pre-block non-shared clear before attempting Parameter.ClearValue.");
 
 const setScheduleCells = readSource("src/tools/set_schedule_cells.ts");
 assertContains(setScheduleCells, "[PRODUCTION_SCHEDULE_CELL_WRITE]", "set_schedule_cells must stay marked as a production write tool.");
@@ -94,6 +97,8 @@ assertContains(inspectSchedules, "readNativeResultArray(schedule, \"sections\")"
 assertContains(inspectSchedules, "readNativeResultField(lastEvidence, \"scheduleId\") ?? readNativeResultField(lastSchedule, \"id\") ?? null", "inspect_schedules must keep last scanned schedule id when no cell evidence matched.");
 assertContains(inspectSchedules, "clampIntArg(args.maxRowsPerSection, 80, 0, 1000)", "inspect_schedules must preserve valid zero row limits.");
 assertContains(inspectSchedules, "clampIntArg(args.maxColumnsPerSection, 30, 0, 200)", "inspect_schedules must preserve valid zero column limits.");
+assertContains(inspectSchedules, "nameMatched: inventoryMode ? false", "inspect_schedules inventory mode must not expose schedule names as matches.");
+assertContains(inspectSchedules, "result.matches = []", "inspect_schedules inventory mode must clear legacy top-level matches.");
 assertContains(inspectSchedules, "maxElapsedMs", "inspect_schedules must expose native elapsed-budget control.");
 assertContains(inspectSchedules, "maxCells", "inspect_schedules must expose native cell-budget control.");
 assertContains(inspectSchedules, "maxResponseBytes", "inspect_schedules must expose native response-byte budget control.");

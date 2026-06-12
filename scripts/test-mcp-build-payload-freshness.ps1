@@ -53,6 +53,53 @@ function Get-RelativeFileHashMap {
     return $map
 }
 
+function Invoke-PackageNpmCi {
+    param(
+        [string]$PackageRoot,
+        [string]$PackageRelativePath
+    )
+
+    if (-not (Test-Path -LiteralPath (Join-Path $PackageRoot "package-lock.json") -PathType Leaf)) {
+        throw "package-lock.json was not found for $PackageRelativePath; cannot restore deterministic npm dependencies."
+    }
+
+    Write-Host "Restoring npm dependencies for $PackageRelativePath" -ForegroundColor Cyan
+    Push-Location $PackageRoot
+    try {
+        npm ci
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm ci failed for $PackageRelativePath."
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+
+function Resolve-PackageTsc {
+    param(
+        [string]$PackageRoot,
+        [string]$PackageRelativePath
+    )
+
+    $tscCandidates = @(
+        (Join-Path $PackageRoot "node_modules\.bin\tsc.cmd"),
+        (Join-Path $PackageRoot "node_modules\.bin\tsc")
+    )
+    $tscPath = @($tscCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }) | Select-Object -First 1
+    if (-not [string]::IsNullOrWhiteSpace($tscPath)) {
+        return $tscPath
+    }
+
+    Invoke-PackageNpmCi -PackageRoot $PackageRoot -PackageRelativePath $PackageRelativePath
+
+    $tscPath = @($tscCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }) | Select-Object -First 1
+    if ([string]::IsNullOrWhiteSpace($tscPath)) {
+        throw "TypeScript compiler was not found under $PackageRoot\node_modules\.bin after npm ci."
+    }
+    return $tscPath
+}
+
 function Assert-BuildFresh {
     param(
         [string]$PackageRelativePath
@@ -69,14 +116,7 @@ function Assert-BuildFresh {
     try {
         Push-Location $packageRoot
         try {
-            $tscCandidates = @(
-                (Join-Path $packageRoot "node_modules\.bin\tsc.cmd"),
-                (Join-Path $packageRoot "node_modules\.bin\tsc")
-            )
-            $tscPath = @($tscCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }) | Select-Object -First 1
-            if ([string]::IsNullOrWhiteSpace($tscPath)) {
-                throw "TypeScript compiler was not found under $packageRoot\node_modules\.bin. Run npm ci for this MCP package before the freshness check."
-            }
+            $tscPath = Resolve-PackageTsc -PackageRoot $packageRoot -PackageRelativePath $PackageRelativePath
 
             & $tscPath --outDir $tempRoot
             if ($LASTEXITCODE -ne 0) {

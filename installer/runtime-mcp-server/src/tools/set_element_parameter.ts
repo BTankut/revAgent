@@ -416,18 +416,6 @@ try
             new { parameter = before });
     }
 
-    if (clearOperation && !target.IsShared)
-    {
-        return Blocked(
-            "clear_value_not_supported",
-            "Revit can restore a true no-value state only for parameters that support Parameter.ClearValue. This resolved parameter is not shared, so the tool will not fake clear by writing an empty string.",
-            new {
-                parameter = before,
-                clearApi = "Parameter.ClearValue",
-                visibleEmptyFallback = "Use operation=set with an empty string only if a visible empty value is acceptable. Revit may keep HasValue=true."
-            });
-    }
-
     string expectedRaw = clearOperation ? null : ExpectedRawAfterSet(target);
     string valueSetApi = clearOperation
         ? "ClearValue"
@@ -441,6 +429,10 @@ try
         if (clearOperation)
         {
             dryRunWarnings.Add("clear_value_support_depends_on_revit_parameter_kind");
+            if (!target.IsShared)
+            {
+                dryRunWarnings.Add("non_shared_clear_will_attempt_parameter_clear_value_without_empty_string_fallback");
+            }
         }
         if (!clearOperation && target.StorageType == StorageType.String && requestedValueText.Length == 0)
         {
@@ -511,6 +503,8 @@ try
                     parameter = before,
                     clearApi = "Parameter.ClearValue",
                     clearError = clearError,
+                    attemptedClearValue = true,
+                    parameterWasShared = target.IsShared,
                     visibleEmptyFallback = "Use operation=set with an empty string only if a visible empty value is acceptable. Revit may keep HasValue=true."
                 });
         }
@@ -611,7 +605,7 @@ catch (Exception ex)
 }
 
 export function registerSetElementParameterTool(server: ToolServer) {
-    server.tool("set_element_parameter", "[PRODUCTION_PARAMETER_WRITE] Safely set or clear one Revit element parameter after exact inspect_parameter_schema-style identity resolution. Never writes by visible display name alone: duplicate display names, read-only parameters, identity mismatch, unsupported clear/no-value attempts, and unapproved type-parameter writes are blocked before commit. Defaults to dryRun; use mode=commit only for an explicitly confirmed write, then the tool reads the parameter back for verification.", {
+    server.tool("set_element_parameter", "[PRODUCTION_PARAMETER_WRITE] Safely set or clear one Revit element parameter after exact inspect_parameter_schema-style identity resolution. Never writes by visible display name alone: duplicate display names, read-only parameters, identity mismatch, unsupported clear/no-value attempts, and unapproved type-parameter writes are guarded. Clear attempts Revit Parameter.ClearValue and never fakes no-value restore by writing an empty string. Defaults to dryRun; use mode=commit only for an explicitly confirmed write, then the tool reads the parameter back for verification.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         elementId: z.union([z.number(), z.string()]).optional().describe("Target Revit ElementId. Preferred for production writes."),

@@ -249,9 +249,10 @@ function buildScheduleScanPolicy(args: JsonObject) {
     };
 }
 
-function buildCompatibleSection(section: JsonObject) {
+function buildCompatibleSection(section: JsonObject, includeMatches = true) {
+    const { matches: _matches, Matches: _pascalMatches, ...rest } = section;
     return {
-        ...section,
+        ...rest,
         section: readNativeResultField(section, "section"),
         rowCount: readNativeResultField(section, "rowCount"),
         columnCount: readNativeResultField(section, "columnCount"),
@@ -266,13 +267,17 @@ function buildCompatibleSection(section: JsonObject) {
         scannedCells: readNativeResultField(section, "scannedCells"),
         lastReadRow: readNativeResultField(section, "lastReadRow"),
         lastReadColumn: readNativeResultField(section, "lastReadColumn"),
-        matches: readNativeResultArray(section, "matches").map((match) => ({
-            ...match,
-            section: readNativeResultField(match, "section"),
-            row: readNativeResultField(match, "row"),
-            column: readNativeResultField(match, "column"),
-            text: readNativeResultField(match, "text"),
-        })),
+        matches: includeMatches
+            ? readNativeResultArray(section, "matches")
+                .filter(isObject)
+                .map((match) => ({
+                    ...match,
+                    section: readNativeResultField(match, "section"),
+                    row: readNativeResultField(match, "row"),
+                    column: readNativeResultField(match, "column"),
+                    text: readNativeResultField(match, "text"),
+                }))
+            : [],
         cells: readNativeResultArray(section, "cells").map((row) => ({
             ...row,
             row: readNativeResultField(row, "row"),
@@ -288,17 +293,26 @@ function buildCompatibleSection(section: JsonObject) {
 }
 
 function buildCompatibleSchedules(result: JsonObject) {
-    return readNativeResultArray(result, "schedules").map((schedule) => ({
-        ...schedule,
-        id: readNativeResultField(schedule, "id"),
-        uniqueId: readNativeResultField(schedule, "uniqueId"),
-        name: readNativeResultField(schedule, "name"),
-        viewType: readNativeResultField(schedule, "viewType"),
-        isTemplate: readNativeResultField(schedule, "isTemplate"),
-        nameMatched: readNativeResultField(schedule, "nameMatched"),
-        cellMatchCount: readNativeResultField(schedule, "cellMatchCount"),
-        sections: readNativeResultArray(schedule, "sections").map(buildCompatibleSection),
-    }));
+    const inventoryMode = !hasScheduleNameQuery(result) && !hasScheduleCellQuery(result);
+    const includeMatches = hasScheduleCellQuery(result);
+    return readNativeResultArray(result, "schedules")
+        .filter(isObject)
+        .map((schedule) => {
+            const { nameMatched: _nameMatched, NameMatched: _pascalNameMatched, cellMatchCount: _cellMatchCount, CellMatchCount: _pascalCellMatchCount, sections: _sections, Sections: _pascalSections, ...rest } = schedule;
+            return {
+                ...rest,
+                id: readNativeResultField(schedule, "id"),
+                uniqueId: readNativeResultField(schedule, "uniqueId"),
+                name: readNativeResultField(schedule, "name"),
+                viewType: readNativeResultField(schedule, "viewType"),
+                isTemplate: readNativeResultField(schedule, "isTemplate"),
+                nameMatched: inventoryMode ? false : readNativeResultField(schedule, "nameMatched"),
+                cellMatchCount: includeMatches ? readNativeResultField(schedule, "cellMatchCount") : 0,
+                sections: readNativeResultArray(schedule, "sections")
+                    .filter(isObject)
+                    .map((section) => buildCompatibleSection(section, includeMatches)),
+            };
+        });
 }
 
 function preserveScheduleCompatibilityFields(result: JsonObject) {
@@ -308,8 +322,10 @@ function preserveScheduleCompatibilityFields(result: JsonObject) {
             result[field] = value;
         }
     }
-    if (result.schedules === undefined) {
-        result.schedules = buildCompatibleSchedules(result);
+    result.schedules = buildCompatibleSchedules(result);
+    if (!hasScheduleCellQuery(result)) {
+        result.matches = [];
+        delete result.Matches;
     }
     return result;
 }
