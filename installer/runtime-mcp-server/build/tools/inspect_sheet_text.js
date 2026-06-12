@@ -171,12 +171,15 @@ function copyWithoutKeys(source, keysToOmit) {
 }
 function normalizeSheetTextNestedScheduleInstance(row, hasTextQuery) {
     const matchedTextQuery = hasTextQuery && isMatchedSheetTextEvidence(row, hasTextQuery);
+    const target = copyWithoutKeys(row, new Set(["MatchedTextQuery", "InventoryOnly", "matchedTextQuery", "inventoryOnly"]));
     return {
-        ...row,
+        ...target,
         sourceType: sourceTypeForSheetEvidence({
             ...row,
             kind: readNativeResultField(row, "kind") ?? "scheduleInstance",
         }),
+        MatchedTextQuery: matchedTextQuery,
+        InventoryOnly: !matchedTextQuery,
         matchedTextQuery,
         inventoryOnly: !matchedTextQuery,
     };

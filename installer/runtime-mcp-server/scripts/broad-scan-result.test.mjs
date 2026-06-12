@@ -234,6 +234,8 @@ assert.equal(nativeSheetTextEmptyQueryPayload.inventoryRows.length, 1);
 assert.equal(nativeSheetTextEmptyQueryPayload.inventoryRows[0].matchedTextQuery, false);
 assert.equal(nativeSheetTextEmptyQueryPayload.sheets[0].scheduleInstances[0].matchedTextQuery, false);
 assert.equal(nativeSheetTextEmptyQueryPayload.sheets[0].scheduleInstances[0].inventoryOnly, true);
+assert.equal(nativeSheetTextEmptyQueryPayload.sheets[0].scheduleInstances[0].MatchedTextQuery, false);
+assert.equal(nativeSheetTextEmptyQueryPayload.sheets[0].scheduleInstances[0].InventoryOnly, true);
 assert.equal(Object.prototype.hasOwnProperty.call(nativeSheetTextEmptyQueryPayload, "Sheets"), false);
 
 const nativeScheduleFailurePayload = normalizeScheduleResult({
