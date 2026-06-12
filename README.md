@@ -462,6 +462,18 @@ strings, native bridge responses use camelCase `success`, and
 `scripts\test-all.ps1` because it requires a running Revit session with an
 active document.
 
+For operator-owned junk/test models, the focused runtime smoke package is:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-live-junk-model-smoke.ps1
+```
+
+It exercises safe-code guarding, parameter set/restore when the selected
+fixture has a restorable `Comments` value, standard schedule body write
+guarding, focus, view export, coordination export with cleanup, and final
+selection cleanup. It is intentionally optional and is not part of `test-all`
+or CI.
+
 9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
 10. Verify that both MCP servers are registered:
 

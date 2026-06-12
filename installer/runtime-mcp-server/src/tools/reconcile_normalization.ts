@@ -27,7 +27,7 @@ export const RECONCILIATION_ALL_ROLES: ReconciliationColumnRole[] = ["identity",
 
 export const RECONCILIATION_ROLE_ALIASES: Record<ReconciliationColumnRole, string[]> = {
     identity: ["identity", "id", "key", "name", "item", "row", "code", "type", "mark", "tag", "poz", "kod", "ad", "isim"],
-    comparisonText: ["comparisontext", "comparison text", "text", "name", "description", "desc", "item", "type", "mark", "tag", "ad", "isim", "aciklama"],
+    comparisonText: ["comparisontext", "comparison text", "description", "desc", "aciklama", "text", "name", "item", "type", "mark", "tag", "ad", "isim"],
     code: ["code", "kod", "type code", "mark", "tag", "poz"],
     description: ["description", "desc", "text", "aciklama"],
     quantity: ["quantity", "qty", "count", "adet", "miktar"],

@@ -376,6 +376,19 @@ runtime-only dynamic result normalization changes, the deterministic
 `bridge-result-contract-test` is the required gate; live Revit is optional
 unless the native bridge payload changed.
 
+For operator-owned junk/test models, run the focused live runtime smoke package:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-live-junk-model-smoke.ps1
+```
+
+This optional gate uses runtime tools rather than raw socket snippets. It
+checks safe-code guarding, parameter set/restore when the fixture has a
+restorable `Comments` value, standard schedule body write guarding,
+`focus_elements`, `export_revit_view_image`, `export_revit_coordination_image`
+with cleanup, and `clear_selection`. It is deliberately outside `test-all` and
+CI because it requires Revit plus a disposable model.
+
 Keep `src/revit-plugin/RevitMCPCommandSet` limited to the registered production
 bridge commands: `send_code_to_revit`, `get_current_view_elements`,
 `get_current_view_info`, `get_selected_elements`, `list_open_views`,

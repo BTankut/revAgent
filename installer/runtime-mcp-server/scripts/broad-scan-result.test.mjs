@@ -115,6 +115,7 @@ assert.equal(nativeSheetTextPayload.lastReadColumn, 2);
 const nativeViewportTagPayload = normalizeSheetTextResult({
   Success: true,
   Action: "inspect_sheet_text",
+  TextQuery: "QHK",
   Partial: false,
   ScanStoppedReason: "completed",
   ScannedSheetCount: 1,
@@ -192,6 +193,31 @@ assert.equal(nativeSheetTextInventoryOnlyPayload.summary.inventoryRowCount, 1);
 assert.equal(nativeSheetTextInventoryOnlyPayload.inventoryRows[0].sourceType, "placedScheduleInstance");
 assert.equal(nativeSheetTextInventoryOnlyPayload.inventoryRows[0].matchedTextQuery, false);
 
+const nativeSheetTextEmptyQueryPayload = normalizeSheetTextResult({
+  Success: true,
+  Action: "inspect_sheet_text",
+  SheetQuery: "M701",
+  TextQuery: "",
+  Partial: false,
+  ScanStoppedReason: "completed",
+  EvidenceRows: ["malformed-evidence-row", null],
+  Matches: [
+    "malformed-match-row",
+    {
+      Kind: "sheetTextNote",
+      SheetId: 1001,
+      ElementId: 5001,
+      Text: "General note",
+      MatchedTextQuery: true,
+    },
+  ],
+}, 10);
+assert.equal(nativeSheetTextEmptyQueryPayload.summary.inventoryMode, true);
+assert.equal(nativeSheetTextEmptyQueryPayload.evidenceRows.length, 0);
+assert.equal(nativeSheetTextEmptyQueryPayload.summary.matchCount, 0);
+assert.equal(nativeSheetTextEmptyQueryPayload.inventoryRows.length, 1);
+assert.equal(nativeSheetTextEmptyQueryPayload.inventoryRows[0].matchedTextQuery, false);
+
 const nativeScheduleFailurePayload = normalizeScheduleResult({
   Success: false,
   Action: "inspect_schedules",
@@ -206,6 +232,7 @@ assert.equal(nativeScheduleFailurePayload.summary.scanStoppedReason, "read_faile
 const nativeScheduleElapsedPayload = normalizeScheduleResult({
   Success: true,
   Action: "inspect_schedules",
+  CellQuery: "QHK",
   Partial: true,
   ScanStoppedReason: "max_elapsed",
   Schedules: [{
@@ -330,6 +357,7 @@ assert.equal(nativeScheduleSmallPayload.success, true);
 assert.equal(nativeScheduleSmallPayload.partial, false);
 assert.equal(nativeScheduleSmallPayload.scanStoppedReason, "completed");
 assert.equal(nativeScheduleSmallPayload.summary.returnedCount, 1);
+assert.equal(nativeScheduleSmallPayload.summary.inventoryMode, true);
 assert.equal(nativeScheduleSmallPayload.lastReadItemId, 7004);
 assert.equal(nativeScheduleSmallPayload.totalSchedules, 1);
 assert.equal(Array.isArray(nativeScheduleSmallPayload.schedules), true);
@@ -403,6 +431,31 @@ const nativeScheduleRowTruncatedPayload = normalizeScheduleResult({
 assert.equal(nativeScheduleRowTruncatedPayload.partial, true);
 assert.equal(nativeScheduleRowTruncatedPayload.scanStoppedReason, "max_rows");
 assert.equal(nativeScheduleRowTruncatedPayload.summary.scanStoppedReason, "max_rows");
+
+const nativeScheduleEmptyQueryPayload = normalizeScheduleResult({
+  Success: true,
+  Action: "inspect_schedules",
+  NameQuery: "",
+  CellQuery: "",
+  Partial: false,
+  ScanStoppedReason: "completed",
+  Schedules: [{
+    Id: 7006,
+    Name: "Inventory Schedule",
+    Sections: [{
+      Section: "body",
+      Matches: [{
+        Section: "body",
+        Row: 0,
+        Column: 0,
+        Text: "Inventory only",
+      }],
+    }],
+  }],
+}, {}, 8);
+assert.equal(nativeScheduleEmptyQueryPayload.summary.inventoryMode, true);
+assert.equal(nativeScheduleEmptyQueryPayload.evidenceRows.length, 0);
+assert.equal(nativeScheduleEmptyQueryPayload.summary.matchCount, 0);
 
 const occurrenceCountPayload = normalizeCountAnnotationsResult({
   Success: true,

@@ -343,6 +343,7 @@ function resolveColumnMapping(headers, startColumn, explicitMapping) {
     const notices = [];
     const mapping = {};
     const assignedIndices = new Set();
+    const explicitlyMappedRoles = new Set();
     for (const role of ALL_ROLES) {
         const explicit = explicitMapping?.[role];
         if (explicit !== undefined) {
@@ -352,6 +353,7 @@ function resolveColumnMapping(headers, startColumn, explicitMapping) {
             }
             mapping[role] = resolved;
             assignedIndices.add(resolved);
+            explicitlyMappedRoles.add(role);
         }
     }
     for (const role of ALL_ROLES) {
@@ -376,7 +378,38 @@ function resolveColumnMapping(headers, startColumn, explicitMapping) {
             return { error: { role, reason: "missing_required_role" } };
         }
     }
+    const inferredRequiredRoles = REQUIRED_ROLES.filter((role) => !explicitlyMappedRoles.has(role));
+    if (inferredRequiredRoles.length > 0) {
+        const inferredLabels = inferredRequiredRoles
+            .map((role) => `${role}=${headers[mapping[role]] || columnNumberToLetters(startColumn + mapping[role])}`)
+            .join(", ");
+        notices.push(`column_mapping_inferred_from_headers: ${inferredLabels}. Review or pass explicit columnMapping when first-pass reconciliation looks surprising.`);
+    }
     return { mapping, warnings, notices };
+}
+function buildColumnMappingSuggestion(headers, startColumn) {
+    const candidates = {};
+    const example = {};
+    const assignedIndices = new Set();
+    for (const role of REQUIRED_ROLES) {
+        const matches = findAllColumnAliases(role, headers)
+            .filter((match) => !assignedIndices.has(match.index))
+            .sort((left, right) => left.priority - right.priority || left.index - right.index);
+        candidates[role] = matches.map((match) => ({
+            header: match.header,
+            column: columnNumberToLetters(startColumn + match.index),
+            priority: match.priority,
+        }));
+        if (matches.length > 0) {
+            example[role] = matches[0].header;
+            assignedIndices.add(matches[0].index);
+        }
+    }
+    return {
+        requiredRoles: REQUIRED_ROLES,
+        candidates,
+        suggestedColumnMapping: example,
+    };
 }
 function getAliasPriority(role, header) {
     const normalized = normalizeAlias(header);
@@ -719,6 +752,7 @@ export async function ingestExcelSource(rawInput) {
         if ("error" in resolvedMapping) {
             return buildGuardedResult("excel_column_mapping_required", "Resolve identity and comparisonText column mapping before ingestion.", {
                 mappingError: resolvedMapping.error,
+                mappingSuggestion: buildColumnMappingSuggestion(table.headers, table.startColumn),
                 summary: {
                     sheetName: table.sheetName,
                     headers: table.headers,

@@ -2,7 +2,7 @@ export const RECONCILIATION_REQUIRED_ROLES = ["identity", "comparisonText"];
 export const RECONCILIATION_ALL_ROLES = ["identity", "comparisonText", "code", "description", "quantity", "unit", "system", "discipline", "notes"];
 export const RECONCILIATION_ROLE_ALIASES = {
     identity: ["identity", "id", "key", "name", "item", "row", "code", "type", "mark", "tag", "poz", "kod", "ad", "isim"],
-    comparisonText: ["comparisontext", "comparison text", "text", "name", "description", "desc", "item", "type", "mark", "tag", "ad", "isim", "aciklama"],
+    comparisonText: ["comparisontext", "comparison text", "description", "desc", "aciklama", "text", "name", "item", "type", "mark", "tag", "ad", "isim"],
     code: ["code", "kod", "type code", "mark", "tag", "poz"],
     description: ["description", "desc", "text", "aciklama"],
     quantity: ["quantity", "qty", "count", "adet", "miktar"],
