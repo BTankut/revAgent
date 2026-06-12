@@ -160,6 +160,41 @@ function buildSheetTextInventoryRows(payload) {
         return true;
     });
 }
+function copyWithoutKeys(source, keysToOmit) {
+    const target = {};
+    for (const [key, value] of Object.entries(source)) {
+        if (!keysToOmit.has(key)) {
+            target[key] = value;
+        }
+    }
+    return target;
+}
+function normalizeSheetTextNestedScheduleInstance(row, hasTextQuery) {
+    const matchedTextQuery = hasTextQuery && isMatchedSheetTextEvidence(row, hasTextQuery);
+    const target = copyWithoutKeys(row, new Set(["MatchedTextQuery", "InventoryOnly", "matchedTextQuery", "inventoryOnly"]));
+    return {
+        ...target,
+        sourceType: sourceTypeForSheetEvidence({
+            ...row,
+            kind: readNativeResultField(row, "kind") ?? "scheduleInstance",
+        }),
+        MatchedTextQuery: matchedTextQuery,
+        InventoryOnly: !matchedTextQuery,
+        matchedTextQuery,
+        inventoryOnly: !matchedTextQuery,
+    };
+}
+function normalizeSheetTextNestedSheets(payload) {
+    const hasTextQuery = hasSheetTextQuery(payload);
+    return readNativeResultArray(payload, "sheets").map((sheet) => {
+        const target = copyWithoutKeys(sheet, new Set(["ScheduleInstances"]));
+        const scheduleInstances = readNativeResultArray(sheet, "scheduleInstances");
+        return {
+            ...target,
+            scheduleInstances: scheduleInstances.map((row) => normalizeSheetTextNestedScheduleInstance(row, hasTextQuery)),
+        };
+    });
+}
 function stopDetailForSheetText(payload) {
     const canonicalReason = normalizeBroadScanStopReason(readNativeResultField(payload, "scanStoppedReason"));
     const nativeReason = String(readNativeResultField(payload, "rawScanStoppedReason") ?? readNativeResultField(payload, "scanStoppedReason") ?? canonicalReason).trim() || canonicalReason;
@@ -235,20 +270,25 @@ export function normalizeSheetTextResult(payload, elapsedMs) {
         lastRead: inferSheetTextLastRead,
         suggestedNextScopes: ["sheetQuery", "sheetIds", "viewNameQuery", "maxSheets", "allowExpensiveSearch", "searchBudget=deep"],
     });
-    normalized.evidenceRows = buildSheetTextEvidenceRows(normalized);
-    normalized.inventoryRows = buildSheetTextInventoryRows(normalized);
-    if (!hasSheetTextQuery(normalized)) {
-        normalized.matches = [];
-        delete normalized.Matches;
-        normalized.evidenceRows = [];
-        delete normalized.EvidenceRows;
+    const inventoryRows = buildSheetTextInventoryRows(normalized);
+    const hasTextQuery = hasSheetTextQuery(normalized);
+    const omittedTopLevelKeys = new Set(["Sheets"]);
+    if (!hasTextQuery) {
+        omittedTopLevelKeys.add("Matches");
+        omittedTopLevelKeys.add("EvidenceRows");
     }
-    normalized.summary = {
-        ...(normalized.summary || {}),
-        inventoryRowCount: normalized.inventoryRows.length,
-        scanStopDetail: stopDetailForSheetText(normalized),
+    return {
+        ...copyWithoutKeys(normalized, omittedTopLevelKeys),
+        evidenceRows: hasTextQuery ? buildSheetTextEvidenceRows(normalized) : [],
+        inventoryRows,
+        matches: hasTextQuery ? readNativeResultArray(normalized, "matches") : [],
+        sheets: normalizeSheetTextNestedSheets(normalized),
+        summary: {
+            ...(normalized.summary || {}),
+            inventoryRowCount: inventoryRows.length,
+            scanStopDetail: stopDetailForSheetText(normalized),
+        },
     };
-    return normalized;
 }
 export function registerInspectSheetTextTool(server) {
     server.tool("inspect_sheet_text", "[SHEET_TEXT_INSPECTION_READ_ONLY] Read-only native sheet text and annotation inspection for DrawingSheet text notes, titleblock/title block notes, revision schedule instances, placed schedule cells, viewport-linked text notes, viewport plan annotations, and viewport tags. Prefer this dedicated tool over generic send_code_to_revit for sheet text lookup, drawing note searches, plan note searches, titleblock/revision evidence, and large-project sheet or viewport annotation searches. Use sheetQuery/sheetIds first; project-wide text, viewport, tag, or placed-schedule cell scans require allowExpensiveSearch=true.", {

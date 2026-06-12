@@ -414,7 +414,7 @@ namespace RevitMCPCommandSet.Commands.View
                         }
                     }
 
-                    bool matchedTextQuery = !hasTextQuery || (_request.ScanScheduleCells && scheduleCellMatchCount > 0);
+                    bool matchedTextQuery = hasTextQuery && _request.ScanScheduleCells && scheduleCellMatchCount > 0;
                     bool includeSchedule = !hasTextQuery || !_request.ScanScheduleCells || scheduleCellMatchCount > 0;
                     if (!includeSchedule) continue;
 

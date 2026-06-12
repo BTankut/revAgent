@@ -148,9 +148,11 @@ with an explicit force-add; moved tracked plans should use `git mv`.
 It is not part of `test-all` because it requires a running Revit session, but it
 should be used when shared bridge command payload behavior changes.
 
-`scripts/test-mcp-build-payload-freshness.ps1` recompiles the MCP packages into
-a temporary location and compares the output with committed `build/` payloads.
-It also checks Revit payload freshness through
+`scripts/test-mcp-build-payload-freshness.ps1` copies MCP packages to isolated
+temporary work folders, restores npm dependencies there, recompiles into a
+temporary output location, and compares the output with committed `build/`
+payloads. It does not run `npm ci` against a live source or ProgramData package
+folder. It also checks Revit payload freshness through
 `installer/revit-payload-manifest.json`, using source Git blob SHAs instead of
 file mtimes. `scripts/test-all.ps1` and the NAS publish preflight run this gate
 before release packaging.
