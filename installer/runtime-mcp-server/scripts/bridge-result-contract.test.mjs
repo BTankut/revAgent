@@ -10,7 +10,9 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, "..");
-const repoRoot = path.resolve(packageRoot, "..", "..");
+const repoRoot = process.env.REVIT_MCP_REPO_ROOT
+  ? path.resolve(process.env.REVIT_MCP_REPO_ROOT)
+  : path.resolve(packageRoot, "..", "..");
 
 function readRepo(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");

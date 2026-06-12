@@ -160,6 +160,30 @@ function buildSheetTextInventoryRows(payload) {
         return true;
     });
 }
+function normalizeSheetTextNestedScheduleInstance(row, hasTextQuery) {
+    const matchedTextQuery = hasTextQuery && isMatchedSheetTextEvidence(row, hasTextQuery);
+    return {
+        ...row,
+        sourceType: sourceTypeForSheetEvidence({
+            ...row,
+            kind: readNativeResultField(row, "kind") ?? "scheduleInstance",
+        }),
+        matchedTextQuery,
+        inventoryOnly: !matchedTextQuery,
+    };
+}
+function normalizeSheetTextNestedSheets(payload) {
+    const hasTextQuery = hasSheetTextQuery(payload);
+    return readNativeResultArray(payload, "sheets").map((sheet) => {
+        const normalizedSheet = { ...sheet };
+        const scheduleInstances = readNativeResultArray(sheet, "scheduleInstances");
+        if (scheduleInstances.length > 0) {
+            normalizedSheet.scheduleInstances = scheduleInstances.map((row) => normalizeSheetTextNestedScheduleInstance(row, hasTextQuery));
+            delete normalizedSheet.ScheduleInstances;
+        }
+        return normalizedSheet;
+    });
+}
 function stopDetailForSheetText(payload) {
     const canonicalReason = normalizeBroadScanStopReason(readNativeResultField(payload, "scanStoppedReason"));
     const nativeReason = String(readNativeResultField(payload, "rawScanStoppedReason") ?? readNativeResultField(payload, "scanStoppedReason") ?? canonicalReason).trim() || canonicalReason;
@@ -237,6 +261,8 @@ export function normalizeSheetTextResult(payload, elapsedMs) {
     });
     normalized.evidenceRows = buildSheetTextEvidenceRows(normalized);
     normalized.inventoryRows = buildSheetTextInventoryRows(normalized);
+    normalized.sheets = normalizeSheetTextNestedSheets(normalized);
+    delete normalized.Sheets;
     if (!hasSheetTextQuery(normalized)) {
         normalized.matches = [];
         delete normalized.Matches;

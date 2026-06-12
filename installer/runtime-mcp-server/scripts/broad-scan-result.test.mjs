@@ -200,6 +200,19 @@ const nativeSheetTextEmptyQueryPayload = normalizeSheetTextResult({
   TextQuery: "",
   Partial: false,
   ScanStoppedReason: "completed",
+  Sheets: [{
+    Id: 1001,
+    SheetNumber: "M701",
+    ScheduleInstances: [{
+      Kind: "scheduleInstance",
+      SheetId: 1001,
+      InstanceId: 2101,
+      ScheduleId: 3101,
+      ScheduleName: "Revision Schedule",
+      MatchedTextQuery: true,
+      InventoryOnly: false,
+    }],
+  }],
   EvidenceRows: ["malformed-evidence-row", null],
   Matches: [
     "malformed-match-row",
@@ -219,6 +232,9 @@ assert.equal(Object.prototype.hasOwnProperty.call(nativeSheetTextEmptyQueryPaylo
 assert.equal(nativeSheetTextEmptyQueryPayload.summary.matchCount, 0);
 assert.equal(nativeSheetTextEmptyQueryPayload.inventoryRows.length, 1);
 assert.equal(nativeSheetTextEmptyQueryPayload.inventoryRows[0].matchedTextQuery, false);
+assert.equal(nativeSheetTextEmptyQueryPayload.sheets[0].scheduleInstances[0].matchedTextQuery, false);
+assert.equal(nativeSheetTextEmptyQueryPayload.sheets[0].scheduleInstances[0].inventoryOnly, true);
+assert.equal(Object.prototype.hasOwnProperty.call(nativeSheetTextEmptyQueryPayload, "Sheets"), false);
 
 const nativeScheduleFailurePayload = normalizeScheduleResult({
   Success: false,

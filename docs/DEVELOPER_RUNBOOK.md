@@ -444,12 +444,13 @@ CI-safe aggregate gate:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-ci.ps1
 ```
 
-`test-ci.ps1` installs both MCP packages with `npm ci`, runs forced strict
-TypeScript checks in both packages, checks the zero `@ts-nocheck` policy,
-verifies MCP build payload freshness with
-`test-mcp-build-payload-freshness.ps1`, then runs both package `npm test`
-chains. Freshness intentionally runs before `npm test` because `npm run build`
-rewrites the local `build/` folder in the CI workspace. The Revit half reads
+`test-ci.ps1` copies both MCP packages to isolated temporary work folders,
+restores dependencies there with `npm ci`, runs forced strict TypeScript checks
+in those copies, checks the zero `@ts-nocheck` policy, verifies MCP build
+payload freshness with `test-mcp-build-payload-freshness.ps1`, then runs both
+package `npm test` chains from the temporary copies. The source package folders
+are not used as dependency restore targets, so live ProgramData package
+processes cannot lock `node_modules` cleanup. The Revit half reads
 `installer/revit-payload-manifest.json`; it does not rebuild the add-in or
 compare file mtimes.
 

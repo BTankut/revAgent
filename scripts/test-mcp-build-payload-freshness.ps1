@@ -27,6 +27,7 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
 Import-Module (Join-Path $RepoRoot "scripts\RevitPayloadManifest.psm1") -Force
+Import-Module (Join-Path $RepoRoot "scripts\McpPackageTestHelpers.psm1") -Force
 
 function Get-RelativeFileHashMap {
     param(
@@ -53,53 +54,6 @@ function Get-RelativeFileHashMap {
     return $map
 }
 
-function Invoke-PackageNpmCi {
-    param(
-        [string]$PackageRoot,
-        [string]$PackageRelativePath
-    )
-
-    if (-not (Test-Path -LiteralPath (Join-Path $PackageRoot "package-lock.json") -PathType Leaf)) {
-        throw "package-lock.json was not found for $PackageRelativePath; cannot restore deterministic npm dependencies."
-    }
-
-    Write-Host "Restoring npm dependencies for $PackageRelativePath" -ForegroundColor Cyan
-    Push-Location $PackageRoot
-    try {
-        npm ci
-        if ($LASTEXITCODE -ne 0) {
-            throw "npm ci failed for $PackageRelativePath."
-        }
-    }
-    finally {
-        Pop-Location
-    }
-}
-
-function Resolve-PackageTsc {
-    param(
-        [string]$PackageRoot,
-        [string]$PackageRelativePath
-    )
-
-    $tscCandidates = @(
-        (Join-Path $PackageRoot "node_modules\.bin\tsc.cmd"),
-        (Join-Path $PackageRoot "node_modules\.bin\tsc")
-    )
-    $tscPath = @($tscCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }) | Select-Object -First 1
-    if (-not [string]::IsNullOrWhiteSpace($tscPath)) {
-        return $tscPath
-    }
-
-    Invoke-PackageNpmCi -PackageRoot $PackageRoot -PackageRelativePath $PackageRelativePath
-
-    $tscPath = @($tscCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }) | Select-Object -First 1
-    if ([string]::IsNullOrWhiteSpace($tscPath)) {
-        throw "TypeScript compiler was not found under $PackageRoot\node_modules\.bin after npm ci."
-    }
-    return $tscPath
-}
-
 function Assert-BuildFresh {
     param(
         [string]$PackageRelativePath
@@ -110,13 +64,16 @@ function Assert-BuildFresh {
         throw "MCP package tsconfig was not found: $packageRoot"
     }
 
-    $tempRoot = Join-Path $env:TEMP ("revagent-mcp-build-check-" + [Guid]::NewGuid().ToString("N"))
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-mcp-build-check-" + [Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    $workCopy = New-McpPackageWorkCopy -PackageRoot $packageRoot -PackageRelativePath $PackageRelativePath
 
     try {
-        Push-Location $packageRoot
+        Invoke-McpPackageNpmCi -PackageName $PackageRelativePath -PackageRoot $workCopy.PackageRoot -PackageRelativePath $PackageRelativePath
+
+        Push-Location $workCopy.PackageRoot
         try {
-            $tscPath = Resolve-PackageTsc -PackageRoot $packageRoot -PackageRelativePath $PackageRelativePath
+            $tscPath = Get-McpPackageTscPath -PackageRoot $workCopy.PackageRoot -PackageRelativePath $PackageRelativePath
 
             & $tscPath --outDir $tempRoot
             if ($LASTEXITCODE -ne 0) {
@@ -145,6 +102,7 @@ function Assert-BuildFresh {
         }
     }
     finally {
+        Remove-McpPackageWorkCopy -WorkCopy $workCopy
         if (Test-Path -LiteralPath $tempRoot) {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force
         }
