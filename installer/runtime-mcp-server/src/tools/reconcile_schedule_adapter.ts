@@ -163,6 +163,7 @@ function adaptInspectSchedulesResult(source: z.infer<typeof inspectSchedulesResu
     const records: JsonObject[] = [];
     let scannedRows = 0;
     let scannedCells = 0;
+    let skippedHeaderLikeRows = 0;
 
     for (const schedule of schedules) {
         const scheduleId = stringifyId(readNativeResultField(schedule, "id"));
@@ -199,6 +200,10 @@ function adaptInspectSchedulesResult(source: z.infer<typeof inspectSchedulesResu
             for (const row of readSectionRows(section, scheduleId, scheduleName, sectionName)) {
                 scannedRows++;
                 scannedCells += row.cells.length;
+                if (sectionName === "body" && isHeaderLikeBodyRow(row, resolvedMapping.mapping, headerLabels)) {
+                    skippedHeaderLikeRows++;
+                    continue;
+                }
                 const record = buildScheduleRecord(row, resolvedMapping.mapping);
                 if (record) {
                     records.push(record);
@@ -234,6 +239,7 @@ function adaptInspectSchedulesResult(source: z.infer<typeof inspectSchedulesResu
             scheduleCount: schedules.length,
             scannedRows,
             scannedCells,
+            skippedHeaderLikeRows,
             scheduleRecordCount: records.length,
             visibilityBasis: VISIBILITY_BASIS,
             partial,
@@ -252,13 +258,48 @@ function adaptInspectSchedulesResult(source: z.infer<typeof inspectSchedulesResu
             visibilityBasis: VISIBILITY_BASIS,
         })),
         warnings,
-        notices,
+        notices: skippedHeaderLikeRows > 0
+            ? [...notices, `Skipped ${skippedHeaderLikeRows} header-like body row(s) during schedule adaptation.`]
+            : notices,
         lastRead: {
             lastReadSection: readNativeResultField(payload, "lastReadSection") ?? lastRecord?.section ?? null,
             lastReadRow: readNativeResultField(payload, "lastReadRow") ?? lastRecord?.row ?? null,
             lastReadColumn: readNativeResultField(payload, "lastReadColumn") ?? null,
             lastReadItemId: readNativeResultField(payload, "lastReadItemId") ?? lastRecord?.scheduleRowId ?? null,
         },
+    });
+}
+
+function isHeaderLikeBodyRow(row: ScheduleRow, mapping: Partial<Record<ColumnRole, number>>, headerLabels: HeaderLabel[]): boolean {
+    const byColumn = new Map<number, string>();
+    for (const cell of row.cells) {
+        byColumn.set(cell.column, cell.text);
+    }
+    const requiredMappedRoles = REQUIRED_ROLES.filter((role) => typeof mapping[role] === "number");
+    if (requiredMappedRoles.length === 0) {
+        return false;
+    }
+    return requiredMappedRoles.every((role) => {
+        const column = mapping[role];
+        if (typeof column !== "number") {
+            return false;
+        }
+        const text = cleanReconciliationText(byColumn.get(column));
+        if (!text) {
+            return false;
+        }
+        const normalizedText = normalizeReconciliationHeader(text);
+        const sameColumnHeader = headerLabels.find((label) => label.column === column);
+        if (sameColumnHeader && normalizeReconciliationHeader(sameColumnHeader.header) === normalizedText) {
+            return true;
+        }
+        if (Number.isFinite(getAliasPriority(role, text))) {
+            return true;
+        }
+        if (role === "identity" && ["number", "no", "numara"].includes(normalizedText)) {
+            return true;
+        }
+        return role === "comparisonText" && ["name", "description", "desc", "text", "aciklama"].includes(normalizedText);
     });
 }
 

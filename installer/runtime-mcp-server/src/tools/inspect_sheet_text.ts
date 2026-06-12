@@ -267,6 +267,12 @@ export function normalizeSheetTextResult(payload: JsonObject, elapsedMs: number)
     });
     normalized.evidenceRows = buildSheetTextEvidenceRows(normalized);
     normalized.inventoryRows = buildSheetTextInventoryRows(normalized);
+    if (!hasSheetTextQuery(normalized)) {
+        normalized.matches = [];
+        delete normalized.Matches;
+        normalized.evidenceRows = [];
+        delete normalized.EvidenceRows;
+    }
     normalized.summary = {
         ...(normalized.summary || {}),
         inventoryRowCount: normalized.inventoryRows.length,

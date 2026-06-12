@@ -214,6 +214,8 @@ const nativeSheetTextEmptyQueryPayload = normalizeSheetTextResult({
 }, 10);
 assert.equal(nativeSheetTextEmptyQueryPayload.summary.inventoryMode, true);
 assert.equal(nativeSheetTextEmptyQueryPayload.evidenceRows.length, 0);
+assert.equal(nativeSheetTextEmptyQueryPayload.matches.length, 0);
+assert.equal(Object.prototype.hasOwnProperty.call(nativeSheetTextEmptyQueryPayload, "Matches"), false);
 assert.equal(nativeSheetTextEmptyQueryPayload.summary.matchCount, 0);
 assert.equal(nativeSheetTextEmptyQueryPayload.inventoryRows.length, 1);
 assert.equal(nativeSheetTextEmptyQueryPayload.inventoryRows[0].matchedTextQuery, false);
@@ -455,6 +457,11 @@ const nativeScheduleEmptyQueryPayload = normalizeScheduleResult({
 }, {}, 8);
 assert.equal(nativeScheduleEmptyQueryPayload.summary.inventoryMode, true);
 assert.equal(nativeScheduleEmptyQueryPayload.evidenceRows.length, 0);
+assert.equal(nativeScheduleEmptyQueryPayload.matches.length, 0);
+assert.equal(Object.prototype.hasOwnProperty.call(nativeScheduleEmptyQueryPayload, "Matches"), false);
+assert.equal(nativeScheduleEmptyQueryPayload.schedules[0].nameMatched, false);
+assert.equal(nativeScheduleEmptyQueryPayload.schedules[0].cellMatchCount, 0);
+assert.equal(nativeScheduleEmptyQueryPayload.schedules[0].sections[0].matches.length, 0);
 assert.equal(nativeScheduleEmptyQueryPayload.summary.matchCount, 0);
 
 const occurrenceCountPayload = normalizeCountAnnotationsResult({

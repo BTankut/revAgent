@@ -4,6 +4,12 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Fixed remaining live-test friction: local `test-all` and standalone payload
+  freshness now restore npm dependencies before TypeScript builds, empty
+  sheet/schedule inventory scans no longer expose misleading legacy match
+  fields, schedule reconciliation skips header-like body rows, and parameter
+  clear attempts `Parameter.ClearValue` before reporting unsupported no-value
+  restore.
 - Fixed local gates and live-smoke coverage: installer smoke now checks the
   current double-encoded JSON parser path, MCP build freshness uses package-local
   `tsc`, and an optional junk-model smoke package covers safe-code guards,

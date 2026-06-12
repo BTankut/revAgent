@@ -33,6 +33,14 @@ const realShapeResult = {
           Section: "Body",
           Rows: [
             {
+              Row: 0,
+              Cells: [
+                { Column: 0, Text: "Number" },
+                { Column: 1, Text: "Name" },
+                { Column: 2, Text: "Unit" },
+              ],
+            },
+            {
               Row: 1,
               Cells: [
                 { Column: 0, Text: "FCU-01" },
@@ -67,8 +75,10 @@ assert.equal(adapted.scanStoppedReason, "completed");
 assert.equal(adapted.visibilityBasis, "displayedScheduleCells");
 assert.equal(adapted.scheduleRecords.length, 2);
 assert.equal(adapted.summary.scheduleRecordCount, 2);
+assert.equal(adapted.summary.skippedHeaderLikeRows, 1);
 assert.equal(adapted.evidenceRows.length, 2);
 assert.equal(adapted.warnings[0], "native warning");
+assert.match(adapted.notices.join("\n"), /Skipped 1 header-like body row/);
 
 const firstRecord = adapted.scheduleRecords[0];
 assert.equal(firstRecord.scheduleRowId, "202:body:1");
