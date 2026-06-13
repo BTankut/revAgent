@@ -74,7 +74,7 @@ async function smokeSafeCodeGuard(prefix, summary) {
   summary.safeCodeGuard = "guarded";
 }
 
-async function smokeParameterSetRestore(prefix, elementId, summary) {
+async function smokeParameterVisibleClear(prefix, elementId, summary) {
   const marker = `revAgent live smoke ${Date.now()}`;
   const dryRun = await callTool("set_element_parameter", {
     elementId,
@@ -86,7 +86,7 @@ async function smokeParameterSetRestore(prefix, elementId, summary) {
     timeoutMs: 20000,
   });
   if (dryRun.guarded) {
-    summary.parameterSetRestore = `skipped: ${dryRun.reason || dryRun.guardReason || "guarded"}`;
+    summary.parameterVisibleClear = `skipped: ${dryRun.reason || dryRun.guardReason || "guarded"}`;
     return;
   }
   assertSuccess(dryRun, "parameter dry-run");
@@ -102,39 +102,96 @@ async function smokeParameterSetRestore(prefix, elementId, summary) {
   assert.equal(visibleClearDryRun.requested?.clearValueSupport, "not_applicable_visible_clear_uses_empty_string_set");
   assert.match((visibleClearDryRun.warnings || []).join("\n"), /does_not_restore_revit_has_value_false/);
   if (dryRun.before?.hasValue !== true) {
-    summary.parameterSetRestore = "skipped: Comments had no prior value; true no-value restore is not forced by smoke";
+    summary.parameterVisibleClear = "revit_limitation_wont_fix: Comments/ALL_MODEL_INSTANCE_COMMENTS starts at true_no_value; smoke avoids creating a permanent visible_empty_has_value trace";
     return;
   }
 
   const priorRaw = String(dryRun.before.raw ?? "");
-  const setResult = await callTool("set_element_parameter", {
-    elementId,
-    parameterName: "Comments",
-    mode: "commit",
-    operation: "set",
-    expectedCurrentRaw: priorRaw,
-    value: marker,
-    taskName: `${prefix} parameter commit`,
-    timeoutMs: 30000,
-  });
-  assertSuccess(setResult, "parameter commit");
-  assert.equal(setResult.committed, true, "parameter commit should write");
-  assert.equal(setResult.verification?.verified, true, "parameter commit should verify");
+  let expectedCurrentRawForRestore = null;
+  let visibleClearAssertionsCompleted = false;
+  try {
+    const setResult = await callTool("set_element_parameter", {
+      elementId,
+      parameterName: "Comments",
+      mode: "commit",
+      operation: "set",
+      expectedCurrentRaw: priorRaw,
+      value: marker,
+      taskName: `${prefix} parameter commit`,
+      timeoutMs: 30000,
+    });
+    if (setResult.committed === true) {
+      expectedCurrentRawForRestore = marker;
+    }
+    assertSuccess(setResult, "parameter commit");
+    assert.equal(setResult.committed, true, "parameter commit should write");
+    assert.equal(setResult.verification?.verified, true, "parameter commit should verify");
 
-  const restoreResult = await callTool("set_element_parameter", {
-    elementId,
-    parameterName: "Comments",
-    mode: "commit",
-    operation: "set",
-    expectedCurrentRaw: marker,
-    value: priorRaw,
-    taskName: `${prefix} parameter restore`,
-    timeoutMs: 30000,
-  });
-  assertSuccess(restoreResult, "parameter restore");
-  assert.equal(restoreResult.committed, true, "parameter restore should write");
-  assert.equal(restoreResult.verification?.verified, true, "parameter restore should verify");
-  summary.parameterSetRestore = "committed_and_restored";
+    const visibleClearResult = await callTool("set_element_parameter", {
+      elementId,
+      parameterName: "Comments",
+      mode: "commit",
+      operation: "clearVisibleValue",
+      expectedCurrentRaw: marker,
+      taskName: `${prefix} parameter visible clear`,
+      timeoutMs: 30000,
+    });
+    if (visibleClearResult.committed === true) {
+      expectedCurrentRawForRestore = "";
+    }
+    assertSuccess(visibleClearResult, "parameter visible clear");
+    assert.equal(visibleClearResult.committed, true, "parameter visible clear should write");
+    assert.equal(visibleClearResult.verification?.verified, true, "parameter visible clear should verify");
+    assert.equal(visibleClearResult.after?.raw, "", "parameter visible clear should leave a blank visible raw value");
+    assert.equal(
+      visibleClearResult.after?.noValueState,
+      "visible_empty_has_value",
+      "built-in non-shared Comments/ALL_MODEL_INSTANCE_COMMENTS completes visible clear as visible_empty_has_value"
+    );
+    visibleClearAssertionsCompleted = true;
+  } finally {
+    if (expectedCurrentRawForRestore !== null) {
+      let restoreResult;
+      try {
+        restoreResult = await callTool("set_element_parameter", {
+          elementId,
+          parameterName: "Comments",
+          mode: "commit",
+          operation: "set",
+          expectedCurrentRaw: expectedCurrentRawForRestore,
+          value: priorRaw,
+          taskName: `${prefix} parameter restore`,
+          timeoutMs: 30000,
+        });
+      } catch (restoreError) {
+        if (visibleClearAssertionsCompleted) {
+          throw restoreError;
+        }
+        const restoreErrorText = restoreError instanceof Error ? restoreError.message : String(restoreError);
+        console.error(`WARNING: parameter restore after smoke failure also failed: ${restoreErrorText}`);
+      }
+
+      if (restoreResult) {
+        if (visibleClearAssertionsCompleted) {
+          assertSuccess(restoreResult, "parameter restore");
+          assert.equal(restoreResult.committed, true, "parameter restore should write");
+          assert.equal(restoreResult.verification?.verified, true, "parameter restore should verify");
+        } else if (
+          restoreResult.success !== true ||
+          restoreResult.committed !== true ||
+          restoreResult.verification?.verified !== true
+        ) {
+          console.error(`WARNING: parameter restore after smoke failure did not verify: ${JSON.stringify({
+            success: restoreResult.success,
+            committed: restoreResult.committed,
+            verified: restoreResult.verification?.verified,
+            reason: restoreResult.reason || restoreResult.guardReason || restoreResult.error,
+          })}`);
+        }
+      }
+    }
+  }
+  summary.parameterVisibleClear = "completed_visible_empty_has_value_then_restored_visible_value";
 }
 
 async function smokeScheduleBodyWriteGuard(prefix, summary) {
@@ -240,7 +297,7 @@ const targetElementId = await findJunkTarget(prefix);
 summary.targetElementId = targetElementId;
 
 await smokeSafeCodeGuard(prefix, summary);
-await smokeParameterSetRestore(prefix, targetElementId, summary);
+await smokeParameterVisibleClear(prefix, targetElementId, summary);
 await smokeScheduleBodyWriteGuard(prefix, summary);
 await smokeFocusExportCleanup(prefix, targetElementId, summary);
 

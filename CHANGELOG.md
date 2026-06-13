@@ -9,11 +9,17 @@ All notable revAgent workstation deployment changes are tracked here.
   sheet/schedule inventory scans no longer expose misleading legacy match
   fields, schedule reconciliation skips header-like body rows, and parameter
   clear attempts `Parameter.ClearValue` before reporting unsupported no-value
-  restore.
+  restore. `Comments` / `ALL_MODEL_INSTANCE_COMMENTS` is a built-in,
+  non-shared parameter, so true no-value restore is not supported by the Revit
+  API. Expected product behavior: `operation="clear"` returns guarded and does
+  not write an empty-string fallback; when visible cleanup is required,
+  `operation="clearVisibleValue"` or an explicit empty-string set is used, and
+  the result is reported as `visible_empty_has_value`.
 - Fixed local gates and live-smoke coverage: installer smoke now checks the
   current double-encoded JSON parser path, MCP build freshness uses package-local
   `tsc`, and an optional junk-model smoke package covers safe-code guards,
-  parameter set/restore, schedule body write guards, focus/export/cleanup.
+  parameter visible-clear/restore where Revit permits it, schedule body write
+  guards, focus/export/cleanup.
 - Tightened discovery/reconciliation semantics: explicit `find_elements`
   categories no longer expand through inferred MEP categories, subtype queries
   such as pump/AHU/FCU keep residual text, empty sheet/schedule queries report

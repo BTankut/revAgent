@@ -383,11 +383,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-live-junk-mod
 ```
 
 This optional gate uses runtime tools rather than raw socket snippets. It
-checks safe-code guarding, parameter set/restore when the fixture has a
-restorable `Comments` value, standard schedule body write guarding,
+checks safe-code guarding, parameter visible-clear/restore when the fixture
+already has a writable `Comments` value, standard schedule body write guarding,
 `focus_elements`, `export_revit_view_image`, `export_revit_coordination_image`
-with cleanup, and `clear_selection`. It is deliberately outside `test-all` and
-CI because it requires Revit plus a disposable model.
+with cleanup, and `clear_selection`. True no-value restore for built-in,
+non-shared `Comments` / `ALL_MODEL_INSTANCE_COMMENTS` is treated as a Revit API
+limitation; the smoke avoids creating a permanent `HasValue=true` trace when a
+fixture starts at true no-value. It is
+deliberately outside `test-all` and CI because it requires Revit plus a
+disposable model.
 
 Keep `src/revit-plugin/RevitMCPCommandSet` limited to the registered production
 bridge commands: `send_code_to_revit`, `get_current_view_elements`,
