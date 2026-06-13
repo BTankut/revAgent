@@ -90,6 +90,17 @@ async function smokeParameterSetRestore(prefix, elementId, summary) {
     return;
   }
   assertSuccess(dryRun, "parameter dry-run");
+  const visibleClearDryRun = await callTool("set_element_parameter", {
+    elementId,
+    parameterName: "Comments",
+    mode: "dryRun",
+    operation: "clearVisibleValue",
+    taskName: `${prefix} parameter visible clear dry-run`,
+    timeoutMs: 20000,
+  });
+  assertSuccess(visibleClearDryRun, "parameter visible clear dry-run");
+  assert.equal(visibleClearDryRun.requested?.clearValueSupport, "not_applicable_visible_clear_uses_empty_string_set");
+  assert.match((visibleClearDryRun.warnings || []).join("\n"), /does_not_restore_revit_has_value_false/);
   if (dryRun.before?.hasValue !== true) {
     summary.parameterSetRestore = "skipped: Comments had no prior value; true no-value restore is not forced by smoke";
     return;
