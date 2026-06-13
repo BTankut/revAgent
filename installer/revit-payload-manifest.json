@@ -280,7 +280,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/InspectSheetTextEventHandler.cs",
-                                                "gitBlobSha":  "1ee92b23ab8c42c710bf8c9f9d057ad877b96c51"
+                                                "gitBlobSha":  "ec63e4e7930f74526ebfd37615af399d782283a6"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ListOpenViewsCommand.cs",
@@ -346,13 +346,13 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/command-payload/RevitMCPCommandSet.dll",
-                                                  "sha256":  "c2f407ac39557f629970d7c6b61433ba92d74799a3bf587590dc4d9d2675f928",
-                                                  "sizeBytes":  270848
+                                                  "sha256":  "0f57ba1a727d03020900b877e3a4a6c1d7cca84cd4493bb1fcb3d77753f6305c",
+                                                  "sizeBytes":  271360
                                               },
                                               {
                                                   "path":  "installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPCommandSet/2022/RevitMCPCommandSet.dll",
-                                                  "sha256":  "c2f407ac39557f629970d7c6b61433ba92d74799a3bf587590dc4d9d2675f928",
-                                                  "sizeBytes":  270848
+                                                  "sha256":  "0f57ba1a727d03020900b877e3a4a6c1d7cca84cd4493bb1fcb3d77753f6305c",
+                                                  "sizeBytes":  271360
                                               }
                                           ]
                          }

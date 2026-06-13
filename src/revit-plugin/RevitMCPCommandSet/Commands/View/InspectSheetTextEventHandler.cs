@@ -355,7 +355,8 @@ namespace RevitMCPCommandSet.Commands.View
                         _request.MaxTextChars);
                     record["matchedTextQuery"] = matchedTextQuery;
                     record["inventoryOnly"] = !matchedTextQuery;
-                    if (!AddRecordIfWithinResponseBudget(record, state)) return;
+                    Dictionary<string, object> flat = AnnotationEvidenceHelpers.CloneRecord(record);
+                    if (!AddRecordsIfWithinResponseBudget(state, record, flat)) return;
 
                     returned++;
                     result.TextNoteReturned = returned;
@@ -363,11 +364,11 @@ namespace RevitMCPCommandSet.Commands.View
                     if (matchedTextQuery)
                     {
                         state.TotalTextNoteMatches++;
-                        flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                        flatMatches.Add(flat);
                     }
                     else
                     {
-                        inventoryRows.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                        inventoryRows.Add(flat);
                     }
                 }
             }
@@ -433,14 +434,14 @@ namespace RevitMCPCommandSet.Commands.View
                     Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildScheduleInstanceRecord(sheet, instance, schedule, cellScan);
                     record["matchedTextQuery"] = matchedTextQuery;
                     record["inventoryOnly"] = !matchedTextQuery;
-                    if (!AddRecordIfWithinResponseBudget(record, state)) return;
+                    Dictionary<string, object> flat = AnnotationEvidenceHelpers.CloneRecord(record);
+                    flat["kind"] = "scheduleInstance";
+                    if (!AddRecordsIfWithinResponseBudget(state, record, flat)) return;
 
                     returned++;
                     result.ScheduleInstanceReturned = returned;
                     result.ScheduleInstances.Add(record);
 
-                    Dictionary<string, object> flat = AnnotationEvidenceHelpers.CloneRecord(record);
-                    flat["kind"] = "scheduleInstance";
                     if (matchedTextQuery)
                     {
                         state.TotalScheduleInstanceMatches++;
@@ -513,7 +514,8 @@ namespace RevitMCPCommandSet.Commands.View
                         if (!string.IsNullOrWhiteSpace(_request.TextQuery) && AnnotationEvidenceHelpers.ContainsPreNormalized(text, _request.NormalizedTextQuery))
                         {
                             Dictionary<string, object> cell = AnnotationEvidenceHelpers.BuildScheduleCellMatch("body", row, column, text, _request.MaxTextChars);
-                            if (!AddRecordIfWithinResponseBudget(cell, state))
+                            Dictionary<string, object> flat = AnnotationEvidenceHelpers.BuildPlacedScheduleCellEvidenceRow(sheet, instance, schedule, row, column, text, _request.MaxTextChars);
+                            if (!AddRecordsIfWithinResponseBudget(state, cell, flat))
                             {
                                 truncated = true;
                                 return AnnotationEvidenceHelpers.BuildScheduleCellScan(scannedRows, scannedColumns, truncated, matches, readFailed, readError);
@@ -521,7 +523,6 @@ namespace RevitMCPCommandSet.Commands.View
 
                             matches.Add(cell);
                             state.TotalScheduleCellMatches++;
-                            Dictionary<string, object> flat = AnnotationEvidenceHelpers.BuildPlacedScheduleCellEvidenceRow(sheet, instance, schedule, row, column, text, _request.MaxTextChars);
                             flatMatches.Add(flat);
                         }
                     }
@@ -705,18 +706,19 @@ namespace RevitMCPCommandSet.Commands.View
                         _request.MaxTextChars);
                     record["matchedTextQuery"] = matchedTextQuery;
                     record["inventoryOnly"] = !matchedTextQuery;
-                    if (!AddRecordIfWithinResponseBudget(record, state)) return;
+                    Dictionary<string, object> flat = AnnotationEvidenceHelpers.CloneRecord(record);
+                    if (!AddRecordsIfWithinResponseBudget(state, record, flat)) return;
 
                     textNoteReturned++;
                     textNotes.Add(record);
                     if (matchedTextQuery)
                     {
                         state.TotalViewportTextNoteMatches++;
-                        flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                        flatMatches.Add(flat);
                     }
                     else
                     {
-                        inventoryRows.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                        inventoryRows.Add(flat);
                     }
                 }
             }
@@ -786,18 +788,19 @@ namespace RevitMCPCommandSet.Commands.View
                     Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildViewportTagRecord(document, sheet, viewport, view, tag, tagText, _request.MaxTextChars, warnings);
                     record["matchedTextQuery"] = matchedTextQuery;
                     record["inventoryOnly"] = !matchedTextQuery;
-                    if (!AddRecordIfWithinResponseBudget(record, state)) return;
+                    Dictionary<string, object> flat = AnnotationEvidenceHelpers.CloneRecord(record);
+                    if (!AddRecordsIfWithinResponseBudget(state, record, flat)) return;
 
                     tagReturned++;
                     tags.Add(record);
                     if (matchedTextQuery)
                     {
                         state.TotalViewportTagMatches++;
-                        flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                        flatMatches.Add(flat);
                     }
                     else
                     {
-                        inventoryRows.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                        inventoryRows.Add(flat);
                     }
                 }
             }
@@ -1019,14 +1022,26 @@ namespace RevitMCPCommandSet.Commands.View
 
         private bool AddRecordIfWithinResponseBudget(Dictionary<string, object> record, SheetAnnotationScanState state)
         {
-            int estimate = AnnotationEvidenceHelpers.EstimateObjectBytes(record, AnnotationEvidenceByteEstimateKind.SheetText);
-            if (state.EstimatedResponseBytes + estimate > _request.MaxResponseBytes)
+            return AddRecordsIfWithinResponseBudget(state, record);
+        }
+
+        private bool AddRecordsIfWithinResponseBudget(SheetAnnotationScanState state, params Dictionary<string, object>[] records)
+        {
+            long estimate = 0;
+            foreach (Dictionary<string, object> record in records)
+            {
+                if (record == null) continue;
+                estimate += AnnotationEvidenceHelpers.EstimateObjectBytes(record, AnnotationEvidenceByteEstimateKind.SheetText);
+            }
+
+            long projectedBytes = (long)state.EstimatedResponseBytes + estimate;
+            if (projectedBytes > _request.MaxResponseBytes)
             {
                 state.Stop("max_bytes");
                 return false;
             }
 
-            state.EstimatedResponseBytes += estimate;
+            state.EstimatedResponseBytes = projectedBytes > int.MaxValue ? int.MaxValue : (int)projectedBytes;
             return true;
         }
 
