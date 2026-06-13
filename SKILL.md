@@ -284,7 +284,11 @@ normalizer.
   `operation: "clear"` no-value attempts, and type writes unless explicitly
   allowed, then verifies the value or `HasValue=false` state after
   `mode: "commit"`. Empty string writes are not treated as true no-value
-  clears; use `operation: "clear"` when that distinction matters.
+  clears. Use `operation: "clear"` only for real Revit no-value restore through
+  `Parameter.ClearValue`. Use `operation: "clearVisibleValue"` only when a
+  visible blank string is acceptable; built-in string parameters such as
+  `Comments` may remain `HasValue=true` and are reported as
+  `noValueState="visible_empty_has_value"`.
 - `set_schedule_cells` - production-safe exact schedule-cell text write tool.
   It never writes by schedule name, requires `scheduleId`, `section`, and
   zero-based row/column coordinates, defaults to `mode: "dryRun"`, can block

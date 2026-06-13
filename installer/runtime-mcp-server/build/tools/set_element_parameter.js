@@ -1,6 +1,15 @@
 import { z } from "zod";
 import { connectionOptionsFromArgs, connectionTargetSchema, csharpString, executeRevitCode, formatJsonContent, getSelectionElementIds, taskMetadataSchema, taskOptionsFromArgs, } from "../utils/revitToolHelpers.js";
 import { runtimeFailure, runtimeGuarded } from "../utils/runtimeResult.js";
+function normalizeParameterOperation(value) {
+    if (value === "clear") {
+        return "clear";
+    }
+    if (value === "clearVisibleValue") {
+        return "clearVisibleValue";
+    }
+    return "set";
+}
 function valueToText(value) {
     if (typeof value === "boolean") {
         return value ? "true" : "false";
@@ -33,12 +42,13 @@ async function resolveSingleElementId(args, connectionOptions) {
     return null;
 }
 function buildSetElementParameterCode(args, elementId) {
+    const normalizedOperation = normalizeParameterOperation(args.operation);
     const parameterName = csharpString(args.parameterName || "");
     const parameterSource = csharpString(args.parameterSource || "instance");
-    const valueText = csharpString(valueToText(args.value));
+    const valueText = csharpString(normalizedOperation === "clearVisibleValue" ? "" : valueToText(args.value));
     const valueMode = csharpString(args.valueMode || "raw");
     const mode = csharpString(args.mode === "commit" ? "commit" : "dryRun");
-    const operation = csharpString(args.operation === "clear" ? "clear" : "set");
+    const operation = csharpString(normalizedOperation);
     const hasRequestedValue = args.value === undefined || args.value === null ? "false" : "true";
     const builtInParameterId = Number.isInteger(args.builtInParameterId)
         ? String(args.builtInParameterId)
@@ -63,6 +73,7 @@ bool allowTypeParameterWrite = ${allowTypeParameterWrite};
 bool hasRequestedValue = ${hasRequestedValue};
 bool dryRun = !string.Equals(mode, "commit", StringComparison.OrdinalIgnoreCase);
 bool clearOperation = string.Equals(operation, "clear", StringComparison.OrdinalIgnoreCase);
+bool clearVisibleOperation = string.Equals(operation, "clearVisibleValue", StringComparison.OrdinalIgnoreCase);
 
 string RawValue(Parameter p)
 {
@@ -123,6 +134,7 @@ int? ReflectedParameterElementId(Parameter p)
 object ParameterIdentity(Parameter p, string source)
 {
     string name = p.Definition != null ? p.Definition.Name : "";
+    string raw = RawValue(p);
     string valueString = ValueString(p);
     string dataType = "";
     string unitType = "";
@@ -131,6 +143,14 @@ object ParameterIdentity(Parameter p, string source)
     try { unitType = p.GetUnitTypeId().TypeId; } catch {}
     try { isShared = p.IsShared; } catch {}
     int? builtInId = BuiltInId(p);
+    string noValueState = !p.HasValue
+        ? "true_no_value"
+        : p.StorageType == StorageType.String && string.IsNullOrEmpty(raw)
+            ? "visible_empty_has_value"
+            : "has_value";
+    string trueNoValueUnsupportedReason = "";
+    bool? hideWhenNoValue = null;
+    bool trueNoValueClearSupported = CanAttemptTrueNoValueClear(document, p, out trueNoValueUnsupportedReason, out hideWhenNoValue);
     return new {
         source = source,
         name = name,
@@ -143,8 +163,20 @@ object ParameterIdentity(Parameter p, string source)
         dataType = dataType,
         unitType = unitType,
         hasValue = p.HasValue,
-        raw = RawValue(p),
-        valueString = valueString
+        raw = raw,
+        valueString = valueString,
+        noValueState = noValueState,
+        effectiveVisibleEmpty = p.StorageType == StorageType.String && string.IsNullOrEmpty(raw),
+        clearability = new {
+            clearApi = "Parameter.ClearValue",
+            trueNoValueClearSupported = trueNoValueClearSupported,
+            trueNoValueUnsupportedReason = trueNoValueClearSupported ? "" : trueNoValueUnsupportedReason,
+            hideWhenNoValue = hideWhenNoValue,
+            hideWhenNoValueVerified = hideWhenNoValue.HasValue,
+            visibleEmptyClearSupported = p.StorageType == StorageType.String && !p.IsReadOnly,
+            visibleEmptyClearOperation = "clearVisibleValue",
+            visibleEmptyClearLeavesHasValueTrue = p.StorageType == StorageType.String
+        }
     };
 }
 
@@ -318,6 +350,11 @@ bool CanAttemptTrueNoValueClear(Document doc, Parameter p, out string unsupporte
 {
     unsupportedReason = "";
     hideWhenNoValue = null;
+    if (p.IsReadOnly)
+    {
+        unsupportedReason = "read_only_parameter_blocked";
+        return false;
+    }
     if (!p.IsShared)
     {
         unsupportedReason = "clear_value_requires_shared_parameter";
@@ -367,9 +404,9 @@ try
     {
         return Blocked("parameter_name_required", "parameterName is required for exact schema preflight.");
     }
-    if (!clearOperation && !hasRequestedValue)
+    if (!clearOperation && !clearVisibleOperation && !hasRequestedValue)
     {
-        return Blocked("value_required", "value is required when operation=set. Use operation=clear only when you intentionally want to restore a no-value state.");
+        return Blocked("value_required", "value is required when operation=set. Use operation=clear only when you intentionally want to restore a true no-value state, or operation=clearVisibleValue when a visible empty string is acceptable.");
     }
     if (expectedBuiltInParameterId.HasValue && expectedBuiltInParameterId.Value == -1)
     {
@@ -482,13 +519,22 @@ try
                 parameterWasShared = target.IsShared,
                 hideWhenNoValue = hideWhenNoValue,
                 hideWhenNoValueVerified = hideWhenNoValue.HasValue,
-                visibleEmptyFallback = "Use operation=set with an empty string only if a visible empty value is acceptable. Revit may keep HasValue=true."
+                visibleEmptyAlternative = "Use operation=clearVisibleValue only if a visible empty value is acceptable. Revit may keep HasValue=true."
             });
+    }
+    if (clearVisibleOperation && target.StorageType != StorageType.String)
+    {
+        return Blocked(
+            "visible_clear_requires_string_parameter",
+            "operation=clearVisibleValue writes an empty string and is only valid for String parameters. Use operation=clear for true no-value restore when the parameter supports Parameter.ClearValue.",
+            new { parameter = before });
     }
 
     string expectedRaw = clearOperation ? null : ExpectedRawAfterSet(target);
     string valueSetApi = clearOperation
         ? "ClearValue"
+        : clearVisibleOperation
+            ? "Set(empty string)"
         : target.StorageType == StorageType.Double && string.Equals(valueMode, "valueString", StringComparison.OrdinalIgnoreCase)
             ? "SetValueString"
             : "Set";
@@ -503,6 +549,10 @@ try
         if (!clearOperation && target.StorageType == StorageType.String && requestedValueText.Length == 0)
         {
             dryRunWarnings.Add("empty_string_set_does_not_guarantee_revit_has_value_false_use_operation_clear_when_supported");
+        }
+        if (clearVisibleOperation)
+        {
+            dryRunWarnings.Add("clear_visible_value_sets_empty_string_and_does_not_restore_revit_has_value_false");
         }
         if (rollbackTrueNoValueMayBeUnsupported)
         {
@@ -538,17 +588,20 @@ try
             },
             parameter = before,
             requested = new {
-                value = clearOperation ? null : requestedValueText,
+                value = clearOperation || clearVisibleOperation ? null : requestedValueText,
                 valueMode = valueMode,
                 expectedRawAfterSet = expectedRaw,
                 expectedHasValueAfterClear = clearOperation ? false : (bool?)null,
+                expectedNoValueState = clearOperation ? "true_no_value" : null,
+                expectedRawAfterVisibleClear = clearVisibleOperation ? "" : null,
+                hasValueAfterVisibleClear = clearVisibleOperation ? "not_guaranteed_may_remain_true" : null,
                 valueSetApi = valueSetApi,
-                clearValueSupport = clearOperation ? "will_attempt_clear_value_on_commit" : null
+                clearValueSupport = clearOperation ? "will_attempt_clear_value_on_commit" : clearVisibleOperation ? "not_applicable_visible_clear_uses_empty_string_set" : null
             },
             before = before,
             verification = new {
                 wouldVerifyAfterWrite = true,
-                verificationMode = clearOperation ? "hasValue false after ClearValue" : expectedRaw == null ? "SetValueString readback" : "raw readback"
+                verificationMode = clearOperation ? "hasValue false after ClearValue" : clearVisibleOperation ? "visible empty raw readback; HasValue may remain true" : expectedRaw == null ? "SetValueString readback" : "raw readback"
             },
             rollbackSafety = rollbackSafety,
             warnings = dryRunWarnings.ToArray()
@@ -571,7 +624,7 @@ try
                     clearError = clearError,
                     attemptedClearValue = true,
                     parameterWasShared = target.IsShared,
-                    visibleEmptyFallback = "Use operation=set with an empty string only if a visible empty value is acceptable. Revit may keep HasValue=true."
+                    visibleEmptyAlternative = "Use operation=clearVisibleValue only if a visible empty value is acceptable. Revit may keep HasValue=true."
                 });
         }
     }
@@ -601,6 +654,10 @@ try
     if (!clearOperation && target.StorageType == StorageType.String && requestedValueText.Length == 0)
     {
         warnings.Add("empty_string_set_does_not_guarantee_revit_has_value_false_use_operation_clear_when_supported");
+    }
+    if (clearVisibleOperation)
+    {
+        warnings.Add("clear_visible_value_sets_empty_string_and_does_not_restore_revit_has_value_false");
     }
     if (rollbackTrueNoValueMayBeUnsupported)
     {
@@ -635,20 +692,23 @@ try
             readOnlyBlocked = false
         },
         requested = new {
-            value = clearOperation ? null : requestedValueText,
+            value = clearOperation || clearVisibleOperation ? null : requestedValueText,
             valueMode = valueMode,
             expectedRawAfterSet = expectedRaw,
             expectedHasValueAfterClear = clearOperation ? false : (bool?)null,
+            expectedNoValueState = clearOperation ? "true_no_value" : null,
+            expectedRawAfterVisibleClear = clearVisibleOperation ? "" : null,
+            hasValueAfterVisibleClear = clearVisibleOperation ? "not_guaranteed_may_remain_true" : null,
             valueSetApi = valueSetApi
         },
         before = before,
         after = after,
-        changed = clearOperation
+        changed = clearOperation || clearVisibleOperation
             ? beforeHasValue != target.HasValue || !string.Equals(beforeRaw, afterRaw, StringComparison.Ordinal) || !string.Equals(beforeValueString, afterValueString, StringComparison.Ordinal)
             : !string.Equals(beforeRaw, afterRaw, StringComparison.Ordinal) || !string.Equals(beforeValueString, afterValueString, StringComparison.Ordinal),
         verification = new {
             verified = rawVerified,
-            verificationMode = clearOperation ? "hasValue false after ClearValue" : expectedRaw == null ? "SetValueString readback" : "raw readback",
+            verificationMode = clearOperation ? "hasValue false after ClearValue" : clearVisibleOperation ? "visible empty raw readback; HasValue may remain true" : expectedRaw == null ? "SetValueString readback" : "raw readback",
             setApiReturned = setSucceeded
         },
         rollbackSafety = rollbackSafety,
@@ -670,7 +730,7 @@ catch (Exception ex)
 }`;
 }
 export function registerSetElementParameterTool(server) {
-    server.tool("set_element_parameter", "[PRODUCTION_PARAMETER_WRITE] Safely set or clear one Revit element parameter after exact inspect_parameter_schema-style identity resolution. Never writes by visible display name alone: duplicate display names, read-only parameters, identity mismatch, unsupported clear/no-value attempts, and unapproved type-parameter writes are guarded. Clear uses Revit Parameter.ClearValue only for parameter kinds that can restore a true no-value state and never fakes no-value restore by writing an empty string. Defaults to dryRun; use mode=commit only for an explicitly confirmed write, then the tool reads the parameter back for verification.", {
+    server.tool("set_element_parameter", "[PRODUCTION_PARAMETER_WRITE] Safely set, true-clear, or visibly clear one Revit element parameter after exact inspect_parameter_schema-style identity resolution. Never writes by visible display name alone: duplicate display names, read-only parameters, identity mismatch, unsupported clear/no-value attempts, and unapproved type-parameter writes are guarded. operation=clear uses Revit Parameter.ClearValue only for parameter kinds that can restore a true no-value state and never fakes no-value restore by writing an empty string. operation=clearVisibleValue is an explicit string-only visible cleanup path that writes an empty string and reports that Revit may keep HasValue=true. Defaults to dryRun; use mode=commit only for an explicitly confirmed write, then the tool reads the parameter back for verification.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         elementId: z.union([z.number(), z.string()]).optional().describe("Target Revit ElementId. Preferred for production writes."),
@@ -680,7 +740,7 @@ export function registerSetElementParameterTool(server) {
         builtInParameterId: z.number().int().optional().describe("Optional stable BuiltInParameter integer from inspect_parameter_schema. If supplied, it must match the exact display-name result."),
         expectedStorageType: z.enum(["String", "Integer", "Double", "ElementId"]).optional().describe("Optional storage-type guard from inspect_parameter_schema."),
         expectedCurrentRaw: z.union([z.string(), z.number(), z.boolean()]).optional().describe("Optional compare-and-set guard. Commit is blocked if the current raw value differs."),
-        operation: z.enum(["set", "clear"]).optional().default("set").describe("set writes the supplied value. clear uses Revit Parameter.ClearValue only when the parameter kind supports true no-value restore and never falls back to writing an empty string."),
+        operation: z.enum(["set", "clear", "clearVisibleValue"]).optional().default("set").describe("set writes the supplied value. clear uses Revit Parameter.ClearValue only when the parameter kind supports true no-value restore and never falls back to writing an empty string. clearVisibleValue explicitly writes an empty string to a String parameter and may leave HasValue=true."),
         value: z.union([z.string(), z.number(), z.boolean()]).optional().describe("Requested value for operation=set. String writes use the text as-is; Integer accepts number/true/false; Double defaults to raw Revit internal units; ElementId accepts an integer id."),
         valueMode: z.enum(["raw", "valueString"]).optional().default("raw").describe("For Double parameters, raw writes internal Revit units. valueString uses Parameter.SetValueString with project units."),
         mode: z.enum(["dryRun", "commit"]).optional().default("dryRun").describe("dryRun performs schema/convertibility checks only. commit writes inside the wrapper transaction and verifies readback."),
@@ -702,13 +762,13 @@ export function registerSetElementParameterTool(server) {
                 });
             }
             const mode = args.mode === "commit" ? "commit" : "dryRun";
-            const operation = args.operation === "clear" ? "clear" : "set";
+            const operation = normalizeParameterOperation(args.operation);
             if (operation === "set" && (args.value === undefined || args.value === null)) {
                 return formatJsonContent({
                     ...runtimeGuarded({
                         action: "set_element_parameter",
                         reason: "value_required",
-                        error: "value is required when operation=set. Use operation=clear only when you intentionally want to restore a no-value state.",
+                        error: "value is required when operation=set. Use operation=clear only when you intentionally want to restore a true no-value state, or operation=clearVisibleValue when a visible empty string is acceptable.",
                     }),
                     guardReason: "value_required",
                     tool: "set_element_parameter",
@@ -719,8 +779,8 @@ export function registerSetElementParameterTool(server) {
             const response = await executeRevitCode(buildSetElementParameterCode(args, resolvedElementId), {
                 ...connectionOptions,
                 ...taskOptionsFromArgs(args, mode === "commit"
-                    ? operation === "clear" ? "Clear Revit element parameter" : "Set Revit element parameter"
-                    : operation === "clear" ? "Dry-run Revit element parameter clear" : "Dry-run Revit element parameter write"),
+                    ? operation === "clear" ? "Clear Revit element parameter" : operation === "clearVisibleValue" ? "Visibly clear Revit element parameter" : "Set Revit element parameter"
+                    : operation === "clear" ? "Dry-run Revit element parameter clear" : operation === "clearVisibleValue" ? "Dry-run visible Revit element parameter clear" : "Dry-run Revit element parameter write"),
                 transactionMode: mode === "commit" ? "auto" : "none",
             });
             return formatJsonContent(response && response.result ? response.result : response);

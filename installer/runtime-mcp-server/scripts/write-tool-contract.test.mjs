@@ -24,6 +24,7 @@ assertContains(setElementParameter, "runtimeGuarded", "set_element_parameter mus
 assertContains(setElementParameter, "runtimeFailure", "set_element_parameter must use the shared runtime failure result contract for JS-side failures.");
 assertContains(setElementParameter, 'mode: z.enum(["dryRun", "commit"]).optional().default("dryRun")', "set_element_parameter must default to dryRun.");
 assertContains(setElementParameter, 'transactionMode: mode === "commit" ? "auto" : "none"', "set_element_parameter must only use auto transaction mode for commit.");
+assertContains(setElementParameter, 'operation: z.enum(["set", "clear", "clearVisibleValue"])', "set_element_parameter must expose explicit true-clear and visible-clear operations.");
 assertContains(setElementParameter, "expectedCurrentRaw", "set_element_parameter must keep compare-and-set current value protection.");
 assertContains(setElementParameter, "allowTypeParameterWrite", "set_element_parameter must keep explicit type parameter write approval.");
 assertContains(setElementParameter, "expected_current_raw_mismatch", "set_element_parameter must guard stale current values.");
@@ -31,6 +32,7 @@ assertContains(setElementParameter, "verified = rawVerified", "set_element_param
 assertContains(setElementParameter, "rollbackSafety", "set_element_parameter must expose rollback safety metadata.");
 assertContains(setElementParameter, "rollbackTrueNoValueMayBeUnsupported", "set_element_parameter must warn when true no-value rollback may not be supported.");
 assertContains(setElementParameter, "prior_no_value_state_may_not_be_restorable_for_non_shared_parameter", "set_element_parameter must warn before writes that may not restore prior HasValue=false state.");
+assertContains(setElementParameter, "normalizeParameterOperation", "set_element_parameter must normalize the public operation before generating C#.");
 assertContains(setElementParameter, "clear_value_requires_shared_parameter", "set_element_parameter must guard non-shared true no-value clears before commit.");
 assertContains(setElementParameter, "clear_value_requires_hide_when_no_value", "set_element_parameter must guard shared parameters that cannot hide no-value state.");
 assertContains(setElementParameter, "clear_value_hide_when_no_value_unverified", "set_element_parameter must guard shared clears when HideWhenNoValue cannot be verified.");
@@ -39,6 +41,10 @@ assertContains(setElementParameter, "ShouldHideWhenNoValue", "set_element_parame
 assertContains(setElementParameter, "canRestoreTrueNoValue = false", "set_element_parameter clear guards must disclose that true HasValue=false restore is impossible for this parameter kind.");
 assertContains(setElementParameter, "attemptedClearValue = true", "set_element_parameter clear failures must report that ClearValue was actually attempted.");
 assertContains(setElementParameter, "attemptedClearValue = false", "set_element_parameter non-shared clear guards must avoid pretending ClearValue was tried.");
+assertContains(setElementParameter, "clear_visible_value_sets_empty_string_and_does_not_restore_revit_has_value_false", "set_element_parameter visible clears must disclose that HasValue=false is not restored.");
+assertContains(setElementParameter, "visible_clear_requires_string_parameter", "set_element_parameter visible clears must guard non-string parameters.");
+assertContains(setElementParameter, 'visibleEmptyClearOperation = "clearVisibleValue"', "set_element_parameter parameter identity must advertise the visible clear operation.");
+assertContains(setElementParameter, 'noValueState = !p.HasValue', "set_element_parameter parameter identity must distinguish true no-value from visible empty string.");
 
 const setScheduleCells = readSource("src/tools/set_schedule_cells.ts");
 assertContains(setScheduleCells, "[PRODUCTION_SCHEDULE_CELL_WRITE]", "set_schedule_cells must stay marked as a production write tool.");
@@ -173,6 +179,13 @@ assertContains(getRevitMcpStatus, "includeRuntimeActivity", "get_revit_mcp_statu
 assertContains(getRevitMcpStatus, "runtimeActivityLimit", "get_revit_mcp_status must bound runtime activity rows.");
 assertContains(getRevitMcpStatus, "runtimeActivityMode", "get_revit_mcp_status must let callers request summary or full runtime activity.");
 assertContains(getRevitMcpStatus, "getLiveRuntimeActivityStatus", "get_revit_mcp_status must attach runtime/client activity to status responses.");
+
+const inspectParameterSchema = readSource("src/tools/inspect_parameter_schema.ts");
+assertContains(inspectParameterSchema, "noValueState", "inspect_parameter_schema must report the parameter no-value state.");
+assertContains(inspectParameterSchema, "visible_empty_has_value", "inspect_parameter_schema must distinguish visible empty strings from true no-value.");
+assertContains(inspectParameterSchema, "clearability", "inspect_parameter_schema must report true-clear and visible-clear capability metadata.");
+assertContains(inspectParameterSchema, 'visibleEmptyClearOperation = "clearVisibleValue"', "inspect_parameter_schema must point callers to the explicit visible clear operation.");
+assertContains(inspectParameterSchema, "ShouldHideWhenNoValue", "inspect_parameter_schema must verify SharedParameterElement HideWhenNoValue before advertising true no-value clear support.");
 
 const viewOperationResult = readSource("src/tools/view_operation_result.ts");
 for (const field of ["dryRun", "deleted", "confirmDelete", "targetIsReviewView", "reviewSignals", "deletedElementCount"]) {

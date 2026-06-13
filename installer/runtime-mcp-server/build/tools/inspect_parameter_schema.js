@@ -47,6 +47,102 @@ string RawValue(Parameter p)
     return "";
 }
 
+string SharedGuid(Parameter p)
+{
+    try
+    {
+        if (!p.IsShared) return "";
+        ExternalDefinition externalDefinition = p.Definition as ExternalDefinition;
+        if (externalDefinition != null) return externalDefinition.GUID.ToString();
+    }
+    catch {}
+    return "";
+}
+
+int? ReflectedParameterElementId(Parameter p)
+{
+    try
+    {
+        System.Reflection.PropertyInfo prop = p.GetType().GetProperty("Id");
+        if (prop == null) return null;
+        ElementId id = prop.GetValue(p, null) as ElementId;
+        if (id == null || id == ElementId.InvalidElementId) return null;
+        return id.IntegerValue;
+    }
+    catch { return null; }
+}
+
+bool TryResolveHideWhenNoValue(Document doc, Parameter p, out bool hideWhenNoValue)
+{
+    hideWhenNoValue = false;
+    ExternalDefinition externalDefinition = p.Definition as ExternalDefinition;
+    if (externalDefinition != null)
+    {
+        hideWhenNoValue = externalDefinition.HideWhenNoValue;
+        return true;
+    }
+
+    int? parameterElementId = ReflectedParameterElementId(p);
+    if (parameterElementId.HasValue)
+    {
+        SharedParameterElement sharedElement = doc.GetElement(new ElementId(parameterElementId.Value)) as SharedParameterElement;
+        if (sharedElement != null)
+        {
+            hideWhenNoValue = sharedElement.ShouldHideWhenNoValue();
+            return true;
+        }
+    }
+
+    string sharedGuid = SharedGuid(p);
+    if (!string.IsNullOrWhiteSpace(sharedGuid))
+    {
+        Guid guid;
+        if (Guid.TryParse(sharedGuid, out guid))
+        {
+            SharedParameterElement sharedElement = SharedParameterElement.Lookup(doc, guid);
+            if (sharedElement != null)
+            {
+                hideWhenNoValue = sharedElement.ShouldHideWhenNoValue();
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool CanAttemptTrueNoValueClear(Document doc, Parameter p, out string unsupportedReason, out bool? hideWhenNoValue)
+{
+    unsupportedReason = "";
+    hideWhenNoValue = null;
+    if (p.IsReadOnly)
+    {
+        unsupportedReason = "read_only_parameter_blocked";
+        return false;
+    }
+    if (!p.IsShared)
+    {
+        unsupportedReason = "clear_value_requires_shared_parameter";
+        return false;
+    }
+
+    bool resolvedHideWhenNoValue;
+    if (!TryResolveHideWhenNoValue(doc, p, out resolvedHideWhenNoValue))
+    {
+        unsupportedReason = "clear_value_hide_when_no_value_unverified";
+        return false;
+    }
+
+    hideWhenNoValue = resolvedHideWhenNoValue;
+    if (!resolvedHideWhenNoValue)
+    {
+        unsupportedReason = "clear_value_requires_hide_when_no_value";
+        return false;
+    }
+
+    return true;
+}
+
 object ParameterSchema(Parameter p, string source)
 {
     string builtIn = "";
@@ -93,6 +189,15 @@ object ParameterSchema(Parameter p, string source)
     try { dataType = p.Definition.GetDataType().TypeId; } catch {}
     try { unitType = p.GetUnitTypeId().TypeId; } catch {}
     try { valueString = p.AsValueString(); } catch {}
+    string raw = RawValue(p);
+    string noValueState = !p.HasValue
+        ? "true_no_value"
+        : p.StorageType == StorageType.String && string.IsNullOrEmpty(raw)
+            ? "visible_empty_has_value"
+            : "has_value";
+    string trueNoValueUnsupportedReason = "";
+    bool? hideWhenNoValue = null;
+    bool trueNoValueClearSupported = CanAttemptTrueNoValueClear(document, p, out trueNoValueUnsupportedReason, out hideWhenNoValue);
 
     return new {
         source = source,
@@ -106,10 +211,24 @@ object ParameterSchema(Parameter p, string source)
         hasValue = p.HasValue,
         isReadOnly = p.IsReadOnly,
         isShared = isShared,
+        sharedGuid = SharedGuid(p),
+        parameterElementId = ReflectedParameterElementId(p),
         dataType = dataType,
         unitType = unitType,
-        raw = RawValue(p),
-        valueString = valueString
+        raw = raw,
+        valueString = valueString,
+        noValueState = noValueState,
+        effectiveVisibleEmpty = p.StorageType == StorageType.String && string.IsNullOrEmpty(raw),
+        clearability = new {
+            clearApi = "Parameter.ClearValue",
+            trueNoValueClearSupported = trueNoValueClearSupported,
+            trueNoValueUnsupportedReason = trueNoValueClearSupported ? "" : trueNoValueUnsupportedReason,
+            hideWhenNoValue = hideWhenNoValue,
+            hideWhenNoValueVerified = hideWhenNoValue.HasValue,
+            visibleEmptyClearSupported = p.StorageType == StorageType.String && !p.IsReadOnly,
+            visibleEmptyClearOperation = "clearVisibleValue",
+            visibleEmptyClearLeavesHasValueTrue = p.StorageType == StorageType.String
+        }
     };
 }
 
@@ -207,6 +326,8 @@ function summarizeParameterIdentity(parameter) {
         isReadOnly: parameter.isReadOnly,
         dataType: parameter.dataType,
         unitType: parameter.unitType,
+        noValueState: parameter.noValueState,
+        clearability: parameter.clearability,
     };
 }
 function withDuplicateDisplayNameWarnings(payload, args) {
@@ -258,7 +379,7 @@ function withDuplicateDisplayNameWarnings(payload, args) {
     };
 }
 export function registerInspectParameterSchemaTool(server) {
-    server.tool("inspect_parameter_schema", "Read-only parameter schema inspection for selected ids or a category sample: user-facing BIP display label/id, raw enum alias, storage type, unit type, shared/read-only flags, raw and display values.", {
+    server.tool("inspect_parameter_schema", "Read-only parameter schema inspection for selected ids or a category sample: user-facing BIP display label/id, raw enum alias, storage type, unit type, shared/read-only flags, raw/display values, no-value state, and clearability metadata.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         elementIds: z.array(z.union([z.number(), z.string()])).optional().describe("Element ids to inspect."),
