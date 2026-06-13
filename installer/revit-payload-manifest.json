@@ -135,7 +135,7 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/revit-plugin/revit_mcp_plugin/RevitMCPPlugin.dll",
-                                                  "sha256":  "498365da90f8f0f747aa034fdc53b903d60f2b81d4b0194135230bbcffd965c5",
+                                                  "sha256":  "a8130f2b2bb08b6ce40e2a96edaf65dac66aa54681c7943a9c9970e84f3cc32a",
                                                   "sizeBytes":  95232
                                               }
                                           ]
@@ -272,7 +272,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/InspectSchedulesEventHandler.cs",
-                                                "gitBlobSha":  "b67b5ffcb94c9f03a7d27118474fad743a2c00e4"
+                                                "gitBlobSha":  "f68955f868a312783ee2cccec217929b63ca392c"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/InspectSheetTextCommand.cs",
@@ -280,7 +280,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/InspectSheetTextEventHandler.cs",
-                                                "gitBlobSha":  "e23c5469f3d7713627fc6f8364be04e054986aad"
+                                                "gitBlobSha":  "1ee92b23ab8c42c710bf8c9f9d057ad877b96c51"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ListOpenViewsCommand.cs",
@@ -346,12 +346,12 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/command-payload/RevitMCPCommandSet.dll",
-                                                  "sha256":  "d348be3b380e518010d2a9de3a9a56169ef10df0dd255043d19fbbc13932a785",
+                                                  "sha256":  "c2f407ac39557f629970d7c6b61433ba92d74799a3bf587590dc4d9d2675f928",
                                                   "sizeBytes":  270848
                                               },
                                               {
                                                   "path":  "installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPCommandSet/2022/RevitMCPCommandSet.dll",
-                                                  "sha256":  "d348be3b380e518010d2a9de3a9a56169ef10df0dd255043d19fbbc13932a785",
+                                                  "sha256":  "c2f407ac39557f629970d7c6b61433ba92d74799a3bf587590dc4d9d2675f928",
                                                   "sizeBytes":  270848
                                               }
                                           ]

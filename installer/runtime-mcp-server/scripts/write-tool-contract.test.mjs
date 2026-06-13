@@ -31,9 +31,14 @@ assertContains(setElementParameter, "verified = rawVerified", "set_element_param
 assertContains(setElementParameter, "rollbackSafety", "set_element_parameter must expose rollback safety metadata.");
 assertContains(setElementParameter, "rollbackTrueNoValueMayBeUnsupported", "set_element_parameter must warn when true no-value rollback may not be supported.");
 assertContains(setElementParameter, "prior_no_value_state_may_not_be_restorable_for_non_shared_parameter", "set_element_parameter must warn before writes that may not restore prior HasValue=false state.");
-assertContains(setElementParameter, "non_shared_clear_will_attempt_parameter_clear_value_without_empty_string_fallback", "set_element_parameter clear dry-run must disclose non-shared ClearValue attempts.");
+assertContains(setElementParameter, "clear_value_requires_shared_parameter", "set_element_parameter must guard non-shared true no-value clears before commit.");
+assertContains(setElementParameter, "clear_value_requires_hide_when_no_value", "set_element_parameter must guard shared parameters that cannot hide no-value state.");
+assertContains(setElementParameter, "clear_value_hide_when_no_value_unverified", "set_element_parameter must guard shared clears when HideWhenNoValue cannot be verified.");
+assertContains(setElementParameter, "SharedParameterElement", "set_element_parameter must resolve bound shared parameter metadata through SharedParameterElement.");
+assertContains(setElementParameter, "ShouldHideWhenNoValue", "set_element_parameter must verify the Revit shared-parameter hide flag before clear commit.");
+assertContains(setElementParameter, "canRestoreTrueNoValue = false", "set_element_parameter clear guards must disclose that true HasValue=false restore is impossible for this parameter kind.");
 assertContains(setElementParameter, "attemptedClearValue = true", "set_element_parameter clear failures must report that ClearValue was actually attempted.");
-assertDoesNotContain(setElementParameter, "clearOperation && !target.IsShared", "set_element_parameter must not pre-block non-shared clear before attempting Parameter.ClearValue.");
+assertContains(setElementParameter, "attemptedClearValue = false", "set_element_parameter non-shared clear guards must avoid pretending ClearValue was tried.");
 
 const setScheduleCells = readSource("src/tools/set_schedule_cells.ts");
 assertContains(setScheduleCells, "[PRODUCTION_SCHEDULE_CELL_WRITE]", "set_schedule_cells must stay marked as a production write tool.");

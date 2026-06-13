@@ -366,9 +366,17 @@ try {
     $revitPayloadManifestText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\RevitPayloadManifest.psm1")
     $buildRevitPluginText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\build-revit-plugin.ps1")
     $ciText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-ci.ps1")
+    $runtimePackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\package.json")
+    $runtimePackageLockText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\package-lock.json")
+    $docsPackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\package.json")
+    $docsPackageLockText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\package-lock.json")
     Assert-True ($payloadFreshnessText -match 'Assert-RevitPayloadManifestFresh') "Payload freshness gate must validate the Revit manifest."
     Assert-True ($payloadFreshnessText -match 'New-McpPackageWorkCopy' -and $payloadFreshnessText -match 'Invoke-McpPackageNpmCi' -and $payloadFreshnessText -match 'Get-McpPackageTscPath') "Payload freshness gate must restore and compile MCP packages from isolated temporary work copies."
     Assert-True ($packageTestHelpersText -match 'node_modules' -and $packageTestHelpersText -match '\.package-lock\.json' -and $packageTestHelpersText -match 'GetTempPath' -and $packageTestHelpersText -match 'REVIT_MCP_REPO_ROOT') "MCP package test helpers must skip live dependency folders, use temporary work copies, and preserve repo-root context."
+    Assert-True ($runtimePackageText -match '"@e965/xlsx"' -and $runtimePackageText -notmatch '"exceljs"') "Runtime Excel ingestion must avoid the deprecated exceljs transitive dependency chain."
+    Assert-True ($docsPackageText -match '"rimraf": "\^6\.') "Docs MCP clean script dependency must use rimraf 6 or newer."
+    Assert-True ($runtimePackageLockText -notmatch 'node_modules/(inflight|lodash\.isequal|fstream)' -and $docsPackageLockText -notmatch 'node_modules/(inflight|lodash\.isequal|fstream)') "MCP package locks must not include deprecated npm dependency packages that create CI warning noise."
+    Assert-True ($runtimePackageLockText -notmatch '"version": "2\.7\.1"|node_modules/glob":\s*\{\s*"version": "7\.2\.3"' -and $docsPackageLockText -notmatch '"version": "2\.7\.1"|node_modules/glob":\s*\{\s*"version": "10\.5\.0"') "MCP package locks must not include deprecated rimraf/glob versions."
     Assert-True ($payloadFreshnessText -notmatch 'Get-NewestPayloadSourceFile|Assert-RevitPayloadFresh|LastWriteTimeUtc -gt') "Payload freshness gate must not use Revit source/payload mtimes."
     Assert-True ($ciText -match 'Get-McpPackageTscPath' -and $ciText -notmatch 'tsc\.cmd') "CI forced TypeScript checks must resolve the package-local compiler portably."
     Assert-True ($testAllText -match 'New-McpPackageWorkCopy' -and $testAllText -match 'Invoke-McpPackageNpmCi' -and $testAllText -match 'Invoke-McpPackageCommand -PackageName "\$\(\$package\.Name\) npm test"') "Local test-all gate must restore package npm dependencies in an isolated work copy before npm tests and payload freshness."

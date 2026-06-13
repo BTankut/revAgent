@@ -178,7 +178,8 @@ function resolveScheduleStopReason(payload: JsonObject) {
 }
 
 function buildScheduleSummary(payload: JsonObject) {
-    const scan = readNativeResultObject(payload, "scan") || {};
+    const compatibleScan = buildCompatibleScheduleScan(payload);
+    const scan = isObject(compatibleScan) ? compatibleScan : {};
     const schedules = readNativeResultArray(payload, "schedules");
     const evidenceRows = readNativeResultArray(payload, "evidenceRows").length > 0
         ? readNativeResultArray(payload, "evidenceRows")
@@ -315,6 +316,32 @@ function buildCompatibleSchedules(result: JsonObject) {
         });
 }
 
+function applyCasingNormalization(target: JsonObject, fields: JsonObject) {
+    for (const [camelName, value] of Object.entries(fields)) {
+        const pascalName = camelName.charAt(0).toUpperCase() + camelName.slice(1);
+        target[camelName] = value;
+        target[pascalName] = value;
+    }
+    return target;
+}
+
+function buildCompatibleScheduleScan(result: JsonObject) {
+    const scan = readNativeResultField(result, "scan");
+    if (!scan || typeof scan !== "object" || Array.isArray(scan)) {
+        return scan;
+    }
+    const target = { ...scan };
+    const fields: JsonObject = {};
+    if (!hasScheduleNameQuery(result)) {
+        fields.scheduleNameMatchedCount = 0;
+    }
+    if (!hasScheduleCellQuery(result)) {
+        fields.cellMatchedScheduleCount = 0;
+        fields.totalCellMatches = 0;
+    }
+    return applyCasingNormalization(target, fields);
+}
+
 function preserveScheduleCompatibilityFields(result: JsonObject) {
     for (const field of ["query", "nameQuery", "cellQuery", "totalSchedules", "candidateCount", "returnedCount", "truncated", "maxSchedules", "scan", "matches"]) {
         const value = readNativeResultField(result, field);
@@ -322,6 +349,7 @@ function preserveScheduleCompatibilityFields(result: JsonObject) {
             result[field] = value;
         }
     }
+    result.scan = buildCompatibleScheduleScan(result);
     result.schedules = buildCompatibleSchedules(result);
     if (!hasScheduleCellQuery(result)) {
         result.matches = [];

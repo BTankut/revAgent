@@ -283,7 +283,7 @@ namespace RevitMCPCommandSet.Commands.View
 
             if (_request.IncludeTextNotes)
             {
-                ScanSheetTextNotes(document, sheet, result, deadlineUtc, state, flatMatches);
+                ScanSheetTextNotes(document, sheet, result, hasTextQuery, deadlineUtc, state, flatMatches, inventoryRows);
                 if (state.Partial && IsHardStop(state.ScanStoppedReason)) return result;
             }
 
@@ -295,7 +295,7 @@ namespace RevitMCPCommandSet.Commands.View
 
             if (_request.IncludeViewportTextNotes || _request.IncludeViewportTags)
             {
-                ScanViewports(document, sheet, result, deadlineUtc, state, warnings, flatMatches);
+                ScanViewports(document, sheet, result, hasTextQuery, deadlineUtc, state, warnings, flatMatches, inventoryRows);
             }
 
             return result;
@@ -305,9 +305,11 @@ namespace RevitMCPCommandSet.Commands.View
             Document document,
             ViewSheet sheet,
             InspectSheetTextSheetResult result,
+            bool hasTextQuery,
             DateTime deadlineUtc,
             SheetAnnotationScanState state,
-            List<Dictionary<string, object>> flatMatches)
+            List<Dictionary<string, object>> flatMatches,
+            List<Dictionary<string, object>> inventoryRows)
         {
             if (state.ScannedTextNoteCount >= _request.MaxTextNotesScanned)
             {
@@ -333,7 +335,8 @@ namespace RevitMCPCommandSet.Commands.View
                     state.ScannedTextNoteCount++;
                     result.TextNoteCount++;
                     string text = AnnotationEvidenceHelpers.SafeText(textNote);
-                    if (!AnnotationEvidenceHelpers.ContainsPreNormalized(text, _request.NormalizedTextQuery)) continue;
+                    bool matchedTextQuery = hasTextQuery && AnnotationEvidenceHelpers.ContainsPreNormalized(text, _request.NormalizedTextQuery);
+                    if (hasTextQuery && !matchedTextQuery) continue;
 
                     if (returned >= _request.MaxTextNotesPerSheet)
                     {
@@ -350,13 +353,22 @@ namespace RevitMCPCommandSet.Commands.View
                         textNote,
                         text,
                         _request.MaxTextChars);
+                    record["matchedTextQuery"] = matchedTextQuery;
+                    record["inventoryOnly"] = !matchedTextQuery;
                     if (!AddRecordIfWithinResponseBudget(record, state)) return;
 
                     returned++;
-                    state.TotalTextNoteMatches++;
                     result.TextNoteReturned = returned;
                     result.TextNotes.Add(record);
-                    flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                    if (matchedTextQuery)
+                    {
+                        state.TotalTextNoteMatches++;
+                        flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                    }
+                    else
+                    {
+                        inventoryRows.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                    }
                 }
             }
         }
@@ -528,10 +540,12 @@ namespace RevitMCPCommandSet.Commands.View
             Document document,
             ViewSheet sheet,
             InspectSheetTextSheetResult result,
+            bool hasTextQuery,
             DateTime deadlineUtc,
             SheetAnnotationScanState state,
             List<string> warnings,
-            List<Dictionary<string, object>> flatMatches)
+            List<Dictionary<string, object>> flatMatches,
+            List<Dictionary<string, object>> inventoryRows)
         {
             ICollection<ElementId> viewportIds = sheet.GetAllViewports();
             int considered = 0;
@@ -603,13 +617,13 @@ namespace RevitMCPCommandSet.Commands.View
 
                     if (_request.IncludeViewportTextNotes)
                     {
-                        ScanViewportTextNotes(document, sheet, viewport, view, deadlineUtc, state, flatMatches, textNotes, out textNoteCount, out textNoteReturned, out textNotesTruncated);
+                        ScanViewportTextNotes(document, sheet, viewport, view, hasTextQuery, deadlineUtc, state, flatMatches, inventoryRows, textNotes, out textNoteCount, out textNoteReturned, out textNotesTruncated);
                         if (state.Partial && IsHardStop(state.ScanStoppedReason)) return;
                     }
 
                     if (_request.IncludeViewportTags)
                     {
-                        ScanViewportTags(document, sheet, viewport, view, deadlineUtc, state, warnings, flatMatches, tags, out tagCount, out tagReturned, out tagsTruncated);
+                        ScanViewportTags(document, sheet, viewport, view, hasTextQuery, deadlineUtc, state, warnings, flatMatches, inventoryRows, tags, out tagCount, out tagReturned, out tagsTruncated);
                         if (state.Partial && IsHardStop(state.ScanStoppedReason)) return;
                     }
 
@@ -636,9 +650,11 @@ namespace RevitMCPCommandSet.Commands.View
             ViewSheet sheet,
             Viewport viewport,
             Autodesk.Revit.DB.View view,
+            bool hasTextQuery,
             DateTime deadlineUtc,
             SheetAnnotationScanState state,
             List<Dictionary<string, object>> flatMatches,
+            List<Dictionary<string, object>> inventoryRows,
             List<Dictionary<string, object>> textNotes,
             out int textNoteCount,
             out int textNoteReturned,
@@ -670,7 +686,8 @@ namespace RevitMCPCommandSet.Commands.View
                     state.ScannedTextNoteCount++;
                     textNoteCount++;
                     string text = AnnotationEvidenceHelpers.SafeText(textNote);
-                    if (!AnnotationEvidenceHelpers.ContainsPreNormalized(text, _request.NormalizedTextQuery)) continue;
+                    bool matchedTextQuery = hasTextQuery && AnnotationEvidenceHelpers.ContainsPreNormalized(text, _request.NormalizedTextQuery);
+                    if (hasTextQuery && !matchedTextQuery) continue;
                     if (textNoteReturned >= _request.MaxViewportTextNotesPerView)
                     {
                         textNotesTruncated = true;
@@ -686,12 +703,21 @@ namespace RevitMCPCommandSet.Commands.View
                         textNote,
                         text,
                         _request.MaxTextChars);
+                    record["matchedTextQuery"] = matchedTextQuery;
+                    record["inventoryOnly"] = !matchedTextQuery;
                     if (!AddRecordIfWithinResponseBudget(record, state)) return;
 
                     textNoteReturned++;
-                    state.TotalViewportTextNoteMatches++;
                     textNotes.Add(record);
-                    flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                    if (matchedTextQuery)
+                    {
+                        state.TotalViewportTextNoteMatches++;
+                        flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                    }
+                    else
+                    {
+                        inventoryRows.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                    }
                 }
             }
         }
@@ -701,10 +727,12 @@ namespace RevitMCPCommandSet.Commands.View
             ViewSheet sheet,
             Viewport viewport,
             Autodesk.Revit.DB.View view,
+            bool hasTextQuery,
             DateTime deadlineUtc,
             SheetAnnotationScanState state,
             List<string> warnings,
             List<Dictionary<string, object>> flatMatches,
+            List<Dictionary<string, object>> inventoryRows,
             List<Dictionary<string, object>> tags,
             out int tagCount,
             out int tagReturned,
@@ -746,7 +774,8 @@ namespace RevitMCPCommandSet.Commands.View
                         AnnotationEvidenceHelpers.AddOnce(warnings, "viewport_tag_text_unavailable");
                         continue;
                     }
-                    if (!AnnotationEvidenceHelpers.ContainsPreNormalized(tagText, _request.NormalizedTextQuery)) continue;
+                    bool matchedTextQuery = hasTextQuery && AnnotationEvidenceHelpers.ContainsPreNormalized(tagText, _request.NormalizedTextQuery);
+                    if (hasTextQuery && !matchedTextQuery) continue;
                     if (tagReturned >= _request.MaxViewportTagsPerView)
                     {
                         tagsTruncated = true;
@@ -755,12 +784,21 @@ namespace RevitMCPCommandSet.Commands.View
                     }
 
                     Dictionary<string, object> record = AnnotationEvidenceHelpers.BuildViewportTagRecord(document, sheet, viewport, view, tag, tagText, _request.MaxTextChars, warnings);
+                    record["matchedTextQuery"] = matchedTextQuery;
+                    record["inventoryOnly"] = !matchedTextQuery;
                     if (!AddRecordIfWithinResponseBudget(record, state)) return;
 
                     tagReturned++;
-                    state.TotalViewportTagMatches++;
                     tags.Add(record);
-                    flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                    if (matchedTextQuery)
+                    {
+                        state.TotalViewportTagMatches++;
+                        flatMatches.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                    }
+                    else
+                    {
+                        inventoryRows.Add(AnnotationEvidenceHelpers.CloneRecord(record));
+                    }
                 }
             }
         }

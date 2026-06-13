@@ -1,11 +1,13 @@
+import * as nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import ExcelJS from "exceljs";
+import * as XLSX from "@e965/xlsx";
 import { parse as parseCsvSync } from "csv-parse/sync";
 import { z } from "zod";
 import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, } from "../utils/broadScanResult.js";
 import { buildReconciliationTokenProfile, cleanReconciliationText, normalizeReconciliationAlias, normalizeReconciliationHeader, RECONCILIATION_ALL_ROLES, RECONCILIATION_REQUIRED_ROLES, RECONCILIATION_ROLE_ALIASES, } from "./reconcile_normalization.js";
+XLSX.set_fs(nodeFs);
 const ACTION = "reconcile_schedule_excel";
 const INGESTION_STAGE = "excel_ingestion";
 const DEFAULT_BUDGETS = {
@@ -303,29 +305,42 @@ function cellValueToText(value) {
     }
     return cleanText(value);
 }
-function readExcelCell(cell, sheetName) {
-    const value = cell.value;
-    const isFormula = Boolean(value && typeof value === "object" && ("formula" in value || "sharedFormula" in value));
+function readXlsxCell(worksheet, rowNumber, columnNumber, sheetName) {
+    const cellAddress = XLSX.utils.encode_cell({ r: rowNumber - 1, c: columnNumber - 1 });
+    const address = `${sheetName}!${cellAddress}`;
+    const cell = worksheet[cellAddress];
+    if (!cell) {
+        return {
+            value: "",
+            text: "",
+            address,
+        };
+    }
+    const isFormula = typeof cell.f === "string" && cell.f.length > 0;
     if (isFormula) {
-        if (Object.prototype.hasOwnProperty.call(value, "result") && value.result !== undefined && value.result !== null) {
+        const hasCachedValue = cell.v !== undefined
+            && cell.v !== null
+            && !(typeof cell.v === "string" && cell.v.length === 0 && (cell.w === undefined || cell.w === ""));
+        if (hasCachedValue) {
             return {
-                value: value.result,
-                text: cellValueToText(value.result),
-                address: `${sheetName}!${cell.address}`,
+                value: cell.v,
+                text: cellValueToText(cell.v) || cleanText(cell.w),
+                address,
                 formulaWithCachedValue: true,
             };
         }
         return {
             value: "",
             text: "",
-            address: `${sheetName}!${cell.address}`,
+            address,
             formulaWithoutCachedValue: true,
         };
     }
+    const value = cell.v ?? "";
     return {
         value,
-        text: cellValueToText(value),
-        address: `${sheetName}!${cell.address}`,
+        text: cellValueToText(value) || cleanText(cell.w),
+        address,
     };
 }
 function readMatrixCell(value, rowNumber, columnNumber, sheetName) {
@@ -494,12 +509,14 @@ function buildRecords(table, mapping) {
     return records;
 }
 async function loadXlsxTable(source, budgets, startedAt) {
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(source.path);
-    const sheets = workbook.worksheets;
+    const workbook = XLSX.readFile(source.path, { cellDates: true, cellFormula: true, cellText: true, nodim: true });
+    const sheets = workbook.SheetNames.map((name) => ({
+        name,
+        worksheet: workbook.Sheets[name] || {},
+    }));
     const selection = source.selection || {};
     const exactSheetSelected = Boolean(selection.sheetName || selection.sheetIndex);
-    const nonEmptySheets = sheets.filter((sheet) => sheet.actualRowCount > 0 || sheet.actualColumnCount > 0);
+    const nonEmptySheets = sheets.filter((sheet) => xlsxWorksheetHasCells(sheet.worksheet));
     if (!exactSheetSelected && sheets.length > budgets.maxSheets && nonEmptySheets.length !== 1) {
         return buildGuardedResult("max_items", "Workbook sheet count exceeds maxSheets and cannot be auto-scoped to one non-empty sheet. Provide sheetName or sheetIndex.", {
             partial: true,
@@ -525,41 +542,58 @@ async function loadXlsxTable(source, budgets, startedAt) {
 }
 function selectWorksheet(workbook, selection, nonEmptySheets) {
     if (selection.sheetName) {
-        return workbook.getWorksheet(selection.sheetName) || null;
+        const worksheet = workbook.Sheets[selection.sheetName];
+        return worksheet ? { name: selection.sheetName, worksheet } : null;
     }
     if (selection.sheetIndex) {
-        return workbook.worksheets[selection.sheetIndex - 1] || null;
+        const name = workbook.SheetNames[selection.sheetIndex - 1];
+        return name && workbook.Sheets[name] ? { name, worksheet: workbook.Sheets[name] } : null;
     }
     return nonEmptySheets.length === 1 ? nonEmptySheets[0] : null;
 }
-function readWorksheetTable(worksheet, selection, budgets, startedAt) {
-    const bounds = findWorksheetBounds(worksheet);
+function readWorksheetTable(sheet, selection, budgets, startedAt) {
+    const bounds = findWorksheetBounds(sheet.worksheet);
     return readTabularCells({
-        sheetName: worksheet.name,
+        sheetName: sheet.name,
         fallbackRange: bounds,
         selection,
         budgets,
         startedAt,
-        readCell: (rowNumber, columnNumber) => readExcelCell(worksheet.getCell(rowNumber, columnNumber), worksheet.name),
+        readCell: (rowNumber, columnNumber) => readXlsxCell(sheet.worksheet, rowNumber, columnNumber, sheet.name),
     });
+}
+function xlsxWorksheetHasCells(worksheet) {
+    return Object.keys(worksheet).some((key) => !key.startsWith("!"));
 }
 function findWorksheetBounds(worksheet) {
     let minRow = Number.POSITIVE_INFINITY;
     let minColumn = Number.POSITIVE_INFINITY;
     let maxRow = 1;
     let maxColumn = 1;
-    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-        row.eachCell({ includeEmpty: false }, (_cell, columnNumber) => {
-            minRow = Math.min(minRow, rowNumber);
-            minColumn = Math.min(minColumn, columnNumber);
-            maxRow = Math.max(maxRow, rowNumber);
-            maxColumn = Math.max(maxColumn, columnNumber);
-        });
-    });
+    for (const address of Object.keys(worksheet)) {
+        if (address.startsWith("!")) {
+            continue;
+        }
+        try {
+            const decoded = XLSX.utils.decode_cell(address);
+            minRow = Math.min(minRow, decoded.r + 1);
+            minColumn = Math.min(minColumn, decoded.c + 1);
+            maxRow = Math.max(maxRow, decoded.r + 1);
+            maxColumn = Math.max(maxColumn, decoded.c + 1);
+        }
+        catch {
+            continue;
+        }
+    }
     if (!Number.isFinite(minRow) || !Number.isFinite(minColumn)) {
         return { startRow: 1, startColumn: 1, endRow: 1, endColumn: 1 };
     }
-    return { startRow: minRow, startColumn: minColumn, endRow: maxRow, endColumn: maxColumn };
+    return {
+        startRow: minRow,
+        startColumn: minColumn,
+        endRow: maxRow,
+        endColumn: maxColumn,
+    };
 }
 async function loadDelimitedTable(source, budgets, startedAt, format) {
     const text = await fs.readFile(source.path, "utf8");
