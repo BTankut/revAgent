@@ -288,7 +288,13 @@ normalizer.
   `Parameter.ClearValue`. Use `operation: "clearVisibleValue"` only when a
   visible blank string is acceptable; built-in string parameters such as
   `Comments` may remain `HasValue=true` and are reported as
-  `noValueState="visible_empty_has_value"`.
+  `noValueState="visible_empty_has_value"`. `Comments` /
+  `ALL_MODEL_INSTANCE_COMMENTS` is built-in and non-shared, so true no-value
+  restore is not supported by the Revit API. Expected product behavior is that
+  `operation="clear"` returns guarded and does not write an empty-string
+  fallback; when visible cleanup is required, use
+  `operation="clearVisibleValue"` or an explicit empty-string set, and report
+  the result as `visible_empty_has_value`.
 - `set_schedule_cells` - production-safe exact schedule-cell text write tool.
   It never writes by schedule name, requires `scheduleId`, `section`, and
   zero-based row/column coordinates, defaults to `mode: "dryRun"`, can block

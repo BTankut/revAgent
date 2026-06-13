@@ -468,11 +468,14 @@ For operator-owned junk/test models, the focused runtime smoke package is:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-live-junk-model-smoke.ps1
 ```
 
-It exercises safe-code guarding, parameter set/restore when the selected
-fixture has a restorable `Comments` value, standard schedule body write
-guarding, focus, view export, coordination export with cleanup, and final
-selection cleanup. It is intentionally optional and is not part of `test-all`
-or CI.
+It exercises safe-code guarding, parameter visible-clear/restore when the
+selected fixture already has a writable `Comments` value, standard schedule
+body write guarding, focus, view export, coordination export with cleanup, and
+final selection cleanup. It treats `Comments` /
+`ALL_MODEL_INSTANCE_COMMENTS` true no-value restore as a Revit API limitation
+and does not create a permanent `HasValue=true` trace when a fixture starts at
+true no-value. It is
+intentionally optional and is not part of `test-all` or CI.
 
 9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
 10. Verify that both MCP servers are registered:
@@ -729,7 +732,13 @@ state, use `operation="clear"`; for built-in string parameters such as
 `Comments` that cannot return to true no-value through Revit `ClearValue`, use
 `operation="clearVisibleValue"` only when a visible blank is acceptable. The
 tool reports this state as `noValueState="visible_empty_has_value"` rather than
-pretending `HasValue=false` was restored.
+pretending `HasValue=false` was restored. Treat that visible-empty state as the
+completed result for `Comments` / `ALL_MODEL_INSTANCE_COMMENTS`: it is a
+built-in, non-shared parameter, so true no-value restore is not supported by the
+Revit API. Expected product behavior is that `operation="clear"` returns
+guarded and does not write an empty-string fallback; when visible cleanup is
+required, use `operation="clearVisibleValue"` or an explicit empty-string set,
+and report the result as `visible_empty_has_value`.
 
 For sheet text work, use `inspect_sheet_text` before raw dynamic code. It is a
 native Revit commandset workflow, not a generated C# snippet, and performs
