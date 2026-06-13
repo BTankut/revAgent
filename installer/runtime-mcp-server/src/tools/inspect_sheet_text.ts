@@ -225,6 +225,29 @@ function normalizeSheetTextNestedSheets(payload: JsonObject) {
     });
 }
 
+function buildCompatibleSheetTextScan(payload: JsonObject) {
+    const scan = readNativeResultField(payload, "scan");
+    if (!scan || typeof scan !== "object" || Array.isArray(scan)) {
+        return scan;
+    }
+    if (hasSheetTextQuery(payload)) {
+        return scan;
+    }
+    return {
+        ...scan,
+        TotalTextNoteMatches: 0,
+        totalTextNoteMatches: 0,
+        TotalViewportTextNoteMatches: 0,
+        totalViewportTextNoteMatches: 0,
+        TotalViewportTagMatches: 0,
+        totalViewportTagMatches: 0,
+        TotalScheduleCellMatches: 0,
+        totalScheduleCellMatches: 0,
+        TotalScheduleInstanceMatches: 0,
+        totalScheduleInstanceMatches: 0,
+    };
+}
+
 function stopDetailForSheetText(payload: JsonObject) {
     const canonicalReason = normalizeBroadScanStopReason(readNativeResultField(payload, "scanStoppedReason"));
     const nativeReason = String(readNativeResultField(payload, "rawScanStoppedReason") ?? readNativeResultField(payload, "scanStoppedReason") ?? canonicalReason).trim() || canonicalReason;
@@ -305,6 +328,7 @@ export function normalizeSheetTextResult(payload: JsonObject, elapsedMs: number)
     });
     const inventoryRows = buildSheetTextInventoryRows(normalized);
     const hasTextQuery = hasSheetTextQuery(normalized);
+    const scan = buildCompatibleSheetTextScan(normalized);
     const omittedTopLevelKeys = new Set(["Sheets"]);
     if (!hasTextQuery) {
         omittedTopLevelKeys.add("Matches");
@@ -315,6 +339,7 @@ export function normalizeSheetTextResult(payload: JsonObject, elapsedMs: number)
         evidenceRows: hasTextQuery ? buildSheetTextEvidenceRows(normalized) : [],
         inventoryRows,
         matches: hasTextQuery ? readNativeResultArray(normalized, "matches") : [],
+        scan,
         sheets: normalizeSheetTextNestedSheets(normalized),
         summary: {
             ...(normalized.summary || {}),

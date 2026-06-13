@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import * as nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import ExcelJS from "exceljs";
+import * as XLSX from "@e965/xlsx";
 import { registerTools } from "../build/tools/register.js";
 import { reconcileScheduleExcel } from "../build/tools/reconcile_schedule_excel.js";
+
+XLSX.set_fs(nodeFs);
 
 const tools = new Map();
 const server = {
@@ -201,11 +204,13 @@ assert.equal(typeof invalidShapePayload.schemaExamples.rowsSource.excel, "object
 assert.equal(invalidShapePayload.requiredColumnMapping.requiredRoles.includes("identity"), true);
 
 const workbookPath = path.join(tempRoot, "representative-reconciliation.xlsx");
-const workbook = new ExcelJS.Workbook();
-const worksheet = workbook.addWorksheet("Items");
-worksheet.addRow(["Identity", "Description", "Unit", "System"]);
-worksheet.addRow(["XLS-001", "Pump DN80", "PCS", "HVAC"]);
-await workbook.xlsx.writeFile(workbookPath);
+const workbook = XLSX.utils.book_new();
+const worksheet = XLSX.utils.aoa_to_sheet([
+  ["Identity", "Description", "Unit", "System"],
+  ["XLS-001", "Pump DN80", "PCS", "HVAC"],
+]);
+XLSX.utils.book_append_sheet(workbook, worksheet, "Items");
+XLSX.writeFile(workbook, workbookPath, { bookType: "xlsx" });
 
 const xlsxPayload = await reconcileScheduleExcel({
   excel: {

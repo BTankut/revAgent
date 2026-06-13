@@ -200,6 +200,13 @@ const nativeSheetTextEmptyQueryPayload = normalizeSheetTextResult({
   TextQuery: "",
   Partial: false,
   ScanStoppedReason: "completed",
+  Scan: {
+    TotalTextNoteMatches: 3,
+    TotalViewportTextNoteMatches: 2,
+    TotalViewportTagMatches: 1,
+    TotalScheduleCellMatches: 4,
+    TotalScheduleInstanceMatches: 1,
+  },
   Sheets: [{
     Id: 1001,
     SheetNumber: "M701",
@@ -212,6 +219,14 @@ const nativeSheetTextEmptyQueryPayload = normalizeSheetTextResult({
       MatchedTextQuery: true,
       InventoryOnly: false,
     }],
+  }],
+  InventoryRows: [{
+    Kind: "sheetTextNote",
+    SheetId: 1001,
+    ElementId: 5002,
+    Text: "Inventory-only general note",
+    MatchedTextQuery: false,
+    InventoryOnly: true,
   }],
   EvidenceRows: ["malformed-evidence-row", null],
   Matches: [
@@ -230,8 +245,19 @@ assert.equal(nativeSheetTextEmptyQueryPayload.evidenceRows.length, 0);
 assert.equal(nativeSheetTextEmptyQueryPayload.matches.length, 0);
 assert.equal(Object.prototype.hasOwnProperty.call(nativeSheetTextEmptyQueryPayload, "Matches"), false);
 assert.equal(nativeSheetTextEmptyQueryPayload.summary.matchCount, 0);
-assert.equal(nativeSheetTextEmptyQueryPayload.inventoryRows.length, 1);
+assert.equal(nativeSheetTextEmptyQueryPayload.scan.totalTextNoteMatches, 0);
+assert.equal(nativeSheetTextEmptyQueryPayload.scan.totalViewportTextNoteMatches, 0);
+assert.equal(nativeSheetTextEmptyQueryPayload.scan.totalViewportTagMatches, 0);
+assert.equal(nativeSheetTextEmptyQueryPayload.scan.totalScheduleCellMatches, 0);
+assert.equal(nativeSheetTextEmptyQueryPayload.scan.totalScheduleInstanceMatches, 0);
+assert.equal(nativeSheetTextEmptyQueryPayload.inventoryRows.length, 2);
+assert.equal(nativeSheetTextEmptyQueryPayload.summary.inventoryRowCount, 2);
 assert.equal(nativeSheetTextEmptyQueryPayload.inventoryRows[0].matchedTextQuery, false);
+const nativeSheetTextInventoryRow = nativeSheetTextEmptyQueryPayload.inventoryRows.find((row) => row.ElementId === 5002 || row.elementId === 5002);
+assert.ok(nativeSheetTextInventoryRow);
+assert.equal(nativeSheetTextInventoryRow.sourceType, "sheetTextNote");
+assert.equal(nativeSheetTextInventoryRow.matchedTextQuery, false);
+assert.equal(nativeSheetTextInventoryRow.inventoryOnly, true);
 assert.equal(nativeSheetTextEmptyQueryPayload.sheets[0].scheduleInstances[0].matchedTextQuery, false);
 assert.equal(nativeSheetTextEmptyQueryPayload.sheets[0].scheduleInstances[0].inventoryOnly, true);
 assert.equal(nativeSheetTextEmptyQueryPayload.sheets[0].scheduleInstances[0].MatchedTextQuery, false);
@@ -459,6 +485,11 @@ const nativeScheduleEmptyQueryPayload = normalizeScheduleResult({
   CellQuery: "",
   Partial: false,
   ScanStoppedReason: "completed",
+  Scan: {
+    ScheduleNameMatchedCount: 5,
+    CellMatchedScheduleCount: 3,
+    TotalCellMatches: 7,
+  },
   Schedules: [{
     Id: 7006,
     Name: "Inventory Schedule",
@@ -481,6 +512,10 @@ assert.equal(nativeScheduleEmptyQueryPayload.schedules[0].nameMatched, false);
 assert.equal(nativeScheduleEmptyQueryPayload.schedules[0].cellMatchCount, 0);
 assert.equal(nativeScheduleEmptyQueryPayload.schedules[0].sections[0].matches.length, 0);
 assert.equal(nativeScheduleEmptyQueryPayload.summary.matchCount, 0);
+assert.equal(nativeScheduleEmptyQueryPayload.summary.totalCellMatches, 0);
+assert.equal(nativeScheduleEmptyQueryPayload.scan.scheduleNameMatchedCount, 0);
+assert.equal(nativeScheduleEmptyQueryPayload.scan.cellMatchedScheduleCount, 0);
+assert.equal(nativeScheduleEmptyQueryPayload.scan.totalCellMatches, 0);
 
 const occurrenceCountPayload = normalizeCountAnnotationsResult({
   Success: true,

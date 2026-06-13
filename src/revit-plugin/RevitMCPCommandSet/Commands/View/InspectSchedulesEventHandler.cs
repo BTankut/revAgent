@@ -177,7 +177,7 @@ namespace RevitMCPCommandSet.Commands.View
                 {
                     if (StopIfNeeded(deadlineUtc, state)) break;
 
-                    bool nameMatches = !hasNameQuery || AnnotationEvidenceHelpers.ContainsPreNormalized(schedule.Name, _request.NormalizedNameQuery);
+                    bool nameMatches = hasNameQuery && AnnotationEvidenceHelpers.ContainsPreNormalized(schedule.Name, _request.NormalizedNameQuery);
                     if (!hasExplicitIds && hasNameQuery && !nameMatches)
                     {
                         continue;
@@ -210,7 +210,7 @@ namespace RevitMCPCommandSet.Commands.View
                         }
                     }
 
-                    bool includeSchedule = hasExplicitIds || nameMatches || !hasCellQuery || scheduleMatchCount > 0;
+                    bool includeSchedule = hasExplicitIds || nameMatches || (!hasNameQuery && !hasCellQuery) || scheduleMatchCount > 0;
                     if (!includeSchedule) continue;
                     if (scheduleMatchCount > 0) state.CellMatchedScheduleCount++;
 

@@ -1,43 +1,52 @@
 import assert from "node:assert/strict";
+import * as nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import ExcelJS from "exceljs";
+import * as XLSX from "@e965/xlsx";
+import { strToU8, zipSync } from "fflate";
 import { ingestExcelSource } from "../build/tools/reconcile_excel_ingestion.js";
+
+XLSX.set_fs(nodeFs);
 
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "revagent-excel-ingest-"));
 
 async function writeWorkbook(filePath, sheets) {
-  const workbook = new ExcelJS.Workbook();
+  const workbook = XLSX.utils.book_new();
   for (const sheetSpec of sheets) {
-    const sheet = workbook.addWorksheet(sheetSpec.name);
-    for (const row of sheetSpec.rows) {
-      sheet.addRow(row);
-    }
+    const sheet = XLSX.utils.aoa_to_sheet(sheetSpec.rows);
     if (sheetSpec.configure) {
       sheetSpec.configure(sheet);
     }
+    XLSX.utils.book_append_sheet(workbook, sheet, sheetSpec.name);
   }
-  await workbook.xlsx.writeFile(filePath);
+  XLSX.writeFile(workbook, filePath, { bookType: "xlsx" });
+}
+
+async function writeFormulaWorkbook(filePath) {
+  const files = {
+    "[Content_Types].xml": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'),
+    "_rels/.rels": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'),
+    "xl/workbook.xml": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Items" sheetId="1" r:id="rId1"/></sheets></workbook>'),
+    "xl/_rels/workbook.xml.rels": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'),
+    "xl/worksheets/sheet1.xml": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:C6"/><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Identity</t></is></c><c r="B1" t="inlineStr"><is><t>Description</t></is></c><c r="C1" t="inlineStr"><is><t>Qty</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>FCU-01</t></is></c><c r="B2" t="inlineStr"><is><t>Fan coil</t></is></c><c r="C2"><v>1</v></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>FCU-02</t></is></c><c r="B3" t="str"><f>CONCAT(&quot;Cached&quot;, &quot; value&quot;)</f><v>Cached value</v></c><c r="C3"><v>2</v></c></row><row r="5"><c r="A5" t="inlineStr"><is><t>FCU-03</t></is></c><c r="B5" t="str"><f>CONCAT(&quot;No&quot;, &quot; cache&quot;)</f></c><c r="C5"><v>3</v></c></row><row r="6"><c r="A6" t="inlineStr"><is><t>FCU-04</t></is></c><c r="B6" t="inlineStr"><is><t>Fan coil</t></is></c><c r="C6"><v>4</v></c></row></sheetData></worksheet>'),
+  };
+  await fs.writeFile(filePath, zipSync(files));
+}
+
+async function writeStaleDimensionWorkbook(filePath) {
+  const files = {
+    "[Content_Types].xml": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'),
+    "_rels/.rels": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'),
+    "xl/workbook.xml": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Items" sheetId="1" r:id="rId1"/></sheets></workbook>'),
+    "xl/_rels/workbook.xml.rels": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'),
+    "xl/worksheets/sheet1.xml": strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:B1"/><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Identity</t></is></c><c r="B1" t="inlineStr"><is><t>Description</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>STALE-1</t></is></c><c r="B2" t="inlineStr"><is><t>Present below stale dimension</t></is></c></row></sheetData></worksheet>'),
+  };
+  await fs.writeFile(filePath, zipSync(files));
 }
 
 const workbookPath = path.join(tempRoot, "single-sheet.xlsx");
-await writeWorkbook(workbookPath, [{
-  name: "Items",
-  rows: [
-    ["Identity", "Description", "Qty"],
-    ["FCU-01", "Fan coil", 1],
-    ["FCU-02", "", 2],
-    ["", "", ""],
-    ["FCU-03", "Terminal unit", 3],
-    ["FCU-04", "", 4],
-  ],
-  configure(sheet) {
-    sheet.getCell("B3").value = { formula: "CONCAT(\"Cached\", \" value\")", result: "Cached value" };
-    sheet.getCell("B5").value = { formula: "CONCAT(\"No\", \" cache\")" };
-    sheet.getCell("B6").value = { richText: [{ text: "Fan " }, { text: "coil" }] };
-  },
-}]);
+await writeFormulaWorkbook(workbookPath);
 
 const xlsxResult = await ingestExcelSource({
   kind: "file",
@@ -60,6 +69,20 @@ assert.equal(xlsxResult.summary.emptyExcelRows, 1);
 assert.equal(xlsxResult.summary.formulaCachedValueCount, 1);
 assert.equal(xlsxResult.summary.formulaWithoutCachedValueCount, 1);
 assert.match(xlsxResult.warnings.join("\n"), /Items!B5/);
+
+const staleDimensionPath = path.join(tempRoot, "stale-dimension.xlsx");
+await writeStaleDimensionWorkbook(staleDimensionPath);
+const staleDimensionResult = await ingestExcelSource({
+  kind: "file",
+  path: staleDimensionPath,
+  format: "xlsx",
+  selection: { sheetName: "Items" },
+  columnMapping: { identity: "Identity", comparisonText: "Description" },
+});
+assert.equal(staleDimensionResult.success, true);
+assert.equal(staleDimensionResult.excelRecords.length, 1);
+assert.equal(staleDimensionResult.excelRecords[0].excelRowId, "Items!2");
+assert.equal(staleDimensionResult.excelRecords[0].comparisonText, "Present below stale dimension");
 
 const autoSheetResult = await ingestExcelSource({
   kind: "file",
@@ -90,14 +113,16 @@ assert.equal(multiSheetResult.reason, "excel_sheet_selection_required");
 assert.equal(multiSheetResult.scanStoppedReason, "needs_scope");
 
 const manyBlankSheetsPath = path.join(tempRoot, "many-blank-sheets.xlsx");
-const manyBlankWorkbook = new ExcelJS.Workbook();
+const manyBlankWorkbook = XLSX.utils.book_new();
 for (let index = 1; index <= 6; index++) {
-  manyBlankWorkbook.addWorksheet(`Blank ${index}`);
+  XLSX.utils.book_append_sheet(manyBlankWorkbook, XLSX.utils.aoa_to_sheet([]), `Blank ${index}`);
 }
-const populated = manyBlankWorkbook.addWorksheet("Only Data");
-populated.addRow(["Identity", "Description"]);
-populated.addRow(["ONLY-1", "Only populated sheet"]);
-await manyBlankWorkbook.xlsx.writeFile(manyBlankSheetsPath);
+const populated = XLSX.utils.aoa_to_sheet([
+  ["Identity", "Description"],
+  ["ONLY-1", "Only populated sheet"],
+]);
+XLSX.utils.book_append_sheet(manyBlankWorkbook, populated, "Only Data");
+XLSX.writeFile(manyBlankWorkbook, manyBlankSheetsPath, { bookType: "xlsx" });
 const manyBlankResult = await ingestExcelSource({
   kind: "file",
   path: manyBlankSheetsPath,

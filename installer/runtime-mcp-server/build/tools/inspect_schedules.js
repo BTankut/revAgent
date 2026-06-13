@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { connectionTargetSchema, executionOptionsFromArgs, formatJsonContent, sendRevitCommand, taskMetadataSchema, } from "../utils/revitToolHelpers.js";
-import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, readNativeResultArray, readNativeResultField, readNativeResultObject, } from "../utils/broadScanResult.js";
+import { buildBroadScanFailureResult, buildBroadScanGuardedResult, normalizeBroadScanResult, readNativeResultArray, readNativeResultField, } from "../utils/broadScanResult.js";
 import { boundedPositiveInt, compactObjectRows, isDetailedResponseMode, responseModeSchema, } from "../utils/responseMode.js";
 const DEFAULT_COMPACT_RESULT_ROWS = 25;
 const DEFAULT_COMPACT_MATCH_ROWS = 50;
@@ -143,7 +143,8 @@ function resolveScheduleStopReason(payload) {
     return nativeReason;
 }
 function buildScheduleSummary(payload) {
-    const scan = readNativeResultObject(payload, "scan") || {};
+    const compatibleScan = buildCompatibleScheduleScan(payload);
+    const scan = isObject(compatibleScan) ? compatibleScan : {};
     const schedules = readNativeResultArray(payload, "schedules");
     const evidenceRows = readNativeResultArray(payload, "evidenceRows").length > 0
         ? readNativeResultArray(payload, "evidenceRows")
@@ -275,6 +276,30 @@ function buildCompatibleSchedules(result) {
         };
     });
 }
+function applyCasingNormalization(target, fields) {
+    for (const [camelName, value] of Object.entries(fields)) {
+        const pascalName = camelName.charAt(0).toUpperCase() + camelName.slice(1);
+        target[camelName] = value;
+        target[pascalName] = value;
+    }
+    return target;
+}
+function buildCompatibleScheduleScan(result) {
+    const scan = readNativeResultField(result, "scan");
+    if (!scan || typeof scan !== "object" || Array.isArray(scan)) {
+        return scan;
+    }
+    const target = { ...scan };
+    const fields = {};
+    if (!hasScheduleNameQuery(result)) {
+        fields.scheduleNameMatchedCount = 0;
+    }
+    if (!hasScheduleCellQuery(result)) {
+        fields.cellMatchedScheduleCount = 0;
+        fields.totalCellMatches = 0;
+    }
+    return applyCasingNormalization(target, fields);
+}
 function preserveScheduleCompatibilityFields(result) {
     for (const field of ["query", "nameQuery", "cellQuery", "totalSchedules", "candidateCount", "returnedCount", "truncated", "maxSchedules", "scan", "matches"]) {
         const value = readNativeResultField(result, field);
@@ -282,6 +307,7 @@ function preserveScheduleCompatibilityFields(result) {
             result[field] = value;
         }
     }
+    result.scan = buildCompatibleScheduleScan(result);
     result.schedules = buildCompatibleSchedules(result);
     if (!hasScheduleCellQuery(result)) {
         result.matches = [];

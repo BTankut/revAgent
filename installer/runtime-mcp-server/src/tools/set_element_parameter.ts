@@ -290,6 +290,72 @@ bool TryClearParameterValue(Parameter p, out string clearError)
     }
 }
 
+bool TryResolveHideWhenNoValue(Document doc, Parameter p, out bool hideWhenNoValue)
+{
+    hideWhenNoValue = false;
+    ExternalDefinition externalDefinition = p.Definition as ExternalDefinition;
+    if (externalDefinition != null)
+    {
+        hideWhenNoValue = externalDefinition.HideWhenNoValue;
+        return true;
+    }
+
+    int? parameterElementId = ReflectedParameterElementId(p);
+    if (parameterElementId.HasValue)
+    {
+        SharedParameterElement sharedElement = doc.GetElement(new ElementId(parameterElementId.Value)) as SharedParameterElement;
+        if (sharedElement != null)
+        {
+            hideWhenNoValue = sharedElement.ShouldHideWhenNoValue();
+            return true;
+        }
+    }
+
+    string sharedGuid = SharedGuid(p);
+    if (!string.IsNullOrWhiteSpace(sharedGuid))
+    {
+        Guid guid;
+        if (Guid.TryParse(sharedGuid, out guid))
+        {
+            SharedParameterElement sharedElement = SharedParameterElement.Lookup(doc, guid);
+            if (sharedElement != null)
+            {
+                hideWhenNoValue = sharedElement.ShouldHideWhenNoValue();
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool CanAttemptTrueNoValueClear(Document doc, Parameter p, out string unsupportedReason, out bool? hideWhenNoValue)
+{
+    unsupportedReason = "";
+    hideWhenNoValue = null;
+    if (!p.IsShared)
+    {
+        unsupportedReason = "clear_value_requires_shared_parameter";
+        return false;
+    }
+
+    bool resolvedHideWhenNoValue;
+    if (!TryResolveHideWhenNoValue(doc, p, out resolvedHideWhenNoValue))
+    {
+        unsupportedReason = "clear_value_hide_when_no_value_unverified";
+        return false;
+    }
+
+    hideWhenNoValue = resolvedHideWhenNoValue;
+    if (!resolvedHideWhenNoValue)
+    {
+        unsupportedReason = "clear_value_requires_hide_when_no_value";
+        return false;
+    }
+
+    return true;
+}
+
 object Blocked(string reason, string message, object extra = null)
 {
     return new {
@@ -416,6 +482,25 @@ try
             new { parameter = before });
     }
 
+    string clearUnsupportedReason = "";
+    bool? hideWhenNoValue = null;
+    if (clearOperation && !CanAttemptTrueNoValueClear(document, target, out clearUnsupportedReason, out hideWhenNoValue))
+    {
+        return Blocked(
+            clearUnsupportedReason,
+            "Revit Parameter.ClearValue can restore HasValue=false only for shared parameters whose definition has HideWhenNoValue=true. This parameter cannot be restored to a true no-value state through a safe Revit API path, and the tool did not write an empty string fallback.",
+            new {
+                parameter = before,
+                clearApi = "Parameter.ClearValue",
+                canRestoreTrueNoValue = false,
+                attemptedClearValue = false,
+                parameterWasShared = target.IsShared,
+                hideWhenNoValue = hideWhenNoValue,
+                hideWhenNoValueVerified = hideWhenNoValue.HasValue,
+                visibleEmptyFallback = "Use operation=set with an empty string only if a visible empty value is acceptable. Revit may keep HasValue=true."
+            });
+    }
+
     string expectedRaw = clearOperation ? null : ExpectedRawAfterSet(target);
     string valueSetApi = clearOperation
         ? "ClearValue"
@@ -429,10 +514,6 @@ try
         if (clearOperation)
         {
             dryRunWarnings.Add("clear_value_support_depends_on_revit_parameter_kind");
-            if (!target.IsShared)
-            {
-                dryRunWarnings.Add("non_shared_clear_will_attempt_parameter_clear_value_without_empty_string_fallback");
-            }
         }
         if (!clearOperation && target.StorageType == StorageType.String && requestedValueText.Length == 0)
         {
@@ -605,7 +686,7 @@ catch (Exception ex)
 }
 
 export function registerSetElementParameterTool(server: ToolServer) {
-    server.tool("set_element_parameter", "[PRODUCTION_PARAMETER_WRITE] Safely set or clear one Revit element parameter after exact inspect_parameter_schema-style identity resolution. Never writes by visible display name alone: duplicate display names, read-only parameters, identity mismatch, unsupported clear/no-value attempts, and unapproved type-parameter writes are guarded. Clear attempts Revit Parameter.ClearValue and never fakes no-value restore by writing an empty string. Defaults to dryRun; use mode=commit only for an explicitly confirmed write, then the tool reads the parameter back for verification.", {
+    server.tool("set_element_parameter", "[PRODUCTION_PARAMETER_WRITE] Safely set or clear one Revit element parameter after exact inspect_parameter_schema-style identity resolution. Never writes by visible display name alone: duplicate display names, read-only parameters, identity mismatch, unsupported clear/no-value attempts, and unapproved type-parameter writes are guarded. Clear uses Revit Parameter.ClearValue only for parameter kinds that can restore a true no-value state and never fakes no-value restore by writing an empty string. Defaults to dryRun; use mode=commit only for an explicitly confirmed write, then the tool reads the parameter back for verification.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         elementId: z.union([z.number(), z.string()]).optional().describe("Target Revit ElementId. Preferred for production writes."),
@@ -615,7 +696,7 @@ export function registerSetElementParameterTool(server: ToolServer) {
         builtInParameterId: z.number().int().optional().describe("Optional stable BuiltInParameter integer from inspect_parameter_schema. If supplied, it must match the exact display-name result."),
         expectedStorageType: z.enum(["String", "Integer", "Double", "ElementId"]).optional().describe("Optional storage-type guard from inspect_parameter_schema."),
         expectedCurrentRaw: z.union([z.string(), z.number(), z.boolean()]).optional().describe("Optional compare-and-set guard. Commit is blocked if the current raw value differs."),
-        operation: z.enum(["set", "clear"]).optional().default("set").describe("set writes the supplied value. clear attempts Revit Parameter.ClearValue to restore a true no-value state and never falls back to writing an empty string."),
+        operation: z.enum(["set", "clear"]).optional().default("set").describe("set writes the supplied value. clear uses Revit Parameter.ClearValue only when the parameter kind supports true no-value restore and never falls back to writing an empty string."),
         value: z.union([z.string(), z.number(), z.boolean()]).optional().describe("Requested value for operation=set. String writes use the text as-is; Integer accepts number/true/false; Double defaults to raw Revit internal units; ElementId accepts an integer id."),
         valueMode: z.enum(["raw", "valueString"]).optional().default("raw").describe("For Double parameters, raw writes internal Revit units. valueString uses Parameter.SetValueString with project units."),
         mode: z.enum(["dryRun", "commit"]).optional().default("dryRun").describe("dryRun performs schema/convertibility checks only. commit writes inside the wrapper transaction and verifies readback."),
