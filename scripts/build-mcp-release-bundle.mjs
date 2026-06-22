@@ -65,6 +65,9 @@ function buildRuntimePackageLock(sourceLock, runtimePackage) {
   if (runtimePackage.bin) {
     packages[""].bin = runtimePackage.bin;
   }
+  if (runtimePackage.overrides) {
+    packages[""].overrides = runtimePackage.overrides;
+  }
 
   return {
     name: runtimePackage.name,
