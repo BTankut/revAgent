@@ -145,6 +145,7 @@ Assert-BuildFresh -PackageRelativePath "installer\revit-api-docs-mcp"
 
 if (-not $McpOnly) {
     Assert-RevitPayloadManifestFresh -RepoRoot $RepoRoot
+    Assert-RevitPayloadNoDebugArtifacts -RepoRoot $RepoRoot
 }
 
 if ($McpOnly) {

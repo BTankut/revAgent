@@ -169,6 +169,68 @@ function Assert-NoUntrackedRevitPayloadSourceInputs {
     }
 }
 
+function Get-RevitPayloadDebugArtifactPaths {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    $repoRootFullName = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $repoPrefix = $repoRootFullName + [System.IO.Path]::DirectorySeparatorChar
+    $payloadRoots = @(
+        "installer/revit-plugin",
+        "installer/command-payload"
+    )
+    $debugExtensions = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($extension in @(".pdb", ".mdb")) {
+        [void]$debugExtensions.Add($extension)
+    }
+
+    $artifacts = @(foreach ($payloadRoot in $payloadRoots) {
+        $fullRoot = Join-RevitPayloadRepoPath -RepoRoot $repoRootFullName -RelativePath $payloadRoot
+        if (-not (Test-Path -LiteralPath $fullRoot -PathType Container)) {
+            continue
+        }
+
+        Get-ChildItem -LiteralPath $fullRoot -Recurse -File -Force |
+            Where-Object { $debugExtensions.Contains($_.Extension) } |
+            ForEach-Object {
+                if (-not $_.FullName.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    throw "File '$($_.FullName)' is not under expected repository root '$repoRootFullName'."
+                }
+                ConvertTo-RevitPayloadGitPath -Path ($_.FullName.Substring($repoPrefix.Length))
+            }
+    })
+
+    return @($artifacts | Sort-Object)
+}
+
+function Assert-RevitPayloadNoDebugArtifacts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    $artifacts = @(Get-RevitPayloadDebugArtifactPaths -RepoRoot $RepoRoot)
+    if ($artifacts.Count -gt 0) {
+        throw "Revit installer payload contains .NET debug artifacts: $($artifacts -join ', '). Remove them before publishing a user pack."
+    }
+}
+
+function Remove-RevitPayloadDebugArtifacts {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    foreach ($relativePath in Get-RevitPayloadDebugArtifactPaths -RepoRoot $RepoRoot) {
+        $fullPath = Join-RevitPayloadRepoPath -RepoRoot $RepoRoot -RelativePath $relativePath
+        if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+            Remove-Item -LiteralPath $fullPath -Force
+        }
+    }
+}
+
 function Get-RevitPayloadGitBlobSha {
     param(
         [Parameter(Mandatory = $true)]
@@ -466,6 +528,8 @@ Export-ModuleMember `
     Get-RevitPayloadManifestRelativePath, `
     Get-RevitPayloadSourceGroups, `
     Assert-NoUntrackedRevitPayloadSourceInputs, `
+    Assert-RevitPayloadNoDebugArtifacts, `
+    Remove-RevitPayloadDebugArtifacts, `
     New-RevitPayloadManifest, `
     Write-RevitPayloadManifest, `
     Assert-RevitPayloadManifestFresh

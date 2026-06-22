@@ -208,6 +208,9 @@ Commit together:
 - relevant docs
 
 Do not publish an add-in change if the payload binaries were not refreshed.
+The refresh step removes managed debug symbol files from the installer payload;
+committed Revit payloads and release ZIPs must not contain `.pdb` or `.mdb`
+files.
 For Revit C#/DLL/command-payload changes, the CI `Engineering gates` check
 proves the committed manifest and payload files match source, but it is not
 sufficient for deployment readiness. Run the local live commandset gate before
@@ -666,12 +669,13 @@ Publishing refreshes `tools\` on the NAS. Workstations should launch the tools
 from the NAS share, not from copied old script bodies when possible.
 
 The versioned release ZIP is an allowlisted user pack. It must not contain the
-repo root, `src/`, root `docs/`, developer tests, repo metadata, `.pdb`, or
-source maps. `publish-nas-release.ps1` stages the hardened MCP release bundles
-as single-file `build\index.js` payloads with runtime-only npm manifests, Revit
-DLL payloads, installer/updater helpers, release metadata, and
-`installer/codex-user` orchestration files, then fails if source/developer or
-unhardened JavaScript artifacts are detected in the staged package.
+repo root, `src/`, root `docs/`, developer tests, repo metadata, `.pdb`, `.mdb`,
+or source maps. `publish-nas-release.ps1` stages the hardened MCP release
+bundles as single-file `build\index.js` payloads with runtime-only npm
+manifests, Revit DLL payloads, installer/updater helpers, release metadata, and
+`installer/codex-user` orchestration files, then fails if source/developer,
+managed debug-symbol, or unhardened JavaScript artifacts are detected in the
+staged package.
 
 Large offline dependency payloads are local/NAS-side assets, not Git assets:
 

@@ -240,6 +240,9 @@ if (-not $SkipPayloadCopy) {
         -CommandJsonPath (Join-Path $commandSetRoot "command.json") `
         -Version $RevitVersion
 
+    Remove-RevitPayloadDebugArtifacts -RepoRoot $RepoRoot
+    Assert-RevitPayloadNoDebugArtifacts -RepoRoot $RepoRoot
+
     $manifestPath = Write-RevitPayloadManifest `
         -RepoRoot $RepoRoot `
         -RevitVersion $RevitVersion `

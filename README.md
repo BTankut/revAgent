@@ -296,8 +296,8 @@ existing sections or keys.
 
 The deployed release is an allowlisted user pack. It does not copy the repo
 root and must not contain `src/`, developer docs, tests, repo metadata, `.pdb`,
-or source maps. After install, the user pack payload is copied into the real
-system locations below:
+`.mdb`, or source maps. After install, the user pack payload is copied into the
+real system locations below:
 
 - Revit add-in manifest:
   - `C:\ProgramData\Autodesk\Revit\Addins\2022\mcp-servers-for-revit.addin`
@@ -446,7 +446,9 @@ Use `scripts\test-all.ps1` to run the non-Revit checks in one command. It
 includes installer smoke, usage intelligence, live dashboard helpers,
 `@ts-nocheck` policy enforcement, both MCP package test suites, and committed
 MCP/Revit payload freshness checks. Revit payload freshness is manifest-based,
-so ordinary checkout or merge mtimes do not force a payload refresh.
+so ordinary checkout or merge mtimes do not force a payload refresh. The Revit
+payload freshness gate also rejects managed debug symbol files in installer
+payload roots.
 The runtime MCP test suite includes bridge result contract characterization
 checks for dynamic-result double encoding, central C# camelCase response
 helpers, `resultContractVersion`, and idempotent legacy normalization.

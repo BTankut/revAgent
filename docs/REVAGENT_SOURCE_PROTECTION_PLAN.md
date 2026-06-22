@@ -46,11 +46,23 @@ Required outcomes:
 Goal: make Revit DLL inspection more expensive while preserving Revit loading
 and live runtime behavior.
 
-Candidate work:
+Required outcomes:
 
-- Ensure release payloads never include `.pdb` files.
-- Evaluate obfuscation on Revit 2022 payloads with a live model smoke test.
-- Add signing if needed for deployment trust and integrity.
+- Installer Revit payload roots must not contain `.pdb` or `.mdb` debug symbol
+  files.
+- Revit payload build refresh removes stale managed debug artifacts before
+  writing the payload freshness manifest.
+- CI fails if committed Revit installer payloads contain managed debug
+  artifacts.
+- Release publishing fails if the staged user pack contains managed debug
+  artifacts anywhere in the ZIP payload.
+
+Deferred gates:
+
+- Obfuscation requires a Revit 2022 live model smoke test before it can be
+  shipped.
+- Signing requires a deployment trust decision and must not place private
+  signing material in the client payload.
 
 ## Phase 4 - Know-How Boundary Review
 
