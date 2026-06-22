@@ -93,6 +93,7 @@ function Get-TamperedBase64Signature {
 
 function New-TestRsaProvider {
     $cspParameters = [System.Security.Cryptography.CspParameters]::new(24)
+    $cspParameters.Flags = [System.Security.Cryptography.CspProviderFlags]::CreateEphemeralKey
     return [System.Security.Cryptography.RSACryptoServiceProvider]::new(2048, $cspParameters)
 }
 
@@ -144,9 +145,10 @@ $rsa = New-TestRsaProvider
 try {
     $publicKeyXml = $rsa.ToXmlString($false)
     $publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
-    $publicKeyXmlLf = $publicKeyXml -replace '><', ">`n<"
+    $publicKeyXmlLf = $publicKeyXml -replace '><', ">`n  <"
     $publicKeyXmlCrLf = $publicKeyXmlLf -replace "`n", "`r`n"
-    Assert-Equal (Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXmlCrLf) (Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXmlLf) "Public key fingerprints must be stable across LF and CRLF line endings."
+    Assert-Equal (Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXmlLf) $publicKeyFingerprint "Public key fingerprints must be stable across XML formatting whitespace."
+    Assert-Equal (Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXmlCrLf) $publicKeyFingerprint "Public key fingerprints must be stable across LF and CRLF line endings."
     $trustedKeys = @{
         "test-rsa-2026" = [pscustomobject][ordered]@{
             publicKeyXml = $publicKeyXml

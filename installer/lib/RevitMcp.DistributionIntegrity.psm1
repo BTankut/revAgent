@@ -190,13 +190,14 @@ function Get-RevitMcpPublicKeyFingerprint {
         throw "PublicKeyXml cannot be empty."
     }
 
-    $normalizedPublicKeyXml = ($PublicKeyXml.Trim() -replace "`r`n", "`n") -replace "`r", "`n"
+    $normalizedPublicKeyXml = $PublicKeyXml.Trim() -replace "\s+", ""
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalizedPublicKeyXml)
     return ConvertTo-RevitMcpSha256Hex -Bytes $bytes
 }
 
 function New-RevitMcpRsaCryptoServiceProvider {
     $cspParameters = [System.Security.Cryptography.CspParameters]::new(24)
+    $cspParameters.Flags = [System.Security.Cryptography.CspProviderFlags]::CreateEphemeralKey
     return [System.Security.Cryptography.RSACryptoServiceProvider]::new($cspParameters)
 }
 
