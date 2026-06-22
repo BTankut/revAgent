@@ -57,9 +57,39 @@ function Get-RevitMcpObjectPropertyNames {
         return @($names.ToArray())
     }
 
-    return @($Value.PSObject.Properties |
-        Where-Object { $_.MemberType -in @("NoteProperty", "Property") } |
-        ForEach-Object { [string]$_.Name })
+    $propertyNames = [System.Collections.Generic.List[string]]::new()
+    $seenPropertyNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($property in $Value.PSObject.Properties) {
+        if ($property.MemberType -notin @("NoteProperty", "Property")) {
+            continue
+        }
+
+        $propertyName = [string]$property.Name
+        if (-not $seenPropertyNames.Add($propertyName)) {
+            throw "Canonical JSON object contains duplicate property: $propertyName"
+        }
+        [void]$propertyNames.Add($propertyName)
+    }
+
+    return @($propertyNames.ToArray())
+}
+
+function Get-RevitMcpPsObjectProperty {
+    param(
+        [Parameter(Mandatory = $true)][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    foreach ($property in $Value.PSObject.Properties) {
+        if ($property.MemberType -notin @("NoteProperty", "Property")) {
+            continue
+        }
+        if ([string]::Equals([string]$property.Name, $Name, [System.StringComparison]::Ordinal)) {
+            return $property
+        }
+    }
+
+    return $null
 }
 
 function Get-RevitMcpObjectPropertyValue {
@@ -79,7 +109,7 @@ function Get-RevitMcpObjectPropertyValue {
         return $null
     }
 
-    $property = $Value.PSObject.Properties[$Name]
+    $property = Get-RevitMcpPsObjectProperty -Value $Value -Name $Name
     if ($property) {
         return ,$property.Value
     }
@@ -475,6 +505,18 @@ function Find-RevitMcpDuplicateJsonObjectKey {
     return [pscustomobject][ordered]@{ found = $false; key = "" }
 }
 
+function ConvertFrom-RevitMcpJsonPreservingStrings {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Json)
+
+    $convertFromJsonCommand = Get-Command ConvertFrom-Json
+    if ($convertFromJsonCommand.Parameters.ContainsKey("DateKind")) {
+        return $Json | ConvertFrom-Json -DateKind String
+    }
+
+    return $Json | ConvertFrom-Json
+}
+
 function Test-RevitMcpSignatureEnvelopeShape {
     param(
         [Parameter(Mandatory = $true)][object]$SignatureEnvelope,
@@ -636,8 +678,8 @@ function Test-RevitMcpDetachedJsonSignatureFile {
         if ($signatureDuplicate.found) {
             return Invoke-RevitMcpDistributionIntegrityFailure -Reason "duplicate_json_key" -Message "Signature envelope JSON contains duplicate object key '$($signatureDuplicate.key)'." -ThrowOnFailure:$ThrowOnFailure
         }
-        $content = $contentJson | ConvertFrom-Json
-        $signatureEnvelope = $signatureJson | ConvertFrom-Json
+        $content = ConvertFrom-RevitMcpJsonPreservingStrings -Json $contentJson
+        $signatureEnvelope = ConvertFrom-RevitMcpJsonPreservingStrings -Json $signatureJson
     }
     catch {
         return Invoke-RevitMcpDistributionIntegrityFailure -Reason "invalid_json_file" -Message $_.Exception.Message -ThrowOnFailure:$ThrowOnFailure

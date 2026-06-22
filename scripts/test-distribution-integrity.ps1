@@ -40,7 +40,7 @@ function Assert-Equal {
         [string]$Message
     )
 
-    if ($Actual -ne $Expected) {
+    if (-not [object]::Equals($Actual, $Expected)) {
         throw "$Message Expected '$Expected', got '$Actual'."
     }
 }
