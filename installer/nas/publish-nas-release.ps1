@@ -306,6 +306,35 @@ function Assert-RevitMcpUserPackNoSourceLeak {
     }
 }
 
+function Assert-RevitMcpUserPackDotNetPayloadHardened {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $rootFullName = (Get-Item -LiteralPath $Root).FullName.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $rootPrefix = $rootFullName + [System.IO.Path]::DirectorySeparatorChar
+    $debugExtensions = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($extension in @(".pdb", ".mdb")) {
+        [void]$debugExtensions.Add($extension)
+    }
+
+    $debugArtifacts = @(Get-ChildItem -LiteralPath $rootFullName -Recurse -File -Force |
+        Where-Object { $debugExtensions.Contains($_.Extension) } |
+        ForEach-Object {
+            if (-not $_.FullName.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "File '$($_.FullName)' is not under expected user pack root '$rootFullName'."
+            }
+            $_.FullName.Substring($rootPrefix.Length).Replace("/", "\")
+        } |
+        Sort-Object)
+
+    if ($debugArtifacts.Count -gt 0) {
+        $preview = @($debugArtifacts | Select-Object -First 40)
+        throw "User pack .NET payload is not hardened; debug artifacts found: $($preview -join ', ')"
+    }
+}
+
 function Test-JsonProperty {
     param(
         [Parameter(Mandatory = $true)]
@@ -601,6 +630,7 @@ try {
     Write-Section "Stage package"
     Copy-RevitMcpUserPack
     Assert-RevitMcpUserPackNoSourceLeak -Root $packageRoot
+    Assert-RevitMcpUserPackDotNetPayloadHardened -Root $packageRoot
     Assert-RevitMcpUserPackHardenedJsPayload -Root $packageRoot
 
     $releaseInfo = [ordered]@{

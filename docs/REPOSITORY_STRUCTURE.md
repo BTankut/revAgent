@@ -96,6 +96,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -Revit
 ```
 
 Then commit both the source change and the refreshed payload binaries.
+The refresh script removes managed debug symbol files from
+`installer/revit-plugin` and `installer/command-payload`; committed installer
+payloads and release ZIPs must not contain `.pdb` or `.mdb` files.
 
 When `src/revit-plugin/RevitMCPCommandSet` changes, validate it explicitly:
 
