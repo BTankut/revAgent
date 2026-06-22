@@ -4,7 +4,7 @@ $script:RevitMcpCanonicalizationId = "RFC8785-JCS-SHA256-v1"
 $script:RevitMcpSignatureAlgorithm = "RS256"
 
 function ConvertTo-RevitMcpJsonString {
-    param([Parameter(Mandatory = $true)][string]$Value)
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
 
     $builder = [System.Text.StringBuilder]::new()
     foreach ($character in $Value.ToCharArray()) {
@@ -132,7 +132,7 @@ function Test-RevitMcpCanonicalInteger {
 
 function ConvertTo-RevitMcpCanonicalJson {
     [CmdletBinding()]
-    param([AllowNull()][object]$Value)
+    param([AllowNull()][AllowEmptyString()][object]$Value)
 
     if ($null -eq $Value) {
         return "null"
@@ -186,7 +186,7 @@ function ConvertTo-RevitMcpCanonicalJson {
 
 function Get-RevitMcpCanonicalJsonBytes {
     [CmdletBinding()]
-    param([AllowNull()][object]$Value)
+    param([AllowNull()][AllowEmptyString()][object]$Value)
 
     $json = ConvertTo-RevitMcpCanonicalJson -Value $Value
     return ,[System.Text.Encoding]::UTF8.GetBytes($json)
@@ -207,7 +207,7 @@ function ConvertTo-RevitMcpSha256Hex {
 
 function Get-RevitMcpCanonicalJsonSha256 {
     [CmdletBinding()]
-    param([AllowNull()][object]$Value)
+    param([AllowNull()][AllowEmptyString()][object]$Value)
 
     return ConvertTo-RevitMcpSha256Hex -Bytes (Get-RevitMcpCanonicalJsonBytes -Value $Value)
 }
