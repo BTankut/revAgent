@@ -211,6 +211,28 @@ function Assert-RevitMcpUserPackNoSourceLeak {
         [string]$Root
     )
 
+    function Get-RevitMcpUserPackPathParts {
+        param([string]$RelativePath)
+
+        if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+            return @()
+        }
+
+        return @($RelativePath -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    function Test-RevitMcpUserPackIgnoredDependencyPath {
+        param([string]$RelativePath)
+
+        foreach ($part in Get-RevitMcpUserPackPathParts -RelativePath $RelativePath) {
+            if ($part -ieq "node_modules" -or $part -ieq "dependencies") {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
     $blocked = [System.Collections.Generic.List[string]]::new()
     $blockedDirectoryNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($name in @(".git", ".github", ".githooks", ".tmp", "src", "docs", "evals", "references", "dashboard")) {
@@ -220,7 +242,10 @@ function Assert-RevitMcpUserPackNoSourceLeak {
     Get-ChildItem -LiteralPath $Root -Recurse -Directory -Force |
         ForEach-Object {
             $relative = $_.FullName.Substring($Root.Length).TrimStart("\", "/").Replace("/", "\")
-            $parts = $relative -split '[\\/]'
+            $parts = Get-RevitMcpUserPackPathParts -RelativePath $relative
+            if (Test-RevitMcpUserPackIgnoredDependencyPath -RelativePath $relative) {
+                return
+            }
             if ($blockedDirectoryNames.Contains($_.Name) -or ($parts.Count -eq 1 -and $_.Name -eq "scripts")) {
                 $blocked.Add($relative)
             }
@@ -229,7 +254,7 @@ function Assert-RevitMcpUserPackNoSourceLeak {
     Get-ChildItem -LiteralPath $Root -Recurse -File -Force |
         ForEach-Object {
             $relative = $_.FullName.Substring($Root.Length).TrimStart("\", "/").Replace("/", "\")
-            if ($relative -match '\\node_modules\\') {
+            if (Test-RevitMcpUserPackIgnoredDependencyPath -RelativePath $relative) {
                 return
             }
             if ($_.Extension -in @(".cs", ".csproj", ".sln", ".ts", ".tsx", ".pdb", ".map")) {

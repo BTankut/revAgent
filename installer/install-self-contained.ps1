@@ -644,17 +644,67 @@ function Remove-CodexProfileBackupArtifacts {
 }
 
 function Remove-RevitMcpManagedSourceLeakArtifacts {
-    $sourceLeakDirectoryNames = @(
-        "src",
-        "docs",
-        "references",
-        "evals",
-        "dashboard",
-        "scripts",
-        ".github",
-        ".githooks",
-        ".tmp"
-    )
+    function Get-RevitMcpPathParts {
+        param([string]$Path)
+
+        if ([string]::IsNullOrWhiteSpace($Path)) {
+            return @()
+        }
+
+        return @($Path -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    function Get-RevitMcpRelativeManagedPath {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Root,
+            [Parameter(Mandatory = $true)]
+            [string]$Path
+        )
+
+        $normalizedRoot = Get-NormalizedPath -Path $Root
+        $normalizedPath = Get-NormalizedPath -Path $Path
+        if ($normalizedPath.Length -le $normalizedRoot.Length) {
+            return ""
+        }
+
+        return $normalizedPath.Substring($normalizedRoot.Length).TrimStart([char[]]@('\', '/'))
+    }
+
+    function Test-RevitMcpIgnoredManagedPath {
+        param([string]$RelativePath)
+
+        foreach ($part in Get-RevitMcpPathParts -Path $RelativePath) {
+            if ($part -ieq "node_modules" -or $part -ieq "dependencies") {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    function Test-RevitMcpAllowedManagedDirectory {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Root,
+            [Parameter(Mandatory = $true)]
+            [System.IO.DirectoryInfo]$Directory
+        )
+
+        $relative = Get-RevitMcpRelativeManagedPath -Root $Root -Path $Directory.FullName
+        $parts = Get-RevitMcpPathParts -Path $relative
+        return (
+            $parts.Count -eq 3 -and
+            $parts[0] -ieq "installer" -and
+            $parts[1] -ieq "revit-api-docs-mcp" -and
+            $parts[2] -ieq "scripts"
+        )
+    }
+
+    $sourceLeakDirectoryNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in @("src", "docs", "references", "evals", "dashboard", "scripts", ".github", ".githooks", ".tmp")) {
+        [void]$sourceLeakDirectoryNames.Add($name)
+    }
     $sourceLeakNamePattern = "(?i)(^src$|^docs$|^references$|^evals$|^dashboard$|^scripts$|^\.github$|^\.githooks$|^\.tmp$)"
     $managedRoots = [System.Collections.Generic.List[string]]::new()
 
@@ -679,22 +729,40 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
     foreach ($root in $managedRoots) {
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
 
-        foreach ($name in $sourceLeakDirectoryNames) {
-            $target = Join-Path $root $name
-            if (Test-Path -LiteralPath $target -PathType Container) {
-                Remove-RevitMcpPath -Path $target -Label "managed source/developer artifact directory" -Recurse -AllowedNamePattern $sourceLeakNamePattern
-                $removed++
+        Get-ChildItem -LiteralPath $root -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+                $relative = Get-RevitMcpRelativeManagedPath -Root $root -Path $_.FullName
+                $sourceLeakDirectoryNames.Contains($_.Name) -and
+                -not (Test-RevitMcpIgnoredManagedPath -RelativePath $relative) -and
+                -not (Test-RevitMcpAllowedManagedDirectory -Root $root -Directory $_)
+            } |
+            Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object {
+                $artifactPath = $_.FullName
+                try {
+                    Remove-RevitMcpPath -Path $artifactPath -Label "managed source/developer artifact directory" -Recurse -AllowedNamePattern $sourceLeakNamePattern
+                    $removed++
+                }
+                catch {
+                    Write-Warning "Could not remove managed source/developer artifact directory '$artifactPath': $($_.Exception.Message)"
+                }
             }
-        }
 
         Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue |
             Where-Object {
+                $relative = Get-RevitMcpRelativeManagedPath -Root $root -Path $_.FullName
                 $_.Extension -in @(".cs", ".csproj", ".sln", ".ts", ".tsx", ".pdb", ".map") -and
-                $_.FullName -notmatch '\\node_modules\\|\\dependencies\\'
+                -not (Test-RevitMcpIgnoredManagedPath -RelativePath $relative)
             } |
             ForEach-Object {
-                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
-                $removed++
+                $artifactPath = $_.FullName
+                try {
+                    Remove-Item -LiteralPath $artifactPath -Force -ErrorAction Stop
+                    $removed++
+                }
+                catch {
+                    Write-Warning "Could not remove managed source/developer artifact file '$artifactPath': $($_.Exception.Message)"
+                }
             }
     }
 
