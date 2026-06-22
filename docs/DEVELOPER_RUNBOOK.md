@@ -486,6 +486,7 @@ compare file mtimes.
 | Publish-path detached signing writes verifiable signature files without real NAS or production keys | `scripts/test-publish-signing.ps1` | `Engineering gates` | Uses a temporary release root and ephemeral test key only. |
 | Updater compatibility mode verifies signed releases and reports unsigned legacy releases | `scripts/test-distribution-integrity.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish a signed stable baseline or flip fail-closed enforcement. |
 | Signed release anti-rollback and enforce-mode metadata stay valid | `scripts/test-distribution-integrity.ps1`, `scripts/test-publish-signing.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish to NAS or include production private keys. |
+| Optional signed license-seat verification stays public-key-only | `scripts/test-license-seat.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Default policy is disabled; no production license keys are included. |
 | Bridge result contract stays canonical and idempotent | runtime `bridge-result-contract-test` via `npm test` | `Engineering gates` | Live Revit skew checks remain local-only. |
 | Production write tools keep guard/verification contracts | runtime `write-tool-contract-test` via `npm test` | `Engineering gates` | - |
 | Tool argument schema inference does not collapse to `any` | runtime `tool-inference-test` via `npm test` | `Engineering gates` | - |
@@ -708,6 +709,14 @@ Signed release enforcement uses `releaseSequence` metadata in both
 channel replay during normal execution. Emergency signed rollback is available
 only through the explicit local updater flag `-AllowSignedReleaseRollback`; the
 scheduled updater does not pass that flag.
+
+License/seat verification is optional and disabled by default. The updater can
+load a signed `revagent-license.json` plus `revagent-license.sig.json` from the
+configured license path, and public license verification keys from updater
+config or `config/license-trusted-keys.json`. `audit` policy records missing,
+expired, or tampered license evidence without blocking; `enforce` blocks before
+package replacement. License private keys must stay outside the repo, package,
+NAS tools, updater config, and workstation install.
 
 Large offline dependency payloads are local/NAS-side assets, not Git assets:
 

@@ -28,6 +28,10 @@ param(
     [ValidateSet("", "compatibility", "enforce")]
     [string]$DistributionIntegrityPolicy = "",
     [switch]$AllowSignedReleaseRollback,
+    [ValidateSet("", "disabled", "audit", "enforce")]
+    [string]$LicensePolicy = "",
+    [string]$LicensePath = "",
+    [string]$LicenseSignaturePath = "",
     [switch]$Force,
     [switch]$AuditOnly,
     [switch]$SkipNpmInstall,
@@ -65,6 +69,7 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.DistributionIntegrity.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.License.psm1") -Force
 
 $updaterVersion = "0.1.0"
 $script:RevitMcpTranscriptStarted = $false
@@ -85,6 +90,17 @@ $script:RevitMcpDistributionIntegrity = [ordered]@{
     message = "Distribution integrity has not been evaluated yet."
     policy = $script:RevitMcpDistributionIntegrityPolicy
     trustedKeyCount = 0
+}
+$script:RevitMcpLicensePolicy = "disabled"
+$script:RevitMcpTrustedLicenseKeys = @{}
+$script:RevitMcpTrustedLicenseKeySources = @()
+$script:RevitMcpLicense = [ordered]@{
+    success = $true
+    valid = $false
+    state = "disabled"
+    reason = "disabled"
+    message = "License verification is disabled."
+    policy = $script:RevitMcpLicensePolicy
 }
 $script:RevitMcpOperation = if ($AuditOnly) { "audit" } elseif ($Force) { "reinstall" } else { "update" }
 $script:RevitMcpOperationMethod = if (-not [string]::IsNullOrWhiteSpace($OperationMethod)) {
@@ -1725,6 +1741,106 @@ function Get-InstalledHighestAcceptedReleaseSequence {
     return [long]$highest
 }
 
+function Initialize-LicenseConfig {
+    param([AllowNull()][object]$Config)
+
+    $policy = "disabled"
+    $trustedKeys = @{}
+    $sources = [System.Collections.Generic.List[string]]::new()
+    $configuredLicensePath = $LicensePath
+    $configuredSignaturePath = $LicenseSignaturePath
+    $licenseConfig = if ($Config) { Get-JsonPropertyValue -Object $Config -Name "license" } else { $null }
+
+    if ($licenseConfig) {
+        $configuredPolicy = [string](Get-JsonPropertyValue -Object $licenseConfig -Name "policy")
+        if (-not [string]::IsNullOrWhiteSpace($configuredPolicy)) {
+            if ($configuredPolicy -notin @("disabled", "audit", "enforce")) {
+                throw "Unsupported license policy '$configuredPolicy'."
+            }
+            $policy = $configuredPolicy
+        }
+
+        $directTrustedKeys = Get-JsonPropertyValue -Object $licenseConfig -Name "trustedKeys"
+        if ($null -ne $directTrustedKeys) {
+            $added = Add-TrustedReleaseKeys -Target $trustedKeys -Source $directTrustedKeys
+            if ($added -gt 0) {
+                [void]$sources.Add("updater-config")
+            }
+        }
+
+        $trustedKeysPath = [string](Get-JsonPropertyValue -Object $licenseConfig -Name "trustedKeysPath")
+        if (-not [string]::IsNullOrWhiteSpace($trustedKeysPath)) {
+            $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $trustedKeysPath -Required
+            if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
+                [void]$sources.Add($sourcePath)
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($configuredLicensePath)) {
+            $configuredLicensePath = [string](Get-JsonPropertyValue -Object $licenseConfig -Name "licensePath")
+        }
+        if ([string]::IsNullOrWhiteSpace($configuredSignaturePath)) {
+            $configuredSignaturePath = [string](Get-JsonPropertyValue -Object $licenseConfig -Name "signaturePath")
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($LicensePolicy)) {
+        $policy = $LicensePolicy
+    }
+
+    foreach ($candidate in @(
+            (Join-Path $WorkRoot "config\license-trusted-keys.json"),
+            (Join-Path $PSScriptRoot "config\license-trusted-keys.json"),
+            (Join-Path (Split-Path -Parent $PSScriptRoot) "config\license-trusted-keys.json")
+        )) {
+        if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            continue
+        }
+        $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $candidate
+        if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
+            [void]$sources.Add($sourcePath)
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($configuredLicensePath)) {
+        foreach ($candidate in @(
+                (Join-Path $InstallRoot "license\revagent-license.json"),
+                (Join-Path $WorkRoot "license\revagent-license.json"),
+                (Join-Path $WorkRoot "config\revagent-license.json")
+            )) {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $configuredLicensePath = $candidate
+                break
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($configuredLicensePath)) {
+            $configuredLicensePath = Join-Path $InstallRoot "license\revagent-license.json"
+        }
+    }
+    else {
+        $configuredLicensePath = Resolve-UpdaterConfigRelativePath -Path $configuredLicensePath
+    }
+
+    if ([string]::IsNullOrWhiteSpace($configuredSignaturePath)) {
+        $configuredSignaturePath = Get-RevitMcpDetachedSignaturePath -ContentPath $configuredLicensePath
+    }
+    else {
+        $configuredSignaturePath = Resolve-UpdaterConfigRelativePath -Path $configuredSignaturePath
+    }
+
+    $script:RevitMcpLicensePolicy = $policy
+    $script:RevitMcpTrustedLicenseKeys = $trustedKeys
+    $script:RevitMcpTrustedLicenseKeySources = @($sources.ToArray())
+    $script:RevitMcpLicense = Test-RevitMcpLicenseSeatFile `
+        -LicensePath $configuredLicensePath `
+        -SignaturePath $configuredSignaturePath `
+        -TrustedKeys $trustedKeys `
+        -Policy $policy
+
+    $script:RevitMcpLicense | Add-Member -NotePropertyName "trustedKeyCount" -NotePropertyValue $trustedKeys.Count -Force
+    $script:RevitMcpLicense | Add-Member -NotePropertyName "trustedKeySources" -NotePropertyValue @($script:RevitMcpTrustedLicenseKeySources) -Force
+}
+
 function Get-ComponentByKey {
     param(
         [object]$Manifest,
@@ -2235,6 +2351,7 @@ function Write-UpdateReport {
         status = $Status
         message = $Message
         distributionIntegrity = $script:RevitMcpDistributionIntegrity
+        license = $script:RevitMcpLicense
         computerName = $env:COMPUTERNAME
         userName = $env:USERNAME
         atUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -2302,6 +2419,7 @@ function New-CurrentUpdateDiagnostics {
     $running = @($runningRevit)
     return [ordered]@{
         distributionIntegrity = $script:RevitMcpDistributionIntegrity
+        license = $script:RevitMcpLicense
         allowSignedReleaseRollback = [bool]$AllowSignedReleaseRollback
         isFirstInstall = [bool]$isFirstInstall
         revitRunning = ($running.Count -gt 0)
@@ -2631,12 +2749,17 @@ if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
 }
 $script:RevitMcpRemoteReportsRoot = $ReportsRoot
 Initialize-DistributionIntegrityConfig -Config $config
+Initialize-LicenseConfig -Config $config
 
 $installedState = Get-InstalledState -Path $statePath
 $highestAcceptedReleaseSequence = Get-InstalledHighestAcceptedReleaseSequence -InstalledState $installedState
 $channel = $null
 
 try {
+    if (-not [bool]$script:RevitMcpLicense.success) {
+        throw "License verification rejected this run: $($script:RevitMcpLicense.reason). $($script:RevitMcpLicense.message)"
+    }
+
     if (-not (Test-Path -LiteralPath $ChannelManifestPath)) {
         throw "Channel manifest was not found: $ChannelManifestPath"
     }
@@ -3013,6 +3136,7 @@ try {
         minimumAcceptedReleaseSequence = [long]$script:RevitMcpDistributionIntegrity.minimumAcceptedReleaseSequence
         highestAcceptedReleaseSequence = [long]$script:RevitMcpDistributionIntegrity.highestAcceptedReleaseSequence
         signedReleaseRollbackAllowed = [bool]$script:RevitMcpDistributionIntegrity.rollbackAllowed
+        license = $script:RevitMcpLicense
         updaterVersion = $updaterVersion
         skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
         paths = [ordered]@{

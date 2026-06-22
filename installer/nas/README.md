@@ -262,6 +262,13 @@ and blocks older signed channel replay during normal runs. Emergency rollback
 requires a manual updater run with `-AllowSignedReleaseRollback`; the scheduled
 task and GUI update path do not pass that flag.
 
+License/seat verification is optional and disabled unless configured. When
+enabled, the updater verifies `revagent-license.json` with
+`revagent-license.sig.json` using public keys from updater config or
+`config\license-trusted-keys.json`. `audit` records invalid or missing license
+evidence without blocking; `enforce` blocks before package replacement.
+License private keys must never be shipped to workstations or NAS `tools\`.
+
 ## Local No-Deploy Validation
 
 Before publishing a stable release, run the local checks from the repo root:
@@ -334,6 +341,9 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
 - A fail-closed signed stable rollout must first deploy the public key material
   and publish a signed stable channel with `releaseSequence`. Do not flip
   normal office update policy to `enforce` against an unsigned stable channel.
+- License/seat enforcement is separate from release signing. Use public license
+  keys and signed license files only; do not place license-signing private keys
+  in the release root, package, updater config, or local updater folder.
 - Revit version metadata is centralized in `config\revit-versions.json`. The
   current office deployment payload supports Revit 2022 only. Revit
   2023/2024/2025 are modeled for future expansion and must remain blocked until

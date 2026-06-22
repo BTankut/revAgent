@@ -31,6 +31,7 @@ Import-Module (Join-Path $libRoot "RevitMcp.Proxy.psm1") -Force
 Import-Module (Join-Path $libRoot "RevitMcp.LogRetention.psm1") -Force
 Import-Module (Join-Path $libRoot "RevitMcp.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $libRoot "RevitMcp.Reporting.psm1") -Force
+Import-Module (Join-Path $libRoot "RevitMcp.License.psm1") -Force
 
 function Assert-True {
     param(
@@ -351,6 +352,11 @@ try {
     Assert-True ($updateText -match '\[switch\]\$AllowSignedReleaseRollback') "Updater must require an explicit operator flag for signed rollback bypass."
     Assert-True ($updateText -match 'Get-InstalledHighestAcceptedReleaseSequence') "Updater must persist and reuse the highest accepted signed release sequence."
     Assert-True ($updateText -match 'HighestAcceptedReleaseSequence\s+\$highestAcceptedReleaseSequence') "Updater must pass anti-rollback state into integrity verification."
+    Assert-True ($updateText -match 'RevitMcp\.License\.psm1') "Updater must import the license verifier."
+    Assert-True ($updateText -match '\[string\]\$LicensePolicy = ""' -and $updateText -match '\[string\]\$LicensePath = ""' -and $updateText -match '\[string\]\$LicenseSignaturePath = ""') "Updater must expose explicit license verification inputs."
+    Assert-True ($updateText -match 'license-trusted-keys\.json') "Updater must look for packaged public license-key config."
+    Assert-True ($updateText -match 'Initialize-LicenseConfig -Config \$config') "Updater must initialize license verification before package work."
+    Assert-True ($updateText -match 'license = \$script:RevitMcpLicense') "Updater reports must include license verification status."
     Assert-True ($updateText.IndexOf('Test-RevitMcpReleaseDistributionIntegrity') -lt $updateText.IndexOf('Copy-Item -LiteralPath $packagePath')) "Updater must verify release integrity before copying the package into the local cache."
     Assert-True ($updateText -match 'elseif \(\$Force\) \{ "reinstall" \}') "Forced updater runs must be reported as reinstall operations."
     Assert-True ($updateText -match 'Publish-RevitMcpMachineRunReport') "Updater must publish per-machine NAS reports and logs."
