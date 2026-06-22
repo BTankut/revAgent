@@ -175,6 +175,8 @@ function Get-RevitPayloadDebugArtifactPaths {
         [string]$RepoRoot
     )
 
+    $repoRootFullName = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $repoPrefix = $repoRootFullName + [System.IO.Path]::DirectorySeparatorChar
     $payloadRoots = @(
         "installer/revit-plugin",
         "installer/command-payload"
@@ -186,7 +188,7 @@ function Get-RevitPayloadDebugArtifactPaths {
 
     $artifacts = @()
     foreach ($payloadRoot in $payloadRoots) {
-        $fullRoot = Join-RevitPayloadRepoPath -RepoRoot $RepoRoot -RelativePath $payloadRoot
+        $fullRoot = Join-RevitPayloadRepoPath -RepoRoot $repoRootFullName -RelativePath $payloadRoot
         if (-not (Test-Path -LiteralPath $fullRoot -PathType Container)) {
             continue
         }
@@ -194,7 +196,10 @@ function Get-RevitPayloadDebugArtifactPaths {
         $artifacts += @(Get-ChildItem -LiteralPath $fullRoot -Recurse -File -Force |
             Where-Object { $debugExtensions.Contains($_.Extension) } |
             ForEach-Object {
-                ConvertTo-RevitPayloadGitPath -Path ($_.FullName.Substring($RepoRoot.Length + 1))
+                if (-not $_.FullName.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    throw "File '$($_.FullName)' is not under expected repository root '$repoRootFullName'."
+                }
+                ConvertTo-RevitPayloadGitPath -Path ($_.FullName.Substring($repoPrefix.Length))
             })
     }
 
