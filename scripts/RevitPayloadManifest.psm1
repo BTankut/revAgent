@@ -186,22 +186,21 @@ function Get-RevitPayloadDebugArtifactPaths {
         [void]$debugExtensions.Add($extension)
     }
 
-    $artifacts = @()
-    foreach ($payloadRoot in $payloadRoots) {
+    $artifacts = @(foreach ($payloadRoot in $payloadRoots) {
         $fullRoot = Join-RevitPayloadRepoPath -RepoRoot $repoRootFullName -RelativePath $payloadRoot
         if (-not (Test-Path -LiteralPath $fullRoot -PathType Container)) {
             continue
         }
 
-        $artifacts += @(Get-ChildItem -LiteralPath $fullRoot -Recurse -File -Force |
+        Get-ChildItem -LiteralPath $fullRoot -Recurse -File -Force |
             Where-Object { $debugExtensions.Contains($_.Extension) } |
             ForEach-Object {
                 if (-not $_.FullName.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
                     throw "File '$($_.FullName)' is not under expected repository root '$repoRootFullName'."
                 }
                 ConvertTo-RevitPayloadGitPath -Path ($_.FullName.Substring($repoPrefix.Length))
-            })
-    }
+            }
+    })
 
     return @($artifacts | Sort-Object)
 }
