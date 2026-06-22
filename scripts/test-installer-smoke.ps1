@@ -359,6 +359,9 @@ try {
     Assert-True ($publishText -match 'foreach \(\$payloadRoot in @\("installer\\revit-plugin", "installer\\command-payload"\)\)') "Release manifest must classify Revit add-in and command payload trees as Revit-close-required."
     Assert-True ($publishText -match 'revitClosedRequiredPaths = @\(\s+"installer\\revit-plugin"\s+"installer\\command-payload"\s+\)') "Release manifest must advertise Revit-close-required payload paths."
     Assert-True ($publishText -match '\.revagent-npm-dependencies\.json') "Release payload fingerprints must ignore npm dependency marker files."
+    Assert-True ($publishText -match '\[string\]\$SigningPrivateKeyPath = ""' -and $publishText -match '\[string\]\$SigningKeyId = ""') "Release signing must be optional publish-time input."
+    Assert-True ($publishText -match 'Signing private key must be stored outside the repository' -and $publishText -match 'Signing private key must be stored outside NAS tools') "Publish signing must reject private keys stored in shipped or tool roots."
+    Assert-True ($publishText -match 'manifest\.sig\.json' -and $publishText -match '\{0\}\.sig\.json' -and $publishText -match 'Test-RevitMcpDetachedJsonSignatureFile') "Publish signing must write and verify detached signature files."
     Assert-True ($publishText -notmatch 'kurulum|legacyEntryPoint|legacyInstaller') "Release publishing must not create the removed legacy kurulum package alias."
     $payloadFreshnessText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-mcp-build-payload-freshness.ps1")
     $testAllText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-all.ps1")

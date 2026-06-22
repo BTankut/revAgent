@@ -172,6 +172,12 @@ try {
     Assert-True $valid.success "Valid detached channel signature should verify."
     Assert-Equal $valid.signedObject "channel" "Valid signature result should preserve signedObject."
 
+    Write-Host "Test detached signature helper generation"
+    $generatedEnvelope = New-RevitMcpDetachedJsonSignature -Content $channel -SignedObject "channel" -KeyId "test-rsa-2026" -PrivateKeyXml ($rsa.ToXmlString($true)) -CreatedAtUtc "2026-06-22T00:00:00.0000000Z"
+    $generatedValid = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $generatedEnvelope -TrustedKeys $trustedKeys
+    Assert-True $generatedValid.success "Generated detached channel signature should verify."
+    Assert-Equal $generatedEnvelope.contentSha256 (Get-RevitMcpCanonicalJsonSha256 -Value $channel) "Generated signature envelope must bind the canonical content hash."
+
     Write-Host "Test signedObject allowlist is case-sensitive"
     $wrongCaseSignedObjectEnvelope = Copy-OrderedMap -Value $envelope
     $wrongCaseSignedObjectEnvelope["signedObject"] = "Channel"

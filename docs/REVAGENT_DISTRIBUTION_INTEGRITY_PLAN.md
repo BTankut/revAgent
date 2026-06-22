@@ -170,7 +170,9 @@ Migration sequence:
 1. Add canonicalization and verifier fixtures without changing production
    updater behavior.
 2. Add optional signing to the publish path and write detached signature files
-   when a signing key is provided.
+   when a signing key is provided. This workstream adds publish-time
+   `manifest.sig.json` and `stable.sig.json` generation without requiring a
+   signed release.
 3. Add updater verification in compatibility mode: signed releases are
    verified, unsigned releases are reported as legacy-compatible.
 4. Add a signed release sequence or minimum-version claim and persist the
@@ -230,7 +232,8 @@ Each workstream should remain a separate PR:
 2. Canonical JSON plus signature verification fixtures. This workstream adds
    the shared verifier helper and `scripts/test-distribution-integrity.ps1`
    without changing production updater behavior.
-3. Publish-path detached signing support.
+3. Publish-path detached signing support. This adds optional publish-time
+   signature generation and temp-root tests without publishing to NAS.
 4. Updater verification in compatibility mode with reporting.
 5. Signed-stable baseline and enforcement flip.
 6. Optional license or seat design and implementation.

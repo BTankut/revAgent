@@ -62,6 +62,12 @@ powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps
   -Channel stable
 ```
 
+Optional detached release signing is publish-time only. When a release-signing
+key is approved, pass both `-SigningPrivateKeyPath` and `-SigningKeyId`; the
+script writes `manifest.sig.json` and `stable.sig.json`, verifies them before
+finishing, and rejects private keys stored under the repo or NAS `tools` root.
+Do not store private signing keys in Git, the user ZIP, or NAS tools.
+
 ## Install The Workstation Updater
 
 Workstation prerequisites handled by the installer:
