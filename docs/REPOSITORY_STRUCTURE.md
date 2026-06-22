@@ -169,9 +169,12 @@ file mtimes. `scripts/test-all.ps1` and the NAS publish preflight run this gate
 before release packaging.
 
 `installer/lib` contains shared PowerShell helper modules for updater/installer
-behavior, including distribution-integrity canonical JSON and detached
-signature helper functions used by tests and optional publish-path signing.
-`config/revit-versions.json` is the central Revit version matrix.
+behavior, including distribution-integrity canonical JSON, detached signature
+helper functions, updater compatibility-mode verification, and optional
+publish-path signing.
+`config/revit-versions.json` is the central Revit version matrix; future public
+release-verification key files also live under `config/` and must not include
+private signing material.
 
 ## Release Rule
 

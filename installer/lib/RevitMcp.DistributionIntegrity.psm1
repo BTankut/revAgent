@@ -767,6 +767,396 @@ function Test-RevitMcpDetachedJsonSignatureFile {
         -ThrowOnFailure:$ThrowOnFailure
 }
 
+function ConvertTo-RevitMcpTrustedKeyMap {
+    param([AllowNull()][object]$TrustedKeys)
+
+    $map = @{}
+    if ($null -eq $TrustedKeys) {
+        return $map
+    }
+
+    if ($TrustedKeys -is [System.Collections.IDictionary]) {
+        foreach ($key in $TrustedKeys.Keys) {
+            if ($null -eq $key -or [string]::IsNullOrWhiteSpace([string]$key)) {
+                continue
+            }
+            $map[[string]$key] = $TrustedKeys[$key]
+        }
+        return $map
+    }
+
+    if ($TrustedKeys -is [System.Collections.IEnumerable] -and -not ($TrustedKeys -is [string])) {
+        foreach ($entry in $TrustedKeys) {
+            if ($null -eq $entry) {
+                continue
+            }
+            $keyId = [string](Get-RevitMcpObjectPropertyValue -Value $entry -Name "keyId")
+            if (-not [string]::IsNullOrWhiteSpace($keyId)) {
+                $map[$keyId] = $entry
+            }
+        }
+        if ($map.Count -gt 0) {
+            return $map
+        }
+    }
+
+    foreach ($property in $TrustedKeys.PSObject.Properties) {
+        if ($property.MemberType -notin @("NoteProperty", "Property")) {
+            continue
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$property.Name)) {
+            $map[[string]$property.Name] = $property.Value
+        }
+    }
+
+    return $map
+}
+
+function Get-RevitMcpDetachedSignaturePath {
+    param([Parameter(Mandatory = $true)][string]$ContentPath)
+
+    $directory = Split-Path -Parent $ContentPath
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($ContentPath)
+    return Join-Path $directory ("{0}.sig.json" -f $baseName)
+}
+
+function New-RevitMcpDetachedJsonSignatureCompatibilityResult {
+    param(
+        [bool]$Success,
+        [string]$State,
+        [string]$Reason,
+        [string]$Message,
+        [string]$SignedObject,
+        [string]$ContentPath,
+        [string]$SignaturePath,
+        [bool]$SignaturePresent,
+        [string]$Policy,
+        [int]$TrustedKeyCount = 0,
+        [string]$KeyId = "",
+        [string]$ContentSha256 = "",
+        [string]$Canonicalization = $script:RevitMcpCanonicalizationId,
+        [string]$Algorithm = $script:RevitMcpSignatureAlgorithm
+    )
+
+    return [pscustomobject][ordered]@{
+        success = $Success
+        state = $State
+        reason = $Reason
+        message = $Message
+        signedObject = $SignedObject
+        contentPath = $ContentPath
+        signaturePath = $SignaturePath
+        signaturePresent = $SignaturePresent
+        policy = $Policy
+        trustedKeyCount = $TrustedKeyCount
+        keyId = $KeyId
+        contentSha256 = $ContentSha256
+        canonicalization = $Canonicalization
+        algorithm = $Algorithm
+    }
+}
+
+function Test-RevitMcpDetachedJsonSignatureCompatibilityFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ContentPath,
+        [Parameter(Mandatory = $true)][string]$SignaturePath,
+        [Parameter(Mandatory = $true)][object]$TrustedKeys,
+        [Parameter(Mandatory = $true)][string]$SignedObject,
+        [ValidateSet("compatibility", "enforce")]
+        [string]$Policy = "compatibility"
+    )
+
+    $trustedKeyMap = ConvertTo-RevitMcpTrustedKeyMap -TrustedKeys $TrustedKeys
+    if (-not (Test-Path -LiteralPath $SignaturePath -PathType Leaf)) {
+        if ($Policy -eq "compatibility") {
+            return New-RevitMcpDetachedJsonSignatureCompatibilityResult `
+                -Success $true `
+                -State "legacy-compatible" `
+                -Reason "unsigned_legacy_release" `
+                -Message "Detached signature is absent; unsigned legacy release is accepted in compatibility mode." `
+                -SignedObject $SignedObject `
+                -ContentPath $ContentPath `
+                -SignaturePath $SignaturePath `
+                -SignaturePresent $false `
+                -Policy $Policy `
+                -TrustedKeyCount $trustedKeyMap.Count
+        }
+
+        return New-RevitMcpDetachedJsonSignatureCompatibilityResult `
+            -Success $false `
+            -State "rejected" `
+            -Reason "signature_required" `
+            -Message "Detached signature is required by release integrity policy." `
+            -SignedObject $SignedObject `
+            -ContentPath $ContentPath `
+            -SignaturePath $SignaturePath `
+            -SignaturePresent $false `
+            -Policy $Policy `
+            -TrustedKeyCount $trustedKeyMap.Count
+    }
+
+    $result = Test-RevitMcpDetachedJsonSignatureFile `
+        -ContentPath $ContentPath `
+        -SignaturePath $SignaturePath `
+        -TrustedKeys $trustedKeyMap `
+        -AllowedSignedObjects @($SignedObject)
+
+    return New-RevitMcpDetachedJsonSignatureCompatibilityResult `
+        -Success ([bool]$result.success) `
+        -State $(if ($result.success) { "verified" } else { "rejected" }) `
+        -Reason ([string]$result.reason) `
+        -Message ([string]$result.message) `
+        -SignedObject $SignedObject `
+        -ContentPath $ContentPath `
+        -SignaturePath $SignaturePath `
+        -SignaturePresent $true `
+        -Policy $Policy `
+        -TrustedKeyCount $trustedKeyMap.Count `
+        -KeyId ([string]$result.keyId) `
+        -ContentSha256 ([string]$result.contentSha256) `
+        -Canonicalization ([string]$result.canonicalization) `
+        -Algorithm ([string]$result.algorithm)
+}
+
+function Test-RevitMcpReleaseManifestChannelConsistency {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$Channel,
+        [Parameter(Mandatory = $true)][object]$ReleaseManifest
+    )
+
+    $issues = [System.Collections.Generic.List[string]]::new()
+    $manifestApp = [string](Get-RevitMcpObjectPropertyValue -Value $ReleaseManifest -Name "app")
+    if (-not [string]::IsNullOrWhiteSpace($manifestApp) -and $manifestApp -ne "revit-mcp-skill") {
+        [void]$issues.Add("release manifest app is '$manifestApp'")
+    }
+
+    $channelVersion = [string](Get-RevitMcpObjectPropertyValue -Value $Channel -Name "version")
+    $manifestVersion = [string](Get-RevitMcpObjectPropertyValue -Value $ReleaseManifest -Name "version")
+    if (-not [string]::Equals($channelVersion, $manifestVersion, [System.StringComparison]::Ordinal)) {
+        [void]$issues.Add("version mismatch '$channelVersion' != '$manifestVersion'")
+    }
+
+    $channelName = [string](Get-RevitMcpObjectPropertyValue -Value $Channel -Name "channel")
+    $manifestChannel = [string](Get-RevitMcpObjectPropertyValue -Value $ReleaseManifest -Name "channel")
+    if (-not [string]::IsNullOrWhiteSpace($manifestChannel) -and -not [string]::Equals($channelName, $manifestChannel, [System.StringComparison]::Ordinal)) {
+        [void]$issues.Add("channel mismatch '$channelName' != '$manifestChannel'")
+    }
+
+    $manifestPackage = Get-RevitMcpObjectPropertyValue -Value $ReleaseManifest -Name "package"
+    $channelSha = [string](Get-RevitMcpObjectPropertyValue -Value $Channel -Name "sha256")
+    $manifestSha = [string](Get-RevitMcpObjectPropertyValue -Value $manifestPackage -Name "sha256")
+    if (-not [string]::IsNullOrWhiteSpace($manifestSha) -and -not [string]::Equals($channelSha, $manifestSha, [System.StringComparison]::OrdinalIgnoreCase)) {
+        [void]$issues.Add("package SHA mismatch")
+    }
+
+    $channelPackagePath = [string](Get-RevitMcpObjectPropertyValue -Value $Channel -Name "packagePath")
+    $manifestPackagePath = [string](Get-RevitMcpObjectPropertyValue -Value $manifestPackage -Name "path")
+    if (-not [string]::IsNullOrWhiteSpace($manifestPackagePath) -and -not [string]::Equals($channelPackagePath, $manifestPackagePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        [void]$issues.Add("package path mismatch")
+    }
+
+    if ($issues.Count -gt 0) {
+        return [pscustomobject][ordered]@{
+            success = $false
+            state = "rejected"
+            reason = "channel_manifest_mismatch"
+            message = "Signed channel and release manifest metadata do not agree: $($issues.ToArray() -join '; ')."
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        success = $true
+        state = "verified"
+        reason = "ok"
+        message = "Signed channel and release manifest metadata are consistent."
+    }
+}
+
+function New-RevitMcpReleaseDistributionIntegrityAggregate {
+    param(
+        [bool]$Success,
+        [string]$State,
+        [string]$Reason,
+        [string]$Message,
+        [string]$Policy,
+        [int]$TrustedKeyCount,
+        [object]$ChannelSignature,
+        [object]$ReleaseManifestSignature,
+        [object]$Consistency
+    )
+
+    return [pscustomobject][ordered]@{
+        success = $Success
+        state = $State
+        reason = $Reason
+        message = $Message
+        policy = $Policy
+        trustedKeyCount = $TrustedKeyCount
+        channelSignature = $ChannelSignature
+        releaseManifestSignature = $ReleaseManifestSignature
+        consistency = $Consistency
+    }
+}
+
+function Test-RevitMcpReleaseDistributionIntegrity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ChannelPath,
+        [Parameter(Mandatory = $true)][object]$Channel,
+        [string]$ReleaseManifestPath = "",
+        [AllowNull()][object]$ReleaseManifest = $null,
+        [Parameter(Mandatory = $true)][object]$TrustedKeys,
+        [ValidateSet("compatibility", "enforce")]
+        [string]$Policy = "compatibility"
+    )
+
+    $trustedKeyMap = ConvertTo-RevitMcpTrustedKeyMap -TrustedKeys $TrustedKeys
+    $channelSignaturePath = Get-RevitMcpDetachedSignaturePath -ContentPath $ChannelPath
+    $channelSignature = Test-RevitMcpDetachedJsonSignatureCompatibilityFile `
+        -ContentPath $ChannelPath `
+        -SignaturePath $channelSignaturePath `
+        -TrustedKeys $trustedKeyMap `
+        -SignedObject "channel" `
+        -Policy $Policy
+
+    $releaseManifestSignature = $null
+    if ([string]::IsNullOrWhiteSpace($ReleaseManifestPath)) {
+        $releaseManifestSignature = New-RevitMcpDetachedJsonSignatureCompatibilityResult `
+            -Success ($Policy -eq "compatibility") `
+            -State $(if ($Policy -eq "compatibility") { "legacy-compatible" } else { "rejected" }) `
+            -Reason $(if ($Policy -eq "compatibility") { "release_manifest_not_declared" } else { "release_manifest_required" }) `
+            -Message $(if ($Policy -eq "compatibility") { "Release manifest is absent; unsigned legacy release is accepted in compatibility mode." } else { "Release manifest is required by release integrity policy." }) `
+            -SignedObject "release-manifest" `
+            -ContentPath "" `
+            -SignaturePath "" `
+            -SignaturePresent $false `
+            -Policy $Policy `
+            -TrustedKeyCount $trustedKeyMap.Count
+    }
+    else {
+        $releaseManifestSignaturePath = Get-RevitMcpDetachedSignaturePath -ContentPath $ReleaseManifestPath
+        $releaseManifestSignature = Test-RevitMcpDetachedJsonSignatureCompatibilityFile `
+            -ContentPath $ReleaseManifestPath `
+            -SignaturePath $releaseManifestSignaturePath `
+            -TrustedKeys $trustedKeyMap `
+            -SignedObject "release-manifest" `
+            -Policy $Policy
+    }
+
+    $consistency = [pscustomobject][ordered]@{
+        success = $true
+        state = "skipped"
+        reason = "unsigned_legacy_release"
+        message = "Release manifest consistency is not enforced for unsigned legacy releases in compatibility mode."
+    }
+
+    $anySignaturePresent = [bool]$channelSignature.signaturePresent -or [bool]$releaseManifestSignature.signaturePresent
+    if (-not $anySignaturePresent) {
+        if ($Policy -eq "compatibility") {
+            return New-RevitMcpReleaseDistributionIntegrityAggregate `
+                -Success $true `
+                -State "legacy-compatible" `
+                -Reason "unsigned_legacy_release" `
+                -Message "Unsigned legacy release accepted in compatibility mode." `
+                -Policy $Policy `
+                -TrustedKeyCount $trustedKeyMap.Count `
+                -ChannelSignature $channelSignature `
+                -ReleaseManifestSignature $releaseManifestSignature `
+                -Consistency $consistency
+        }
+
+        return New-RevitMcpReleaseDistributionIntegrityAggregate `
+            -Success $false `
+            -State "rejected" `
+            -Reason "signature_required" `
+            -Message "Signed channel and release manifest are required by release integrity policy." `
+            -Policy $Policy `
+            -TrustedKeyCount $trustedKeyMap.Count `
+            -ChannelSignature $channelSignature `
+            -ReleaseManifestSignature $releaseManifestSignature `
+            -Consistency $consistency
+    }
+
+    if (-not [bool]$channelSignature.signaturePresent -or -not [bool]$releaseManifestSignature.signaturePresent) {
+        return New-RevitMcpReleaseDistributionIntegrityAggregate `
+            -Success $false `
+            -State "rejected" `
+            -Reason "partial_signature_set" `
+            -Message "Signed releases must include both channel and release-manifest detached signatures." `
+            -Policy $Policy `
+            -TrustedKeyCount $trustedKeyMap.Count `
+            -ChannelSignature $channelSignature `
+            -ReleaseManifestSignature $releaseManifestSignature `
+            -Consistency $consistency
+    }
+
+    if (-not [bool]$channelSignature.success) {
+        return New-RevitMcpReleaseDistributionIntegrityAggregate `
+            -Success $false `
+            -State "rejected" `
+            -Reason "channel_signature_failed" `
+            -Message ([string]$channelSignature.message) `
+            -Policy $Policy `
+            -TrustedKeyCount $trustedKeyMap.Count `
+            -ChannelSignature $channelSignature `
+            -ReleaseManifestSignature $releaseManifestSignature `
+            -Consistency $consistency
+    }
+
+    if (-not [bool]$releaseManifestSignature.success) {
+        return New-RevitMcpReleaseDistributionIntegrityAggregate `
+            -Success $false `
+            -State "rejected" `
+            -Reason "release_manifest_signature_failed" `
+            -Message ([string]$releaseManifestSignature.message) `
+            -Policy $Policy `
+            -TrustedKeyCount $trustedKeyMap.Count `
+            -ChannelSignature $channelSignature `
+            -ReleaseManifestSignature $releaseManifestSignature `
+            -Consistency $consistency
+    }
+
+    if ($null -eq $ReleaseManifest) {
+        return New-RevitMcpReleaseDistributionIntegrityAggregate `
+            -Success $false `
+            -State "rejected" `
+            -Reason "release_manifest_missing" `
+            -Message "Signed release manifest JSON could not be loaded." `
+            -Policy $Policy `
+            -TrustedKeyCount $trustedKeyMap.Count `
+            -ChannelSignature $channelSignature `
+            -ReleaseManifestSignature $releaseManifestSignature `
+            -Consistency $consistency
+    }
+
+    $consistency = Test-RevitMcpReleaseManifestChannelConsistency -Channel $Channel -ReleaseManifest $ReleaseManifest
+    if (-not [bool]$consistency.success) {
+        return New-RevitMcpReleaseDistributionIntegrityAggregate `
+            -Success $false `
+            -State "rejected" `
+            -Reason ([string]$consistency.reason) `
+            -Message ([string]$consistency.message) `
+            -Policy $Policy `
+            -TrustedKeyCount $trustedKeyMap.Count `
+            -ChannelSignature $channelSignature `
+            -ReleaseManifestSignature $releaseManifestSignature `
+            -Consistency $consistency
+    }
+
+    return New-RevitMcpReleaseDistributionIntegrityAggregate `
+        -Success $true `
+        -State "verified" `
+        -Reason "ok" `
+        -Message "Channel and release-manifest detached signatures verified." `
+        -Policy $Policy `
+        -TrustedKeyCount $trustedKeyMap.Count `
+        -ChannelSignature $channelSignature `
+        -ReleaseManifestSignature $releaseManifestSignature `
+        -Consistency $consistency
+}
+
 Export-ModuleMember -Function `
     ConvertTo-RevitMcpCanonicalJson, `
     Get-RevitMcpCanonicalJsonBytes, `
@@ -776,4 +1166,9 @@ Export-ModuleMember -Function `
     New-RevitMcpDetachedJsonSignature, `
     Get-RevitMcpSignaturePayloadCanonicalJson, `
     Test-RevitMcpDetachedJsonSignature, `
-    Test-RevitMcpDetachedJsonSignatureFile
+    Test-RevitMcpDetachedJsonSignatureFile, `
+    ConvertTo-RevitMcpTrustedKeyMap, `
+    Get-RevitMcpDetachedSignaturePath, `
+    Test-RevitMcpDetachedJsonSignatureCompatibilityFile, `
+    Test-RevitMcpReleaseManifestChannelConsistency, `
+    Test-RevitMcpReleaseDistributionIntegrity

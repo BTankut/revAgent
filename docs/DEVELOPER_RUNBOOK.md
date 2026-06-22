@@ -484,6 +484,7 @@ compare file mtimes.
 | MCP build payloads and the Revit payload manifest match source | `scripts/test-mcp-build-payload-freshness.ps1` | `Engineering gates` | Live Revit behavior remains local-only. |
 | Distribution canonical JSON and detached signature fixtures stay deterministic | `scripts/test-distribution-integrity.ps1` | `Engineering gates` | Does not publish, sign a real stable channel, or enable updater enforcement. |
 | Publish-path detached signing writes verifiable signature files without real NAS or production keys | `scripts/test-publish-signing.ps1` | `Engineering gates` | Uses a temporary release root and ephemeral test key only. |
+| Updater compatibility mode verifies signed releases and reports unsigned legacy releases | `scripts/test-distribution-integrity.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish a signed stable baseline or flip fail-closed enforcement. |
 | Bridge result contract stays canonical and idempotent | runtime `bridge-result-contract-test` via `npm test` | `Engineering gates` | Live Revit skew checks remain local-only. |
 | Production write tools keep guard/verification contracts | runtime `write-tool-contract-test` via `npm test` | `Engineering gates` | - |
 | Tool argument schema inference does not collapse to `any` | runtime `tool-inference-test` via `npm test` | `Engineering gates` | - |
@@ -693,8 +694,12 @@ canonical JSON and detached signature helper surface, while
 release-manifest fixtures. `publish-nas-release.ps1` can optionally write
 `manifest.sig.json` and `stable.sig.json` when `-SigningPrivateKeyPath` and
 `-SigningKeyId` are provided; private keys must stay outside the repo and NAS
-tools. Updater compatibility mode, signed stable publication, and fail-closed
-enforcement remain separate human-approved workstreams.
+tools. The updater imports the same helper before caching a package. In
+`compatibility` policy, a fully signed channel plus release manifest is
+verified, a completely unsigned release is accepted as `legacy-compatible` and
+reported, and partial or invalid signatures are rejected before package
+replacement. Signed stable publication and fail-closed enforcement remain
+separate human-approved workstreams.
 
 Large offline dependency payloads are local/NAS-side assets, not Git assets:
 

@@ -215,6 +215,78 @@ try {
         $validFile = Test-RevitMcpDetachedJsonSignatureFile -ContentPath $channelPath -SignaturePath $signaturePath -TrustedKeys $trustedKeys
         Assert-True $validFile.success "File-based detached signature verification should pass for signed fixture files."
 
+        Write-Host "Test updater compatibility aggregate accepts valid signed release"
+        $manifestPath = Join-Path $tempRoot "manifest.json"
+        $manifestSignaturePath = Join-Path $tempRoot "manifest.sig.json"
+        $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        $manifestEnvelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestSignaturePath -Encoding UTF8
+        $jsonTrustedKeys = (($trustedKeys | ConvertTo-Json -Depth 8) | ConvertFrom-Json)
+        $validAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+            -ChannelPath $channelPath `
+            -Channel $channel `
+            -ReleaseManifestPath $manifestPath `
+            -ReleaseManifest $manifest `
+            -TrustedKeys $jsonTrustedKeys `
+            -Policy "compatibility"
+        Assert-True $validAggregate.success "Valid signed release should pass the updater compatibility aggregate."
+        Assert-Equal $validAggregate.state "verified" "Valid signed release aggregate should be verified."
+
+        Write-Host "Test updater compatibility aggregate accepts unsigned legacy release"
+        Remove-Item -LiteralPath $signaturePath, $manifestSignaturePath -Force
+        $unsignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+            -ChannelPath $channelPath `
+            -Channel $channel `
+            -ReleaseManifestPath $manifestPath `
+            -ReleaseManifest $manifest `
+            -TrustedKeys $trustedKeys `
+            -Policy "compatibility"
+        Assert-True $unsignedAggregate.success "Unsigned release should pass in compatibility mode."
+        Assert-Equal $unsignedAggregate.state "legacy-compatible" "Unsigned release must be reported as legacy-compatible."
+
+        Write-Host "Test updater compatibility aggregate rejects partial signature set"
+        $envelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $signaturePath -Encoding UTF8
+        $partialAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+            -ChannelPath $channelPath `
+            -Channel $channel `
+            -ReleaseManifestPath $manifestPath `
+            -ReleaseManifest $manifest `
+            -TrustedKeys $trustedKeys `
+            -Policy "compatibility"
+        Assert-True (-not $partialAggregate.success) "Partially signed release must be rejected."
+        Assert-Equal $partialAggregate.reason "partial_signature_set" "Partially signed release should fail with a stable reason."
+
+        Write-Host "Test updater enforce aggregate rejects unsigned release"
+        Remove-Item -LiteralPath $signaturePath -Force
+        $enforcedUnsignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+            -ChannelPath $channelPath `
+            -Channel $channel `
+            -ReleaseManifestPath $manifestPath `
+            -ReleaseManifest $manifest `
+            -TrustedKeys $trustedKeys `
+            -Policy "enforce"
+        Assert-True (-not $enforcedUnsignedAggregate.success) "Unsigned release must be rejected when enforcement is enabled."
+        Assert-Equal $enforcedUnsignedAggregate.reason "signature_required" "Unsigned enforced release should fail with signature_required."
+
+        Write-Host "Test updater aggregate rejects signed channel/manifest mismatch"
+        $mismatchedManifest = Copy-OrderedMap -Value $manifest
+        $mismatchedPackage = Copy-OrderedMap -Value $manifest["package"]
+        $mismatchedPackage["sha256"] = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+        $mismatchedManifest["package"] = $mismatchedPackage
+        $mismatchedManifestEnvelope = New-TestSignatureEnvelope -Content $mismatchedManifest -PrivateKey $rsa -PublicKeyFingerprint $publicKeyFingerprint -SignedObject "release-manifest"
+        $channel | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $channelPath -Encoding UTF8
+        $envelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $signaturePath -Encoding UTF8
+        $mismatchedManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        $mismatchedManifestEnvelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestSignaturePath -Encoding UTF8
+        $mismatchAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+            -ChannelPath $channelPath `
+            -Channel $channel `
+            -ReleaseManifestPath $manifestPath `
+            -ReleaseManifest $mismatchedManifest `
+            -TrustedKeys $trustedKeys `
+            -Policy "compatibility"
+        Assert-True (-not $mismatchAggregate.success) "Signed release with channel/manifest metadata mismatch must be rejected."
+        Assert-Equal $mismatchAggregate.reason "channel_manifest_mismatch" "Signed channel/manifest mismatch should have a stable reason."
+
         Write-Host "Test duplicate JSON keys are rejected before file verification"
         $duplicateContentPath = Join-Path $tempRoot "duplicate-content.json"
         $duplicateSignaturePath = Join-Path $tempRoot "duplicate-content.sig.json"
