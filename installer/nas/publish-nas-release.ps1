@@ -314,7 +314,7 @@ function Test-JsonProperty {
         [string]$Name
     )
 
-    return $null -ne $Object.PSObject.Properties[$Name]
+    return ($null -ne $Object) -and ($null -ne $Object.PSObject.Properties[$Name])
 }
 
 function Assert-RevitMcpUserPackHardenedJsPayload {
