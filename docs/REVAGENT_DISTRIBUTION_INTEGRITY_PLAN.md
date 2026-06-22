@@ -127,6 +127,13 @@ properties:
   RFC 8785 alignment.
 
 The publish and updater paths must share the same canonicalization helper.
+The first implementation helper is
+`installer/lib/RevitMcp.DistributionIntegrity.psm1`; it provides deterministic
+canonical JSON, SHA256 hashing, public-key fingerprinting, and detached
+signature verification primitives. It deliberately rejects floating-point and
+decimal values until full JCS number handling is implemented, because current
+release channel and manifest fields only need integers, booleans, nulls,
+strings, arrays, and objects.
 
 ## Updater Verification Flow
 
@@ -219,8 +226,10 @@ Rejected patterns:
 
 Each workstream should remain a separate PR:
 
-1. Distribution integrity plan and gates.
-2. Canonical JSON plus signature verification fixtures.
+1. Distribution integrity plan and gates. Done in PR #78.
+2. Canonical JSON plus signature verification fixtures. This workstream adds
+   the shared verifier helper and `scripts/test-distribution-integrity.ps1`
+   without changing production updater behavior.
 3. Publish-path detached signing support.
 4. Updater verification in compatibility mode with reporting.
 5. Signed-stable baseline and enforcement flip.

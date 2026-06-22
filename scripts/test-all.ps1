@@ -42,6 +42,7 @@ try {
     }
 
     & (Join-Path $RepoRoot "scripts\test-installer-smoke.ps1") -RepoRoot $RepoRoot
+    & (Join-Path $RepoRoot "scripts\test-distribution-integrity.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-usage-intelligence.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-live-dashboard.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-typescript-nocheck-policy.ps1") -RepoRoot $RepoRoot

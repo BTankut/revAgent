@@ -59,6 +59,7 @@ try {
         }
     }
 
+    & (Join-Path $RepoRoot "scripts\test-distribution-integrity.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-typescript-nocheck-policy.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-mcp-build-payload-freshness.ps1") -RepoRoot $RepoRoot
 
