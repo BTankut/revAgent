@@ -96,9 +96,13 @@ Important source vs payload rule:
 - `installer/revit-plugin/` is the bundled install payload.
 - `installer/command-payload/` is the bundled shared bridge command payload.
 - `installer/runtime-mcp-server/src/` is the runtime MCP TypeScript source;
-  `installer/runtime-mcp-server/build/` is the built runtime payload.
+  `installer/runtime-mcp-server/build/` is the developer/test build payload and
+  `installer/runtime-mcp-server/release/` is the hardened release bundle used
+  by user packs.
 - `installer/revit-api-docs-mcp/src/` is the docs MCP TypeScript source;
-  `installer/revit-api-docs-mcp/build/` is the built docs server payload.
+  `installer/revit-api-docs-mcp/build/` is the developer/test build payload and
+  `installer/revit-api-docs-mcp/release/` is the hardened release bundle used
+  by user packs.
 - `installer/codex-user/` contains the minimal installed Codex orchestration
   files used by the user pack.
 - `installer/lib/` contains shared PowerShell helper modules used by installer
@@ -248,8 +252,9 @@ docs MCP smoke intentionally verifies tool registration without requiring a
 local Revit API index.
 
 After changes to bundled MCP server payloads, run the relevant local tests,
-commit `src/`, `build/`, `package.json`, and `package-lock.json` together, and
-verify `codex mcp list` after install or update.
+run `npm run build:release`, commit `src/`, `build/`, `release/`,
+`package.json`, and `package-lock.json` together, and verify `codex mcp list`
+after install or update.
 
 For runtime/docs MCP source changes, also keep the committed payload fresh:
 
@@ -662,10 +667,11 @@ from the NAS share, not from copied old script bodies when possible.
 
 The versioned release ZIP is an allowlisted user pack. It must not contain the
 repo root, `src/`, root `docs/`, developer tests, repo metadata, `.pdb`, or
-source maps. `publish-nas-release.ps1` stages only the runtime build payloads,
-Revit DLL payloads, installer/updater helpers, release metadata, and
-`installer/codex-user` orchestration files, then fails if source/developer
-artifacts are detected in the staged package.
+source maps. `publish-nas-release.ps1` stages the hardened MCP release bundles
+as single-file `build\index.js` payloads with runtime-only npm manifests, Revit
+DLL payloads, installer/updater helpers, release metadata, and
+`installer/codex-user` orchestration files, then fails if source/developer or
+unhardened JavaScript artifacts are detected in the staged package.
 
 Large offline dependency payloads are local/NAS-side assets, not Git assets:
 

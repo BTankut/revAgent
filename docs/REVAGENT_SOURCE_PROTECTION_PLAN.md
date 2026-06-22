@@ -28,12 +28,18 @@ Required outcomes:
 Goal: make runtime JavaScript less readable after the source-free package is
 stable.
 
-Candidate work:
+Required outcomes:
 
-- Bundle runtime MCP and docs MCP outputs into fewer files.
-- Disable source maps in release artifacts.
-- Minify and mangle release JavaScript.
-- Remove test-only build outputs from the runtime package.
+- Runtime MCP and Revit API docs MCP produce hardened release bundles from
+  their TypeScript entrypoints.
+- User packs copy each release bundle as the only file under the deployed
+  `build/` directory.
+- Release bundles are minified and do not include source maps.
+- User-pack MCP `package.json` files are runtime-only and omit developer
+  scripts, package `files` metadata, and `devDependencies`.
+- User-pack MCP `package-lock.json` files omit dev dependency entries.
+- Release gates fail if the user pack falls back to a multi-file developer
+  build tree or carries an unhardened JavaScript package manifest.
 
 ## Phase 3 - .NET Payload Hardening
 

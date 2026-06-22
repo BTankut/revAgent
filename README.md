@@ -7,9 +7,10 @@ documentation in one place.
 
 It is the single canonical source for production office deployment.
 Published release ZIPs are user packs, not repo copies. A user pack contains
-only the files needed to run revAgent on a workstation: runtime build outputs,
-Revit DLL payloads, installer/updater helpers, release metadata, and the
-minimal installed Codex orchestration files.
+only the files needed to run revAgent on a workstation: hardened runtime
+JavaScript bundles, runtime-only npm manifests, Revit DLL payloads,
+installer/updater helpers, release metadata, and the minimal installed Codex
+orchestration files.
 
 Product-facing documentation should use **revAgent**. The names `revit-mcp`,
 `RevitMCP*`, `mcp-servers-for-revit`, and `C:\ProgramData\DPE\RevitMCP`
@@ -305,8 +306,9 @@ system locations below:
 - Dynamic command payload mirror:
   - `C:\ProgramData\DPE\RevitMCP\commands\CommandSet\...`
 - Local runtime MCP server bundle:
-  - `C:\ProgramData\DPE\RevitMCP\runtime` containing runtime `build/` and npm
-    manifests, not TypeScript source
+  - `C:\ProgramData\DPE\RevitMCP\runtime` containing a single bundled
+    `build\index.js` and runtime-only npm manifests, not TypeScript source,
+    tests, source maps, or developer package scripts
 - Required docs MCP server:
   - kept under the managed package copy and registered from there by the NAS updater
 - Codex skill and workstation role:

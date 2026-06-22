@@ -205,6 +205,36 @@ function Copy-UserPackDirectory {
     Copy-OneUserPackDirectory -From $sourcePath -To $destinationPath
 }
 
+function Copy-UserPackReleaseMcpPackage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceRelativePath,
+        [string]$DestinationRelativePath = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DestinationRelativePath)) {
+        $DestinationRelativePath = $SourceRelativePath
+    }
+
+    $sourcePath = Join-Path $RepoRoot $SourceRelativePath
+    $destinationPath = Join-Path $packageRoot $DestinationRelativePath
+    $releasePath = Join-Path $sourcePath "release"
+    $bundlePath = Join-Path $releasePath "index.js"
+    $runtimePackageJson = Join-Path $releasePath "package.json"
+    $runtimePackageLock = Join-Path $releasePath "package-lock.json"
+
+    foreach ($requiredPath in @($bundlePath, $runtimePackageJson, $runtimePackageLock)) {
+        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+            throw "Required hardened MCP release artifact was not found: $requiredPath. Run npm run build:release in $SourceRelativePath."
+        }
+    }
+
+    New-Item -ItemType Directory -Path (Join-Path $destinationPath "build") -Force | Out-Null
+    Copy-Item -LiteralPath $bundlePath -Destination (Join-Path $destinationPath "build\index.js") -Force
+    Copy-Item -LiteralPath $runtimePackageJson -Destination (Join-Path $destinationPath "package.json") -Force
+    Copy-Item -LiteralPath $runtimePackageLock -Destination (Join-Path $destinationPath "package-lock.json") -Force
+}
+
 function Assert-RevitMcpUserPackNoSourceLeak {
     param(
         [Parameter(Mandatory = $true)]
@@ -276,6 +306,81 @@ function Assert-RevitMcpUserPackNoSourceLeak {
     }
 }
 
+function Test-JsonProperty {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Object,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    return $null -ne $Object.PSObject.Properties[$Name]
+}
+
+function Assert-RevitMcpUserPackHardenedJsPayload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $issues = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($relativePackageRoot in @("installer\runtime-mcp-server", "installer\revit-api-docs-mcp")) {
+        $packageRootPath = Join-Path $Root $relativePackageRoot
+        $buildRoot = Join-Path $packageRootPath "build"
+        if (-not (Test-Path -LiteralPath $buildRoot -PathType Container)) {
+            $issues.Add("$relativePackageRoot missing build directory")
+            continue
+        }
+
+        $buildFiles = @(Get-ChildItem -LiteralPath $buildRoot -Recurse -File -Force |
+            ForEach-Object { $_.FullName.Substring($buildRoot.Length).TrimStart("\", "/").Replace("/", "\") } |
+            Sort-Object)
+        if (($buildFiles.Count -ne 1) -or ($buildFiles[0] -ne "index.js")) {
+            $issues.Add("$relativePackageRoot build must contain only bundled index.js")
+        }
+
+        $bundlePath = Join-Path $buildRoot "index.js"
+        if (Test-Path -LiteralPath $bundlePath -PathType Leaf) {
+            $bundleText = Get-Content -Raw -LiteralPath $bundlePath
+            if ($bundleText -match 'sourceMappingURL') {
+                $issues.Add("$relativePackageRoot bundle must not include source map references")
+            }
+        }
+
+        $packageJsonPath = Join-Path $packageRootPath "package.json"
+        if (-not (Test-Path -LiteralPath $packageJsonPath -PathType Leaf)) {
+            $issues.Add("$relativePackageRoot missing runtime package.json")
+        }
+        else {
+            $packageJson = Get-Content -Raw -LiteralPath $packageJsonPath | ConvertFrom-Json
+            foreach ($blockedProperty in @("scripts", "devDependencies", "files")) {
+                if (Test-JsonProperty -Object $packageJson -Name $blockedProperty) {
+                    $issues.Add("$relativePackageRoot package.json must not include $blockedProperty")
+                }
+            }
+        }
+
+        $packageLockPath = Join-Path $packageRootPath "package-lock.json"
+        if (-not (Test-Path -LiteralPath $packageLockPath -PathType Leaf)) {
+            $issues.Add("$relativePackageRoot missing runtime package-lock.json")
+        }
+        else {
+            $packageLockText = Get-Content -Raw -LiteralPath $packageLockPath
+            if ($packageLockText -match '"devDependencies"\s*:') {
+                $issues.Add("$relativePackageRoot package-lock must not include devDependencies")
+            }
+            if ($packageLockText -match '"dev"\s*:\s*true') {
+                $issues.Add("$relativePackageRoot package-lock must not include dev dependency entries")
+            }
+        }
+    }
+
+    if ($issues.Count -gt 0) {
+        throw "User pack JavaScript payload is not hardened: $($issues.ToArray() -join '; ')"
+    }
+}
+
 function Copy-RevitMcpUserPack {
     Copy-UserPackFile -SourceRelativePath "installer\codex-user\SKILL.md" -DestinationRelativePath "SKILL.md"
     Copy-UserPackFile -SourceRelativePath "installer\codex-user\AGENTS.md" -DestinationRelativePath "AGENTS.md"
@@ -293,14 +398,10 @@ function Copy-RevitMcpUserPack {
     Copy-UserPackDirectory -SourceRelativePath "installer\revit-plugin" -ExcludeFilePatterns @("*.pdb", "*.map")
     Copy-UserPackDirectory -SourceRelativePath "installer\command-payload" -ExcludeFilePatterns @("*.pdb", "*.map")
 
-    Copy-UserPackDirectory -SourceRelativePath "installer\runtime-mcp-server\build" -ExcludeFilePatterns @("*.map", "*.test.js", "*.guard-test.js")
-    Copy-UserPackFile -SourceRelativePath "installer\runtime-mcp-server\package.json"
-    Copy-UserPackFile -SourceRelativePath "installer\runtime-mcp-server\package-lock.json"
+    Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\runtime-mcp-server"
 
-    Copy-UserPackDirectory -SourceRelativePath "installer\revit-api-docs-mcp\build" -ExcludeFilePatterns @("*.map", "*.test.js")
+    Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\revit-api-docs-mcp"
     Copy-UserPackFile -SourceRelativePath "installer\revit-api-docs-mcp\scripts\build-index.ps1"
-    Copy-UserPackFile -SourceRelativePath "installer\revit-api-docs-mcp\package.json"
-    Copy-UserPackFile -SourceRelativePath "installer\revit-api-docs-mcp\package-lock.json"
 }
 
 function Get-RelativeFileHash {
@@ -487,6 +588,7 @@ try {
     Write-Section "Stage package"
     Copy-RevitMcpUserPack
     Assert-RevitMcpUserPackNoSourceLeak -Root $packageRoot
+    Assert-RevitMcpUserPackHardenedJsPayload -Root $packageRoot
 
     $releaseInfo = [ordered]@{
         schemaVersion = 1
@@ -531,8 +633,10 @@ try {
         updaterTaskInstaller = "installer\nas\install-updater-task.ps1"
         revitPlugin = "installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
         commandSet = "installer\command-payload\RevitMCPCommandSet.dll"
+        runtimeBundle = "installer\runtime-mcp-server\build\index.js"
         runtimePackageJson = "installer\runtime-mcp-server\package.json"
         runtimePackageLock = "installer\runtime-mcp-server\package-lock.json"
+        docsServerBundle = "installer\revit-api-docs-mcp\build\index.js"
         docsPackageJson = "installer\revit-api-docs-mcp\package.json"
         docsPackageLock = "installer\revit-api-docs-mcp\package-lock.json"
     }
