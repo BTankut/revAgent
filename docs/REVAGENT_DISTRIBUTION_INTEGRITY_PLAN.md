@@ -120,11 +120,11 @@ aligned with RFC 8785 JSON Canonicalization Scheme (JCS), with these
 properties:
 
 - UTF-8 without BOM;
-- LF line endings;
 - object keys sorted ordinally;
 - arrays preserved in source order;
 - integers, booleans, nulls, and strings encoded consistently;
-- no volatile whitespace outside the canonical form.
+- no insignificant whitespace, with the canonical form minified as required by
+  RFC 8785 alignment.
 
 The publish and updater paths must share the same canonicalization helper.
 
