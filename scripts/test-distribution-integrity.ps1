@@ -166,6 +166,7 @@ try {
         packagePath = "releases\2026.06.22.1-test\revit-mcp-skill-2026.06.22.1-test.zip"
         sha256 = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
         releaseSequence = 1001
+        minimumAcceptedReleaseSequence = 1000
         publishedAtUtc = "2026-06-22T00:00:00.0000000Z"
     }
     $envelope = New-TestSignatureEnvelope -Content $channel -PrivateKey $rsa -PublicKeyFingerprint $publicKeyFingerprint
@@ -198,6 +199,8 @@ try {
             sha256 = $channel.sha256
             sizeBytes = 4096
         }
+        releaseSequence = 1001
+        minimumAcceptedReleaseSequence = 1000
     }
     $manifestEnvelope = New-TestSignatureEnvelope -Content $manifest -PrivateKey $rsa -PublicKeyFingerprint $publicKeyFingerprint -SignedObject "release-manifest"
     $validManifest = Test-RevitMcpDetachedJsonSignature -Content $manifest -SignatureEnvelope $manifestEnvelope -TrustedKeys $trustedKeys
@@ -230,6 +233,34 @@ try {
             -Policy "compatibility"
         Assert-True $validAggregate.success "Valid signed release should pass the updater compatibility aggregate."
         Assert-Equal $validAggregate.state "verified" "Valid signed release aggregate should be verified."
+        Assert-Equal $validAggregate.releaseSequence ([long]1001) "Valid signed release aggregate should report releaseSequence."
+        Assert-Equal $validAggregate.highestAcceptedReleaseSequence ([long]1001) "Valid signed release aggregate should advance highest accepted sequence."
+
+        Write-Host "Test updater aggregate blocks older signed release replay"
+        $replayAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+            -ChannelPath $channelPath `
+            -Channel $channel `
+            -ReleaseManifestPath $manifestPath `
+            -ReleaseManifest $manifest `
+            -TrustedKeys $trustedKeys `
+            -Policy "compatibility" `
+            -HighestAcceptedReleaseSequence 1002
+        Assert-True (-not $replayAggregate.success) "Older signed release sequence must be rejected without rollback allowance."
+        Assert-Equal $replayAggregate.reason "signed_release_replay" "Older signed release sequence should fail with signed_release_replay."
+
+        Write-Host "Test updater aggregate allows explicit signed rollback"
+        $rollbackAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+            -ChannelPath $channelPath `
+            -Channel $channel `
+            -ReleaseManifestPath $manifestPath `
+            -ReleaseManifest $manifest `
+            -TrustedKeys $trustedKeys `
+            -Policy "compatibility" `
+            -HighestAcceptedReleaseSequence 1002 `
+            -AllowRollback
+        Assert-True $rollbackAggregate.success "Explicit rollback flag should allow an older signed release sequence."
+        Assert-Equal $rollbackAggregate.state "rollback-allowed" "Explicit signed rollback should be visible in aggregate state."
+        Assert-True $rollbackAggregate.rollbackAllowed "Explicit signed rollback should be reported."
 
         Write-Host "Test updater compatibility aggregate accepts unsigned legacy release"
         Remove-Item -LiteralPath $signaturePath, $manifestSignaturePath -Force
