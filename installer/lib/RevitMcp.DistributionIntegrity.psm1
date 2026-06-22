@@ -60,16 +60,14 @@ function Get-RevitMcpObjectPropertyValue {
 
     if ($Value -is [System.Collections.IDictionary]) {
         if ($Value.Contains($Name)) {
-            Write-Output -NoEnumerate $Value[$Name]
-            return
+            return ,$Value[$Name]
         }
         return $null
     }
 
     $property = $Value.PSObject.Properties[$Name]
     if ($property) {
-        Write-Output -NoEnumerate $property.Value
-        return
+        return ,$property.Value
     }
 
     return $null
@@ -147,7 +145,7 @@ function Get-RevitMcpCanonicalJsonBytes {
     param([AllowNull()][object]$Value)
 
     $json = ConvertTo-RevitMcpCanonicalJson -Value $Value
-    return [System.Text.Encoding]::UTF8.GetBytes($json)
+    return ,[System.Text.Encoding]::UTF8.GetBytes($json)
 }
 
 function ConvertTo-RevitMcpSha256Hex {
