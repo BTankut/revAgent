@@ -5,7 +5,19 @@ import path from "path";
 import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PACKAGE_ROOT = path.resolve(__dirname, "..", "..");
+function resolvePackageRoot() {
+    const candidates = [
+        path.resolve(__dirname, "..", ".."),
+        path.resolve(__dirname, ".."),
+    ];
+    for (const candidate of candidates) {
+        if (existsSync(path.join(candidate, "scripts", "build-index.ps1"))) {
+            return candidate;
+        }
+    }
+    return candidates[0];
+}
+const PACKAGE_ROOT = resolvePackageRoot();
 const INDEX_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "build-index.ps1");
 const DEFAULT_REVIT_VERSION = "2022";
 const INDEX_SCHEMA_VERSION = 2;

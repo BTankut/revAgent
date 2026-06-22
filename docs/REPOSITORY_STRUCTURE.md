@@ -121,9 +121,11 @@ structural, electrical, and MEP-specific capabilities in the runtime MCP tool
 layer unless they require a reusable native Revit bridge primitive.
 
 `installer/runtime-mcp-server/src` and `installer/revit-api-docs-mcp/src` are
-the TypeScript MCP source trees. Their `build/` folders remain the runtime
-payload contract consumed by installer and Codex MCP registrations. Both
-packages run with `strict: true`; keep new TypeScript source checked by
+the TypeScript MCP source trees. Their `build/` folders remain the
+developer/test build payloads used by local package tests. Their `release/`
+folders contain the hardened single-file JavaScript bundles and runtime-only
+npm manifests copied into user packs as deployed `build\index.js` entrypoints.
+Both packages run with `strict: true`; keep new TypeScript source checked by
 default. `scripts/test-typescript-nocheck-policy.ps1` guards strict compiler
 settings and a zero-allowlist `@ts-nocheck` policy for both MCP source trees.
 
@@ -151,8 +153,9 @@ should be used when shared bridge command payload behavior changes.
 `scripts/test-mcp-build-payload-freshness.ps1` copies MCP packages to isolated
 temporary work folders, restores npm dependencies there, recompiles into a
 temporary output location, and compares the output with committed `build/`
-payloads. It does not run `npm ci` against a live source or ProgramData package
-folder. It also checks Revit payload freshness through
+payloads plus committed `release/` payloads. It does not run `npm ci` against a
+live source or ProgramData package folder. It also checks Revit payload
+freshness through
 `installer/revit-payload-manifest.json`, using source Git blob SHAs instead of
 file mtimes. `scripts/test-all.ps1` and the NAS publish preflight run this gate
 before release packaging.

@@ -1,6 +1,10 @@
 installer/runtime-mcp-server/src/**/*.ts text eol=lf
 installer/runtime-mcp-server/scripts/**/*.ts text eol=lf
 installer/runtime-mcp-server/build/**/*.js text eol=lf
+installer/runtime-mcp-server/release/**/*.js text eol=lf
+installer/runtime-mcp-server/release/**/*.json text eol=lf
 installer/revit-api-docs-mcp/src/**/*.ts text eol=lf
 installer/revit-api-docs-mcp/scripts/**/*.ts text eol=lf
 installer/revit-api-docs-mcp/build/**/*.js text eol=lf
+installer/revit-api-docs-mcp/release/**/*.js text eol=lf
+installer/revit-api-docs-mcp/release/**/*.json text eol=lf

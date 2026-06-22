@@ -1,0 +1,27 @@
+{
+  "name": "revit-mcp",
+  "version": "1.0.0",
+  "description": "Bundled local MCP server for the self-contained Revit MCP skill package.",
+  "private": true,
+  "main": "build/index.js",
+  "type": "module",
+  "license": "UNLICENSED",
+  "bin": {
+    "revit-mcp": "./build/index.js"
+  },
+  "dependencies": {
+    "@e965/xlsx": "^0.20.3",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "12.9.0",
+    "csv-parse": "^6.2.1",
+    "ws": "^8.20.1",
+    "zod": "^3.24.2"
+  },
+  "overrides": {
+    "brace-expansion": "2.0.3",
+    "fast-uri": "3.1.2",
+    "hono": "4.12.21",
+    "qs": "6.15.2",
+    "uuid": "11.1.1"
+  }
+}

@@ -31,7 +31,8 @@ Import-Module (Join-Path $RepoRoot "scripts\McpPackageTestHelpers.psm1") -Force
 
 function Get-RelativeFileHashMap {
     param(
-        [string]$Root
+        [string]$Root,
+        [string[]]$Extensions = @(".js")
     )
 
     $map = @{}
@@ -42,7 +43,15 @@ function Get-RelativeFileHashMap {
     $rootFullName = (Get-Item -LiteralPath $Root).FullName.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
     $rootPrefix = $rootFullName + [System.IO.Path]::DirectorySeparatorChar
 
-    Get-ChildItem -LiteralPath $rootFullName -Recurse -File -Filter "*.js" |
+    $extensionSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($extension in $Extensions) {
+        if (-not [string]::IsNullOrWhiteSpace($extension)) {
+            [void]$extensionSet.Add($extension)
+        }
+    }
+
+    Get-ChildItem -LiteralPath $rootFullName -Recurse -File |
+        Where-Object { $extensionSet.Count -eq 0 -or $extensionSet.Contains($_.Extension) } |
         Sort-Object FullName |
         ForEach-Object {
             if (-not $_.FullName.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -52,6 +61,27 @@ function Get-RelativeFileHashMap {
             $map[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash
         }
     return $map
+}
+
+function Assert-HashMapsEqual {
+    param(
+        [string]$Label,
+        [hashtable]$Actual,
+        [hashtable]$Expected
+    )
+
+    $actualKeys = @($Actual.Keys | Sort-Object)
+    $expectedKeys = @($Expected.Keys | Sort-Object)
+    if (($actualKeys -join "|") -ne ($expectedKeys -join "|")) {
+        $missing = @($expectedKeys | Where-Object { -not $Actual.ContainsKey($_) })
+        $stale = @($actualKeys | Where-Object { -not $Expected.ContainsKey($_) })
+        throw "$Label file list is stale. Missing: $($missing -join ', ') Extra: $($stale -join ', ')"
+    }
+
+    $mismatched = @($expectedKeys | Where-Object { $Actual[$_] -ne $Expected[$_] })
+    if ($mismatched.Count -gt 0) {
+        throw "$Label content is stale. Mismatched files: $($mismatched -join ', ')"
+    }
 }
 
 function Assert-BuildFresh {
@@ -87,19 +117,20 @@ function Assert-BuildFresh {
         $actualBuild = Join-Path $packageRoot "build"
         $actual = Get-RelativeFileHashMap -Root $actualBuild
         $expected = Get-RelativeFileHashMap -Root $tempRoot
+        Assert-HashMapsEqual -Label "Build payload for $PackageRelativePath" -Actual $actual -Expected $expected
 
-        $actualKeys = @($actual.Keys | Sort-Object)
-        $expectedKeys = @($expected.Keys | Sort-Object)
-        if (($actualKeys -join "|") -ne ($expectedKeys -join "|")) {
-            $missing = @($expectedKeys | Where-Object { -not $actual.ContainsKey($_) })
-            $stale = @($actualKeys | Where-Object { -not $expected.ContainsKey($_) })
-            throw "Build payload file list is stale for $PackageRelativePath. Missing: $($missing -join ', ') Extra: $($stale -join ', ')"
+        $releaseBuilder = Join-Path $RepoRoot "scripts\build-mcp-release-bundle.mjs"
+        if (-not (Test-Path -LiteralPath $releaseBuilder -PathType Leaf)) {
+            throw "Release bundle builder was not found: $releaseBuilder"
         }
 
-        $mismatched = @($expectedKeys | Where-Object { $actual[$_] -ne $expected[$_] })
-        if ($mismatched.Count -gt 0) {
-            throw "Build payload content is stale for $PackageRelativePath. Mismatched files: $($mismatched -join ', ')"
+        Invoke-McpPackageCommand -PackageName "$PackageRelativePath release bundle" -PackageRoot $workCopy.PackageRoot -RepoRoot $RepoRoot -Command {
+            node $releaseBuilder
         }
+
+        $actualRelease = Get-RelativeFileHashMap -Root (Join-Path $packageRoot "release") -Extensions @(".js", ".json")
+        $expectedRelease = Get-RelativeFileHashMap -Root (Join-Path $workCopy.PackageRoot "release") -Extensions @(".js", ".json")
+        Assert-HashMapsEqual -Label "Release payload for $PackageRelativePath" -Actual $actualRelease -Expected $expectedRelease
     }
     finally {
         Remove-McpPackageWorkCopy -WorkCopy $workCopy

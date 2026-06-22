@@ -368,12 +368,20 @@ try {
     $ciText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-ci.ps1")
     $runtimePackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\package.json")
     $runtimePackageLockText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\package-lock.json")
+    $runtimeReleasePackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\release\package.json")
+    $runtimeReleasePackageLockText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\release\package-lock.json")
     $docsPackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\package.json")
     $docsPackageLockText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\package-lock.json")
+    $docsReleasePackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\release\package.json")
+    $docsReleasePackageLockText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\release\package-lock.json")
     Assert-True ($payloadFreshnessText -match 'Assert-RevitPayloadManifestFresh') "Payload freshness gate must validate the Revit manifest."
     Assert-True ($payloadFreshnessText -match 'New-McpPackageWorkCopy' -and $payloadFreshnessText -match 'Invoke-McpPackageNpmCi' -and $payloadFreshnessText -match 'Get-McpPackageTscPath') "Payload freshness gate must restore and compile MCP packages from isolated temporary work copies."
+    Assert-True ($payloadFreshnessText -match 'build-mcp-release-bundle\.mjs' -and $payloadFreshnessText -match 'Release payload for \$PackageRelativePath') "Payload freshness gate must validate hardened MCP release artifacts."
     Assert-True ($packageTestHelpersText -match 'node_modules' -and $packageTestHelpersText -match '\.package-lock\.json' -and $packageTestHelpersText -match 'GetTempPath' -and $packageTestHelpersText -match 'REVIT_MCP_REPO_ROOT') "MCP package test helpers must skip live dependency folders, use temporary work copies, and preserve repo-root context."
     Assert-True ($runtimePackageText -match '"@e965/xlsx"' -and $runtimePackageText -notmatch '"exceljs"') "Runtime Excel ingestion must avoid the deprecated exceljs transitive dependency chain."
+    Assert-True ($runtimePackageText -match '"build:release"' -and $docsPackageText -match '"build:release"') "MCP packages must expose a hardened release bundle build script."
+    Assert-True ($runtimeReleasePackageText -notmatch '"(scripts|devDependencies|files)"' -and $docsReleasePackageText -notmatch '"(scripts|devDependencies|files)"') "Release MCP package manifests must be runtime-only."
+    Assert-True ($runtimeReleasePackageLockText -notmatch '"dev": true' -and $docsReleasePackageLockText -notmatch '"dev": true') "Release MCP package locks must not include dev dependency entries."
     Assert-True ($docsPackageText -match '"rimraf": "\^6\.') "Docs MCP clean script dependency must use rimraf 6 or newer."
     Assert-True ($runtimePackageLockText -notmatch 'node_modules/(inflight|lodash\.isequal|fstream)' -and $docsPackageLockText -notmatch 'node_modules/(inflight|lodash\.isequal|fstream)') "MCP package locks must not include deprecated npm dependency packages that create CI warning noise."
     Assert-True ($runtimePackageLockText -notmatch '"version": "2\.7\.1"|node_modules/glob":\s*\{\s*"version": "7\.2\.3"' -and $docsPackageLockText -notmatch '"version": "2\.7\.1"|node_modules/glob":\s*\{\s*"version": "10\.5\.0"') "MCP package locks must not include deprecated rimraf/glob versions."
@@ -879,7 +887,10 @@ try {
     Assert-True ($publishText -match 'installer\\codex-user\\SKILL\.md') "Publish must use the user orchestration SKILL.md."
     Assert-True ($publishText -match 'Copy-UserPackFile -SourceRelativePath "CHANGELOG\.md"' -and $publishText -match 'changelog = "CHANGELOG\.md"') "User pack must include the changelog and hash it in the release manifest."
     Assert-True ($publishText -match 'update-from-nas\.ps1' -and $publishText -match 'show-installed-version\.ps1' -and $publishText -match 'install-updater-task\.ps1') "User pack must include only workstation updater entrypoints from installer\\nas."
+    Assert-True ($publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\runtime-mcp-server"' -and $publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\revit-api-docs-mcp"') "User pack must use hardened MCP release bundles instead of developer build trees."
     Assert-True ($publishText -match 'Assert-RevitMcpUserPackNoSourceLeak -Root \$packageRoot') "Publish must gate the user pack against source/developer artifact leaks."
+    Assert-True ($publishText -match 'Assert-RevitMcpUserPackHardenedJsPayload -Root \$packageRoot') "Publish must gate the user pack against unhardened JavaScript payloads."
+    Assert-True ($publishText -match 'runtimeBundle = "installer\\runtime-mcp-server\\build\\index\.js"' -and $publishText -match 'docsServerBundle = "installer\\revit-api-docs-mcp\\build\\index\.js"') "Release manifest must hash hardened JavaScript bundle entrypoints."
     Assert-True ($publishText -match 'Get-RevitMcpUserPackPathParts' -and $publishText -match 'Test-RevitMcpUserPackIgnoredDependencyPath') "Publish source-leak gate must use path-component dependency exclusions."
     Assert-True ($publishText -notmatch 'Copy-DirectoryFiltered -Source \$RepoRoot -Destination \$packageRoot') "Publish must not stage releases by copying the repo root."
     Assert-True ($publishText -notmatch 'Copy-UserPackDirectory -SourceRelativePath "installer\\nas"') "Versioned user pack must not copy deployment tooling wholesale."

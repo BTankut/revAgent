@@ -20,7 +20,17 @@ export function readJsonFile(filePath: string | undefined | null): any {
 
 export function getRuntimeRoot(): string {
     const thisFile = fileURLToPath(import.meta.url);
-    return path.resolve(path.dirname(thisFile), "..", "..");
+    const thisDir = path.dirname(thisFile);
+    const candidates = [
+        path.resolve(thisDir, "..", ".."),
+        path.resolve(thisDir, ".."),
+    ];
+    for (const candidate of candidates) {
+        if (fs.existsSync(path.join(candidate, "package.json"))) {
+            return candidate;
+        }
+    }
+    return candidates[0];
 }
 
 export function getInstallRoot(): string {
