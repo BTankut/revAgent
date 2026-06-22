@@ -248,6 +248,14 @@ C:\ProgramData\DPE\RevitMCP\updater\lib
 C:\ProgramData\DPE\RevitMCP\updater\config
 ```
 
+The updater loads public release-verification material from its updater config
+or from `config\release-trusted-keys.json` when that file is shipped beside the
+tools. Only public key XML and fingerprints belong there. In the default
+`compatibility` policy, valid `stable.sig.json` plus `manifest.sig.json` files
+are verified before the ZIP is cached, unsigned legacy releases continue with a
+`legacy-compatible` report state, and partial or invalid signatures stop the
+update before package replacement.
+
 ## Local No-Deploy Validation
 
 Before publishing a stable release, run the local checks from the repo root:
@@ -314,6 +322,9 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   `-AllowReplaceGitPackageTarget` is explicitly passed.
 - Release ZIPs use the canonical `installer/` layout only; removed compatibility
   aliases are not regenerated in new releases.
+- Release signature verification uses public keys only. Private signing keys
+  must never be placed in the repo, package, NAS `tools\`, updater config, or
+  local updater folder.
 - Revit version metadata is centralized in `config\revit-versions.json`. The
   current office deployment payload supports Revit 2022 only. Revit
   2023/2024/2025 are modeled for future expansion and must remain blocked until

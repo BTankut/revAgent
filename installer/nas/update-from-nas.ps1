@@ -61,6 +61,7 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.Proxy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.DistributionIntegrity.psm1") -Force
 
 $updaterVersion = "0.1.0"
 $script:RevitMcpTranscriptStarted = $false
@@ -71,6 +72,17 @@ $script:RevitMcpProxyUrl = ""
 $script:RevitMcpProxyBypass = "<local>"
 $script:RevitMcpRemoteReportsRoot = ""
 $script:RevitMcpLatestReport = $null
+$script:RevitMcpDistributionIntegrityPolicy = "compatibility"
+$script:RevitMcpTrustedReleaseKeys = @{}
+$script:RevitMcpTrustedReleaseKeySources = @()
+$script:RevitMcpDistributionIntegrity = [ordered]@{
+    success = $false
+    state = "not-evaluated"
+    reason = "not_evaluated"
+    message = "Distribution integrity has not been evaluated yet."
+    policy = $script:RevitMcpDistributionIntegrityPolicy
+    trustedKeyCount = 0
+}
 $script:RevitMcpOperation = if ($AuditOnly) { "audit" } elseif ($Force) { "reinstall" } else { "update" }
 $script:RevitMcpOperationMethod = if (-not [string]::IsNullOrWhiteSpace($OperationMethod)) {
     $OperationMethod
@@ -1531,6 +1543,147 @@ function Get-JsonPropertyValue {
     return $null
 }
 
+function Add-TrustedReleaseKeys {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Target,
+        [AllowNull()][object]$Source
+    )
+
+    $sourceMap = ConvertTo-RevitMcpTrustedKeyMap -TrustedKeys $Source
+    foreach ($key in $sourceMap.Keys) {
+        $Target[[string]$key] = $sourceMap[$key]
+    }
+
+    return $sourceMap.Count
+}
+
+function Resolve-UpdaterConfigRelativePath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ""
+    }
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+        $configDir = Split-Path -Parent $ConfigPath
+        if (-not [string]::IsNullOrWhiteSpace($configDir)) {
+            return [System.IO.Path]::GetFullPath((Join-Path $configDir $Path))
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($WorkRoot)) {
+        return [System.IO.Path]::GetFullPath((Join-Path $WorkRoot $Path))
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $Path))
+}
+
+function Add-TrustedReleaseKeysFromFile {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Target,
+        [string]$Path,
+        [switch]$Required
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+
+    $fullPath = Resolve-UpdaterConfigRelativePath -Path $Path
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        if ($Required) {
+            throw "Configured release trusted-key file was not found: $fullPath"
+        }
+        return $null
+    }
+
+    $document = Get-Content -Raw -LiteralPath $fullPath | ConvertFrom-Json
+    $trustedKeys = Get-JsonPropertyValue -Object $document -Name "trustedKeys"
+    if ($null -eq $trustedKeys) {
+        $trustedKeys = $document
+    }
+
+    [void](Add-TrustedReleaseKeys -Target $Target -Source $trustedKeys)
+    return $fullPath
+}
+
+function Initialize-DistributionIntegrityConfig {
+    param([AllowNull()][object]$Config)
+
+    $policy = "compatibility"
+    $trustedKeys = @{}
+    $sources = [System.Collections.Generic.List[string]]::new()
+    $integrityConfig = if ($Config) { Get-JsonPropertyValue -Object $Config -Name "distributionIntegrity" } else { $null }
+
+    if ($integrityConfig) {
+        $configuredPolicy = [string](Get-JsonPropertyValue -Object $integrityConfig -Name "policy")
+        if (-not [string]::IsNullOrWhiteSpace($configuredPolicy)) {
+            if ($configuredPolicy -notin @("compatibility", "enforce")) {
+                throw "Unsupported distribution integrity policy '$configuredPolicy'."
+            }
+            $policy = $configuredPolicy
+        }
+
+        $directTrustedKeys = Get-JsonPropertyValue -Object $integrityConfig -Name "trustedKeys"
+        if ($null -ne $directTrustedKeys) {
+            $added = Add-TrustedReleaseKeys -Target $trustedKeys -Source $directTrustedKeys
+            if ($added -gt 0) {
+                [void]$sources.Add("updater-config")
+            }
+        }
+
+        $trustedKeysPath = [string](Get-JsonPropertyValue -Object $integrityConfig -Name "trustedKeysPath")
+        if (-not [string]::IsNullOrWhiteSpace($trustedKeysPath)) {
+            $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $trustedKeysPath -Required
+            if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
+                [void]$sources.Add($sourcePath)
+            }
+        }
+
+        $trustedKeyPaths = Get-JsonPropertyValue -Object $integrityConfig -Name "trustedKeyPaths"
+        foreach ($path in @($trustedKeyPaths)) {
+            if ([string]::IsNullOrWhiteSpace([string]$path)) {
+                continue
+            }
+            $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path ([string]$path) -Required
+            if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
+                [void]$sources.Add($sourcePath)
+            }
+        }
+    }
+
+    foreach ($candidate in @(
+            (Join-Path $WorkRoot "config\release-trusted-keys.json"),
+            (Join-Path $PSScriptRoot "config\release-trusted-keys.json"),
+            (Join-Path (Split-Path -Parent $PSScriptRoot) "config\release-trusted-keys.json")
+        )) {
+        if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            continue
+        }
+        $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $candidate
+        if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
+            [void]$sources.Add($sourcePath)
+        }
+    }
+
+    $script:RevitMcpDistributionIntegrityPolicy = $policy
+    $script:RevitMcpTrustedReleaseKeys = $trustedKeys
+    $script:RevitMcpTrustedReleaseKeySources = @($sources.ToArray())
+    $script:RevitMcpDistributionIntegrity = [ordered]@{
+        success = $true
+        state = "configured"
+        reason = "configured"
+        message = "Distribution integrity policy loaded."
+        policy = $policy
+        trustedKeyCount = $trustedKeys.Count
+        trustedKeySources = @($script:RevitMcpTrustedReleaseKeySources)
+    }
+}
+
 function Get-ComponentByKey {
     param(
         [object]$Manifest,
@@ -2040,6 +2193,7 @@ function Write-UpdateReport {
         operationMethod = $script:RevitMcpOperationMethod
         status = $Status
         message = $Message
+        distributionIntegrity = $script:RevitMcpDistributionIntegrity
         computerName = $env:COMPUTERNAME
         userName = $env:USERNAME
         atUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -2106,6 +2260,7 @@ function Write-UpdateReport {
 function New-CurrentUpdateDiagnostics {
     $running = @($runningRevit)
     return [ordered]@{
+        distributionIntegrity = $script:RevitMcpDistributionIntegrity
         isFirstInstall = [bool]$isFirstInstall
         revitRunning = ($running.Count -gt 0)
         deferredForRevitClose = if ($runningDecision) { [bool]$runningDecision.DeferForRevitClose } else { $false }
@@ -2433,6 +2588,7 @@ if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
     $ReportsRoot = Join-Path $releaseRootGuess "reports"
 }
 $script:RevitMcpRemoteReportsRoot = $ReportsRoot
+Initialize-DistributionIntegrityConfig -Config $config
 
 $installedState = Get-InstalledState -Path $statePath
 $channel = $null
@@ -2457,6 +2613,23 @@ try {
     $releaseManifestPath = Resolve-ReleasePath -Path ([string]$channel.manifestPath) -BaseDirectory $channelDir
     if (-not [string]::IsNullOrWhiteSpace($releaseManifestPath) -and (Test-Path -LiteralPath $releaseManifestPath -PathType Leaf)) {
         $releaseManifest = Get-Content -Raw -LiteralPath $releaseManifestPath | ConvertFrom-Json
+    }
+
+    $script:RevitMcpDistributionIntegrity = Test-RevitMcpReleaseDistributionIntegrity `
+        -ChannelPath $ChannelManifestPath `
+        -Channel $channel `
+        -ReleaseManifestPath $releaseManifestPath `
+        -ReleaseManifest $releaseManifest `
+        -TrustedKeys $script:RevitMcpTrustedReleaseKeys `
+        -Policy $script:RevitMcpDistributionIntegrityPolicy
+    if (-not [bool]$script:RevitMcpDistributionIntegrity.success) {
+        throw "Distribution integrity check rejected this release: $($script:RevitMcpDistributionIntegrity.reason). $($script:RevitMcpDistributionIntegrity.message)"
+    }
+    if ($script:RevitMcpDistributionIntegrity.state -eq "legacy-compatible") {
+        Write-Warning "Distribution integrity: unsigned legacy release accepted in compatibility mode."
+    }
+    else {
+        Write-Host ("Distribution integrity: {0} ({1})" -f $script:RevitMcpDistributionIntegrity.state, $script:RevitMcpDistributionIntegrity.reason) -ForegroundColor Green
     }
 
     if ([string]::IsNullOrWhiteSpace($packagePath)) {
@@ -2790,6 +2963,7 @@ try {
         fastUpdateFallbackUsed = [bool]$fastUpdateFallbackUsed
         fastUpdateFallbackMessage = $fastUpdateFallbackMessage
         revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
+        distributionIntegrity = $script:RevitMcpDistributionIntegrity
         updaterVersion = $updaterVersion
         skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
         paths = [ordered]@{

@@ -234,7 +234,11 @@ Each workstream should remain a separate PR:
    without changing production updater behavior.
 3. Publish-path detached signing support. This adds optional publish-time
    signature generation and temp-root tests without publishing to NAS.
-4. Updater verification in compatibility mode with reporting.
+4. Updater verification in compatibility mode with reporting. This verifies
+   fully signed channel/release-manifest pairs before package caching, accepts
+   completely unsigned legacy releases as `legacy-compatible`, rejects partial
+   or invalid signature sets, and writes the integrity state into update
+   reports without enabling fail-closed enforcement by default.
 5. Signed-stable baseline and enforcement flip.
 6. Optional license or seat design and implementation.
 
