@@ -26,6 +26,8 @@ for servers, assemblies, manifests, and installed paths.
 |   |-- DEVELOPER_RUNBOOK.md
 |   |-- PLATFORM_ARCHITECTURE.md
 |   |-- REPOSITORY_STRUCTURE.md
+|   |-- REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md
+|   |-- REVAGENT_SOURCE_PROTECTION_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
 |-- references/

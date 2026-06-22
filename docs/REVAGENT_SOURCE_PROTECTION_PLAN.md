@@ -69,13 +69,19 @@ Deferred gates:
 Goal: decide which high-value heuristics should stay in local payloads and
 which should move behind a controlled service boundary.
 
-Candidate work:
+Required outcomes:
 
 - Inventory runtime scoring, reconciliation, usage-intelligence, tool-routing,
   and mechanical decision logic.
-- Classify local-only, safe-to-ship, and service-backed candidates.
-- Keep Codex workstation context local while moving only reusable protected
-  product logic when it is worth the operational cost.
+- Record the decision classes in `docs/REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md`.
+- Classify local-only, safe-to-ship, service-backed, hybrid-cache, and deferred
+  candidates.
+- Keep Codex workstation session, memory, and project context local.
+- Keep live Revit model traversal, writes, image export, workbook ingestion,
+  and raw telemetry out of service-backed product-logic flows unless a later
+  separately approved design changes the boundary.
+- Require latency, offline fallback, data-minimization, versioning, and cache
+  invalidation gates before any service-backed candidate is implemented.
 
 ## Phase 5 - Distribution Integrity
 
