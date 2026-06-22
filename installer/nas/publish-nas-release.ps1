@@ -281,6 +281,7 @@ function Copy-RevitMcpUserPack {
     Copy-UserPackFile -SourceRelativePath "installer\codex-user\AGENTS.md" -DestinationRelativePath "AGENTS.md"
     Copy-UserPackDirectory -SourceRelativePath "installer\codex-user" -DestinationRelativePath "installer\codex-user"
 
+    Copy-UserPackFile -SourceRelativePath "CHANGELOG.md"
     Copy-UserPackFile -SourceRelativePath "config\revit-versions.json"
 
     Copy-UserPackFile -SourceRelativePath "installer\install-self-contained.ps1"
@@ -512,6 +513,7 @@ try {
     $componentPaths = [ordered]@{
         skill = "SKILL.md"
         agents = "AGENTS.md"
+        changelog = "CHANGELOG.md"
         revitVersionMatrix = "config\revit-versions.json"
         installerLibHiddenLauncher = "installer\lib\RevitMcp.HiddenLauncher.psm1"
         installerLibScheduledTask = "installer\lib\RevitMcp.ScheduledTask.psm1"

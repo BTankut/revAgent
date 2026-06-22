@@ -877,6 +877,7 @@ try {
     Assert-True ($publishText -notmatch 'yyyy\.MM\.dd\.HHmm') "Default release version must not use local wall-clock minutes as the version identity."
     Assert-True ($publishText -match 'function Copy-RevitMcpUserPack') "Publish must build an allowlisted user pack instead of copying the repo root."
     Assert-True ($publishText -match 'installer\\codex-user\\SKILL\.md') "Publish must use the user orchestration SKILL.md."
+    Assert-True ($publishText -match 'Copy-UserPackFile -SourceRelativePath "CHANGELOG\.md"' -and $publishText -match 'changelog = "CHANGELOG\.md"') "User pack must include the changelog and hash it in the release manifest."
     Assert-True ($publishText -match 'update-from-nas\.ps1' -and $publishText -match 'show-installed-version\.ps1' -and $publishText -match 'install-updater-task\.ps1') "User pack must include only workstation updater entrypoints from installer\\nas."
     Assert-True ($publishText -match 'Assert-RevitMcpUserPackNoSourceLeak -Root \$packageRoot') "Publish must gate the user pack against source/developer artifact leaks."
     Assert-True ($publishText -match 'Get-RevitMcpUserPackPathParts' -and $publishText -match 'Test-RevitMcpUserPackIgnoredDependencyPath') "Publish source-leak gate must use path-component dependency exclusions."
