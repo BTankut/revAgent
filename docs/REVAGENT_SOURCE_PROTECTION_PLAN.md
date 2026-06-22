@@ -97,7 +97,7 @@ Required outcomes:
 - Verify channel and release-manifest signatures in the updater before any
   local managed package folder is replaced.
 - Keep private release-signing and licensing material outside Git, NAS
-  `tools\`, user release ZIPs, updater payloads, runtime MCP payloads, and
+  `tools/`, user release ZIPs, updater payloads, runtime MCP payloads, and
   Revit DLL payloads.
 - Keep license or seat checks separate from release signing. Client-side checks
   may carry only public verification material or service endpoints, never

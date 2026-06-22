@@ -48,7 +48,7 @@ The integrity layer does not try to prevent:
 Private signing material must stay outside all shipped artifacts:
 
 - no private release-signing key in Git;
-- no private release-signing key in the NAS `tools\` folder;
+- no private release-signing key in the NAS `tools/` folder;
 - no private release-signing key inside a user release ZIP;
 - no private licensing or seat-secret material in the updater or runtime
   payload.
@@ -166,7 +166,7 @@ Required operational rules:
 
 - Use an asymmetric signing algorithm supported by the Windows updater runtime.
 - Assign every key a stable `keyId` and public-key fingerprint.
-- Store private keys outside the repo and outside NAS `tools\`.
+- Store private keys outside the repo and outside NAS `tools/`.
 - Pass the private key path to the publish script only at publish time.
 - Do not log private key paths if that path reveals secret storage layout.
 - Support multiple trusted public keys during rotation.
@@ -223,7 +223,7 @@ Implementation PRs must add tests for:
 - unsigned release blocked after enforcement is enabled.
 
 Release gates must also verify that private keys, test private keys, and license
-secrets do not appear in the user pack, NAS `tools\`, or committed config.
+secrets do not appear in the user pack, NAS `tools/`, or committed config.
 
 ## Phase 5 Outcome
 
