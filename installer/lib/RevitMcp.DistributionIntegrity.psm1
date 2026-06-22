@@ -123,6 +123,7 @@ function ConvertTo-RevitMcpCanonicalJson {
         return "[" + (($items.ToArray()) -join ",") + "]"
     }
 
+    # Empty dictionaries and PSCustomObject instances are valid canonical JSON objects.
     $isJsonObject = $Value -is [System.Collections.IDictionary] -or $Value -is [System.Management.Automation.PSCustomObject]
     if (-not $isJsonObject) {
         throw "Unsupported value type for canonical JSON: $($Value.GetType().FullName)"

@@ -100,6 +100,7 @@ Write-Host "Test canonical JSON output"
 $canonicalInput = [ordered]@{
     b = $true
     emptyArray = @()
+    emptyCustomObject = ([pscustomobject][ordered]@{})
     emptyObject = [ordered]@{}
     nested = [ordered]@{
         beta = @(3, $null, "x")
@@ -111,7 +112,7 @@ $canonicalInput = [ordered]@{
     a = 1
 }
 $canonicalJson = ConvertTo-RevitMcpCanonicalJson -Value $canonicalInput
-Assert-Equal $canonicalJson '{"a":1,"b":true,"emptyArray":[],"emptyObject":{},"nested":{"alpha":"z","beta":[3,null,"x"]},"path":"tools/lib","singleArray":["x"],"windows":"C:\\Temp\\file"}' "Canonical JSON must sort object keys ordinally, preserve array shape, preserve forward slashes, escape backslashes, and remove insignificant whitespace."
+Assert-Equal $canonicalJson '{"a":1,"b":true,"emptyArray":[],"emptyCustomObject":{},"emptyObject":{},"nested":{"alpha":"z","beta":[3,null,"x"]},"path":"tools/lib","singleArray":["x"],"windows":"C:\\Temp\\file"}' "Canonical JSON must sort object keys ordinally, preserve array shape, preserve empty objects, preserve forward slashes, escape backslashes, and remove insignificant whitespace."
 Assert-Equal (Get-RevitMcpCanonicalJsonSha256 -Value $canonicalInput).Length 64 "Canonical SHA256 must be a hex digest."
 
 Write-Host "Test canonical JSON rejects unsupported numeric ambiguity"
