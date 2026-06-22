@@ -286,6 +286,195 @@ function Get-RevitMcpSignaturePayloadCanonicalJson {
     return ConvertTo-RevitMcpCanonicalJson -Value (Get-RevitMcpSignaturePayloadObject -SignatureEnvelope $SignatureEnvelope)
 }
 
+function New-RevitMcpJsonScanContext {
+    param([Parameter(Mandatory = $true)][string]$Kind)
+
+    if ($Kind -eq "object") {
+        return [pscustomobject][ordered]@{
+            kind = "object"
+            state = "keyOrEnd"
+            keys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        kind = "array"
+        state = "valueOrEnd"
+        keys = $null
+    }
+}
+
+function Set-RevitMcpJsonValueConsumed {
+    param([Parameter(Mandatory = $true)][System.Collections.Generic.Stack[object]]$Stack)
+
+    if ($Stack.Count -eq 0) {
+        return
+    }
+
+    $context = $Stack.Peek()
+    if ($context.kind -eq "object" -and $context.state -eq "value") {
+        $context.state = "commaOrEnd"
+    }
+    elseif ($context.kind -eq "array" -and $context.state -in @("valueOrEnd", "value")) {
+        $context.state = "commaOrEnd"
+    }
+}
+
+function Read-RevitMcpJsonStringToken {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Index
+    )
+
+    $builder = [System.Text.StringBuilder]::new()
+    $length = $Json.Length
+    $i = $Index.Value + 1
+
+    while ($i -lt $length) {
+        $character = $Json[$i]
+        if ($character -eq '"') {
+            $Index.Value = $i
+            return $builder.ToString()
+        }
+
+        if ($character -eq '\') {
+            $i++
+            if ($i -ge $length) {
+                throw "Invalid JSON string escape."
+            }
+
+            $escaped = $Json[$i]
+            switch ($escaped) {
+                '"' { [void]$builder.Append('"'); break }
+                '\' { [void]$builder.Append('\'); break }
+                '/' { [void]$builder.Append('/'); break }
+                'b' { [void]$builder.Append([char]8); break }
+                'f' { [void]$builder.Append([char]12); break }
+                'n' { [void]$builder.Append([char]10); break }
+                'r' { [void]$builder.Append([char]13); break }
+                't' { [void]$builder.Append([char]9); break }
+                'u' {
+                    if ($i + 4 -ge $length) {
+                        throw "Invalid JSON unicode escape."
+                    }
+                    $hex = $Json.Substring($i + 1, 4)
+                    if ($hex -notmatch '^[0-9a-fA-F]{4}$') {
+                        throw "Invalid JSON unicode escape."
+                    }
+                    [void]$builder.Append([char]([Convert]::ToInt32($hex, 16)))
+                    $i += 4
+                    break
+                }
+                default {
+                    throw "Invalid JSON string escape."
+                }
+            }
+
+            $i++
+            continue
+        }
+
+        [void]$builder.Append($character)
+        $i++
+    }
+
+    throw "Unterminated JSON string."
+}
+
+function Find-RevitMcpDuplicateJsonObjectKey {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Json)
+
+    $stack = [System.Collections.Generic.Stack[object]]::new()
+    $length = $Json.Length
+
+    for ($i = 0; $i -lt $length; $i++) {
+        $character = $Json[$i]
+        if ([char]::IsWhiteSpace($character)) {
+            continue
+        }
+
+        switch ($character) {
+            '"' {
+                $indexRef = [ref]$i
+                $text = Read-RevitMcpJsonStringToken -Json $Json -Index $indexRef
+                $i = $indexRef.Value
+
+                if ($stack.Count -gt 0) {
+                    $context = $stack.Peek()
+                    if ($context.kind -eq "object" -and $context.state -eq "keyOrEnd") {
+                        if (-not $context.keys.Add($text)) {
+                            return [pscustomobject][ordered]@{ found = $true; key = $text }
+                        }
+                        $context.state = "colon"
+                    }
+                    else {
+                        Set-RevitMcpJsonValueConsumed -Stack $stack
+                    }
+                }
+                continue
+            }
+            '{' {
+                $stack.Push((New-RevitMcpJsonScanContext -Kind "object"))
+                continue
+            }
+            '[' {
+                $stack.Push((New-RevitMcpJsonScanContext -Kind "array"))
+                continue
+            }
+            '}' {
+                if ($stack.Count -gt 0 -and $stack.Peek().kind -eq "object") {
+                    [void]$stack.Pop()
+                    Set-RevitMcpJsonValueConsumed -Stack $stack
+                }
+                continue
+            }
+            ']' {
+                if ($stack.Count -gt 0 -and $stack.Peek().kind -eq "array") {
+                    [void]$stack.Pop()
+                    Set-RevitMcpJsonValueConsumed -Stack $stack
+                }
+                continue
+            }
+            ':' {
+                if ($stack.Count -gt 0) {
+                    $context = $stack.Peek()
+                    if ($context.kind -eq "object" -and $context.state -eq "colon") {
+                        $context.state = "value"
+                    }
+                }
+                continue
+            }
+            ',' {
+                if ($stack.Count -gt 0) {
+                    $context = $stack.Peek()
+                    if ($context.state -eq "commaOrEnd") {
+                        if ($context.kind -eq "object") {
+                            $context.state = "keyOrEnd"
+                        }
+                        else {
+                            $context.state = "value"
+                        }
+                    }
+                }
+                continue
+            }
+            default {
+                while ($i + 1 -lt $length) {
+                    $next = $Json[$i + 1]
+                    if ([char]::IsWhiteSpace($next) -or $next -eq ',' -or $next -eq ']' -or $next -eq '}') {
+                        break
+                    }
+                    $i++
+                }
+                Set-RevitMcpJsonValueConsumed -Stack $stack
+            }
+        }
+    }
+
+    return [pscustomobject][ordered]@{ found = $false; key = "" }
+}
+
 function Test-RevitMcpSignatureEnvelopeShape {
     param(
         [Parameter(Mandatory = $true)][object]$SignatureEnvelope,
@@ -332,7 +521,11 @@ function Test-RevitMcpSignatureEnvelopeShape {
     if ($canonicalization -ne $script:RevitMcpCanonicalizationId) {
         return Invoke-RevitMcpDistributionIntegrityFailure -Reason "unsupported_canonicalization" -Message "Unsupported canonicalization '$canonicalization'." -SignedObject $signedObject -ThrowOnFailure:$ThrowOnFailure
     }
-    if ($AllowedSignedObjects -notcontains $signedObject) {
+    $allowedSignedObjectSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($allowedSignedObject in $AllowedSignedObjects) {
+        [void]$allowedSignedObjectSet.Add($allowedSignedObject)
+    }
+    if (-not $allowedSignedObjectSet.Contains($signedObject)) {
         return Invoke-RevitMcpDistributionIntegrityFailure -Reason "unsupported_signed_object" -Message "Unsupported signedObject '$signedObject'." -SignedObject $signedObject -ThrowOnFailure:$ThrowOnFailure
     }
 
@@ -433,8 +626,18 @@ function Test-RevitMcpDetachedJsonSignatureFile {
     }
 
     try {
-        $content = Get-Content -Raw -LiteralPath $ContentPath -Encoding UTF8 | ConvertFrom-Json
-        $signatureEnvelope = Get-Content -Raw -LiteralPath $SignaturePath -Encoding UTF8 | ConvertFrom-Json
+        $contentJson = Get-Content -Raw -LiteralPath $ContentPath -Encoding UTF8
+        $signatureJson = Get-Content -Raw -LiteralPath $SignaturePath -Encoding UTF8
+        $contentDuplicate = Find-RevitMcpDuplicateJsonObjectKey -Json $contentJson
+        if ($contentDuplicate.found) {
+            return Invoke-RevitMcpDistributionIntegrityFailure -Reason "duplicate_json_key" -Message "Signed content JSON contains duplicate object key '$($contentDuplicate.key)'." -ThrowOnFailure:$ThrowOnFailure
+        }
+        $signatureDuplicate = Find-RevitMcpDuplicateJsonObjectKey -Json $signatureJson
+        if ($signatureDuplicate.found) {
+            return Invoke-RevitMcpDistributionIntegrityFailure -Reason "duplicate_json_key" -Message "Signature envelope JSON contains duplicate object key '$($signatureDuplicate.key)'." -ThrowOnFailure:$ThrowOnFailure
+        }
+        $content = $contentJson | ConvertFrom-Json
+        $signatureEnvelope = $signatureJson | ConvertFrom-Json
     }
     catch {
         return Invoke-RevitMcpDistributionIntegrityFailure -Reason "invalid_json_file" -Message $_.Exception.Message -ThrowOnFailure:$ThrowOnFailure

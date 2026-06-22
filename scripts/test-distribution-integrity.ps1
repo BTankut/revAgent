@@ -172,6 +172,13 @@ try {
     Assert-True $valid.success "Valid detached channel signature should verify."
     Assert-Equal $valid.signedObject "channel" "Valid signature result should preserve signedObject."
 
+    Write-Host "Test signedObject allowlist is case-sensitive"
+    $wrongCaseSignedObjectEnvelope = Copy-OrderedMap -Value $envelope
+    $wrongCaseSignedObjectEnvelope["signedObject"] = "Channel"
+    $wrongCaseSignedObject = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $wrongCaseSignedObjectEnvelope -TrustedKeys $trustedKeys -AllowedSignedObjects @("channel")
+    Assert-True (-not $wrongCaseSignedObject.success) "Different-case signedObject values must be rejected."
+    Assert-Equal $wrongCaseSignedObject.reason "unsupported_signed_object" "Different-case signedObject should fail the allowlist check."
+
     Write-Host "Test detached release-manifest signature verification"
     $manifest = [ordered]@{
         schemaVersion = 1
@@ -200,6 +207,22 @@ try {
         $envelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $signaturePath -Encoding UTF8
         $validFile = Test-RevitMcpDetachedJsonSignatureFile -ContentPath $channelPath -SignaturePath $signaturePath -TrustedKeys $trustedKeys
         Assert-True $validFile.success "File-based detached signature verification should pass for signed fixture files."
+
+        Write-Host "Test duplicate JSON keys are rejected before file verification"
+        $duplicateContentPath = Join-Path $tempRoot "duplicate-content.json"
+        $duplicateSignaturePath = Join-Path $tempRoot "duplicate-content.sig.json"
+        '{"schemaVersion":1,"schemaVersion":2}' | Set-Content -LiteralPath $duplicateContentPath -Encoding UTF8
+        $envelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $duplicateSignaturePath -Encoding UTF8
+        $duplicateContent = Test-RevitMcpDetachedJsonSignatureFile -ContentPath $duplicateContentPath -SignaturePath $duplicateSignaturePath -TrustedKeys $trustedKeys
+        Assert-True (-not $duplicateContent.success) "Duplicate keys in signed content JSON must be rejected before ConvertFrom-Json can collapse them."
+        Assert-Equal $duplicateContent.reason "duplicate_json_key" "Duplicate signed content keys should have a stable reason."
+
+        $duplicateEnvelopePath = Join-Path $tempRoot "duplicate-envelope.sig.json"
+        $channel | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $channelPath -Encoding UTF8
+        '{"schemaVersion":1,"schemaVersion":2}' | Set-Content -LiteralPath $duplicateEnvelopePath -Encoding UTF8
+        $duplicateEnvelope = Test-RevitMcpDetachedJsonSignatureFile -ContentPath $channelPath -SignaturePath $duplicateEnvelopePath -TrustedKeys $trustedKeys
+        Assert-True (-not $duplicateEnvelope.success) "Duplicate keys in signature envelope JSON must be rejected before ConvertFrom-Json can collapse them."
+        Assert-Equal $duplicateEnvelope.reason "duplicate_json_key" "Duplicate signature envelope keys should have a stable reason."
     }
     finally {
         if (Test-Path -LiteralPath $tempRoot) {
