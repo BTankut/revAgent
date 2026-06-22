@@ -31,6 +31,10 @@ remain exact implementation, tool, package, manifest, and path identifiers.
 - `installer/runtime-mcp-server/`: TypeScript source and bundled local runtime MCP server build for live Revit execution
 - `dashboard/`: read-only live dashboard server and browser UI for office monitoring
 - `docs/PLATFORM_ARCHITECTURE.md`: current platform, bridge, runtime, telemetry, dashboard, and deployment architecture
+- `docs/REVAGENT_SOURCE_PROTECTION_PLAN.md`: phased source-free user-pack,
+  hardening, know-how boundary, and integrity roadmap
+- `docs/REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md`: Phase 4 local vs service-backed
+  product know-how classification
 - `docs/REVAGENT_USAGE_INTELLIGENCE.md`: usage-intelligence event, summary, live dashboard, and analyst pipeline
 - `docs/REVIT_IMAGE_EXPORT.md`: visual QA export workflow for active views,
   selected views, and coordination-focused 3D review images
@@ -598,6 +602,8 @@ revit-mcp-skill/
 |   |-- DEVELOPER_RUNBOOK.md
 |   |-- PLATFORM_ARCHITECTURE.md
 |   |-- REPOSITORY_STRUCTURE.md
+|   |-- REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md
+|   |-- REVAGENT_SOURCE_PROTECTION_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
 |-- dashboard/
