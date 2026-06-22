@@ -82,8 +82,15 @@ releases\
     revit-mcp-skill-<version>.zip
 ```
 
-`manifest.sig.json` signs the canonical bytes of `manifest.json`.
-`stable.sig.json` signs the canonical bytes of `stable.json`.
+`manifest.sig.json` carries a detached signature envelope for `manifest.json`.
+`stable.sig.json` carries a detached signature envelope for `stable.json`.
+
+The target JSON is canonicalized and hashed as `contentSha256`. The signature
+then covers a canonicalized signature payload built from the envelope fields
+except `signature`, including `contentSha256`, `signedObject`, `algorithm`,
+`keyId`, `publicKeyFingerprint`, `canonicalization`, and `createdAtUtc`. This
+binds the release metadata to the signed content hash and prevents unsigned
+metadata edits.
 
 Signature envelope fields:
 
