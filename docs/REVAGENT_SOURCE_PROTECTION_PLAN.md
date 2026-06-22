@@ -74,8 +74,8 @@ Required outcomes:
 - Inventory runtime scoring, reconciliation, usage-intelligence, tool-routing,
   and mechanical decision logic.
 - Record the decision classes in `docs/REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md`.
-- Classify local-only, safe-to-ship, service-backed, hybrid-cache, and deferred
-  candidates.
+- Classify local-only, safe-to-ship, service-backed, hybrid-cache,
+  reporting-boundary, and deferred candidates.
 - Keep Codex workstation session, memory, and project context local.
 - Keep live Revit model traversal, writes, image export, workbook ingestion,
   and raw telemetry out of service-backed product-logic flows unless a later,
