@@ -275,12 +275,15 @@ noise.
 See `docs/REVAGENT_USAGE_INTELLIGENCE.md` for the event schema, signal
 boundaries, and environment controls.
 
-Source protection and product know-how boundaries are tracked separately in
-`docs/REVAGENT_SOURCE_PROTECTION_PLAN.md` and
-`docs/REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md`. Those documents keep Codex
+Source protection, product know-how boundaries, and distribution integrity are
+tracked separately in `docs/REVAGENT_SOURCE_PROTECTION_PLAN.md`,
+`docs/REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md`, and
+`docs/REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md`. Those documents keep Codex
 workstation context, live Revit model data, and raw telemetry out of
 service-backed product-logic flows while identifying only reusable product
-logic as possible future service-boundary candidates.
+logic as possible future service-boundary candidates. They also define the
+future signed-release trust model without putting private signing or licensing
+material in workstation payloads.
 
 ## Live Dashboard
 

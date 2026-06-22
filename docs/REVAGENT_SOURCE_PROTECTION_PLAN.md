@@ -87,9 +87,23 @@ Required outcomes:
 
 Goal: make release origin and package integrity verifiable.
 
-Candidate work:
+Required outcomes:
 
-- Sign release manifests.
-- Verify signatures in the updater before install.
-- Add license or seat checks without putting private signing/licensing secrets
-  in the client payload.
+- Record the trust model, signed-artifact shape, migration policy, key
+  management rules, and license boundary in
+  `docs/REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md`.
+- Sign channel and release manifests with detached signatures before signature
+  enforcement is enabled.
+- Verify channel and release-manifest signatures in the updater before any
+  local managed package folder is replaced.
+- Keep private release-signing and licensing material outside Git, NAS
+  `tools\`, user release ZIPs, updater payloads, runtime MCP payloads, and
+  Revit DLL payloads.
+- Keep license or seat checks separate from release signing. Client-side checks
+  may carry only public verification material or service endpoints, never
+  shared secrets or private signing keys.
+- Ship distribution-integrity work as separate PRs: plan/gates, canonical JSON
+  verifier fixtures, publish-path signing, updater compatibility verification,
+  signed-stable baseline, enforcement flip, and optional license/seat work.
+- Keep unsigned-release compatibility only for migration until a signed stable
+  baseline has been published through the normal human-approved NAS flow.
