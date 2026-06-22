@@ -35,6 +35,8 @@ remain exact implementation, tool, package, manifest, and path identifiers.
   hardening, know-how boundary, and integrity roadmap
 - `docs/REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md`: Phase 4 local vs service-backed
   product know-how classification
+- `docs/REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md`: Phase 5 release-origin,
+  manifest-signing, updater-verification, and license-boundary plan
 - `docs/REVAGENT_USAGE_INTELLIGENCE.md`: usage-intelligence event, summary, live dashboard, and analyst pipeline
 - `docs/REVIT_IMAGE_EXPORT.md`: visual QA export workflow for active views,
   selected views, and coordination-focused 3D review images
@@ -602,6 +604,7 @@ revit-mcp-skill/
 |   |-- DEVELOPER_RUNBOOK.md
 |   |-- PLATFORM_ARCHITECTURE.md
 |   |-- REPOSITORY_STRUCTURE.md
+|   |-- REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md
 |   |-- REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md
 |   |-- REVAGENT_SOURCE_PROTECTION_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
