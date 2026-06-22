@@ -41,6 +41,7 @@ for servers, assemblies, manifests, and installed paths.
 |   |-- test-mcp-build-payload-freshness.ps1
 |   |-- test-typescript-nocheck-policy.ps1
 |   |-- test-live-dashboard.ps1
+|   |-- test-distribution-integrity.ps1
 |   `-- test-installer-smoke.ps1
 |-- src/
 |   `-- revit-plugin/
@@ -167,7 +168,9 @@ file mtimes. `scripts/test-all.ps1` and the NAS publish preflight run this gate
 before release packaging.
 
 `installer/lib` contains shared PowerShell helper modules for updater/installer
-behavior. `config/revit-versions.json` is the central Revit version matrix.
+behavior, including distribution-integrity canonical JSON and detached
+signature verification helpers. `config/revit-versions.json` is the central
+Revit version matrix.
 
 ## Release Rule
 

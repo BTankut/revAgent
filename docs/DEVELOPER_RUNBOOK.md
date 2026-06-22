@@ -80,6 +80,7 @@ revit-mcp-skill/
 |   |-- test-live-dashboard.ps1
 |   |-- test-mcp-build-payload-freshness.ps1
 |   |-- test-typescript-nocheck-policy.ps1
+|   |-- test-distribution-integrity.ps1
 |   `-- test-installer-smoke.ps1
 |-- src/
 |   `-- revit-plugin/
@@ -305,6 +306,7 @@ Run the local PowerShell smoke suite after touching installer/updater behavior:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-installer-smoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-distribution-integrity.ps1
 ```
 
 The smoke suite is non-admin and does not need Revit. It checks hidden launcher
@@ -463,9 +465,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-ci.ps1
 
 `test-ci.ps1` copies both MCP packages to isolated temporary work folders,
 restores dependencies there with `npm ci`, runs forced strict TypeScript checks
-in those copies, checks the zero `@ts-nocheck` policy, verifies MCP build
-payload freshness with `test-mcp-build-payload-freshness.ps1`, then runs both
-package `npm test` chains from the temporary copies. The source package folders
+in those copies, checks the zero `@ts-nocheck` policy, verifies distribution
+canonicalization/signature fixtures, verifies MCP build payload freshness with
+`test-mcp-build-payload-freshness.ps1`, then runs both package `npm test`
+chains from the temporary copies. The source package folders
 are not used as dependency restore targets, so live ProgramData package
 processes cannot lock `node_modules` cleanup. The Revit half reads
 `installer/revit-payload-manifest.json`; it does not rebuild the add-in or
@@ -478,6 +481,7 @@ compare file mtimes.
 | Runtime MCP package still builds and passes local characterization tests | `installer/runtime-mcp-server` `npm test` | `Engineering gates` | - |
 | Revit API docs MCP package still builds and smoke-tests | `installer/revit-api-docs-mcp` `npm test` | `Engineering gates` | - |
 | MCP build payloads and the Revit payload manifest match source | `scripts/test-mcp-build-payload-freshness.ps1` | `Engineering gates` | Live Revit behavior remains local-only. |
+| Distribution canonical JSON and detached signature fixtures stay deterministic | `scripts/test-distribution-integrity.ps1` | `Engineering gates` | Does not publish, sign a real stable channel, or enable updater enforcement. |
 | Bridge result contract stays canonical and idempotent | runtime `bridge-result-contract-test` via `npm test` | `Engineering gates` | Live Revit skew checks remain local-only. |
 | Production write tools keep guard/verification contracts | runtime `write-tool-contract-test` via `npm test` | `Engineering gates` | - |
 | Tool argument schema inference does not collapse to `any` | runtime `tool-inference-test` via `npm test` | `Engineering gates` | - |
@@ -679,6 +683,14 @@ manifests, Revit DLL payloads, installer/updater helpers, release metadata, and
 `installer/codex-user` orchestration files, then fails if source/developer,
 managed debug-symbol, or unhardened JavaScript artifacts are detected in the
 staged package.
+
+Distribution integrity support starts in CI as fixtures before production
+enforcement. `installer/lib/RevitMcp.DistributionIntegrity.psm1` owns the
+canonical JSON and detached signature verifier helpers, while
+`scripts/test-distribution-integrity.ps1` proves valid and tampered channel and
+release-manifest fixtures. Publish-path signing, updater compatibility mode,
+signed stable publication, and fail-closed enforcement remain separate
+human-approved workstreams.
 
 Large offline dependency payloads are local/NAS-side assets, not Git assets:
 

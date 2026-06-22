@@ -438,6 +438,7 @@ Run the local no-deploy checks before publishing a release:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-installer-smoke.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-distribution-integrity.ps1
 
 cd .\installer\runtime-mcp-server
 npm install --no-audit --no-fund
@@ -449,10 +450,11 @@ npm run test
 ```
 
 Use `scripts\test-all.ps1` to run the non-Revit checks in one command. It
-includes installer smoke, usage intelligence, live dashboard helpers,
-`@ts-nocheck` policy enforcement, both MCP package test suites, and committed
-MCP/Revit payload freshness checks. Revit payload freshness is manifest-based,
-so ordinary checkout or merge mtimes do not force a payload refresh. The Revit
+includes installer smoke, distribution-integrity fixtures, usage intelligence,
+live dashboard helpers, `@ts-nocheck` policy enforcement, both MCP package test
+suites, and committed MCP/Revit payload freshness checks. Revit payload
+freshness is manifest-based, so ordinary checkout or merge mtimes do not force a
+payload refresh. The Revit
 payload freshness gate also rejects managed debug symbol files in installer
 payload roots.
 The runtime MCP test suite includes bridge result contract characterization
@@ -631,6 +633,7 @@ revit-mcp-skill/
 |   |-- test-mcp-build-payload-freshness.ps1
 |   |-- test-typescript-nocheck-policy.ps1
 |   |-- test-all.ps1
+|   |-- test-distribution-integrity.ps1
 |   `-- test-installer-smoke.ps1
 |-- src/
 |   `-- revit-plugin/
