@@ -91,6 +91,11 @@ function Get-TamperedBase64Signature {
     return [Convert]::ToBase64String($bytes)
 }
 
+function New-TestRsaProvider {
+    $cspParameters = [System.Security.Cryptography.CspParameters]::new(24)
+    return [System.Security.Cryptography.RSACryptoServiceProvider]::new(2048, $cspParameters)
+}
+
 Write-Host "Test canonical JSON output"
 $canonicalInput = [ordered]@{
     b = $true
@@ -98,10 +103,12 @@ $canonicalInput = [ordered]@{
         beta = @(3, $null, "x")
         alpha = "z"
     }
+    path = "tools/lib"
+    windows = "C:\Temp\file"
     a = 1
 }
 $canonicalJson = ConvertTo-RevitMcpCanonicalJson -Value $canonicalInput
-Assert-Equal $canonicalJson '{"a":1,"b":true,"nested":{"alpha":"z","beta":[3,null,"x"]}}' "Canonical JSON must sort object keys ordinally and remove insignificant whitespace."
+Assert-Equal $canonicalJson '{"a":1,"b":true,"nested":{"alpha":"z","beta":[3,null,"x"]},"path":"tools/lib","windows":"C:\\Temp\\file"}' "Canonical JSON must sort object keys ordinally, preserve forward slashes, escape backslashes, and remove insignificant whitespace."
 Assert-Equal (Get-RevitMcpCanonicalJsonSha256 -Value $canonicalInput).Length 64 "Canonical SHA256 must be a hex digest."
 
 Write-Host "Test canonical JSON rejects unsupported numeric ambiguity"
@@ -115,7 +122,7 @@ catch {
 Assert-True $rejectedFloat "Canonical signing JSON must reject floating-point input until full JCS number handling is implemented."
 
 Write-Host "Test detached channel signature verification"
-$rsa = [System.Security.Cryptography.RSACryptoServiceProvider]::new(2048)
+$rsa = New-TestRsaProvider
 try {
     $publicKeyXml = $rsa.ToXmlString($false)
     $publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml

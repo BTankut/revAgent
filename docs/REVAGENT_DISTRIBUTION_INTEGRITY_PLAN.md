@@ -226,7 +226,7 @@ Rejected patterns:
 
 Each workstream should remain a separate PR:
 
-1. Distribution integrity plan and gates. Done in PR #78.
+1. Distribution integrity plan and gates. Done in PR 78.
 2. Canonical JSON plus signature verification fixtures. This workstream adds
    the shared verifier helper and `scripts/test-distribution-integrity.ps1`
    without changing production updater behavior.

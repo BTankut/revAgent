@@ -6,7 +6,30 @@ $script:RevitMcpSignatureAlgorithm = "RS256"
 function ConvertTo-RevitMcpJsonString {
     param([Parameter(Mandatory = $true)][string]$Value)
 
-    return [string]($Value | ConvertTo-Json -Compress)
+    $builder = [System.Text.StringBuilder]::new()
+    foreach ($character in $Value.ToCharArray()) {
+        $code = [int][char]$character
+        switch ($code) {
+            8 { [void]$builder.Append('\b'); continue }
+            9 { [void]$builder.Append('\t'); continue }
+            10 { [void]$builder.Append('\n'); continue }
+            12 { [void]$builder.Append('\f'); continue }
+            13 { [void]$builder.Append('\r'); continue }
+            34 { [void]$builder.Append('\"'); continue }
+            92 { [void]$builder.Append('\\'); continue }
+            default {
+                if ($code -lt 0x20) {
+                    [void]$builder.Append('\u')
+                    [void]$builder.Append($code.ToString("x4", [System.Globalization.CultureInfo]::InvariantCulture))
+                }
+                else {
+                    [void]$builder.Append($character)
+                }
+            }
+        }
+    }
+
+    return '"' + $builder.ToString() + '"'
 }
 
 function Get-RevitMcpObjectPropertyNames {
@@ -153,6 +176,11 @@ function Get-RevitMcpPublicKeyFingerprint {
 
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($PublicKeyXml.Trim())
     return ConvertTo-RevitMcpSha256Hex -Bytes $bytes
+}
+
+function New-RevitMcpRsaCryptoServiceProvider {
+    $cspParameters = [System.Security.Cryptography.CspParameters]::new(24)
+    return [System.Security.Cryptography.RSACryptoServiceProvider]::new($cspParameters)
 }
 
 function New-RevitMcpDistributionIntegrityResult {
@@ -350,7 +378,7 @@ function Test-RevitMcpDetachedJsonSignature {
     }
 
     $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes((Get-RevitMcpSignaturePayloadCanonicalJson -SignatureEnvelope $SignatureEnvelope))
-    $rsa = [System.Security.Cryptography.RSACryptoServiceProvider]::new()
+    $rsa = New-RevitMcpRsaCryptoServiceProvider
     try {
         $rsa.FromXmlString($publicKeyXml)
         $verified = $rsa.VerifyData($payloadBytes, "SHA256", $signatureBytes)
@@ -387,8 +415,8 @@ function Test-RevitMcpDetachedJsonSignatureFile {
     }
 
     try {
-        $content = Get-Content -Raw -LiteralPath $ContentPath | ConvertFrom-Json
-        $signatureEnvelope = Get-Content -Raw -LiteralPath $SignaturePath | ConvertFrom-Json
+        $content = Get-Content -Raw -LiteralPath $ContentPath -Encoding UTF8 | ConvertFrom-Json
+        $signatureEnvelope = Get-Content -Raw -LiteralPath $SignaturePath -Encoding UTF8 | ConvertFrom-Json
     }
     catch {
         return Invoke-RevitMcpDistributionIntegrityFailure -Reason "invalid_json_file" -Message $_.Exception.Message -ThrowOnFailure:$ThrowOnFailure
