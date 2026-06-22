@@ -31,8 +31,9 @@ later, separately approved design explicitly changes that rule.
 - User artifacts remain workstation inputs. Excel rows, schedules, sheet text,
   element samples, images, and model identifiers are not sent to a central
   product-logic service by default.
-- Service candidates must consume compact summaries, not raw models, raw
-  workbooks, source documents, images, or full telemetry streams.
+- Service candidates must consume minimized, non-reversible summaries, not raw
+  models, raw workbooks, source documents, images, full telemetry streams, or
+  token profiles that still reveal source text.
 - No private signing keys, license secrets, service credentials, or policy
   authority may live in the client payload.
 - Every service-backed candidate needs an offline fallback that is explicit in
@@ -50,7 +51,7 @@ later, separately approved design explicitly changes that rule.
 | Shared result and broad-scan contracts | `broadScanResult.ts`, bridge result contract, command wrappers | Stable product API shape and partial-result vocabulary | `safe-to-ship` | The contract is necessary for local reliability and reviewability. Exposing the contract does not expose the highest-value domain scoring. | Keep local; continue compatibility tests. |
 | Element search policy | `searchPolicy.ts`, `find_elements.ts`, native `ElementDiscoveryHelpers.cs` | MEP concept/category inference, scope risk policy, plan candidate ranking | `service-backed-candidate` for reusable inference tables; `local-only` for live Revit search | Concept aliases and ranking heuristics are reusable product know-how. The actual search, visibility checks, element scoring, and plan candidates require local Revit data. | Split future rule table from local executor; design signed rule-pack or service summary call before implementation. |
 | Schedule-to-Excel normalization | `reconcile_normalization.ts`, Excel/schedule adapters | Header aliases, Turkish/Unicode normalization, unit/dimension tokenization | `hybrid-cache-candidate` | Static aliases and unit rules are reusable and can be versioned. Local file/schedule ingestion must stay local. | Consider signed rule-pack updates; keep local parser fallback. |
-| Schedule-to-Excel matching/scoring | `reconcile_matching.ts`, `reconcile_schedule_excel.ts` | Candidate generation, score weights, thresholds, hard-conflict policy, review buckets | `service-backed-candidate` | Deterministic scoring is high-value product know-how and can operate on minimized row profiles. It does not need raw workbooks if adapters produce compact tokens and mapped context values locally. | Define minimal token-profile, mapped role/context value, request/response contract, latency budget, and offline fallback before moving. |
+| Schedule-to-Excel matching/scoring | `reconcile_matching.ts`, `reconcile_schedule_excel.ts` | Candidate generation, score weights, thresholds, hard-conflict policy, review buckets | `service-backed-candidate` | Deterministic scoring is high-value product know-how, but the current token profiles and mapped values still derive from user workbook/schedule text. A future service must use redacted or hashed feature vectors, or keep scoring local. | Define a non-reversible feature-vector contract, latency budget, and offline fallback before moving. |
 | Schedule, sheet text, annotation, and tag inspection | native inspect/count handlers, `AnnotationEvidenceHelpers.cs` | Revit API traversal, evidence shaping, scan budgets, continuation metadata | `local-only` plus `safe-to-ship` contract | Raw evidence depends on model/sheet contents and Revit API limitations. Budget and continuation contracts are safe to ship. | Keep traversal local; only aggregate lessons into rule candidates. |
 | Controlled schedule and parameter writes | `set_schedule_cells*.ts`, `set_element_parameter.ts`, native write handlers | Write preflight, dry-run defaults, exact identity guards, verification | `safe-to-ship` | Writes must be guarded locally against the actual active model. Centralizing would increase failure modes and would not materially protect product heuristics. | Keep local; harden package and keep tests. |
 | Image export and visual QA | export tools and native view/export handlers | View framing, crop, QA style, file output evidence | `local-only` | It depends on active model/view state and produces local files. Service movement would be operationally expensive and data-heavy. | Keep local; consider only signed style/rule presets later. |
@@ -74,9 +75,10 @@ design spike. They are not approved for implementation by this review alone.
 
    Move scoring weights, token role aliases, hard-conflict policy, bucket
    thresholds, and profile versioning. Keep Excel parsing, schedule reading,
-   row text, and source files local; send only local token profiles plus the
-   mapped role/context values required for unit conflict and context scoring if
-   a later service design is approved.
+   row text, source files, current token profiles, and mapped context values
+   local unless a later design proves a non-reversible feature-vector contract
+   that preserves unit conflict and context scoring without exposing user text.
+   If that contract is not possible, keep reconciliation scoring local.
 
 3. Usage-intelligence aggregation and promotion policy
 
@@ -108,7 +110,10 @@ design spike. They are not approved for implementation by this review alone.
 Before any `service-backed-candidate` can move behind a service boundary, the
 workstream must document and test:
 
-- Minimal input and output schemas with raw user/model data excluded by default.
+- Minimal input and output schemas with raw user/model data, reversible source
+  text, and current token profiles excluded by default.
+- Redaction, hashing, or feature-vector rules for every field allowed to cross
+  the boundary.
 - Offline fallback behavior and how the UI/result contract reports fallback.
 - Latency budget for interactive Revit use.
 - Version compatibility between client bundle, rule profile, and service.
