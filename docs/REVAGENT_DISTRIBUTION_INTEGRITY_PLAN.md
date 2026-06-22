@@ -108,8 +108,9 @@ Do not sign raw `ConvertTo-Json` output directly as the long-term contract.
 PowerShell version, object ordering, and formatting changes can produce
 different JSON text for the same logical manifest.
 
-Before signature enforcement ships, add a tested canonical JSON writer with
-these properties:
+Before signature enforcement ships, add a tested canonical JSON writer, ideally
+aligned with RFC 8785 JSON Canonicalization Scheme (JCS), with these
+properties:
 
 - UTF-8 without BOM;
 - LF line endings;
@@ -168,7 +169,8 @@ Required operational rules:
 - Assign every key a stable `keyId` and public-key fingerprint.
 - Store private keys outside the repo and outside NAS `tools/`.
 - Pass the private key path to the publish script only at publish time.
-- Do not log private key paths if that path reveals secret storage layout.
+- Do not log private keys, passphrases, raw secret material, or private key
+  paths if those paths reveal secret storage layout.
 - Support multiple trusted public keys during rotation.
 - Treat unknown key IDs, mismatched fingerprints, and revoked key IDs as
   verification failures after enforcement is enabled.
@@ -184,7 +186,8 @@ License or seat checks are not a substitute for release signing.
 
 Acceptable future patterns:
 
-- signed entitlement token stored locally, verified with a public key only;
+- signed entitlement token stored locally, bound to a documented machine
+  identity claim, and verified with a public key only;
 - service-side seat check with an offline grace policy;
 - machine or user identity claim that is not trusted unless signed or confirmed
   by the service.
