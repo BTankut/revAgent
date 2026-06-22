@@ -171,7 +171,8 @@ before release packaging.
 `installer/lib` contains shared PowerShell helper modules for updater/installer
 behavior, including distribution-integrity canonical JSON, detached signature
 helper functions, updater compatibility-mode verification, signed release
-sequence checks, and optional publish-path signing.
+sequence checks, optional signed license-seat verification, and optional
+publish-path signing.
 `config/revit-versions.json` is the central Revit version matrix; future public
 release-verification key files also live under `config/` and must not include
 private signing material.

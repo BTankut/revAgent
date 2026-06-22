@@ -246,7 +246,13 @@ Each workstream should remain a separate PR:
    actual signed stable publish remains a separate human-approved NAS
    deployment step with production public keys present on workstations before
    fail-closed policy is enabled.
-6. Optional license or seat design and implementation.
+6. Optional license or seat design and implementation. License verification
+   must use signed seat/license files and public verification keys only. The
+   default workstation policy remains `disabled`; `audit` records invalid or
+   missing license evidence without blocking, and `enforce` blocks updater work
+   before package replacement. This layer is an entitlement and copying-cost
+   control, not a user-data privacy mechanism and not a substitute for
+   source-free packaging or release signing.
 
 ## Acceptance Gates
 

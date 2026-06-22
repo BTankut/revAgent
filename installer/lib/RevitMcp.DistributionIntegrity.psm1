@@ -269,7 +269,7 @@ function New-RevitMcpDetachedJsonSignature {
         $CreatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
     }
     $allowedSignedObjects = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-    foreach ($allowedSignedObject in @("channel", "release-manifest")) {
+    foreach ($allowedSignedObject in @("channel", "release-manifest", "license-seat")) {
         [void]$allowedSignedObjects.Add($allowedSignedObject)
     }
     if (-not $allowedSignedObjects.Contains($SignedObject)) {
@@ -301,7 +301,7 @@ function New-RevitMcpDetachedJsonSignature {
         $rsa.Dispose()
     }
 
-    [void](Test-RevitMcpSignatureEnvelopeShape -SignatureEnvelope $envelope -AllowedSignedObjects @("channel", "release-manifest") -ThrowOnFailure)
+    [void](Test-RevitMcpSignatureEnvelopeShape -SignatureEnvelope $envelope -AllowedSignedObjects @("channel", "release-manifest", "license-seat") -ThrowOnFailure)
     return $envelope
 }
 
