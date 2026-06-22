@@ -99,6 +99,8 @@ Important source vs payload rule:
   `installer/runtime-mcp-server/build/` is the built runtime payload.
 - `installer/revit-api-docs-mcp/src/` is the docs MCP TypeScript source;
   `installer/revit-api-docs-mcp/build/` is the built docs server payload.
+- `installer/codex-user/` contains the minimal installed Codex orchestration
+  files used by the user pack.
 - `installer/lib/` contains shared PowerShell helper modules used by installer
   and updater entrypoints.
 - `config/revit-versions.json` is the central Revit version matrix.
@@ -657,6 +659,13 @@ Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\channels\sta
 
 Publishing refreshes `tools\` on the NAS. Workstations should launch the tools
 from the NAS share, not from copied old script bodies when possible.
+
+The versioned release ZIP is an allowlisted user pack. It must not contain the
+repo root, `src/`, root `docs/`, developer tests, repo metadata, `.pdb`, or
+source maps. `publish-nas-release.ps1` stages only the runtime build payloads,
+Revit DLL payloads, installer/updater helpers, release metadata, and
+`installer/codex-user` orchestration files, then fails if source/developer
+artifacts are detected in the staged package.
 
 Large offline dependency payloads are local/NAS-side assets, not Git assets:
 

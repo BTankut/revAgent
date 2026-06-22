@@ -875,6 +875,13 @@ try {
     $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
     Assert-True ($publishText -match 'rev-list", "--count", "HEAD"') "Default release version must use a monotonically increasing git build number."
     Assert-True ($publishText -notmatch 'yyyy\.MM\.dd\.HHmm') "Default release version must not use local wall-clock minutes as the version identity."
+    Assert-True ($publishText -match 'function Copy-RevitMcpUserPack') "Publish must build an allowlisted user pack instead of copying the repo root."
+    Assert-True ($publishText -match 'installer\\codex-user\\SKILL\.md') "Publish must use the user orchestration SKILL.md."
+    Assert-True ($publishText -match 'update-from-nas\.ps1' -and $publishText -match 'show-installed-version\.ps1' -and $publishText -match 'install-updater-task\.ps1') "User pack must include only workstation updater entrypoints from installer\\nas."
+    Assert-True ($publishText -match 'Assert-RevitMcpUserPackNoSourceLeak -Root \$packageRoot') "Publish must gate the user pack against source/developer artifact leaks."
+    Assert-True ($publishText -notmatch 'Copy-DirectoryFiltered -Source \$RepoRoot -Destination \$packageRoot') "Publish must not stage releases by copying the repo root."
+    Assert-True ($publishText -notmatch 'Copy-UserPackDirectory -SourceRelativePath "installer\\nas"') "Versioned user pack must not copy deployment tooling wholesale."
+    Assert-True ($publishText -notmatch 'src\\revit-plugin\\revit-mcp-plugin\\revit-mcp-plugin\.csproj') "Release manifest components must not include developer source project files."
 
     Write-Host "Test initial updater invocation binding"
     $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
@@ -967,6 +974,10 @@ try {
     $installerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\install-self-contained.ps1")
     Assert-True ($installerText -match 'Set-RevitMcpCodexMemoryConfig') "Installer must enforce Codex memory config."
     Assert-True ($installerText -match 'Remove-CodexProfileBackupArtifacts') "Installer must clean old Codex profile backup artifacts."
+    Assert-True ($installerText -match 'Copy-RevitMcpRuntimeUserPayload') "Installer must copy only the runtime user payload."
+    Assert-True ($installerText -match 'codexUserSourceRoot') "Installer must source Codex orchestration from the user pack."
+    Assert-True ($installerText -match 'Remove-RevitMcpManagedSourceLeakArtifacts') "Installer must clean managed source/developer artifact leaks."
+    Assert-True ($installerText -notmatch 'Get-ChildItem -LiteralPath \$repoRoot -Force[\s\S]{0,160}Copy-Item -Destination \$codexMachineSkillTarget') "Installer must not copy the repo root into the Codex skill."
     Assert-True ($installerText -match '\$taskName = "revAgent Auto Update"') "Self-contained installer scheduled-task repair must use the revAgent task name."
     Assert-True ($installerText -match 'LegacyNames @\("Revit MCP Auto Update"\)') "Self-contained installer must migrate the legacy Revit MCP task name."
     Assert-True ($installerText -notmatch 'Copy-Item[^\r\n]*AGENTS\.md\.backup-') "Installer must not create AGENTS.md backup files."

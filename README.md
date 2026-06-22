@@ -6,6 +6,10 @@ companion Revit API docs MCP server, installer, NAS updater, and deployment
 documentation in one place.
 
 It is the single canonical source for production office deployment.
+Published release ZIPs are user packs, not repo copies. A user pack contains
+only the files needed to run revAgent on a workstation: runtime build outputs,
+Revit DLL payloads, installer/updater helpers, release metadata, and the
+minimal installed Codex orchestration files.
 
 Product-facing documentation should use **revAgent**. The names `revit-mcp`,
 `RevitMCP*`, `mcp-servers-for-revit`, and `C:\ProgramData\DPE\RevitMCP`
@@ -14,7 +18,9 @@ remain exact implementation, tool, package, manifest, and path identifiers.
 ## What this repo provides
 
 - `SKILL.md`: host-agnostic skill instructions for Revit MEP work
-- `AGENTS.md`: workstation-wide coordination rules copied during install
+- `AGENTS.md`: repo/workstation coordination rules for development context
+- `installer/codex-user/`: minimal `SKILL.md` and `AGENTS.md` copied into
+  deployed user packs
 - `src/revit-plugin/`: Revit add-in source code
 - `config/revit-versions.json`: central Revit version matrix and payload gate
 - `scripts/build-revit-plugin.ps1`: builds the add-in source and refreshes the installer payload binaries and manifest
@@ -287,8 +293,10 @@ existing sections or keys.
 
 ## What the installer deploys
 
-The files under `installer/` are source payloads kept in the repo for redistribution.
-After install, the same payload is copied into the real system locations below:
+The deployed release is an allowlisted user pack. It does not copy the repo
+root and must not contain `src/`, developer docs, tests, repo metadata, `.pdb`,
+or source maps. After install, the user pack payload is copied into the real
+system locations below:
 
 - Revit add-in manifest:
   - `C:\ProgramData\Autodesk\Revit\Addins\2022\mcp-servers-for-revit.addin`
@@ -297,12 +305,14 @@ After install, the same payload is copied into the real system locations below:
 - Dynamic command payload mirror:
   - `C:\ProgramData\DPE\RevitMCP\commands\CommandSet\...`
 - Local runtime MCP server bundle:
-  - `C:\ProgramData\DPE\RevitMCP\runtime`
+  - `C:\ProgramData\DPE\RevitMCP\runtime` containing runtime `build/` and npm
+    manifests, not TypeScript source
 - Required docs MCP server:
   - kept under the managed package copy and registered from there by the NAS updater
 - Codex skill and workstation role:
   - `C:\ProgramData\DPE\RevitMCP\codex\skills\revit-mcp`
   - `C:\ProgramData\DPE\RevitMCP\codex\AGENTS.md`
+  - sourced from `installer/codex-user`, not from the developer repo root
 
 Before copying, the installer cleans the known revAgent/RevitMCP install
 locations it owns: the exact `mcp-servers-for-revit.addin` manifest, old
@@ -315,6 +325,10 @@ as `AGENTS.md.backup-*`, `config.toml.backup-*`, and the legacy
 `.codex\skill-backups` directory. New installs overwrite managed Codex
 integration targets directly instead of creating timestamped backups. This
 prevents old files from surviving directory/layout changes.
+The installer also removes managed source/developer artifact leaks left by
+older packages from `ProgramData` package/runtime/Codex skill locations and
+from managed package backups. It does not delete user Codex sessions, history,
+or memory.
 Cleanup is guarded by path checks and does not delete Autodesk Revit program
 files, Windows system folders, Revit add-in root folders themselves, or broad
 workspace/user directories.
