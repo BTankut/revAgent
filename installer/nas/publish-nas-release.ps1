@@ -333,8 +333,9 @@ function Assert-RevitMcpUserPackHardenedJsPayload {
             continue
         }
 
-        $buildFiles = @(Get-ChildItem -LiteralPath $buildRoot -Recurse -File -Force |
-            ForEach-Object { $_.FullName.Substring($buildRoot.Length).TrimStart("\", "/").Replace("/", "\") } |
+        $buildRootAbs = (Get-Item -LiteralPath $buildRoot).FullName
+        $buildFiles = @(Get-ChildItem -LiteralPath $buildRootAbs -Recurse -File -Force |
+            ForEach-Object { $_.FullName.Substring($buildRootAbs.Length).TrimStart("\", "/").Replace("/", "\") } |
             Sort-Object)
         if (($buildFiles.Count -ne 1) -or ($buildFiles[0] -ne "index.js")) {
             $issues.Add("$relativePackageRoot build must contain only bundled index.js")
