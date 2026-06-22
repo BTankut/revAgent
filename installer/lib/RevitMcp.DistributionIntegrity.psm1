@@ -10,13 +10,13 @@ function ConvertTo-RevitMcpJsonString {
     foreach ($character in $Value.ToCharArray()) {
         $code = [int][char]$character
         switch ($code) {
-            8 { [void]$builder.Append('\b'); continue }
-            9 { [void]$builder.Append('\t'); continue }
-            10 { [void]$builder.Append('\n'); continue }
-            12 { [void]$builder.Append('\f'); continue }
-            13 { [void]$builder.Append('\r'); continue }
-            34 { [void]$builder.Append('\"'); continue }
-            92 { [void]$builder.Append('\\'); continue }
+            8 { [void]$builder.Append('\b'); break }
+            9 { [void]$builder.Append('\t'); break }
+            10 { [void]$builder.Append('\n'); break }
+            12 { [void]$builder.Append('\f'); break }
+            13 { [void]$builder.Append('\r'); break }
+            34 { [void]$builder.Append('\"'); break }
+            92 { [void]$builder.Append('\\'); break }
             default {
                 if ($code -lt 0x20) {
                     [void]$builder.Append('\u')
