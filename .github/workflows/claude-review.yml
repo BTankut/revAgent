@@ -22,6 +22,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
-          prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
-          # Ağır C#/TS diff'leri için --model opus'a yükseltebilirsin
-          claude_args: "--model claude-sonnet-4-6"
+          # --comment: bulguları PR'a satır içi yorum olarak gönderir
+          prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment"
+          # Opus 4.8 ile en derin in-runner review. Kotayı korumak istersen
+          # claude-sonnet-4-6'ya düşürebilirsin. (ultra = bulut, krediyle faturalanır;
+          # otomatik PR workflow'una uygun değil — README/PR açıklamasına bak.)
+          claude_args: "--model claude-opus-4-8"
