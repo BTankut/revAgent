@@ -439,6 +439,7 @@ Run the local no-deploy checks before publishing a release:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-installer-smoke.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-distribution-integrity.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-publish-signing.ps1
 
 cd .\installer\runtime-mcp-server
 npm install --no-audit --no-fund

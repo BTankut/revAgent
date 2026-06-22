@@ -26,6 +26,10 @@ param(
 
     [switch]$Force,
 
+    [string]$SigningPrivateKeyPath = "",
+
+    [string]$SigningKeyId = "",
+
     [switch]$NoChannelUpdate
 )
 
@@ -555,6 +559,103 @@ function Write-JsonFile {
     $Value | ConvertTo-Json -Depth $Depth | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
+function Get-RevitMcpPathPrefix {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd("\", "/")
+    return $fullPath + [System.IO.Path]::DirectorySeparatorChar
+}
+
+function Test-RevitMcpPathUnderRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $rootPrefix = Get-RevitMcpPathPrefix -Path $Root
+    return $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function New-RevitMcpPublishSigningContext {
+    param(
+        [string]$PrivateKeyPath,
+        [string]$KeyId,
+        [string]$RepositoryRoot,
+        [string]$NasToolsRoot
+    )
+
+    $hasPrivateKeyPath = -not [string]::IsNullOrWhiteSpace($PrivateKeyPath)
+    $hasKeyId = -not [string]::IsNullOrWhiteSpace($KeyId)
+    if (-not $hasPrivateKeyPath -and -not $hasKeyId) {
+        return $null
+    }
+    if (-not $hasPrivateKeyPath -or -not $hasKeyId) {
+        throw "Release signing requires both -SigningPrivateKeyPath and -SigningKeyId."
+    }
+
+    $distributionIntegrityModule = Join-Path $RepositoryRoot "installer\lib\RevitMcp.DistributionIntegrity.psm1"
+    if (-not (Test-Path -LiteralPath $distributionIntegrityModule -PathType Leaf)) {
+        throw "Distribution integrity helper module was not found."
+    }
+
+    $privateKeyFullPath = [System.IO.Path]::GetFullPath($PrivateKeyPath)
+    if (Test-RevitMcpPathUnderRoot -Path $privateKeyFullPath -Root $RepositoryRoot) {
+        throw "Signing private key must be stored outside the repository."
+    }
+    if (Test-RevitMcpPathUnderRoot -Path $privateKeyFullPath -Root $NasToolsRoot) {
+        throw "Signing private key must be stored outside NAS tools."
+    }
+    if (-not (Test-Path -LiteralPath $privateKeyFullPath -PathType Leaf)) {
+        throw "Signing private key file was not found."
+    }
+
+    Import-Module $distributionIntegrityModule -Force
+    $privateKeyXml = Get-Content -Raw -LiteralPath $privateKeyFullPath -Encoding UTF8
+    $publicKeyXml = Get-RevitMcpPublicKeyXmlFromPrivateKeyXml -PrivateKeyXml $privateKeyXml
+    $publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+
+    $trustedKeys = @{}
+    $trustedKeys[$KeyId] = [pscustomobject][ordered]@{
+        publicKeyXml = $publicKeyXml
+        publicKeyFingerprint = $publicKeyFingerprint
+        algorithm = "RS256"
+    }
+
+    return [pscustomobject][ordered]@{
+        keyId = $KeyId
+        privateKeyXml = $privateKeyXml
+        publicKeyFingerprint = $publicKeyFingerprint
+        trustedKeys = $trustedKeys
+    }
+}
+
+function Write-RevitMcpDetachedSignatureFile {
+    param(
+        [Parameter(Mandatory = $true)][object]$Content,
+        [Parameter(Mandatory = $true)][string]$ContentPath,
+        [Parameter(Mandatory = $true)][string]$SignaturePath,
+        [Parameter(Mandatory = $true)][string]$SignedObject,
+        [Parameter(Mandatory = $true)][object]$SigningContext
+    )
+
+    $signatureEnvelope = New-RevitMcpDetachedJsonSignature `
+        -Content $Content `
+        -SignedObject $SignedObject `
+        -KeyId ([string]$SigningContext.keyId) `
+        -PrivateKeyXml ([string]$SigningContext.privateKeyXml)
+    Write-JsonFile -Value $signatureEnvelope -Path $SignaturePath -Depth 8
+
+    $verification = Test-RevitMcpDetachedJsonSignatureFile `
+        -ContentPath $ContentPath `
+        -SignaturePath $SignaturePath `
+        -TrustedKeys ([hashtable]$SigningContext.trustedKeys) `
+        -AllowedSignedObjects @($SignedObject)
+    if (-not $verification.success) {
+        throw "Detached signature verification failed after writing $SignedObject signature: $($verification.reason)"
+    }
+}
+
 Write-Section "Validate repository"
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "SKILL.md"))) {
@@ -610,6 +711,14 @@ $releasesRoot = Join-Path $ReleaseRoot "releases"
 $channelsRoot = Join-Path $ReleaseRoot "channels"
 $toolsRoot = Join-Path $ReleaseRoot "tools"
 $releaseDir = Join-Path $releasesRoot $Version
+$signingContext = New-RevitMcpPublishSigningContext `
+    -PrivateKeyPath $SigningPrivateKeyPath `
+    -KeyId $SigningKeyId `
+    -RepositoryRoot $RepoRoot `
+    -NasToolsRoot $toolsRoot
+if ($signingContext) {
+    Write-Host "Release signing: enabled for keyId '$SigningKeyId'" -ForegroundColor Green
+}
 
 if (Test-Path -LiteralPath $releaseDir) {
     if (-not $Force) {
@@ -756,6 +865,16 @@ try {
         components = $components
     }
     $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    if ($signingContext) {
+        $manifestSignaturePath = Join-Path $releaseDir "manifest.sig.json"
+        Write-RevitMcpDetachedSignatureFile `
+            -Content $manifest `
+            -ContentPath $manifestPath `
+            -SignaturePath $manifestSignaturePath `
+            -SignedObject "release-manifest" `
+            -SigningContext $signingContext
+        Write-Host "Release manifest signature: $manifestSignaturePath" -ForegroundColor Green
+    }
 
     if (-not $NoChannelUpdate) {
         $channelPath = Join-Path $channelsRoot ("{0}.json" -f $Channel)
@@ -775,6 +894,16 @@ try {
             }
         }
         Write-JsonFile -Value $channelManifest -Path $channelPath -Depth 8
+        if ($signingContext) {
+            $channelSignaturePath = Join-Path $channelsRoot ("{0}.sig.json" -f $Channel)
+            Write-RevitMcpDetachedSignatureFile `
+                -Content $channelManifest `
+                -ContentPath $channelPath `
+                -SignaturePath $channelSignaturePath `
+                -SignedObject "channel" `
+                -SigningContext $signingContext
+            Write-Host "Channel signature: $channelSignaturePath" -ForegroundColor Green
+        }
         Write-Host "Updated release manifest: $channelPath" -ForegroundColor Green
     }
 

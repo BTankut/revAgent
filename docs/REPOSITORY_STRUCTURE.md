@@ -42,6 +42,7 @@ for servers, assemblies, manifests, and installed paths.
 |   |-- test-typescript-nocheck-policy.ps1
 |   |-- test-live-dashboard.ps1
 |   |-- test-distribution-integrity.ps1
+|   |-- test-publish-signing.ps1
 |   `-- test-installer-smoke.ps1
 |-- src/
 |   `-- revit-plugin/
@@ -169,8 +170,8 @@ before release packaging.
 
 `installer/lib` contains shared PowerShell helper modules for updater/installer
 behavior, including distribution-integrity canonical JSON and detached
-signature verification helpers. `config/revit-versions.json` is the central
-Revit version matrix.
+signature helper functions used by tests and optional publish-path signing.
+`config/revit-versions.json` is the central Revit version matrix.
 
 ## Release Rule
 

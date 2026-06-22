@@ -111,11 +111,12 @@ $canonicalInput = [ordered]@{
     path = "tools/lib"
     singleArray = @("x")
     singleNullArray = @($null)
+    emptyString = ""
     windows = "C:\Temp\file"
     a = 1
 }
 $canonicalJson = ConvertTo-RevitMcpCanonicalJson -Value $canonicalInput
-Assert-Equal $canonicalJson '{"a":1,"b":true,"emptyArray":[],"emptyCustomObject":{},"emptyObject":{},"nested":{"alpha":"z","beta":[3,null,"x"]},"nullValue":null,"path":"tools/lib","singleArray":["x"],"singleNullArray":[null],"windows":"C:\\Temp\\file"}' "Canonical JSON must sort object keys ordinally, preserve array shape, preserve empty objects, preserve nulls, preserve forward slashes, escape backslashes, and remove insignificant whitespace."
+Assert-Equal $canonicalJson '{"a":1,"b":true,"emptyArray":[],"emptyCustomObject":{},"emptyObject":{},"emptyString":"","nested":{"alpha":"z","beta":[3,null,"x"]},"nullValue":null,"path":"tools/lib","singleArray":["x"],"singleNullArray":[null],"windows":"C:\\Temp\\file"}' "Canonical JSON must sort object keys ordinally, preserve array shape, preserve empty objects, preserve empty strings, preserve nulls, preserve forward slashes, escape backslashes, and remove insignificant whitespace."
 Assert-Equal (Get-RevitMcpCanonicalJsonSha256 -Value $canonicalInput).Length 64 "Canonical SHA256 must be a hex digest."
 
 Write-Host "Test canonical JSON rejects non-string dictionary keys"
@@ -171,6 +172,12 @@ try {
     $valid = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $envelope -TrustedKeys $trustedKeys
     Assert-True $valid.success "Valid detached channel signature should verify."
     Assert-Equal $valid.signedObject "channel" "Valid signature result should preserve signedObject."
+
+    Write-Host "Test detached signature helper generation"
+    $generatedEnvelope = New-RevitMcpDetachedJsonSignature -Content $channel -SignedObject "channel" -KeyId "test-rsa-2026" -PrivateKeyXml ($rsa.ToXmlString($true)) -CreatedAtUtc "2026-06-22T00:00:00.0000000Z"
+    $generatedValid = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $generatedEnvelope -TrustedKeys $trustedKeys
+    Assert-True $generatedValid.success "Generated detached channel signature should verify."
+    Assert-Equal $generatedEnvelope.contentSha256 (Get-RevitMcpCanonicalJsonSha256 -Value $channel) "Generated signature envelope must bind the canonical content hash."
 
     Write-Host "Test signedObject allowlist is case-sensitive"
     $wrongCaseSignedObjectEnvelope = Copy-OrderedMap -Value $envelope

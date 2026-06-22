@@ -4,7 +4,7 @@ $script:RevitMcpCanonicalizationId = "RFC8785-JCS-SHA256-v1"
 $script:RevitMcpSignatureAlgorithm = "RS256"
 
 function ConvertTo-RevitMcpJsonString {
-    param([Parameter(Mandatory = $true)][string]$Value)
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
 
     $builder = [System.Text.StringBuilder]::new()
     foreach ($character in $Value.ToCharArray()) {
@@ -132,7 +132,7 @@ function Test-RevitMcpCanonicalInteger {
 
 function ConvertTo-RevitMcpCanonicalJson {
     [CmdletBinding()]
-    param([AllowNull()][object]$Value)
+    param([AllowNull()][AllowEmptyString()][object]$Value)
 
     if ($null -eq $Value) {
         return "null"
@@ -186,7 +186,7 @@ function ConvertTo-RevitMcpCanonicalJson {
 
 function Get-RevitMcpCanonicalJsonBytes {
     [CmdletBinding()]
-    param([AllowNull()][object]$Value)
+    param([AllowNull()][AllowEmptyString()][object]$Value)
 
     $json = ConvertTo-RevitMcpCanonicalJson -Value $Value
     return ,[System.Text.Encoding]::UTF8.GetBytes($json)
@@ -207,7 +207,7 @@ function ConvertTo-RevitMcpSha256Hex {
 
 function Get-RevitMcpCanonicalJsonSha256 {
     [CmdletBinding()]
-    param([AllowNull()][object]$Value)
+    param([AllowNull()][AllowEmptyString()][object]$Value)
 
     return ConvertTo-RevitMcpSha256Hex -Bytes (Get-RevitMcpCanonicalJsonBytes -Value $Value)
 }
@@ -229,6 +229,80 @@ function New-RevitMcpRsaCryptoServiceProvider {
     $cspParameters = [System.Security.Cryptography.CspParameters]::new(24)
     $cspParameters.Flags = [System.Security.Cryptography.CspProviderFlags]::CreateEphemeralKey
     return [System.Security.Cryptography.RSACryptoServiceProvider]::new($cspParameters)
+}
+
+function Get-RevitMcpPublicKeyXmlFromPrivateKeyXml {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$PrivateKeyXml)
+
+    if ([string]::IsNullOrWhiteSpace($PrivateKeyXml)) {
+        throw "PrivateKeyXml cannot be empty."
+    }
+
+    $rsa = New-RevitMcpRsaCryptoServiceProvider
+    try {
+        $rsa.FromXmlString($PrivateKeyXml)
+        return $rsa.ToXmlString($false)
+    }
+    finally {
+        $rsa.Dispose()
+    }
+}
+
+function New-RevitMcpDetachedJsonSignature {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$Content,
+        [Parameter(Mandatory = $true)][string]$SignedObject,
+        [Parameter(Mandatory = $true)][string]$KeyId,
+        [Parameter(Mandatory = $true)][string]$PrivateKeyXml,
+        [string]$CreatedAtUtc = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SignedObject)) {
+        throw "SignedObject cannot be empty."
+    }
+    if ([string]::IsNullOrWhiteSpace($KeyId)) {
+        throw "KeyId cannot be empty."
+    }
+    if ([string]::IsNullOrWhiteSpace($CreatedAtUtc)) {
+        $CreatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $allowedSignedObjects = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($allowedSignedObject in @("channel", "release-manifest")) {
+        [void]$allowedSignedObjects.Add($allowedSignedObject)
+    }
+    if (-not $allowedSignedObjects.Contains($SignedObject)) {
+        throw "Unsupported signedObject '$SignedObject'."
+    }
+
+    $publicKeyXml = Get-RevitMcpPublicKeyXmlFromPrivateKeyXml -PrivateKeyXml $PrivateKeyXml
+    $envelope = [ordered]@{
+        schemaVersion = 1
+        app = "revit-mcp-skill"
+        signedObject = $SignedObject
+        algorithm = $script:RevitMcpSignatureAlgorithm
+        keyId = $KeyId
+        publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+        canonicalization = $script:RevitMcpCanonicalizationId
+        contentSha256 = Get-RevitMcpCanonicalJsonSha256 -Value $Content
+        createdAtUtc = $CreatedAtUtc
+        signature = ""
+    }
+
+    $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes((Get-RevitMcpSignaturePayloadCanonicalJson -SignatureEnvelope $envelope))
+    $rsa = New-RevitMcpRsaCryptoServiceProvider
+    try {
+        $rsa.FromXmlString($PrivateKeyXml)
+        $signatureBytes = $rsa.SignData($payloadBytes, "SHA256")
+        $envelope["signature"] = [Convert]::ToBase64String($signatureBytes)
+    }
+    finally {
+        $rsa.Dispose()
+    }
+
+    [void](Test-RevitMcpSignatureEnvelopeShape -SignatureEnvelope $envelope -AllowedSignedObjects @("channel", "release-manifest") -ThrowOnFailure)
+    return $envelope
 }
 
 function New-RevitMcpDistributionIntegrityResult {
@@ -698,6 +772,8 @@ Export-ModuleMember -Function `
     Get-RevitMcpCanonicalJsonBytes, `
     Get-RevitMcpCanonicalJsonSha256, `
     Get-RevitMcpPublicKeyFingerprint, `
+    Get-RevitMcpPublicKeyXmlFromPrivateKeyXml, `
+    New-RevitMcpDetachedJsonSignature, `
     Get-RevitMcpSignaturePayloadCanonicalJson, `
     Test-RevitMcpDetachedJsonSignature, `
     Test-RevitMcpDetachedJsonSignatureFile
