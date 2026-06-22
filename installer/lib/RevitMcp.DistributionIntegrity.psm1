@@ -40,7 +40,21 @@ function Get-RevitMcpObjectPropertyNames {
     }
 
     if ($Value -is [System.Collections.IDictionary]) {
-        return @($Value.Keys | ForEach-Object { [string]$_ })
+        $names = [System.Collections.Generic.List[string]]::new()
+        $seenNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        foreach ($key in $Value.Keys) {
+            if ($null -eq $key -or -not ($key -is [string])) {
+                $keyType = if ($null -eq $key) { "<null>" } else { $key.GetType().FullName }
+                throw "Canonical JSON dictionary keys must be strings. Found key type: $keyType."
+            }
+
+            $name = [string]$key
+            if (-not $seenNames.Add($name)) {
+                throw "Canonical JSON dictionary contains duplicate key: $name"
+            }
+            [void]$names.Add($name)
+        }
+        return @($names.ToArray())
     }
 
     return @($Value.PSObject.Properties |
@@ -176,7 +190,8 @@ function Get-RevitMcpPublicKeyFingerprint {
         throw "PublicKeyXml cannot be empty."
     }
 
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($PublicKeyXml.Trim())
+    $normalizedPublicKeyXml = ($PublicKeyXml.Trim() -replace "`r`n", "`n") -replace "`r", "`n"
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalizedPublicKeyXml)
     return ConvertTo-RevitMcpSha256Hex -Bytes $bytes
 }
 

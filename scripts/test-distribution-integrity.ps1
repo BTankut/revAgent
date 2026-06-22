@@ -117,6 +117,18 @@ $canonicalJson = ConvertTo-RevitMcpCanonicalJson -Value $canonicalInput
 Assert-Equal $canonicalJson '{"a":1,"b":true,"emptyArray":[],"emptyCustomObject":{},"emptyObject":{},"nested":{"alpha":"z","beta":[3,null,"x"]},"nullValue":null,"path":"tools/lib","singleArray":["x"],"singleNullArray":[null],"windows":"C:\\Temp\\file"}' "Canonical JSON must sort object keys ordinally, preserve array shape, preserve empty objects, preserve nulls, preserve forward slashes, escape backslashes, and remove insignificant whitespace."
 Assert-Equal (Get-RevitMcpCanonicalJsonSha256 -Value $canonicalInput).Length 64 "Canonical SHA256 must be a hex digest."
 
+Write-Host "Test canonical JSON rejects non-string dictionary keys"
+$nonStringKeyDictionary = [System.Collections.Specialized.OrderedDictionary]::new()
+$nonStringKeyDictionary.Add(1, "one")
+$rejectedNonStringKey = $false
+try {
+    [void](ConvertTo-RevitMcpCanonicalJson -Value $nonStringKeyDictionary)
+}
+catch {
+    $rejectedNonStringKey = ($_.Exception.Message -match "dictionary keys must be strings")
+}
+Assert-True $rejectedNonStringKey "Canonical JSON must reject non-string dictionary keys instead of serializing a silent null."
+
 Write-Host "Test canonical JSON rejects unsupported numeric ambiguity"
 $rejectedFloat = $false
 try {
@@ -132,6 +144,9 @@ $rsa = New-TestRsaProvider
 try {
     $publicKeyXml = $rsa.ToXmlString($false)
     $publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+    $publicKeyXmlLf = $publicKeyXml -replace '><', ">`n<"
+    $publicKeyXmlCrLf = $publicKeyXmlLf -replace "`n", "`r`n"
+    Assert-Equal (Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXmlCrLf) (Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXmlLf) "Public key fingerprints must be stable across LF and CRLF line endings."
     $trustedKeys = @{
         "test-rsa-2026" = [pscustomobject][ordered]@{
             publicKeyXml = $publicKeyXml
