@@ -957,6 +957,22 @@ function Test-RevitMcpReleaseManifestChannelConsistency {
         [void]$issues.Add("package path mismatch")
     }
 
+    $channelReleaseSequence = [string](Get-RevitMcpObjectPropertyValue -Value $Channel -Name "releaseSequence")
+    $manifestReleaseSequence = [string](Get-RevitMcpObjectPropertyValue -Value $ReleaseManifest -Name "releaseSequence")
+    if (-not [string]::IsNullOrWhiteSpace($channelReleaseSequence) -and
+        -not [string]::IsNullOrWhiteSpace($manifestReleaseSequence) -and
+        -not [string]::Equals($channelReleaseSequence, $manifestReleaseSequence, [System.StringComparison]::Ordinal)) {
+        [void]$issues.Add("release sequence mismatch '$channelReleaseSequence' != '$manifestReleaseSequence'")
+    }
+
+    $channelMinimumSequence = [string](Get-RevitMcpObjectPropertyValue -Value $Channel -Name "minimumAcceptedReleaseSequence")
+    $manifestMinimumSequence = [string](Get-RevitMcpObjectPropertyValue -Value $ReleaseManifest -Name "minimumAcceptedReleaseSequence")
+    if (-not [string]::IsNullOrWhiteSpace($channelMinimumSequence) -and
+        -not [string]::IsNullOrWhiteSpace($manifestMinimumSequence) -and
+        -not [string]::Equals($channelMinimumSequence, $manifestMinimumSequence, [System.StringComparison]::Ordinal)) {
+        [void]$issues.Add("minimum accepted release sequence mismatch '$channelMinimumSequence' != '$manifestMinimumSequence'")
+    }
+
     if ($issues.Count -gt 0) {
         return [pscustomobject][ordered]@{
             success = $false
@@ -974,6 +990,175 @@ function Test-RevitMcpReleaseManifestChannelConsistency {
     }
 }
 
+function Get-RevitMcpInt64Claim {
+    param(
+        [Parameter(Mandatory = $true)][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $raw = Get-RevitMcpObjectPropertyValue -Value $Value -Name $Name
+    if ($null -eq $raw -or [string]::IsNullOrWhiteSpace([string]$raw)) {
+        return [pscustomobject][ordered]@{
+            hasValue = $false
+            value = [long]0
+            reason = "missing"
+        }
+    }
+
+    $parsed = [long]0
+    if (-not [long]::TryParse([string]$raw, [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
+        return [pscustomobject][ordered]@{
+            hasValue = $false
+            value = [long]0
+            reason = "invalid"
+            raw = [string]$raw
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        hasValue = $true
+        value = $parsed
+        reason = "ok"
+        raw = [string]$raw
+    }
+}
+
+function New-RevitMcpReleaseSequenceResult {
+    param(
+        [bool]$Success,
+        [string]$State,
+        [string]$Reason,
+        [string]$Message,
+        [long]$ReleaseSequence = 0,
+        [long]$MinimumAcceptedReleaseSequence = 0,
+        [long]$PreviousHighestAcceptedReleaseSequence = 0,
+        [long]$HighestAcceptedReleaseSequence = 0,
+        [bool]$RollbackAllowed = $false
+    )
+
+    return [pscustomobject][ordered]@{
+        success = $Success
+        state = $State
+        reason = $Reason
+        message = $Message
+        releaseSequence = $ReleaseSequence
+        minimumAcceptedReleaseSequence = $MinimumAcceptedReleaseSequence
+        previousHighestAcceptedReleaseSequence = $PreviousHighestAcceptedReleaseSequence
+        highestAcceptedReleaseSequence = $HighestAcceptedReleaseSequence
+        rollbackAllowed = $RollbackAllowed
+    }
+}
+
+function Test-RevitMcpSignedReleaseSequence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object]$Channel,
+        [Parameter(Mandatory = $true)][object]$ReleaseManifest,
+        [long]$HighestAcceptedReleaseSequence = 0,
+        [switch]$AllowRollback
+    )
+
+    $channelSequence = Get-RevitMcpInt64Claim -Value $Channel -Name "releaseSequence"
+    $manifestSequence = Get-RevitMcpInt64Claim -Value $ReleaseManifest -Name "releaseSequence"
+    if (-not [bool]$channelSequence.hasValue -or -not [bool]$manifestSequence.hasValue) {
+        return New-RevitMcpReleaseSequenceResult `
+            -Success $false `
+            -State "rejected" `
+            -Reason "missing_release_sequence" `
+            -Message "Signed releases must include releaseSequence in both channel and release manifest." `
+            -PreviousHighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence
+    }
+
+    if ($channelSequence.value -le 0 -or $manifestSequence.value -le 0) {
+        return New-RevitMcpReleaseSequenceResult `
+            -Success $false `
+            -State "rejected" `
+            -Reason "invalid_release_sequence" `
+            -Message "Signed releaseSequence values must be positive integers." `
+            -PreviousHighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence
+    }
+
+    if ($channelSequence.value -ne $manifestSequence.value) {
+        return New-RevitMcpReleaseSequenceResult `
+            -Success $false `
+            -State "rejected" `
+            -Reason "release_sequence_mismatch" `
+            -Message "Signed channel and release manifest releaseSequence values do not match." `
+            -ReleaseSequence $channelSequence.value `
+            -PreviousHighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence
+    }
+
+    $releaseSequence = [long]$channelSequence.value
+    $channelMinimum = Get-RevitMcpInt64Claim -Value $Channel -Name "minimumAcceptedReleaseSequence"
+    $manifestMinimum = Get-RevitMcpInt64Claim -Value $ReleaseManifest -Name "minimumAcceptedReleaseSequence"
+    $minimumAcceptedReleaseSequence = [long]0
+    if ([bool]$channelMinimum.hasValue -or [bool]$manifestMinimum.hasValue) {
+        if (-not [bool]$channelMinimum.hasValue -or -not [bool]$manifestMinimum.hasValue) {
+            return New-RevitMcpReleaseSequenceResult `
+                -Success $false `
+                -State "rejected" `
+                -Reason "minimum_sequence_mismatch" `
+                -Message "minimumAcceptedReleaseSequence must be present in both channel and release manifest when used." `
+                -ReleaseSequence $releaseSequence `
+                -PreviousHighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence
+        }
+        if ($channelMinimum.value -ne $manifestMinimum.value) {
+            return New-RevitMcpReleaseSequenceResult `
+                -Success $false `
+                -State "rejected" `
+                -Reason "minimum_sequence_mismatch" `
+                -Message "Signed channel and release manifest minimumAcceptedReleaseSequence values do not match." `
+                -ReleaseSequence $releaseSequence `
+                -PreviousHighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence
+        }
+        if ($channelMinimum.value -lt 0 -or $manifestMinimum.value -lt 0) {
+            return New-RevitMcpReleaseSequenceResult `
+                -Success $false `
+                -State "rejected" `
+                -Reason "invalid_minimum_sequence" `
+                -Message "minimumAcceptedReleaseSequence must be zero or a positive integer." `
+                -ReleaseSequence $releaseSequence `
+                -PreviousHighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence
+        }
+        $minimumAcceptedReleaseSequence = [long]$channelMinimum.value
+    }
+
+    if ($minimumAcceptedReleaseSequence -gt $releaseSequence) {
+        return New-RevitMcpReleaseSequenceResult `
+            -Success $false `
+            -State "rejected" `
+            -Reason "minimum_sequence_exceeds_release_sequence" `
+            -Message "minimumAcceptedReleaseSequence cannot be greater than releaseSequence." `
+            -ReleaseSequence $releaseSequence `
+            -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
+            -PreviousHighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence
+    }
+
+    if ($releaseSequence -lt $HighestAcceptedReleaseSequence -and -not $AllowRollback) {
+        return New-RevitMcpReleaseSequenceResult `
+            -Success $false `
+            -State "rejected" `
+            -Reason "signed_release_replay" `
+            -Message "Signed releaseSequence '$releaseSequence' is older than highest accepted '$HighestAcceptedReleaseSequence'." `
+            -ReleaseSequence $releaseSequence `
+            -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
+            -PreviousHighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence `
+            -HighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence
+    }
+
+    $nextHighest = [Math]::Max([Math]::Max($HighestAcceptedReleaseSequence, $releaseSequence), $minimumAcceptedReleaseSequence)
+    return New-RevitMcpReleaseSequenceResult `
+        -Success $true `
+        -State $(if ($releaseSequence -lt $HighestAcceptedReleaseSequence) { "rollback-allowed" } else { "verified" }) `
+        -Reason "ok" `
+        -Message $(if ($releaseSequence -lt $HighestAcceptedReleaseSequence) { "Explicit rollback flag allowed this older signed release." } else { "Signed release sequence is accepted." }) `
+        -ReleaseSequence $releaseSequence `
+        -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
+        -PreviousHighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence `
+        -HighestAcceptedReleaseSequence $nextHighest `
+        -RollbackAllowed:($releaseSequence -lt $HighestAcceptedReleaseSequence)
+}
+
 function New-RevitMcpReleaseDistributionIntegrityAggregate {
     param(
         [bool]$Success,
@@ -984,8 +1169,14 @@ function New-RevitMcpReleaseDistributionIntegrityAggregate {
         [int]$TrustedKeyCount,
         [object]$ChannelSignature,
         [object]$ReleaseManifestSignature,
-        [object]$Consistency
+        [object]$Consistency,
+        [object]$ReleaseSequence = $null
     )
+
+    $releaseSequenceValue = if ($ReleaseSequence) { [long]$ReleaseSequence.releaseSequence } else { [long]0 }
+    $minimumAcceptedReleaseSequence = if ($ReleaseSequence) { [long]$ReleaseSequence.minimumAcceptedReleaseSequence } else { [long]0 }
+    $highestAcceptedReleaseSequence = if ($ReleaseSequence) { [long]$ReleaseSequence.highestAcceptedReleaseSequence } else { [long]0 }
+    $rollbackAllowed = if ($ReleaseSequence) { [bool]$ReleaseSequence.rollbackAllowed } else { $false }
 
     return [pscustomobject][ordered]@{
         success = $Success
@@ -997,6 +1188,11 @@ function New-RevitMcpReleaseDistributionIntegrityAggregate {
         channelSignature = $ChannelSignature
         releaseManifestSignature = $ReleaseManifestSignature
         consistency = $Consistency
+        releaseSequence = $releaseSequenceValue
+        minimumAcceptedReleaseSequence = $minimumAcceptedReleaseSequence
+        highestAcceptedReleaseSequence = $highestAcceptedReleaseSequence
+        rollbackAllowed = $rollbackAllowed
+        releaseSequenceCheck = $ReleaseSequence
     }
 }
 
@@ -1009,7 +1205,9 @@ function Test-RevitMcpReleaseDistributionIntegrity {
         [AllowNull()][object]$ReleaseManifest = $null,
         [Parameter(Mandatory = $true)][object]$TrustedKeys,
         [ValidateSet("compatibility", "enforce")]
-        [string]$Policy = "compatibility"
+        [string]$Policy = "compatibility",
+        [long]$HighestAcceptedReleaseSequence = 0,
+        [switch]$AllowRollback
     )
 
     $trustedKeyMap = ConvertTo-RevitMcpTrustedKeyMap -TrustedKeys $TrustedKeys
@@ -1145,16 +1343,36 @@ function Test-RevitMcpReleaseDistributionIntegrity {
             -Consistency $consistency
     }
 
+    $releaseSequence = Test-RevitMcpSignedReleaseSequence `
+        -Channel $Channel `
+        -ReleaseManifest $ReleaseManifest `
+        -HighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence `
+        -AllowRollback:$AllowRollback
+    if (-not [bool]$releaseSequence.success) {
+        return New-RevitMcpReleaseDistributionIntegrityAggregate `
+            -Success $false `
+            -State "rejected" `
+            -Reason ([string]$releaseSequence.reason) `
+            -Message ([string]$releaseSequence.message) `
+            -Policy $Policy `
+            -TrustedKeyCount $trustedKeyMap.Count `
+            -ChannelSignature $channelSignature `
+            -ReleaseManifestSignature $releaseManifestSignature `
+            -Consistency $consistency `
+            -ReleaseSequence $releaseSequence
+    }
+
     return New-RevitMcpReleaseDistributionIntegrityAggregate `
         -Success $true `
-        -State "verified" `
+        -State $(if ($releaseSequence.rollbackAllowed) { "rollback-allowed" } else { "verified" }) `
         -Reason "ok" `
-        -Message "Channel and release-manifest detached signatures verified." `
+        -Message $(if ($releaseSequence.rollbackAllowed) { "Channel and release-manifest detached signatures verified with explicit rollback allowance." } else { "Channel and release-manifest detached signatures verified." }) `
         -Policy $Policy `
         -TrustedKeyCount $trustedKeyMap.Count `
         -ChannelSignature $channelSignature `
         -ReleaseManifestSignature $releaseManifestSignature `
-        -Consistency $consistency
+        -Consistency $consistency `
+        -ReleaseSequence $releaseSequence
 }
 
 Export-ModuleMember -Function `
@@ -1171,4 +1389,5 @@ Export-ModuleMember -Function `
     Get-RevitMcpDetachedSignaturePath, `
     Test-RevitMcpDetachedJsonSignatureCompatibilityFile, `
     Test-RevitMcpReleaseManifestChannelConsistency, `
+    Test-RevitMcpSignedReleaseSequence, `
     Test-RevitMcpReleaseDistributionIntegrity

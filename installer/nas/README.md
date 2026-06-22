@@ -256,6 +256,12 @@ are verified before the ZIP is cached, unsigned legacy releases continue with a
 `legacy-compatible` report state, and partial or invalid signatures stop the
 update before package replacement.
 
+Signed releases carry a monotonic `releaseSequence` in both the channel and
+release manifest. The updater stores `highestAcceptedReleaseSequence` locally
+and blocks older signed channel replay during normal runs. Emergency rollback
+requires a manual updater run with `-AllowSignedReleaseRollback`; the scheduled
+task and GUI update path do not pass that flag.
+
 ## Local No-Deploy Validation
 
 Before publishing a stable release, run the local checks from the repo root:
@@ -325,6 +331,9 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
 - Release signature verification uses public keys only. Private signing keys
   must never be placed in the repo, package, NAS `tools\`, updater config, or
   local updater folder.
+- A fail-closed signed stable rollout must first deploy the public key material
+  and publish a signed stable channel with `releaseSequence`. Do not flip
+  normal office update policy to `enforce` against an unsigned stable channel.
 - Revit version metadata is centralized in `config\revit-versions.json`. The
   current office deployment payload supports Revit 2022 only. Revit
   2023/2024/2025 are modeled for future expansion and must remain blocked until

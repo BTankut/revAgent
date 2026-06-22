@@ -239,7 +239,13 @@ Each workstream should remain a separate PR:
    completely unsigned legacy releases as `legacy-compatible`, rejects partial
    or invalid signature sets, and writes the integrity state into update
    reports without enabling fail-closed enforcement by default.
-5. Signed-stable baseline and enforcement flip.
+5. Signed-stable baseline and enforcement flip. Implementation must add signed
+   `releaseSequence` metadata, persist the highest accepted sequence locally,
+   block older signed-channel replay during normal updater execution, and expose
+   an explicit local rollback flag that records audit/report evidence. The
+   actual signed stable publish remains a separate human-approved NAS
+   deployment step with production public keys present on workstations before
+   fail-closed policy is enabled.
 6. Optional license or seat design and implementation.
 
 ## Acceptance Gates

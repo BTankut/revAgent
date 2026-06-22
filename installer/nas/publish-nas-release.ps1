@@ -30,6 +30,12 @@ param(
 
     [string]$SigningKeyId = "",
 
+    [long]$ReleaseSequence = 0,
+
+    [long]$MinimumAcceptedReleaseSequence = 0,
+
+    [switch]$RequireSigning,
+
     [switch]$NoChannelUpdate
 )
 
@@ -79,6 +85,10 @@ function Assert-SafeVersion {
     if ($Value -notmatch '^[A-Za-z0-9._-]+$') {
         throw "Version may only contain letters, numbers, dot, underscore, and dash: $Value"
     }
+}
+
+function Get-DefaultReleaseSequence {
+    return [long]((Get-Date).ToUniversalTime().ToString("yyyyMMddHHmmss", [System.Globalization.CultureInfo]::InvariantCulture))
 }
 
 function Copy-DirectoryFiltered {
@@ -716,8 +726,27 @@ $signingContext = New-RevitMcpPublishSigningContext `
     -KeyId $SigningKeyId `
     -RepositoryRoot $RepoRoot `
     -NasToolsRoot $toolsRoot
+if ($RequireSigning -and -not $signingContext) {
+    throw "Release signing is required for this publish. Provide -SigningPrivateKeyPath and -SigningKeyId."
+}
+if ($ReleaseSequence -lt 0) {
+    throw "ReleaseSequence must be zero or a positive integer."
+}
+if ($MinimumAcceptedReleaseSequence -lt 0) {
+    throw "MinimumAcceptedReleaseSequence must be zero or a positive integer."
+}
+if ($MinimumAcceptedReleaseSequence -gt 0 -and $ReleaseSequence -le 0 -and -not $signingContext) {
+    throw "MinimumAcceptedReleaseSequence requires a positive ReleaseSequence."
+}
 if ($signingContext) {
+    if ($ReleaseSequence -eq 0) {
+        $ReleaseSequence = Get-DefaultReleaseSequence
+    }
     Write-Host "Release signing: enabled for keyId '$SigningKeyId'" -ForegroundColor Green
+    Write-Host "Release sequence: $ReleaseSequence" -ForegroundColor Green
+}
+if ($MinimumAcceptedReleaseSequence -gt $ReleaseSequence) {
+    throw "MinimumAcceptedReleaseSequence cannot be greater than ReleaseSequence."
 }
 
 if (Test-Path -LiteralPath $releaseDir) {
@@ -864,6 +893,12 @@ try {
         }
         components = $components
     }
+    if ($ReleaseSequence -gt 0) {
+        $manifest["releaseSequence"] = $ReleaseSequence
+    }
+    if ($MinimumAcceptedReleaseSequence -gt 0) {
+        $manifest["minimumAcceptedReleaseSequence"] = $MinimumAcceptedReleaseSequence
+    }
     $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
     if ($signingContext) {
         $manifestSignaturePath = Join-Path $releaseDir "manifest.sig.json"
@@ -892,6 +927,12 @@ try {
                 commit = $commit
                 isDirty = $isDirty
             }
+        }
+        if ($ReleaseSequence -gt 0) {
+            $channelManifest["releaseSequence"] = $ReleaseSequence
+        }
+        if ($MinimumAcceptedReleaseSequence -gt 0) {
+            $channelManifest["minimumAcceptedReleaseSequence"] = $MinimumAcceptedReleaseSequence
         }
         Write-JsonFile -Value $channelManifest -Path $channelPath -Depth 8
         if ($signingContext) {

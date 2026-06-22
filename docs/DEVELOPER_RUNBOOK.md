@@ -485,6 +485,7 @@ compare file mtimes.
 | Distribution canonical JSON and detached signature fixtures stay deterministic | `scripts/test-distribution-integrity.ps1` | `Engineering gates` | Does not publish, sign a real stable channel, or enable updater enforcement. |
 | Publish-path detached signing writes verifiable signature files without real NAS or production keys | `scripts/test-publish-signing.ps1` | `Engineering gates` | Uses a temporary release root and ephemeral test key only. |
 | Updater compatibility mode verifies signed releases and reports unsigned legacy releases | `scripts/test-distribution-integrity.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish a signed stable baseline or flip fail-closed enforcement. |
+| Signed release anti-rollback and enforce-mode metadata stay valid | `scripts/test-distribution-integrity.ps1`, `scripts/test-publish-signing.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish to NAS or include production private keys. |
 | Bridge result contract stays canonical and idempotent | runtime `bridge-result-contract-test` via `npm test` | `Engineering gates` | Live Revit skew checks remain local-only. |
 | Production write tools keep guard/verification contracts | runtime `write-tool-contract-test` via `npm test` | `Engineering gates` | - |
 | Tool argument schema inference does not collapse to `any` | runtime `tool-inference-test` via `npm test` | `Engineering gates` | - |
@@ -700,6 +701,13 @@ verified, a completely unsigned release is accepted as `legacy-compatible` and
 reported, and partial or invalid signatures are rejected before package
 replacement. Signed stable publication and fail-closed enforcement remain
 separate human-approved workstreams.
+
+Signed release enforcement uses `releaseSequence` metadata in both
+`stable.json` and `manifest.json`. The updater persists
+`highestAcceptedReleaseSequence` in `installed.json` and rejects older signed
+channel replay during normal execution. Emergency signed rollback is available
+only through the explicit local updater flag `-AllowSignedReleaseRollback`; the
+scheduled updater does not pass that flag.
 
 Large offline dependency payloads are local/NAS-side assets, not Git assets:
 

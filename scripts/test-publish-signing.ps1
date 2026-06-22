@@ -57,6 +57,8 @@ $releaseRoot = Join-Path $tempRoot "release-root"
 $secretRoot = Join-Path $tempRoot "secrets"
 $version = "2026.06.22.1-signing-test"
 $keyId = "test-rsa-2026"
+$releaseSequence = 1001
+$minimumAcceptedReleaseSequence = 1000
 $rsa = New-TestRsaProvider
 
 try {
@@ -78,9 +80,12 @@ try {
         -AllowDirty `
         -Force `
         -SigningPrivateKeyPath $privateKeyPath `
-        -SigningKeyId $keyId 6>&1 | Out-String
+        -SigningKeyId $keyId `
+        -ReleaseSequence $releaseSequence `
+        -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence 6>&1 | Out-String
 
     Assert-True ($publishOutput -match "Release signing: enabled for keyId '$keyId'") "Publish output should report signing by keyId only."
+    Assert-True ($publishOutput -match "Release sequence: $releaseSequence") "Publish output should report the signed release sequence."
     Assert-True (-not ($publishOutput -match [regex]::Escape($privateKeyPath))) "Publish output must not leak the private signing key path."
 
     $manifestPath = Join-Path $releaseRoot (Join-Path "releases" (Join-Path $version "manifest.json"))
@@ -107,6 +112,23 @@ try {
         -AllowedSignedObjects @("channel")
     Assert-True $channelVerification.success "Published channel signature should verify."
     Assert-Equal $channelVerification.signedObject "channel" "Channel signature should use the channel signedObject."
+
+    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    $channel = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
+    Assert-Equal ([long]$manifest.releaseSequence) ([long]$releaseSequence) "Published manifest must include the signed release sequence."
+    Assert-Equal ([long]$channel.releaseSequence) ([long]$releaseSequence) "Published channel must include the signed release sequence."
+    Assert-Equal ([long]$manifest.minimumAcceptedReleaseSequence) ([long]$minimumAcceptedReleaseSequence) "Published manifest must include the minimum accepted release sequence."
+    Assert-Equal ([long]$channel.minimumAcceptedReleaseSequence) ([long]$minimumAcceptedReleaseSequence) "Published channel must include the minimum accepted release sequence."
+
+    $aggregateVerification = Test-RevitMcpReleaseDistributionIntegrity `
+        -ChannelPath $channelPath `
+        -Channel $channel `
+        -ReleaseManifestPath $manifestPath `
+        -ReleaseManifest $manifest `
+        -TrustedKeys $trustedKeys `
+        -Policy "enforce"
+    Assert-True $aggregateVerification.success "Published signed release aggregate should pass enforce-mode verification."
+    Assert-Equal $aggregateVerification.releaseSequence ([long]$releaseSequence) "Aggregate verification must preserve releaseSequence."
 
     $releaseFiles = Get-ChildItem -LiteralPath $releaseRoot -Recurse -File
     Assert-True (-not @($releaseFiles | Where-Object { $_.Name -eq "release-signing-private.xml" }).Count) "Private signing key must not be copied into release artifacts."

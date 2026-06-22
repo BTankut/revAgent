@@ -25,6 +25,9 @@ param(
     [string]$ProxyBypass = "<local>",
     [string[]]$LegacyServerTargets = @(),
     [string]$ReportsRoot = "",
+    [ValidateSet("", "compatibility", "enforce")]
+    [string]$DistributionIntegrityPolicy = "",
+    [switch]$AllowSignedReleaseRollback,
     [switch]$Force,
     [switch]$AuditOnly,
     [switch]$SkipNpmInstall,
@@ -1656,6 +1659,10 @@ function Initialize-DistributionIntegrityConfig {
         }
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($DistributionIntegrityPolicy)) {
+        $policy = $DistributionIntegrityPolicy
+    }
+
     foreach ($candidate in @(
             (Join-Path $WorkRoot "config\release-trusted-keys.json"),
             (Join-Path $PSScriptRoot "config\release-trusted-keys.json"),
@@ -1682,6 +1689,40 @@ function Initialize-DistributionIntegrityConfig {
         trustedKeyCount = $trustedKeys.Count
         trustedKeySources = @($script:RevitMcpTrustedReleaseKeySources)
     }
+}
+
+function ConvertTo-Int64OrZero {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+        return [long]0
+    }
+
+    $parsed = [long]0
+    if ([long]::TryParse([string]$Value, [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
+        return $parsed
+    }
+
+    return [long]0
+}
+
+function Get-InstalledHighestAcceptedReleaseSequence {
+    param([AllowNull()][object]$InstalledState)
+
+    if ($null -eq $InstalledState) {
+        return [long]0
+    }
+
+    $highest = ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $InstalledState -Name "highestAcceptedReleaseSequence")
+    $topLevelSequence = ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $InstalledState -Name "releaseSequence")
+    $highest = [Math]::Max($highest, $topLevelSequence)
+    $integrity = Get-JsonPropertyValue -Object $InstalledState -Name "distributionIntegrity"
+    if ($integrity) {
+        $highest = [Math]::Max($highest, (ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $integrity -Name "highestAcceptedReleaseSequence")))
+        $highest = [Math]::Max($highest, (ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $integrity -Name "releaseSequence")))
+    }
+
+    return [long]$highest
 }
 
 function Get-ComponentByKey {
@@ -2261,6 +2302,7 @@ function New-CurrentUpdateDiagnostics {
     $running = @($runningRevit)
     return [ordered]@{
         distributionIntegrity = $script:RevitMcpDistributionIntegrity
+        allowSignedReleaseRollback = [bool]$AllowSignedReleaseRollback
         isFirstInstall = [bool]$isFirstInstall
         revitRunning = ($running.Count -gt 0)
         deferredForRevitClose = if ($runningDecision) { [bool]$runningDecision.DeferForRevitClose } else { $false }
@@ -2591,6 +2633,7 @@ $script:RevitMcpRemoteReportsRoot = $ReportsRoot
 Initialize-DistributionIntegrityConfig -Config $config
 
 $installedState = Get-InstalledState -Path $statePath
+$highestAcceptedReleaseSequence = Get-InstalledHighestAcceptedReleaseSequence -InstalledState $installedState
 $channel = $null
 
 try {
@@ -2621,7 +2664,9 @@ try {
         -ReleaseManifestPath $releaseManifestPath `
         -ReleaseManifest $releaseManifest `
         -TrustedKeys $script:RevitMcpTrustedReleaseKeys `
-        -Policy $script:RevitMcpDistributionIntegrityPolicy
+        -Policy $script:RevitMcpDistributionIntegrityPolicy `
+        -HighestAcceptedReleaseSequence $highestAcceptedReleaseSequence `
+        -AllowRollback:$AllowSignedReleaseRollback
     if (-not [bool]$script:RevitMcpDistributionIntegrity.success) {
         throw "Distribution integrity check rejected this release: $($script:RevitMcpDistributionIntegrity.reason). $($script:RevitMcpDistributionIntegrity.message)"
     }
@@ -2964,6 +3009,10 @@ try {
         fastUpdateFallbackMessage = $fastUpdateFallbackMessage
         revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
         distributionIntegrity = $script:RevitMcpDistributionIntegrity
+        releaseSequence = [long]$script:RevitMcpDistributionIntegrity.releaseSequence
+        minimumAcceptedReleaseSequence = [long]$script:RevitMcpDistributionIntegrity.minimumAcceptedReleaseSequence
+        highestAcceptedReleaseSequence = [long]$script:RevitMcpDistributionIntegrity.highestAcceptedReleaseSequence
+        signedReleaseRollbackAllowed = [bool]$script:RevitMcpDistributionIntegrity.rollbackAllowed
         updaterVersion = $updaterVersion
         skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
         paths = [ordered]@{
