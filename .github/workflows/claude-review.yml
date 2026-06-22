@@ -24,7 +24,9 @@ jobs:
           plugins: "code-review@claude-code-plugins"
           # --comment: bulguları PR'a satır içi yorum olarak gönderir
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment"
-          # Opus 4.8 ile en derin in-runner review. Kotayı korumak istersen
-          # claude-sonnet-4-6'ya düşürebilirsin. (ultra = bulut, krediyle faturalanır;
-          # otomatik PR workflow'una uygun değil — README/PR açıklamasına bak.)
-          claude_args: "--model claude-opus-4-8"
+          # Opus 4.8 + effort=xhigh (high<->max arası). --effort session-level CLI
+          # flag'idir; plugin positional effort'u yok sayar, bu yüzden claude_args'ta.
+          # Kotayı korumak için --effort high veya --model claude-sonnet-4-6'ya
+          # düşürebilirsin. (ultra/ultracode kullanma: ultra bulut+kredili faturalanır,
+          # ultracode bir effort seviyesi değildir.)
+          claude_args: "--model claude-opus-4-8 --effort xhigh"
