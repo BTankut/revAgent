@@ -710,12 +710,20 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
 
     foreach ($root in @(
             (Join-Path $InstallRoot "package"),
-            $ServerTarget,
             $codexMachineSkillTarget,
             $codexSkillTarget
         )) {
         if (-not [string]::IsNullOrWhiteSpace($root)) {
             $managedRoots.Add($root)
+        }
+    }
+
+    if (-not $SkipRuntimePayloadInstall -and -not [string]::IsNullOrWhiteSpace($ServerTarget)) {
+        if (Test-RevitMcpRuntimeDirectory -Path $ServerTarget) {
+            $managedRoots.Add($ServerTarget)
+        }
+        else {
+            Write-Warning "Skipping runtime source cleanup because the directory does not look like a Revit MCP runtime install: $ServerTarget"
         }
     }
 

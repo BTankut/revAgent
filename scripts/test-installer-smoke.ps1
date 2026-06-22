@@ -979,6 +979,7 @@ try {
     Assert-True ($installerText -match 'Copy-RevitMcpRuntimeUserPayload') "Installer must copy only the runtime user payload."
     Assert-True ($installerText -match 'codexUserSourceRoot') "Installer must source Codex orchestration from the user pack."
     Assert-True ($installerText -match 'Remove-RevitMcpManagedSourceLeakArtifacts') "Installer must clean managed source/developer artifact leaks."
+    Assert-True ($installerText -match 'if \(-not \$SkipRuntimePayloadInstall -and -not \[string\]::IsNullOrWhiteSpace\(\$ServerTarget\)\)' -and $installerText -match 'Test-RevitMcpRuntimeDirectory -Path \$ServerTarget') "Installer source cleanup must honor runtime skip and validate ServerTarget before scanning it."
     Assert-True ($installerText -match 'Get-ChildItem -LiteralPath \$root -Recurse -Directory') "Installer source cleanup must recursively scan managed install roots."
     Assert-True ($installerText -match 'Sort-Object \{ \$_.FullName.Length \} -Descending') "Installer source cleanup must remove nested developer directories deepest-first."
     Assert-True ($installerText -match 'Test-RevitMcpAllowedManagedDirectory' -and $installerText -match 'installer"\s+-and\s+\$parts\[1\] -ieq "revit-api-docs-mcp"') "Installer source cleanup must preserve allowed docs MCP runtime script directories."
