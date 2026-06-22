@@ -60,14 +60,16 @@ function Get-RevitMcpObjectPropertyValue {
 
     if ($Value -is [System.Collections.IDictionary]) {
         if ($Value.Contains($Name)) {
-            return $Value[$Name]
+            Write-Output -NoEnumerate $Value[$Name]
+            return
         }
         return $null
     }
 
     $property = $Value.PSObject.Properties[$Name]
     if ($property) {
-        return $property.Value
+        Write-Output -NoEnumerate $property.Value
+        return
     }
 
     return $null
@@ -121,11 +123,12 @@ function ConvertTo-RevitMcpCanonicalJson {
         return "[" + (($items.ToArray()) -join ",") + "]"
     }
 
-    $propertyNames = @(Get-RevitMcpObjectPropertyNames -Value $Value)
-    if ($propertyNames.Count -eq 0) {
+    $isJsonObject = $Value -is [System.Collections.IDictionary] -or $Value -is [System.Management.Automation.PSCustomObject]
+    if (-not $isJsonObject) {
         throw "Unsupported value type for canonical JSON: $($Value.GetType().FullName)"
     }
 
+    $propertyNames = @(Get-RevitMcpObjectPropertyNames -Value $Value)
     [string[]]$sortedNames = @($propertyNames)
     [Array]::Sort($sortedNames, [System.StringComparer]::Ordinal)
 
