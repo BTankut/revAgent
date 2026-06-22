@@ -24,12 +24,16 @@ function buildRuntimePackageJson(sourcePackage) {
     private: true,
     main: "build/index.js",
     type: "module",
-    bin: Object.fromEntries(
-      Object.keys(sourcePackage.bin || { [sourcePackage.name]: "" })
-        .map((name) => [name, "./build/index.js"]),
-    ),
     license: sourcePackage.license || "UNLICENSED",
   };
+
+  if (typeof sourcePackage.bin === "string") {
+    runtimePackage.bin = "./build/index.js";
+  } else if (sourcePackage.bin && Object.keys(sourcePackage.bin).length > 0) {
+    runtimePackage.bin = Object.fromEntries(
+      Object.keys(sourcePackage.bin).map((name) => [name, "./build/index.js"]),
+    );
+  }
 
   if (sourcePackage.dependencies && Object.keys(sourcePackage.dependencies).length > 0) {
     runtimePackage.dependencies = sourcePackage.dependencies;

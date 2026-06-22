@@ -5,10 +5,10 @@
   "private": true,
   "main": "build/index.js",
   "type": "module",
+  "license": "UNLICENSED",
   "bin": {
     "revit-mcp": "./build/index.js"
   },
-  "license": "UNLICENSED",
   "dependencies": {
     "@e965/xlsx": "^0.20.3",
     "@modelcontextprotocol/sdk": "^1.29.0",

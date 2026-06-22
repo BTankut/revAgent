@@ -335,7 +335,7 @@ function Assert-RevitMcpUserPackHardenedJsPayload {
 
         $buildRootAbs = (Get-Item -LiteralPath $buildRoot).FullName
         $buildFiles = @(Get-ChildItem -LiteralPath $buildRootAbs -Recurse -File -Force |
-            ForEach-Object { $_.FullName.Substring($buildRootAbs.Length).TrimStart("\", "/").Replace("/", "\") } |
+            ForEach-Object { $_.FullName.Substring($buildRootAbs.Length).TrimStart([char]"\", [char]"/").Replace("/", "\") } |
             Sort-Object)
         if (($buildFiles.Count -ne 1) -or ($buildFiles[0] -ne "index.js")) {
             $issues.Add("$relativePackageRoot build must contain only bundled index.js")
@@ -354,10 +354,22 @@ function Assert-RevitMcpUserPackHardenedJsPayload {
             $issues.Add("$relativePackageRoot missing runtime package.json")
         }
         else {
-            $packageJson = Get-Content -Raw -LiteralPath $packageJsonPath | ConvertFrom-Json
-            foreach ($blockedProperty in @("scripts", "devDependencies", "files")) {
-                if (Test-JsonProperty -Object $packageJson -Name $blockedProperty) {
-                    $issues.Add("$relativePackageRoot package.json must not include $blockedProperty")
+            try {
+                $packageJson = Get-Content -Raw -LiteralPath $packageJsonPath | ConvertFrom-Json
+            }
+            catch {
+                $issues.Add("$relativePackageRoot package.json is invalid JSON: $($_.Exception.Message)")
+                $packageJson = $null
+            }
+
+            if ($null -eq $packageJson) {
+                $issues.Add("$relativePackageRoot package.json is empty or invalid")
+            }
+            else {
+                foreach ($blockedProperty in @("scripts", "devDependencies", "files")) {
+                    if (Test-JsonProperty -Object $packageJson -Name $blockedProperty) {
+                        $issues.Add("$relativePackageRoot package.json must not include $blockedProperty")
+                    }
                 }
             }
         }

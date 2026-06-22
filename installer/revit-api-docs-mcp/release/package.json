@@ -5,10 +5,10 @@
   "private": true,
   "main": "build/index.js",
   "type": "module",
+  "license": "UNLICENSED",
   "bin": {
     "revit-api-docs-mcp": "./build/index.js"
   },
-  "license": "UNLICENSED",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^3.24.2"
