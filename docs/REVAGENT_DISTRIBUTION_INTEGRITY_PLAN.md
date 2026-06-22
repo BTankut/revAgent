@@ -133,14 +133,18 @@ folder:
 5. Load and verify `manifest.sig.json`.
 6. Confirm the manifest version, channel, package path, and package SHA match
    the signed channel data.
-7. Copy the ZIP to the local cache.
-8. Verify the cached ZIP SHA256 against the signed manifest.
-9. Continue with the existing component-aware update flow.
-10. Record integrity verification status in local and NAS update reports.
+7. Reject signed-channel replay by comparing a signed monotonic release
+   sequence, signed minimum accepted version, or equivalent anti-rollback
+   claim against the locally stored highest accepted release state.
+8. Copy the ZIP to the local cache.
+9. Verify the cached ZIP SHA256 against the signed manifest.
+10. Continue with the existing component-aware update flow.
+11. Record integrity verification status in local and NAS update reports.
 
-After enforcement is enabled, signature or hash failure must stop the update
-before package replacement. Guarded failures should be explicit in logs and
-reports as distribution-integrity failures, not generic install errors.
+After enforcement is enabled, signature, hash, or anti-rollback failure must
+stop the update before package replacement. Guarded failures should be explicit
+in logs and reports as distribution-integrity failures, not generic install
+errors.
 
 ## Migration Policy
 
@@ -155,11 +159,15 @@ Migration sequence:
    when a signing key is provided.
 3. Add updater verification in compatibility mode: signed releases are
    verified, unsigned releases are reported as legacy-compatible.
-4. Publish one signed stable release through the normal human-approved NAS
+4. Add a signed release sequence or minimum-version claim and persist the
+   highest accepted release state locally.
+5. Publish one signed stable release through the normal human-approved NAS
    process.
-5. Flip the updater policy to require signed channel and release manifests.
-6. Keep an emergency rollback path that requires an explicit local operator
-   flag and writes an audit report.
+6. Flip the updater policy to require signed channel and release manifests.
+7. Keep an emergency rollback path that requires an explicit local operator
+   flag, bypasses normal scheduled update execution, and writes an audit
+   report. Replaying an older signed `stable.json` and `stable.sig.json` pair
+   from the NAS channel must not be enough to roll a workstation back.
 
 ## Key Management
 
@@ -222,6 +230,7 @@ Implementation PRs must add tests for:
 - tampered release manifest JSON;
 - unknown key ID;
 - wrong public-key fingerprint;
+- older signed channel replay blocked without explicit rollback authorization;
 - unsigned legacy release in compatibility mode;
 - unsigned release blocked after enforcement is enabled.
 
