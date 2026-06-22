@@ -78,7 +78,7 @@ Required outcomes:
   candidates.
 - Keep Codex workstation session, memory, and project context local.
 - Keep live Revit model traversal, writes, image export, workbook ingestion,
-  and raw telemetry out of service-backed product-logic flows unless a later
+  and raw telemetry out of service-backed product-logic flows unless a later,
   separately approved design changes the boundary.
 - Require latency, offline fallback, data-minimization, versioning, and cache
   invalidation gates before any service-backed candidate is implemented.
