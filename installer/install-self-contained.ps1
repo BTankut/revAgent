@@ -36,6 +36,10 @@ if (-not $Uninstall) {
 $pluginSource = Join-Path $PSScriptRoot "revit-plugin"
 $serverSource = Join-Path $PSScriptRoot "runtime-mcp-server"
 $docsServerSource = Join-Path $PSScriptRoot "revit-api-docs-mcp"
+$codexUserSourceRoot = Join-Path $PSScriptRoot "codex-user"
+if (-not (Test-Path -LiteralPath (Join-Path $codexUserSourceRoot "SKILL.md") -PathType Leaf)) {
+    $codexUserSourceRoot = $repoRoot
+}
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
 $defaultInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
@@ -317,6 +321,56 @@ function New-HardLinkOrCopyFile {
     }
 }
 
+function Copy-RevitMcpFilePayload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw "Required user-pack file was not found: $Source"
+    }
+
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+}
+
+function Copy-RevitMcpDirectoryPayload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+        throw "Required user-pack directory was not found: $Source"
+    }
+
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Recurse -Force
+    }
+
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null
+    Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
+}
+
+function Copy-RevitMcpRuntimeUserPayload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationRoot
+    )
+
+    Copy-RevitMcpDirectoryPayload -Source (Join-Path $SourceRoot "build") -Destination (Join-Path $DestinationRoot "build")
+    foreach ($fileName in @("package.json", "package-lock.json")) {
+        Copy-RevitMcpFilePayload -Source (Join-Path $SourceRoot $fileName) -Destination (Join-Path $DestinationRoot $fileName)
+    }
+}
+
 function Install-UpdaterToolsFromPackage {
     param(
         [string]$SourceRoot,
@@ -589,6 +643,142 @@ function Remove-CodexProfileBackupArtifacts {
     }
 }
 
+function Remove-RevitMcpManagedSourceLeakArtifacts {
+    function Get-RevitMcpPathParts {
+        param([string]$Path)
+
+        if ([string]::IsNullOrWhiteSpace($Path)) {
+            return @()
+        }
+
+        return @($Path -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    function Get-RevitMcpRelativeManagedPath {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Root,
+            [Parameter(Mandatory = $true)]
+            [string]$Path
+        )
+
+        $normalizedRoot = Get-NormalizedPath -Path $Root
+        $normalizedPath = Get-NormalizedPath -Path $Path
+        if ($normalizedPath.Length -le $normalizedRoot.Length) {
+            return ""
+        }
+
+        return $normalizedPath.Substring($normalizedRoot.Length).TrimStart([char[]]@('\', '/'))
+    }
+
+    function Test-RevitMcpIgnoredManagedPath {
+        param([string]$RelativePath)
+
+        foreach ($part in Get-RevitMcpPathParts -Path $RelativePath) {
+            if ($part -ieq "node_modules" -or $part -ieq "dependencies") {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    function Test-RevitMcpAllowedManagedDirectory {
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$Root,
+            [Parameter(Mandatory = $true)]
+            [System.IO.DirectoryInfo]$Directory
+        )
+
+        $relative = Get-RevitMcpRelativeManagedPath -Root $Root -Path $Directory.FullName
+        $parts = Get-RevitMcpPathParts -Path $relative
+        return (
+            $parts.Count -eq 3 -and
+            $parts[0] -ieq "installer" -and
+            $parts[1] -ieq "revit-api-docs-mcp" -and
+            $parts[2] -ieq "scripts"
+        )
+    }
+
+    $sourceLeakDirectoryNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in @("src", "docs", "references", "evals", "dashboard", "scripts", ".github", ".githooks", ".tmp")) {
+        [void]$sourceLeakDirectoryNames.Add($name)
+    }
+    $sourceLeakNamePattern = "(?i)(^src$|^docs$|^references$|^evals$|^dashboard$|^scripts$|^\.github$|^\.githooks$|^\.tmp$)"
+    $managedRoots = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($root in @(
+            (Join-Path $InstallRoot "package"),
+            $codexMachineSkillTarget,
+            $codexSkillTarget
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($root)) {
+            $managedRoots.Add($root)
+        }
+    }
+
+    if (-not $SkipRuntimePayloadInstall -and -not [string]::IsNullOrWhiteSpace($ServerTarget)) {
+        if (Test-RevitMcpRuntimeDirectory -Path $ServerTarget) {
+            $managedRoots.Add($ServerTarget)
+        }
+        else {
+            Write-Warning "Skipping runtime source cleanup because the directory does not look like a Revit MCP runtime install: $ServerTarget"
+        }
+    }
+
+    $backupRoot = Join-Path $updaterRoot "backups"
+    if (Test-Path -LiteralPath $backupRoot -PathType Container) {
+        Get-ChildItem -LiteralPath $backupRoot -Directory -Filter "revit-mcp-skill.backup-*" -ErrorAction SilentlyContinue |
+            ForEach-Object { $managedRoots.Add($_.FullName) }
+    }
+
+    $removed = 0
+    foreach ($root in $managedRoots) {
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+
+        Get-ChildItem -LiteralPath $root -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+                $relative = Get-RevitMcpRelativeManagedPath -Root $root -Path $_.FullName
+                $sourceLeakDirectoryNames.Contains($_.Name) -and
+                -not (Test-RevitMcpIgnoredManagedPath -RelativePath $relative) -and
+                -not (Test-RevitMcpAllowedManagedDirectory -Root $root -Directory $_)
+            } |
+            Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object {
+                $artifactPath = $_.FullName
+                try {
+                    Remove-RevitMcpPath -Path $artifactPath -Label "managed source/developer artifact directory" -Recurse -AllowedNamePattern $sourceLeakNamePattern
+                    $removed++
+                }
+                catch {
+                    Write-Warning "Could not remove managed source/developer artifact directory '$artifactPath': $($_.Exception.Message)"
+                }
+            }
+
+        Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+                $relative = Get-RevitMcpRelativeManagedPath -Root $root -Path $_.FullName
+                $_.Extension -in @(".cs", ".csproj", ".sln", ".ts", ".tsx", ".pdb", ".map") -and
+                -not (Test-RevitMcpIgnoredManagedPath -RelativePath $relative)
+            } |
+            ForEach-Object {
+                $artifactPath = $_.FullName
+                try {
+                    Remove-Item -LiteralPath $artifactPath -Force -ErrorAction Stop
+                    $removed++
+                }
+                catch {
+                    Write-Warning "Could not remove managed source/developer artifact file '$artifactPath': $($_.Exception.Message)"
+                }
+            }
+    }
+
+    if ($removed -gt 0) {
+        Write-Host ("Source cleanup  : removed {0} managed source/developer artifact item(s)" -f $removed) -ForegroundColor Green
+    }
+}
+
 function Repair-RevitMcpManagedInstallPermissions {
     param([switch]$IncludeExistingPayloadTrees)
 
@@ -691,8 +881,7 @@ else {
     Write-Host "Revit add-in payload install skipped; existing Revit files were left untouched." -ForegroundColor Yellow
 }
 if (-not $SkipRuntimePayloadInstall) {
-    # Expand the bundled runtime server contents into the target directory.
-    Copy-Item -Path (Join-Path $serverSource "*") -Destination $ServerTarget -Recurse -Force
+    Copy-RevitMcpRuntimeUserPayload -SourceRoot $serverSource -DestinationRoot $ServerTarget
     Set-Content -LiteralPath (Join-Path $ServerTarget ".revit-mcp-self-contained-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
 }
 else {
@@ -807,9 +996,7 @@ if (-not $SkipCodexSkillInstall) {
     }
 
     New-Item -ItemType Directory -Path $codexMachineSkillTarget -Force | Out-Null
-    Get-ChildItem -LiteralPath $repoRoot -Force |
-        Where-Object { $_.Name -notin @(".git", "node_modules") } |
-        Copy-Item -Destination $codexMachineSkillTarget -Recurse -Force
+    Copy-RevitMcpFilePayload -Source (Join-Path $codexUserSourceRoot "SKILL.md") -Destination (Join-Path $codexMachineSkillTarget "SKILL.md")
 
     if (-not $SkipCodexUserIntegration) {
         New-Item -ItemType Directory -Path $codexSkillsRoot -Force | Out-Null
@@ -822,7 +1009,7 @@ if (-not $SkipCodexSkillInstall) {
     }
 }
 
-$agentsSource = Join-Path $repoRoot "AGENTS.md"
+$agentsSource = Join-Path $codexUserSourceRoot "AGENTS.md"
 if (-not (Test-Path -LiteralPath $agentsSource)) {
     throw "Required AGENTS.md was not found: $agentsSource"
 }
@@ -852,6 +1039,8 @@ if ((-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) -and
     Copy-Item -LiteralPath $codexMachineAgentsTarget -Destination $workspaceAgentsFullPath -Force
     $workspaceAgentsInstalled = $workspaceAgentsFullPath
 }
+
+Remove-RevitMcpManagedSourceLeakArtifacts
 
 function ConvertTo-VbsStringLiteral {
     param([string]$Value)

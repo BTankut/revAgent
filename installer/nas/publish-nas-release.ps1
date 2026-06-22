@@ -123,6 +123,186 @@ function Copy-DirectoryFiltered {
     Copy-OneDirectory -From $Source -To $Destination
 }
 
+function Copy-UserPackFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceRelativePath,
+        [string]$DestinationRelativePath = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DestinationRelativePath)) {
+        $DestinationRelativePath = $SourceRelativePath
+    }
+
+    $sourcePath = Join-Path $RepoRoot $SourceRelativePath
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        throw "Required user-pack file was not found: $SourceRelativePath"
+    }
+
+    $destinationPath = Join-Path $packageRoot $DestinationRelativePath
+    New-Item -ItemType Directory -Path (Split-Path -Parent $destinationPath) -Force | Out-Null
+    Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+}
+
+function Copy-UserPackDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceRelativePath,
+        [string]$DestinationRelativePath = "",
+        [string[]]$ExcludeDirectoryNames = @(),
+        [string[]]$ExcludeFilePatterns = @()
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DestinationRelativePath)) {
+        $DestinationRelativePath = $SourceRelativePath
+    }
+
+    $sourcePath = Join-Path $RepoRoot $SourceRelativePath
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) {
+        throw "Required user-pack directory was not found: $SourceRelativePath"
+    }
+
+    $destinationPath = Join-Path $packageRoot $DestinationRelativePath
+    if (Test-Path -LiteralPath $destinationPath) {
+        Remove-Item -LiteralPath $destinationPath -Recurse -Force
+    }
+
+    $excludedDirs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $ExcludeDirectoryNames) {
+        if (-not [string]::IsNullOrWhiteSpace($name)) {
+            [void]$excludedDirs.Add($name)
+        }
+    }
+
+    function Copy-OneUserPackDirectory {
+        param(
+            [string]$From,
+            [string]$To
+        )
+
+        New-Item -ItemType Directory -Path $To -Force | Out-Null
+
+        Get-ChildItem -LiteralPath $From -Force | ForEach-Object {
+            if ($_.PSIsContainer) {
+                if ($excludedDirs.Contains($_.Name)) {
+                    return
+                }
+
+                Copy-OneUserPackDirectory -From $_.FullName -To (Join-Path $To $_.Name)
+                return
+            }
+
+            foreach ($pattern in $ExcludeFilePatterns) {
+                if ($_.Name -like $pattern) {
+                    return
+                }
+            }
+
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $To $_.Name) -Force
+        }
+    }
+
+    Copy-OneUserPackDirectory -From $sourcePath -To $destinationPath
+}
+
+function Assert-RevitMcpUserPackNoSourceLeak {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    function Get-RevitMcpUserPackPathParts {
+        param([string]$RelativePath)
+
+        if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+            return @()
+        }
+
+        return @($RelativePath -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    function Test-RevitMcpUserPackIgnoredDependencyPath {
+        param([string]$RelativePath)
+
+        foreach ($part in Get-RevitMcpUserPackPathParts -RelativePath $RelativePath) {
+            if ($part -ieq "node_modules" -or $part -ieq "dependencies") {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    $blocked = [System.Collections.Generic.List[string]]::new()
+    $blockedDirectoryNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in @(".git", ".github", ".githooks", ".tmp", "src", "docs", "evals", "references", "dashboard")) {
+        [void]$blockedDirectoryNames.Add($name)
+    }
+
+    Get-ChildItem -LiteralPath $Root -Recurse -Directory -Force |
+        ForEach-Object {
+            $relative = $_.FullName.Substring($Root.Length).TrimStart("\", "/").Replace("/", "\")
+            $parts = Get-RevitMcpUserPackPathParts -RelativePath $relative
+            if (Test-RevitMcpUserPackIgnoredDependencyPath -RelativePath $relative) {
+                return
+            }
+            if ($blockedDirectoryNames.Contains($_.Name) -or ($parts.Count -eq 1 -and $_.Name -eq "scripts")) {
+                $blocked.Add($relative)
+            }
+        }
+
+    Get-ChildItem -LiteralPath $Root -Recurse -File -Force |
+        ForEach-Object {
+            $relative = $_.FullName.Substring($Root.Length).TrimStart("\", "/").Replace("/", "\")
+            if (Test-RevitMcpUserPackIgnoredDependencyPath -RelativePath $relative) {
+                return
+            }
+            if ($_.Extension -in @(".cs", ".csproj", ".sln", ".ts", ".tsx", ".pdb", ".map")) {
+                $blocked.Add($relative)
+                return
+            }
+            if ($_.Name -like "*.test.js" -or $_.Name -like "*.guard-test.js") {
+                $blocked.Add($relative)
+                return
+            }
+            if ($_.Name -in @("publish-nas-release.ps1", "promote-nas-release.ps1")) {
+                $blocked.Add($relative)
+            }
+        }
+
+    if ($blocked.Count -gt 0) {
+        $preview = @($blocked.ToArray() | Sort-Object | Select-Object -First 40)
+        throw "User pack contains source/developer artifacts: $($preview -join ', ')"
+    }
+}
+
+function Copy-RevitMcpUserPack {
+    Copy-UserPackFile -SourceRelativePath "installer\codex-user\SKILL.md" -DestinationRelativePath "SKILL.md"
+    Copy-UserPackFile -SourceRelativePath "installer\codex-user\AGENTS.md" -DestinationRelativePath "AGENTS.md"
+    Copy-UserPackDirectory -SourceRelativePath "installer\codex-user" -DestinationRelativePath "installer\codex-user"
+
+    Copy-UserPackFile -SourceRelativePath "CHANGELOG.md"
+    Copy-UserPackFile -SourceRelativePath "config\revit-versions.json"
+
+    Copy-UserPackFile -SourceRelativePath "installer\install-self-contained.ps1"
+    Copy-UserPackDirectory -SourceRelativePath "installer\lib"
+    foreach ($nasTool in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1")) {
+        Copy-UserPackFile -SourceRelativePath (Join-Path "installer\nas" $nasTool)
+    }
+
+    Copy-UserPackDirectory -SourceRelativePath "installer\revit-plugin" -ExcludeFilePatterns @("*.pdb", "*.map")
+    Copy-UserPackDirectory -SourceRelativePath "installer\command-payload" -ExcludeFilePatterns @("*.pdb", "*.map")
+
+    Copy-UserPackDirectory -SourceRelativePath "installer\runtime-mcp-server\build" -ExcludeFilePatterns @("*.map", "*.test.js", "*.guard-test.js")
+    Copy-UserPackFile -SourceRelativePath "installer\runtime-mcp-server\package.json"
+    Copy-UserPackFile -SourceRelativePath "installer\runtime-mcp-server\package-lock.json"
+
+    Copy-UserPackDirectory -SourceRelativePath "installer\revit-api-docs-mcp\build" -ExcludeFilePatterns @("*.map", "*.test.js")
+    Copy-UserPackFile -SourceRelativePath "installer\revit-api-docs-mcp\scripts\build-index.ps1"
+    Copy-UserPackFile -SourceRelativePath "installer\revit-api-docs-mcp\package.json"
+    Copy-UserPackFile -SourceRelativePath "installer\revit-api-docs-mcp\package-lock.json"
+}
+
 function Get-RelativeFileHash {
     param(
         [string]$Root,
@@ -305,7 +485,8 @@ New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 
 try {
     Write-Section "Stage package"
-    Copy-DirectoryFiltered -Source $RepoRoot -Destination $packageRoot
+    Copy-RevitMcpUserPack
+    Assert-RevitMcpUserPackNoSourceLeak -Root $packageRoot
 
     $releaseInfo = [ordered]@{
         schemaVersion = 1
@@ -333,13 +514,7 @@ try {
         skill = "SKILL.md"
         agents = "AGENTS.md"
         changelog = "CHANGELOG.md"
-        repositoryStructure = "docs\REPOSITORY_STRUCTURE.md"
-        platformArchitecture = "docs\PLATFORM_ARCHITECTURE.md"
-        developerRunbook = "docs\DEVELOPER_RUNBOOK.md"
-        revitPluginSourceReadme = "src\revit-plugin\README.md"
-        revitPluginSourceProject = "src\revit-plugin\revit-mcp-plugin\revit-mcp-plugin.csproj"
         revitVersionMatrix = "config\revit-versions.json"
-        revitPluginBuildScript = "scripts\build-revit-plugin.ps1"
         installerLibHiddenLauncher = "installer\lib\RevitMcp.HiddenLauncher.psm1"
         installerLibScheduledTask = "installer\lib\RevitMcp.ScheduledTask.psm1"
         installerLibVersions = "installer\lib\RevitMcp.RevitVersions.psm1"
@@ -351,9 +526,14 @@ try {
         installerLibCodexRegistration = "installer\lib\RevitMcp.CodexRegistration.psm1"
         installerLibReporting = "installer\lib\RevitMcp.Reporting.psm1"
         installer = "installer\install-self-contained.ps1"
+        updater = "installer\nas\update-from-nas.ps1"
+        versionStatusTool = "installer\nas\show-installed-version.ps1"
+        updaterTaskInstaller = "installer\nas\install-updater-task.ps1"
         revitPlugin = "installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
         commandSet = "installer\command-payload\RevitMCPCommandSet.dll"
+        runtimePackageJson = "installer\runtime-mcp-server\package.json"
         runtimePackageLock = "installer\runtime-mcp-server\package-lock.json"
+        docsPackageJson = "installer\revit-api-docs-mcp\package.json"
         docsPackageLock = "installer\revit-api-docs-mcp\package-lock.json"
     }
 
