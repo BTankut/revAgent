@@ -141,6 +141,8 @@ Assert-True ($updaterText -match 'Source migration : runtime, docs, Codex skill,
 Assert-True ($updaterText -match 'Invoke-RevitMcpSourceFreeArtifactCleanup') "Updater migration mode must run source-free cleanup."
 Assert-True ($updaterText -match 'sourceFreeMigration = \$sourceFreeMigrationState') "Updater installed state must include migration verification metadata."
 Assert-True ($updaterText -match '-not \$SourceFreeMigration -and \$isPackageCurrent') "Updater must not return early as current during source-free migration."
+Assert-True ($updaterText -match 'function Get-UpdaterDetachedSignaturePath' -and $updaterText -match 'Get-UpdaterDetachedSignaturePath -ContentPath \$configuredLicensePath') "Updater must compute default detached signature paths without relying on imported helper scope."
+Assert-True ($updaterText -match 'RevitMcpDistributionIntegrityModule = Import-Module .*RevitMcp\.DistributionIntegrity\.psm1.*-PassThru' -and $updaterText -match 'function Get-UpdaterDistributionIntegrityCommand' -and $updaterText -match 'Get-UpdaterDistributionIntegrityCommand -Name "Test-RevitMcpReleaseDistributionIntegrity" -Required') "Updater must call distribution integrity helpers through the imported module object during nested migration runs."
 
 $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
 Assert-True ($publishText -match 'migrate-source-free-install\.ps1') "Publisher must include the source-free migration tool in user packs and NAS tools."

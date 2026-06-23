@@ -351,7 +351,7 @@ try {
     Assert-True ($updateText -match '\[string\]\$DistributionIntegrityPolicy = ""') "Updater must expose an explicit distribution integrity policy override."
     Assert-True ($updateText -match '\[switch\]\$AllowSignedReleaseRollback') "Updater must require an explicit operator flag for signed rollback bypass."
     Assert-True ($updateText -match 'Get-InstalledHighestAcceptedReleaseSequence') "Updater must persist and reuse the highest accepted signed release sequence."
-    Assert-True ($updateText -match 'HighestAcceptedReleaseSequence\s+\$highestAcceptedReleaseSequence') "Updater must pass anti-rollback state into integrity verification."
+    Assert-True ($updateText -match 'HighestAcceptedReleaseSequence\s*=\s*\$highestAcceptedReleaseSequence') "Updater must pass anti-rollback state into integrity verification."
     Assert-True ($updateText -match 'RevitMcp\.License\.psm1') "Updater must import the license verifier."
     Assert-True ($updateText -match '\[string\]\$LicensePolicy = ""' -and $updateText -match '\[string\]\$LicensePath = ""' -and $updateText -match '\[string\]\$LicenseSignaturePath = ""') "Updater must expose explicit license verification inputs."
     Assert-True ($updateText -match 'license-trusted-keys\.json') "Updater must look for packaged public license-key config."

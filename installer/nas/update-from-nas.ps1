@@ -69,7 +69,7 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.Proxy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.DistributionIntegrity.psm1") -Force
+$script:RevitMcpDistributionIntegrityModule = Import-Module (Join-Path $nasLibRoot "RevitMcp.DistributionIntegrity.psm1") -Force -PassThru
 Import-Module (Join-Path $nasLibRoot "RevitMcp.License.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.SourceFreeMigration.psm1") -Force
 
@@ -1567,13 +1567,44 @@ function Get-JsonPropertyValue {
     return $null
 }
 
+function Get-UpdaterDistributionIntegrityCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [switch]$Required
+    )
+
+    $command = $null
+    $module = @($script:RevitMcpDistributionIntegrityModule | Select-Object -First 1)
+    if ($module) {
+        if ($module.ExportedFunctions -and $module.ExportedFunctions.ContainsKey($Name)) {
+            $command = $module.ExportedFunctions[$Name]
+        }
+        elseif ($module.ExportedCommands -and $module.ExportedCommands.ContainsKey($Name)) {
+            $command = $module.ExportedCommands[$Name]
+        }
+    }
+
+    if (-not $command) {
+        $command = Get-Command ("RevitMcp.DistributionIntegrity\{0}" -f $Name) -ErrorAction SilentlyContinue
+    }
+    if (-not $command) {
+        $command = Get-Command $Name -ErrorAction SilentlyContinue
+    }
+    if (-not $command -and $Required) {
+        throw "Distribution integrity helper '$Name' was not loaded from RevitMcp.DistributionIntegrity.psm1."
+    }
+
+    return $command
+}
+
 function Add-TrustedReleaseKeys {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Target,
         [AllowNull()][object]$Source
     )
 
-    $sourceMap = ConvertTo-RevitMcpTrustedKeyMap -TrustedKeys $Source
+    $convertCommand = Get-UpdaterDistributionIntegrityCommand -Name "ConvertTo-RevitMcpTrustedKeyMap" -Required
+    $sourceMap = & $convertCommand -TrustedKeys $Source
     foreach ($key in $sourceMap.Keys) {
         $Target[[string]$key] = $sourceMap[$key]
     }
@@ -1604,6 +1635,19 @@ function Resolve-UpdaterConfigRelativePath {
     }
 
     return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $Path))
+}
+
+function Get-UpdaterDetachedSignaturePath {
+    param([Parameter(Mandatory = $true)][string]$ContentPath)
+
+    $command = Get-UpdaterDistributionIntegrityCommand -Name "Get-RevitMcpDetachedSignaturePath"
+    if ($command) {
+        return & $command -ContentPath $ContentPath
+    }
+
+    $directory = Split-Path -Parent $ContentPath
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($ContentPath)
+    return Join-Path $directory ("{0}.sig.json" -f $baseName)
 }
 
 function Add-TrustedReleaseKeysFromFile {
@@ -1827,7 +1871,7 @@ function Initialize-LicenseConfig {
     }
 
     if ([string]::IsNullOrWhiteSpace($configuredSignaturePath)) {
-        $configuredSignaturePath = Get-RevitMcpDetachedSignaturePath -ContentPath $configuredLicensePath
+        $configuredSignaturePath = Get-UpdaterDetachedSignaturePath -ContentPath $configuredLicensePath
     }
     else {
         $configuredSignaturePath = Resolve-UpdaterConfigRelativePath -Path $configuredSignaturePath
@@ -2790,15 +2834,19 @@ try {
         $releaseManifest = Get-Content -Raw -LiteralPath $releaseManifestPath | ConvertFrom-Json
     }
 
-    $script:RevitMcpDistributionIntegrity = Test-RevitMcpReleaseDistributionIntegrity `
-        -ChannelPath $ChannelManifestPath `
-        -Channel $channel `
-        -ReleaseManifestPath $releaseManifestPath `
-        -ReleaseManifest $releaseManifest `
-        -TrustedKeys $script:RevitMcpTrustedReleaseKeys `
-        -Policy $script:RevitMcpDistributionIntegrityPolicy `
-        -HighestAcceptedReleaseSequence $highestAcceptedReleaseSequence `
-        -AllowRollback:$AllowSignedReleaseRollback
+    $distributionIntegrityCommand = Get-UpdaterDistributionIntegrityCommand -Name "Test-RevitMcpReleaseDistributionIntegrity" -Required
+
+    $distributionIntegrityArgs = @{
+        ChannelPath = $ChannelManifestPath
+        Channel = $channel
+        ReleaseManifestPath = $releaseManifestPath
+        ReleaseManifest = $releaseManifest
+        TrustedKeys = $script:RevitMcpTrustedReleaseKeys
+        Policy = $script:RevitMcpDistributionIntegrityPolicy
+        HighestAcceptedReleaseSequence = $highestAcceptedReleaseSequence
+        AllowRollback = $AllowSignedReleaseRollback
+    }
+    $script:RevitMcpDistributionIntegrity = & $distributionIntegrityCommand @distributionIntegrityArgs
     if (-not [bool]$script:RevitMcpDistributionIntegrity.success) {
         throw "Distribution integrity check rejected this release: $($script:RevitMcpDistributionIntegrity.reason). $($script:RevitMcpDistributionIntegrity.message)"
     }
