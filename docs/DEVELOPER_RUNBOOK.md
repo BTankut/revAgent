@@ -68,7 +68,7 @@ revit-mcp-skill/
 |   |-- REPOSITORY_STRUCTURE.md
 |   |-- REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md
 |   |-- REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md
-|   |-- REVAGENT_SOURCE_PROTECTION_PLAN.md
+|   |-- REVAGENT_SIGNED_SOURCE_FREE_CD_ROLLOUT_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
 |-- references/
@@ -650,10 +650,12 @@ Layout:
 ```text
 channels\
   stable.json
+  stable.sig.json
 releases\
   <version>\
     revit-mcp-skill-<version>.zip
     manifest.json
+    manifest.sig.json
 reports\
   machines\
     <computer>\
@@ -680,6 +682,57 @@ Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\channels\sta
 
 Publishing refreshes `tools\` on the NAS. Workstations should launch the tools
 from the NAS share, not from copied old script bodies when possible.
+
+## GitHub Actions Signed Source-Free CD
+
+The protected CD workflow is `.github/workflows/signed-source-free-cd.yml`.
+It is manually dispatched from `main` and defaults to build/validate only. NAS
+publish runs only when the operator sets `publish_to_nas=true`, and that job is
+separated behind the `revagent-production-publish` GitHub environment.
+
+Chosen production signing model:
+
+- Use an office-controlled self-hosted Windows runner, normally selected with
+  `["self-hosted","Windows","revagent-cd"]`.
+- Keep the private release signing key as a local file on that runner, outside
+  the Git checkout and outside NAS `tools\`.
+- Store only public release verification keys in
+  `release-trusted-keys.json`; the CD producer copies that public file into
+  release `tools\config\release-trusted-keys.json` for workstation updaters.
+- Name production signing keys with a stable key id such as
+  `revagent-prod-rsa-2026q3`; rotate by adding the new public key before
+  signing releases with the new private key, then remove old trust only after
+  all workstations have accepted a newer signed baseline.
+- Keep the encrypted/offline private-key backup under the release owner's
+  control. Do not put private release keys, license-signing keys, seat secrets,
+  or GitHub write tokens in Git, release ZIPs, NAS `tools\`, updater config, or
+  workstation payloads.
+
+Required protected environment variables:
+
+```text
+revagent-release-signing:
+  REVAGENT_RELEASE_SIGNING_PRIVATE_KEY_PATH
+  REVAGENT_RELEASE_SIGNING_KEY_ID
+  REVAGENT_TRUSTED_RELEASE_KEYS_PATH
+
+revagent-production-publish:
+  REVAGENT_NAS_RELEASE_ROOT
+  REVAGENT_TRUSTED_RELEASE_KEYS_PATH
+```
+
+The build job runs `scripts/invoke-signed-source-free-cd.ps1`. That wrapper
+runs `scripts/test-ci.ps1`, uses `publish-nas-release.ps1` against a staging
+release root, requires release signatures, copies public trusted keys into
+`tools\config`, and runs `scripts/check-signed-stable-readiness.ps1`.
+
+The publish job downloads the reviewed artifact and runs
+`scripts/publish-signed-source-free-release-to-nas.ps1`. That script does not
+rebuild or re-sign. It copies the release and tools to NAS, validates
+`stable.candidate.json` on the NAS root, then updates `stable.sig.json` and
+`stable.json`. New signed channel metadata uses relative paths so the same
+signed artifact can move from CD staging to NAS without changing the signed
+JSON.
 
 The versioned release ZIP is an allowlisted user pack. It must not contain the
 repo root, `src/`, root `docs/`, developer tests, repo metadata, `.pdb`, `.mdb`,
@@ -729,8 +782,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-signed-stabl
 
 The preflight verifies channel and release-manifest detached signatures in
 `enforce` mode, checks ZIP SHA256 against signed metadata, requires a positive
-`releaseSequence`, and fails if obvious private signing material appears under
-the release root. It does not publish or change workstation policy.
+`releaseSequence`, scans the release root and ZIP for source/developer/debug
+artifacts, and fails if obvious private signing material appears under the
+release root. It does not publish or change workstation policy.
 
 Signed release enforcement uses `releaseSequence` metadata in both
 `stable.json` and `manifest.json`. The updater persists

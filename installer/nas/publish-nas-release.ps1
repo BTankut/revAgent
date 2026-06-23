@@ -36,6 +36,8 @@ param(
 
     [switch]$RequireSigning,
 
+    [string]$TrustedReleaseKeysPath = "",
+
     [switch]$NoChannelUpdate
 )
 
@@ -787,6 +789,9 @@ try {
 
     Write-Section "Create ZIP"
     $zipPath = Join-Path $releaseDir ("revit-mcp-skill-{0}.zip" -f $Version)
+    $releaseRelativeDir = Join-Path "releases" $Version
+    $manifestMetadataPath = (Join-Path ".." (Join-Path $releaseRelativeDir "manifest.json")).Replace("/", "\")
+    $zipMetadataPath = (Join-Path ".." (Join-Path $releaseRelativeDir ("revit-mcp-skill-{0}.zip" -f $Version))).Replace("/", "\")
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [System.IO.Compression.ZipFile]::CreateFromDirectory($packageRoot, $zipPath)
 
@@ -876,7 +881,7 @@ try {
         }
         package = [ordered]@{
             fileName = (Split-Path -Leaf $zipPath)
-            path = $zipPath
+            path = $zipMetadataPath
             sha256 = $zipHash
             sizeBytes = $zipItem.Length
         }
@@ -922,8 +927,8 @@ try {
             channel = $Channel
             version = $Version
             publishedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-            manifestPath = $manifestPath
-            packagePath = $zipPath
+            manifestPath = $manifestMetadataPath
+            packagePath = $zipMetadataPath
             sha256 = $zipHash
             git = [ordered]@{
                 branch = $branch
@@ -972,6 +977,20 @@ try {
         }
         Copy-DirectoryFiltered -Source $configSource -Destination $configTarget
         Write-Host "Tools config path: $configTarget" -ForegroundColor Green
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($TrustedReleaseKeysPath)) {
+        $configTarget = Join-Path $toolsRoot "config"
+        New-Item -ItemType Directory -Path $configTarget -Force | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TrustedReleaseKeysPath)) {
+        $trustedReleaseKeysFullPath = [System.IO.Path]::GetFullPath($TrustedReleaseKeysPath)
+        if (-not (Test-Path -LiteralPath $trustedReleaseKeysFullPath -PathType Leaf)) {
+            throw "Trusted release keys file was not found: $trustedReleaseKeysFullPath"
+        }
+        $trustedReleaseKeysTarget = Join-Path (Join-Path $toolsRoot "config") "release-trusted-keys.json"
+        New-Item -ItemType Directory -Path (Split-Path -Parent $trustedReleaseKeysTarget) -Force | Out-Null
+        Copy-Item -LiteralPath $trustedReleaseKeysFullPath -Destination $trustedReleaseKeysTarget -Force
+        Write-Host "Trusted release keys: $trustedReleaseKeysTarget" -ForegroundColor Green
     }
     $dependenciesSource = Join-Path $scriptRoot "dependencies"
     if (Test-Path -LiteralPath $dependenciesSource -PathType Container) {

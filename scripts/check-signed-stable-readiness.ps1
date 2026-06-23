@@ -135,6 +135,127 @@ function Find-RevitMcpPrivateSigningMaterial {
     return @($findings.ToArray())
 }
 
+function New-RevitMcpReleaseArtifactFinding {
+    param(
+        [string]$Path,
+        [string]$Reason,
+        [string]$Container = ""
+    )
+
+    return [pscustomobject][ordered]@{
+        path = $Path
+        reason = $Reason
+        container = $Container
+    }
+}
+
+function Get-RevitMcpForbiddenReleaseArtifactReason {
+    param(
+        [string]$RelativePath,
+        [switch]$InsideUserPackage
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+        return ""
+    }
+
+    $normalized = $RelativePath.Replace("/", "\").TrimStart("\")
+    $parts = @($normalized -split '[\\/]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($parts.Count -eq 0) {
+        return ""
+    }
+
+    $leaf = [string]$parts[$parts.Count - 1]
+    $extension = [System.IO.Path]::GetExtension($leaf).ToLowerInvariant()
+    if ($extension -in @(".cs", ".csproj", ".sln", ".ts", ".tsx", ".pdb", ".mdb", ".map")) {
+        return "source_or_debug_artifact"
+    }
+
+    if ($leaf -match '(?i)(private.*key|signing.*private|release.*private|license.*private|seat.*secret|license.*secret|\.pfx$|\.p12$|\.pem$|\.key$)') {
+        return "secret_or_private_key_artifact_name"
+    }
+
+    if ($leaf -match '(?i)(^tsconfig(\..*)?\.json$|^\.eslintrc|^eslint\.config\.|^vite\.config\.|^vitest\.config\.|^rollup\.config\.|^webpack\.config\.|^jest\.config\.|^revit-payload-manifest\.json$)') {
+        return "developer_manifest_artifact"
+    }
+
+    if ($leaf -match '(?i)(\.test\.js$|\.guard-test\.js$)') {
+        return "developer_test_artifact"
+    }
+
+    if ($InsideUserPackage -and $leaf -in @("publish-nas-release.ps1", "promote-nas-release.ps1")) {
+        return "developer_publish_tool_in_user_package"
+    }
+
+    $blockedDirectoryNames = @(".git", ".github", ".githooks", ".tmp", "src", "docs", "evals", "references", "dashboard")
+    $directoryParts = @()
+    if ($parts.Count -gt 1) {
+        $directoryParts = @($parts[0..($parts.Count - 2)])
+    }
+    foreach ($part in $directoryParts) {
+        if ($part -in $blockedDirectoryNames) {
+            return "developer_directory_artifact"
+        }
+    }
+
+    if ($InsideUserPackage -and $parts.Count -gt 1 -and [string]::Equals([string]$parts[0], "scripts", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return "root_scripts_directory_in_user_package"
+    }
+
+    return ""
+}
+
+function Find-RevitMcpReleaseArtifactFindings {
+    param([string]$Root)
+
+    if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
+        return @()
+    }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+    $rootFullName = (Get-Item -LiteralPath $Root).FullName.TrimEnd("\", "/")
+    $rootPrefix = $rootFullName + [System.IO.Path]::DirectorySeparatorChar
+    $findings = [System.Collections.Generic.List[object]]::new()
+
+    Get-ChildItem -LiteralPath $rootFullName -Recurse -File -Force | ForEach-Object {
+        $relative = $_.FullName.Substring($rootPrefix.Length).Replace("/", "\")
+        $reason = Get-RevitMcpForbiddenReleaseArtifactReason -RelativePath $relative
+        if (-not [string]::IsNullOrWhiteSpace($reason)) {
+            $findings.Add([object](New-RevitMcpReleaseArtifactFinding -Path $relative -Reason $reason)) | Out-Null
+        }
+
+        if (-not [string]::Equals($_.Extension, ".zip", [System.StringComparison]::OrdinalIgnoreCase)) {
+            return
+        }
+
+        try {
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($_.FullName)
+            try {
+                foreach ($entry in $archive.Entries) {
+                    if ([string]::IsNullOrWhiteSpace($entry.Name)) {
+                        continue
+                    }
+
+                    $entryPath = $entry.FullName.Replace("/", "\")
+                    $entryReason = Get-RevitMcpForbiddenReleaseArtifactReason -RelativePath $entryPath -InsideUserPackage
+                    if (-not [string]::IsNullOrWhiteSpace($entryReason)) {
+                        $findings.Add([object](New-RevitMcpReleaseArtifactFinding -Path ("{0}!{1}" -f $relative, $entryPath) -Reason $entryReason -Container $relative)) | Out-Null
+                    }
+                }
+            }
+            finally {
+                $archive.Dispose()
+            }
+        }
+        catch {
+            $findings.Add([object](New-RevitMcpReleaseArtifactFinding -Path $relative -Reason "zip_read_failed")) | Out-Null
+        }
+    }
+
+    return @($findings.ToArray())
+}
+
 if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) {
     if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
         throw "Pass -ReleaseRoot or -ChannelManifestPath."
@@ -222,6 +343,9 @@ Add-RevitMcpReadinessCheck -Checks $checks -Name "package_sha256_matches_signed_
 $privateMaterial = @(Find-RevitMcpPrivateSigningMaterial -Root $ReleaseRoot)
 Add-RevitMcpReadinessCheck -Checks $checks -Name "no_private_signing_material_in_release_root" -Success ($privateMaterial.Count -eq 0) -Reason $(if ($privateMaterial.Count -eq 0) { "" } else { "private_signing_material_detected" }) -Message "Release root must not contain private signing material." -Path $ReleaseRoot
 
+$artifactFindings = @(Find-RevitMcpReleaseArtifactFindings -Root $ReleaseRoot)
+Add-RevitMcpReadinessCheck -Checks $checks -Name "no_source_or_developer_artifacts_in_release_root" -Success ($artifactFindings.Count -eq 0) -Reason $(if ($artifactFindings.Count -eq 0) { "" } else { "source_or_developer_artifacts_detected" }) -Message "Release root and release ZIP must not contain source, source maps, debug symbols, developer manifests, private key names, or license secret names." -Path $ReleaseRoot
+
 $failedChecks = @($checks.ToArray() | Where-Object { -not [bool]$_.success })
 $ready = $failedChecks.Count -eq 0
 $report = [pscustomobject][ordered]@{
@@ -238,6 +362,7 @@ $report = [pscustomobject][ordered]@{
     minimumAcceptedReleaseSequence = if ($channel.PSObject.Properties["minimumAcceptedReleaseSequence"]) { [long]$channel.minimumAcceptedReleaseSequence } else { 0 }
     integrity = $integrity
     privateMaterialFindings = $privateMaterial
+    artifactFindings = $artifactFindings
     checks = @($checks.ToArray())
 }
 

@@ -73,6 +73,8 @@ try {
         publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
         algorithm = "RS256"
     }
+    $trustedKeysPath = Join-Path $secretRoot "release-trusted-keys.json"
+    @{ trustedKeys = $trustedKeys } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $trustedKeysPath -Encoding UTF8
 
     $publishOutput = & (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1") `
         -ReleaseRoot $releaseRoot `
@@ -82,7 +84,8 @@ try {
         -SigningPrivateKeyPath $privateKeyPath `
         -SigningKeyId $keyId `
         -ReleaseSequence $releaseSequence `
-        -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence 6>&1 | Out-String
+        -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
+        -TrustedReleaseKeysPath $trustedKeysPath 6>&1 | Out-String
 
     Assert-True ($publishOutput -match "Release signing: enabled for keyId '$keyId'") "Publish output should report signing by keyId only."
     Assert-True ($publishOutput -match "Release sequence: $releaseSequence") "Publish output should report the signed release sequence."
@@ -115,10 +118,14 @@ try {
 
     $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
     $channel = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
+    Assert-True (-not [System.IO.Path]::IsPathRooted([string]$channel.manifestPath)) "Published channel manifestPath should be relative so signed artifacts can move from CD staging to NAS."
+    Assert-True (-not [System.IO.Path]::IsPathRooted([string]$channel.packagePath)) "Published channel packagePath should be relative so signed artifacts can move from CD staging to NAS."
+    Assert-Equal ([string]$channel.packagePath) ([string]$manifest.package.path) "Channel and manifest package paths should stay byte-identical for signature consistency."
     Assert-Equal ([long]$manifest.releaseSequence) ([long]$releaseSequence) "Published manifest must include the signed release sequence."
     Assert-Equal ([long]$channel.releaseSequence) ([long]$releaseSequence) "Published channel must include the signed release sequence."
     Assert-Equal ([long]$manifest.minimumAcceptedReleaseSequence) ([long]$minimumAcceptedReleaseSequence) "Published manifest must include the minimum accepted release sequence."
     Assert-Equal ([long]$channel.minimumAcceptedReleaseSequence) ([long]$minimumAcceptedReleaseSequence) "Published channel must include the minimum accepted release sequence."
+    Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\config\release-trusted-keys.json") -PathType Leaf) "Public trusted release keys should be copied to NAS tools config when supplied."
 
     $aggregateVerification = Test-RevitMcpReleaseDistributionIntegrity `
         -ChannelPath $channelPath `

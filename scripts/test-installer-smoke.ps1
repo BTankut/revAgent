@@ -377,6 +377,8 @@ try {
     Assert-True ($publishText -match '\[string\]\$SigningPrivateKeyPath = ""' -and $publishText -match '\[string\]\$SigningKeyId = ""') "Release signing must be optional publish-time input."
     Assert-True ($publishText -match '\[long\]\$ReleaseSequence = 0' -and $publishText -match '\[long\]\$MinimumAcceptedReleaseSequence = 0') "Release publish signing must support signed anti-rollback sequence metadata."
     Assert-True ($publishText -match '\[switch\]\$RequireSigning') "Release publishing must expose an operator-enforced signing requirement."
+    Assert-True ($publishText -match '\[string\]\$TrustedReleaseKeysPath = ""' -and $publishText -match 'release-trusted-keys\.json') "Release publishing must optionally copy public trusted release keys to tools config."
+    Assert-True ($publishText -match '\$manifestMetadataPath' -and $publishText -match '\$zipMetadataPath') "Release publishing must write portable relative channel paths for signed CD artifacts."
     Assert-True ($publishText -match 'Signing private key must be stored outside the repository' -and $publishText -match 'Signing private key must be stored outside NAS tools') "Publish signing must reject private keys stored in shipped or tool roots."
     Assert-True ($publishText -match 'manifest\.sig\.json' -and $publishText -match '\{0\}\.sig\.json' -and $publishText -match 'Test-RevitMcpDetachedJsonSignatureFile') "Publish signing must write and verify detached signature files."
     Assert-True ($publishText -notmatch 'kurulum|legacyEntryPoint|legacyInstaller') "Release publishing must not create the removed legacy kurulum package alias."
