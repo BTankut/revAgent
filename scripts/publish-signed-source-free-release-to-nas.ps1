@@ -145,6 +145,7 @@ $candidateReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readin
     -ReleaseRoot $NasReleaseRoot `
     -ChannelManifestPath $candidateChannelPath `
     -TrustedKeysPath $TrustedKeysPath `
+    -ArtifactScanScope activeRelease `
     -RepoRoot $RepoRoot
 if (-not [bool]$candidateReadiness.success) {
     throw "NAS candidate signed release root failed readiness verification."
@@ -156,6 +157,7 @@ Copy-Item -LiteralPath $candidateChannelPath -Destination $stableChannelPath -Fo
 $stableReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
     -ReleaseRoot $NasReleaseRoot `
     -TrustedKeysPath $TrustedKeysPath `
+    -ArtifactScanScope activeRelease `
     -RepoRoot $RepoRoot
 if (-not [bool]$stableReadiness.success) {
     throw "NAS stable signed release root failed readiness verification after publish."

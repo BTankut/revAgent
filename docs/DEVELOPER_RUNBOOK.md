@@ -755,12 +755,16 @@ quota while keeping the signing and publish jobs separated by environment and
 by the explicit `publish_to_nas=true` operator gate. The publish job runs
 `scripts/publish-signed-source-free-release-to-nas.ps1`; it does not rebuild or
 re-sign. It copies the release and tools to NAS, validates
-`stable.candidate.json` on the NAS root, then updates `stable.sig.json` and
-`stable.json`. New signed channel metadata uses relative paths so the same
-signed release root can move from CD staging to NAS without changing the signed
-JSON. Because the handoff is local to the self-hosted runner, the selected
-runner label set must identify the office runner that owns both signing-key and
-NAS access.
+`stable.candidate.json` on the NAS root with active-release artifact hygiene,
+then updates `stable.sig.json` and `stable.json`. Active-release scope checks
+the candidate release package and current `tools\` payload without blocking on
+historical legacy release ZIPs already present under the existing NAS
+`releases\` archive. Use the default full release-root readiness scan only when
+intentionally auditing or cleaning that historical archive. New signed channel
+metadata uses relative paths so the same signed release root can move from CD
+staging to NAS without changing the signed JSON. Because the handoff is local
+to the self-hosted runner, the selected runner label set must identify the
+office runner that owns both signing-key and NAS access.
 
 The versioned release ZIP is an allowlisted user pack. It must not contain the
 repo root, `src/`, root `docs/`, developer tests, repo metadata, `.pdb`, `.mdb`,
@@ -813,6 +817,18 @@ The preflight verifies channel and release-manifest detached signatures in
 `releaseSequence`, scans the release root and ZIP for source/developer/debug
 artifacts, and fails if obvious private signing material appears under the
 release root. It does not publish or change workstation policy.
+
+For an existing NAS root that still contains older source-full release ZIPs,
+check the currently selected signed stable release and `tools\` payload without
+failing on historical archives:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-signed-stable-readiness.ps1 `
+  -ReleaseRoot "\\dpe-nas\...\revit-mcp-deploy" `
+  -TrustedKeysPath "\\dpe-nas\...\revit-mcp-deploy\tools\config\release-trusted-keys.json" `
+  -ArtifactScanScope activeRelease `
+  -OutputJson
+```
 
 Signed release enforcement uses `releaseSequence` metadata in both
 `stable.json` and `manifest.json`. The updater persists

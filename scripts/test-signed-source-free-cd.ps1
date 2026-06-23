@@ -95,6 +95,10 @@ try {
     Assert-Equal ([string]$sourceChannel.packagePath) ([string]$sourceManifest.package.path) "CD channel and manifest package paths must match."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\config\release-trusted-keys.json") -PathType Leaf) "CD release root should carry public trusted keys in tools config."
 
+    $legacyReleaseDir = Join-Path $nasRoot "releases\2026.05.01.legacy"
+    New-Item -ItemType Directory -Path $legacyReleaseDir -Force | Out-Null
+    "export const legacy = true;" | Set-Content -LiteralPath (Join-Path $legacyReleaseDir "legacy-source.ts") -Encoding UTF8
+
     $publishResult = & (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1") `
         -SourceReleaseRoot $releaseRoot `
         -NasReleaseRoot $nasRoot `
@@ -112,8 +116,17 @@ try {
     $nasReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
         -ReleaseRoot $nasRoot `
         -TrustedKeysPath $trustedKeysPath `
+        -ArtifactScanScope activeRelease `
         -RepoRoot $RepoRoot
     Assert-True ([bool]$nasReadiness.success) "Published NAS root should pass signed stable readiness."
+    Assert-Equal ([string]$nasReadiness.artifactScanScope) "activeRelease" "NAS publish readiness should use the active release artifact scan scope."
+
+    $fullRootReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
+        -ReleaseRoot $nasRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -RepoRoot $RepoRoot `
+        -ReportOnly
+    Assert-True (-not [bool]$fullRootReadiness.success) "Full root readiness should still report legacy source artifacts."
 
     $workflowPath = Join-Path $RepoRoot ".github\workflows\signed-source-free-cd.yml"
     $workflowText = Get-Content -Raw -LiteralPath $workflowPath

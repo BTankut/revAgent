@@ -21,6 +21,8 @@ param(
     [switch]$AllowRollback,
     [switch]$ReportOnly,
     [switch]$OutputJson,
+    [ValidateSet("releaseRoot", "activeRelease")]
+    [string]$ArtifactScanScope = "releaseRoot",
     [string]$RepoRoot = ""
 )
 
@@ -205,8 +207,23 @@ function Get-RevitMcpForbiddenReleaseArtifactReason {
     return ""
 }
 
+function Test-RevitMcpPathUnderRoot {
+    param(
+        [string]$Path,
+        [string]$Root
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd("\", "/")
+    $rootFullPath = [System.IO.Path]::GetFullPath($Root).TrimEnd("\", "/")
+    return [string]::Equals($fullPath, $rootFullPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $fullPath.StartsWith($rootFullPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Find-RevitMcpReleaseArtifactFindings {
-    param([string]$Root)
+    param(
+        [string]$Root,
+        [string[]]$ScanPaths = @()
+    )
 
     if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
         return @()
@@ -217,8 +234,30 @@ function Find-RevitMcpReleaseArtifactFindings {
     $rootFullName = (Get-Item -LiteralPath $Root).FullName.TrimEnd("\", "/")
     $rootPrefix = $rootFullName + [System.IO.Path]::DirectorySeparatorChar
     $findings = [System.Collections.Generic.List[object]]::new()
+    $filesToScan = [System.Collections.Generic.List[object]]::new()
 
-    Get-ChildItem -LiteralPath $rootFullName -Recurse -File -Force | ForEach-Object {
+    if ($ScanPaths -and $ScanPaths.Count -gt 0) {
+        foreach ($scanPath in $ScanPaths) {
+            if ([string]::IsNullOrWhiteSpace($scanPath) -or -not (Test-RevitMcpPathUnderRoot -Path $scanPath -Root $rootFullName)) {
+                continue
+            }
+            if (Test-Path -LiteralPath $scanPath -PathType Container) {
+                Get-ChildItem -LiteralPath $scanPath -Recurse -File -Force | ForEach-Object {
+                    $filesToScan.Add([object]$_) | Out-Null
+                }
+            }
+            elseif (Test-Path -LiteralPath $scanPath -PathType Leaf) {
+                $filesToScan.Add([object](Get-Item -LiteralPath $scanPath)) | Out-Null
+            }
+        }
+    }
+    else {
+        Get-ChildItem -LiteralPath $rootFullName -Recurse -File -Force | ForEach-Object {
+            $filesToScan.Add([object]$_) | Out-Null
+        }
+    }
+
+    $filesToScan.ToArray() | ForEach-Object {
         $relative = $_.FullName.Substring($rootPrefix.Length).Replace("/", "\")
         $reason = Get-RevitMcpForbiddenReleaseArtifactReason -RelativePath $relative
         if (-not [string]::IsNullOrWhiteSpace($reason)) {
@@ -343,8 +382,19 @@ Add-RevitMcpReadinessCheck -Checks $checks -Name "package_sha256_matches_signed_
 $privateMaterial = @(Find-RevitMcpPrivateSigningMaterial -Root $ReleaseRoot)
 Add-RevitMcpReadinessCheck -Checks $checks -Name "no_private_signing_material_in_release_root" -Success ($privateMaterial.Count -eq 0) -Reason $(if ($privateMaterial.Count -eq 0) { "" } else { "private_signing_material_detected" }) -Message "Release root must not contain private signing material." -Path $ReleaseRoot
 
-$artifactFindings = @(Find-RevitMcpReleaseArtifactFindings -Root $ReleaseRoot)
-Add-RevitMcpReadinessCheck -Checks $checks -Name "no_source_or_developer_artifacts_in_release_root" -Success ($artifactFindings.Count -eq 0) -Reason $(if ($artifactFindings.Count -eq 0) { "" } else { "source_or_developer_artifacts_detected" }) -Message "Release root and release ZIP must not contain source, source maps, debug symbols, developer manifests, private key names, or license secret names." -Path $ReleaseRoot
+$artifactScanPaths = @()
+if ([string]::Equals($ArtifactScanScope, "activeRelease", [System.StringComparison]::OrdinalIgnoreCase)) {
+    if (-not [string]::IsNullOrWhiteSpace($releaseManifestPath) -and (Test-Path -LiteralPath $releaseManifestPath -PathType Leaf)) {
+        $artifactScanPaths += (Split-Path -Parent $releaseManifestPath)
+    }
+    $toolsPath = Join-Path $ReleaseRoot "tools"
+    if (Test-Path -LiteralPath $toolsPath -PathType Container) {
+        $artifactScanPaths += $toolsPath
+    }
+}
+$artifactFindings = @(Find-RevitMcpReleaseArtifactFindings -Root $ReleaseRoot -ScanPaths $artifactScanPaths)
+$artifactCheckPath = if ($artifactScanPaths.Count -gt 0) { ($artifactScanPaths -join ";") } else { $ReleaseRoot }
+Add-RevitMcpReadinessCheck -Checks $checks -Name "no_source_or_developer_artifacts_in_release_root" -Success ($artifactFindings.Count -eq 0) -Reason $(if ($artifactFindings.Count -eq 0) { "" } else { "source_or_developer_artifacts_detected" }) -Message "Release root and release ZIP must not contain source, source maps, debug symbols, developer manifests, private key names, or license secret names." -Path $artifactCheckPath
 
 $failedChecks = @($checks.ToArray() | Where-Object { -not [bool]$_.success })
 $ready = $failedChecks.Count -eq 0
@@ -362,6 +412,8 @@ $report = [pscustomobject][ordered]@{
     minimumAcceptedReleaseSequence = if ($channel.PSObject.Properties["minimumAcceptedReleaseSequence"]) { [long]$channel.minimumAcceptedReleaseSequence } else { 0 }
     integrity = $integrity
     privateMaterialFindings = $privateMaterial
+    artifactScanScope = $ArtifactScanScope
+    artifactScanPaths = @($artifactScanPaths)
     artifactFindings = $artifactFindings
     checks = @($checks.ToArray())
 }
