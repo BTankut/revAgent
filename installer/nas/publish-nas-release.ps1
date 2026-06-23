@@ -447,7 +447,7 @@ function Copy-RevitMcpUserPack {
 
     Copy-UserPackFile -SourceRelativePath "installer\install-self-contained.ps1"
     Copy-UserPackDirectory -SourceRelativePath "installer\lib"
-    foreach ($nasTool in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1")) {
+    foreach ($nasTool in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1")) {
         Copy-UserPackFile -SourceRelativePath (Join-Path "installer\nas" $nasTool)
     }
 
@@ -808,10 +808,12 @@ try {
         installerLibLogRetention = "installer\lib\RevitMcp.LogRetention.psm1"
         installerLibCodexRegistration = "installer\lib\RevitMcp.CodexRegistration.psm1"
         installerLibReporting = "installer\lib\RevitMcp.Reporting.psm1"
+        installerLibSourceFreeMigration = "installer\lib\RevitMcp.SourceFreeMigration.psm1"
         installer = "installer\install-self-contained.ps1"
         updater = "installer\nas\update-from-nas.ps1"
         versionStatusTool = "installer\nas\show-installed-version.ps1"
         updaterTaskInstaller = "installer\nas\install-updater-task.ps1"
+        sourceFreeMigrationTool = "installer\nas\migrate-source-free-install.ps1"
         revitPlugin = "installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
         commandSet = "installer\command-payload\RevitMCPCommandSet.dll"
         runtimeBundle = "installer\runtime-mcp-server\build\index.js"
@@ -881,6 +883,7 @@ try {
         installer = [ordered]@{
             entryPoint = "installer\install-self-contained.ps1"
             docsServerPath = "installer\revit-api-docs-mcp"
+            sourceFreeMigrationTool = "installer\nas\migrate-source-free-install.ps1"
             updaterMinimumVersion = "0.1.0"
         }
         updatePolicy = [ordered]@{
@@ -949,7 +952,7 @@ try {
     }
 
     Write-Section "Refresh NAS tools"
-    foreach ($toolName in @("Install-Revit-MCP-Updater.cmd", "Install-Revit-MCP-Updater-GUI.cmd", "Install-Revit-MCP-Updater-GUI.ps1", "Revit MCP Updater STABLE.cmd", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "promote-nas-release.ps1", "README.md")) {
+    foreach ($toolName in @("Install-Revit-MCP-Updater.cmd", "Install-Revit-MCP-Updater-GUI.cmd", "Install-Revit-MCP-Updater-GUI.ps1", "Revit MCP Updater STABLE.cmd", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "promote-nas-release.ps1", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $scriptRoot $toolName) -Destination (Join-Path $toolsRoot $toolName) -Force
     }
     $libSource = Join-Path (Split-Path -Parent $scriptRoot) "lib"

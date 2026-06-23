@@ -33,6 +33,7 @@ param(
     [string]$LicensePath = "",
     [string]$LicenseSignaturePath = "",
     [switch]$Force,
+    [switch]$SourceFreeMigration,
     [switch]$AuditOnly,
     [switch]$SkipNpmInstall,
     [switch]$SkipCodexMcpRegistration,
@@ -70,6 +71,7 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.DistributionIntegrity.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.License.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.SourceFreeMigration.psm1") -Force
 
 $updaterVersion = "0.1.0"
 $script:RevitMcpTranscriptStarted = $false
@@ -102,12 +104,15 @@ $script:RevitMcpLicense = [ordered]@{
     message = "License verification is disabled."
     policy = $script:RevitMcpLicensePolicy
 }
-$script:RevitMcpOperation = if ($AuditOnly) { "audit" } elseif ($Force) { "reinstall" } else { "update" }
+$script:RevitMcpOperation = if ($AuditOnly) { "audit" } elseif ($SourceFreeMigration) { "source-free-migration" } elseif ($Force) { "reinstall" } else { "update" }
 $script:RevitMcpOperationMethod = if (-not [string]::IsNullOrWhiteSpace($OperationMethod)) {
     $OperationMethod
 }
 elseif ($AuditOnly) {
     "audit"
+}
+elseif ($SourceFreeMigration) {
+    "source-free-migration"
 }
 elseif ($Force) {
     "force-update"
@@ -2624,7 +2629,7 @@ function Install-UpdaterToolsFromPackage {
     }
 
     New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
-    foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1")) {
+    foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1")) {
         $source = Join-Path $SourceRoot $toolName
         if (Test-Path -LiteralPath $source -PathType Leaf) {
             Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationRoot $toolName) -Force
@@ -2756,6 +2761,10 @@ $highestAcceptedReleaseSequence = Get-InstalledHighestAcceptedReleaseSequence -I
 $channel = $null
 
 try {
+    if ($SourceFreeMigration -and $AuditOnly) {
+        throw "-SourceFreeMigration cannot be combined with -AuditOnly. Use migrate-source-free-install.ps1 -Mode dryRun for inventory-only checks."
+    }
+
     if (-not [bool]$script:RevitMcpLicense.success) {
         throw "License verification rejected this run: $($script:RevitMcpLicense.reason). $($script:RevitMcpLicense.message)"
     }
@@ -2811,10 +2820,13 @@ try {
     $installedSha = if ($installedState) { [string]$installedState.packageSha256 } else { "" }
     $installedVersionLabel = Get-VersionLabel $installedVersion
     $isFirstInstall = [string]::IsNullOrWhiteSpace($installedVersion)
-    $script:RevitMcpOperation = if ($AuditOnly) { "audit" } elseif ($isFirstInstall) { "install" } elseif ($Force) { "reinstall" } else { "update" }
+    $script:RevitMcpOperation = if ($AuditOnly) { "audit" } elseif ($SourceFreeMigration) { "source-free-migration" } elseif ($isFirstInstall) { "install" } elseif ($Force) { "reinstall" } else { "update" }
     if ([string]::IsNullOrWhiteSpace($OperationMethod)) {
         $script:RevitMcpOperationMethod = if ($AuditOnly) {
             "audit"
+        }
+        elseif ($SourceFreeMigration) {
+            "source-free-migration"
         }
         elseif ($Force) {
             "force-update"
@@ -2838,12 +2850,18 @@ try {
 
     $installedManifest = Get-InstalledReleaseManifest -InstalledState $installedState -PackageTarget $PackageTarget
     $revitPayloadChanges = @(Get-RevitPayloadChanges -TargetManifest $releaseManifest -InstalledManifest $installedManifest -PackageTarget $PackageTarget -InstallRoot $InstallRoot -RevitVersion $RevitVersion)
+    $effectiveRevitPayloadChangeCount = if ($SourceFreeMigration) {
+        [Math]::Max(1, $revitPayloadChanges.Count)
+    }
+    else {
+        $revitPayloadChanges.Count
+    }
     $releaseComponents = Get-JsonPropertyValue -Object $releaseManifest -Name "components"
     $updateDecision = Get-RevitMcpUpdateDecision `
         -IsFirstInstall:$isFirstInstall `
         -HasReleaseManifest:($null -ne $releaseManifest) `
         -HasReleaseComponents:($null -ne $releaseComponents) `
-        -RevitPayloadChangeCount $revitPayloadChanges.Count
+        -RevitPayloadChangeCount $effectiveRevitPayloadChangeCount
     $requiresRevitClosed = [bool]$updateDecision.RequiresRevitClosed
     $skipRevitPayloadInstall = $false
     $skipRuntimePayloadInstall = $false
@@ -2858,6 +2876,9 @@ try {
                 [string]$_.key
             }
         })
+    if ($SourceFreeMigration -and $revitChangeLabels.Count -eq 0) {
+        $revitChangeLabels = @("source-free migration full Revit payload repair")
+    }
     $isPackageCurrent = ($installedVersion -eq $targetVersion -and $installedSha -eq $targetSha)
 
     if ((-not $AuditOnly) -and (-not $SkipCodexUserIntegration)) {
@@ -2865,7 +2886,7 @@ try {
         [void](Set-CodexMemoryConfig)
     }
 
-    if (-not $Force -and $isPackageCurrent -and -not $requiresRevitClosed) {
+    if (-not $Force -and -not $SourceFreeMigration -and $isPackageCurrent -and -not $requiresRevitClosed) {
         $message = "Already up to date."
         Write-Host $message -ForegroundColor Green
         Write-UpdateReport -Status "current" -Message $message -Channel $channel -InstalledState $installedState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
@@ -2902,13 +2923,17 @@ try {
         $skipRevitPayloadInstall = [bool]$updateDecision.SkipRevitPayloadInstall
         Write-Host "Revit payload    : unchanged; existing Revit files will be left untouched." -ForegroundColor Green
     }
+    if ($SourceFreeMigration) {
+        $skipRevitPayloadInstall = $false
+        Write-Host "Source migration : full managed Revit/runtime/Codex payload repair forced." -ForegroundColor Yellow
+    }
 
     $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
     $runningDecision = Get-RevitMcpUpdateDecision `
         -IsFirstInstall:$isFirstInstall `
         -HasReleaseManifest:($null -ne $releaseManifest) `
         -HasReleaseComponents:($null -ne $releaseComponents) `
-        -RevitPayloadChangeCount $revitPayloadChanges.Count `
+        -RevitPayloadChangeCount $effectiveRevitPayloadChangeCount `
         -IsRevitRunning:($null -ne $runningRevit)
     if ($runningDecision.DeferForRevitClose) {
         $message = "Update requires Revit to be closed because Revit add-in/command files changed. Save and synchronize your model, close Revit, then run the updater again."
@@ -2949,23 +2974,43 @@ try {
 
     $packageLayout = Resolve-PackageLayout -Root $extractRoot -ReleaseManifest $releaseManifest
 
-    if (Test-DirectoryPayloadUnchanged -Manifest $releaseManifest -ComponentKey "runtimePayload" -PackageTarget $PackageTarget) {
-        $skipRuntimePayloadInstall = $true
-        Write-Host "Runtime payload  : unchanged; existing runtime files will be left untouched." -ForegroundColor Green
+    if ($SourceFreeMigration) {
+        Write-Host "Source migration : runtime, docs, Codex skill, and MCP registration refresh forced." -ForegroundColor Yellow
     }
-    if (Test-DirectoryPayloadUnchanged -Manifest $releaseManifest -ComponentKey "docsServerPayload" -PackageTarget $PackageTarget) {
-        $skipDocsPayloadWork = $true
-        Write-Host "Docs payload     : unchanged; docs dependency/index refresh will be skipped." -ForegroundColor Green
+    else {
+        if (Test-DirectoryPayloadUnchanged -Manifest $releaseManifest -ComponentKey "runtimePayload" -PackageTarget $PackageTarget) {
+            $skipRuntimePayloadInstall = $true
+            Write-Host "Runtime payload  : unchanged; existing runtime files will be left untouched." -ForegroundColor Green
+        }
+        if (Test-DirectoryPayloadUnchanged -Manifest $releaseManifest -ComponentKey "docsServerPayload" -PackageTarget $PackageTarget) {
+            $skipDocsPayloadWork = $true
+            Write-Host "Docs payload     : unchanged; docs dependency/index refresh will be skipped." -ForegroundColor Green
+        }
+        if ((Test-ManifestComponentUnchanged -TargetManifest $releaseManifest -InstalledManifest $installedManifest -ComponentKey "skill" -PackageTarget $PackageTarget) -and
+            (Test-ManifestComponentUnchanged -TargetManifest $releaseManifest -InstalledManifest $installedManifest -ComponentKey "agents" -PackageTarget $PackageTarget) -and
+            (Test-CodexSkillInstallPresent -InstallRoot $InstallRoot -SkipUserIntegration:$SkipCodexUserIntegration)) {
+            $skipCodexSkillInstallForThisUpdate = $true
+            Write-Host "Codex skill      : unchanged; existing skill integration will be left untouched." -ForegroundColor Green
+        }
+        if ($skipRuntimePayloadInstall -and $skipDocsPayloadWork) {
+            $skipCodexMcpRegistrationForThisUpdate = $true
+            Write-Host "Codex MCP config : unchanged entry points; registration refresh will be skipped." -ForegroundColor Green
+        }
     }
-    if ((Test-ManifestComponentUnchanged -TargetManifest $releaseManifest -InstalledManifest $installedManifest -ComponentKey "skill" -PackageTarget $PackageTarget) -and
-        (Test-ManifestComponentUnchanged -TargetManifest $releaseManifest -InstalledManifest $installedManifest -ComponentKey "agents" -PackageTarget $PackageTarget) -and
-        (Test-CodexSkillInstallPresent -InstallRoot $InstallRoot -SkipUserIntegration:$SkipCodexUserIntegration)) {
-        $skipCodexSkillInstallForThisUpdate = $true
-        Write-Host "Codex skill      : unchanged; existing skill integration will be left untouched." -ForegroundColor Green
-    }
-    if ($skipRuntimePayloadInstall -and $skipDocsPayloadWork) {
-        $skipCodexMcpRegistrationForThisUpdate = $true
-        Write-Host "Codex MCP config : unchanged entry points; registration refresh will be skipped." -ForegroundColor Green
+
+    $sourceFreeMigrationPreCleanup = $null
+    $sourceFreeMigrationPostCleanup = $null
+    if ($SourceFreeMigration) {
+        $sourceFreeMigrationPreCleanup = Invoke-RevitMcpSourceFreeArtifactCleanup `
+            -InstallRoot $InstallRoot `
+            -PackageTarget $PackageTarget `
+            -ServerTarget $ServerTarget `
+            -UserProfileRoot $env:USERPROFILE `
+            -Commit
+        Write-Host ("Source cleanup  : removed {0} pre-install source/developer artifact item(s); {1} failed." -f $sourceFreeMigrationPreCleanup.removedCount, $sourceFreeMigrationPreCleanup.failedCount) -ForegroundColor Yellow
+        if ([int]$sourceFreeMigrationPreCleanup.failedCount -gt 0) {
+            throw "Source-free migration cleanup failed before package replacement. Failed items: $($sourceFreeMigrationPreCleanup.failedCount)"
+        }
     }
 
     if (Test-Path -LiteralPath $PackageTarget) {
@@ -3110,6 +3155,35 @@ try {
         }
     }
 
+    if ($SourceFreeMigration) {
+        $sourceFreeMigrationPostCleanup = Invoke-RevitMcpSourceFreeArtifactCleanup `
+            -InstallRoot $InstallRoot `
+            -PackageTarget $PackageTarget `
+            -ServerTarget $ServerTarget `
+            -UserProfileRoot $env:USERPROFILE `
+            -Commit
+        Write-Host ("Source verify   : remaining managed source/developer artifact item(s): {0}; cleanup failures: {1}" -f $sourceFreeMigrationPostCleanup.remainingCount, $sourceFreeMigrationPostCleanup.failedCount) -ForegroundColor Yellow
+        if ([int]$sourceFreeMigrationPostCleanup.failedCount -gt 0 -or [int]$sourceFreeMigrationPostCleanup.remainingCount -gt 0) {
+            throw "Source-free migration verification failed. Remaining: $($sourceFreeMigrationPostCleanup.remainingCount); failed cleanup: $($sourceFreeMigrationPostCleanup.failedCount)"
+        }
+    }
+
+    $sourceFreeMigrationState = if ($SourceFreeMigration) {
+        [ordered]@{
+            enabled = $true
+            preCleanupArtifactCount = if ($sourceFreeMigrationPreCleanup) { [int]$sourceFreeMigrationPreCleanup.artifactCount } else { 0 }
+            preCleanupRemovedCount = if ($sourceFreeMigrationPreCleanup) { [int]$sourceFreeMigrationPreCleanup.removedCount } else { 0 }
+            preCleanupFailedCount = if ($sourceFreeMigrationPreCleanup) { [int]$sourceFreeMigrationPreCleanup.failedCount } else { 0 }
+            postCleanupArtifactCount = if ($sourceFreeMigrationPostCleanup) { [int]$sourceFreeMigrationPostCleanup.artifactCount } else { 0 }
+            postCleanupRemovedCount = if ($sourceFreeMigrationPostCleanup) { [int]$sourceFreeMigrationPostCleanup.removedCount } else { 0 }
+            postCleanupFailedCount = if ($sourceFreeMigrationPostCleanup) { [int]$sourceFreeMigrationPostCleanup.failedCount } else { 0 }
+            postCleanupRemainingCount = if ($sourceFreeMigrationPostCleanup) { [int]$sourceFreeMigrationPostCleanup.remainingCount } else { 0 }
+        }
+    }
+    else {
+        $null
+    }
+
     $newState = [ordered]@{
         schemaVersion = 1
         app = "revit-mcp-skill"
@@ -3137,6 +3211,7 @@ try {
         highestAcceptedReleaseSequence = [long]$script:RevitMcpDistributionIntegrity.highestAcceptedReleaseSequence
         signedReleaseRollbackAllowed = [bool]$script:RevitMcpDistributionIntegrity.rollbackAllowed
         license = $script:RevitMcpLicense
+        sourceFreeMigration = $sourceFreeMigrationState
         updaterVersion = $updaterVersion
         skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
         paths = [ordered]@{

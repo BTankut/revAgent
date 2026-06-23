@@ -384,7 +384,7 @@ function Install-UpdaterToolsFromPackage {
     }
 
     New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
-    foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1")) {
+    foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1")) {
         $source = Join-Path $SourceRoot $toolName
         if (Test-Path -LiteralPath $source -PathType Leaf) {
             Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationRoot $toolName) -Force

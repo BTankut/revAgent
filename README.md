@@ -352,6 +352,21 @@ global and workspace `AGENTS.md` files. If a workstation used an older runtime
 directory name, pass it explicitly with `-LegacyServerTargets` so it is cleaned
 under the same safety checks.
 
+### Source-free migration
+
+Older workstations may already have source-bearing managed payloads under
+`C:\ProgramData\DPE\RevitMCP\package`, `runtime`, Codex skill locations, or
+updater package backups. Use the migration tool before broad rollout:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\ProgramData\DPE\RevitMCP\updater\migrate-source-free-install.ps1" -Mode dryRun
+```
+
+Commit mode calls the updater with `-SourceFreeMigration`, forces a full
+managed payload repair instead of using unchanged-payload skips, cleans managed
+source/developer artifacts, and writes a JSON report. It does not delete Codex
+sessions, history, memory, Revit models, or user project folders.
+
 ## Roslyn dependency model
 
 `send_code_to_revit` works through the bundled `RevitMCPCommandSet.dll`, and that DLL is already prebuilt.
