@@ -105,6 +105,11 @@ Chosen CD model:
   self-hosted runner workspace; it does not rebuild or re-sign. This avoids
   GitHub artifact storage quota, but it means the selected runner labels must
   resolve to the office runner that owns both signing-key and NAS access.
+- NAS candidate/stable readiness uses active-release artifact hygiene so the
+  new signed source-free release and current `tools\` payload are enforced
+  without blocking on historical source-full ZIPs already present in the
+  existing NAS release archive. Historical archive cleanup remains a separate
+  maintenance task.
 
 Still not executed by this repo change:
 

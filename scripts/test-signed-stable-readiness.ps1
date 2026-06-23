@@ -136,6 +136,26 @@ try {
     Assert-True (@($artifactReport.checks | Where-Object { $_.name -eq "no_source_or_developer_artifacts_in_release_root" -and -not $_.success }).Count -eq 1) "Artifact hygiene check should be present and failed."
     Remove-Item -LiteralPath $leakedSourcePath -Force
 
+    $legacyReleaseDir = Join-Path $signedRoot "releases\2026.05.01.legacy"
+    New-Item -ItemType Directory -Path $legacyReleaseDir -Force | Out-Null
+    $legacySourcePath = Join-Path $legacyReleaseDir "legacy-source.ts"
+    "export const legacy = true;" | Set-Content -LiteralPath $legacySourcePath -Encoding UTF8
+    $fullRootArtifactReport = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
+        -ReleaseRoot $signedRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -RepoRoot $RepoRoot `
+        -ReportOnly
+    Assert-True (-not [bool]$fullRootArtifactReport.success) "Full release-root scan should still report historical source artifacts."
+
+    $activeReleaseReport = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
+        -ReleaseRoot $signedRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -RepoRoot $RepoRoot `
+        -ArtifactScanScope activeRelease
+    Assert-True ([bool]$activeReleaseReport.success) "Active release scan should ignore historical legacy release artifacts."
+    Assert-Equal ([string]$activeReleaseReport.artifactScanScope) "activeRelease" "Readiness report should identify active release artifact scan scope."
+    Remove-Item -LiteralPath $legacyReleaseDir -Recurse -Force
+
     $scriptText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1")
     Assert-True ($scriptText -match 'Test-RevitMcpReleaseDistributionIntegrity' -and $scriptText -match '-Policy "enforce"') "Readiness preflight must use the shared enforce-mode verifier."
     Assert-True ($scriptText -match 'no_private_signing_material_in_release_root') "Readiness preflight must include private signing material checks."

@@ -90,6 +90,12 @@ artifact. The local runner staging handoff avoids GitHub Actions artifact
 storage quota, so the selected runner labels must resolve to the office runner
 that owns both signing-key and NAS access.
 
+Candidate and final stable readiness checks use active-release artifact
+hygiene. They verify the candidate release package and current `tools\`
+payload, but do not block on historical legacy release ZIPs that may already
+exist under the NAS `releases\` archive. Use the default full-root readiness
+scan separately when auditing or cleaning those historical archives.
+
 Required protected variables:
 
 ```text
