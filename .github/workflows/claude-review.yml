@@ -26,7 +26,12 @@ jobs:
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment"
           # Opus 4.8 + effort=xhigh (high<->max arası). --effort session-level CLI
           # flag'idir; plugin positional effort'u yok sayar, bu yüzden claude_args'ta.
-          # Kotayı korumak için --effort high veya --model claude-sonnet-4-6'ya
-          # düşürebilirsin. (ultra/ultracode kullanma: ultra bulut+kredili faturalanır,
-          # ultracode bir effort seviyesi değildir.)
-          claude_args: "--model claude-opus-4-8 --effort xhigh"
+          # --allowedTools ZORUNLU: action'ın izin katmanı plugin frontmatter'ını
+          # otomatik tanımaz. Bu liste olmadan Task (paralel reviewer alt-ajanları),
+          # dosya okuma ve satır içi yorum araçları reddedilir (permission_denials),
+          # review derinleşemez ve hep "no issues"a düşer.
+          # Kotayı korumak için --effort high / --model claude-sonnet-4-6 yapabilirsin.
+          claude_args: |
+            --model claude-opus-4-8
+            --effort xhigh
+            --allowedTools "Task,Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),mcp__github_inline_comment__create_inline_comment"
