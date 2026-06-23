@@ -188,6 +188,33 @@ function Set-RevitMcpManagedPowerShellProfileBlock {
     return $ProfilePath
 }
 
+function Set-RevitMcpCurrentProcessUtf8Console {
+    try {
+        $revAgentUtf8Encoding = [System.Text.UTF8Encoding]::new($false)
+        [Console]::InputEncoding = $revAgentUtf8Encoding
+        [Console]::OutputEncoding = $revAgentUtf8Encoding
+        $global:OutputEncoding = $revAgentUtf8Encoding
+        $env:PYTHONUTF8 = "1"
+        $env:PYTHONIOENCODING = "utf-8"
+        if (Get-Command chcp.com -ErrorAction SilentlyContinue) {
+            & chcp.com 65001 > $null
+        }
+
+        return [ordered]@{
+            success = $true
+            codePage = 65001
+            error = ""
+        }
+    }
+    catch {
+        return [ordered]@{
+            success = $false
+            codePage = 0
+            error = $_.Exception.Message
+        }
+    }
+}
+
 function Set-RevitMcpPowerShellUtf8ConsoleConfig {
     param(
         [string]$UserProfileRoot = "",
@@ -257,4 +284,4 @@ function Register-RevitMcpCodexMcpServersInConfig {
     return $ConfigPath
 }
 
-Export-ModuleMember -Function ConvertTo-RevitMcpTomlString, Set-RevitMcpCodexMcpServerConfig, Set-RevitMcpCodexMemoryConfig, Set-RevitMcpPowerShellUtf8ConsoleConfig, Register-RevitMcpCodexMcpServersInConfig
+Export-ModuleMember -Function ConvertTo-RevitMcpTomlString, Set-RevitMcpCodexMcpServerConfig, Set-RevitMcpCodexMemoryConfig, Set-RevitMcpCurrentProcessUtf8Console, Set-RevitMcpPowerShellUtf8ConsoleConfig, Register-RevitMcpCodexMcpServersInConfig

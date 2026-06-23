@@ -1022,11 +1022,24 @@ try {
     [void](Set-RevitMcpPowerShellUtf8ConsoleConfig -UserProfileRoot $profileUserRoot)
     $windowsPowerShellProfileTextAfterSecondWrite = Get-Content -Raw -LiteralPath $windowsPowerShellProfile
     Assert-Equal ([regex]::Matches($windowsPowerShellProfileTextAfterSecondWrite, '# BEGIN revAgent UTF-8 console').Count) 1 "UTF-8 profile block must not be duplicated."
+    $currentProcessUtf8 = Set-RevitMcpCurrentProcessUtf8Console
+    Assert-True ([bool]$currentProcessUtf8.success) "Current process UTF-8 setup should succeed."
+    Assert-Equal ([Console]::InputEncoding.CodePage) 65001 "Current process input encoding must be UTF-8."
+    Assert-Equal ([Console]::OutputEncoding.CodePage) 65001 "Current process output encoding must be UTF-8."
+    Assert-Equal ($OutputEncoding.CodePage) 65001 "Current process PowerShell output encoding must be UTF-8."
+    Assert-Equal $env:PYTHONUTF8 "1" "Current process must opt Python into UTF-8 mode."
+    Assert-Equal $env:PYTHONIOENCODING "utf-8" "Current process must opt Python stdio into UTF-8."
+    $codexRegistrationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.CodexRegistration.psm1")
+    Assert-True ($codexRegistrationText -match 'function Set-RevitMcpCurrentProcessUtf8Console' -and $codexRegistrationText -match 'Export-ModuleMember .*Set-RevitMcpCurrentProcessUtf8Console') "Codex registration module must export the current-process UTF-8 helper."
+    $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
+    Assert-True ($installTaskText -match 'Set-RevitMcpCurrentProcessUtf8Console') "Updater task installer entrypoint must force UTF-8 output even when launched with -NoProfile."
     Assert-True ($updaterText -match 'Set-RevitMcpCodexMemoryConfig') "Updater must enforce Codex memory config, including fast/no-op update paths."
+    Assert-True ($updaterText -match 'Set-RevitMcpCurrentProcessUtf8Console') "Updater entrypoint must force UTF-8 output even when launched with -NoProfile."
     Assert-True ($updaterText -match 'Remove-CodexProfileBackupArtifacts') "Updater must clean old Codex profile backup artifacts."
     $installerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\install-self-contained.ps1")
     Assert-True ($installerText -match 'Set-RevitMcpCodexMemoryConfig') "Installer must enforce Codex memory config."
     Assert-True ($installerText -match 'Set-RevitMcpPowerShellUtf8ConsoleConfig .* -ConfigureConsoleRegistry' -and $installerText -match 'PowerShell UTF-8 console profiles') "Installer must enforce UTF-8 console defaults for Codex PowerShell sessions."
+    Assert-True ($installerText -match 'Set-RevitMcpCurrentProcessUtf8Console') "Self-contained installer entrypoint must force UTF-8 output even when launched with -NoProfile."
     Assert-True ($installerText -match 'Remove-CodexProfileBackupArtifacts') "Installer must clean old Codex profile backup artifacts."
     Assert-True ($installerText -match 'Copy-RevitMcpRuntimeUserPayload') "Installer must copy only the runtime user payload."
     Assert-True ($installerText -match 'codexUserSourceRoot') "Installer must source Codex orchestration from the user pack."

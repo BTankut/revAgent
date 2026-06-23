@@ -127,6 +127,7 @@ try {
     $harnessLib = Join-Path $harnessTools "lib"
     New-Item -ItemType Directory -Path $harnessLib -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\nas\migrate-source-free-install.ps1") -Destination (Join-Path $harnessTools "migrate-source-free-install.ps1") -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.CodexRegistration.psm1") -Destination (Join-Path $harnessLib "RevitMcp.CodexRegistration.psm1") -Force
     Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.SourceFreeMigration.psm1") -Destination (Join-Path $harnessLib "RevitMcp.SourceFreeMigration.psm1") -Force
 
     $fakeUpdaterPath = Join-Path $harnessTools "update-from-nas.ps1"
@@ -237,6 +238,7 @@ $migrationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\n
 Assert-True ($migrationText -match 'Get-Command powershell\.exe' -and $migrationText -match '\[void\]\$updateArgs\.Add\("-File"\)' -and $migrationText -match '\[void\]\$updateArgs\.Add\(\$updaterPath\)') "Migration commit mode must launch the updater as a child PowerShell -File process so updater transcripts do not inherit encoded wrapper commands."
 Assert-True ($migrationText -notmatch '& \$updaterPath @updateArgs') "Migration commit mode must not call update-from-nas.ps1 inside the current PowerShell process."
 Assert-True ($migrationText -match 'update-from-nas\.ps1 exited with code') "Migration commit mode must treat non-zero child updater exit codes as failures."
+Assert-True ($migrationText -match 'Set-RevitMcpCurrentProcessUtf8Console') "Migration entrypoint must force UTF-8 output even when launched with -NoProfile."
 
 $updaterParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
 Assert-True ($updaterParams -contains "SourceFreeMigration") "update-from-nas.ps1 must expose -SourceFreeMigration."

@@ -72,6 +72,7 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
 $script:RevitMcpDistributionIntegrityModule = Import-Module (Join-Path $nasLibRoot "RevitMcp.DistributionIntegrity.psm1") -Force -PassThru
 Import-Module (Join-Path $nasLibRoot "RevitMcp.License.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.SourceFreeMigration.psm1") -Force
+Set-RevitMcpCurrentProcessUtf8Console | Out-Null
 
 $updaterVersion = "0.1.0"
 $script:RevitMcpTranscriptStarted = $false

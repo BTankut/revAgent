@@ -27,6 +27,7 @@ Import-Module (Join-Path $installerLibRoot "RevitMcp.RevitVersions.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevitMcp.Permissions.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevitMcp.LogRetention.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevitMcp.CodexRegistration.psm1") -Force
+Set-RevitMcpCurrentProcessUtf8Console | Out-Null
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $revitVersionConfig = Get-RevitMcpVersionConfig -Version $RevitVersion -RepoRoot $repoRoot

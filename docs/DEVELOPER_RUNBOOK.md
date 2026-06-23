@@ -846,7 +846,10 @@ duplicate blocks on repeated runs.
 It also writes a managed revAgent UTF-8 block to both Windows PowerShell and
 PowerShell 7 user profile files, and sets the current user's default console
 code page to UTF-8. This keeps Turkish text in `AGENTS.md`, `SKILL.md`, and
-MCP/Revit output readable in Codex PowerShell terminals.
+MCP/Revit output readable in Codex PowerShell terminals. Installer, updater,
+updater-task installer, and migration entrypoints also set UTF-8 in the current
+process before writing transcript/log output, because scheduled or remote
+automation commonly launches PowerShell with `-NoProfile`.
 
 Background updater notifications:
 

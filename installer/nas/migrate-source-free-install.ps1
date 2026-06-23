@@ -45,7 +45,9 @@ if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
     throw "revAgent migration lib folder was not found beside or above: $PSScriptRoot"
 }
 
+Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.SourceFreeMigration.psm1") -Force
+Set-RevitMcpCurrentProcessUtf8Console | Out-Null
 
 function Read-RevitMcpJsonFileOrNull {
     param([string]$Path)

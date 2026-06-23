@@ -59,7 +59,9 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.RevitVersions.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Permissions.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Proxy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
+Set-RevitMcpCurrentProcessUtf8Console | Out-Null
 
 $script:RevitMcpTranscriptStarted = $false
 $script:RevitMcpLogPath = ""
