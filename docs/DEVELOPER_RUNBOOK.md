@@ -686,9 +686,11 @@ from the NAS share, not from copied old script bodies when possible.
 ## GitHub Actions Signed Source-Free CD
 
 The protected CD workflow is `.github/workflows/signed-source-free-cd.yml`.
-It is manually dispatched from `main` and defaults to build/validate only. NAS
-publish runs only when the operator sets `publish_to_nas=true`, and that job is
-separated behind the `revagent-production-publish` GitHub environment.
+It runs automatically when protected `main` is updated and publishes the
+validated signed release to the NAS stable channel. Manual dispatch remains
+available from `main`; it defaults to build/validate only unless the operator
+sets `publish_to_nas=true`. The publish job is separated behind the
+`revagent-production-publish` GitHub environment.
 
 Chosen production signing model:
 
@@ -739,9 +741,10 @@ The GitHub environments `revagent-release-signing` and
 Reviewer and wait-timer protection rules could not be enabled on the current
 GitHub repo plan; GitHub returned billing-plan 422 errors when those protection
 rules were requested. Until reviewer protection is available, the human gate is
-the manual workflow dispatch plus explicit `publish_to_nas=true`. The NAS
-publish wrapper still validates `stable.candidate.json` on the target release
-root before replacing `stable.json`.
+the protected PR review/CI/merge decision for `main`; after merge, signed CD
+publishes automatically. The NAS publish wrapper still validates
+`stable.candidate.json` on the target release root before replacing
+`stable.json`.
 
 The build job runs `scripts/invoke-signed-source-free-cd.ps1`. That wrapper
 runs `scripts/test-ci.ps1`, uses `publish-nas-release.ps1` against a staging
@@ -752,7 +755,9 @@ The workflow keeps the validated signed release root in local staging under
 the self-hosted runner workspace and passes that path to the publish job. This
 avoids coupling the production handoff to GitHub Actions artifact storage
 quota while keeping the signing and publish jobs separated by environment and
-by the explicit `publish_to_nas=true` operator gate. The publish job runs
+by the protected `main` merge gate. The publish job runs automatically after a
+`main` push, and manual dispatch can still publish when `publish_to_nas=true`.
+The publish job runs
 `scripts/publish-signed-source-free-release-to-nas.ps1`; it does not rebuild or
 re-sign. It copies the release and tools to NAS, validates
 `stable.candidate.json` on the NAS root with active-release artifact hygiene,

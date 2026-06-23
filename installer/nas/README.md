@@ -80,15 +80,16 @@ uses the protected `revagent-release-signing` environment to build and validate
 a signed release root, and stores that root in local staging under the
 self-hosted runner workspace.
 
-NAS publish is a separate manual choice: run the workflow with
-`publish_to_nas=true` and approve the `revagent-production-publish`
-environment. The publish job reads the validated staged release root and runs
-`scripts/publish-signed-source-free-release-to-nas.ps1`, which copies the
-release and tools to NAS, validates `stable.candidate.json`, then updates
-`stable.sig.json` and `stable.json`. It does not rebuild or re-sign the
-artifact. The local runner staging handoff avoids GitHub Actions artifact
-storage quota, so the selected runner labels must resolve to the office runner
-that owns both signing-key and NAS access.
+When protected `main` is updated, the workflow automatically publishes the
+validated signed release to the NAS stable channel. Manual dispatch is still
+available for build-only validation or for an explicit operator-triggered
+publish with `publish_to_nas=true`. The publish job reads the validated staged
+release root and runs `scripts/publish-signed-source-free-release-to-nas.ps1`,
+which copies the release and tools to NAS, validates `stable.candidate.json`,
+then updates `stable.sig.json` and `stable.json`. It does not rebuild or
+re-sign the artifact. The local runner staging handoff avoids GitHub Actions
+artifact storage quota, so the selected runner labels must resolve to the
+office runner that owns both signing-key and NAS access.
 
 Candidate and final stable readiness checks use active-release artifact
 hygiene. They verify the candidate release package and current `tools\`
@@ -119,10 +120,10 @@ The public key fingerprint is
 
 The GitHub environments exist and the workflow variables are configured, but
 reviewer/wait-timer protection rules are unavailable on the current GitHub
-repo plan. Until that plan supports environment reviewer approval, use the
-manual workflow dispatch plus explicit `publish_to_nas=true` as the operator
-gate. The NAS publish wrapper still validates a candidate channel on the NAS
-root before replacing `channels\stable.json`.
+repo plan. The repository-side gate is therefore protected `main` plus passing
+CI/review before merge; after merge, signed CD publishes automatically. The
+NAS publish wrapper still validates a candidate channel on the NAS root before
+replacing `channels\stable.json`.
 
 ## Install The Workstation Updater
 

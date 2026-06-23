@@ -1,6 +1,9 @@
 name: Signed Source-Free CD
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       runner_labels_json:
@@ -35,7 +38,7 @@ concurrency:
 jobs:
   build-signed-release:
     name: Build signed source-free release
-    runs-on: ${{ fromJSON(inputs.runner_labels_json) }}
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
     environment: revagent-release-signing
     outputs:
       release_root: ${{ steps.build.outputs.release_root }}
@@ -54,6 +57,9 @@ jobs:
           REVAGENT_RELEASE_SIGNING_PRIVATE_KEY_PATH: ${{ vars.REVAGENT_RELEASE_SIGNING_PRIVATE_KEY_PATH }}
           REVAGENT_RELEASE_SIGNING_KEY_ID: ${{ vars.REVAGENT_RELEASE_SIGNING_KEY_ID }}
           REVAGENT_TRUSTED_RELEASE_KEYS_PATH: ${{ vars.REVAGENT_TRUSTED_RELEASE_KEYS_PATH }}
+          REVAGENT_CD_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+          REVAGENT_CD_RELEASE_SEQUENCE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sequence || '' }}
+          REVAGENT_CD_MINIMUM_ACCEPTED_RELEASE_SEQUENCE: ${{ github.event_name == 'workflow_dispatch' && inputs.minimum_accepted_release_sequence || '' }}
         run: |
           $ErrorActionPreference = "Stop"
           foreach ($name in @("REVAGENT_RELEASE_SIGNING_PRIVATE_KEY_PATH", "REVAGENT_RELEASE_SIGNING_KEY_ID", "REVAGENT_TRUSTED_RELEASE_KEYS_PATH")) {
@@ -74,8 +80,8 @@ jobs:
             Remove-Item -LiteralPath $releaseRoot -Recurse -Force
           }
 
-          $releaseSequence = if ([string]::IsNullOrWhiteSpace("${{ inputs.release_sequence }}")) { [long]0 } else { [long]"${{ inputs.release_sequence }}" }
-          $minimumAcceptedReleaseSequence = if ([string]::IsNullOrWhiteSpace("${{ inputs.minimum_accepted_release_sequence }}")) { [long]0 } else { [long]"${{ inputs.minimum_accepted_release_sequence }}" }
+          $releaseSequence = if ([string]::IsNullOrWhiteSpace($env:REVAGENT_CD_RELEASE_SEQUENCE)) { [long]0 } else { [long]$env:REVAGENT_CD_RELEASE_SEQUENCE }
+          $minimumAcceptedReleaseSequence = if ([string]::IsNullOrWhiteSpace($env:REVAGENT_CD_MINIMUM_ACCEPTED_RELEASE_SEQUENCE)) { [long]0 } else { [long]$env:REVAGENT_CD_MINIMUM_ACCEPTED_RELEASE_SEQUENCE }
 
           $args = @{
             ReleaseRoot = $releaseRoot
@@ -86,8 +92,8 @@ jobs:
             MinimumAcceptedReleaseSequence = $minimumAcceptedReleaseSequence
             Force = $true
           }
-          if (-not [string]::IsNullOrWhiteSpace("${{ inputs.version }}")) {
-            $args["Version"] = "${{ inputs.version }}"
+          if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_CD_VERSION)) {
+            $args["Version"] = $env:REVAGENT_CD_VERSION
           }
 
           .\scripts\invoke-signed-source-free-cd.ps1 @args
@@ -95,7 +101,7 @@ jobs:
           "release_root=$releaseRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Remove staged release root after no-publish validation
-        if: ${{ !inputs.publish_to_nas && success() }}
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.publish_to_nas && success() }}
         shell: pwsh
         run: |
           $releaseRoot = "${{ steps.build.outputs.release_root }}"
@@ -106,8 +112,8 @@ jobs:
   publish-to-nas:
     name: Publish signed release to NAS
     needs: build-signed-release
-    if: ${{ inputs.publish_to_nas }}
-    runs-on: ${{ fromJSON(inputs.runner_labels_json) }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_to_nas) }}
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
     environment: revagent-production-publish
 
     steps:
