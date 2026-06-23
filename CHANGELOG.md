@@ -4,6 +4,12 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added signed source-free CD automation: a protected GitHub Actions workflow
+  can build a signed source-free release root from `main`, preserve it as a
+  reviewed artifact, and publish that exact artifact to NAS after a separate
+  protected approval. Signed release metadata now uses portable relative paths,
+  public trusted release keys can be copied into `tools\config`, and readiness
+  checks scan the release root and ZIP for source/developer/debug artifacts.
 - Fixed remaining live-test friction: local `test-all` and standalone payload
   freshness now restore npm dependencies before TypeScript builds, empty
   sheet/schedule inventory scans no longer expose misleading legacy match

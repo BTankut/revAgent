@@ -122,10 +122,24 @@ try {
         -ReportOnly
     Assert-True (-not [bool]$privateMaterialReport.success) "Release root with private signing material must not be ready."
     Assert-True (@($privateMaterialReport.privateMaterialFindings).Count -gt 0) "Private signing material finding should be reported."
+    Remove-Item -LiteralPath $leakedKeyPath -Force
+
+    $leakedSourcePath = Join-Path $signedRoot (Join-Path "releases" (Join-Path $signedVersion "leaked-source.ts"))
+    "export const leaked = true;" | Set-Content -LiteralPath $leakedSourcePath -Encoding UTF8
+    $artifactReport = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
+        -ReleaseRoot $signedRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -RepoRoot $RepoRoot `
+        -ReportOnly
+    Assert-True (-not [bool]$artifactReport.success) "Release root with source artifacts must not be ready."
+    Assert-True (@($artifactReport.artifactFindings).Count -gt 0) "Source/developer artifact findings should be reported."
+    Assert-True (@($artifactReport.checks | Where-Object { $_.name -eq "no_source_or_developer_artifacts_in_release_root" -and -not $_.success }).Count -eq 1) "Artifact hygiene check should be present and failed."
+    Remove-Item -LiteralPath $leakedSourcePath -Force
 
     $scriptText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1")
     Assert-True ($scriptText -match 'Test-RevitMcpReleaseDistributionIntegrity' -and $scriptText -match '-Policy "enforce"') "Readiness preflight must use the shared enforce-mode verifier."
     Assert-True ($scriptText -match 'no_private_signing_material_in_release_root') "Readiness preflight must include private signing material checks."
+    Assert-True ($scriptText -match 'no_source_or_developer_artifacts_in_release_root') "Readiness preflight must include source/developer artifact checks."
 }
 finally {
     $rsa.Dispose()

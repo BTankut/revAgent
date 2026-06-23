@@ -18,7 +18,7 @@ Code change
 -> commit / push
 -> test
 -> publish-nas-release.ps1
--> channels\stable.json is updated
+-> channels\stable.json and stable.sig.json are updated
 -> workstations run update-from-nas.ps1
 ```
 
@@ -30,10 +30,12 @@ A normal `git commit` or `git push` does not update the office by itself.
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\
   channels\
     stable.json
+    stable.sig.json
   releases\
     2026.05.08.1500-a1b2c3d4\
       revit-mcp-skill-2026.05.08.1500-a1b2c3d4.zip
       manifest.json
+      manifest.sig.json
   reports\
     PC-01_USER22.json
   tools\
@@ -66,7 +68,52 @@ Optional detached release signing is publish-time only. When a release-signing
 key is approved, pass both `-SigningPrivateKeyPath` and `-SigningKeyId`; the
 script writes `manifest.sig.json` and `stable.sig.json`, verifies them before
 finishing, and rejects private keys stored under the repo or NAS `tools` root.
-Do not store private signing keys in Git, the user ZIP, or NAS tools.
+Pass `-TrustedReleaseKeysPath` to copy the public release key set into
+`tools\config\release-trusted-keys.json` for workstation updaters. Do not store
+private signing keys in Git, the user ZIP, or NAS tools.
+
+## GitHub Actions CD
+
+The protected workflow `.github/workflows/signed-source-free-cd.yml` is the
+preferred CD producer for signed source-free releases. It runs from `main`,
+uses the protected `revagent-release-signing` environment to build and validate
+a signed release root, and uploads that root as a reviewable artifact.
+
+NAS publish is a separate manual choice: run the workflow with
+`publish_to_nas=true` and approve the `revagent-production-publish`
+environment. The publish job downloads the reviewed artifact and runs
+`scripts/publish-signed-source-free-release-to-nas.ps1`, which copies the
+release and tools to NAS, validates `stable.candidate.json`, then updates
+`stable.sig.json` and `stable.json`. It does not rebuild or re-sign the
+artifact.
+
+Required protected variables:
+
+```text
+REVAGENT_RELEASE_SIGNING_PRIVATE_KEY_PATH
+REVAGENT_RELEASE_SIGNING_KEY_ID
+REVAGENT_TRUSTED_RELEASE_KEYS_PATH
+REVAGENT_NAS_RELEASE_ROOT
+```
+
+Keep the private signing key path on the approved self-hosted Windows runner,
+outside the Git checkout and outside NAS `tools`. Only public trusted release
+keys belong in `release-trusted-keys.json`.
+
+Current production signing setup on this workstation uses key id
+`revagent-prod-rsa-2026q3`, private key path
+`C:\ProgramData\DPE\revAgentReleaseSigning\private\revagent-prod-rsa-2026q3-private.xml`,
+and public trusted keys path
+`C:\ProgramData\DPE\revAgentReleaseSigning\public\release-trusted-keys.json`.
+The public key fingerprint is
+`32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33`.
+
+The GitHub environments exist and the workflow variables are configured, but
+reviewer/wait-timer protection rules are unavailable on the current GitHub
+repo plan. Until that plan supports environment reviewer approval, use the
+manual workflow dispatch plus explicit `publish_to_nas=true` as the operator
+gate. The NAS publish wrapper still validates a candidate channel on the NAS
+root before replacing `channels\stable.json`.
 
 ## Install The Workstation Updater
 

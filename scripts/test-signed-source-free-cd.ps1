@@ -1,0 +1,137 @@
+<#
+.SYNOPSIS
+    CI-safe tests for the signed source-free CD producer and NAS publish wrapper.
+#>
+
+[CmdletBinding()]
+param(
+    [string]$RepoRoot = ""
+)
+
+$ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
+$RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
+Import-Module (Join-Path $RepoRoot "installer\lib\RevitMcp.DistributionIntegrity.psm1") -Force
+
+function Assert-True {
+    param(
+        [bool]$Condition,
+        [string]$Message
+    )
+
+    if (-not $Condition) {
+        throw $Message
+    }
+}
+
+function Assert-Equal {
+    param(
+        [object]$Actual,
+        [object]$Expected,
+        [string]$Message
+    )
+
+    if (-not [object]::Equals($Actual, $Expected)) {
+        throw "$Message Expected '$Expected', got '$Actual'."
+    }
+}
+
+function New-TestRsaProvider {
+    $cspParameters = [System.Security.Cryptography.CspParameters]::new(24)
+    $cspParameters.Flags = [System.Security.Cryptography.CspProviderFlags]::CreateEphemeralKey
+    return [System.Security.Cryptography.RSACryptoServiceProvider]::new(2048, $cspParameters)
+}
+
+Write-Host "Test signed source-free CD producer and NAS publish wrapper"
+$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-signed-source-free-cd-test-" + [Guid]::NewGuid().ToString("N"))
+$releaseRoot = Join-Path $tempRoot "release-root"
+$nasRoot = Join-Path $tempRoot "nas-root"
+$secretRoot = Join-Path $tempRoot "secrets"
+$version = "2026.06.23.1-cd-test"
+$keyId = "test-cd-key"
+$releaseSequence = 3001
+$minimumAcceptedReleaseSequence = 3000
+$rsa = New-TestRsaProvider
+
+try {
+    New-Item -ItemType Directory -Path $secretRoot -Force | Out-Null
+    $privateKeyPath = Join-Path $secretRoot "release-signing-private.xml"
+    $rsa.ToXmlString($true) | Set-Content -LiteralPath $privateKeyPath -Encoding UTF8
+    $publicKeyXml = $rsa.ToXmlString($false)
+    $trustedKeys = @{ trustedKeys = @{} }
+    $trustedKeys.trustedKeys[$keyId] = [pscustomobject][ordered]@{
+        publicKeyXml = $publicKeyXml
+        publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+        algorithm = "RS256"
+    }
+    $trustedKeysPath = Join-Path $secretRoot "release-trusted-keys.json"
+    $trustedKeys | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $trustedKeysPath -Encoding UTF8
+
+    $buildResult = & (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1") `
+        -ReleaseRoot $releaseRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -SigningPrivateKeyPath $privateKeyPath `
+        -SigningKeyId $keyId `
+        -Version $version `
+        -ReleaseSequence $releaseSequence `
+        -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
+        -SkipEngineeringGates `
+        -AllowDirty `
+        -AllowNonMain `
+        -Force `
+        -RepoRoot $RepoRoot
+    Assert-True ([bool]$buildResult.success) "CD producer should return success."
+    Assert-Equal ([string]$buildResult.version) $version "CD producer should report the produced version."
+
+    $sourceChannelPath = Join-Path $releaseRoot "channels\stable.json"
+    $sourceManifestPath = Join-Path $releaseRoot "releases\$version\manifest.json"
+    $sourceChannel = Get-Content -Raw -LiteralPath $sourceChannelPath | ConvertFrom-Json
+    $sourceManifest = Get-Content -Raw -LiteralPath $sourceManifestPath | ConvertFrom-Json
+    Assert-True (-not [System.IO.Path]::IsPathRooted([string]$sourceChannel.packagePath)) "CD channel packagePath must be relative."
+    Assert-True (-not [System.IO.Path]::IsPathRooted([string]$sourceChannel.manifestPath)) "CD channel manifestPath must be relative."
+    Assert-Equal ([string]$sourceChannel.packagePath) ([string]$sourceManifest.package.path) "CD channel and manifest package paths must match."
+    Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\config\release-trusted-keys.json") -PathType Leaf) "CD release root should carry public trusted keys in tools config."
+
+    $publishResult = & (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1") `
+        -SourceReleaseRoot $releaseRoot `
+        -NasReleaseRoot $nasRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -Force `
+        -RepoRoot $RepoRoot
+    Assert-True ([bool]$publishResult.success) "NAS publish wrapper should return success."
+    Assert-Equal ([string]$publishResult.version) $version "NAS publish wrapper should report the published version."
+
+    Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "channels\stable.json") -PathType Leaf) "NAS stable channel should exist after publish."
+    Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "channels\stable.sig.json") -PathType Leaf) "NAS stable channel signature should exist after publish."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $nasRoot "channels\stable.candidate.json"))) "NAS candidate channel should be removed after publish."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $nasRoot "channels\stable.candidate.sig.json"))) "NAS candidate channel signature should be removed after publish."
+
+    $nasReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
+        -ReleaseRoot $nasRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -RepoRoot $RepoRoot
+    Assert-True ([bool]$nasReadiness.success) "Published NAS root should pass signed stable readiness."
+
+    $workflowPath = Join-Path $RepoRoot ".github\workflows\signed-source-free-cd.yml"
+    $workflowText = Get-Content -Raw -LiteralPath $workflowPath
+    Assert-True ($workflowText -match 'revagent-release-signing') "CD workflow should use a protected signing environment."
+    Assert-True ($workflowText -match 'revagent-production-publish') "CD workflow should use a separate protected publish environment."
+    Assert-True ($workflowText -match 'actions/upload-artifact' -and $workflowText -match 'actions/download-artifact') "CD workflow should preserve a reviewed signed artifact between build and publish jobs."
+    Assert-True ($workflowText -match 'publish_to_nas') "CD workflow should keep NAS publish as an explicit manual input."
+
+    $producerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1")
+    $publisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1")
+    Assert-True ($producerText -match 'test-ci\.ps1' -and $producerText -match 'RequireSigning') "CD producer should run engineering gates and require signing."
+    Assert-True ($publisherText -match 'candidate\.json' -and $publisherText -match 'check-signed-stable-readiness\.ps1') "NAS publisher should validate a candidate channel before stable promotion."
+}
+finally {
+    $rsa.Dispose()
+    if (Test-Path -LiteralPath $tempRoot) {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+    }
+}
+
+Write-Host "Signed source-free CD tests passed." -ForegroundColor Green

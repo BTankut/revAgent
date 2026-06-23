@@ -28,7 +28,7 @@ for servers, assemblies, manifests, and installed paths.
 |   |-- REPOSITORY_STRUCTURE.md
 |   |-- REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md
 |   |-- REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md
-|   |-- REVAGENT_SOURCE_PROTECTION_PLAN.md
+|   |-- REVAGENT_SIGNED_SOURCE_FREE_CD_ROLLOUT_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
 |-- references/

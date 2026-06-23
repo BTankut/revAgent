@@ -31,8 +31,9 @@ remain exact implementation, tool, package, manifest, and path identifiers.
 - `installer/runtime-mcp-server/`: TypeScript source and bundled local runtime MCP server build for live Revit execution
 - `dashboard/`: read-only live dashboard server and browser UI for office monitoring
 - `docs/PLATFORM_ARCHITECTURE.md`: current platform, bridge, runtime, telemetry, dashboard, and deployment architecture
-- `docs/REVAGENT_SOURCE_PROTECTION_PLAN.md`: phased source-free user-pack,
-  hardening, know-how boundary, and integrity roadmap
+- `docs/REVAGENT_SIGNED_SOURCE_FREE_CD_ROLLOUT_PLAN.md`: active signed
+  source-free rollout, GitHub Actions CD, NAS publish, pilot, and enforcement
+  plan
 - `docs/REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md`: Phase 4 local vs service-backed
   product know-how classification
 - `docs/REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md`: Phase 5 release-origin,
@@ -154,6 +155,9 @@ pulling and reinstalling on every machine.
 - The NAS share is the single deployment source workstations read from.
 - A normal `git commit` / `git push` does not update the office.
 - A release is published only when `publish-nas-release.ps1` is run.
+- Signed source-free CD is available through
+  `.github/workflows/signed-source-free-cd.yml`; its NAS publish job is still a
+  separate protected approval step.
 - Office releases are published to the managed release channel after local/manual testing.
 - Workstations run `update-from-nas.ps1`, usually through a scheduled task
   installed by `install-updater-task.ps1`; automatic checks run once daily at
@@ -624,7 +628,7 @@ revit-mcp-skill/
 |   |-- REPOSITORY_STRUCTURE.md
 |   |-- REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md
 |   |-- REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md
-|   |-- REVAGENT_SOURCE_PROTECTION_PLAN.md
+|   |-- REVAGENT_SIGNED_SOURCE_FREE_CD_ROLLOUT_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
 |-- dashboard/
