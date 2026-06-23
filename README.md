@@ -371,6 +371,14 @@ managed payload repair instead of using unchanged-payload skips, cleans managed
 source/developer artifacts, and writes a JSON report. It does not delete Codex
 sessions, history, memory, Revit models, or user project folders.
 
+Normal stable updater entrypoints now check the same managed source/developer
+artifact inventory before install/update work starts. If artifacts remain, the
+GUI shows a one-time migration path and runs the update with
+`-SourceFreeMigration` after operator confirmation. If the inventory is already
+clean, migration does not run again and the machine follows the normal stable
+update path. Non-GUI updater runs still stop with a migration-required report
+instead of replacing the package without that explicit migration mode.
+
 ## Roslyn dependency model
 
 `send_code_to_revit` works through the bundled `RevitMCPCommandSet.dll`, and that DLL is already prebuilt.

@@ -2930,6 +2930,47 @@ try {
     }
     $isPackageCurrent = ($installedVersion -eq $targetVersion -and $installedSha -eq $targetSha)
 
+    if (-not $SourceFreeMigration) {
+        $sourceFreeGuardArtifacts = @(Get-RevitMcpSourceFreeArtifactInventory `
+                -InstallRoot $InstallRoot `
+                -PackageTarget $PackageTarget `
+                -ServerTarget $ServerTarget)
+        if ($sourceFreeGuardArtifacts.Count -gt 0) {
+            $sampleArtifacts = @($sourceFreeGuardArtifacts |
+                    Select-Object -First 20 |
+                    ForEach-Object {
+                        [ordered]@{
+                            rootLabel = [string]$_.rootLabel
+                            rootKind = [string]$_.rootKind
+                            kind = [string]$_.kind
+                            reason = [string]$_.reason
+                            relativePath = [string]$_.relativePath
+                            path = [string]$_.path
+                        }
+                    })
+            $message = "Source-free migration is required before normal update. Found $($sourceFreeGuardArtifacts.Count) managed source/developer artifact item(s). Run migrate-source-free-install.ps1 -Mode dryRun first, review the report, then run -Mode commit."
+            Write-Warning $message
+            Write-UpdateReport `
+                -Status "source-free-migration-required" `
+                -Message $message `
+                -Channel $channel `
+                -InstalledState $installedState `
+                -Diagnostics ([ordered]@{
+                    sourceFreeMigrationRequired = $true
+                    sourceFreeMigrationArtifactCount = $sourceFreeGuardArtifacts.Count
+                    sourceFreeMigrationSampleArtifacts = $sampleArtifacts
+                    migrationDryRunCommand = "migrate-source-free-install.ps1 -Mode dryRun"
+                    migrationCommitCommand = "migrate-source-free-install.ps1 -Mode commit"
+                }) `
+                -PreviousVersion $installedVersion `
+                -InstalledVersion $installedVersion `
+                -LocalReportPath $localReportPath `
+                -RemoteReportsRoot $ReportsRoot
+            Show-UserNotification -Title "revAgent migration required" -Message $message -Key ("source-free-migration-required|{0}" -f $targetVersion) -Icon "Warning"
+            return
+        }
+    }
+
     if ((-not $AuditOnly) -and (-not $SkipCodexUserIntegration)) {
         Remove-CodexProfileBackupArtifacts
         [void](Set-CodexMemoryConfig)
