@@ -696,8 +696,10 @@ launches `update-from-nas.ps1 -SourceFreeMigration` in a child PowerShell
 integration, cleans managed source/developer artifacts from package/runtime/Codex
 skill/updater backup locations, and writes a JSON migration report. The child
 `-File` launch keeps updater transcript headers readable even when migration is
-orchestrated remotely. It must not delete Codex sessions, memory, Revit models,
-or user project folders.
+orchestrated remotely. If `revAgent Auto Update` was already disabled before
+migration, commit mode restores that disabled state after the updater/installer
+refresh. It must not delete Codex sessions, memory, Revit models, or user
+project folders.
 
 Distribution integrity support starts in CI as fixtures before production
 enforcement. `installer/lib/RevitMcp.DistributionIntegrity.psm1` owns the

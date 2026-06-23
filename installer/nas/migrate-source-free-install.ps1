@@ -135,6 +135,106 @@ function Add-RevitMcpChildProcessSwitch {
     }
 }
 
+function Get-RevitMcpScheduledTaskState {
+    param([string]$Name)
+
+    $getTaskCommand = Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue
+    if ($null -eq $getTaskCommand) {
+        return [ordered]@{
+            available = $false
+            exists = $false
+            state = ""
+            error = ""
+        }
+    }
+
+    try {
+        $task = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -eq $task) {
+            return [ordered]@{
+                available = $true
+                exists = $false
+                state = ""
+                error = ""
+            }
+        }
+
+        return [ordered]@{
+            available = $true
+            exists = $true
+            state = [string]$task.State
+            error = ""
+        }
+    }
+    catch {
+        return [ordered]@{
+            available = $true
+            exists = $false
+            state = ""
+            error = $_.Exception.Message
+        }
+    }
+}
+
+function Restore-RevitMcpScheduledTaskDisabledState {
+    param(
+        [string]$Name,
+        [object]$BeforeState
+    )
+
+    if ($null -eq $BeforeState -or -not $BeforeState.available -or -not $BeforeState.exists) {
+        return [ordered]@{
+            attempted = $false
+            success = $true
+            reason = "task_not_previously_present"
+            state = ""
+            error = ""
+        }
+    }
+
+    if (-not [string]::Equals([string]$BeforeState.state, "Disabled", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return [ordered]@{
+            attempted = $false
+            success = $true
+            reason = "task_not_previously_disabled"
+            state = [string]$BeforeState.state
+            error = ""
+        }
+    }
+
+    $disableTaskCommand = Get-Command Disable-ScheduledTask -ErrorAction SilentlyContinue
+    if ($null -eq $disableTaskCommand) {
+        return [ordered]@{
+            attempted = $true
+            success = $false
+            reason = "disable_command_unavailable"
+            state = [string]$BeforeState.state
+            error = "Disable-ScheduledTask is unavailable."
+        }
+    }
+
+    try {
+        Disable-ScheduledTask -TaskName $Name -ErrorAction Stop | Out-Null
+        $afterState = Get-RevitMcpScheduledTaskState -Name $Name
+        return [ordered]@{
+            attempted = $true
+            success = [string]::Equals([string]$afterState.state, "Disabled", [System.StringComparison]::OrdinalIgnoreCase)
+            reason = "restored_disabled_state"
+            state = [string]$afterState.state
+            error = [string]$afterState.error
+        }
+    }
+    catch {
+        return [ordered]@{
+            attempted = $true
+            success = $false
+            reason = "restore_failed"
+            state = [string]$BeforeState.state
+            error = $_.Exception.Message
+        }
+    }
+}
+
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
 $requestedInstallRoot = $InstallRoot
 $requestedWorkRoot = $WorkRoot
@@ -177,6 +277,15 @@ $beforeInventory = @(Get-RevitMcpSourceFreeArtifactInventory `
 
 $updateExitCode = $null
 $updateError = ""
+$updaterTaskName = "revAgent Auto Update"
+$scheduledTaskBefore = $null
+$scheduledTaskRestore = [ordered]@{
+    attempted = $false
+    success = $true
+    reason = "not_commit_mode"
+    state = ""
+    error = ""
+}
 
 if ($Mode -eq "commit") {
     if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) {
@@ -222,6 +331,8 @@ if ($Mode -eq "commit") {
     Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipProxySetup" -Enabled $SkipProxySetup
     Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "NoNotifyUser" -Enabled $NoNotifyUser
 
+    $scheduledTaskBefore = Get-RevitMcpScheduledTaskState -Name $updaterTaskName
+
     try {
         & $powerShellPath @updateArgs
         $updateExitCode = $LASTEXITCODE
@@ -231,6 +342,12 @@ if ($Mode -eq "commit") {
     }
     catch {
         $updateError = $_.Exception.Message
+    }
+    finally {
+        $scheduledTaskRestore = Restore-RevitMcpScheduledTaskDisabledState -Name $updaterTaskName -BeforeState $scheduledTaskBefore
+        if (-not $scheduledTaskRestore.success -and [string]::IsNullOrWhiteSpace($updateError)) {
+            $updateError = "Failed to restore disabled scheduled task state: $($scheduledTaskRestore.error)"
+        }
     }
 }
 
@@ -268,6 +385,11 @@ $report = [ordered]@{
     updater = [ordered]@{
         exitCode = $updateExitCode
         error = $updateError
+    }
+    scheduledTask = [ordered]@{
+        name = $updaterTaskName
+        before = $scheduledTaskBefore
+        restore = $scheduledTaskRestore
     }
 }
 

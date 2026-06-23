@@ -155,6 +155,9 @@ Start-Transcript -Path $transcriptPath -Force | Out-Null
 try {
     Write-Host "fake updater invoked"
     Write-Host "sourceFreeMigration=$([bool]$SourceFreeMigration)"
+    if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_FAKE_TASK_STATE_FILE)) {
+        "Ready" | Set-Content -LiteralPath $env:REVAGENT_FAKE_TASK_STATE_FILE -Encoding ASCII
+    }
 }
 finally {
     Stop-Transcript | Out-Null
@@ -171,9 +174,11 @@ exit 0
     $harnessUserProfileRoot = Join-Path $harnessRoot "user"
     $harnessConfigPath = Join-Path $harnessWorkRoot "updater-config.json"
     $harnessChannelPath = Join-Path $harnessRoot "stable.json"
+    $fakeTaskStatePath = Join-Path $harnessRoot "fake-task-state.txt"
     New-Item -ItemType Directory -Path $harnessWorkRoot -Force | Out-Null
     "{}" | Set-Content -LiteralPath $harnessConfigPath -Encoding ASCII
     "{}" | Set-Content -LiteralPath $harnessChannelPath -Encoding ASCII
+    "Disabled" | Set-Content -LiteralPath $fakeTaskStatePath -Encoding ASCII
 
     function ConvertTo-SingleQuotedPowerShellLiteral {
         param([string]$Value)
@@ -181,6 +186,8 @@ exit 0
     }
 
     $encodedHarnessScript = @(
+        "function Get-ScheduledTask { [CmdletBinding()] param([string]`$TaskName) `$state = (Get-Content -Raw -LiteralPath `$env:REVAGENT_FAKE_TASK_STATE_FILE).Trim(); [pscustomobject]@{ TaskName = `$TaskName; State = `$state } }"
+        "function Disable-ScheduledTask { [CmdletBinding()] param([string]`$TaskName) 'Disabled' | Set-Content -LiteralPath `$env:REVAGENT_FAKE_TASK_STATE_FILE -Encoding ASCII; [pscustomobject]@{ TaskName = `$TaskName; State = 'Disabled' } }"
         "& " + (ConvertTo-SingleQuotedPowerShellLiteral (Join-Path $harnessTools "migrate-source-free-install.ps1")) + " ``"
         "  -Mode commit ``"
         "  -ConfigPath " + (ConvertTo-SingleQuotedPowerShellLiteral $harnessConfigPath) + " ``"
@@ -196,7 +203,9 @@ exit 0
     ) -join "`n"
     $encodedHarness = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($encodedHarnessScript))
     $encodedHarnessOutputPath = Join-Path $harnessRoot "encoded-wrapper-output.log"
+    $env:REVAGENT_FAKE_TASK_STATE_FILE = $fakeTaskStatePath
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedHarness *> $encodedHarnessOutputPath
+    Remove-Item Env:\REVAGENT_FAKE_TASK_STATE_FILE -ErrorAction SilentlyContinue
     Assert-Equal $LASTEXITCODE 0 "Encoded wrapper migration harness should succeed."
 
     $fakeTranscriptPath = Join-Path $harnessTools "fake-updater-transcript.log"
@@ -207,6 +216,10 @@ exit 0
     Assert-True ($hostLine -notmatch 'EncodedCommand') "Child updater transcript host must not inherit the outer EncodedCommand wrapper."
     $harnessReport = Get-Content -Raw -LiteralPath $harnessReportPath | ConvertFrom-Json
     Assert-True $harnessReport.success "Encoded wrapper migration harness report should succeed."
+    Assert-Equal ((Get-Content -Raw -LiteralPath $fakeTaskStatePath).Trim()) "Disabled" "Migration should preserve a previously disabled revAgent Auto Update task after the child updater runs."
+    Assert-Equal ([string]$harnessReport.scheduledTask.before.state) "Disabled" "Migration report should capture the disabled scheduled task state before updater."
+    Assert-True ([bool]$harnessReport.scheduledTask.restore.attempted) "Migration report should show that disabled scheduled task state was restored."
+    Assert-Equal ([string]$harnessReport.scheduledTask.restore.state) "Disabled" "Migration report should capture the restored disabled scheduled task state."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {
