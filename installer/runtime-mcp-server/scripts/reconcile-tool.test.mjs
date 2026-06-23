@@ -9,6 +9,10 @@ import { reconcileScheduleExcel } from "../build/tools/reconcile_schedule_excel.
 
 XLSX.set_fs(nodeFs);
 
+// registerTools wraps handlers with telemetry; contract tests must not touch the live dashboard.
+process.env.REVAGENT_TELEMETRY_DISABLED = "1";
+process.env.REVAGENT_LIVE_STATUS_DISABLED = "1";
+
 const tools = new Map();
 const server = {
   tool(name, description, schema, handler) {
