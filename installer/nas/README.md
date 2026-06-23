@@ -100,6 +100,21 @@ Keep the private signing key path on the approved self-hosted Windows runner,
 outside the Git checkout and outside NAS `tools`. Only public trusted release
 keys belong in `release-trusted-keys.json`.
 
+Current production signing setup on this workstation uses key id
+`revagent-prod-rsa-2026q3`, private key path
+`C:\ProgramData\DPE\revAgentReleaseSigning\private\revagent-prod-rsa-2026q3-private.xml`,
+and public trusted keys path
+`C:\ProgramData\DPE\revAgentReleaseSigning\public\release-trusted-keys.json`.
+The public key fingerprint is
+`32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33`.
+
+The GitHub environments exist and the workflow variables are configured, but
+reviewer/wait-timer protection rules are unavailable on the current GitHub
+repo plan. Until that plan supports environment reviewer approval, use the
+manual workflow dispatch plus explicit `publish_to_nas=true` as the operator
+gate. The NAS publish wrapper still validates a candidate channel on the NAS
+root before replacing `channels\stable.json`.
+
 ## Install The Workstation Updater
 
 Workstation prerequisites handled by the installer:

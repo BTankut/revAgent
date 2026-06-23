@@ -721,6 +721,28 @@ revagent-production-publish:
   REVAGENT_TRUSTED_RELEASE_KEYS_PATH
 ```
 
+Current production signing setup on this workstation:
+
+```text
+key id:
+  revagent-prod-rsa-2026q3
+private key:
+  C:\ProgramData\DPE\revAgentReleaseSigning\private\revagent-prod-rsa-2026q3-private.xml
+public trusted keys:
+  C:\ProgramData\DPE\revAgentReleaseSigning\public\release-trusted-keys.json
+public key fingerprint:
+  32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33
+```
+
+The GitHub environments `revagent-release-signing` and
+`revagent-production-publish` exist and their path/key variables are set.
+Reviewer and wait-timer protection rules could not be enabled on the current
+GitHub repo plan; GitHub returned billing-plan 422 errors when those protection
+rules were requested. Until reviewer protection is available, the human gate is
+the manual workflow dispatch plus explicit `publish_to_nas=true`. The NAS
+publish wrapper still validates `stable.candidate.json` on the target release
+root before replacing `stable.json`.
+
 The build job runs `scripts/invoke-signed-source-free-cd.ps1`. That wrapper
 runs `scripts/test-ci.ps1`, uses `publish-nas-release.ps1` against a staging
 release root, requires release signatures, copies public trusted keys into

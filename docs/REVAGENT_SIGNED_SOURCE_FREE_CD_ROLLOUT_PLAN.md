@@ -113,6 +113,45 @@ Still not executed by this repo change:
 - Enabling fail-closed enforcement.
 - Running multi-machine migration rollout.
 
+External setup status after PR preparation:
+
+- Production release signing key material was created on this workstation,
+  outside Git and outside NAS `tools`:
+  - key id: `revagent-prod-rsa-2026q3`;
+  - private key path:
+    `C:\ProgramData\DPE\revAgentReleaseSigning\private\revagent-prod-rsa-2026q3-private.xml`;
+  - public trusted key path:
+    `C:\ProgramData\DPE\revAgentReleaseSigning\public\release-trusted-keys.json`;
+  - public key fingerprint:
+    `32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33`.
+- GitHub Actions environments now exist:
+  - `revagent-release-signing`;
+  - `revagent-production-publish`.
+- Required environment variables are configured with paths/key id:
+  - `REVAGENT_RELEASE_SIGNING_PRIVATE_KEY_PATH`;
+  - `REVAGENT_RELEASE_SIGNING_KEY_ID`;
+  - `REVAGENT_TRUSTED_RELEASE_KEYS_PATH`;
+  - `REVAGENT_NAS_RELEASE_ROOT`.
+- GitHub environment reviewer/wait-timer protection rules could not be enabled
+  on the current repo plan; the GitHub API returned billing-plan 422 errors for
+  those protection-rule requests. Until the repo plan supports protected
+  environment reviewers, the explicit operator gate is manual workflow dispatch
+  plus `publish_to_nas=true`, followed by the script-side candidate-readiness
+  guard before `stable.json` is replaced.
+- A no-publish local CD smoke using the production signing key succeeded and
+  produced signed `stable.json`, `stable.sig.json`, `manifest.json`,
+  `manifest.sig.json`, a positive `releaseSequence`, and a readiness-verified
+  release root in a temporary directory that was deleted after verification.
+
+Still not executed after external setup:
+
+- Merging PR #88 into `main`.
+- Running the GitHub Actions CD workflow from merged `main`.
+- Publishing production NAS stable.
+- Installing/updating pilot workstations from the signed stable baseline.
+- Enabling fail-closed enforcement.
+- Running multi-machine migration rollout.
+
 ## Phase 1 - CD Design And Key Decisions
 
 Goal: make the next deployment step explicit before touching production NAS.
