@@ -18,6 +18,24 @@ function assertDoesNotContain(source, text, message) {
   assert.equal(source.includes(text), false, message);
 }
 
+const liveRegisterToolScripts = new Set([
+  "live-junk-model-smoke.mjs",
+]);
+
+for (const fileName of fs.readdirSync(path.join(packageRoot, "scripts")).filter((name) => name.endsWith(".mjs")).sort()) {
+  const source = readSource(path.join("scripts", fileName));
+  if (!source.includes("registerTools")) {
+    continue;
+  }
+  if (liveRegisterToolScripts.has(fileName)) {
+    continue;
+  }
+  assert.ok(
+    source.includes("REVAGENT_TELEMETRY_DISABLED") || source.includes("REVAGENT_TELEMETRY_ROOT"),
+    `${fileName} uses registerTools and must disable or isolate telemetry so tests cannot write to the live dashboard.`,
+  );
+}
+
 const setElementParameter = readSource("src/tools/set_element_parameter.ts");
 assertContains(setElementParameter, "[PRODUCTION_PARAMETER_WRITE]", "set_element_parameter must stay marked as a production write tool.");
 assertContains(setElementParameter, "runtimeGuarded", "set_element_parameter must use the shared runtime guarded result contract for JS-side guards.");

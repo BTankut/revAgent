@@ -16,6 +16,10 @@ import {
 } from "../build/tools/count_annotations.js";
 import { registerTools } from "../build/tools/register.js";
 
+// registerTools wraps handlers with telemetry; contract tests must not touch the live dashboard.
+process.env.REVAGENT_TELEMETRY_DISABLED = "1";
+process.env.REVAGENT_LIVE_STATUS_DISABLED = "1";
+
 const expectedStopReasons = [
   "completed",
   "max_elapsed",
