@@ -3040,7 +3040,9 @@ try {
     }
     elseif ($runningDecision.SkipRevitPayloadInstall) {
         $skipRevitPayloadInstall = [bool]$runningDecision.SkipRevitPayloadInstall
-        Write-Warning "Revit is running, but this update does not change Revit add-in/command files. Non-Revit files will be updated without touching the active Revit payload."
+        if ($runningRevit) {
+            Write-Warning "Revit is running, but this update does not change Revit add-in/command files. Non-Revit files will be updated without touching the active Revit payload."
+        }
     }
 
     Initialize-RevitMcpWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
