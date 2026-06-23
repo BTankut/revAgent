@@ -112,6 +112,29 @@ function Write-RevitMcpMigrationReport {
     $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
+function Add-RevitMcpChildProcessParameter {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [AllowNull()][string]$Value
+    )
+
+    [void]$Arguments.Add("-$Name")
+    [void]$Arguments.Add([string]$Value)
+}
+
+function Add-RevitMcpChildProcessSwitch {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [bool]$Enabled
+    )
+
+    if ($Enabled) {
+        [void]$Arguments.Add("-$Name")
+    }
+}
+
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
 $requestedInstallRoot = $InstallRoot
 $requestedWorkRoot = $WorkRoot
@@ -168,41 +191,43 @@ if ($Mode -eq "commit") {
         throw "update-from-nas.ps1 was not found beside the migration tool or under WorkRoot: $WorkRoot"
     }
 
-    $updateArgs = @{
-        ConfigPath = $ConfigPath
-        ChannelManifestPath = $ChannelManifestPath
-        InstallRoot = $InstallRoot
-        WorkRoot = $WorkRoot
-        PackageTarget = $PackageTarget
-        ServerTarget = $ServerTarget
-        OperationMethod = "source-free-migration"
-        SourceFreeMigration = $true
-    }
-    if (-not [string]::IsNullOrWhiteSpace($RevitInstallRoot)) {
-        $updateArgs["RevitInstallRoot"] = $RevitInstallRoot
-    }
-    if (-not [string]::IsNullOrWhiteSpace($ReportsRoot)) {
-        $updateArgs["ReportsRoot"] = $ReportsRoot
-    }
-    if ($SkipNpmInstall) {
-        $updateArgs["SkipNpmInstall"] = $true
-    }
-    if ($SkipCodexMcpRegistration) {
-        $updateArgs["SkipCodexMcpRegistration"] = $true
-    }
-    if ($SkipCodexUserIntegration) {
-        $updateArgs["SkipCodexUserIntegration"] = $true
-    }
-    if ($SkipProxySetup) {
-        $updateArgs["SkipProxySetup"] = $true
-    }
-    if ($NoNotifyUser) {
-        $updateArgs["NoNotifyUser"] = $true
+    $powerShellPath = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
+    if ([string]::IsNullOrWhiteSpace($powerShellPath)) {
+        $powerShellPath = "powershell.exe"
     }
 
+    $updateArgs = [System.Collections.Generic.List[string]]::new()
+    [void]$updateArgs.Add("-NoProfile")
+    [void]$updateArgs.Add("-ExecutionPolicy")
+    [void]$updateArgs.Add("Bypass")
+    [void]$updateArgs.Add("-File")
+    [void]$updateArgs.Add($updaterPath)
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ConfigPath" -Value $ConfigPath
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ChannelManifestPath" -Value $ChannelManifestPath
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "InstallRoot" -Value $InstallRoot
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "WorkRoot" -Value $WorkRoot
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "PackageTarget" -Value $PackageTarget
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ServerTarget" -Value $ServerTarget
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "OperationMethod" -Value "source-free-migration"
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SourceFreeMigration" -Enabled $true
+    if (-not [string]::IsNullOrWhiteSpace($RevitInstallRoot)) {
+        Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "RevitInstallRoot" -Value $RevitInstallRoot
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ReportsRoot)) {
+        Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ReportsRoot" -Value $ReportsRoot
+    }
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipNpmInstall" -Enabled $SkipNpmInstall
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipCodexMcpRegistration" -Enabled $SkipCodexMcpRegistration
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipCodexUserIntegration" -Enabled $SkipCodexUserIntegration
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipProxySetup" -Enabled $SkipProxySetup
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "NoNotifyUser" -Enabled $NoNotifyUser
+
     try {
-        & $updaterPath @updateArgs
+        & $powerShellPath @updateArgs
         $updateExitCode = $LASTEXITCODE
+        if ($null -ne $updateExitCode -and $updateExitCode -ne 0) {
+            $updateError = "update-from-nas.ps1 exited with code $updateExitCode"
+        }
     }
     catch {
         $updateError = $_.Exception.Message
