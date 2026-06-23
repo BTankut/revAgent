@@ -999,9 +999,11 @@ Repair-RevitMcpUpdaterPermissions
 
 $localUpdater = Join-Path $WorkRoot "update-from-nas.ps1"
 $localVersionTool = Join-Path $WorkRoot "show-installed-version.ps1"
+$localMigrationTool = Join-Path $WorkRoot "migrate-source-free-install.ps1"
 $configPath = Join-Path $WorkRoot "updater-config.json"
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "update-from-nas.ps1") -Destination $localUpdater -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "show-installed-version.ps1") -Destination $localVersionTool -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "migrate-source-free-install.ps1") -Destination $localMigrationTool -Force
 $localLibRoot = Join-Path $WorkRoot "lib"
 if (Test-Path -LiteralPath $localLibRoot) {
     Remove-Item -LiteralPath $localLibRoot -Recurse -Force

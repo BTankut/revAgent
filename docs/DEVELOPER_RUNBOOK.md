@@ -689,6 +689,14 @@ manifests, Revit DLL payloads, installer/updater helpers, release metadata, and
 managed debug-symbol, or unhardened JavaScript artifacts are detected in the
 staged package.
 
+For existing workstations that may already contain source-bearing managed
+payloads, run `migrate-source-free-install.ps1 -Mode dryRun` first. Commit mode
+uses `update-from-nas.ps1 -SourceFreeMigration`, disables unchanged-payload
+skips, refreshes runtime/docs/Codex integration, cleans managed source/developer
+artifacts from package/runtime/Codex skill/updater backup locations, and writes
+a JSON migration report. It must not delete Codex sessions, memory, Revit
+models, or user project folders.
+
 Distribution integrity support starts in CI as fixtures before production
 enforcement. `installer/lib/RevitMcp.DistributionIntegrity.psm1` owns the
 canonical JSON and detached signature helper surface, while
