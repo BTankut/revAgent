@@ -245,7 +245,10 @@ Each workstream should remain a separate PR:
    an explicit local rollback flag that records audit/report evidence. The
    actual signed stable publish remains a separate human-approved NAS
    deployment step with production public keys present on workstations before
-   fail-closed policy is enabled.
+   fail-closed policy is enabled. A read-only signed-stable readiness preflight
+   must pass before either action; it verifies enforce-mode signatures, package
+   hash consistency, positive `releaseSequence` metadata, and absence of obvious
+   private signing material under the release root.
 6. Optional license or seat design and implementation. License verification
    must use signed seat/license files and public verification keys only. The
    default workstation policy remains `disabled`; `audit` records invalid or

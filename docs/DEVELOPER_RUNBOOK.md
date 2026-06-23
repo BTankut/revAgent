@@ -484,6 +484,7 @@ compare file mtimes.
 | MCP build payloads and the Revit payload manifest match source | `scripts/test-mcp-build-payload-freshness.ps1` | `Engineering gates` | Live Revit behavior remains local-only. |
 | Distribution canonical JSON and detached signature fixtures stay deterministic | `scripts/test-distribution-integrity.ps1` | `Engineering gates` | Does not publish, sign a real stable channel, or enable updater enforcement. |
 | Publish-path detached signing writes verifiable signature files without real NAS or production keys | `scripts/test-publish-signing.ps1` | `Engineering gates` | Uses a temporary release root and ephemeral test key only. |
+| Signed stable readiness preflight rejects unsigned, partially signed, hash-mismatched, or private-key-bearing release roots | `scripts/test-signed-stable-readiness.ps1` | `Engineering gates` | Uses a temporary release root and ephemeral test key only; does not publish to NAS or enable enforcement. |
 | Updater compatibility mode verifies signed releases and reports unsigned legacy releases | `scripts/test-distribution-integrity.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish a signed stable baseline or flip fail-closed enforcement. |
 | Signed release anti-rollback and enforce-mode metadata stay valid | `scripts/test-distribution-integrity.ps1`, `scripts/test-publish-signing.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish to NAS or include production private keys. |
 | Optional signed license-seat verification stays public-key-only | `scripts/test-license-seat.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Default policy is disabled; no production license keys are included. |
@@ -714,6 +715,22 @@ verified, a completely unsigned release is accepted as `legacy-compatible` and
 reported, and partial or invalid signatures are rejected before package
 replacement. Signed stable publication and fail-closed enforcement remain
 separate human-approved workstreams.
+
+Before a signed stable baseline or fail-closed policy change, run the read-only
+preflight against the candidate release root and production public release-key
+file:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-signed-stable-readiness.ps1 `
+  -ReleaseRoot "\\dpe-nas\...\revit-mcp-deploy" `
+  -TrustedKeysPath "C:\secure\release-trusted-keys.json" `
+  -OutputJson
+```
+
+The preflight verifies channel and release-manifest detached signatures in
+`enforce` mode, checks ZIP SHA256 against signed metadata, requires a positive
+`releaseSequence`, and fails if obvious private signing material appears under
+the release root. It does not publish or change workstation policy.
 
 Signed release enforcement uses `releaseSequence` metadata in both
 `stable.json` and `manifest.json`. The updater persists
