@@ -29,6 +29,14 @@ $packageTarget = Join-Path $InstallRoot "package"
 $serverTarget = Join-Path $InstallRoot "runtime"
 $configPath = Join-Path $workRoot "updater-config.json"
 $localVersionTool = Join-Path $workRoot "show-installed-version.ps1"
+$nasLibRoot = @(
+    (Join-Path $scriptDir "lib"),
+    (Join-Path (Split-Path -Parent $scriptDir) "lib")
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
+    throw "revAgent updater lib folder was not found beside or above: $scriptDir"
+}
+Import-Module (Join-Path $nasLibRoot "RevitMcp.SourceFreeMigration.psm1") -Force
 $script:ActiveProcess = $null
 $script:ActiveLogPath = ""
 $script:LastLogLength = -1
@@ -83,6 +91,35 @@ function Read-JsonFile {
     catch {
         return $null
     }
+}
+
+function Get-SourceFreeMigrationArtifactsForGui {
+    return @(Get-RevitMcpSourceFreeArtifactInventory `
+            -InstallRoot $InstallRoot `
+            -PackageTarget $packageTarget `
+            -ServerTarget $serverTarget)
+}
+
+function Confirm-SourceFreeMigrationForGui {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Artifacts
+    )
+
+    $sample = @($Artifacts |
+            Select-Object -First 6 |
+            ForEach-Object { "- {0}: {1}" -f [string]$_.rootLabel, [string]$_.relativePath })
+    $sampleText = if ($sample.Count -gt 0) { "`r`n`r`nExamples:`r`n" + ($sample -join "`r`n") } else { "" }
+    $message = "Source-free migration is required before install/update.`r`n`r`nFound $($Artifacts.Count) managed source/developer artifact item(s). revAgent can run the one-time migration update now. After it succeeds, this machine will use the normal stable update path and migration will not run again while the inventory stays clean.`r`n`r`nContinue with source-free migration and update?$sampleText"
+
+    $statusLabel.Text = "Migration required."
+    $logBox.Text = $message + "`r`n"
+    $choice = [System.Windows.Forms.MessageBox]::Show(
+        $message,
+        "revAgent source-free migration required",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning)
+    return ($choice -eq [System.Windows.Forms.DialogResult]::Yes)
 }
 
 function Get-VersionNumericParts {
@@ -148,7 +185,24 @@ function Get-ChannelStatus {
             UpdateEnabled = $false
             RestoreEnabled = $false
             UpdateButtonText = "Update"
+            SourceFreeMigrationRequired = $false
+            SourceFreeMigrationArtifactCount = 0
             StatusText = "Release manifest could not be read."
+        }
+    }
+
+    $sourceFreeArtifacts = @(Get-SourceFreeMigrationArtifactsForGui)
+    if ($sourceFreeArtifacts.Count -gt 0) {
+        return [pscustomobject]@{
+            Code = "source-free-migration-required"
+            InstalledVersion = $installedVersion
+            ChannelVersion = $channelVersion
+            UpdateEnabled = $true
+            RestoreEnabled = $false
+            UpdateButtonText = "Migrate"
+            SourceFreeMigrationRequired = $true
+            SourceFreeMigrationArtifactCount = $sourceFreeArtifacts.Count
+            StatusText = "Source-free migration required before update: $($sourceFreeArtifacts.Count) managed source/developer artifact item(s)."
         }
     }
 
@@ -160,6 +214,8 @@ function Get-ChannelStatus {
             UpdateEnabled = $true
             RestoreEnabled = $false
             UpdateButtonText = "Install"
+            SourceFreeMigrationRequired = $false
+            SourceFreeMigrationArtifactCount = 0
             StatusText = "Not installed. Release can be installed: $channelVersion"
         }
     }
@@ -172,6 +228,8 @@ function Get-ChannelStatus {
             UpdateEnabled = $false
             RestoreEnabled = $true
             UpdateButtonText = "Update"
+            SourceFreeMigrationRequired = $false
+            SourceFreeMigrationArtifactCount = 0
             StatusText = "Current: $installedVersion. Install/repair is available."
         }
     }
@@ -185,6 +243,8 @@ function Get-ChannelStatus {
             UpdateEnabled = $true
             RestoreEnabled = $true
             UpdateButtonText = "Update"
+            SourceFreeMigrationRequired = $false
+            SourceFreeMigrationArtifactCount = 0
             StatusText = "Update available: $installedVersion -> $channelVersion"
         }
     }
@@ -196,6 +256,8 @@ function Get-ChannelStatus {
         UpdateEnabled = $false
         RestoreEnabled = $true
         UpdateButtonText = "Update"
+        SourceFreeMigrationRequired = $false
+        SourceFreeMigrationArtifactCount = 0
         StatusText = "Installed version differs from or is newer than the release target. Install/repair is available: $installedVersion -> $channelVersion"
     }
 }
@@ -415,7 +477,23 @@ function Start-InstallerOperation {
         return
     }
 
+    $directUpdaterPath = Join-Path $PSScriptRoot "update-from-nas.ps1"
     $status = Get-ChannelStatus
+    $sourceFreeArtifacts = @(Get-SourceFreeMigrationArtifactsForGui)
+    $runSourceFreeMigration = ($sourceFreeArtifacts.Count -gt 0)
+    if ($runSourceFreeMigration) {
+        if (-not (Test-Path -LiteralPath $directUpdaterPath -PathType Leaf)) {
+            [System.Windows.Forms.MessageBox]::Show("Source-free migration is required, but update-from-nas.ps1 was not found beside the launcher.", "revAgent") | Out-Null
+            Set-ButtonsEnabled -Enabled $true
+            return
+        }
+        if (-not (Confirm-SourceFreeMigrationForGui -Artifacts $sourceFreeArtifacts)) {
+            Set-ButtonsEnabled -Enabled $true
+            return
+        }
+        $Operation = "update"
+    }
+
     if ($Operation -eq "update" -and -not [bool]$status.UpdateEnabled) {
         [System.Windows.Forms.MessageBox]::Show("No update is available.`r`n`r`n$($status.StatusText)", "revAgent") | Out-Null
         Set-ButtonsEnabled -Enabled $true
@@ -436,7 +514,10 @@ function Start-InstallerOperation {
 
     $script:ActiveLogPath = New-RunLogPath
     $script:LastLogLength = -1
-    $operationMethod = if ($Operation -eq "restore") {
+    $operationMethod = if ($runSourceFreeMigration) {
+        "source-free-migration"
+    }
+    elseif ($Operation -eq "restore") {
         if ([string]::IsNullOrWhiteSpace($status.InstalledVersion)) { "gui-install" } else { "gui-install-repair" }
     }
     elseif ([string]::IsNullOrWhiteSpace($status.InstalledVersion)) {
@@ -445,15 +526,14 @@ function Start-InstallerOperation {
     else {
         "gui-update"
     }
-    $operationLabel = if ($operationMethod -eq "gui-install-repair") { "Install/repair" } elseif ($operationMethod -eq "gui-install") { "Install" } else { "Update" }
+    $operationLabel = if ($operationMethod -eq "source-free-migration") { "Source-free migration" } elseif ($operationMethod -eq "gui-install-repair") { "Install/repair" } elseif ($operationMethod -eq "gui-install") { "Install" } else { "Update" }
     $logBox.Text = "$operationLabel starting...`r`n"
     $statusLabel.Text = "Running."
     $progress.Style = "Marquee"
     Set-ButtonsEnabled -Enabled $false
 
-    $directUpdaterPath = Join-Path $PSScriptRoot "update-from-nas.ps1"
-    $useDirectUpdate = $Operation -eq "update" -and
-        -not [string]::IsNullOrWhiteSpace($status.InstalledVersion) -and
+    $useDirectUpdate = ($Operation -eq "update" -and
+        (-not [string]::IsNullOrWhiteSpace($status.InstalledVersion) -or $runSourceFreeMigration)) -and
         (Test-Path -LiteralPath $directUpdaterPath -PathType Leaf)
 
     if ($useDirectUpdate) {
@@ -489,6 +569,9 @@ function Start-InstallerOperation {
     }
     if ($Operation -eq "restore") {
         $arguments += "-ForceUpdate"
+    }
+    if ($runSourceFreeMigration) {
+        $arguments += "-SourceFreeMigration"
     }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo

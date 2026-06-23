@@ -787,6 +787,15 @@ migration, commit mode restores that disabled state after the updater/installer
 refresh. It must not delete Codex sessions, memory, Revit models, or user
 project folders.
 
+Normal stable updater entrypoints, including the standalone GUI launcher, check
+the managed source/developer artifact inventory before update/repair work
+starts. If artifacts remain, the GUI exposes a one-time migration path and runs
+`update-from-nas.ps1 -SourceFreeMigration` after operator confirmation. If the
+inventory is already clean, migration does not run again and the machine follows
+the normal stable update path. Non-GUI updater runs still stop with
+`source-free-migration-required` and write a report instead of replacing the
+package without explicit migration mode.
+
 Distribution integrity support starts in CI as fixtures before production
 enforcement. `installer/lib/RevitMcp.DistributionIntegrity.psm1` owns the
 canonical JSON and detached signature helper surface, while

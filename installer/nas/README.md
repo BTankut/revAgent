@@ -382,6 +382,13 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
 - Normal GUI updates run `update-from-nas.ps1` directly after the updater is
   already installed. `Install/Repair` remains the explicit path that refreshes
   the updater wrapper, task registration, permissions, and the full package.
+- Normal GUI and updater runs check managed source/developer artifact inventory
+  before install/update work starts. If an older workstation still needs
+  source-free migration, the GUI shows a one-time migration path and runs
+  `update-from-nas.ps1 -SourceFreeMigration` after operator confirmation. If the
+  inventory is already clean, migration does not run again. Non-GUI updater runs
+  still report `source-free-migration-required` and stop instead of replacing
+  the package without explicit migration mode.
 - Already-current update checks return before proxy, scheduled-task,
   Node/Codex Desktop, and npm preparation work after the lightweight Codex
   config/backup hygiene step.
