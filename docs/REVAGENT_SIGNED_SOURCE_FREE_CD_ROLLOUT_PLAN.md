@@ -99,7 +99,8 @@ Chosen CD model:
   outside NAS `tools`; GitHub receives only the path, key id, and public trusted
   key file path.
 - NAS publish is a separate job behind the protected
-  `revagent-production-publish` environment and is enabled only with
+  `revagent-production-publish` environment. It runs automatically after a
+  protected `main` update and can still be triggered manually with
   `publish_to_nas=true`.
 - The publish job uses the validated release root staged locally under the
   self-hosted runner workspace; it does not rebuild or re-sign. This avoids
@@ -115,7 +116,9 @@ Still not executed by this repo change:
 
 - Creating or installing a production private signing key.
 - Setting protected GitHub environment variables and approvals.
-- Publishing production NAS stable.
+- Publishing production NAS stable from the current protected `main` state
+  after each merge, and verifying the published `stable.json` commit before
+  telling operators to run workstation updaters.
 - Installing public trusted release keys on pilot workstations through a real
   signed stable update.
 - Enabling fail-closed enforcement.
@@ -143,9 +146,10 @@ External setup status after PR preparation:
 - GitHub environment reviewer/wait-timer protection rules could not be enabled
   on the current repo plan; the GitHub API returned billing-plan 422 errors for
   those protection-rule requests. Until the repo plan supports protected
-  environment reviewers, the explicit operator gate is manual workflow dispatch
-  plus `publish_to_nas=true`, followed by the script-side candidate-readiness
-  guard before `stable.json` is replaced.
+  environment reviewers, the explicit operator gate is the protected PR
+  review/CI/merge decision for `main`; after merge, signed CD publishes
+  automatically. The script-side candidate-readiness guard still runs before
+  `stable.json` is replaced.
 - A no-publish local CD smoke using the production signing key succeeded and
   produced signed `stable.json`, `stable.sig.json`, `manifest.json`,
   `manifest.sig.json`, a positive `releaseSequence`, and a readiness-verified
@@ -183,10 +187,10 @@ Required outcomes:
   - key rotation policy and key ID naming;
   - public trusted release key deployment path for workstations.
 - Decide the initial GitHub Actions deployment trigger:
-  - protected manual workflow dispatch from `main`;
-  - protected tag/release workflow;
-  - or a two-step workflow where build/sign is automatic and NAS publish is an
-    environment-approved job.
+  - protected `main` push automatically builds, signs, validates, and publishes
+    to NAS stable;
+  - manual workflow dispatch remains available from `main` for build-only
+    validation or explicit operator-triggered publish.
 - Decide whether signing happens inside GitHub Actions or on a self-hosted
   runner. Prefer a self-hosted runner if the private signing key or NAS access
   should never leave the office-controlled environment.
@@ -247,8 +251,9 @@ tools\
 - Refresh NAS `tools` from the same reviewed release state.
 - Verify `stable.json`, `stable.sig.json`, release manifest, manifest
   signature, ZIP path, ZIP SHA256, and release sequence after publish.
-- Keep publish approval human-controlled through a protected GitHub
-  environment or an equivalent explicit operator gate.
+- Keep publish controlled by the protected PR review/CI/merge gate for `main`;
+  do not tell operators to run workstation updaters until the signed CD run has
+  completed and NAS `stable.json` points at the expected merge commit.
 
 Gate:
 

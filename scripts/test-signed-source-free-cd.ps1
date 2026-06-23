@@ -134,7 +134,10 @@ try {
     Assert-True ($workflowText -match 'revagent-production-publish') "CD workflow should use a separate protected publish environment."
     Assert-True ($workflowText -match 'RUNNER_WORKSPACE' -and $workflowText -match '_revagent_signed_cd' -and $workflowText -match 'release_root') "CD workflow should preserve the signed release root through local self-hosted runner staging."
     Assert-True ($workflowText -notmatch 'actions/upload-artifact' -and $workflowText -notmatch 'actions/download-artifact') "CD workflow should not depend on GitHub artifact storage quota for source-free release handoff."
-    Assert-True ($workflowText -match 'publish_to_nas') "CD workflow should keep NAS publish as an explicit manual input."
+    Assert-True ($workflowText -match 'push:\s*\r?\n\s*branches:\s*\r?\n\s*-\s*main') "CD workflow should run automatically after main is updated."
+    Assert-True ($workflowText -match 'publish_to_nas') "CD workflow should keep NAS publish as an explicit manual dispatch input."
+    Assert-True ($workflowText -match "github\.event_name == 'push'" -and $workflowText -match 'inputs\.publish_to_nas') "CD workflow should publish to NAS automatically on main push and still support manual publish dispatch."
+    Assert-True ($workflowText -match 'REVAGENT_CD_VERSION' -and $workflowText -match 'REVAGENT_CD_RELEASE_SEQUENCE') "CD workflow should route optional manual inputs through push-safe environment variables."
 
     $producerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1")
     $publisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1")

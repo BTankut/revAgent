@@ -153,11 +153,12 @@ pulling and reinstalling on every machine.
 
 - GitHub remains the source history.
 - The NAS share is the single deployment source workstations read from.
-- A normal `git commit` / `git push` does not update the office.
-- A release is published only when `publish-nas-release.ps1` is run.
-- Signed source-free CD is available through
-  `.github/workflows/signed-source-free-cd.yml`; its NAS publish job is still a
-  separate protected approval step.
+- A normal feature-branch `git commit` / `git push` does not update the office.
+- Updating protected `main` starts the signed source-free CD workflow and
+  publishes the validated release to the NAS stable channel.
+- Signed source-free CD runs through
+  `.github/workflows/signed-source-free-cd.yml`; manual dispatch remains
+  available for build-only validation or an explicit operator-triggered publish.
 - Office releases are published to the managed release channel after local/manual testing.
 - Workstations run `update-from-nas.ps1`, usually through a scheduled task
   installed by `install-updater-task.ps1`; automatic checks run once daily at
