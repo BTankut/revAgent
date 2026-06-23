@@ -1008,10 +1008,25 @@ try {
     $codexStaleProfileText = Get-Content -Raw -LiteralPath $codexStaleProfileConfig
     Assert-True ($codexStaleProfileText -notmatch '(?m)^service_tier\s*=\s*"priority"\s*$') "Codex stale profile service_tier=priority must be normalized."
     Assert-True ($codexStaleProfileText -match '(?ms)^\[profiles\.legacy\]\s*.*?^service_tier\s*=\s*"fast"\s*$') "Codex stale profile service_tier must be normalized to fast."
+    $profileUserRoot = Join-Path $tempRoot "profile-user"
+    $windowsPowerShellProfile = Join-Path $profileUserRoot "Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $windowsPowerShellProfile) -Force | Out-Null
+    Set-Content -LiteralPath $windowsPowerShellProfile -Value "# existing operator profile`r`n`$x = 1`r`n" -Encoding UTF8
+    $utf8Profiles = @(Set-RevitMcpPowerShellUtf8ConsoleConfig -UserProfileRoot $profileUserRoot)
+    Assert-Equal $utf8Profiles.Count 2 "UTF-8 console config must cover Windows PowerShell and PowerShell 7 profile paths."
+    $windowsPowerShellProfileText = Get-Content -Raw -LiteralPath $windowsPowerShellProfile
+    $powerShell7ProfileText = Get-Content -Raw -LiteralPath (Join-Path $profileUserRoot "Documents\PowerShell\Microsoft.PowerShell_profile.ps1")
+    Assert-True ($windowsPowerShellProfileText -match '# existing operator profile') "UTF-8 console config must preserve existing profile content."
+    Assert-True ($windowsPowerShellProfileText -match '\[Console\]::OutputEncoding = \$revAgentUtf8Encoding' -and $windowsPowerShellProfileText -match 'chcp\.com 65001') "Windows PowerShell profile must force UTF-8 console output."
+    Assert-True ($powerShell7ProfileText -match '\[Console\]::OutputEncoding = \$revAgentUtf8Encoding' -and $powerShell7ProfileText -match 'PYTHONIOENCODING = "utf-8"') "PowerShell 7 profile must force UTF-8 console output."
+    [void](Set-RevitMcpPowerShellUtf8ConsoleConfig -UserProfileRoot $profileUserRoot)
+    $windowsPowerShellProfileTextAfterSecondWrite = Get-Content -Raw -LiteralPath $windowsPowerShellProfile
+    Assert-Equal ([regex]::Matches($windowsPowerShellProfileTextAfterSecondWrite, '# BEGIN revAgent UTF-8 console').Count) 1 "UTF-8 profile block must not be duplicated."
     Assert-True ($updaterText -match 'Set-RevitMcpCodexMemoryConfig') "Updater must enforce Codex memory config, including fast/no-op update paths."
     Assert-True ($updaterText -match 'Remove-CodexProfileBackupArtifacts') "Updater must clean old Codex profile backup artifacts."
     $installerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\install-self-contained.ps1")
     Assert-True ($installerText -match 'Set-RevitMcpCodexMemoryConfig') "Installer must enforce Codex memory config."
+    Assert-True ($installerText -match 'Set-RevitMcpPowerShellUtf8ConsoleConfig .* -ConfigureConsoleRegistry' -and $installerText -match 'PowerShell UTF-8 console profiles') "Installer must enforce UTF-8 console defaults for Codex PowerShell sessions."
     Assert-True ($installerText -match 'Remove-CodexProfileBackupArtifacts') "Installer must clean old Codex profile backup artifacts."
     Assert-True ($installerText -match 'Copy-RevitMcpRuntimeUserPayload') "Installer must copy only the runtime user payload."
     Assert-True ($installerText -match 'codexUserSourceRoot') "Installer must source Codex orchestration from the user pack."

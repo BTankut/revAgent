@@ -1022,6 +1022,10 @@ if (-not $SkipCodexUserIntegration) {
 
     New-HardLinkOrCopyFile -Source $codexMachineAgentsTarget -Destination $codexAgentsTarget
     [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $codexConfigTarget)
+    $utf8ProfilePaths = @(Set-RevitMcpPowerShellUtf8ConsoleConfig -UserProfileRoot $env:USERPROFILE -ConfigureConsoleRegistry)
+    if ($utf8ProfilePaths.Count -gt 0) {
+        Write-Host "PowerShell UTF-8 console profiles: $($utf8ProfilePaths -join '; ')"
+    }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {

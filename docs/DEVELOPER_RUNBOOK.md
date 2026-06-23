@@ -841,6 +841,10 @@ standard Codex memory settings and normalizes `service_tier = "fast"` in
 `%USERPROFILE%\.codex\config.toml` idempotently. The helper reuses existing
 top-level keys plus `[features]` and `[memories]` sections, and must not append
 duplicate blocks on repeated runs.
+It also writes a managed revAgent UTF-8 block to both Windows PowerShell and
+PowerShell 7 user profile files, and sets the current user's default console
+code page to UTF-8. This keeps Turkish text in `AGENTS.md`, `SKILL.md`, and
+MCP/Revit output readable in Codex PowerShell terminals.
 
 Background updater notifications:
 

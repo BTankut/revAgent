@@ -149,6 +149,96 @@ function Set-RevitMcpCodexMemoryConfig {
     return $ConfigPath
 }
 
+function Set-RevitMcpManagedPowerShellProfileBlock {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProfilePath,
+        [Parameter(Mandatory = $true)]
+        [string]$Block
+    )
+
+    $profileDir = Split-Path -Parent $ProfilePath
+    if (-not [string]::IsNullOrWhiteSpace($profileDir)) {
+        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+    }
+
+    $existing = if (Test-Path -LiteralPath $ProfilePath -PathType Leaf) {
+        Get-Content -Raw -LiteralPath $ProfilePath
+    }
+    else {
+        ""
+    }
+
+    $begin = "# BEGIN revAgent UTF-8 console"
+    $end = "# END revAgent UTF-8 console"
+    $pattern = "(?ms)^$([regex]::Escape($begin))\r?\n.*?\r?\n$([regex]::Escape($end))\r?\n?"
+
+    if ($existing -match $pattern) {
+        $updated = [regex]::Replace($existing, $pattern, $Block + "`r`n")
+    }
+    else {
+        $prefix = if ([string]::IsNullOrWhiteSpace($existing)) { "" } else { $existing.TrimEnd() + "`r`n`r`n" }
+        $updated = $prefix + $Block + "`r`n"
+    }
+
+    if ($updated -ne $existing) {
+        Set-Content -LiteralPath $ProfilePath -Value $updated -Encoding UTF8
+    }
+
+    return $ProfilePath
+}
+
+function Set-RevitMcpPowerShellUtf8ConsoleConfig {
+    param(
+        [string]$UserProfileRoot = "",
+        [switch]$ConfigureConsoleRegistry
+    )
+
+    if ([string]::IsNullOrWhiteSpace($UserProfileRoot)) {
+        $UserProfileRoot = $env:USERPROFILE
+    }
+    if ([string]::IsNullOrWhiteSpace($UserProfileRoot)) {
+        return @()
+    }
+
+    $block = @(
+        "# BEGIN revAgent UTF-8 console",
+        'try {',
+        '    $revAgentUtf8Encoding = [System.Text.UTF8Encoding]::new($false)',
+        '    [Console]::InputEncoding = $revAgentUtf8Encoding',
+        '    [Console]::OutputEncoding = $revAgentUtf8Encoding',
+        '    $OutputEncoding = $revAgentUtf8Encoding',
+        '    $env:PYTHONUTF8 = "1"',
+        '    $env:PYTHONIOENCODING = "utf-8"',
+        '    if (Get-Command chcp.com -ErrorAction SilentlyContinue) { & chcp.com 65001 > $null }',
+        '} catch {}',
+        "# END revAgent UTF-8 console"
+    ) -join "`r`n"
+
+    $documentsRoot = Join-Path $UserProfileRoot "Documents"
+    $profilePaths = @(
+        (Join-Path $documentsRoot "WindowsPowerShell\Microsoft.PowerShell_profile.ps1"),
+        (Join-Path $documentsRoot "PowerShell\Microsoft.PowerShell_profile.ps1")
+    )
+
+    $written = [System.Collections.Generic.List[string]]::new()
+    foreach ($profilePath in $profilePaths) {
+        [void]$written.Add((Set-RevitMcpManagedPowerShellProfileBlock -ProfilePath $profilePath -Block $block))
+    }
+
+    if ($ConfigureConsoleRegistry) {
+        try {
+            New-Item -Path "HKCU:\Console" -Force | Out-Null
+            New-ItemProperty -Path "HKCU:\Console" -Name "CodePage" -Value 65001 -PropertyType DWord -Force | Out-Null
+        }
+        catch {
+            Write-Warning "Could not set HKCU console UTF-8 code page: $($_.Exception.Message)"
+        }
+    }
+
+    return @($written.ToArray())
+}
+
 function Register-RevitMcpCodexMcpServersInConfig {
     param(
         [Parameter(Mandatory = $true)]
@@ -167,4 +257,4 @@ function Register-RevitMcpCodexMcpServersInConfig {
     return $ConfigPath
 }
 
-Export-ModuleMember -Function ConvertTo-RevitMcpTomlString, Set-RevitMcpCodexMcpServerConfig, Set-RevitMcpCodexMemoryConfig, Register-RevitMcpCodexMcpServersInConfig
+Export-ModuleMember -Function ConvertTo-RevitMcpTomlString, Set-RevitMcpCodexMcpServerConfig, Set-RevitMcpCodexMemoryConfig, Set-RevitMcpPowerShellUtf8ConsoleConfig, Register-RevitMcpCodexMcpServersInConfig
