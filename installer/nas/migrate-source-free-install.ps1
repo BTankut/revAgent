@@ -45,7 +45,9 @@ if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
     throw "revAgent migration lib folder was not found beside or above: $PSScriptRoot"
 }
 
+Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.SourceFreeMigration.psm1") -Force
+Set-RevitMcpCurrentProcessUtf8Console | Out-Null
 
 function Read-RevitMcpJsonFileOrNull {
     param([string]$Path)
@@ -112,6 +114,129 @@ function Write-RevitMcpMigrationReport {
     $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
+function Add-RevitMcpChildProcessParameter {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [AllowNull()][string]$Value
+    )
+
+    [void]$Arguments.Add("-$Name")
+    [void]$Arguments.Add([string]$Value)
+}
+
+function Add-RevitMcpChildProcessSwitch {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [bool]$Enabled
+    )
+
+    if ($Enabled) {
+        [void]$Arguments.Add("-$Name")
+    }
+}
+
+function Get-RevitMcpScheduledTaskState {
+    param([string]$Name)
+
+    $getTaskCommand = Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue
+    if ($null -eq $getTaskCommand) {
+        return [ordered]@{
+            available = $false
+            exists = $false
+            state = ""
+            error = ""
+        }
+    }
+
+    try {
+        $task = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -eq $task) {
+            return [ordered]@{
+                available = $true
+                exists = $false
+                state = ""
+                error = ""
+            }
+        }
+
+        return [ordered]@{
+            available = $true
+            exists = $true
+            state = [string]$task.State
+            error = ""
+        }
+    }
+    catch {
+        return [ordered]@{
+            available = $true
+            exists = $false
+            state = ""
+            error = $_.Exception.Message
+        }
+    }
+}
+
+function Restore-RevitMcpScheduledTaskDisabledState {
+    param(
+        [string]$Name,
+        [object]$BeforeState
+    )
+
+    if ($null -eq $BeforeState -or -not $BeforeState.available -or -not $BeforeState.exists) {
+        return [ordered]@{
+            attempted = $false
+            success = $true
+            reason = "task_not_previously_present"
+            state = ""
+            error = ""
+        }
+    }
+
+    if (-not [string]::Equals([string]$BeforeState.state, "Disabled", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return [ordered]@{
+            attempted = $false
+            success = $true
+            reason = "task_not_previously_disabled"
+            state = [string]$BeforeState.state
+            error = ""
+        }
+    }
+
+    $disableTaskCommand = Get-Command Disable-ScheduledTask -ErrorAction SilentlyContinue
+    if ($null -eq $disableTaskCommand) {
+        return [ordered]@{
+            attempted = $true
+            success = $false
+            reason = "disable_command_unavailable"
+            state = [string]$BeforeState.state
+            error = "Disable-ScheduledTask is unavailable."
+        }
+    }
+
+    try {
+        Disable-ScheduledTask -TaskName $Name -ErrorAction Stop | Out-Null
+        $afterState = Get-RevitMcpScheduledTaskState -Name $Name
+        return [ordered]@{
+            attempted = $true
+            success = [string]::Equals([string]$afterState.state, "Disabled", [System.StringComparison]::OrdinalIgnoreCase)
+            reason = "restored_disabled_state"
+            state = [string]$afterState.state
+            error = [string]$afterState.error
+        }
+    }
+    catch {
+        return [ordered]@{
+            attempted = $true
+            success = $false
+            reason = "restore_failed"
+            state = [string]$BeforeState.state
+            error = $_.Exception.Message
+        }
+    }
+}
+
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
 $requestedInstallRoot = $InstallRoot
 $requestedWorkRoot = $WorkRoot
@@ -154,6 +279,15 @@ $beforeInventory = @(Get-RevitMcpSourceFreeArtifactInventory `
 
 $updateExitCode = $null
 $updateError = ""
+$updaterTaskName = "revAgent Auto Update"
+$scheduledTaskBefore = $null
+$scheduledTaskRestore = [ordered]@{
+    attempted = $false
+    success = $true
+    reason = "not_commit_mode"
+    state = ""
+    error = ""
+}
 
 if ($Mode -eq "commit") {
     if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) {
@@ -168,44 +302,54 @@ if ($Mode -eq "commit") {
         throw "update-from-nas.ps1 was not found beside the migration tool or under WorkRoot: $WorkRoot"
     }
 
-    $updateArgs = @{
-        ConfigPath = $ConfigPath
-        ChannelManifestPath = $ChannelManifestPath
-        InstallRoot = $InstallRoot
-        WorkRoot = $WorkRoot
-        PackageTarget = $PackageTarget
-        ServerTarget = $ServerTarget
-        OperationMethod = "source-free-migration"
-        SourceFreeMigration = $true
-    }
-    if (-not [string]::IsNullOrWhiteSpace($RevitInstallRoot)) {
-        $updateArgs["RevitInstallRoot"] = $RevitInstallRoot
-    }
-    if (-not [string]::IsNullOrWhiteSpace($ReportsRoot)) {
-        $updateArgs["ReportsRoot"] = $ReportsRoot
-    }
-    if ($SkipNpmInstall) {
-        $updateArgs["SkipNpmInstall"] = $true
-    }
-    if ($SkipCodexMcpRegistration) {
-        $updateArgs["SkipCodexMcpRegistration"] = $true
-    }
-    if ($SkipCodexUserIntegration) {
-        $updateArgs["SkipCodexUserIntegration"] = $true
-    }
-    if ($SkipProxySetup) {
-        $updateArgs["SkipProxySetup"] = $true
-    }
-    if ($NoNotifyUser) {
-        $updateArgs["NoNotifyUser"] = $true
+    $powerShellPath = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
+    if ([string]::IsNullOrWhiteSpace($powerShellPath)) {
+        $powerShellPath = "powershell.exe"
     }
 
+    $updateArgs = [System.Collections.Generic.List[string]]::new()
+    [void]$updateArgs.Add("-NoProfile")
+    [void]$updateArgs.Add("-ExecutionPolicy")
+    [void]$updateArgs.Add("Bypass")
+    [void]$updateArgs.Add("-File")
+    [void]$updateArgs.Add($updaterPath)
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ConfigPath" -Value $ConfigPath
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ChannelManifestPath" -Value $ChannelManifestPath
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "InstallRoot" -Value $InstallRoot
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "WorkRoot" -Value $WorkRoot
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "PackageTarget" -Value $PackageTarget
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ServerTarget" -Value $ServerTarget
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "OperationMethod" -Value "source-free-migration"
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SourceFreeMigration" -Enabled $true
+    if (-not [string]::IsNullOrWhiteSpace($RevitInstallRoot)) {
+        Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "RevitInstallRoot" -Value $RevitInstallRoot
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ReportsRoot)) {
+        Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ReportsRoot" -Value $ReportsRoot
+    }
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipNpmInstall" -Enabled $SkipNpmInstall
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipCodexMcpRegistration" -Enabled $SkipCodexMcpRegistration
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipCodexUserIntegration" -Enabled $SkipCodexUserIntegration
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipProxySetup" -Enabled $SkipProxySetup
+    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "NoNotifyUser" -Enabled $NoNotifyUser
+
+    $scheduledTaskBefore = Get-RevitMcpScheduledTaskState -Name $updaterTaskName
+
     try {
-        & $updaterPath @updateArgs
+        & $powerShellPath @updateArgs
         $updateExitCode = $LASTEXITCODE
+        if ($null -ne $updateExitCode -and $updateExitCode -ne 0) {
+            $updateError = "update-from-nas.ps1 exited with code $updateExitCode"
+        }
     }
     catch {
         $updateError = $_.Exception.Message
+    }
+    finally {
+        $scheduledTaskRestore = Restore-RevitMcpScheduledTaskDisabledState -Name $updaterTaskName -BeforeState $scheduledTaskBefore
+        if (-not $scheduledTaskRestore.success -and [string]::IsNullOrWhiteSpace($updateError)) {
+            $updateError = "Failed to restore disabled scheduled task state: $($scheduledTaskRestore.error)"
+        }
     }
 }
 
@@ -243,6 +387,11 @@ $report = [ordered]@{
     updater = [ordered]@{
         exitCode = $updateExitCode
         error = $updateError
+    }
+    scheduledTask = [ordered]@{
+        name = $updaterTaskName
+        before = $scheduledTaskBefore
+        restore = $scheduledTaskRestore
     }
 }
 

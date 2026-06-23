@@ -691,11 +691,15 @@ staged package.
 
 For existing workstations that may already contain source-bearing managed
 payloads, run `migrate-source-free-install.ps1 -Mode dryRun` first. Commit mode
-uses `update-from-nas.ps1 -SourceFreeMigration`, disables unchanged-payload
-skips, refreshes runtime/docs/Codex integration, cleans managed source/developer
-artifacts from package/runtime/Codex skill/updater backup locations, and writes
-a JSON migration report. It must not delete Codex sessions, memory, Revit
-models, or user project folders.
+launches `update-from-nas.ps1 -SourceFreeMigration` in a child PowerShell
+`-File` process, disables unchanged-payload skips, refreshes runtime/docs/Codex
+integration, cleans managed source/developer artifacts from package/runtime/Codex
+skill/updater backup locations, and writes a JSON migration report. The child
+`-File` launch keeps updater transcript headers readable even when migration is
+orchestrated remotely. If `revAgent Auto Update` was already disabled before
+migration, commit mode restores that disabled state after the updater/installer
+refresh. It must not delete Codex sessions, memory, Revit models, or user
+project folders.
 
 Distribution integrity support starts in CI as fixtures before production
 enforcement. `installer/lib/RevitMcp.DistributionIntegrity.psm1` owns the
@@ -839,6 +843,13 @@ standard Codex memory settings and normalizes `service_tier = "fast"` in
 `%USERPROFILE%\.codex\config.toml` idempotently. The helper reuses existing
 top-level keys plus `[features]` and `[memories]` sections, and must not append
 duplicate blocks on repeated runs.
+It also writes a managed revAgent UTF-8 block to both Windows PowerShell and
+PowerShell 7 user profile files, and sets the current user's default console
+code page to UTF-8. This keeps Turkish text in `AGENTS.md`, `SKILL.md`, and
+MCP/Revit output readable in Codex PowerShell terminals. Installer, updater,
+updater-task installer, and migration entrypoints also set UTF-8 in the current
+process before writing transcript/log output, because scheduled or remote
+automation commonly launches PowerShell with `-NoProfile`.
 
 Background updater notifications:
 

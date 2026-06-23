@@ -120,6 +120,107 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $packageTarget "src"))) "Package src directory should be removed."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $serverTarget "src"))) "Runtime src directory should be removed."
     Assert-True (Test-Path -LiteralPath (Join-Path $packageTarget "installer\revit-api-docs-mcp\scripts\build-index.ps1")) "Allowed docs build-index script should not be removed by cleanup."
+
+    Write-Host "Test source-free migration child updater transcript host"
+    $harnessRoot = Join-Path $tempRoot "encoded-host-harness"
+    $harnessTools = Join-Path $harnessRoot "tools"
+    $harnessLib = Join-Path $harnessTools "lib"
+    New-Item -ItemType Directory -Path $harnessLib -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\nas\migrate-source-free-install.ps1") -Destination (Join-Path $harnessTools "migrate-source-free-install.ps1") -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.CodexRegistration.psm1") -Destination (Join-Path $harnessLib "RevitMcp.CodexRegistration.psm1") -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.SourceFreeMigration.psm1") -Destination (Join-Path $harnessLib "RevitMcp.SourceFreeMigration.psm1") -Force
+
+    $fakeUpdaterPath = Join-Path $harnessTools "update-from-nas.ps1"
+    $fakeUpdater = @'
+param(
+    [string]$ConfigPath = "",
+    [string]$ChannelManifestPath = "",
+    [string]$InstallRoot = "",
+    [string]$WorkRoot = "",
+    [string]$PackageTarget = "",
+    [string]$ServerTarget = "",
+    [string]$OperationMethod = "",
+    [string]$RevitInstallRoot = "",
+    [string]$ReportsRoot = "",
+    [switch]$SourceFreeMigration,
+    [switch]$SkipNpmInstall,
+    [switch]$SkipCodexMcpRegistration,
+    [switch]$SkipCodexUserIntegration,
+    [switch]$SkipProxySetup,
+    [switch]$NoNotifyUser
+)
+
+$ErrorActionPreference = "Stop"
+$transcriptPath = Join-Path $PSScriptRoot "fake-updater-transcript.log"
+Start-Transcript -Path $transcriptPath -Force | Out-Null
+try {
+    Write-Host "fake updater invoked"
+    Write-Host "sourceFreeMigration=$([bool]$SourceFreeMigration)"
+    if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_FAKE_TASK_STATE_FILE)) {
+        "Ready" | Set-Content -LiteralPath $env:REVAGENT_FAKE_TASK_STATE_FILE -Encoding ASCII
+    }
+}
+finally {
+    Stop-Transcript | Out-Null
+}
+exit 0
+'@
+    Set-Content -LiteralPath $fakeUpdaterPath -Value $fakeUpdater -Encoding ASCII
+
+    $harnessReportPath = Join-Path $harnessRoot "migration-report.json"
+    $harnessInstallRoot = Join-Path $harnessRoot "install"
+    $harnessWorkRoot = Join-Path $harnessInstallRoot "updater"
+    $harnessPackageTarget = Join-Path $harnessInstallRoot "package"
+    $harnessServerTarget = Join-Path $harnessInstallRoot "runtime"
+    $harnessUserProfileRoot = Join-Path $harnessRoot "user"
+    $harnessConfigPath = Join-Path $harnessWorkRoot "updater-config.json"
+    $harnessChannelPath = Join-Path $harnessRoot "stable.json"
+    $fakeTaskStatePath = Join-Path $harnessRoot "fake-task-state.txt"
+    New-Item -ItemType Directory -Path $harnessWorkRoot -Force | Out-Null
+    "{}" | Set-Content -LiteralPath $harnessConfigPath -Encoding ASCII
+    "{}" | Set-Content -LiteralPath $harnessChannelPath -Encoding ASCII
+    "Disabled" | Set-Content -LiteralPath $fakeTaskStatePath -Encoding ASCII
+
+    function ConvertTo-SingleQuotedPowerShellLiteral {
+        param([string]$Value)
+        return "'" + $Value.Replace("'", "''") + "'"
+    }
+
+    $encodedHarnessScript = @(
+        "function Get-ScheduledTask { [CmdletBinding()] param([string]`$TaskName) `$state = (Get-Content -Raw -LiteralPath `$env:REVAGENT_FAKE_TASK_STATE_FILE).Trim(); [pscustomobject]@{ TaskName = `$TaskName; State = `$state } }"
+        "function Disable-ScheduledTask { [CmdletBinding()] param([string]`$TaskName) 'Disabled' | Set-Content -LiteralPath `$env:REVAGENT_FAKE_TASK_STATE_FILE -Encoding ASCII; [pscustomobject]@{ TaskName = `$TaskName; State = 'Disabled' } }"
+        "& " + (ConvertTo-SingleQuotedPowerShellLiteral (Join-Path $harnessTools "migrate-source-free-install.ps1")) + " ``"
+        "  -Mode commit ``"
+        "  -ConfigPath " + (ConvertTo-SingleQuotedPowerShellLiteral $harnessConfigPath) + " ``"
+        "  -ChannelManifestPath " + (ConvertTo-SingleQuotedPowerShellLiteral $harnessChannelPath) + " ``"
+        "  -InstallRoot " + (ConvertTo-SingleQuotedPowerShellLiteral $harnessInstallRoot) + " ``"
+        "  -WorkRoot " + (ConvertTo-SingleQuotedPowerShellLiteral $harnessWorkRoot) + " ``"
+        "  -PackageTarget " + (ConvertTo-SingleQuotedPowerShellLiteral $harnessPackageTarget) + " ``"
+        "  -ServerTarget " + (ConvertTo-SingleQuotedPowerShellLiteral $harnessServerTarget) + " ``"
+        "  -UserProfileRoot " + (ConvertTo-SingleQuotedPowerShellLiteral $harnessUserProfileRoot) + " ``"
+        "  -ReportPath " + (ConvertTo-SingleQuotedPowerShellLiteral $harnessReportPath) + " ``"
+        "  -NoNotifyUser"
+        'if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }'
+    ) -join "`n"
+    $encodedHarness = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($encodedHarnessScript))
+    $encodedHarnessOutputPath = Join-Path $harnessRoot "encoded-wrapper-output.log"
+    $env:REVAGENT_FAKE_TASK_STATE_FILE = $fakeTaskStatePath
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedHarness *> $encodedHarnessOutputPath
+    Remove-Item Env:\REVAGENT_FAKE_TASK_STATE_FILE -ErrorAction SilentlyContinue
+    Assert-Equal $LASTEXITCODE 0 "Encoded wrapper migration harness should succeed."
+
+    $fakeTranscriptPath = Join-Path $harnessTools "fake-updater-transcript.log"
+    Assert-True (Test-Path -LiteralPath $fakeTranscriptPath -PathType Leaf) "Fake updater transcript should be written."
+    $fakeTranscript = Get-Content -Raw -LiteralPath $fakeTranscriptPath
+    $hostLine = @($fakeTranscript -split "`r?`n" | Where-Object { $_ -like "Host Application:*" } | Select-Object -First 1)[0]
+    Assert-True ($hostLine -match '-File' -and $hostLine -match 'update-from-nas\.ps1') "Child updater transcript host should show the update-from-nas.ps1 -File invocation."
+    Assert-True ($hostLine -notmatch 'EncodedCommand') "Child updater transcript host must not inherit the outer EncodedCommand wrapper."
+    $harnessReport = Get-Content -Raw -LiteralPath $harnessReportPath | ConvertFrom-Json
+    Assert-True $harnessReport.success "Encoded wrapper migration harness report should succeed."
+    Assert-Equal ((Get-Content -Raw -LiteralPath $fakeTaskStatePath).Trim()) "Disabled" "Migration should preserve a previously disabled revAgent Auto Update task after the child updater runs."
+    Assert-Equal ([string]$harnessReport.scheduledTask.before.state) "Disabled" "Migration report should capture the disabled scheduled task state before updater."
+    Assert-True ([bool]$harnessReport.scheduledTask.restore.attempted) "Migration report should show that disabled scheduled task state was restored."
+    Assert-Equal ([string]$harnessReport.scheduledTask.restore.state) "Disabled" "Migration report should capture the restored disabled scheduled task state."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {
@@ -133,6 +234,12 @@ foreach ($name in @("Mode", "ConfigPath", "ChannelManifestPath", "InstallRoot", 
     Assert-True ($migrationParams -contains $name) "migrate-source-free-install.ps1 lost public parameter -$name."
 }
 
+$migrationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\migrate-source-free-install.ps1")
+Assert-True ($migrationText -match 'Get-Command powershell\.exe' -and $migrationText -match '\[void\]\$updateArgs\.Add\("-File"\)' -and $migrationText -match '\[void\]\$updateArgs\.Add\(\$updaterPath\)') "Migration commit mode must launch the updater as a child PowerShell -File process so updater transcripts do not inherit encoded wrapper commands."
+Assert-True ($migrationText -notmatch '& \$updaterPath @updateArgs') "Migration commit mode must not call update-from-nas.ps1 inside the current PowerShell process."
+Assert-True ($migrationText -match 'update-from-nas\.ps1 exited with code') "Migration commit mode must treat non-zero child updater exit codes as failures."
+Assert-True ($migrationText -match 'Set-RevitMcpCurrentProcessUtf8Console') "Migration entrypoint must force UTF-8 output even when launched with -NoProfile."
+
 $updaterParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
 Assert-True ($updaterParams -contains "SourceFreeMigration") "update-from-nas.ps1 must expose -SourceFreeMigration."
 
@@ -141,6 +248,8 @@ Assert-True ($updaterText -match 'Source migration : runtime, docs, Codex skill,
 Assert-True ($updaterText -match 'Invoke-RevitMcpSourceFreeArtifactCleanup') "Updater migration mode must run source-free cleanup."
 Assert-True ($updaterText -match 'sourceFreeMigration = \$sourceFreeMigrationState') "Updater installed state must include migration verification metadata."
 Assert-True ($updaterText -match '-not \$SourceFreeMigration -and \$isPackageCurrent') "Updater must not return early as current during source-free migration."
+Assert-True ($updaterText -match 'function Get-UpdaterDetachedSignaturePath' -and $updaterText -match 'Get-UpdaterDetachedSignaturePath -ContentPath \$configuredLicensePath') "Updater must compute default detached signature paths without relying on imported helper scope."
+Assert-True ($updaterText -match 'RevitMcpDistributionIntegrityModule = Import-Module .*RevitMcp\.DistributionIntegrity\.psm1.*-PassThru' -and $updaterText -match 'function Get-UpdaterDistributionIntegrityCommand' -and $updaterText -match 'Get-UpdaterDistributionIntegrityCommand -Name "Test-RevitMcpReleaseDistributionIntegrity" -Required') "Updater must call distribution integrity helpers through the imported module object during nested migration runs."
 
 $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
 Assert-True ($publishText -match 'migrate-source-free-install\.ps1') "Publisher must include the source-free migration tool in user packs and NAS tools."
