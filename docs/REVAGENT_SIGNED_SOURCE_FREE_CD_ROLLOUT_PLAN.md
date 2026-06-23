@@ -101,7 +101,10 @@ Chosen CD model:
 - NAS publish is a separate job behind the protected
   `revagent-production-publish` environment and is enabled only with
   `publish_to_nas=true`.
-- The publish job uses the reviewed artifact; it does not rebuild or re-sign.
+- The publish job uses the validated release root staged locally under the
+  self-hosted runner workspace; it does not rebuild or re-sign. This avoids
+  GitHub artifact storage quota, but it means the selected runner labels must
+  resolve to the office runner that owns both signing-key and NAS access.
 
 Still not executed by this repo change:
 
@@ -143,10 +146,21 @@ External setup status after PR preparation:
   `manifest.sig.json`, a positive `releaseSequence`, and a readiness-verified
   release root in a temporary directory that was deleted after verification.
 
+Post-merge setup status:
+
+- PR #88 was merged into `main`.
+- A self-hosted Windows runner was registered for this repo with the
+  `revagent-cd` label on the office workstation.
+- PowerShell 7 was installed for the runner because the workflow uses `pwsh`.
+- A no-publish GitHub Actions CD run reached and passed the build/validate
+  step from merged `main`. The first workflow shape then hit GitHub Actions
+  artifact storage quota during `actions/upload-artifact`; the follow-up
+  workflow uses local self-hosted runner staging for the signed release-root
+  handoff instead of GitHub artifact storage.
+
 Still not executed after external setup:
 
-- Merging PR #88 into `main`.
-- Running the GitHub Actions CD workflow from merged `main`.
+- Running the local-staging GitHub Actions CD workflow from merged `main`.
 - Publishing production NAS stable.
 - Installing/updating pilot workstations from the signed stable baseline.
 - Enabling fail-closed enforcement.

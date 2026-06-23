@@ -6,8 +6,8 @@
     This script is the GitHub Actions CD producer entrypoint. It runs the
     CI-safe engineering gates, calls the existing source-free NAS publisher
     against a staging release root, requires detached release signatures, and
-    runs the signed-stable readiness preflight before the artifact is uploaded
-    or copied to NAS.
+    runs the signed-stable readiness preflight before the artifact is staged
+    for optional NAS publish.
 
     It does not publish to production NAS by itself.
 #>

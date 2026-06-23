@@ -77,15 +77,18 @@ private signing keys in Git, the user ZIP, or NAS tools.
 The protected workflow `.github/workflows/signed-source-free-cd.yml` is the
 preferred CD producer for signed source-free releases. It runs from `main`,
 uses the protected `revagent-release-signing` environment to build and validate
-a signed release root, and uploads that root as a reviewable artifact.
+a signed release root, and stores that root in local staging under the
+self-hosted runner workspace.
 
 NAS publish is a separate manual choice: run the workflow with
 `publish_to_nas=true` and approve the `revagent-production-publish`
-environment. The publish job downloads the reviewed artifact and runs
+environment. The publish job reads the validated staged release root and runs
 `scripts/publish-signed-source-free-release-to-nas.ps1`, which copies the
 release and tools to NAS, validates `stable.candidate.json`, then updates
 `stable.sig.json` and `stable.json`. It does not rebuild or re-sign the
-artifact.
+artifact. The local runner staging handoff avoids GitHub Actions artifact
+storage quota, so the selected runner labels must resolve to the office runner
+that owns both signing-key and NAS access.
 
 Required protected variables:
 

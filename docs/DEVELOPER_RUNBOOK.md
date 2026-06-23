@@ -748,13 +748,19 @@ runs `scripts/test-ci.ps1`, uses `publish-nas-release.ps1` against a staging
 release root, requires release signatures, copies public trusted keys into
 `tools\config`, and runs `scripts/check-signed-stable-readiness.ps1`.
 
-The publish job downloads the reviewed artifact and runs
-`scripts/publish-signed-source-free-release-to-nas.ps1`. That script does not
-rebuild or re-sign. It copies the release and tools to NAS, validates
+The workflow keeps the validated signed release root in local staging under
+the self-hosted runner workspace and passes that path to the publish job. This
+avoids coupling the production handoff to GitHub Actions artifact storage
+quota while keeping the signing and publish jobs separated by environment and
+by the explicit `publish_to_nas=true` operator gate. The publish job runs
+`scripts/publish-signed-source-free-release-to-nas.ps1`; it does not rebuild or
+re-sign. It copies the release and tools to NAS, validates
 `stable.candidate.json` on the NAS root, then updates `stable.sig.json` and
 `stable.json`. New signed channel metadata uses relative paths so the same
-signed artifact can move from CD staging to NAS without changing the signed
-JSON.
+signed release root can move from CD staging to NAS without changing the signed
+JSON. Because the handoff is local to the self-hosted runner, the selected
+runner label set must identify the office runner that owns both signing-key and
+NAS access.
 
 The versioned release ZIP is an allowlisted user pack. It must not contain the
 repo root, `src/`, root `docs/`, developer tests, repo metadata, `.pdb`, `.mdb`,

@@ -119,7 +119,8 @@ try {
     $workflowText = Get-Content -Raw -LiteralPath $workflowPath
     Assert-True ($workflowText -match 'revagent-release-signing') "CD workflow should use a protected signing environment."
     Assert-True ($workflowText -match 'revagent-production-publish') "CD workflow should use a separate protected publish environment."
-    Assert-True ($workflowText -match 'actions/upload-artifact' -and $workflowText -match 'actions/download-artifact') "CD workflow should preserve a reviewed signed artifact between build and publish jobs."
+    Assert-True ($workflowText -match 'RUNNER_WORKSPACE' -and $workflowText -match '_revagent_signed_cd' -and $workflowText -match 'release_root') "CD workflow should preserve the signed release root through local self-hosted runner staging."
+    Assert-True ($workflowText -notmatch 'actions/upload-artifact' -and $workflowText -notmatch 'actions/download-artifact') "CD workflow should not depend on GitHub artifact storage quota for source-free release handoff."
     Assert-True ($workflowText -match 'publish_to_nas') "CD workflow should keep NAS publish as an explicit manual input."
 
     $producerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1")
