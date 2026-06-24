@@ -27,6 +27,11 @@ on:
         required: true
         type: boolean
         default: false
+      allow_rollback:
+        description: 'Allow signed rollback, same-sequence repair, or one-time legacy stable bootstrap during NAS publish.'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -113,7 +118,7 @@ jobs:
     name: Publish signed release to NAS
     needs: build-signed-release
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_nas }}
-    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
+    runs-on: ${{ fromJSON(inputs.runner_labels_json) }}
     environment: revagent-production-publish
 
     steps:
@@ -141,6 +146,7 @@ jobs:
         env:
           REVAGENT_NAS_RELEASE_ROOT: ${{ vars.REVAGENT_NAS_RELEASE_ROOT }}
           REVAGENT_TRUSTED_RELEASE_KEYS_PATH: ${{ vars.REVAGENT_TRUSTED_RELEASE_KEYS_PATH }}
+          REVAGENT_CD_ALLOW_ROLLBACK: ${{ inputs.allow_rollback }}
         run: |
           $ErrorActionPreference = "Stop"
           foreach ($name in @("REVAGENT_NAS_RELEASE_ROOT", "REVAGENT_TRUSTED_RELEASE_KEYS_PATH")) {
@@ -151,11 +157,17 @@ jobs:
 
           $sourceReleaseRoot = $env:REVAGENT_SIGNED_RELEASE_ROOT
 
-          .\scripts\publish-signed-source-free-release-to-nas.ps1 `
-            -SourceReleaseRoot $sourceReleaseRoot `
-            -NasReleaseRoot $env:REVAGENT_NAS_RELEASE_ROOT `
-            -TrustedKeysPath $env:REVAGENT_TRUSTED_RELEASE_KEYS_PATH `
-            -Force
+          $publishArgs = @{
+            SourceReleaseRoot = $sourceReleaseRoot
+            NasReleaseRoot = $env:REVAGENT_NAS_RELEASE_ROOT
+            TrustedKeysPath = $env:REVAGENT_TRUSTED_RELEASE_KEYS_PATH
+            Force = $true
+          }
+          if ([string]::Equals($env:REVAGENT_CD_ALLOW_ROLLBACK, "true", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $publishArgs["AllowRollback"] = $true
+          }
+
+          .\scripts\publish-signed-source-free-release-to-nas.ps1 @publishArgs
 
       - name: Remove staged release root after NAS publish
         if: ${{ success() }}

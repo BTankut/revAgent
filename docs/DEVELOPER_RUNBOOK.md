@@ -708,8 +708,12 @@ tools\
 ```
 
 Production stable releases publish through manual `workflow_dispatch` on the
-signed source-free CD workflow with `publish_to_nas=true`. Use the manual
-publish script only for controlled recovery/backstop work from a clean repo:
+signed source-free CD workflow with `publish_to_nas=true`. Keep
+`allow_rollback=false` for normal forward publishes. Set `allow_rollback=true`
+only for deliberate signed rollback, same-sequence repair, or the one-time
+legacy stable bootstrap when the current NAS `stable.json` predates
+`releaseSequence`. Use the manual publish script only for controlled
+recovery/backstop work from a clean repo:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\installer\nas\publish-nas-release.ps1 `
@@ -789,8 +793,11 @@ GitHub repo plan; GitHub returned billing-plan 422 errors when those protection
 rules were requested. Until reviewer protection is available, the human gate is
 the protected PR review/CI/merge decision for `main`; after merge, signed CD
 validates automatically, and production NAS publish requires explicit manual
-workflow dispatch with `publish_to_nas=true`. The NAS publish wrapper still
-validates `stable.candidate.json` on the target release root before replacing
+workflow dispatch with `publish_to_nas=true`. The optional manual
+`allow_rollback=true` input is reserved for signed rollback, same-sequence
+repair, or the first legacy stable bootstrap when existing NAS stable metadata
+has no `releaseSequence`. The NAS publish wrapper still validates
+`stable.candidate.json` on the target release root before replacing
 `stable.json`.
 
 The build job runs `scripts/invoke-signed-source-free-cd.ps1`. That wrapper
@@ -809,11 +816,15 @@ when publish was not requested. The publish job runs
 re-sign. It copies the release and tools to NAS, validates
 `stable.candidate.json` on the NAS root with active-release artifact hygiene,
 blocks stable `releaseSequence` rollback or equal-sequence repair unless
-`-AllowRollback` is passed deliberately, then promotes `stable.sig.json` and
-`stable.json` with rollback files retained until the post-publish readiness
-check passes. After a successful publish, transient `.previous.*` channel
-backups are removed; operator recovery should use the versioned NAS
-`releases\` archive rather than relying on those promotion scratch files.
+`allow_rollback=true` / `-AllowRollback` is passed deliberately. The same
+explicit flag is required for a one-time legacy stable bootstrap when the
+current NAS `stable.json` exists but has no `releaseSequence`; unreadable or
+invalid current metadata still fails closed. The publisher then promotes
+`stable.sig.json` and `stable.json` with rollback files retained until the
+post-publish readiness check passes. After a successful publish, transient
+`.previous.*` channel backups are removed; operator recovery should use the
+versioned NAS `releases\` archive rather than relying on those promotion
+scratch files.
 Active-release
 scope checks the candidate release package and current `tools\` payload without
 blocking on historical legacy release ZIPs already present under the existing

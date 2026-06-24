@@ -210,6 +210,7 @@ try {
     Assert-True ($workflowText -notmatch 'actions/upload-artifact' -and $workflowText -notmatch 'actions/download-artifact') "CD workflow should not depend on GitHub artifact storage quota for source-free release handoff."
     Assert-True ($workflowText -match 'push:\s*\r?\n\s*branches:\s*\r?\n\s*-\s*main') "CD workflow should run automatically after main is updated."
     Assert-True ($workflowText -match 'publish_to_nas') "CD workflow should keep NAS publish as an explicit manual dispatch input."
+    Assert-True ($workflowText -match 'allow_rollback' -and $workflowText -match 'REVAGENT_CD_ALLOW_ROLLBACK' -and $workflowText -match '\$publishArgs\["AllowRollback"\] = \$true') "CD workflow must expose explicit manual rollback/legacy bootstrap publish input."
     $rawPublishJobCondition = Get-WorkflowJobIfCondition -Path $workflowPath -JobName "publish-to-nas"
     Assert-True (-not [string]::IsNullOrWhiteSpace($rawPublishJobCondition)) "CD workflow parser must find the publish-to-nas job if condition."
     $publishJobCondition = ConvertTo-GithubWorkflowIfExpression -Expression $rawPublishJobCondition

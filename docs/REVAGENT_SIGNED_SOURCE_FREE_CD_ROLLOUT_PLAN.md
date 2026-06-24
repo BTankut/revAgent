@@ -188,7 +188,10 @@ Required outcomes:
   - protected `main` push automatically builds, signs, and validates without
     publishing to NAS stable;
   - manual workflow dispatch from `main` with `publish_to_nas=true` is required
-    for explicit operator-triggered production publish.
+    for explicit operator-triggered production publish;
+  - manual `allow_rollback=true` is reserved for signed rollback,
+    same-sequence repair, or the one-time bootstrap over legacy stable metadata
+    that has no `releaseSequence`.
 - Decide whether signing happens inside GitHub Actions or on a self-hosted
   runner. Prefer a self-hosted runner if the private signing key or NAS access
   should never leave the office-controlled environment.
@@ -253,6 +256,9 @@ tools\
 - Keep publish controlled by the protected PR review/CI/merge gate for `main`;
   do not tell operators to run workstation updaters until the signed CD run has
   completed and NAS `stable.json` points at the expected merge commit.
+- Keep `allow_rollback=false` for normal forward publishes. Use
+  `allow_rollback=true` only as an explicit operator decision for signed
+  rollback, same-sequence repair, or first legacy stable bootstrap.
 
 Gate:
 
