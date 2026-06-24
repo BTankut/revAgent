@@ -175,16 +175,17 @@ used. Production NAS releases should be published from a clean tree.
 7. Commit source and generated payload together when payload is affected.
 8. Push the topic branch and open a pull request. See `Git Commit And Push` for
    the exact protected branch workflow.
-9. Merge only after `Engineering gates`, GitGuardian, and automatic Claude Code
-   Review are clear. Do not leave manual `@claude`, `@codex`, or `@gemini`
-   review-trigger comments; review runs from GitHub Actions.
+9. Merge only after `Engineering gates` and GitGuardian are green, automatic
+   Claude Code Review has run, and actionable review comments are addressed. Do
+   not leave manual `@claude`, `@codex`, or `@gemini` review-trigger comments;
+   review runs from GitHub Actions.
 10. Update local `main` with `git pull --ff-only`.
 11. Watch the signed source-free CD run that starts from the protected `main`
     update.
 12. Verify NAS `stable.json`, release manifest, ZIP path/hash, and at least one
-   real Revit workstation before broad or manual rollout. If scheduled auto
-   update remains enabled, workstations may consume the new stable channel at
-   the next 12:00 check even without a manual rollout instruction.
+    real Revit workstation before broad or manual rollout. If scheduled auto
+    update remains enabled, workstations may consume the new stable channel at
+    the next 12:00 check even without a manual rollout instruction.
 
 Useful baseline commands:
 
@@ -648,11 +649,11 @@ git push -u origin codex/<short-topic>
 gh pr create --base main --head codex/<short-topic>
 ```
 
-Merge the pull request only after `Engineering gates`, GitGuardian, and the
-automatic Claude Code Review result are clear. Do not add manual `@claude`,
-`@codex`, or `@gemini` review comments; this repository uses the GitHub Actions
-Claude review job as the review signal. After merge, update the local main
-branch:
+Merge the pull request only after `Engineering gates` and GitGuardian are green,
+the automatic Claude Code Review job has run, and actionable review comments are
+addressed. Do not add manual `@claude`, `@codex`, or `@gemini` review comments;
+this repository uses the GitHub Actions Claude review job as the review signal.
+After merge, update the local main branch:
 
 ```powershell
 git switch main

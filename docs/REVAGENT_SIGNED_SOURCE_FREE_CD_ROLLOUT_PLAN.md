@@ -24,7 +24,7 @@ design changes that boundary.
 - The current production NAS stable channel is signed and source-free. Verify
   the live `channels\stable.json`, release manifest, ZIP hash, and CD run before
   instructing operators to update workstations.
-- Verification snapshot on 2026-06-24:
+- Point-in-time verification snapshot recorded on 2026-06-24:
   - CD run:
     `https://github.com/BTankut/revit-mcp-skill/actions/runs/28057789912`
   - stable version: `2026.06.24.366-40425d12`

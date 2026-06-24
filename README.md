@@ -501,9 +501,10 @@ JSON-looking nested `result` strings, while disabled or failed parsing leaves
 the raw text available for debugging.
 
 The protected `main` branch runs GitHub Actions on pull requests and pushes to
-`main`: `Engineering gates`, Claude Code Review for PRs, and signed source-free
-CD for `main` updates. Normal development should happen on a topic branch, then
-merge through a pull request after the required checks and review are clear.
+`main`: `Engineering gates`, GitGuardian Security Checks, Claude Code Review
+for PRs, and signed source-free CD for `main` updates. Normal development
+should happen on a topic branch, then merge through a pull request after the
+required checks pass and actionable review comments are addressed.
 Any update that reaches protected `main` publishes to the office NAS stable
 channel through signed CD, so branch protection is the real production gate.
 Verify the workflow result and `channels\stable.json` before manual rollout

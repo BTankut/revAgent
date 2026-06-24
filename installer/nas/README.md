@@ -16,7 +16,7 @@ office workstations.
 ```text
 Code change
 -> topic branch / pull request
--> Engineering gates + automatic Claude Code Review
+-> Engineering gates + GitGuardian + automatic Claude Code Review
 -> protected main update
 -> signed-source-free-cd.yml builds, signs, validates, and publishes
 -> channels\stable.json and stable.sig.json are updated on NAS
