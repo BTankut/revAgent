@@ -128,6 +128,9 @@ Current production signing setup on this workstation uses key id
 `C:\ProgramData\DPE\revAgentReleaseSigning\private\revagent-prod-rsa-2026q3-private.xml`,
 and public trusted keys path
 `C:\ProgramData\DPE\revAgentReleaseSigning\public\release-trusted-keys.json`.
+The key id and private-key filename are current rotation examples; rotate them
+together and publish the new public key before signing with the new private
+key.
 The public key fingerprint is
 `32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33`.
 
@@ -326,7 +329,9 @@ fingerprints belong there. When trusted keys are present, the default policy is
 before the ZIP is cached, and unsigned releases are rejected. Keys-free
 `compatibility` remains only for legacy bootstrap/test paths. After a
 workstation accepts any signed release sequence, unsigned legacy fallback is
-blocked even if compatibility is requested.
+blocked even if compatibility is requested. `-DistributionIntegrityPolicy
+compatibility` is not an emergency escape hatch once trusted keys are pinned or
+a signed sequence has been accepted.
 
 Signed releases carry a monotonic `releaseSequence` in both the channel and
 release manifest. The updater stores `highestAcceptedReleaseSequence` locally

@@ -116,4 +116,7 @@ powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps
   -TrustedReleaseKeysPath $TrustedKeysPath
 ```
 
+`revagent-prod-rsa-2026q3` is the current rotation example; update both the key
+id and private-key path together when rotating production release-signing keys.
+
 See `installer\nas\README.md` for the full NAS deployment workflow.

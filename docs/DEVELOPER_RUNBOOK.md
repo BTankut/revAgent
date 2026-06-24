@@ -778,6 +778,10 @@ public key fingerprint:
   32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33
 ```
 
+The key id and private-key filename above are current rotation examples, not
+permanent literals. Update both values together when rotating production
+release-signing keys.
+
 The GitHub environments `revagent-release-signing` and
 `revagent-production-publish` exist and their path/key variables are set.
 Reviewer and wait-timer protection rules could not be enabled on the current
@@ -807,7 +811,10 @@ re-sign. It copies the release and tools to NAS, validates
 blocks stable `releaseSequence` rollback or equal-sequence repair unless
 `-AllowRollback` is passed deliberately, then promotes `stable.sig.json` and
 `stable.json` with rollback files retained until the post-publish readiness
-check passes. Active-release
+check passes. After a successful publish, transient `.previous.*` channel
+backups are removed; operator recovery should use the versioned NAS
+`releases\` archive rather than relying on those promotion scratch files.
+Active-release
 scope checks the candidate release package and current `tools\` payload without
 blocking on historical legacy release ZIPs already present under the existing
 NAS `releases\` archive. Use the default full release-root readiness scan only

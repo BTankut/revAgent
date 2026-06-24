@@ -189,6 +189,9 @@ $candidateReleaseSequence = ConvertTo-RevitMcpInt64OrZero -Value $candidateReadi
 if ($candidateReleaseSequence -le 0) {
     $candidateReleaseSequence = Get-RevitMcpChannelReleaseSequence -Path $candidateChannelPath
 }
+if ($candidateReleaseSequence -le 0) {
+    throw "Refusing to publish because candidate releaseSequence could not be determined as a positive integer. Check '$candidateChannelPath' and readiness output before retrying."
+}
 $currentStableReleaseSequence = Get-RevitMcpChannelReleaseSequence -Path $stableChannelPath
 # Equal releaseSequence republish is a protected repair path; require an explicit operator override.
 if ($currentStableReleaseSequence -gt 0 -and $candidateReleaseSequence -le $currentStableReleaseSequence -and -not $AllowRollback) {
@@ -258,6 +261,8 @@ catch {
 finally {
     $cleanupPaths = @($stableChannelTempPath, $stableSignatureTempPath)
     if (-not $rollbackFailed) {
+        # Successful publishes remove transient channel backups; versioned
+        # release recovery remains available from the NAS releases archive.
         $cleanupPaths += @($stableChannelBackupPath, $stableSignatureBackupPath)
     }
     Remove-Item -LiteralPath $cleanupPaths -Force -ErrorAction SilentlyContinue
