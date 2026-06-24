@@ -1676,8 +1676,8 @@ function Add-TrustedReleaseKeysFromFile {
         $trustedKeys = $document
     }
 
-    [void](Add-TrustedReleaseKeys -Target $Target -Source $trustedKeys)
-    return $fullPath
+    $keyCount = Add-TrustedReleaseKeys -Target $Target -Source $trustedKeys
+    return [pscustomobject]@{ Path = $fullPath; KeyCount = [int]$keyCount }
 }
 
 function Set-DistributionIntegrityBlockedReport {
@@ -1712,6 +1712,7 @@ function Initialize-DistributionIntegrityConfig {
     $policy = ""
     $trustedKeys = @{}
     $sources = [System.Collections.Generic.List[string]]::new()
+    $consumedKeyPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $integrityConfig = if ($Config) { Get-JsonPropertyValue -Object $Config -Name "distributionIntegrity" } else { $null }
 
     if ($integrityConfig) {
@@ -1734,7 +1735,7 @@ function Initialize-DistributionIntegrityConfig {
         $trustedKeysPath = [string](Get-JsonPropertyValue -Object $integrityConfig -Name "trustedKeysPath")
         if (-not [string]::IsNullOrWhiteSpace($trustedKeysPath)) {
             try {
-                $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $trustedKeysPath -Required
+                $loaded = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $trustedKeysPath -Required
             }
             catch {
                 $resolvedTrustedKeysPath = Resolve-UpdaterConfigRelativePath -Path $trustedKeysPath
@@ -1742,8 +1743,9 @@ function Initialize-DistributionIntegrityConfig {
                 Set-DistributionIntegrityBlockedReport -Policy $policy -TrustedKeys $trustedKeys -Sources $sources -Reason "trusted_keys_missing" -Message $message -TrustedKeysPath $resolvedTrustedKeysPath
                 throw $message
             }
-            if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
-                [void]$sources.Add($sourcePath)
+            if ($loaded) {
+                [void]$sources.Add($loaded.Path)
+                [void]$consumedKeyPaths.Add($loaded.Path)
             }
         }
 
@@ -1753,7 +1755,7 @@ function Initialize-DistributionIntegrityConfig {
                 continue
             }
             try {
-                $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path ([string]$path) -Required
+                $loaded = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path ([string]$path) -Required
             }
             catch {
                 $resolvedTrustedKeysPath = Resolve-UpdaterConfigRelativePath -Path ([string]$path)
@@ -1761,8 +1763,9 @@ function Initialize-DistributionIntegrityConfig {
                 Set-DistributionIntegrityBlockedReport -Policy $policy -TrustedKeys $trustedKeys -Sources $sources -Reason "trusted_keys_missing" -Message $message -TrustedKeysPath $resolvedTrustedKeysPath
                 throw $message
             }
-            if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
-                [void]$sources.Add($sourcePath)
+            if ($loaded) {
+                [void]$sources.Add($loaded.Path)
+                [void]$consumedKeyPaths.Add($loaded.Path)
             }
         }
     }
@@ -1779,23 +1782,26 @@ function Initialize-DistributionIntegrityConfig {
         if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
             continue
         }
-        $beforeCount = $trustedKeys.Count
+        $candidateFullPath = [System.IO.Path]::GetFullPath($candidate)
+        if ($consumedKeyPaths.Contains($candidateFullPath)) {
+            continue
+        }
         try {
-            $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $candidate -Required
+            $loaded = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $candidate -Required
         }
         catch {
             $message = "Auto-discovered trusted release keys could not be loaded from '$candidate'. Run Install/Repair after restoring release-trusted-keys.json."
             Set-DistributionIntegrityBlockedReport -Policy $policy -TrustedKeys $trustedKeys -Sources $sources -Reason "trusted_keys_invalid" -Message $message -TrustedKeysPath $candidate
             throw $message
         }
-        if ($trustedKeys.Count -le $beforeCount) {
+        if ($null -eq $loaded -or $loaded.KeyCount -le 0) {
             $message = "Auto-discovered trusted release keys file '$candidate' did not contain any trusted keys. Run Install/Repair after restoring release-trusted-keys.json."
             Set-DistributionIntegrityBlockedReport -Policy $policy -TrustedKeys $trustedKeys -Sources $sources -Reason "trusted_keys_empty" -Message $message -TrustedKeysPath $candidate
             throw $message
         }
-        if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
-            [void]$sources.Add($sourcePath)
-        }
+        [void]$consumedKeyPaths.Add($candidateFullPath)
+        [void]$consumedKeyPaths.Add($loaded.Path)
+        [void]$sources.Add($loaded.Path)
     }
 
     if ([string]::IsNullOrWhiteSpace($policy)) {
@@ -1908,9 +1914,9 @@ function Initialize-LicenseConfig {
 
         $trustedKeysPath = [string](Get-JsonPropertyValue -Object $licenseConfig -Name "trustedKeysPath")
         if (-not [string]::IsNullOrWhiteSpace($trustedKeysPath)) {
-            $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $trustedKeysPath -Required
-            if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
-                [void]$sources.Add($sourcePath)
+            $loaded = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $trustedKeysPath -Required
+            if ($loaded) {
+                [void]$sources.Add($loaded.Path)
             }
         }
 
@@ -1934,9 +1940,9 @@ function Initialize-LicenseConfig {
         if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
             continue
         }
-        $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $candidate
-        if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
-            [void]$sources.Add($sourcePath)
+        $loaded = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $candidate
+        if ($loaded) {
+            [void]$sources.Add($loaded.Path)
         }
     }
 
