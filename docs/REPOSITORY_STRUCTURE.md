@@ -188,12 +188,14 @@ local build/smoke work, but must not run `publish-nas-release.ps1` or update the
 stable NAS channel.
 
 For the full developer and code-assistant workflow, including clone recovery,
-local testing, commit/push, NAS stable publishing, updater diagnostics, and
-Revit-close policy, read `docs/DEVELOPER_RUNBOOK.md`.
+local testing, commit/push, signed CD/NAS stable publish verification, updater
+diagnostics, and Revit-close policy, read `docs/DEVELOPER_RUNBOOK.md`.
 
 ## Deployment
 
-NAS releases are still produced with:
+Production NAS stable releases are produced by the signed source-free GitHub
+Actions CD workflow after protected `main` updates. The manual publish command
+below remains available as a controlled fallback/recovery primitive:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\installer\nas\publish-nas-release.ps1 `

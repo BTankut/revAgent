@@ -49,6 +49,9 @@ install/repair remain available from the NAS GUI and command launchers. The
 managed log folder is pruned automatically to keep the latest 10 `.log` files.
 The NAS deployment report bridge also keeps per-machine latest status JSON and
 the latest two copied operation logs under `reports\machines\<computer>`.
+To hold a production rollout before verification, temporarily disable the
+`revAgent Auto Update` scheduled task on affected machines and re-enable it
+after the signed stable release is accepted.
 
 ## Manual Repo-Root Install
 
@@ -94,7 +97,10 @@ and skill integration should also be removed.
 
 ## Release Publishing
 
-Development machines publish release ZIPs through:
+Production release ZIPs normally publish through the signed source-free GitHub
+Actions CD workflow after protected `main` updates. Use the manual publish
+command only for controlled recovery/backstop work from a clean development
+checkout:
 
 ```powershell
 $ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"

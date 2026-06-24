@@ -15,14 +15,23 @@ office workstations.
 
 ```text
 Code change
--> commit / push
--> test
--> publish-nas-release.ps1
--> channels\stable.json and stable.sig.json are updated
--> workstations run update-from-nas.ps1
+-> topic branch / pull request
+-> Engineering gates + GitGuardian + automatic Claude Code Review
+-> protected main update
+-> signed-source-free-cd.yml builds, signs, validates, and publishes
+-> channels\stable.json and stable.sig.json are updated on NAS
+-> workstations run update-from-nas.ps1 manually or by scheduled task
 ```
 
-A normal `git commit` or `git push` does not update the office by itself.
+A normal feature-branch `git commit` or `git push` does not update the office by
+itself. Any update that reaches protected `main`, including a direct push if
+branch protection allows it, is the production publish trigger because the
+signed source-free CD workflow publishes the validated release to NAS stable.
+
+The stable channel is also consumed by the daily workstation scheduled task. If
+verification must finish before any workstation installs the new stable release,
+hold the `revAgent Auto Update` scheduled task on affected machines or publish
+to a non-stable test channel until the release is accepted.
 
 ## NAS Layout
 
@@ -53,9 +62,11 @@ A normal `git commit` or `git push` does not update the office by itself.
     show-installed-version.ps1
 ```
 
-## Publish A Release
+## Manual Publish Fallback
 
-Run from a clean repo root on the development machine:
+The normal production path is GitHub Actions signed source-free CD. Use
+`publish-nas-release.ps1` directly only for controlled recovery/backstop work
+from a clean repo root on the development machine:
 
 ```powershell
 $ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
@@ -64,8 +75,8 @@ powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps
   -Channel stable
 ```
 
-Optional detached release signing is publish-time only. When a release-signing
-key is approved, pass both `-SigningPrivateKeyPath` and `-SigningKeyId`; the
+Detached release signing is required for production stable. When using the
+manual fallback, pass both `-SigningPrivateKeyPath` and `-SigningKeyId`; the
 script writes `manifest.sig.json` and `stable.sig.json`, verifies them before
 finishing, and rejects private keys stored under the repo or NAS `tools` root.
 Pass `-TrustedReleaseKeysPath` to copy the public release key set into
@@ -328,7 +339,9 @@ License private keys must never be shipped to workstations or NAS `tools\`.
 
 ## Local No-Deploy Validation
 
-Before publishing a stable release, run the local checks from the repo root:
+Before manual fallback publishing, run the local checks from the repo root.
+Normal production publishes run the equivalent gates inside signed source-free
+CD:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-installer-smoke.ps1
