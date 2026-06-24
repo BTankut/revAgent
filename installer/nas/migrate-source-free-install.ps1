@@ -294,15 +294,9 @@ if ($Mode -eq "commit") {
         throw "ChannelManifestPath is required for commit mode. Pass it explicitly or provide an updater config."
     }
 
-    $localUpdaterPath = Join-Path $WorkRoot "update-from-nas.ps1"
-    $updaterPath = if (Test-Path -LiteralPath $localUpdaterPath -PathType Leaf) {
-        $localUpdaterPath
-    }
-    else {
-        Join-Path $PSScriptRoot "update-from-nas.ps1"
-    }
+    $updaterPath = Join-Path $WorkRoot "update-from-nas.ps1"
     if (-not (Test-Path -LiteralPath $updaterPath -PathType Leaf)) {
-        throw "update-from-nas.ps1 was not found beside the migration tool or under WorkRoot: $WorkRoot"
+        throw "Source-free migration commit mode requires the local trusted updater under WorkRoot: $updaterPath. Run Install/Repair first to bootstrap the local updater."
     }
 
     $powerShellPath = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source

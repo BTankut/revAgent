@@ -130,7 +130,18 @@ try {
     Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.CodexRegistration.psm1") -Destination (Join-Path $harnessLib "RevitMcp.CodexRegistration.psm1") -Force
     Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.SourceFreeMigration.psm1") -Destination (Join-Path $harnessLib "RevitMcp.SourceFreeMigration.psm1") -Force
 
-    $fakeUpdaterPath = Join-Path $harnessTools "update-from-nas.ps1"
+    $harnessReportPath = Join-Path $harnessRoot "migration-report.json"
+    $harnessInstallRoot = Join-Path $harnessRoot "install"
+    $harnessWorkRoot = Join-Path $harnessInstallRoot "updater"
+    $harnessPackageTarget = Join-Path $harnessInstallRoot "package"
+    $harnessServerTarget = Join-Path $harnessInstallRoot "runtime"
+    $harnessUserProfileRoot = Join-Path $harnessRoot "user"
+    $harnessConfigPath = Join-Path $harnessWorkRoot "updater-config.json"
+    $harnessChannelPath = Join-Path $harnessRoot "stable.json"
+    $fakeTaskStatePath = Join-Path $harnessRoot "fake-task-state.txt"
+    New-Item -ItemType Directory -Path $harnessWorkRoot -Force | Out-Null
+
+    $fakeUpdaterPath = Join-Path $harnessWorkRoot "update-from-nas.ps1"
     $fakeUpdater = @'
 param(
     [string]$ConfigPath = "",
@@ -167,16 +178,6 @@ exit 0
 '@
     Set-Content -LiteralPath $fakeUpdaterPath -Value $fakeUpdater -Encoding ASCII
 
-    $harnessReportPath = Join-Path $harnessRoot "migration-report.json"
-    $harnessInstallRoot = Join-Path $harnessRoot "install"
-    $harnessWorkRoot = Join-Path $harnessInstallRoot "updater"
-    $harnessPackageTarget = Join-Path $harnessInstallRoot "package"
-    $harnessServerTarget = Join-Path $harnessInstallRoot "runtime"
-    $harnessUserProfileRoot = Join-Path $harnessRoot "user"
-    $harnessConfigPath = Join-Path $harnessWorkRoot "updater-config.json"
-    $harnessChannelPath = Join-Path $harnessRoot "stable.json"
-    $fakeTaskStatePath = Join-Path $harnessRoot "fake-task-state.txt"
-    New-Item -ItemType Directory -Path $harnessWorkRoot -Force | Out-Null
     "{}" | Set-Content -LiteralPath $harnessConfigPath -Encoding ASCII
     "{}" | Set-Content -LiteralPath $harnessChannelPath -Encoding ASCII
     "Disabled" | Set-Content -LiteralPath $fakeTaskStatePath -Encoding ASCII
@@ -209,7 +210,7 @@ exit 0
     Remove-Item Env:\REVAGENT_FAKE_TASK_STATE_FILE -ErrorAction SilentlyContinue
     Assert-Equal $LASTEXITCODE 0 "Encoded wrapper migration harness should succeed."
 
-    $fakeTranscriptPath = Join-Path $harnessTools "fake-updater-transcript.log"
+    $fakeTranscriptPath = Join-Path $harnessWorkRoot "fake-updater-transcript.log"
     Assert-True (Test-Path -LiteralPath $fakeTranscriptPath -PathType Leaf) "Fake updater transcript should be written."
     $fakeTranscript = Get-Content -Raw -LiteralPath $fakeTranscriptPath
     $hostLine = @($fakeTranscript -split "`r?`n" | Where-Object { $_ -like "Host Application:*" } | Select-Object -First 1)[0]
@@ -237,6 +238,7 @@ foreach ($name in @("Mode", "ConfigPath", "ChannelManifestPath", "InstallRoot", 
 $migrationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\migrate-source-free-install.ps1")
 Assert-True ($migrationText -match 'Get-Command powershell\.exe' -and $migrationText -match '\[void\]\$updateArgs\.Add\("-File"\)' -and $migrationText -match '\[void\]\$updateArgs\.Add\(\$updaterPath\)') "Migration commit mode must launch the updater as a child PowerShell -File process so updater transcripts do not inherit encoded wrapper commands."
 Assert-True ($migrationText -notmatch '& \$updaterPath @updateArgs') "Migration commit mode must not call update-from-nas.ps1 inside the current PowerShell process."
+Assert-True ($migrationText -match 'local trusted updater under WorkRoot' -and $migrationText -notmatch 'Join-Path \$PSScriptRoot "update-from-nas\.ps1"') "Migration commit mode must fail closed instead of falling back to a NAS-side updater."
 Assert-True ($migrationText -match 'update-from-nas\.ps1 exited with code') "Migration commit mode must treat non-zero child updater exit codes as failures."
 Assert-True ($migrationText -match 'Set-RevitMcpCurrentProcessUtf8Console') "Migration entrypoint must force UTF-8 output even when launched with -NoProfile."
 

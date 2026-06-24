@@ -478,20 +478,14 @@ function Start-InstallerOperation {
     }
 
     $localUpdaterPath = Join-Path $workRoot "update-from-nas.ps1"
-    $nasUpdaterPath = Join-Path $PSScriptRoot "update-from-nas.ps1"
     $hasLocalUpdater = Test-Path -LiteralPath $localUpdaterPath -PathType Leaf
-    $directUpdaterPath = if ($hasLocalUpdater) { $localUpdaterPath } else { $nasUpdaterPath }
+    $directUpdaterPath = $localUpdaterPath
     $status = Get-ChannelStatus
     $sourceFreeArtifacts = @(Get-SourceFreeMigrationArtifactsForGui)
     $runSourceFreeMigration = ($sourceFreeArtifacts.Count -gt 0)
     if ($runSourceFreeMigration) {
         if (-not $hasLocalUpdater) {
             [System.Windows.Forms.MessageBox]::Show("Source-free migration requires the local trusted updater, but it was not found. Run Install/Repair first to bootstrap the local updater.", "revAgent") | Out-Null
-            Set-ButtonsEnabled -Enabled $true
-            return
-        }
-        if (-not (Test-Path -LiteralPath $directUpdaterPath -PathType Leaf)) {
-            [System.Windows.Forms.MessageBox]::Show("Source-free migration is required, but update-from-nas.ps1 was not found beside the launcher.", "revAgent") | Out-Null
             Set-ButtonsEnabled -Enabled $true
             return
         }
