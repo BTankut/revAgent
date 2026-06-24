@@ -18,24 +18,40 @@ design changes that boundary.
   readiness preflight, GitHub Actions signed source-free CD, and production
   signing/NAS publish automation are implemented.
 - `main` is the development and release source of truth.
-- Protected `main` updates, including direct pushes if branch protection allows
-  them, automatically build, sign, validate, and publish a signed source-free
-  release to NAS stable through `.github/workflows/signed-source-free-cd.yml`.
-- The current production NAS stable channel is signed and source-free. Verify
-  the live `channels\stable.json`, release manifest, ZIP hash, and CD run before
-  instructing operators to update workstations.
-- Point-in-time verification snapshot recorded on 2026-06-24:
-  - CD run:
-    `https://github.com/BTankut/revit-mcp-skill/actions/runs/28057789912`
-  - stable version: `2026.06.24.366-40425d12`
-  - stable commit: `40425d128afd5ae60c86ba40aa0399174748474b`
-  - release sequence: `20260623212138`
+- Protected `main` updates build, sign, and validate a signed source-free
+  release root through `.github/workflows/signed-source-free-cd.yml`; they do
+  not publish to NAS stable by themselves.
+- Production NAS stable publish requires explicit manual workflow dispatch with
+  `publish_to_nas=true`. Normal forward publish keeps `allow_rollback=false`.
+- The current production NAS stable channel is signed and source-free, but it
+  may lag the latest `main`. Verify the live `channels\stable.json`, release
+  manifest, ZIP hash, and CD run before instructing operators to update
+  workstations.
+- Point-in-time NAS stable verification snapshot recorded on 2026-06-24:
+  - stable version: `2026.06.24.370-4aaa5120`
+  - release sequence: `20260624090024`
   - signed-stable readiness:
     `success=true`, `readyForEnforce=true`, key `revagent-prod-rsa-2026q3`
-- Normal office update policy has not been flipped to fail-closed signature
-  enforcement.
+- Latest `main` after PR #98/#99 is not yet published to NAS stable.
+- Updater code now defaults to fail-closed signature enforcement when trusted
+  release keys are present, but broad workstations have not yet consumed the
+  PR #98/#99 stable release.
 - Net01 has been used as the migration/source-free pilot machine; broad office
   rollout has not started.
+
+## Security Roadmap Boundary
+
+The current rollout priority is source-code exposure reduction: release
+packages must be source-free, workstation installs must not receive repository
+or source files, and update/migration must keep that boundary intact.
+
+Advanced supply-chain hardening is deferred to a later commercial security
+track. For this office rollout, NAS access and local administrator access are
+controlled operational surfaces. Future commercial production should revisit a
+trusted local/bootstrap installer, out-of-band public-key fingerprint pinning,
+signed installer/updater binaries, verifier self-integrity, Authenticode/code
+signing, HSM/KMS-backed private key storage, and TUF-like release metadata/key
+rotation. These are not blockers for the current source-free user-pack rollout.
 
 ## Deployment Direction
 
@@ -45,12 +61,13 @@ update directly from the private source repository.
 Initial target:
 
 1. GitHub Actions builds and validates a signed source-free release artifact.
-2. GitHub Actions publishes that exact signed release to the existing NAS
-   release layout after a protected `main` update. The normal path is PR review,
-   required checks, and merge; direct pushes must remain disabled or
-   exception-only because they trigger the same publish path.
+2. A manual GitHub Actions dispatch with `publish_to_nas=true` publishes that
+   exact signed release to the existing NAS release layout after a protected
+   `main` update. The normal code path is PR review, required checks, Claude
+   review on PR updates, and merge.
 3. Workstations continue to read the NAS channel while the signed-stable
-   baseline and fail-closed updater policy are phased in.
+   baseline, source-free migration, and fail-closed updater behavior are phased
+   into the office machines.
 
 Later target:
 
@@ -67,22 +84,49 @@ Rejected initial target:
 
 ## Open Items
 
-- Fail-closed distribution-integrity enforcement is not enabled.
+- Publish the latest `main` signed source-free release to NAS stable through
+  manual workflow dispatch with `publish_to_nas=true` and `allow_rollback=false`.
+- Re-run signed-stable readiness against the production NAS root after publish.
+- Net01 must consume the new production NAS stable release through the updater
+  and pass install/update, Codex config, source-free boundary, and live Revit
+  smoke checks.
+- At least one additional workstation should pass the same pilot before broad
+  office rollout.
 - License or seat verification exists but remains optional and disabled by
   default; no production entitlement enforcement is active.
-- .NET obfuscation is not shipped. It remains deferred until a Revit 2022 live
-  model smoke test and deployment trust decision.
-- Net01 pilot is successful, but multi-machine migration rollout has not been
-  executed.
+- .NET obfuscation is not shipped. It remains a separate source-exposure
+  reduction workstream after the signed source-free rollout is stable and a
+  Revit 2022 live model smoke test is available.
+- Migration rollback robustness remains a productization reliability follow-up;
+  current rollout relies on dry-run inventory, one-time commit, and post-run
+  validation rather than a fully transactional workstation rollback.
 - GitHub environment reviewer/wait-timer protection rules are unavailable on the
   current GitHub plan; the operator gate is therefore protected PR review,
   required checks, and the explicit merge decision.
 - The daily workstation scheduled task can consume stable before a manual
-  operator rollout message. To hold a release, keep it off stable or disable
-  `revAgent Auto Update` on the affected machines before the protected `main`
-  update.
+  operator rollout message. To hold a release, keep it off NAS stable or disable
+  `revAgent Auto Update` on the affected machines before manual NAS publish.
 - NAS report/log publish warning from the pilot remains a separate share/report
   write issue.
+
+## Current Execution Position
+
+The repository is past Phase 2 and the CD producer is active on protected
+`main`. The current work is in Phase 3/4:
+
+1. Run manual signed source-free CD publish from `main` with
+   `publish_to_nas=true` and `allow_rollback=false`.
+2. Verify the production NAS stable root with active-release signed-stable
+   readiness.
+3. Run Net01 update/migration/live Revit validation against that exact stable
+   release.
+4. Repeat on one or two additional production-context workstations.
+5. Start broad office rollout only after those pilot reports show source-free
+   package boundaries, signed verification, and Codex/Revit behavior are clean.
+
+Phase 7 remains optional and separate. License enforcement, obfuscation, and
+commercial supply-chain hardening are not required to publish the current
+source-free user pack.
 
 ## Repository Implementation Status - 2026-06-24
 
@@ -115,9 +159,8 @@ Chosen CD model:
   outside NAS `tools`; GitHub receives only the path, key id, and public trusted
   key file path.
 - NAS publish is a separate job behind the protected
-  `revagent-production-publish` environment. It runs automatically after a
-  protected `main` update and can still be triggered manually with
-  `publish_to_nas=true`.
+  `revagent-production-publish` environment. It runs only when the workflow is
+  manually dispatched with `publish_to_nas=true`.
 - The publish job uses the validated release root staged locally under the
   self-hosted runner workspace; it does not rebuild or re-sign. This avoids
   GitHub artifact storage quota, but it means the selected runner labels must
@@ -169,9 +212,11 @@ Operational setup status:
 
 Still open after CD/NAS automation:
 
-- Installing/updating pilot workstations from the signed stable baseline.
-- Enabling fail-closed enforcement.
+- Publishing the latest `main` signed source-free release to NAS stable.
+- Installing/updating pilot workstations from that signed stable release.
 - Running multi-machine migration rollout.
+- Returning to entitlement, obfuscation, and commercial supply-chain
+  hardening as separate later workstreams.
 
 ## Phase 1 - CD Design And Key Decisions
 
@@ -253,8 +298,9 @@ tools\
 - Refresh NAS `tools` from the same reviewed release state.
 - Verify `stable.json`, `stable.sig.json`, release manifest, manifest
   signature, ZIP path, ZIP SHA256, and release sequence after publish.
-- Keep publish controlled by the protected PR review/CI/merge gate for `main`;
-  do not tell operators to run workstation updaters until the signed CD run has
+- Keep code changes controlled by the protected PR review/CI/merge gate for
+  `main`, then publish only by explicit manual workflow dispatch. Do not tell
+  operators to run workstation updaters until the signed CD publish has
   completed and NAS `stable.json` points at the expected merge commit.
 - Keep `allow_rollback=false` for normal forward publishes. Use
   `allow_rollback=true` only as an explicit operator decision for signed
