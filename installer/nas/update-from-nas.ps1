@@ -1776,6 +1776,22 @@ function ConvertTo-Int64OrZero {
     return [long]0
 }
 
+function Test-TruthyJsonValue {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) {
+        return $false
+    }
+    if ($Value -is [bool]) {
+        return [bool]$Value
+    }
+
+    $text = [string]$Value
+    return [string]::Equals($text, "true", [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($text, "1", [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($text, "yes", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Get-InstalledHighestAcceptedReleaseSequence {
     param([AllowNull()][object]$InstalledState)
 
@@ -1786,10 +1802,19 @@ function Get-InstalledHighestAcceptedReleaseSequence {
     $highest = ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $InstalledState -Name "highestAcceptedReleaseSequence")
     $topLevelSequence = ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $InstalledState -Name "releaseSequence")
     $highest = [Math]::Max($highest, $topLevelSequence)
+    $hasAcceptedSignedRelease = Test-TruthyJsonValue -Value (Get-JsonPropertyValue -Object $InstalledState -Name "hasAcceptedSignedRelease")
     $integrity = Get-JsonPropertyValue -Object $InstalledState -Name "distributionIntegrity"
     if ($integrity) {
         $highest = [Math]::Max($highest, (ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $integrity -Name "highestAcceptedReleaseSequence")))
         $highest = [Math]::Max($highest, (ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $integrity -Name "releaseSequence")))
+        $integrityState = [string](Get-JsonPropertyValue -Object $integrity -Name "state")
+        if ([string]::Equals($integrityState, "verified", [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($integrityState, "rollback-allowed", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $hasAcceptedSignedRelease = $true
+        }
+    }
+    if ($hasAcceptedSignedRelease -and $highest -lt 1) {
+        $highest = [long]1
     }
 
     return [long]$highest

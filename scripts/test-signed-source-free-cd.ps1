@@ -39,6 +39,63 @@ function Assert-Equal {
     }
 }
 
+function Get-WorkflowJobIfCondition {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$JobName
+    )
+
+    $insideJobs = $false
+    $insideTargetJob = $false
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        if ($line -match '^\s*(#.*)?$') {
+            continue
+        }
+
+        if (-not $insideJobs) {
+            if ($line -match '^jobs:\s*$') {
+                $insideJobs = $true
+            }
+            continue
+        }
+
+        if ($line -match '^(?<indent>\s*)(?<key>[A-Za-z0-9_.-]+):\s*(?<value>.*)$') {
+            $indent = $Matches.indent.Length
+            $key = $Matches.key
+            $value = $Matches.value.Trim()
+
+            if ($indent -eq 0) {
+                break
+            }
+            if ($indent -eq 2) {
+                $insideTargetJob = [string]::Equals($key, $JobName, [System.StringComparison]::Ordinal)
+                continue
+            }
+            if ($insideTargetJob -and $indent -eq 4 -and [string]::Equals($key, "if", [System.StringComparison]::Ordinal)) {
+                return $value
+            }
+        }
+    }
+
+    return $null
+}
+
+function Normalize-GithubWorkflowIfExpression {
+    param([AllowNull()][string]$Expression)
+
+    if ([string]::IsNullOrWhiteSpace($Expression)) {
+        return ""
+    }
+
+    $trimmed = $Expression.Trim()
+    $match = [regex]::Match($trimmed, '^\$\{\{\s*(?<expr>.*?)\s*\}\}$')
+    if ($match.Success) {
+        $trimmed = $match.Groups["expr"].Value
+    }
+
+    return (($trimmed -replace '\s+', ' ').Trim())
+}
+
 function New-TestRsaProvider {
     $cspParameters = [System.Security.Cryptography.CspParameters]::new(24)
     $cspParameters.Flags = [System.Security.Cryptography.CspProviderFlags]::CreateEphemeralKey
@@ -136,7 +193,8 @@ try {
     Assert-True ($workflowText -notmatch 'actions/upload-artifact' -and $workflowText -notmatch 'actions/download-artifact') "CD workflow should not depend on GitHub artifact storage quota for source-free release handoff."
     Assert-True ($workflowText -match 'push:\s*\r?\n\s*branches:\s*\r?\n\s*-\s*main') "CD workflow should run automatically after main is updated."
     Assert-True ($workflowText -match 'publish_to_nas') "CD workflow should keep NAS publish as an explicit manual dispatch input."
-    Assert-True ($workflowText -match "if:\s*\$\{\{\s*github\.event_name == 'workflow_dispatch' && inputs\.publish_to_nas\s*\}\}" -and $workflowText -notmatch "if:\s*\$\{\{\s*github\.event_name == 'push' \|\|") "CD workflow must not auto-publish production NAS stable on every push to main."
+    $publishJobCondition = Normalize-GithubWorkflowIfExpression -Expression (Get-WorkflowJobIfCondition -Path $workflowPath -JobName "publish-to-nas")
+    Assert-Equal $publishJobCondition "github.event_name == 'workflow_dispatch' && inputs.publish_to_nas" "CD workflow must not auto-publish production NAS stable on every push to main."
     Assert-True ($workflowText -match 'REVAGENT_CD_VERSION' -and $workflowText -match 'REVAGENT_CD_RELEASE_SEQUENCE') "CD workflow should route optional manual inputs through push-safe environment variables."
 
     $producerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1")

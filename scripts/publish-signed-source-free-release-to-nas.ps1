@@ -215,6 +215,7 @@ Copy-Item -LiteralPath $candidateSignaturePath -Destination $stableSignatureTemp
 
 $stableReadiness = $null
 try {
+    # Promote signature before channel: an updater racing between these moves sees a mismatched pair and rejects it.
     Move-Item -LiteralPath $stableSignatureTempPath -Destination $stableSignaturePath -Force
     Move-Item -LiteralPath $stableChannelTempPath -Destination $stableChannelPath -Force
 
