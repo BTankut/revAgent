@@ -1320,7 +1320,7 @@ function Test-RevitMcpReleaseDistributionIntegrity {
             -TrustedKeyCount $trustedKeyMap.Count `
             -ChannelSignature $channelSignature `
             -ReleaseManifestSignature $releaseManifestSignature `
-            -Consistency $consistency
+            -Consistency $unsignedRejectedConsistency
     }
 
     if (-not [bool]$channelSignature.success) {

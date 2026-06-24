@@ -180,6 +180,21 @@ try {
     Assert-True ([bool]$nasReadiness.success) "Published NAS root should pass signed stable readiness."
     Assert-Equal ([string]$nasReadiness.artifactScanScope) "activeRelease" "NAS publish readiness should use the active release artifact scan scope."
 
+    $nasStableChannelPath = Join-Path $nasRoot "channels\stable.json"
+    $legacyStableChannel = Get-Content -Raw -LiteralPath $nasStableChannelPath | ConvertFrom-Json
+    $legacyStableChannel.PSObject.Properties.Remove("releaseSequence")
+    $legacyStableChannel | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $nasStableChannelPath -Encoding UTF8
+    $legacyRepairPublishResult = & (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1") `
+        -SourceReleaseRoot $releaseRoot `
+        -NasReleaseRoot $nasRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -Force `
+        -AllowRollback `
+        -RepoRoot $RepoRoot
+    Assert-True ([bool]$legacyRepairPublishResult.success) "NAS publisher should allow explicit -AllowRollback bootstrap over a legacy stable channel missing releaseSequence."
+    $legacyRepairStableChannel = Get-Content -Raw -LiteralPath $nasStableChannelPath | ConvertFrom-Json
+    Assert-Equal ([long]$legacyRepairStableChannel.releaseSequence) ([long]$releaseSequence) "Legacy stable repair publish should restore the signed releaseSequence."
+
     $fullRootReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
         -ReleaseRoot $nasRoot `
         -TrustedKeysPath $trustedKeysPath `
@@ -208,6 +223,7 @@ try {
     Assert-True ($publisherText -match '\[switch\]\$AllowRollback' -and $publisherText -match 'currentStableReleaseSequence' -and $publisherText -match 'current-sequence repair') "NAS publisher must block signed stable releaseSequence rollback or equal-sequence repair unless explicitly allowed."
     Assert-True ($publisherText -match 'candidate releaseSequence could not be determined as a positive integer') "NAS publisher must report an unreadable candidate releaseSequence separately from rollback protection."
     Assert-True ($publisherText -match 'current stable releaseSequence could not be determined') "NAS publisher must fail closed when the existing stable releaseSequence is unreadable."
+    Assert-True ($publisherText -match 'missing_release_sequence' -and $publisherText -match 'legacy sequence 0 because -AllowRollback was supplied') "NAS publisher must make legacy current-stable bootstrap an explicit -AllowRollback path."
     Assert-True ($publisherText -match 'previous\.json' -and $publisherText -match 'previous\.sig\.json' -and $publisherText -match 'promotionStarted' -and $publisherText -match 'NAS stable signed release root failed readiness' -and $publisherText -match 'rollbackFailed' -and $publisherText -match 'Backup files kept') "NAS publisher must keep rollback files while promoting stable channel metadata and preserve them when rollback fails."
 }
 finally {

@@ -28,8 +28,9 @@ param(
 
     [switch]$Force,
 
-    # Authorizes deliberate signed rollback and equal releaseSequence repair republish.
-    # It does not bypass unreadable candidate/current channel metadata.
+    # Authorizes deliberate signed rollback, equal releaseSequence repair
+    # republish, and legacy current-stable bootstrap when the existing channel
+    # predates releaseSequence. It does not bypass unreadable/invalid metadata.
     [switch]$AllowRollback,
 
     [switch]$OutputJson,
@@ -239,7 +240,12 @@ if ($candidateReleaseSequence -le 0) {
 }
 $currentStableSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus -Path $stableChannelPath
 if ([bool]$currentStableSequenceStatus.exists -and -not [bool]$currentStableSequenceStatus.success) {
-    throw "Refusing to publish because current stable releaseSequence could not be determined from '$stableChannelPath'. Reason: $($currentStableSequenceStatus.reason). $($currentStableSequenceStatus.message)"
+    if ($AllowRollback -and [string]::Equals([string]$currentStableSequenceStatus.reason, "missing_release_sequence", [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Warning "Current stable channel has no releaseSequence; treating it as legacy sequence 0 because -AllowRollback was supplied."
+    }
+    else {
+        throw "Refusing to publish because current stable releaseSequence could not be determined from '$stableChannelPath'. Reason: $($currentStableSequenceStatus.reason). $($currentStableSequenceStatus.message)"
+    }
 }
 $currentStableReleaseSequence = if ([bool]$currentStableSequenceStatus.success) { [long]$currentStableSequenceStatus.value } else { [long]0 }
 # Equal releaseSequence republish is a protected repair path; require an explicit operator override.

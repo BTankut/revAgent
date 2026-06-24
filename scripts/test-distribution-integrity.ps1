@@ -311,6 +311,7 @@ try {
             -Policy "compatibility"
         Assert-True (-not $partialAggregate.success) "Partially signed release must be rejected."
         Assert-Equal $partialAggregate.reason "partial_signature_set" "Partially signed release should fail with a stable reason."
+        Assert-Equal $partialAggregate.consistency.reason "unsigned_release_rejected" "Partially signed release should not report legacy-compatible consistency."
 
         Write-Host "Test updater enforce aggregate rejects unsigned release"
         Remove-Item -LiteralPath $signaturePath -Force
