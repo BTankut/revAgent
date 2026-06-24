@@ -3,12 +3,16 @@ name: Claude Code Review
 # Substantive automated review on every PR (official "Automatic PR Code Review"
 # pattern: anthropics/claude-code-action docs/solutions.md). Not the plugin
 # slash-command: no skip-gate, no "high-signal only" funnel; always posts a
-# summary + suggestions + risks. Trigger: PR open only (no synchronize) to keep
-# Max quota usage down. Model: Opus 4.8 + xhigh.
+# summary + suggestions + risks. Trigger on PR open and later pushed commits
+# so the reviewed diff always tracks the latest PR head. Model: Opus 4.8 + xhigh.
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
