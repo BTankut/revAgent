@@ -14,11 +14,11 @@ All notable revAgent workstation deployment changes are tracked here.
   rollback files during channel promotion.
 - Added signed source-free CD automation: a protected GitHub Actions workflow
   can build a signed source-free release root from `main`, preserve that exact
-  release root in local runner staging, and publish it to NAS after the
-  protected PR review/CI/merge gate updates `main`. Signed release metadata now
-  uses portable relative paths, public trusted release keys can be copied into
-  `tools\config`, and readiness checks scan the release root and ZIP for
-  source/developer/debug artifacts.
+  release root in local runner staging, and publish it to NAS only when the
+  operator manually dispatches the workflow with `publish_to_nas=true`. Signed
+  release metadata now uses portable relative paths, public trusted release
+  keys can be copied into `tools\config`, and readiness checks scan the release
+  root and ZIP for source/developer/debug artifacts.
 - Fixed remaining live-test friction: local `test-all` and standalone payload
   freshness now restore npm dependencies before TypeScript builds, empty
   sheet/schedule inventory scans no longer expose misleading legacy match

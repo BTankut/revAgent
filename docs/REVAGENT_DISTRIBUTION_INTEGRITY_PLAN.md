@@ -43,6 +43,30 @@ The integrity layer does not try to prevent:
 - reverse engineering of the binaries already installed on a workstation;
 - Revit model, workbook, telemetry, or user Codex memory disclosure.
 
+## Commercial Security Roadmap Boundary
+
+The current productization priority is source-code exposure reduction:
+release packages should be source-free, workstation installs should not receive
+repository/source files, and update/migration should preserve that boundary.
+
+Advanced supply-chain hardening is intentionally deferred for the current
+office rollout. In this rollout threat model, NAS access and local
+administrator access are treated as controlled operational surfaces. Future
+commercial production should revisit these items as a separate security track:
+
+- trusted local/bootstrap installer instead of NAS-executed bootstrap scripts;
+- out-of-band public-key fingerprint pinning;
+- signed installer/updater binaries;
+- verifier self-integrity;
+- Authenticode/code signing;
+- HSM/KMS-backed private key storage;
+- TUF-like release metadata and key rotation.
+
+These are not blockers for the current source-free user-pack rollout. They
+must not be confused with the immediate rollout gates: source-free packaging,
+signed stable publish, readiness verification, and workstation migration/update
+validation.
+
 ## Trust Model
 
 Private signing material must stay outside all shipped artifacts:

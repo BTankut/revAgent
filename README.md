@@ -154,12 +154,12 @@ pulling and reinstalling on every machine.
 - GitHub remains the source history.
 - The NAS share is the single deployment source workstations read from.
 - A normal feature-branch `git commit` / `git push` does not update the office.
-- Any update that reaches protected `main`, including a direct push if branch
-  protection allows it, starts the signed source-free CD workflow and publishes
-  the validated release to the NAS stable channel.
+- Any update that reaches protected `main` starts the signed source-free CD
+  workflow in build/validate mode only; it does not publish to the NAS stable
+  channel.
 - Signed source-free CD runs through
-  `.github/workflows/signed-source-free-cd.yml`; manual dispatch remains
-  available for build-only validation or an explicit operator-triggered publish.
+  `.github/workflows/signed-source-free-cd.yml`; production NAS publish requires
+  an explicit manual dispatch with `publish_to_nas=true`.
 - The protected PR review/CI/merge decision is the normal human gate for
   production publish. After a protected `main` update, verify the signed CD run
   and `channels\stable.json` before manual or broad rollout instructions.
@@ -505,11 +505,13 @@ The protected `main` branch runs GitHub Actions on pull requests and pushes to
 for PRs, and signed source-free CD for `main` updates. Normal development
 should happen on a topic branch, then merge through a pull request after the
 required checks pass and actionable review comments are addressed.
-Any update that reaches protected `main` publishes to the office NAS stable
-channel through signed CD, so branch protection is the real production gate.
-Verify the workflow result and `channels\stable.json` before manual rollout
-instructions, and pause scheduled updater rollout separately when verification
-must happen before any workstation installs the new stable release.
+Any update that reaches protected `main` builds and validates a signed
+source-free release root. Publishing that release to the office NAS stable
+channel is a separate manual workflow-dispatch action with
+`publish_to_nas=true`. Verify the workflow result and `channels\stable.json`
+after publish before manual rollout instructions, and pause scheduled updater
+rollout separately when verification must happen before any workstation
+installs the new stable release.
 
 When the shared bridge command payload changes and Revit 2022 is available, run the
 optional live commandset gate separately:
