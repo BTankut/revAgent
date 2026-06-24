@@ -319,7 +319,7 @@ catch {
     throw $publishError
 }
 finally {
-    $cleanupPaths = @($stableChannelTempPath, $stableSignatureTempPath)
+    $cleanupPaths = @($stableChannelTempPath, $stableSignatureTempPath, $candidateChannelPath, $candidateSignaturePath)
     if (-not $rollbackFailed) {
         # Successful publishes remove transient channel backups; versioned
         # release recovery remains available from the NAS releases archive.
@@ -327,9 +327,6 @@ finally {
     }
     Remove-Item -LiteralPath $cleanupPaths -Force -ErrorAction SilentlyContinue
 }
-
-Remove-Item -LiteralPath $candidateChannelPath -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $candidateSignaturePath -Force -ErrorAction SilentlyContinue
 
 $result = [pscustomobject][ordered]@{
     success = $true

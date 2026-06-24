@@ -496,14 +496,14 @@ function Start-InstallerOperation {
         $Operation = "update"
     }
 
-    if ($Operation -eq "update" -and -not [string]::IsNullOrWhiteSpace($status.InstalledVersion) -and -not $hasLocalUpdater) {
-        [System.Windows.Forms.MessageBox]::Show("This workstation has an installed revAgent package, but the local trusted updater was not found. Use Install/Repair to restore the local updater before normal updates.", "revAgent") | Out-Null
+    if ($Operation -eq "update" -and -not [bool]$status.UpdateEnabled) {
+        [System.Windows.Forms.MessageBox]::Show("No update is available.`r`n`r`n$($status.StatusText)", "revAgent") | Out-Null
         Set-ButtonsEnabled -Enabled $true
         return
     }
 
-    if ($Operation -eq "update" -and -not [bool]$status.UpdateEnabled) {
-        [System.Windows.Forms.MessageBox]::Show("No update is available.`r`n`r`n$($status.StatusText)", "revAgent") | Out-Null
+    if ($Operation -eq "update" -and -not [string]::IsNullOrWhiteSpace($status.InstalledVersion) -and -not $hasLocalUpdater) {
+        [System.Windows.Forms.MessageBox]::Show("This workstation has an installed revAgent package, but the local trusted updater was not found. Use Install/Repair to restore the local updater before normal updates.", "revAgent") | Out-Null
         Set-ButtonsEnabled -Enabled $true
         return
     }

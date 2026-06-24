@@ -225,6 +225,7 @@ try {
     Assert-True ($publisherText -match 'candidate releaseSequence could not be determined as a positive integer') "NAS publisher must report an unreadable candidate releaseSequence separately from rollback protection."
     Assert-True ($publisherText -match 'current stable releaseSequence could not be determined') "NAS publisher must fail closed when the existing stable releaseSequence is unreadable."
     Assert-True ($publisherText -match 'missing_release_sequence' -and $publisherText -match 'legacy sequence 0 because -AllowRollback was supplied') "NAS publisher must make legacy current-stable bootstrap an explicit -AllowRollback path."
+    Assert-True ($publisherText -match '\$cleanupPaths = @\(\$stableChannelTempPath, \$stableSignatureTempPath, \$candidateChannelPath, \$candidateSignaturePath\)') "NAS publisher must clean candidate channel artifacts even when stable promotion rolls back."
     Assert-True ($publisherText -match 'previous\.json' -and $publisherText -match 'previous\.sig\.json' -and $publisherText -match 'promotionStarted' -and $publisherText -match 'NAS stable signed release root failed readiness' -and $publisherText -match 'rollbackFailed' -and $publisherText -match 'Backup files kept') "NAS publisher must keep rollback files while promoting stable channel metadata and preserve them when rollback fails."
 }
 finally {
