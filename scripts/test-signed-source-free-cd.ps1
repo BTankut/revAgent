@@ -221,9 +221,13 @@ try {
     $publisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1")
     $stableSequenceCheckIndex = $publisherText.IndexOf('$currentStableSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus')
     $toolsCopyIndex = $publisherText.IndexOf('Copy-RevitMcpDirectoryExact -Source $sourceToolsDir')
+    $candidateReadinessIndex = $publisherText.IndexOf('$candidateReadiness = &')
+    $tryBeforeCandidateReadinessIndex = $publisherText.LastIndexOf('try {', $candidateReadinessIndex)
+    $finallyAfterCandidateReadinessIndex = $publisherText.IndexOf('finally {', $candidateReadinessIndex)
     Assert-True ($producerText -match 'test-ci\.ps1' -and $producerText -match 'RequireSigning') "CD producer should run engineering gates and require signing."
     Assert-True ($publisherText -match 'candidate\.json' -and $publisherText -match 'check-signed-stable-readiness\.ps1') "NAS publisher should validate a candidate channel before stable promotion."
     Assert-True ($stableSequenceCheckIndex -ge 0 -and $toolsCopyIndex -ge 0 -and $stableSequenceCheckIndex -lt $toolsCopyIndex) "NAS publisher must run releaseSequence rollback guards before overwriting NAS tools."
+    Assert-True ($candidateReadinessIndex -ge 0 -and $tryBeforeCandidateReadinessIndex -ge 0 -and $tryBeforeCandidateReadinessIndex -lt $candidateReadinessIndex -and $finallyAfterCandidateReadinessIndex -gt $candidateReadinessIndex) "NAS publisher must clean candidate channel artifacts even when candidate readiness fails before stable promotion."
     Assert-True ($publisherText -match '\[switch\]\$AllowRollback' -and $publisherText -match 'currentStableReleaseSequence' -and $publisherText -match 'current-sequence repair') "NAS publisher must block signed stable releaseSequence rollback or equal-sequence repair unless explicitly allowed."
     Assert-True ($publisherText -match 'candidate releaseSequence could not be determined as a positive integer') "NAS publisher must report an unreadable candidate releaseSequence separately from rollback protection."
     Assert-True ($publisherText -match 'current stable releaseSequence could not be determined') "NAS publisher must fail closed when the existing stable releaseSequence is unreadable."

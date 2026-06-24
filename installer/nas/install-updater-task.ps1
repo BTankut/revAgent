@@ -1014,6 +1014,7 @@ if ($previousDistributionIntegrity) {
 $preservedTrustedReleaseKeysPath = ""
 $localLibRoot = Join-Path $WorkRoot "lib"
 $localTrustedReleaseKeysPath = Join-Path $WorkRoot "config\release-trusted-keys.json"
+$trustedReleaseKeysMissingAfterRepair = $false
 try {
     if ($previousReleaseIntegrityPinned -and -not [string]::IsNullOrWhiteSpace($previousTrustedReleaseKeysPath) -and (Test-Path -LiteralPath $previousTrustedReleaseKeysPath -PathType Leaf)) {
         $preservedTrustedReleaseKeysPath = Join-Path $WorkRoot "release-trusted-keys.previous.json"
@@ -1044,6 +1045,7 @@ try {
             Write-Warning "NAS tools did not provide release-trusted-keys.json; preserved previously pinned local trusted release keys."
         }
         elseif ($previousReleaseIntegrityPinned) {
+            $trustedReleaseKeysMissingAfterRepair = $true
             Write-Warning "Trusted release keys were previously pinned, but NAS tools did not provide release-trusted-keys.json and no previous local key file could be preserved. Distribution integrity config remains pinned and fail-closed until keys are restored."
         }
     }
@@ -1095,6 +1097,10 @@ if ((Test-Path -LiteralPath $localTrustedReleaseKeysPath -PathType Leaf) -or $pr
     $config["distributionIntegrity"] = [ordered]@{
         policy = "enforce"
         trustedKeysPath = $localTrustedReleaseKeysPath
+    }
+    if ($trustedReleaseKeysMissingAfterRepair -and -not (Test-Path -LiteralPath $localTrustedReleaseKeysPath -PathType Leaf)) {
+        $config["distributionIntegrity"]["trustedKeysMissing"] = $true
+        $config["distributionIntegrity"]["message"] = "Trusted release keys were previously pinned but could not be restored. The updater remains fail-closed until release-trusted-keys.json is restored by Install/Repair."
     }
 }
 Write-JsonFile -Path $configPath -Value $config

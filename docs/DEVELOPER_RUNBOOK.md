@@ -876,6 +876,11 @@ release keys make the default policy `enforce`; unsigned fallback remains only
 for keys-free legacy bootstrap/test paths. Once a workstation accepts any
 signed release sequence, later unsigned releases are rejected and the locally
 stored `highestAcceptedReleaseSequence` is never lowered.
+If an enforce-pinned workstation loses `release-trusted-keys.json`, the updater
+stays fail-closed and writes a structured `trusted_keys_missing` distribution
+integrity report. Restore the public key file by running Install/Repair from a
+NAS tools payload that includes `tools\config\release-trusted-keys.json`; do
+not lower policy to `compatibility` as a recovery step.
 
 Before a signed stable baseline or fail-closed policy change, run the read-only
 preflight against the candidate release root and production public release-key

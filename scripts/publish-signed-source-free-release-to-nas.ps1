@@ -238,20 +238,6 @@ New-Item -ItemType Directory -Path $NasReleaseRoot -Force | Out-Null
 Copy-RevitMcpDirectoryExact -Source $sourceReleaseDir -Destination $nasReleaseDir -Root $NasReleaseRoot -AllowReplace:$Force
 Copy-RevitMcpDirectoryExact -Source $sourceToolsDir -Destination $nasToolsDir -Root $NasReleaseRoot -AllowReplace:$true
 
-New-Item -ItemType Directory -Path $nasChannelsDir -Force | Out-Null
-Copy-Item -LiteralPath $sourceChannelPath -Destination $candidateChannelPath -Force
-Copy-Item -LiteralPath $sourceChannelSignaturePath -Destination $candidateSignaturePath -Force
-
-$candidateReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
-    -ReleaseRoot $NasReleaseRoot `
-    -ChannelManifestPath $candidateChannelPath `
-    -TrustedKeysPath $TrustedKeysPath `
-    -ArtifactScanScope activeRelease `
-    -RepoRoot $RepoRoot
-if (-not [bool]$candidateReadiness.success) {
-    throw "NAS candidate signed release root failed readiness verification."
-}
-
 $stableChannelBackupPath = Join-Path $nasChannelsDir ("{0}.previous.json" -f $Channel)
 $stableSignatureBackupPath = Join-Path $nasChannelsDir ("{0}.previous.sig.json" -f $Channel)
 $stableChannelTempPath = Join-Path $nasChannelsDir ("{0}.next.json" -f $Channel)
@@ -266,6 +252,20 @@ $stableReadiness = $null
 $rollbackFailed = $false
 $promotionStarted = $false
 try {
+    New-Item -ItemType Directory -Path $nasChannelsDir -Force | Out-Null
+    Copy-Item -LiteralPath $sourceChannelPath -Destination $candidateChannelPath -Force
+    Copy-Item -LiteralPath $sourceChannelSignaturePath -Destination $candidateSignaturePath -Force
+
+    $candidateReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
+        -ReleaseRoot $NasReleaseRoot `
+        -ChannelManifestPath $candidateChannelPath `
+        -TrustedKeysPath $TrustedKeysPath `
+        -ArtifactScanScope activeRelease `
+        -RepoRoot $RepoRoot
+    if (-not [bool]$candidateReadiness.success) {
+        throw "NAS candidate signed release root failed readiness verification."
+    }
+
     Remove-Item -LiteralPath $stableChannelBackupPath, $stableSignatureBackupPath, $stableChannelTempPath, $stableSignatureTempPath -Force -ErrorAction SilentlyContinue
     if ($hadStableChannel) {
         Copy-Item -LiteralPath $stableChannelPath -Destination $stableChannelBackupPath -Force

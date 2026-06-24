@@ -1680,6 +1680,32 @@ function Add-TrustedReleaseKeysFromFile {
     return $fullPath
 }
 
+function Set-DistributionIntegrityBlockedReport {
+    param(
+        [string]$Policy,
+        [hashtable]$TrustedKeys,
+        [System.Collections.Generic.List[string]]$Sources,
+        [string]$Reason,
+        [string]$Message,
+        [string]$TrustedKeysPath = ""
+    )
+
+    $effectivePolicy = if ([string]::IsNullOrWhiteSpace($Policy)) { "enforce" } else { $Policy }
+    $script:RevitMcpDistributionIntegrityPolicy = $effectivePolicy
+    $script:RevitMcpTrustedReleaseKeys = $TrustedKeys
+    $script:RevitMcpTrustedReleaseKeySources = @($Sources.ToArray())
+    $script:RevitMcpDistributionIntegrity = [ordered]@{
+        success = $false
+        state = "blocked"
+        reason = $Reason
+        message = $Message
+        policy = $effectivePolicy
+        trustedKeyCount = $TrustedKeys.Count
+        trustedKeySources = @($script:RevitMcpTrustedReleaseKeySources)
+        trustedKeysPath = $TrustedKeysPath
+    }
+}
+
 function Initialize-DistributionIntegrityConfig {
     param([AllowNull()][object]$Config)
 
@@ -1707,7 +1733,15 @@ function Initialize-DistributionIntegrityConfig {
 
         $trustedKeysPath = [string](Get-JsonPropertyValue -Object $integrityConfig -Name "trustedKeysPath")
         if (-not [string]::IsNullOrWhiteSpace($trustedKeysPath)) {
-            $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $trustedKeysPath -Required
+            try {
+                $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $trustedKeysPath -Required
+            }
+            catch {
+                $resolvedTrustedKeysPath = Resolve-UpdaterConfigRelativePath -Path $trustedKeysPath
+                $message = "Trusted release keys are configured but could not be loaded from '$resolvedTrustedKeysPath'. Run Install/Repair after restoring release-trusted-keys.json."
+                Set-DistributionIntegrityBlockedReport -Policy $policy -TrustedKeys $trustedKeys -Sources $sources -Reason "trusted_keys_missing" -Message $message -TrustedKeysPath $resolvedTrustedKeysPath
+                throw $message
+            }
             if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
                 [void]$sources.Add($sourcePath)
             }
@@ -1718,7 +1752,15 @@ function Initialize-DistributionIntegrityConfig {
             if ([string]::IsNullOrWhiteSpace([string]$path)) {
                 continue
             }
-            $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path ([string]$path) -Required
+            try {
+                $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path ([string]$path) -Required
+            }
+            catch {
+                $resolvedTrustedKeysPath = Resolve-UpdaterConfigRelativePath -Path ([string]$path)
+                $message = "Trusted release keys are configured but could not be loaded from '$resolvedTrustedKeysPath'. Run Install/Repair after restoring release-trusted-keys.json."
+                Set-DistributionIntegrityBlockedReport -Policy $policy -TrustedKeys $trustedKeys -Sources $sources -Reason "trusted_keys_missing" -Message $message -TrustedKeysPath $resolvedTrustedKeysPath
+                throw $message
+            }
             if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
                 [void]$sources.Add($sourcePath)
             }
@@ -1745,6 +1787,9 @@ function Initialize-DistributionIntegrityConfig {
 
     if ([string]::IsNullOrWhiteSpace($policy)) {
         $policy = if ($trustedKeys.Count -gt 0) { "enforce" } else { "compatibility" }
+    }
+    elseif ($trustedKeys.Count -gt 0 -and [string]::Equals($policy, "compatibility", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $policy = "enforce"
     }
 
     $script:RevitMcpDistributionIntegrityPolicy = $policy
@@ -2827,14 +2872,17 @@ if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
     $ReportsRoot = Join-Path $releaseRootGuess "reports"
 }
 $script:RevitMcpRemoteReportsRoot = $ReportsRoot
-Initialize-DistributionIntegrityConfig -Config $config
-Initialize-LicenseConfig -Config $config
-
-$installedState = Get-InstalledState -Path $statePath
-$highestAcceptedReleaseSequence = Get-InstalledHighestAcceptedReleaseSequence -InstalledState $installedState
+$installedState = $null
+$highestAcceptedReleaseSequence = [long]0
 $channel = $null
 
 try {
+    Initialize-DistributionIntegrityConfig -Config $config
+    Initialize-LicenseConfig -Config $config
+
+    $installedState = Get-InstalledState -Path $statePath
+    $highestAcceptedReleaseSequence = Get-InstalledHighestAcceptedReleaseSequence -InstalledState $installedState
+
     if ($SourceFreeMigration -and $AuditOnly) {
         throw "-SourceFreeMigration cannot be combined with -AuditOnly. Use migrate-source-free-install.ps1 -Mode dryRun for inventory-only checks."
     }
