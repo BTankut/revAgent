@@ -28,7 +28,10 @@ design changes that boundary.
   manifest, ZIP hash, and CD run before instructing operators to update
   workstations.
 - Point-in-time NAS stable verification snapshot recorded on 2026-06-24:
+  - CD run:
+    `https://github.com/BTankut/revit-mcp-skill/actions/runs/28087195446`
   - stable version: `2026.06.24.370-4aaa5120`
+  - stable commit: `4aaa5120b728d0384b457c0140e3b3c2dc2c7f17`
   - release sequence: `20260624090024`
   - signed-stable readiness:
     `success=true`, `readyForEnforce=true`, key `revagent-prod-rsa-2026q3`
@@ -45,13 +48,10 @@ The current rollout priority is source-code exposure reduction: release
 packages must be source-free, workstation installs must not receive repository
 or source files, and update/migration must keep that boundary intact.
 
-Advanced supply-chain hardening is deferred to a later commercial security
-track. For this office rollout, NAS access and local administrator access are
-controlled operational surfaces. Future commercial production should revisit a
-trusted local/bootstrap installer, out-of-band public-key fingerprint pinning,
-signed installer/updater binaries, verifier self-integrity, Authenticode/code
-signing, HSM/KMS-backed private key storage, and TUF-like release metadata/key
-rotation. These are not blockers for the current source-free user-pack rollout.
+Advanced supply-chain hardening is deferred to the later commercial security
+track defined in `REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md` under
+`Commercial Security Roadmap Boundary`. Those items are not blockers for the
+current source-free user-pack rollout.
 
 ## Deployment Direction
 
