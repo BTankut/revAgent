@@ -174,12 +174,14 @@ Migration sequence:
    `manifest.sig.json` and `stable.sig.json` generation without requiring a
    signed release.
 3. Add updater verification in compatibility mode: signed releases are
-   verified, unsigned releases are reported as legacy-compatible.
+   verified, unsigned releases are reported as legacy-compatible only while no
+   trusted release keys or accepted signed release sequence are present.
 4. Add a signed release sequence or minimum-version claim and persist the
    highest accepted release state locally.
 5. Publish one signed stable release through the protected `main` / signed CD
    NAS process.
-6. Flip the updater policy to require signed channel and release manifests.
+6. Flip the updater policy to require signed channel and release manifests
+   automatically when trusted release keys are present.
 7. Keep an emergency rollback path that requires an explicit local operator
    flag, bypasses normal scheduled update execution, and writes an audit
    report. Replaying an older signed `stable.json` and `stable.sig.json` pair
@@ -234,19 +236,20 @@ Each workstream should remain a separate PR:
    without changing production updater behavior.
 3. Publish-path detached signing support. This adds optional publish-time
    signature generation and temp-root tests without publishing to NAS.
-4. Updater verification in compatibility mode with reporting. This verifies
-   fully signed channel/release-manifest pairs before package caching, accepts
-   completely unsigned legacy releases as `legacy-compatible`, rejects partial
-   or invalid signature sets, and writes the integrity state into update
-   reports without enabling fail-closed enforcement by default.
+4. Updater verification with reporting. This verifies fully signed
+   channel/release-manifest pairs before package caching, accepts completely
+   unsigned legacy releases as `legacy-compatible` only in keys-free bootstrap
+   paths, rejects partial or invalid signature sets, rejects unsigned metadata
+   after any signed sequence has been accepted, and writes the integrity state
+   into update reports.
 5. Signed-stable baseline and enforcement flip. Implementation must add signed
    `releaseSequence` metadata, persist the highest accepted sequence locally,
    block older signed-channel replay during normal updater execution, and expose
    an explicit local rollback flag that records audit/report evidence. The
-   actual signed stable publish now runs through the protected `main` signed CD
-   path, while fail-closed policy remains a separate approved deployment step
-   with production public keys present on workstations first. A read-only
-   signed-stable readiness preflight must pass before either action; it verifies
+   actual signed stable publish now runs through the signed CD path, and
+   production NAS publish requires explicit manual workflow dispatch. Trusted
+   release keys enable fail-closed updater behavior by default. A read-only
+   signed-stable readiness preflight must pass before publish; it verifies
    enforce-mode signatures, package hash consistency, positive `releaseSequence`
    metadata, and absence of obvious private signing material under the release
    root.
@@ -270,7 +273,9 @@ Implementation PRs must add tests for:
 - unknown key ID;
 - wrong public-key fingerprint;
 - older signed channel replay blocked without explicit rollback authorization;
-- unsigned legacy release in compatibility mode;
+- unsigned legacy release in keys-free compatibility mode;
+- unsigned release rejected when trusted keys are configured;
+- unsigned release rejected after a signed release sequence has been accepted;
 - unsigned release blocked after enforcement is enabled.
 
 Release gates must also verify that private keys, test private keys, and license
@@ -280,6 +285,7 @@ secrets do not appear in the user pack, NAS `tools/`, or committed config.
 
 This plan defines the release-origin trust model and the implementation gates.
 The signed stable publish path now runs through the protected `main` branch and
-the signed source-free GitHub Actions CD workflow. Fail-closed enforcement,
-license enforcement, and future key-policy changes remain separate approved
-workstreams.
+the signed source-free GitHub Actions CD workflow. Production NAS publish is a
+manual workflow-dispatch action, and updater fail-closed behavior is now the
+default when trusted release keys are present. License enforcement and future
+key-policy changes remain separate approved workstreams.

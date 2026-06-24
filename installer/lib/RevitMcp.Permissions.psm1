@@ -58,7 +58,8 @@ function Get-RevitMcpManagedPermissionTargets {
             @{ Path = (Join-Path $WorkRoot "logs"); Label = "updater logs root" },
             @{ Path = (Join-Path $WorkRoot "cache"); Label = "updater cache root" },
             @{ Path = (Join-Path $WorkRoot "staging"); Label = "updater staging root" },
-            @{ Path = (Join-Path $WorkRoot "reports"); Label = "updater reports root" }
+            @{ Path = (Join-Path $WorkRoot "reports"); Label = "updater reports root" },
+            @{ Path = (Join-Path $WorkRoot "config"); Label = "updater config root" }
         )) {
         $targets.Add((New-RevitMcpPermissionTarget -Path $entry.Path -Label $entry.Label -CreateDirectory))
     }
@@ -78,7 +79,8 @@ function Get-RevitMcpManagedPermissionTargets {
             "install-updater-task.ps1",
             "Update-Revit-MCP-Now.cmd",
             "Show-Revit-MCP-Version.cmd",
-            "auto-update-loop.ps1"
+            "auto-update-loop.ps1",
+            "config\release-trusted-keys.json"
         )) {
         $targets.Add((New-RevitMcpPermissionTarget -Path (Join-Path $WorkRoot $fileName) -Label "updater file $fileName" -Kind File))
     }

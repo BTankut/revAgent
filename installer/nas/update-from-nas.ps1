@@ -1680,10 +1680,36 @@ function Add-TrustedReleaseKeysFromFile {
     return $fullPath
 }
 
+function Set-DistributionIntegrityBlockedReport {
+    param(
+        [string]$Policy,
+        [hashtable]$TrustedKeys,
+        [System.Collections.Generic.List[string]]$Sources,
+        [string]$Reason,
+        [string]$Message,
+        [string]$TrustedKeysPath = ""
+    )
+
+    $effectivePolicy = if ([string]::IsNullOrWhiteSpace($Policy)) { "enforce" } else { $Policy }
+    $script:RevitMcpDistributionIntegrityPolicy = $effectivePolicy
+    $script:RevitMcpTrustedReleaseKeys = $TrustedKeys
+    $script:RevitMcpTrustedReleaseKeySources = @($Sources.ToArray())
+    $script:RevitMcpDistributionIntegrity = [ordered]@{
+        success = $false
+        state = "blocked"
+        reason = $Reason
+        message = $Message
+        policy = $effectivePolicy
+        trustedKeyCount = $TrustedKeys.Count
+        trustedKeySources = @($script:RevitMcpTrustedReleaseKeySources)
+        trustedKeysPath = $TrustedKeysPath
+    }
+}
+
 function Initialize-DistributionIntegrityConfig {
     param([AllowNull()][object]$Config)
 
-    $policy = "compatibility"
+    $policy = ""
     $trustedKeys = @{}
     $sources = [System.Collections.Generic.List[string]]::new()
     $integrityConfig = if ($Config) { Get-JsonPropertyValue -Object $Config -Name "distributionIntegrity" } else { $null }
@@ -1707,7 +1733,15 @@ function Initialize-DistributionIntegrityConfig {
 
         $trustedKeysPath = [string](Get-JsonPropertyValue -Object $integrityConfig -Name "trustedKeysPath")
         if (-not [string]::IsNullOrWhiteSpace($trustedKeysPath)) {
-            $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $trustedKeysPath -Required
+            try {
+                $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $trustedKeysPath -Required
+            }
+            catch {
+                $resolvedTrustedKeysPath = Resolve-UpdaterConfigRelativePath -Path $trustedKeysPath
+                $message = "Trusted release keys are configured but could not be loaded from '$resolvedTrustedKeysPath'. Run Install/Repair after restoring release-trusted-keys.json."
+                Set-DistributionIntegrityBlockedReport -Policy $policy -TrustedKeys $trustedKeys -Sources $sources -Reason "trusted_keys_missing" -Message $message -TrustedKeysPath $resolvedTrustedKeysPath
+                throw $message
+            }
             if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
                 [void]$sources.Add($sourcePath)
             }
@@ -1718,7 +1752,15 @@ function Initialize-DistributionIntegrityConfig {
             if ([string]::IsNullOrWhiteSpace([string]$path)) {
                 continue
             }
-            $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path ([string]$path) -Required
+            try {
+                $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path ([string]$path) -Required
+            }
+            catch {
+                $resolvedTrustedKeysPath = Resolve-UpdaterConfigRelativePath -Path ([string]$path)
+                $message = "Trusted release keys are configured but could not be loaded from '$resolvedTrustedKeysPath'. Run Install/Repair after restoring release-trusted-keys.json."
+                Set-DistributionIntegrityBlockedReport -Policy $policy -TrustedKeys $trustedKeys -Sources $sources -Reason "trusted_keys_missing" -Message $message -TrustedKeysPath $resolvedTrustedKeysPath
+                throw $message
+            }
             if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
                 [void]$sources.Add($sourcePath)
             }
@@ -1741,6 +1783,13 @@ function Initialize-DistributionIntegrityConfig {
         if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
             [void]$sources.Add($sourcePath)
         }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($policy)) {
+        $policy = if ($trustedKeys.Count -gt 0) { "enforce" } else { "compatibility" }
+    }
+    elseif ($trustedKeys.Count -gt 0 -and [string]::Equals($policy, "compatibility", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $policy = "enforce"
     }
 
     $script:RevitMcpDistributionIntegrityPolicy = $policy
@@ -1772,6 +1821,22 @@ function ConvertTo-Int64OrZero {
     return [long]0
 }
 
+function Test-TruthyJsonValue {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) {
+        return $false
+    }
+    if ($Value -is [bool]) {
+        return [bool]$Value
+    }
+
+    $text = [string]$Value
+    return [string]::Equals($text, "true", [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($text, "1", [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($text, "yes", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Get-InstalledHighestAcceptedReleaseSequence {
     param([AllowNull()][object]$InstalledState)
 
@@ -1782,10 +1847,19 @@ function Get-InstalledHighestAcceptedReleaseSequence {
     $highest = ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $InstalledState -Name "highestAcceptedReleaseSequence")
     $topLevelSequence = ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $InstalledState -Name "releaseSequence")
     $highest = [Math]::Max($highest, $topLevelSequence)
+    $hasAcceptedSignedRelease = Test-TruthyJsonValue -Value (Get-JsonPropertyValue -Object $InstalledState -Name "hasAcceptedSignedRelease")
     $integrity = Get-JsonPropertyValue -Object $InstalledState -Name "distributionIntegrity"
     if ($integrity) {
         $highest = [Math]::Max($highest, (ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $integrity -Name "highestAcceptedReleaseSequence")))
         $highest = [Math]::Max($highest, (ConvertTo-Int64OrZero -Value (Get-JsonPropertyValue -Object $integrity -Name "releaseSequence")))
+        $integrityState = [string](Get-JsonPropertyValue -Object $integrity -Name "state")
+        if ([string]::Equals($integrityState, "verified", [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($integrityState, "rollback-allowed", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $hasAcceptedSignedRelease = $true
+        }
+    }
+    if ($hasAcceptedSignedRelease -and $highest -lt 1) {
+        $highest = [long]1
     }
 
     return [long]$highest
@@ -2798,14 +2872,17 @@ if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
     $ReportsRoot = Join-Path $releaseRootGuess "reports"
 }
 $script:RevitMcpRemoteReportsRoot = $ReportsRoot
-Initialize-DistributionIntegrityConfig -Config $config
-Initialize-LicenseConfig -Config $config
-
-$installedState = Get-InstalledState -Path $statePath
-$highestAcceptedReleaseSequence = Get-InstalledHighestAcceptedReleaseSequence -InstalledState $installedState
+$installedState = $null
+$highestAcceptedReleaseSequence = [long]0
 $channel = $null
 
 try {
+    Initialize-DistributionIntegrityConfig -Config $config
+    Initialize-LicenseConfig -Config $config
+
+    $installedState = Get-InstalledState -Path $statePath
+    $highestAcceptedReleaseSequence = Get-InstalledHighestAcceptedReleaseSequence -InstalledState $installedState
+
     if ($SourceFreeMigration -and $AuditOnly) {
         throw "-SourceFreeMigration cannot be combined with -AuditOnly. Use migrate-source-free-install.ps1 -Mode dryRun for inventory-only checks."
     }
@@ -3276,6 +3353,15 @@ try {
         $null
     }
 
+    $integrityReleaseSequence = ConvertTo-Int64OrZero -Value $script:RevitMcpDistributionIntegrity.releaseSequence
+    $integrityMinimumAcceptedReleaseSequence = ConvertTo-Int64OrZero -Value $script:RevitMcpDistributionIntegrity.minimumAcceptedReleaseSequence
+    $integrityHighestAcceptedReleaseSequence = [Math]::Max(
+        $highestAcceptedReleaseSequence,
+        (ConvertTo-Int64OrZero -Value $script:RevitMcpDistributionIntegrity.highestAcceptedReleaseSequence))
+    $hasAcceptedSignedRelease = $integrityHighestAcceptedReleaseSequence -gt 0 -or
+        [string]::Equals([string]$script:RevitMcpDistributionIntegrity.state, "verified", [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals([string]$script:RevitMcpDistributionIntegrity.state, "rollback-allowed", [System.StringComparison]::OrdinalIgnoreCase)
+
     $newState = [ordered]@{
         schemaVersion = 1
         app = "revit-mcp-skill"
@@ -3298,9 +3384,10 @@ try {
         fastUpdateFallbackMessage = $fastUpdateFallbackMessage
         revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
         distributionIntegrity = $script:RevitMcpDistributionIntegrity
-        releaseSequence = [long]$script:RevitMcpDistributionIntegrity.releaseSequence
-        minimumAcceptedReleaseSequence = [long]$script:RevitMcpDistributionIntegrity.minimumAcceptedReleaseSequence
-        highestAcceptedReleaseSequence = [long]$script:RevitMcpDistributionIntegrity.highestAcceptedReleaseSequence
+        releaseSequence = $integrityReleaseSequence
+        minimumAcceptedReleaseSequence = $integrityMinimumAcceptedReleaseSequence
+        highestAcceptedReleaseSequence = $integrityHighestAcceptedReleaseSequence
+        hasAcceptedSignedRelease = [bool]$hasAcceptedSignedRelease
         signedReleaseRollbackAllowed = [bool]$script:RevitMcpDistributionIntegrity.rollbackAllowed
         license = $script:RevitMcpLicense
         sourceFreeMigration = $sourceFreeMigrationState

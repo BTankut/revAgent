@@ -151,9 +151,10 @@ Operational setup status:
   on the current repo plan; the GitHub API returned billing-plan 422 errors for
   those protection-rule requests. Until the repo plan supports protected
   environment reviewers, the explicit operator gate is the protected PR
-  review/CI/merge decision for `main`; after merge, signed CD publishes
-  automatically. The script-side candidate-readiness guard still runs before
-  `stable.json` is replaced.
+  review/CI/merge decision for `main`; after merge, signed CD validates
+  automatically, and production NAS publish requires manual workflow dispatch
+  with `publish_to_nas=true`. The script-side candidate-readiness guard still
+  runs before `stable.json` is replaced.
 - A no-publish local CD smoke using the production signing key succeeded and
   produced signed `stable.json`, `stable.sig.json`, `manifest.json`,
   `manifest.sig.json`, a positive `releaseSequence`, and a readiness-verified
@@ -161,9 +162,10 @@ Operational setup status:
 - A self-hosted Windows runner was registered for this repo with the
   `revagent-cd` label on the office workstation.
 - PowerShell 7 was installed for the runner because the workflow uses `pwsh`.
-- Signed source-free CD has run from protected `main` and published production
-  NAS stable. The workflow uses local self-hosted runner staging for the signed
-  release-root handoff instead of GitHub artifact storage.
+- Signed source-free CD has run from protected `main` in build/validate mode.
+  Production NAS stable publish now requires manual workflow dispatch with
+  `publish_to_nas=true`. The workflow uses local self-hosted runner staging for
+  the signed release-root handoff instead of GitHub artifact storage.
 
 Still open after CD/NAS automation:
 
@@ -183,10 +185,13 @@ Required outcomes:
   - key rotation policy and key ID naming;
   - public trusted release key deployment path for workstations.
 - Decide the initial GitHub Actions deployment trigger:
-  - protected `main` push automatically builds, signs, validates, and publishes
-    to NAS stable;
-  - manual workflow dispatch remains available from `main` for build-only
-    validation or explicit operator-triggered publish.
+  - protected `main` push automatically builds, signs, and validates without
+    publishing to NAS stable;
+  - manual workflow dispatch from `main` with `publish_to_nas=true` is required
+    for explicit operator-triggered production publish;
+  - manual `allow_rollback=true` is reserved for signed rollback,
+    same-sequence repair, or the one-time bootstrap over legacy stable metadata
+    that has no `releaseSequence`.
 - Decide whether signing happens inside GitHub Actions or on a self-hosted
   runner. Prefer a self-hosted runner if the private signing key or NAS access
   should never leave the office-controlled environment.
@@ -251,6 +256,9 @@ tools\
 - Keep publish controlled by the protected PR review/CI/merge gate for `main`;
   do not tell operators to run workstation updaters until the signed CD run has
   completed and NAS `stable.json` points at the expected merge commit.
+- Keep `allow_rollback=false` for normal forward publishes. Use
+  `allow_rollback=true` only as an explicit operator decision for signed
+  rollback, same-sequence repair, or first legacy stable bootstrap.
 
 Gate:
 
@@ -259,8 +267,8 @@ Gate:
 
 ## Phase 4 - Signed Stable Baseline
 
-Goal: publish one signed production stable release while updater policy remains
-compatible with unsigned legacy releases.
+Goal: publish one signed production stable release and move workstation updater
+verification to fail-closed behavior wherever trusted release keys are present.
 
 Required outcomes:
 
@@ -270,8 +278,9 @@ Required outcomes:
   in both channel and manifest metadata.
 - Updater reports distribution-integrity status as signed and verified on pilot
   machines.
-- Unsigned legacy compatibility remains available only during the migration
-  window.
+- Unsigned legacy compatibility remains available only for keys-free
+  bootstrap/test paths; once a workstation has trusted release keys or any
+  accepted signed sequence, unsigned stable metadata is rejected.
 
 Pilot machines:
 
@@ -281,8 +290,9 @@ Pilot machines:
 
 Gate:
 
-- Do not enable fail-closed enforcement until pilot reports confirm signed
-  verification and no source/developer artifacts after update.
+- Do not start broad workstation rollout until pilot reports confirm signed
+  verification, local trusted key pinning, and no source/developer artifacts
+  after update.
 
 ## Phase 5 - Fail-Closed Enforcement
 
@@ -291,8 +301,9 @@ package replacement.
 
 Required outcomes:
 
-- Updater policy is changed from compatibility to enforce only after signed
-  stable baseline adoption is proven.
+- Updater policy defaults to enforce when trusted release keys are present; no
+  separate broad compatibility window remains after local trusted keys are
+  installed.
 - Missing, partial, invalid, tampered, unknown-key, fingerprint-mismatched, or
   replayed older signed releases are blocked before package replacement.
 - Emergency rollback remains explicit, local-operator controlled, and audited.
@@ -363,9 +374,9 @@ before trusting any provider.
 - Private signing keys, license-signing keys, seat secrets, and GitHub write
   tokens must not be stored in the repo, user ZIP, NAS `tools`, updater config,
   or workstation payload.
-- Production publish is gated by protected branch controls. The normal path is
-  PR review, required checks, and explicit merge; any update that reaches
-  protected `main` causes signed CD to publish automatically.
+- Production publish is gated by protected branch controls plus explicit manual
+  workflow dispatch. The normal path is PR review, required checks, explicit
+  merge, then `workflow_dispatch` with `publish_to_nas=true`.
 - NAS publish and fail-closed policy changes remain separate actions.
 - Source-free packaging, distribution integrity, migration, and optional
   entitlement are separate layers. Do not use one as a substitute for another.

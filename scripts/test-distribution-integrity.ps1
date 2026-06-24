@@ -262,17 +262,44 @@ try {
         Assert-Equal $rollbackAggregate.state "rollback-allowed" "Explicit signed rollback should be visible in aggregate state."
         Assert-True $rollbackAggregate.rollbackAllowed "Explicit signed rollback should be reported."
 
-        Write-Host "Test updater compatibility aggregate accepts unsigned legacy release"
+        Write-Host "Test updater compatibility aggregate rejects stripped signatures when trusted keys exist"
         Remove-Item -LiteralPath $signaturePath, $manifestSignaturePath -Force
-        $unsignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+        $strippedSignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
             -ChannelPath $channelPath `
             -Channel $channel `
             -ReleaseManifestPath $manifestPath `
             -ReleaseManifest $manifest `
             -TrustedKeys $trustedKeys `
             -Policy "compatibility"
-        Assert-True $unsignedAggregate.success "Unsigned release should pass in compatibility mode."
+        Assert-True (-not $strippedSignedAggregate.success) "Trusted-key compatibility mode must reject releases with stripped signatures."
+        Assert-Equal $strippedSignedAggregate.reason "signature_required" "Trusted-key stripped signature rejection should use signature_required."
+        Assert-Equal $strippedSignedAggregate.consistency.reason "unsigned_release_rejected" "Trusted-key stripped signature rejection should not report legacy-compatible consistency."
+
+        Write-Host "Test updater compatibility aggregate rejects unsigned release after signed acceptance"
+        $unsignedAfterSignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+            -ChannelPath $channelPath `
+            -Channel $channel `
+            -ReleaseManifestPath $manifestPath `
+            -ReleaseManifest $manifest `
+            -TrustedKeys @{} `
+            -Policy "compatibility" `
+            -HighestAcceptedReleaseSequence 1001
+        Assert-True (-not $unsignedAfterSignedAggregate.success) "Unsigned releases must be rejected once a signed release sequence has been accepted."
+        Assert-Equal $unsignedAfterSignedAggregate.reason "unsigned_release_after_signed_acceptance" "Unsigned-after-signed rejection should use a stable reason."
+        Assert-Equal $unsignedAfterSignedAggregate.consistency.reason "unsigned_release_rejected" "Unsigned-after-signed rejection should not report legacy-compatible consistency."
+        Assert-Equal $unsignedAfterSignedAggregate.highestAcceptedReleaseSequence ([long]1001) "Unsigned-after-signed rejection should preserve the accepted signed sequence watermark."
+
+        Write-Host "Test updater compatibility aggregate accepts keys-free unsigned legacy release"
+        $unsignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+            -ChannelPath $channelPath `
+            -Channel $channel `
+            -ReleaseManifestPath $manifestPath `
+            -ReleaseManifest $manifest `
+            -TrustedKeys @{} `
+            -Policy "compatibility"
+        Assert-True $unsignedAggregate.success "Unsigned release should pass only in keys-free compatibility mode."
         Assert-Equal $unsignedAggregate.state "legacy-compatible" "Unsigned release must be reported as legacy-compatible."
+        Assert-Equal $unsignedAggregate.consistency.reason "unsigned_legacy_release" "Accepted legacy unsigned release should keep legacy consistency metadata."
 
         Write-Host "Test updater compatibility aggregate rejects partial signature set"
         $envelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $signaturePath -Encoding UTF8
@@ -285,6 +312,7 @@ try {
             -Policy "compatibility"
         Assert-True (-not $partialAggregate.success) "Partially signed release must be rejected."
         Assert-Equal $partialAggregate.reason "partial_signature_set" "Partially signed release should fail with a stable reason."
+        Assert-Equal $partialAggregate.consistency.reason "unsigned_release_rejected" "Partially signed release should not report legacy-compatible consistency."
 
         Write-Host "Test updater enforce aggregate rejects unsigned release"
         Remove-Item -LiteralPath $signaturePath -Force
