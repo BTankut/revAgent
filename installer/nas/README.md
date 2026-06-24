@@ -18,15 +18,15 @@ Code change
 -> topic branch / pull request
 -> Engineering gates + GitGuardian + automatic Claude Code Review
 -> protected main update
--> signed-source-free-cd.yml builds, signs, validates, and publishes
--> channels\stable.json and stable.sig.json are updated on NAS
+-> signed-source-free-cd.yml builds, signs, and validates without publishing
+-> manual workflow_dispatch with publish_to_nas=true updates NAS stable
 -> workstations run update-from-nas.ps1 manually or by scheduled task
 ```
 
 A normal feature-branch `git commit` or `git push` does not update the office by
-itself. Any update that reaches protected `main`, including a direct push if
-branch protection allows it, is the production publish trigger because the
-signed source-free CD workflow publishes the validated release to NAS stable.
+itself. A protected `main` update builds and validates the signed source-free
+release root, but production NAS stable publish requires an explicit
+`workflow_dispatch` run with `publish_to_nas=true`.
 
 The stable channel is also consumed by the daily workstation scheduled task. If
 verification must finish before any workstation installs the new stable release,
@@ -97,12 +97,12 @@ Production NAS publish is a separate explicit `workflow_dispatch` run with
 `publish_to_nas=true`. The publish job reads the validated staged release root
 and runs `scripts/publish-signed-source-free-release-to-nas.ps1`, which copies
 the release and tools to NAS, validates `stable.candidate.json`, blocks stable
-`releaseSequence` rollback unless `-AllowRollback` is passed deliberately, then
-promotes `stable.sig.json` and `stable.json` with rollback files kept until the
-post-publish readiness check passes. It does not rebuild or re-sign the
-artifact. The local runner staging handoff avoids GitHub Actions artifact
-storage quota, so the selected runner labels must resolve to the office runner
-that owns both signing-key and NAS access.
+`releaseSequence` rollback or equal-sequence repair unless `-AllowRollback` is
+passed deliberately, then promotes `stable.sig.json` and `stable.json` with
+rollback files kept until the post-publish readiness check passes. It does not
+rebuild or re-sign the artifact. The local runner staging handoff avoids GitHub
+Actions artifact storage quota, so the selected runner labels must resolve to
+the office runner that owns both signing-key and NAS access.
 
 Candidate and final stable readiness checks use active-release artifact
 hygiene. They verify the candidate release package and current `tools\`

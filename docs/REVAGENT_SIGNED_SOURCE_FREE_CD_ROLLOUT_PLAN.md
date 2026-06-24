@@ -162,9 +162,10 @@ Operational setup status:
 - A self-hosted Windows runner was registered for this repo with the
   `revagent-cd` label on the office workstation.
 - PowerShell 7 was installed for the runner because the workflow uses `pwsh`.
-- Signed source-free CD has run from protected `main` and published production
-  NAS stable. The workflow uses local self-hosted runner staging for the signed
-  release-root handoff instead of GitHub artifact storage.
+- Signed source-free CD has run from protected `main` in build/validate mode.
+  Production NAS stable publish now requires manual workflow dispatch with
+  `publish_to_nas=true`. The workflow uses local self-hosted runner staging for
+  the signed release-root handoff instead of GitHub artifact storage.
 
 Still open after CD/NAS automation:
 
@@ -184,10 +185,10 @@ Required outcomes:
   - key rotation policy and key ID naming;
   - public trusted release key deployment path for workstations.
 - Decide the initial GitHub Actions deployment trigger:
-  - protected `main` push automatically builds, signs, validates, and publishes
-    to NAS stable;
-  - manual workflow dispatch remains available from `main` for build-only
-    validation or explicit operator-triggered publish.
+  - protected `main` push automatically builds, signs, and validates without
+    publishing to NAS stable;
+  - manual workflow dispatch from `main` with `publish_to_nas=true` is required
+    for explicit operator-triggered production publish.
 - Decide whether signing happens inside GitHub Actions or on a self-hosted
   runner. Prefer a self-hosted runner if the private signing key or NAS access
   should never leave the office-controlled environment.
@@ -367,9 +368,9 @@ before trusting any provider.
 - Private signing keys, license-signing keys, seat secrets, and GitHub write
   tokens must not be stored in the repo, user ZIP, NAS `tools`, updater config,
   or workstation payload.
-- Production publish is gated by protected branch controls. The normal path is
-  PR review, required checks, and explicit merge; any update that reaches
-  protected `main` causes signed CD to publish automatically.
+- Production publish is gated by protected branch controls plus explicit manual
+  workflow dispatch. The normal path is PR review, required checks, explicit
+  merge, then `workflow_dispatch` with `publish_to_nas=true`.
 - NAS publish and fail-closed policy changes remain separate actions.
 - Source-free packaging, distribution integrity, migration, and optional
   entitlement are separate layers. Do not use one as a substitute for another.

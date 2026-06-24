@@ -189,8 +189,9 @@ if ($candidateReleaseSequence -le 0) {
     $candidateReleaseSequence = Get-RevitMcpChannelReleaseSequence -Path $candidateChannelPath
 }
 $currentStableReleaseSequence = Get-RevitMcpChannelReleaseSequence -Path $stableChannelPath
+# Equal releaseSequence republish is a protected repair path; require an explicit operator override.
 if ($currentStableReleaseSequence -gt 0 -and $candidateReleaseSequence -le $currentStableReleaseSequence -and -not $AllowRollback) {
-    throw "Refusing to publish releaseSequence '$candidateReleaseSequence' over current stable '$currentStableReleaseSequence'. Pass -AllowRollback only for deliberate signed rollback."
+    throw "Refusing to publish releaseSequence '$candidateReleaseSequence' over current stable '$currentStableReleaseSequence'. Pass -AllowRollback only for deliberate signed rollback or current-sequence repair."
 }
 
 $stableChannelBackupPath = Join-Path $nasChannelsDir ("{0}.previous.json" -f $Channel)
@@ -214,6 +215,7 @@ Copy-Item -LiteralPath $candidateChannelPath -Destination $stableChannelTempPath
 Copy-Item -LiteralPath $candidateSignaturePath -Destination $stableSignatureTempPath -Force
 
 $stableReadiness = $null
+$rollbackFailed = $false
 try {
     # Promote signature before channel: an updater racing between these moves sees a mismatched pair and rejects it.
     Move-Item -LiteralPath $stableSignatureTempPath -Destination $stableSignaturePath -Force
@@ -229,22 +231,35 @@ try {
     }
 }
 catch {
-    if ($hadStableSignature -and (Test-Path -LiteralPath $stableSignatureBackupPath -PathType Leaf)) {
-        Copy-Item -LiteralPath $stableSignatureBackupPath -Destination $stableSignaturePath -Force
+    $publishError = $_
+    try {
+        if ($hadStableSignature -and (Test-Path -LiteralPath $stableSignatureBackupPath -PathType Leaf)) {
+            Copy-Item -LiteralPath $stableSignatureBackupPath -Destination $stableSignaturePath -Force
+        }
+        elseif (Test-Path -LiteralPath $stableSignaturePath -PathType Leaf) {
+            Remove-Item -LiteralPath $stableSignaturePath -Force
+        }
+        if ($hadStableChannel -and (Test-Path -LiteralPath $stableChannelBackupPath -PathType Leaf)) {
+            Copy-Item -LiteralPath $stableChannelBackupPath -Destination $stableChannelPath -Force
+        }
+        elseif (Test-Path -LiteralPath $stableChannelPath -PathType Leaf) {
+            Remove-Item -LiteralPath $stableChannelPath -Force
+        }
     }
-    elseif (Test-Path -LiteralPath $stableSignaturePath -PathType Leaf) {
-        Remove-Item -LiteralPath $stableSignaturePath -Force
+    catch {
+        $rollbackFailed = $true
+        $rollbackError = $_
+        Write-Warning ("NAS stable rollback failed after publish error. Backup files kept for manual recovery: {0}, {1}" -f $stableChannelBackupPath, $stableSignatureBackupPath)
+        throw "NAS stable signed release publish failed and rollback also failed. Original error: $($publishError.Exception.Message). Rollback error: $($rollbackError.Exception.Message). Backup files kept for manual recovery."
     }
-    if ($hadStableChannel -and (Test-Path -LiteralPath $stableChannelBackupPath -PathType Leaf)) {
-        Copy-Item -LiteralPath $stableChannelBackupPath -Destination $stableChannelPath -Force
-    }
-    elseif (Test-Path -LiteralPath $stableChannelPath -PathType Leaf) {
-        Remove-Item -LiteralPath $stableChannelPath -Force
-    }
-    throw
+    throw $publishError
 }
 finally {
-    Remove-Item -LiteralPath $stableChannelBackupPath, $stableSignatureBackupPath, $stableChannelTempPath, $stableSignatureTempPath -Force -ErrorAction SilentlyContinue
+    $cleanupPaths = @($stableChannelTempPath, $stableSignatureTempPath)
+    if (-not $rollbackFailed) {
+        $cleanupPaths += @($stableChannelBackupPath, $stableSignatureBackupPath)
+    }
+    Remove-Item -LiteralPath $cleanupPaths -Force -ErrorAction SilentlyContinue
 }
 
 Remove-Item -LiteralPath $candidateChannelPath -Force -ErrorAction SilentlyContinue

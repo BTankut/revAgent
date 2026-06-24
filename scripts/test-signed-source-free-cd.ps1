@@ -39,6 +39,8 @@ function Assert-Equal {
     }
 }
 
+# Minimal workflow reader for this repository's simple GitHub Actions shape:
+# top-level jobs, two-space job indentation, and single-line job `if:` values.
 function Get-WorkflowJobIfCondition {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -80,7 +82,7 @@ function Get-WorkflowJobIfCondition {
     return $null
 }
 
-function Normalize-GithubWorkflowIfExpression {
+function ConvertTo-GithubWorkflowIfExpression {
     param([AllowNull()][string]$Expression)
 
     if ([string]::IsNullOrWhiteSpace($Expression)) {
@@ -193,7 +195,7 @@ try {
     Assert-True ($workflowText -notmatch 'actions/upload-artifact' -and $workflowText -notmatch 'actions/download-artifact') "CD workflow should not depend on GitHub artifact storage quota for source-free release handoff."
     Assert-True ($workflowText -match 'push:\s*\r?\n\s*branches:\s*\r?\n\s*-\s*main') "CD workflow should run automatically after main is updated."
     Assert-True ($workflowText -match 'publish_to_nas') "CD workflow should keep NAS publish as an explicit manual dispatch input."
-    $publishJobCondition = Normalize-GithubWorkflowIfExpression -Expression (Get-WorkflowJobIfCondition -Path $workflowPath -JobName "publish-to-nas")
+    $publishJobCondition = ConvertTo-GithubWorkflowIfExpression -Expression (Get-WorkflowJobIfCondition -Path $workflowPath -JobName "publish-to-nas")
     Assert-Equal $publishJobCondition "github.event_name == 'workflow_dispatch' && inputs.publish_to_nas" "CD workflow must not auto-publish production NAS stable on every push to main."
     Assert-True ($workflowText -match 'REVAGENT_CD_VERSION' -and $workflowText -match 'REVAGENT_CD_RELEASE_SEQUENCE') "CD workflow should route optional manual inputs through push-safe environment variables."
 
@@ -201,8 +203,8 @@ try {
     $publisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1")
     Assert-True ($producerText -match 'test-ci\.ps1' -and $producerText -match 'RequireSigning') "CD producer should run engineering gates and require signing."
     Assert-True ($publisherText -match 'candidate\.json' -and $publisherText -match 'check-signed-stable-readiness\.ps1') "NAS publisher should validate a candidate channel before stable promotion."
-    Assert-True ($publisherText -match '\[switch\]\$AllowRollback' -and $publisherText -match 'currentStableReleaseSequence' -and $publisherText -match 'Refusing to publish releaseSequence') "NAS publisher must block signed stable releaseSequence rollback unless explicitly allowed."
-    Assert-True ($publisherText -match 'previous\.json' -and $publisherText -match 'previous\.sig\.json' -and $publisherText -match 'NAS stable signed release root failed readiness') "NAS publisher must keep rollback files while promoting stable channel metadata."
+    Assert-True ($publisherText -match '\[switch\]\$AllowRollback' -and $publisherText -match 'currentStableReleaseSequence' -and $publisherText -match 'current-sequence repair') "NAS publisher must block signed stable releaseSequence rollback or equal-sequence repair unless explicitly allowed."
+    Assert-True ($publisherText -match 'previous\.json' -and $publisherText -match 'previous\.sig\.json' -and $publisherText -match 'NAS stable signed release root failed readiness' -and $publisherText -match 'rollbackFailed' -and $publisherText -match 'Backup files kept') "NAS publisher must keep rollback files while promoting stable channel metadata and preserve them when rollback fails."
 }
 finally {
     $rsa.Dispose()
