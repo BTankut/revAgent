@@ -43,6 +43,10 @@ design changes that boundary.
 - Net01 has been used as the migration/source-free pilot machine; broad office
   rollout has not started.
 
+This snapshot is archival. Before taking rollout action, re-verify the live
+NAS `channels\stable.json`, release manifest, ZIP hash, signed-stable
+readiness, and latest CD run rather than treating these values as current truth.
+
 ## Security Roadmap Boundary
 
 The current rollout priority is source-code exposure reduction: release
@@ -213,9 +217,10 @@ Operational setup status:
 
 Still open after CD/NAS automation:
 
-- Publishing the latest `main` signed source-free release to NAS stable.
-- Installing/updating pilot workstations from that signed stable release.
-- Running multi-machine migration rollout.
+- Use `Current Execution Position` as the source of truth for the next
+  operational rollout steps.
+- Installing/updating pilot workstations from the signed stable release.
+- Running multi-machine migration rollout after pilot validation.
 - Returning to entitlement, obfuscation, and commercial supply-chain
   hardening as separate later workstreams.
 
