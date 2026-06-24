@@ -35,10 +35,11 @@ design changes that boundary.
   - release sequence: `20260624090024`
   - signed-stable readiness:
     `success=true`, `readyForEnforce=true`, key `revagent-prod-rsa-2026q3`
-- Latest `main` after PR #98/#99 is not yet published to NAS stable.
+- As of the 2026-06-24 snapshot above, latest `main` after PR #98/#99 is not
+  yet published to NAS stable.
 - Updater code now defaults to fail-closed signature enforcement when trusted
-  release keys are present, but broad workstations have not yet consumed the
-  PR #98/#99 stable release.
+  release keys are present, but as of the same snapshot broad workstations have
+  not yet consumed the PR #98/#99 stable release.
 - Net01 has been used as the migration/source-free pilot machine; broad office
   rollout has not started.
 
