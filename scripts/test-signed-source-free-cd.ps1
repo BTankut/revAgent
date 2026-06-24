@@ -145,6 +145,24 @@ try {
     Assert-True ([bool]$buildResult.success) "CD producer should return success."
     Assert-Equal ([string]$buildResult.version) $version "CD producer should report the produced version."
 
+    $unsignedBuildFailed = $false
+    try {
+        & (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1") `
+            -ReleaseRoot (Join-Path $tempRoot "unsigned-release-root") `
+            -TrustedKeysPath $trustedKeysPath `
+            -SigningKeyId $keyId `
+            -Version "2026.06.23.unsigned-cd-test" `
+            -SkipEngineeringGates `
+            -AllowDirty `
+            -AllowNonMain `
+            -Force `
+            -RepoRoot $RepoRoot | Out-Null
+    }
+    catch {
+        $unsignedBuildFailed = $_.Exception.Message -match "SigningPrivateKeyPath is required"
+    }
+    Assert-True $unsignedBuildFailed "CD producer must behaviorally reject unsigned builds instead of relying on source-text grep."
+
     $sourceChannelPath = Join-Path $releaseRoot "channels\stable.json"
     $sourceManifestPath = Join-Path $releaseRoot "releases\$version\manifest.json"
     $sourceChannel = Get-Content -Raw -LiteralPath $sourceChannelPath | ConvertFrom-Json
@@ -219,6 +237,8 @@ try {
 
     $producerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1")
     $publisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1")
+    $legacyPublisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
+    $claudeWorkflowText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot ".github\workflows\claude-review.yml")
     $stableSequenceCheckIndex = $publisherText.IndexOf('$currentStableSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus')
     $toolsCopyIndex = $publisherText.IndexOf('Copy-RevitMcpDirectoryExact -Source $sourceToolsDir')
     $candidateReadinessIndex = $publisherText.IndexOf('$candidateReadiness = &')
@@ -233,7 +253,9 @@ try {
     Assert-True ($publisherText -match 'current stable releaseSequence could not be determined') "NAS publisher must fail closed when the existing stable releaseSequence is unreadable."
     Assert-True ($publisherText -match 'missing_release_sequence' -and $publisherText -match 'legacy sequence 0 because -AllowRollback was supplied') "NAS publisher must make legacy current-stable bootstrap an explicit -AllowRollback path."
     Assert-True ($publisherText -match '\$cleanupPaths = @\(\$stableChannelTempPath, \$stableSignatureTempPath, \$candidateChannelPath, \$candidateSignaturePath\)') "NAS publisher must clean candidate channel artifacts even when stable promotion rolls back."
-    Assert-True ($publisherText -match 'previous\.json' -and $publisherText -match 'previous\.sig\.json' -and $publisherText -match 'promotionStarted' -and $publisherText -match 'NAS stable signed release root failed readiness' -and $publisherText -match 'rollbackFailed' -and $publisherText -match 'Backup files kept') "NAS publisher must keep rollback files while promoting stable channel metadata and preserve them when rollback fails."
+    Assert-True ($publisherText -match 'previous\.json' -and $publisherText -match 'previous\.sig\.json' -and $publisherText -match 'promotionStarted' -and $publisherText -match 'NAS stable signed release root failed readiness' -and $publisherText -match 'rollbackFailed' -and $publisherText -match 'Backup files kept' -and $publisherText -match 'Restore-RevitMcpDirectoryFromRollback') "NAS publisher must keep rollback files while promoting stable channel metadata and restore payload directories when rollback is needed."
+    Assert-True ($legacyPublisherText -match '\[switch\]\$AllowRollback' -and $legacyPublisherText -match 'Get-RevitMcpChannelReleaseSequenceStatus' -and $legacyPublisherText -match 'Refusing to publish releaseSequence') "Legacy NAS publisher must enforce releaseSequence rollback guards."
+    Assert-True ($claudeWorkflowText -match 'github\.event\.pull_request\.draft == false' -and $claudeWorkflowText -match 'github\.event\.pull_request\.head\.repo\.full_name == github\.repository') "Claude review workflow must visibly skip draft and fork PRs instead of silently consuming review quota or no-oping."
 }
 finally {
     $rsa.Dispose()

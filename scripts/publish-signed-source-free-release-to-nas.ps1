@@ -91,6 +91,45 @@ function Copy-RevitMcpDirectoryExact {
     Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
 }
 
+function Backup-RevitMcpDirectoryForRollback {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Backup,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+
+    Assert-RevitMcpChildPath -Path $Source -Root $Root
+    Assert-RevitMcpChildPath -Path $Backup -Root $Root
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+        return $false
+    }
+
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Backup) -Force | Out-Null
+    Copy-Item -LiteralPath $Source -Destination $Backup -Recurse -Force
+    return $true
+}
+
+function Restore-RevitMcpDirectoryFromRollback {
+    param(
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$Backup,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [bool]$HadOriginal
+    )
+
+    Assert-RevitMcpChildPath -Path $Destination -Root $Root
+    Assert-RevitMcpChildPath -Path $Backup -Root $Root
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Recurse -Force
+    }
+    if ($HadOriginal) {
+        if (-not (Test-Path -LiteralPath $Backup -PathType Container)) {
+            throw "Rollback backup was not found: $Backup"
+        }
+        Copy-Item -LiteralPath $Backup -Destination $Destination -Recurse -Force
+    }
+}
+
 function ConvertTo-RevitMcpInt64OrZero {
     param([AllowNull()][object]$Value)
 
@@ -201,11 +240,14 @@ $sourceToolsDir = Join-Path $SourceReleaseRoot "tools"
 $nasReleaseDir = Join-Path $NasReleaseRoot "releases\$version"
 $nasToolsDir = Join-Path $NasReleaseRoot "tools"
 $nasChannelsDir = Join-Path $NasReleaseRoot "channels"
+$payloadBackupRoot = Join-Path $NasReleaseRoot (".publish-backup-{0}" -f ([Guid]::NewGuid().ToString("N")))
+$toolsBackupDir = Join-Path $payloadBackupRoot "tools"
+$releaseBackupDir = Join-Path $payloadBackupRoot "release"
 $candidateChannelPath = Join-Path $nasChannelsDir ("{0}.candidate.json" -f $Channel)
 $candidateSignaturePath = Join-Path $nasChannelsDir ("{0}.candidate.sig.json" -f $Channel)
 $stableChannelPath = Join-Path $nasChannelsDir ("{0}.json" -f $Channel)
 $stableSignaturePath = Join-Path $nasChannelsDir ("{0}.sig.json" -f $Channel)
-foreach ($path in @($candidateChannelPath, $candidateSignaturePath, $stableChannelPath, $stableSignaturePath)) {
+foreach ($path in @($candidateChannelPath, $candidateSignaturePath, $stableChannelPath, $stableSignaturePath, $payloadBackupRoot, $toolsBackupDir, $releaseBackupDir)) {
     Assert-RevitMcpChildPath -Path $path -Root $NasReleaseRoot
 }
 
@@ -234,10 +276,6 @@ if ($currentStableReleaseSequence -gt 0 -and $candidateReleaseSequence -le $curr
     throw "Refusing to publish releaseSequence '$candidateReleaseSequence' over current stable '$currentStableReleaseSequence'. Pass -AllowRollback only for deliberate signed rollback or current-sequence repair."
 }
 
-New-Item -ItemType Directory -Path $NasReleaseRoot -Force | Out-Null
-Copy-RevitMcpDirectoryExact -Source $sourceReleaseDir -Destination $nasReleaseDir -Root $NasReleaseRoot -AllowReplace:$Force
-Copy-RevitMcpDirectoryExact -Source $sourceToolsDir -Destination $nasToolsDir -Root $NasReleaseRoot -AllowReplace:$true
-
 $stableChannelBackupPath = Join-Path $nasChannelsDir ("{0}.previous.json" -f $Channel)
 $stableSignatureBackupPath = Join-Path $nasChannelsDir ("{0}.previous.sig.json" -f $Channel)
 $stableChannelTempPath = Join-Path $nasChannelsDir ("{0}.next.json" -f $Channel)
@@ -251,7 +289,17 @@ $hadStableSignature = Test-Path -LiteralPath $stableSignaturePath -PathType Leaf
 $stableReadiness = $null
 $rollbackFailed = $false
 $promotionStarted = $false
+$payloadCopyStarted = $false
+$hadToolsDir = $false
+$hadReleaseDir = $false
 try {
+    New-Item -ItemType Directory -Path $NasReleaseRoot -Force | Out-Null
+    $hadToolsDir = Backup-RevitMcpDirectoryForRollback -Source $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot
+    $hadReleaseDir = Backup-RevitMcpDirectoryForRollback -Source $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot
+    $payloadCopyStarted = $true
+    Copy-RevitMcpDirectoryExact -Source $sourceReleaseDir -Destination $nasReleaseDir -Root $NasReleaseRoot -AllowReplace:$Force
+    Copy-RevitMcpDirectoryExact -Source $sourceToolsDir -Destination $nasToolsDir -Root $NasReleaseRoot -AllowReplace:$true
+
     New-Item -ItemType Directory -Path $nasChannelsDir -Force | Out-Null
     Copy-Item -LiteralPath $sourceChannelPath -Destination $candidateChannelPath -Force
     Copy-Item -LiteralPath $sourceChannelSignaturePath -Destination $candidateSignaturePath -Force
@@ -292,27 +340,30 @@ try {
 }
 catch {
     $publishError = $_
-    if (-not $promotionStarted) {
-        throw $publishError
-    }
     try {
-        if ($hadStableSignature -and (Test-Path -LiteralPath $stableSignatureBackupPath -PathType Leaf)) {
-            Copy-Item -LiteralPath $stableSignatureBackupPath -Destination $stableSignaturePath -Force
+        if ($promotionStarted) {
+            if ($hadStableSignature -and (Test-Path -LiteralPath $stableSignatureBackupPath -PathType Leaf)) {
+                Copy-Item -LiteralPath $stableSignatureBackupPath -Destination $stableSignaturePath -Force
+            }
+            elseif (Test-Path -LiteralPath $stableSignaturePath -PathType Leaf) {
+                Remove-Item -LiteralPath $stableSignaturePath -Force
+            }
+            if ($hadStableChannel -and (Test-Path -LiteralPath $stableChannelBackupPath -PathType Leaf)) {
+                Copy-Item -LiteralPath $stableChannelBackupPath -Destination $stableChannelPath -Force
+            }
+            elseif (Test-Path -LiteralPath $stableChannelPath -PathType Leaf) {
+                Remove-Item -LiteralPath $stableChannelPath -Force
+            }
         }
-        elseif (Test-Path -LiteralPath $stableSignaturePath -PathType Leaf) {
-            Remove-Item -LiteralPath $stableSignaturePath -Force
-        }
-        if ($hadStableChannel -and (Test-Path -LiteralPath $stableChannelBackupPath -PathType Leaf)) {
-            Copy-Item -LiteralPath $stableChannelBackupPath -Destination $stableChannelPath -Force
-        }
-        elseif (Test-Path -LiteralPath $stableChannelPath -PathType Leaf) {
-            Remove-Item -LiteralPath $stableChannelPath -Force
+        if ($payloadCopyStarted) {
+            Restore-RevitMcpDirectoryFromRollback -Destination $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot -HadOriginal $hadToolsDir
+            Restore-RevitMcpDirectoryFromRollback -Destination $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot -HadOriginal $hadReleaseDir
         }
     }
     catch {
         $rollbackFailed = $true
         $rollbackError = $_
-        Write-Warning ("NAS stable rollback failed after publish error. Backup files kept for manual recovery: {0}, {1}" -f $stableChannelBackupPath, $stableSignatureBackupPath)
+        Write-Warning ("NAS stable rollback failed after publish error. Backup files kept for manual recovery: {0}, {1}, {2}" -f $stableChannelBackupPath, $stableSignatureBackupPath, $payloadBackupRoot)
         throw "NAS stable signed release publish failed and rollback also failed. Original error: $($publishError.Exception.Message). Rollback error: $($rollbackError.Exception.Message). Backup files kept for manual recovery."
     }
     throw $publishError
@@ -323,6 +374,9 @@ finally {
         # Successful publishes remove transient channel backups; versioned
         # release recovery remains available from the NAS releases archive.
         $cleanupPaths += @($stableChannelBackupPath, $stableSignatureBackupPath)
+        if (Test-Path -LiteralPath $payloadBackupRoot) {
+            Remove-Item -LiteralPath $payloadBackupRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
     Remove-Item -LiteralPath $cleanupPaths -Force -ErrorAction SilentlyContinue
 }

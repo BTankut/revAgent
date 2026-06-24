@@ -26,6 +26,11 @@ param(
 
     [switch]$Force,
 
+    # Authorizes deliberate signed rollback, equal releaseSequence repair,
+    # and first signed bootstrap over a legacy stable channel that predates
+    # releaseSequence. It does not bypass unreadable or invalid metadata.
+    [switch]$AllowRollback,
+
     [string]$SigningPrivateKeyPath = "",
 
     [string]$SigningKeyId = "",
@@ -91,6 +96,63 @@ function Assert-SafeVersion {
 
 function Get-DefaultReleaseSequence {
     return [long]((Get-Date).ToUniversalTime().ToString("yyyyMMddHHmmss", [System.Globalization.CultureInfo]::InvariantCulture))
+}
+
+function Get-RevitMcpChannelReleaseSequenceStatus {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return [pscustomobject][ordered]@{
+            success = $false
+            exists = $false
+            value = [long]0
+            reason = "not_found"
+            message = "Channel manifest was not found."
+        }
+    }
+
+    try {
+        $channel = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+    }
+    catch {
+        return [pscustomobject][ordered]@{
+            success = $false
+            exists = $true
+            value = [long]0
+            reason = "read_failed"
+            message = $_.Exception.Message
+        }
+    }
+
+    $sequenceProperty = $channel.PSObject.Properties["releaseSequence"]
+    if ($null -eq $sequenceProperty -or $null -eq $sequenceProperty.Value -or [string]::IsNullOrWhiteSpace([string]$sequenceProperty.Value)) {
+        return [pscustomobject][ordered]@{
+            success = $false
+            exists = $true
+            value = [long]0
+            reason = "missing_release_sequence"
+            message = "Channel manifest does not contain releaseSequence."
+        }
+    }
+
+    $parsed = [long]0
+    if (-not [long]::TryParse([string]$sequenceProperty.Value, [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
+        return [pscustomobject][ordered]@{
+            success = $false
+            exists = $true
+            value = [long]0
+            reason = "invalid_release_sequence"
+            message = "Channel manifest releaseSequence is not a valid integer."
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        success = $true
+        exists = $true
+        value = $parsed
+        reason = "ok"
+        message = "Channel manifest releaseSequence was read."
+    }
 }
 
 function Copy-DirectoryFiltered {
@@ -751,6 +813,23 @@ if ($MinimumAcceptedReleaseSequence -gt $ReleaseSequence) {
     throw "MinimumAcceptedReleaseSequence cannot be greater than ReleaseSequence."
 }
 
+$channelPath = Join-Path $channelsRoot ("{0}.json" -f $Channel)
+if (-not $NoChannelUpdate) {
+    $currentStableSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus -Path $channelPath
+    if ([bool]$currentStableSequenceStatus.exists -and -not [bool]$currentStableSequenceStatus.success) {
+        if ($AllowRollback -and [string]::Equals([string]$currentStableSequenceStatus.reason, "missing_release_sequence", [System.StringComparison]::OrdinalIgnoreCase)) {
+            Write-Warning "Current stable channel has no releaseSequence; treating it as legacy sequence 0 because -AllowRollback was supplied."
+        }
+        else {
+            throw "Refusing to publish because current stable releaseSequence could not be determined from '$channelPath'. Reason: $($currentStableSequenceStatus.reason). $($currentStableSequenceStatus.message)"
+        }
+    }
+    $currentStableReleaseSequence = if ([bool]$currentStableSequenceStatus.success) { [long]$currentStableSequenceStatus.value } else { [long]0 }
+    if ($currentStableReleaseSequence -gt 0 -and $ReleaseSequence -le $currentStableReleaseSequence -and -not $AllowRollback) {
+        throw "Refusing to publish releaseSequence '$ReleaseSequence' over current stable '$currentStableReleaseSequence'. Pass -AllowRollback only for deliberate signed rollback or current-sequence repair."
+    }
+}
+
 if (Test-Path -LiteralPath $releaseDir) {
     if (-not $Force) {
         throw "Release already exists: $releaseDir. Pass -Force to replace it."
@@ -920,7 +999,6 @@ try {
     }
 
     if (-not $NoChannelUpdate) {
-        $channelPath = Join-Path $channelsRoot ("{0}.json" -f $Channel)
         $channelManifest = [ordered]@{
             schemaVersion = 1
             app = "revit-mcp-skill"

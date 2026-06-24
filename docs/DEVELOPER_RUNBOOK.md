@@ -821,8 +821,10 @@ explicit flag is required for a one-time legacy stable bootstrap when the
 current NAS `stable.json` exists but has no `releaseSequence`; unreadable or
 invalid current metadata still fails closed. The publisher then promotes
 `stable.sig.json` and `stable.json` with rollback files retained until the
-post-publish readiness check passes. After a successful publish, transient
-`.previous.*` channel backups are removed; operator recovery should use the
+post-publish readiness check passes. Publish rollback also restores the
+previous `tools` payload and the replaced `releases\<version>` directory when
+`-Force` overwrote one. After a successful publish, transient `.previous.*`
+channel backups and payload rollback backups are removed; operator recovery should use the
 versioned NAS `releases\` archive rather than relying on those promotion
 scratch files.
 Active-release scope checks the candidate release package and current `tools\` payload without
