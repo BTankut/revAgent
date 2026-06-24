@@ -1243,12 +1243,19 @@ function Test-RevitMcpReleaseDistributionIntegrity {
             -Policy $Policy
     }
 
-    $consistency = [pscustomobject][ordered]@{
+    $unsignedLegacyConsistency = [pscustomobject][ordered]@{
         success = $true
         state = "skipped"
         reason = "unsigned_legacy_release"
         message = "Release manifest consistency is not enforced for unsigned legacy releases in compatibility mode."
     }
+    $unsignedRejectedConsistency = [pscustomobject][ordered]@{
+        success = $false
+        state = "rejected"
+        reason = "unsigned_release_rejected"
+        message = "Release manifest consistency was not evaluated because the unsigned release was rejected by integrity policy."
+    }
+    $consistency = $unsignedLegacyConsistency
 
     $anySignaturePresent = [bool]$channelSignature.signaturePresent -or [bool]$releaseManifestSignature.signaturePresent
     if (-not $anySignaturePresent) {
@@ -1262,7 +1269,7 @@ function Test-RevitMcpReleaseDistributionIntegrity {
                 -TrustedKeyCount $trustedKeyMap.Count `
                 -ChannelSignature $channelSignature `
                 -ReleaseManifestSignature $releaseManifestSignature `
-                -Consistency $consistency
+                -Consistency $unsignedRejectedConsistency
         }
 
         if ($trustedKeyMap.Count -gt 0) {
@@ -1275,7 +1282,7 @@ function Test-RevitMcpReleaseDistributionIntegrity {
                 -TrustedKeyCount $trustedKeyMap.Count `
                 -ChannelSignature $channelSignature `
                 -ReleaseManifestSignature $releaseManifestSignature `
-                -Consistency $consistency
+                -Consistency $unsignedRejectedConsistency
         }
 
         if ($Policy -eq "compatibility") {
@@ -1300,7 +1307,7 @@ function Test-RevitMcpReleaseDistributionIntegrity {
             -TrustedKeyCount $trustedKeyMap.Count `
             -ChannelSignature $channelSignature `
             -ReleaseManifestSignature $releaseManifestSignature `
-            -Consistency $consistency
+            -Consistency $unsignedRejectedConsistency
     }
 
     if (-not [bool]$channelSignature.signaturePresent -or -not [bool]$releaseManifestSignature.signaturePresent) {

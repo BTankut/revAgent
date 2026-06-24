@@ -273,6 +273,7 @@ try {
             -Policy "compatibility"
         Assert-True (-not $strippedSignedAggregate.success) "Trusted-key compatibility mode must reject releases with stripped signatures."
         Assert-Equal $strippedSignedAggregate.reason "signature_required" "Trusted-key stripped signature rejection should use signature_required."
+        Assert-Equal $strippedSignedAggregate.consistency.reason "unsigned_release_rejected" "Trusted-key stripped signature rejection should not report legacy-compatible consistency."
 
         Write-Host "Test updater compatibility aggregate rejects unsigned release after signed acceptance"
         $unsignedAfterSignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
@@ -285,6 +286,7 @@ try {
             -HighestAcceptedReleaseSequence 1001
         Assert-True (-not $unsignedAfterSignedAggregate.success) "Unsigned releases must be rejected once a signed release sequence has been accepted."
         Assert-Equal $unsignedAfterSignedAggregate.reason "unsigned_release_after_signed_acceptance" "Unsigned-after-signed rejection should use a stable reason."
+        Assert-Equal $unsignedAfterSignedAggregate.consistency.reason "unsigned_release_rejected" "Unsigned-after-signed rejection should not report legacy-compatible consistency."
 
         Write-Host "Test updater compatibility aggregate accepts keys-free unsigned legacy release"
         $unsignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
@@ -296,6 +298,7 @@ try {
             -Policy "compatibility"
         Assert-True $unsignedAggregate.success "Unsigned release should pass only in keys-free compatibility mode."
         Assert-Equal $unsignedAggregate.state "legacy-compatible" "Unsigned release must be reported as legacy-compatible."
+        Assert-Equal $unsignedAggregate.consistency.reason "unsigned_legacy_release" "Accepted legacy unsigned release should keep legacy consistency metadata."
 
         Write-Host "Test updater compatibility aggregate rejects partial signature set"
         $envelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $signaturePath -Encoding UTF8

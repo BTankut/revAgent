@@ -28,6 +28,7 @@ param(
 
     [switch]$Force,
 
+    # Also authorizes equal releaseSequence repair republish; the publish guard treats <= as protected.
     [switch]$AllowRollback,
 
     [switch]$OutputJson,
