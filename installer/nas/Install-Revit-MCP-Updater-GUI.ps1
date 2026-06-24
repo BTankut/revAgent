@@ -477,11 +477,19 @@ function Start-InstallerOperation {
         return
     }
 
-    $directUpdaterPath = Join-Path $PSScriptRoot "update-from-nas.ps1"
+    $localUpdaterPath = Join-Path $workRoot "update-from-nas.ps1"
+    $nasUpdaterPath = Join-Path $PSScriptRoot "update-from-nas.ps1"
+    $hasLocalUpdater = Test-Path -LiteralPath $localUpdaterPath -PathType Leaf
+    $directUpdaterPath = if ($hasLocalUpdater) { $localUpdaterPath } else { $nasUpdaterPath }
     $status = Get-ChannelStatus
     $sourceFreeArtifacts = @(Get-SourceFreeMigrationArtifactsForGui)
     $runSourceFreeMigration = ($sourceFreeArtifacts.Count -gt 0)
     if ($runSourceFreeMigration) {
+        if (-not $hasLocalUpdater) {
+            [System.Windows.Forms.MessageBox]::Show("Source-free migration requires the local trusted updater, but it was not found. Run Install/Repair first to bootstrap the local updater.", "revAgent") | Out-Null
+            Set-ButtonsEnabled -Enabled $true
+            return
+        }
         if (-not (Test-Path -LiteralPath $directUpdaterPath -PathType Leaf)) {
             [System.Windows.Forms.MessageBox]::Show("Source-free migration is required, but update-from-nas.ps1 was not found beside the launcher.", "revAgent") | Out-Null
             Set-ButtonsEnabled -Enabled $true
@@ -492,6 +500,12 @@ function Start-InstallerOperation {
             return
         }
         $Operation = "update"
+    }
+
+    if ($Operation -eq "update" -and -not [string]::IsNullOrWhiteSpace($status.InstalledVersion) -and -not $hasLocalUpdater) {
+        [System.Windows.Forms.MessageBox]::Show("This workstation has an installed revAgent package, but the local trusted updater was not found. Use Install/Repair to restore the local updater before normal updates.", "revAgent") | Out-Null
+        Set-ButtonsEnabled -Enabled $true
+        return
     }
 
     if ($Operation -eq "update" -and -not [bool]$status.UpdateEnabled) {
@@ -534,7 +548,7 @@ function Start-InstallerOperation {
 
     $useDirectUpdate = ($Operation -eq "update" -and
         (-not [string]::IsNullOrWhiteSpace($status.InstalledVersion) -or $runSourceFreeMigration)) -and
-        (Test-Path -LiteralPath $directUpdaterPath -PathType Leaf)
+        $hasLocalUpdater
 
     if ($useDirectUpdate) {
         $arguments = @(

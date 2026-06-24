@@ -28,6 +28,8 @@ param(
 
     [switch]$Force,
 
+    [switch]$AllowRollback,
+
     [switch]$OutputJson,
 
     [string]$RepoRoot = ""
@@ -84,6 +86,37 @@ function Copy-RevitMcpDirectoryExact {
 
     New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null
     Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
+}
+
+function ConvertTo-RevitMcpInt64OrZero {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+        return [long]0
+    }
+
+    $parsed = [long]0
+    if ([long]::TryParse([string]$Value, [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
+        return $parsed
+    }
+
+    return [long]0
+}
+
+function Get-RevitMcpChannelReleaseSequence {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return [long]0
+    }
+
+    try {
+        $channel = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+        return ConvertTo-RevitMcpInt64OrZero -Value $channel.releaseSequence
+    }
+    catch {
+        return [long]0
+    }
 }
 
 if (-not (Test-Path -LiteralPath $SourceReleaseRoot -PathType Container)) {
@@ -151,16 +184,66 @@ if (-not [bool]$candidateReadiness.success) {
     throw "NAS candidate signed release root failed readiness verification."
 }
 
-Copy-Item -LiteralPath $candidateSignaturePath -Destination $stableSignaturePath -Force
-Copy-Item -LiteralPath $candidateChannelPath -Destination $stableChannelPath -Force
+$candidateReleaseSequence = ConvertTo-RevitMcpInt64OrZero -Value $candidateReadiness.releaseSequence
+if ($candidateReleaseSequence -le 0) {
+    $candidateReleaseSequence = Get-RevitMcpChannelReleaseSequence -Path $candidateChannelPath
+}
+$currentStableReleaseSequence = Get-RevitMcpChannelReleaseSequence -Path $stableChannelPath
+if ($currentStableReleaseSequence -gt 0 -and $candidateReleaseSequence -le $currentStableReleaseSequence -and -not $AllowRollback) {
+    throw "Refusing to publish releaseSequence '$candidateReleaseSequence' over current stable '$currentStableReleaseSequence'. Pass -AllowRollback only for deliberate signed rollback."
+}
 
-$stableReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
-    -ReleaseRoot $NasReleaseRoot `
-    -TrustedKeysPath $TrustedKeysPath `
-    -ArtifactScanScope activeRelease `
-    -RepoRoot $RepoRoot
-if (-not [bool]$stableReadiness.success) {
-    throw "NAS stable signed release root failed readiness verification after publish."
+$stableChannelBackupPath = Join-Path $nasChannelsDir ("{0}.previous.json" -f $Channel)
+$stableSignatureBackupPath = Join-Path $nasChannelsDir ("{0}.previous.sig.json" -f $Channel)
+$stableChannelTempPath = Join-Path $nasChannelsDir ("{0}.next.json" -f $Channel)
+$stableSignatureTempPath = Join-Path $nasChannelsDir ("{0}.next.sig.json" -f $Channel)
+foreach ($path in @($stableChannelBackupPath, $stableSignatureBackupPath, $stableChannelTempPath, $stableSignatureTempPath)) {
+    Assert-RevitMcpChildPath -Path $path -Root $NasReleaseRoot
+}
+
+$hadStableChannel = Test-Path -LiteralPath $stableChannelPath -PathType Leaf
+$hadStableSignature = Test-Path -LiteralPath $stableSignaturePath -PathType Leaf
+Remove-Item -LiteralPath $stableChannelBackupPath, $stableSignatureBackupPath, $stableChannelTempPath, $stableSignatureTempPath -Force -ErrorAction SilentlyContinue
+if ($hadStableChannel) {
+    Copy-Item -LiteralPath $stableChannelPath -Destination $stableChannelBackupPath -Force
+}
+if ($hadStableSignature) {
+    Copy-Item -LiteralPath $stableSignaturePath -Destination $stableSignatureBackupPath -Force
+}
+Copy-Item -LiteralPath $candidateChannelPath -Destination $stableChannelTempPath -Force
+Copy-Item -LiteralPath $candidateSignaturePath -Destination $stableSignatureTempPath -Force
+
+$stableReadiness = $null
+try {
+    Move-Item -LiteralPath $stableSignatureTempPath -Destination $stableSignaturePath -Force
+    Move-Item -LiteralPath $stableChannelTempPath -Destination $stableChannelPath -Force
+
+    $stableReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
+        -ReleaseRoot $NasReleaseRoot `
+        -TrustedKeysPath $TrustedKeysPath `
+        -ArtifactScanScope activeRelease `
+        -RepoRoot $RepoRoot
+    if (-not [bool]$stableReadiness.success) {
+        throw "NAS stable signed release root failed readiness verification after publish."
+    }
+}
+catch {
+    if ($hadStableSignature -and (Test-Path -LiteralPath $stableSignatureBackupPath -PathType Leaf)) {
+        Copy-Item -LiteralPath $stableSignatureBackupPath -Destination $stableSignaturePath -Force
+    }
+    elseif (Test-Path -LiteralPath $stableSignaturePath -PathType Leaf) {
+        Remove-Item -LiteralPath $stableSignaturePath -Force
+    }
+    if ($hadStableChannel -and (Test-Path -LiteralPath $stableChannelBackupPath -PathType Leaf)) {
+        Copy-Item -LiteralPath $stableChannelBackupPath -Destination $stableChannelPath -Force
+    }
+    elseif (Test-Path -LiteralPath $stableChannelPath -PathType Leaf) {
+        Remove-Item -LiteralPath $stableChannelPath -Force
+    }
+    throw
+}
+finally {
+    Remove-Item -LiteralPath $stableChannelBackupPath, $stableSignatureBackupPath, $stableChannelTempPath, $stableSignatureTempPath -Force -ErrorAction SilentlyContinue
 }
 
 Remove-Item -LiteralPath $candidateChannelPath -Force -ErrorAction SilentlyContinue

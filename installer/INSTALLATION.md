@@ -98,15 +98,22 @@ and skill integration should also be removed.
 ## Release Publishing
 
 Production release ZIPs normally publish through the signed source-free GitHub
-Actions CD workflow after protected `main` updates. Use the manual publish
-command only for controlled recovery/backstop work from a clean development
-checkout:
+Actions CD workflow. Protected `main` updates build and validate a signed
+source-free release; production NAS publish requires an explicit manual workflow
+dispatch with `publish_to_nas=true`. Use the manual publish command only for
+controlled recovery/backstop work from a clean development checkout:
 
 ```powershell
 $ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+$PrivateKeyPath = "C:\ProgramData\DPE\revAgentReleaseSigning\private\revagent-prod-rsa-2026q3-private.xml"
+$TrustedKeysPath = "C:\ProgramData\DPE\revAgentReleaseSigning\public\release-trusted-keys.json"
 powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps1" `
   -ReleaseRoot $ReleaseRoot `
-  -Channel stable
+  -Channel stable `
+  -RequireSigning `
+  -SigningPrivateKeyPath $PrivateKeyPath `
+  -SigningKeyId "revagent-prod-rsa-2026q3" `
+  -TrustedReleaseKeysPath $TrustedKeysPath
 ```
 
 See `installer\nas\README.md` for the full NAS deployment workflow.

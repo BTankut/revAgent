@@ -515,7 +515,7 @@ compare file mtimes.
 | Distribution canonical JSON and detached signature fixtures stay deterministic | `scripts/test-distribution-integrity.ps1` | `Engineering gates` | Does not publish, sign a real stable channel, or enable updater enforcement. |
 | Publish-path detached signing writes verifiable signature files without real NAS or production keys | `scripts/test-publish-signing.ps1` | `Engineering gates` | Uses a temporary release root and ephemeral test key only. |
 | Signed stable readiness preflight rejects unsigned, partially signed, hash-mismatched, or private-key-bearing release roots | `scripts/test-signed-stable-readiness.ps1` | `Engineering gates` | Uses a temporary release root and ephemeral test key only; does not publish to NAS or enable enforcement. |
-| Updater compatibility mode verifies signed releases and reports unsigned legacy releases | `scripts/test-distribution-integrity.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish a signed stable baseline or flip fail-closed enforcement. |
+| Updater integrity defaults fail-closed when trusted release keys are present and keeps keys-free legacy compatibility only for bootstrap/test paths | `scripts/test-distribution-integrity.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish to NAS or include production private keys. |
 | Signed release anti-rollback and enforce-mode metadata stay valid | `scripts/test-distribution-integrity.ps1`, `scripts/test-publish-signing.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish to NAS or include production private keys. |
 | Optional signed license-seat verification stays public-key-only | `scripts/test-license-seat.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Default policy is disabled; no production license keys are included. |
 | Bridge result contract stays canonical and idempotent | runtime `bridge-result-contract-test` via `npm test` | `Engineering gates` | Live Revit skew checks remain local-only. |
@@ -784,8 +784,9 @@ Reviewer and wait-timer protection rules could not be enabled on the current
 GitHub repo plan; GitHub returned billing-plan 422 errors when those protection
 rules were requested. Until reviewer protection is available, the human gate is
 the protected PR review/CI/merge decision for `main`; after merge, signed CD
-publishes automatically. The NAS publish wrapper still validates
-`stable.candidate.json` on the target release root before replacing
+validates automatically, and production NAS publish requires explicit manual
+workflow dispatch with `publish_to_nas=true`. The NAS publish wrapper still
+validates `stable.candidate.json` on the target release root before replacing
 `stable.json`.
 
 The build job runs `scripts/invoke-signed-source-free-cd.ps1`. That wrapper
@@ -797,21 +798,23 @@ The workflow keeps the validated signed release root in local staging under
 the self-hosted runner workspace and passes that path to the publish job. This
 avoids coupling the production handoff to GitHub Actions artifact storage
 quota while keeping the signing and publish jobs separated by environment and
-by the protected `main` merge gate. The publish job runs automatically after a
-`main` push, and manual dispatch can still publish when `publish_to_nas=true`.
-The publish job runs
+by the protected `main` merge gate. Production publish is manual-dispatch only:
+`main` push builds and validates the signed release root, then removes staging
+when publish was not requested. The publish job runs
 `scripts/publish-signed-source-free-release-to-nas.ps1`; it does not rebuild or
 re-sign. It copies the release and tools to NAS, validates
 `stable.candidate.json` on the NAS root with active-release artifact hygiene,
-then updates `stable.sig.json` and `stable.json`. Active-release scope checks
-the candidate release package and current `tools\` payload without blocking on
-historical legacy release ZIPs already present under the existing NAS
-`releases\` archive. Use the default full release-root readiness scan only when
-intentionally auditing or cleaning that historical archive. New signed channel
-metadata uses relative paths so the same signed release root can move from CD
-staging to NAS without changing the signed JSON. Because the handoff is local
-to the self-hosted runner, the selected runner label set must identify the
-office runner that owns both signing-key and NAS access.
+blocks stable `releaseSequence` rollback unless `-AllowRollback` is passed
+deliberately, then promotes `stable.sig.json` and `stable.json` with rollback
+files retained until the post-publish readiness check passes. Active-release
+scope checks the candidate release package and current `tools\` payload without
+blocking on historical legacy release ZIPs already present under the existing
+NAS `releases\` archive. Use the default full release-root readiness scan only
+when intentionally auditing or cleaning that historical archive. New signed
+channel metadata uses relative paths so the same signed release root can move
+from CD staging to NAS without changing the signed JSON. Because the handoff is
+local to the self-hosted runner, the selected runner label set must identify
+the office runner that owns both signing-key and NAS access.
 
 The versioned release ZIP is an allowlisted user pack. It must not contain the
 repo root, `src/`, root `docs/`, developer tests, repo metadata, `.pdb`, `.mdb`,
@@ -843,20 +846,18 @@ the normal stable update path. Non-GUI updater runs still stop with
 `source-free-migration-required` and write a report instead of replacing the
 package without explicit migration mode.
 
-Distribution integrity support starts in CI as fixtures before production
-enforcement. `installer/lib/RevitMcp.DistributionIntegrity.psm1` owns the
-canonical JSON and detached signature helper surface, while
+Distribution integrity support is now active when trusted release keys are
+present. `installer/lib/RevitMcp.DistributionIntegrity.psm1` owns the canonical
+JSON and detached signature helper surface, while
 `scripts/test-distribution-integrity.ps1` proves valid and tampered channel and
-release-manifest fixtures. `publish-nas-release.ps1` can optionally write
+release-manifest fixtures. `publish-nas-release.ps1` can write
 `manifest.sig.json` and `stable.sig.json` when `-SigningPrivateKeyPath` and
 `-SigningKeyId` are provided; private keys must stay outside the repo and NAS
-tools. The updater imports the same helper before caching a package. In
-`compatibility` policy, a fully signed channel plus release manifest is
-verified, a completely unsigned release is accepted as `legacy-compatible` and
-reported, and partial or invalid signatures are rejected before package
-replacement. Signed stable publication now runs through the protected `main`
-branch and signed source-free CD workflow. Fail-closed enforcement remains a
-separate approved workstream.
+tools. The updater imports the local helper before caching a package. Trusted
+release keys make the default policy `enforce`; unsigned fallback remains only
+for keys-free legacy bootstrap/test paths. Once a workstation accepts any
+signed release sequence, later unsigned releases are rejected and the locally
+stored `highestAcceptedReleaseSequence` is never lowered.
 
 Before a signed stable baseline or fail-closed policy change, run the read-only
 preflight against the candidate release root and production public release-key

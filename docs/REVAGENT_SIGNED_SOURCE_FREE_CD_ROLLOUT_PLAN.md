@@ -151,9 +151,10 @@ Operational setup status:
   on the current repo plan; the GitHub API returned billing-plan 422 errors for
   those protection-rule requests. Until the repo plan supports protected
   environment reviewers, the explicit operator gate is the protected PR
-  review/CI/merge decision for `main`; after merge, signed CD publishes
-  automatically. The script-side candidate-readiness guard still runs before
-  `stable.json` is replaced.
+  review/CI/merge decision for `main`; after merge, signed CD validates
+  automatically, and production NAS publish requires manual workflow dispatch
+  with `publish_to_nas=true`. The script-side candidate-readiness guard still
+  runs before `stable.json` is replaced.
 - A no-publish local CD smoke using the production signing key succeeded and
   produced signed `stable.json`, `stable.sig.json`, `manifest.json`,
   `manifest.sig.json`, a positive `releaseSequence`, and a readiness-verified
@@ -259,8 +260,8 @@ Gate:
 
 ## Phase 4 - Signed Stable Baseline
 
-Goal: publish one signed production stable release while updater policy remains
-compatible with unsigned legacy releases.
+Goal: publish one signed production stable release and move workstation updater
+verification to fail-closed behavior wherever trusted release keys are present.
 
 Required outcomes:
 
@@ -270,8 +271,9 @@ Required outcomes:
   in both channel and manifest metadata.
 - Updater reports distribution-integrity status as signed and verified on pilot
   machines.
-- Unsigned legacy compatibility remains available only during the migration
-  window.
+- Unsigned legacy compatibility remains available only for keys-free
+  bootstrap/test paths; once a workstation has trusted release keys or any
+  accepted signed sequence, unsigned stable metadata is rejected.
 
 Pilot machines:
 
@@ -281,8 +283,9 @@ Pilot machines:
 
 Gate:
 
-- Do not enable fail-closed enforcement until pilot reports confirm signed
-  verification and no source/developer artifacts after update.
+- Do not start broad workstation rollout until pilot reports confirm signed
+  verification, local trusted key pinning, and no source/developer artifacts
+  after update.
 
 ## Phase 5 - Fail-Closed Enforcement
 
@@ -291,8 +294,9 @@ package replacement.
 
 Required outcomes:
 
-- Updater policy is changed from compatibility to enforce only after signed
-  stable baseline adoption is proven.
+- Updater policy defaults to enforce when trusted release keys are present; no
+  separate broad compatibility window remains after local trusted keys are
+  installed.
 - Missing, partial, invalid, tampered, unknown-key, fingerprint-mismatched, or
   replayed older signed releases are blocked before package replacement.
 - Emergency rollback remains explicit, local-operator controlled, and audited.

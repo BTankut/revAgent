@@ -1683,7 +1683,7 @@ function Add-TrustedReleaseKeysFromFile {
 function Initialize-DistributionIntegrityConfig {
     param([AllowNull()][object]$Config)
 
-    $policy = "compatibility"
+    $policy = ""
     $trustedKeys = @{}
     $sources = [System.Collections.Generic.List[string]]::new()
     $integrityConfig = if ($Config) { Get-JsonPropertyValue -Object $Config -Name "distributionIntegrity" } else { $null }
@@ -1741,6 +1741,10 @@ function Initialize-DistributionIntegrityConfig {
         if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
             [void]$sources.Add($sourcePath)
         }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($policy)) {
+        $policy = if ($trustedKeys.Count -gt 0) { "enforce" } else { "compatibility" }
     }
 
     $script:RevitMcpDistributionIntegrityPolicy = $policy
@@ -3276,6 +3280,15 @@ try {
         $null
     }
 
+    $integrityReleaseSequence = ConvertTo-Int64OrZero -Value $script:RevitMcpDistributionIntegrity.releaseSequence
+    $integrityMinimumAcceptedReleaseSequence = ConvertTo-Int64OrZero -Value $script:RevitMcpDistributionIntegrity.minimumAcceptedReleaseSequence
+    $integrityHighestAcceptedReleaseSequence = [Math]::Max(
+        $highestAcceptedReleaseSequence,
+        (ConvertTo-Int64OrZero -Value $script:RevitMcpDistributionIntegrity.highestAcceptedReleaseSequence))
+    $hasAcceptedSignedRelease = $integrityHighestAcceptedReleaseSequence -gt 0 -or
+        [string]::Equals([string]$script:RevitMcpDistributionIntegrity.state, "verified", [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals([string]$script:RevitMcpDistributionIntegrity.state, "rollback-allowed", [System.StringComparison]::OrdinalIgnoreCase)
+
     $newState = [ordered]@{
         schemaVersion = 1
         app = "revit-mcp-skill"
@@ -3298,9 +3311,10 @@ try {
         fastUpdateFallbackMessage = $fastUpdateFallbackMessage
         revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
         distributionIntegrity = $script:RevitMcpDistributionIntegrity
-        releaseSequence = [long]$script:RevitMcpDistributionIntegrity.releaseSequence
-        minimumAcceptedReleaseSequence = [long]$script:RevitMcpDistributionIntegrity.minimumAcceptedReleaseSequence
-        highestAcceptedReleaseSequence = [long]$script:RevitMcpDistributionIntegrity.highestAcceptedReleaseSequence
+        releaseSequence = $integrityReleaseSequence
+        minimumAcceptedReleaseSequence = $integrityMinimumAcceptedReleaseSequence
+        highestAcceptedReleaseSequence = $integrityHighestAcceptedReleaseSequence
+        hasAcceptedSignedRelease = [bool]$hasAcceptedSignedRelease
         signedReleaseRollbackAllowed = [bool]$script:RevitMcpDistributionIntegrity.rollbackAllowed
         license = $script:RevitMcpLicense
         sourceFreeMigration = $sourceFreeMigrationState

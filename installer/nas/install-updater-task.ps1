@@ -1015,6 +1015,7 @@ $nasConfigRoot = @(
     (Join-Path $PSScriptRoot "config"),
     (Join-Path (Split-Path -Parent (Split-Path -Parent $nasLibRoot)) "config")
 ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
+$localTrustedReleaseKeysPath = Join-Path $WorkRoot "config\release-trusted-keys.json"
 if (-not [string]::IsNullOrWhiteSpace($nasConfigRoot)) {
     $localConfigRoot = Join-Path $WorkRoot "config"
     if (Test-Path -LiteralPath $localConfigRoot) {
@@ -1054,6 +1055,12 @@ $config = [ordered]@{
     installLogPath = $script:RevitMcpLogPath
     installOperationMethod = $script:RevitMcpOperationMethod
     installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+}
+if (Test-Path -LiteralPath $localTrustedReleaseKeysPath -PathType Leaf) {
+    $config["distributionIntegrity"] = [ordered]@{
+        policy = "enforce"
+        trustedKeysPath = $localTrustedReleaseKeysPath
+    }
 }
 Write-JsonFile -Path $configPath -Value $config
 $manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -DailyAt $DailyAt -CheckIntervalMinutes $CheckIntervalMinutes

@@ -1252,6 +1252,32 @@ function Test-RevitMcpReleaseDistributionIntegrity {
 
     $anySignaturePresent = [bool]$channelSignature.signaturePresent -or [bool]$releaseManifestSignature.signaturePresent
     if (-not $anySignaturePresent) {
+        if ($HighestAcceptedReleaseSequence -gt 0) {
+            return New-RevitMcpReleaseDistributionIntegrityAggregate `
+                -Success $false `
+                -State "rejected" `
+                -Reason "unsigned_release_after_signed_acceptance" `
+                -Message "Unsigned legacy releases are rejected after a signed release has been accepted on this workstation." `
+                -Policy $Policy `
+                -TrustedKeyCount $trustedKeyMap.Count `
+                -ChannelSignature $channelSignature `
+                -ReleaseManifestSignature $releaseManifestSignature `
+                -Consistency $consistency
+        }
+
+        if ($trustedKeyMap.Count -gt 0) {
+            return New-RevitMcpReleaseDistributionIntegrityAggregate `
+                -Success $false `
+                -State "rejected" `
+                -Reason "signature_required" `
+                -Message "Trusted release keys are configured; unsigned releases are rejected even in compatibility mode." `
+                -Policy $Policy `
+                -TrustedKeyCount $trustedKeyMap.Count `
+                -ChannelSignature $channelSignature `
+                -ReleaseManifestSignature $releaseManifestSignature `
+                -Consistency $consistency
+        }
+
         if ($Policy -eq "compatibility") {
             return New-RevitMcpReleaseDistributionIntegrityAggregate `
                 -Success $true `

@@ -294,9 +294,12 @@ if ($Mode -eq "commit") {
         throw "ChannelManifestPath is required for commit mode. Pass it explicitly or provide an updater config."
     }
 
-    $updaterPath = Join-Path $PSScriptRoot "update-from-nas.ps1"
-    if (-not (Test-Path -LiteralPath $updaterPath -PathType Leaf)) {
-        $updaterPath = Join-Path $WorkRoot "update-from-nas.ps1"
+    $localUpdaterPath = Join-Path $WorkRoot "update-from-nas.ps1"
+    $updaterPath = if (Test-Path -LiteralPath $localUpdaterPath -PathType Leaf) {
+        $localUpdaterPath
+    }
+    else {
+        Join-Path $PSScriptRoot "update-from-nas.ps1"
     }
     if (-not (Test-Path -LiteralPath $updaterPath -PathType Leaf)) {
         throw "update-from-nas.ps1 was not found beside the migration tool or under WorkRoot: $WorkRoot"

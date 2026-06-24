@@ -91,16 +91,18 @@ uses the protected `revagent-release-signing` environment to build and validate
 a signed release root, and stores that root in local staging under the
 self-hosted runner workspace.
 
-When protected `main` is updated, the workflow automatically publishes the
-validated signed release to the NAS stable channel. Manual dispatch is still
-available for build-only validation or for an explicit operator-triggered
-publish with `publish_to_nas=true`. The publish job reads the validated staged
-release root and runs `scripts/publish-signed-source-free-release-to-nas.ps1`,
-which copies the release and tools to NAS, validates `stable.candidate.json`,
-then updates `stable.sig.json` and `stable.json`. It does not rebuild or
-re-sign the artifact. The local runner staging handoff avoids GitHub Actions
-artifact storage quota, so the selected runner labels must resolve to the
-office runner that owns both signing-key and NAS access.
+When protected `main` is updated, the workflow builds and validates the signed
+release root, then removes the staged root if no publish was requested.
+Production NAS publish is a separate explicit `workflow_dispatch` run with
+`publish_to_nas=true`. The publish job reads the validated staged release root
+and runs `scripts/publish-signed-source-free-release-to-nas.ps1`, which copies
+the release and tools to NAS, validates `stable.candidate.json`, blocks stable
+`releaseSequence` rollback unless `-AllowRollback` is passed deliberately, then
+promotes `stable.sig.json` and `stable.json` with rollback files kept until the
+post-publish readiness check passes. It does not rebuild or re-sign the
+artifact. The local runner staging handoff avoids GitHub Actions artifact
+storage quota, so the selected runner labels must resolve to the office runner
+that owns both signing-key and NAS access.
 
 Candidate and final stable readiness checks use active-release artifact
 hygiene. They verify the candidate release package and current `tools\`
@@ -132,9 +134,10 @@ The public key fingerprint is
 The GitHub environments exist and the workflow variables are configured, but
 reviewer/wait-timer protection rules are unavailable on the current GitHub
 repo plan. The repository-side gate is therefore protected `main` plus passing
-CI/review before merge; after merge, signed CD publishes automatically. The
-NAS publish wrapper still validates a candidate channel on the NAS root before
-replacing `channels\stable.json`.
+CI/review before merge; after merge, signed CD validates automatically, and
+production NAS publish requires manual workflow dispatch. The NAS publish
+wrapper still validates a candidate channel on the NAS root before replacing
+`channels\stable.json`.
 
 ## Install The Workstation Updater
 
@@ -316,19 +319,21 @@ C:\ProgramData\DPE\RevitMCP\updater\lib
 C:\ProgramData\DPE\RevitMCP\updater\config
 ```
 
-The updater loads public release-verification material from its updater config
-or from `config\release-trusted-keys.json` when that file is shipped beside the
-tools. Only public key XML and fingerprints belong there. In the default
-`compatibility` policy, valid `stable.sig.json` plus `manifest.sig.json` files
-are verified before the ZIP is cached, unsigned legacy releases continue with a
-`legacy-compatible` report state, and partial or invalid signatures stop the
-update before package replacement.
+The updater loads public release-verification material from its local updater
+config or from local `config\release-trusted-keys.json`. Only public key XML and
+fingerprints belong there. When trusted keys are present, the default policy is
+`enforce`: valid `stable.sig.json` plus `manifest.sig.json` files are verified
+before the ZIP is cached, and unsigned releases are rejected. Keys-free
+`compatibility` remains only for legacy bootstrap/test paths. After a
+workstation accepts any signed release sequence, unsigned legacy fallback is
+blocked even if compatibility is requested.
 
 Signed releases carry a monotonic `releaseSequence` in both the channel and
 release manifest. The updater stores `highestAcceptedReleaseSequence` locally
-and blocks older signed channel replay during normal runs. Emergency rollback
-requires a manual updater run with `-AllowSignedReleaseRollback`; the scheduled
-task and GUI update path do not pass that flag.
+and never lowers that high-watermark on later runs. Older signed channel replay
+is blocked during normal runs. Emergency rollback requires a manual updater run
+with `-AllowSignedReleaseRollback`; the scheduled task and GUI update path do
+not pass that flag.
 
 License/seat verification is optional and disabled unless configured. When
 enabled, the updater verifies `revagent-license.json` with
@@ -393,9 +398,11 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
 - Pending updates that require the user to close Revit show a throttled user
   notification instead of failing silently in the background. Status output
   reports these as `Pending update`, not as completed version transitions.
-- Normal GUI updates run `update-from-nas.ps1` directly after the updater is
-  already installed. `Install/Repair` remains the explicit path that refreshes
-  the updater wrapper, task registration, permissions, and the full package.
+- Normal GUI updates run the local trusted `update-from-nas.ps1` after the
+  updater is already installed. If an installed workstation is missing that
+  local updater, normal update and migration are blocked until `Install/Repair`
+  restores the local updater wrapper, task registration, permissions, and the
+  full package.
 - Normal GUI and updater runs check managed source/developer artifact inventory
   before install/update work starts. If an older workstation still needs
   source-free migration, the GUI shows a one-time migration path and runs

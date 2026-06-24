@@ -23,7 +23,7 @@ on:
         required: false
         default: ''
       publish_to_nas:
-        description: 'Publish the validated signed artifact to the NAS stable channel after environment approval.'
+        description: 'Publish the validated signed artifact to the NAS stable channel. Production publish requires manual workflow dispatch.'
         required: true
         type: boolean
         default: false
@@ -101,7 +101,7 @@ jobs:
           "release_root=$releaseRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Remove staged release root after no-publish validation
-        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.publish_to_nas && success() }}
+        if: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.publish_to_nas)) && success() }}
         shell: pwsh
         run: |
           $releaseRoot = "${{ steps.build.outputs.release_root }}"
@@ -112,7 +112,7 @@ jobs:
   publish-to-nas:
     name: Publish signed release to NAS
     needs: build-signed-release
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_to_nas) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_nas }}
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
     environment: revagent-production-publish
 
