@@ -31,9 +31,9 @@ remain exact implementation, tool, package, manifest, and path identifiers.
 - `installer/runtime-mcp-server/`: TypeScript source and bundled local runtime MCP server build for live Revit execution
 - `dashboard/`: read-only live dashboard server and browser UI for office monitoring
 - `docs/PLATFORM_ARCHITECTURE.md`: current platform, bridge, runtime, telemetry, dashboard, and deployment architecture
-- `docs/REVAGENT_SIGNED_SOURCE_FREE_CD_ROLLOUT_PLAN.md`: active signed
-  source-free rollout, GitHub Actions CD, NAS publish, pilot, and enforcement
-  plan
+- `docs/REVAGENT_SIGNED_SOURCE_FREE_CD_ROLLOUT_PLAN.md`: current signed
+  source-free rollout record and next-phase plan for GitHub Actions CD, NAS
+  publish verification, pilot rollout, and enforcement
 - `docs/REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md`: Phase 4 local vs service-backed
   product know-how classification
 - `docs/REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md`: Phase 5 release-origin,
@@ -159,7 +159,9 @@ pulling and reinstalling on every machine.
 - Signed source-free CD runs through
   `.github/workflows/signed-source-free-cd.yml`; manual dispatch remains
   available for build-only validation or an explicit operator-triggered publish.
-- Office releases are published to the managed release channel after local/manual testing.
+- The protected PR review/CI/merge decision is the human gate for production
+  publish. After merge, verify the signed CD run and `channels\stable.json`
+  before telling operators to run workstation updaters.
 - Workstations run `update-from-nas.ps1`, usually through a scheduled task
   installed by `install-updater-task.ps1`; automatic checks run once daily at
   12:00 local time, while manual update/repair remains available from the
@@ -493,12 +495,13 @@ It also verifies that dynamic execution with `parseJsonResult=true` parses
 JSON-looking nested `result` strings, while disabled or failed parsing leaves
 the raw text available for debugging.
 
-The protected `main` branch also runs the GitHub Actions `Engineering gates`
-job on pull requests and pushes to `main`. Normal development should happen on
-a topic branch, then merge through a pull request after the required
-`Engineering gates` check is green. A green commit or pull request still does
-not deploy to the office NAS; deployment changes only when the NAS publish
-script is run intentionally.
+The protected `main` branch runs GitHub Actions on pull requests and pushes to
+`main`: `Engineering gates`, Claude Code Review for PRs, and signed source-free
+CD for `main` updates. Normal development should happen on a topic branch, then
+merge through a pull request after the required checks and review are clear.
+After merge, the signed CD workflow publishes to the office NAS stable channel;
+verify the workflow result and `channels\stable.json` before rollout
+instructions.
 
 When the shared bridge command payload changes and Revit 2022 is available, run the
 optional live commandset gate separately:

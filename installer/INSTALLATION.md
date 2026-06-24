@@ -94,7 +94,10 @@ and skill integration should also be removed.
 
 ## Release Publishing
 
-Development machines publish release ZIPs through:
+Production release ZIPs normally publish through the signed source-free GitHub
+Actions CD workflow after protected `main` updates. Use the manual publish
+command only for controlled recovery/backstop work from a clean development
+checkout:
 
 ```powershell
 $ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"

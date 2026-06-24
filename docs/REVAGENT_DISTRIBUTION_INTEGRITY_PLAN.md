@@ -177,8 +177,8 @@ Migration sequence:
    verified, unsigned releases are reported as legacy-compatible.
 4. Add a signed release sequence or minimum-version claim and persist the
    highest accepted release state locally.
-5. Publish one signed stable release through the normal human-approved NAS
-   process.
+5. Publish one signed stable release through the protected `main` / signed CD
+   NAS process.
 6. Flip the updater policy to require signed channel and release manifests.
 7. Keep an emergency rollback path that requires an explicit local operator
    flag, bypasses normal scheduled update execution, and writes an audit
@@ -243,12 +243,13 @@ Each workstream should remain a separate PR:
    `releaseSequence` metadata, persist the highest accepted sequence locally,
    block older signed-channel replay during normal updater execution, and expose
    an explicit local rollback flag that records audit/report evidence. The
-   actual signed stable publish remains a separate human-approved NAS
-   deployment step with production public keys present on workstations before
-   fail-closed policy is enabled. A read-only signed-stable readiness preflight
-   must pass before either action; it verifies enforce-mode signatures, package
-   hash consistency, positive `releaseSequence` metadata, and absence of obvious
-   private signing material under the release root.
+   actual signed stable publish now runs through the protected `main` signed CD
+   path, while fail-closed policy remains a separate approved deployment step
+   with production public keys present on workstations first. A read-only
+   signed-stable readiness preflight must pass before either action; it verifies
+   enforce-mode signatures, package hash consistency, positive `releaseSequence`
+   metadata, and absence of obvious private signing material under the release
+   root.
 6. Optional license or seat design and implementation. License verification
    must use signed seat/license files and public verification keys only. The
    default workstation policy remains `disabled`; `audit` records invalid or
@@ -277,8 +278,8 @@ secrets do not appear in the user pack, NAS `tools/`, or committed config.
 
 ## Phase 5 Outcome
 
-This phase defines the release-origin trust model and the implementation gates.
-It does not publish a NAS release, enable signature enforcement, add private
-keys, or add license enforcement. Those changes require the separate
-workstreams above and a signed stable baseline before fail-closed updater
-behavior is enabled.
+This plan defines the release-origin trust model and the implementation gates.
+The signed stable publish path now runs through the protected `main` branch and
+the signed source-free GitHub Actions CD workflow. Fail-closed enforcement,
+license enforcement, and future key-policy changes remain separate approved
+workstreams.

@@ -18,9 +18,10 @@ that can clone this repository and reach the NAS share.
   `C:\ProgramData\DPE\RevitMCP`
 
 GitHub is the source history. The NAS share is the deployment source read by
-office workstations. A normal `git commit` or `git push` does not deploy
-anything by itself. Office deployment changes only when a release is published
-to the NAS and a channel file points at that release.
+office workstations. A normal feature-branch `git commit` or `git push` does
+not deploy anything by itself. A protected `main` update starts signed
+source-free CD, which publishes a validated release to NAS stable and moves the
+channel file to that release.
 
 Development and production releases are managed from `main`. Historical
 branches or older repositories are not part of the current production flow.
@@ -174,10 +175,13 @@ used. Production NAS releases should be published from a clean tree.
 7. Commit source and generated payload together when payload is affected.
 8. Push the topic branch and open a pull request. See `Git Commit And Push` for
    the exact protected branch workflow.
-9. Merge only after the required `Engineering gates` check is green.
+9. Merge only after `Engineering gates`, GitGuardian, and automatic Claude Code
+   Review are clear. Do not leave manual `@claude`, `@codex`, or `@gemini`
+   review-trigger comments; review runs from GitHub Actions.
 10. Update local `main` with `git pull --ff-only`.
-11. Publish the tested release to NAS `stable`.
-12. Verify one real Revit workstation after the stable publish.
+11. Watch the signed source-free CD run that starts from the `main` update.
+12. Verify NAS `stable.json`, release manifest, ZIP path/hash, and at least one
+   real Revit workstation before broad rollout.
 
 Useful baseline commands:
 
@@ -495,7 +499,7 @@ compare file mtimes.
 | Usage-intelligence promotion summary and dashboard brief stay deterministic | `scripts/test-usage-intelligence.ps1` or `scripts/test-all.ps1` | No | Runs without Revit or NAS, but remains outside the protected `Engineering gates` job. |
 | Live commandset behavior is valid in Revit | `scripts/test-commandset-live.ps1` | No | Requires Revit 2022 open with an active document. |
 | Live dashboard helpers and publish backfill are valid | `scripts/test-live-dashboard.ps1` or `scripts/test-all.ps1` | No | Local-only; not part of the CI-safe gate. |
-| NAS publish/update/install behavior is valid | `installer\nas\publish-nas-release.ps1`, updater tools, and manual workstation verification | No | Requires human-approved deployment flow and NAS access. |
+| NAS publish/update/install behavior is valid | Signed source-free CD, updater tools, and manual workstation verification | No | Production publish is triggered by protected `main` after checks pass; manual publish scripts remain a controlled fallback and require NAS access. |
 
 The GitHub Actions workflow at `.github/workflows/ci.yml` runs the
 `Engineering gates` job on `push` to `main`, pull requests targeting `main`,
@@ -619,13 +623,21 @@ git push -u origin codex/<short-topic>
 gh pr create --base main --head codex/<short-topic>
 ```
 
-Merge the pull request only after the required `Engineering gates` check is
-green. After merge, update the local main branch:
+Merge the pull request only after `Engineering gates`, GitGuardian, and the
+automatic Claude Code Review result are clear. Do not add manual `@claude`,
+`@codex`, or `@gemini` review comments; this repository uses the GitHub Actions
+Claude review job as the review signal. After merge, update the local main
+branch:
 
 ```powershell
 git switch main
 git pull --ff-only
 ```
+
+For changes that reach `main`, the signed source-free CD workflow publishes to
+NAS stable automatically. Treat the merge as the production publish trigger and
+verify the GitHub Actions CD run plus `channels\stable.json` before any operator
+rollout instruction.
 
 Keep commits coherent:
 
@@ -666,7 +678,9 @@ reports\
 tools\
 ```
 
-Publish a stable release from a clean repo:
+Production stable releases normally publish through the signed source-free CD
+workflow after a protected `main` update. Use the manual publish script only for
+controlled recovery/backstop work from a clean repo:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\installer\nas\publish-nas-release.ps1 `
@@ -812,8 +826,9 @@ tools. The updater imports the same helper before caching a package. In
 `compatibility` policy, a fully signed channel plus release manifest is
 verified, a completely unsigned release is accepted as `legacy-compatible` and
 reported, and partial or invalid signatures are rejected before package
-replacement. Signed stable publication and fail-closed enforcement remain
-separate human-approved workstreams.
+replacement. Signed stable publication now runs through the protected `main`
+branch and signed source-free CD workflow. Fail-closed enforcement remains a
+separate approved workstream.
 
 Before a signed stable baseline or fail-closed policy change, run the read-only
 preflight against the candidate release root and production public release-key
