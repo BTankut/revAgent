@@ -1779,7 +1779,20 @@ function Initialize-DistributionIntegrityConfig {
         if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
             continue
         }
-        $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $candidate
+        $beforeCount = $trustedKeys.Count
+        try {
+            $sourcePath = Add-TrustedReleaseKeysFromFile -Target $trustedKeys -Path $candidate -Required
+        }
+        catch {
+            $message = "Auto-discovered trusted release keys could not be loaded from '$candidate'. Run Install/Repair after restoring release-trusted-keys.json."
+            Set-DistributionIntegrityBlockedReport -Policy $policy -TrustedKeys $trustedKeys -Sources $sources -Reason "trusted_keys_invalid" -Message $message -TrustedKeysPath $candidate
+            throw $message
+        }
+        if ($trustedKeys.Count -le $beforeCount) {
+            $message = "Auto-discovered trusted release keys file '$candidate' did not contain any trusted keys. Run Install/Repair after restoring release-trusted-keys.json."
+            Set-DistributionIntegrityBlockedReport -Policy $policy -TrustedKeys $trustedKeys -Sources $sources -Reason "trusted_keys_empty" -Message $message -TrustedKeysPath $candidate
+            throw $message
+        }
         if (-not [string]::IsNullOrWhiteSpace($sourcePath)) {
             [void]$sources.Add($sourcePath)
         }
@@ -1789,6 +1802,7 @@ function Initialize-DistributionIntegrityConfig {
         $policy = if ($trustedKeys.Count -gt 0) { "enforce" } else { "compatibility" }
     }
     elseif ($trustedKeys.Count -gt 0 -and [string]::Equals($policy, "compatibility", [System.StringComparison]::OrdinalIgnoreCase)) {
+        Write-Warning "DistributionIntegrityPolicy compatibility was escalated to enforce because trusted release keys are configured."
         $policy = "enforce"
     }
 

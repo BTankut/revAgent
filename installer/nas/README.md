@@ -99,7 +99,10 @@ and runs `scripts/publish-signed-source-free-release-to-nas.ps1`, which copies
 the release and tools to NAS, validates `stable.candidate.json`, blocks stable
 `releaseSequence` rollback or equal-sequence repair unless `-AllowRollback` is
 passed deliberately, then promotes `stable.sig.json` and `stable.json` with
-rollback files kept until the post-publish readiness check passes. It does not
+channel and payload rollback backups kept until the post-publish readiness
+check passes. The legacy direct publisher also blocks stable `releaseSequence`
+rollback/equal-sequence repair unless its own `-AllowRollback` flag is passed.
+It does not
 rebuild or re-sign the artifact. The local runner staging handoff avoids GitHub
 Actions artifact storage quota, so the selected runner labels must resolve to
 the office runner that owns both signing-key and NAS access.

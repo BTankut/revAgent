@@ -11,7 +11,7 @@ All notable revAgent workstation deployment changes are tracked here.
   use the local trusted updater instead of the NAS-side updater, and NAS stable
   publish now requires manual workflow dispatch plus publish-time release
   sequence checks, explicit rollback/legacy-bootstrap authorization, and
-  rollback files during channel promotion.
+  rollback backups for channel metadata and replaced payload directories.
 - Added signed source-free CD automation: a protected GitHub Actions workflow
   can build a signed source-free release root from `main`, preserve that exact
   release root in local runner staging, and publish it to NAS only when the
