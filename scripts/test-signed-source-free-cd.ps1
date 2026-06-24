@@ -207,6 +207,7 @@ try {
     Assert-True ($publisherText -match 'candidate\.json' -and $publisherText -match 'check-signed-stable-readiness\.ps1') "NAS publisher should validate a candidate channel before stable promotion."
     Assert-True ($publisherText -match '\[switch\]\$AllowRollback' -and $publisherText -match 'currentStableReleaseSequence' -and $publisherText -match 'current-sequence repair') "NAS publisher must block signed stable releaseSequence rollback or equal-sequence repair unless explicitly allowed."
     Assert-True ($publisherText -match 'candidate releaseSequence could not be determined as a positive integer') "NAS publisher must report an unreadable candidate releaseSequence separately from rollback protection."
+    Assert-True ($publisherText -match 'current stable releaseSequence could not be determined') "NAS publisher must fail closed when the existing stable releaseSequence is unreadable."
     Assert-True ($publisherText -match 'previous\.json' -and $publisherText -match 'previous\.sig\.json' -and $publisherText -match 'NAS stable signed release root failed readiness' -and $publisherText -match 'rollbackFailed' -and $publisherText -match 'Backup files kept') "NAS publisher must keep rollback files while promoting stable channel metadata and preserve them when rollback fails."
 }
 finally {

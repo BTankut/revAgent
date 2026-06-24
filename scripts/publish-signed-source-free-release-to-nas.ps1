@@ -28,7 +28,8 @@ param(
 
     [switch]$Force,
 
-    # Also authorizes equal releaseSequence repair republish; the publish guard treats <= as protected.
+    # Authorizes deliberate signed rollback and equal releaseSequence repair republish.
+    # It does not bypass unreadable candidate/current channel metadata.
     [switch]$AllowRollback,
 
     [switch]$OutputJson,
@@ -104,19 +105,60 @@ function ConvertTo-RevitMcpInt64OrZero {
     return [long]0
 }
 
-function Get-RevitMcpChannelReleaseSequence {
+function Get-RevitMcpChannelReleaseSequenceStatus {
     param([string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        return [long]0
+        return [pscustomobject][ordered]@{
+            success = $false
+            exists = $false
+            value = [long]0
+            reason = "not_found"
+            message = "Channel manifest was not found."
+        }
     }
 
     try {
         $channel = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
-        return ConvertTo-RevitMcpInt64OrZero -Value $channel.releaseSequence
     }
     catch {
-        return [long]0
+        return [pscustomobject][ordered]@{
+            success = $false
+            exists = $true
+            value = [long]0
+            reason = "read_failed"
+            message = $_.Exception.Message
+        }
+    }
+
+    $sequenceProperty = $channel.PSObject.Properties["releaseSequence"]
+    if ($null -eq $sequenceProperty -or $null -eq $sequenceProperty.Value -or [string]::IsNullOrWhiteSpace([string]$sequenceProperty.Value)) {
+        return [pscustomobject][ordered]@{
+            success = $false
+            exists = $true
+            value = [long]0
+            reason = "missing_release_sequence"
+            message = "Channel manifest does not contain releaseSequence."
+        }
+    }
+
+    $parsed = [long]0
+    if (-not [long]::TryParse([string]$sequenceProperty.Value, [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
+        return [pscustomobject][ordered]@{
+            success = $false
+            exists = $true
+            value = [long]0
+            reason = "invalid_release_sequence"
+            message = "Channel manifest releaseSequence is not a valid integer."
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        success = $true
+        exists = $true
+        value = $parsed
+        reason = "ok"
+        message = "Channel manifest releaseSequence was read."
     }
 }
 
@@ -187,12 +229,19 @@ if (-not [bool]$candidateReadiness.success) {
 
 $candidateReleaseSequence = ConvertTo-RevitMcpInt64OrZero -Value $candidateReadiness.releaseSequence
 if ($candidateReleaseSequence -le 0) {
-    $candidateReleaseSequence = Get-RevitMcpChannelReleaseSequence -Path $candidateChannelPath
+    $candidateSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus -Path $candidateChannelPath
+    if ([bool]$candidateSequenceStatus.success) {
+        $candidateReleaseSequence = [long]$candidateSequenceStatus.value
+    }
 }
 if ($candidateReleaseSequence -le 0) {
     throw "Refusing to publish because candidate releaseSequence could not be determined as a positive integer. Check '$candidateChannelPath' and readiness output before retrying."
 }
-$currentStableReleaseSequence = Get-RevitMcpChannelReleaseSequence -Path $stableChannelPath
+$currentStableSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus -Path $stableChannelPath
+if ([bool]$currentStableSequenceStatus.exists -and -not [bool]$currentStableSequenceStatus.success) {
+    throw "Refusing to publish because current stable releaseSequence could not be determined from '$stableChannelPath'. Reason: $($currentStableSequenceStatus.reason). $($currentStableSequenceStatus.message)"
+}
+$currentStableReleaseSequence = if ([bool]$currentStableSequenceStatus.success) { [long]$currentStableSequenceStatus.value } else { [long]0 }
 # Equal releaseSequence republish is a protected repair path; require an explicit operator override.
 if ($currentStableReleaseSequence -gt 0 -and $candidateReleaseSequence -le $currentStableReleaseSequence -and -not $AllowRollback) {
     throw "Refusing to publish releaseSequence '$candidateReleaseSequence' over current stable '$currentStableReleaseSequence'. Pass -AllowRollback only for deliberate signed rollback or current-sequence repair."
