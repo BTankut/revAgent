@@ -1012,42 +1012,51 @@ if ($previousDistributionIntegrity) {
         -not [string]::IsNullOrWhiteSpace($previousTrustedReleaseKeysPath)
 }
 $preservedTrustedReleaseKeysPath = ""
-if ($previousReleaseIntegrityPinned -and -not [string]::IsNullOrWhiteSpace($previousTrustedReleaseKeysPath) -and (Test-Path -LiteralPath $previousTrustedReleaseKeysPath -PathType Leaf)) {
-    $preservedTrustedReleaseKeysPath = Join-Path $WorkRoot "release-trusted-keys.previous.json"
-    Copy-Item -LiteralPath $previousTrustedReleaseKeysPath -Destination $preservedTrustedReleaseKeysPath -Force
-}
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "update-from-nas.ps1") -Destination $localUpdater -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "show-installed-version.ps1") -Destination $localVersionTool -Force
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "migrate-source-free-install.ps1") -Destination $localMigrationTool -Force
 $localLibRoot = Join-Path $WorkRoot "lib"
-if (Test-Path -LiteralPath $localLibRoot) {
-    Remove-Item -LiteralPath $localLibRoot -Recurse -Force
-}
-Copy-Item -LiteralPath $nasLibRoot -Destination $localLibRoot -Recurse -Force
-$nasConfigRoot = @(
-    (Join-Path $PSScriptRoot "config"),
-    (Join-Path (Split-Path -Parent (Split-Path -Parent $nasLibRoot)) "config")
-) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
 $localTrustedReleaseKeysPath = Join-Path $WorkRoot "config\release-trusted-keys.json"
-if (-not [string]::IsNullOrWhiteSpace($nasConfigRoot)) {
-    $localConfigRoot = Join-Path $WorkRoot "config"
-    if (Test-Path -LiteralPath $localConfigRoot) {
-        Remove-Item -LiteralPath $localConfigRoot -Recurse -Force
+try {
+    if ($previousReleaseIntegrityPinned -and -not [string]::IsNullOrWhiteSpace($previousTrustedReleaseKeysPath) -and (Test-Path -LiteralPath $previousTrustedReleaseKeysPath -PathType Leaf)) {
+        $preservedTrustedReleaseKeysPath = Join-Path $WorkRoot "release-trusted-keys.previous.json"
+        Copy-Item -LiteralPath $previousTrustedReleaseKeysPath -Destination $preservedTrustedReleaseKeysPath -Force
     }
-    Copy-Item -LiteralPath $nasConfigRoot -Destination $localConfigRoot -Recurse -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "update-from-nas.ps1") -Destination $localUpdater -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "show-installed-version.ps1") -Destination $localVersionTool -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "migrate-source-free-install.ps1") -Destination $localMigrationTool -Force
+    if (Test-Path -LiteralPath $localLibRoot) {
+        Remove-Item -LiteralPath $localLibRoot -Recurse -Force
+    }
+    Copy-Item -LiteralPath $nasLibRoot -Destination $localLibRoot -Recurse -Force
+    $nasConfigRoot = @(
+        (Join-Path $PSScriptRoot "config"),
+        (Join-Path (Split-Path -Parent (Split-Path -Parent $nasLibRoot)) "config")
+    ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
+    if (-not [string]::IsNullOrWhiteSpace($nasConfigRoot)) {
+        $localConfigRoot = Join-Path $WorkRoot "config"
+        if (Test-Path -LiteralPath $localConfigRoot) {
+            Remove-Item -LiteralPath $localConfigRoot -Recurse -Force
+        }
+        Copy-Item -LiteralPath $nasConfigRoot -Destination $localConfigRoot -Recurse -Force
+    }
+    if (-not (Test-Path -LiteralPath $localTrustedReleaseKeysPath -PathType Leaf)) {
+        if (-not [string]::IsNullOrWhiteSpace($preservedTrustedReleaseKeysPath) -and (Test-Path -LiteralPath $preservedTrustedReleaseKeysPath -PathType Leaf)) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $localTrustedReleaseKeysPath) -Force | Out-Null
+            Copy-Item -LiteralPath $preservedTrustedReleaseKeysPath -Destination $localTrustedReleaseKeysPath -Force
+            Write-Warning "NAS tools did not provide release-trusted-keys.json; preserved previously pinned local trusted release keys."
+        }
+        elseif ($previousReleaseIntegrityPinned) {
+            Write-Warning "Trusted release keys were previously pinned, but NAS tools did not provide release-trusted-keys.json and no previous local key file could be preserved. Distribution integrity config remains pinned and fail-closed until keys are restored."
+        }
+    }
 }
-if (-not (Test-Path -LiteralPath $localTrustedReleaseKeysPath -PathType Leaf)) {
-    if (-not [string]::IsNullOrWhiteSpace($preservedTrustedReleaseKeysPath) -and (Test-Path -LiteralPath $preservedTrustedReleaseKeysPath -PathType Leaf)) {
-        New-Item -ItemType Directory -Path (Split-Path -Parent $localTrustedReleaseKeysPath) -Force | Out-Null
-        Copy-Item -LiteralPath $preservedTrustedReleaseKeysPath -Destination $localTrustedReleaseKeysPath -Force
-        Write-Warning "NAS tools did not provide release-trusted-keys.json; preserved previously pinned local trusted release keys."
+finally {
+    if (-not [string]::IsNullOrWhiteSpace($preservedTrustedReleaseKeysPath)) {
+        if ($previousReleaseIntegrityPinned -and -not (Test-Path -LiteralPath $localTrustedReleaseKeysPath -PathType Leaf) -and (Test-Path -LiteralPath $preservedTrustedReleaseKeysPath -PathType Leaf)) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $localTrustedReleaseKeysPath) -Force | Out-Null
+            Copy-Item -LiteralPath $preservedTrustedReleaseKeysPath -Destination $localTrustedReleaseKeysPath -Force
+            Write-Warning "Restored previously pinned local trusted release keys after updater repair did not leave a trusted key file."
+        }
+        Remove-Item -LiteralPath $preservedTrustedReleaseKeysPath -Force -ErrorAction SilentlyContinue
     }
-    elseif ($previousReleaseIntegrityPinned) {
-        Write-Warning "Trusted release keys were previously pinned, but NAS tools did not provide release-trusted-keys.json and no previous local key file could be preserved. Distribution integrity config will not be pinned until keys are restored."
-    }
-}
-if (-not [string]::IsNullOrWhiteSpace($preservedTrustedReleaseKeysPath)) {
-    Remove-Item -LiteralPath $preservedTrustedReleaseKeysPath -Force -ErrorAction SilentlyContinue
 }
 
 $script:RevitMcpRemoteReportsRoot = $ReportsRoot
@@ -1082,7 +1091,7 @@ $config = [ordered]@{
     installOperationMethod = $script:RevitMcpOperationMethod
     installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
 }
-if (Test-Path -LiteralPath $localTrustedReleaseKeysPath -PathType Leaf) {
+if ((Test-Path -LiteralPath $localTrustedReleaseKeysPath -PathType Leaf) -or $previousReleaseIntegrityPinned) {
     $config["distributionIntegrity"] = [ordered]@{
         policy = "enforce"
         trustedKeysPath = $localTrustedReleaseKeysPath

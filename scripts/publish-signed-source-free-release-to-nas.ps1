@@ -257,20 +257,22 @@ foreach ($path in @($stableChannelBackupPath, $stableSignatureBackupPath, $stabl
 
 $hadStableChannel = Test-Path -LiteralPath $stableChannelPath -PathType Leaf
 $hadStableSignature = Test-Path -LiteralPath $stableSignaturePath -PathType Leaf
-Remove-Item -LiteralPath $stableChannelBackupPath, $stableSignatureBackupPath, $stableChannelTempPath, $stableSignatureTempPath -Force -ErrorAction SilentlyContinue
-if ($hadStableChannel) {
-    Copy-Item -LiteralPath $stableChannelPath -Destination $stableChannelBackupPath -Force
-}
-if ($hadStableSignature) {
-    Copy-Item -LiteralPath $stableSignaturePath -Destination $stableSignatureBackupPath -Force
-}
-Copy-Item -LiteralPath $candidateChannelPath -Destination $stableChannelTempPath -Force
-Copy-Item -LiteralPath $candidateSignaturePath -Destination $stableSignatureTempPath -Force
-
 $stableReadiness = $null
 $rollbackFailed = $false
+$promotionStarted = $false
 try {
+    Remove-Item -LiteralPath $stableChannelBackupPath, $stableSignatureBackupPath, $stableChannelTempPath, $stableSignatureTempPath -Force -ErrorAction SilentlyContinue
+    if ($hadStableChannel) {
+        Copy-Item -LiteralPath $stableChannelPath -Destination $stableChannelBackupPath -Force
+    }
+    if ($hadStableSignature) {
+        Copy-Item -LiteralPath $stableSignaturePath -Destination $stableSignatureBackupPath -Force
+    }
+    Copy-Item -LiteralPath $candidateChannelPath -Destination $stableChannelTempPath -Force
+    Copy-Item -LiteralPath $candidateSignaturePath -Destination $stableSignatureTempPath -Force
+
     # Promote signature before channel: an updater racing between these moves sees a mismatched pair and rejects it.
+    $promotionStarted = $true
     Move-Item -LiteralPath $stableSignatureTempPath -Destination $stableSignaturePath -Force
     Move-Item -LiteralPath $stableChannelTempPath -Destination $stableChannelPath -Force
 
@@ -285,6 +287,9 @@ try {
 }
 catch {
     $publishError = $_
+    if (-not $promotionStarted) {
+        throw $publishError
+    }
     try {
         if ($hadStableSignature -and (Test-Path -LiteralPath $stableSignatureBackupPath -PathType Leaf)) {
             Copy-Item -LiteralPath $stableSignatureBackupPath -Destination $stableSignaturePath -Force
