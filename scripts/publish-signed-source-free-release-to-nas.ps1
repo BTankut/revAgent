@@ -201,12 +201,6 @@ $sourceToolsDir = Join-Path $SourceReleaseRoot "tools"
 $nasReleaseDir = Join-Path $NasReleaseRoot "releases\$version"
 $nasToolsDir = Join-Path $NasReleaseRoot "tools"
 $nasChannelsDir = Join-Path $NasReleaseRoot "channels"
-
-New-Item -ItemType Directory -Path $NasReleaseRoot -Force | Out-Null
-Copy-RevitMcpDirectoryExact -Source $sourceReleaseDir -Destination $nasReleaseDir -Root $NasReleaseRoot -AllowReplace:$Force
-Copy-RevitMcpDirectoryExact -Source $sourceToolsDir -Destination $nasToolsDir -Root $NasReleaseRoot -AllowReplace:$true
-
-New-Item -ItemType Directory -Path $nasChannelsDir -Force | Out-Null
 $candidateChannelPath = Join-Path $nasChannelsDir ("{0}.candidate.json" -f $Channel)
 $candidateSignaturePath = Join-Path $nasChannelsDir ("{0}.candidate.sig.json" -f $Channel)
 $stableChannelPath = Join-Path $nasChannelsDir ("{0}.json" -f $Channel)
@@ -215,28 +209,15 @@ foreach ($path in @($candidateChannelPath, $candidateSignaturePath, $stableChann
     Assert-RevitMcpChildPath -Path $path -Root $NasReleaseRoot
 }
 
-Copy-Item -LiteralPath $sourceChannelPath -Destination $candidateChannelPath -Force
-Copy-Item -LiteralPath $sourceChannelSignaturePath -Destination $candidateSignaturePath -Force
-
-$candidateReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
-    -ReleaseRoot $NasReleaseRoot `
-    -ChannelManifestPath $candidateChannelPath `
-    -TrustedKeysPath $TrustedKeysPath `
-    -ArtifactScanScope activeRelease `
-    -RepoRoot $RepoRoot
-if (-not [bool]$candidateReadiness.success) {
-    throw "NAS candidate signed release root failed readiness verification."
-}
-
-$candidateReleaseSequence = ConvertTo-RevitMcpInt64OrZero -Value $candidateReadiness.releaseSequence
+$candidateReleaseSequence = ConvertTo-RevitMcpInt64OrZero -Value $sourceReadiness.releaseSequence
 if ($candidateReleaseSequence -le 0) {
-    $candidateSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus -Path $candidateChannelPath
+    $candidateSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus -Path $sourceChannelPath
     if ([bool]$candidateSequenceStatus.success) {
         $candidateReleaseSequence = [long]$candidateSequenceStatus.value
     }
 }
 if ($candidateReleaseSequence -le 0) {
-    throw "Refusing to publish because candidate releaseSequence could not be determined as a positive integer. Check '$candidateChannelPath' and readiness output before retrying."
+    throw "Refusing to publish because candidate releaseSequence could not be determined as a positive integer. Check '$sourceChannelPath' and readiness output before retrying."
 }
 $currentStableSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus -Path $stableChannelPath
 if ([bool]$currentStableSequenceStatus.exists -and -not [bool]$currentStableSequenceStatus.success) {
@@ -251,6 +232,24 @@ $currentStableReleaseSequence = if ([bool]$currentStableSequenceStatus.success) 
 # Equal releaseSequence republish is a protected repair path; require an explicit operator override.
 if ($currentStableReleaseSequence -gt 0 -and $candidateReleaseSequence -le $currentStableReleaseSequence -and -not $AllowRollback) {
     throw "Refusing to publish releaseSequence '$candidateReleaseSequence' over current stable '$currentStableReleaseSequence'. Pass -AllowRollback only for deliberate signed rollback or current-sequence repair."
+}
+
+New-Item -ItemType Directory -Path $NasReleaseRoot -Force | Out-Null
+Copy-RevitMcpDirectoryExact -Source $sourceReleaseDir -Destination $nasReleaseDir -Root $NasReleaseRoot -AllowReplace:$Force
+Copy-RevitMcpDirectoryExact -Source $sourceToolsDir -Destination $nasToolsDir -Root $NasReleaseRoot -AllowReplace:$true
+
+New-Item -ItemType Directory -Path $nasChannelsDir -Force | Out-Null
+Copy-Item -LiteralPath $sourceChannelPath -Destination $candidateChannelPath -Force
+Copy-Item -LiteralPath $sourceChannelSignaturePath -Destination $candidateSignaturePath -Force
+
+$candidateReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
+    -ReleaseRoot $NasReleaseRoot `
+    -ChannelManifestPath $candidateChannelPath `
+    -TrustedKeysPath $TrustedKeysPath `
+    -ArtifactScanScope activeRelease `
+    -RepoRoot $RepoRoot
+if (-not [bool]$candidateReadiness.success) {
+    throw "NAS candidate signed release root failed readiness verification."
 }
 
 $stableChannelBackupPath = Join-Path $nasChannelsDir ("{0}.previous.json" -f $Channel)

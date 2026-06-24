@@ -287,6 +287,7 @@ try {
         Assert-True (-not $unsignedAfterSignedAggregate.success) "Unsigned releases must be rejected once a signed release sequence has been accepted."
         Assert-Equal $unsignedAfterSignedAggregate.reason "unsigned_release_after_signed_acceptance" "Unsigned-after-signed rejection should use a stable reason."
         Assert-Equal $unsignedAfterSignedAggregate.consistency.reason "unsigned_release_rejected" "Unsigned-after-signed rejection should not report legacy-compatible consistency."
+        Assert-Equal $unsignedAfterSignedAggregate.highestAcceptedReleaseSequence ([long]1001) "Unsigned-after-signed rejection should preserve the accepted signed sequence watermark."
 
         Write-Host "Test updater compatibility aggregate accepts keys-free unsigned legacy release"
         $unsignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `

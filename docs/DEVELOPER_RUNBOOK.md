@@ -825,8 +825,7 @@ post-publish readiness check passes. After a successful publish, transient
 `.previous.*` channel backups are removed; operator recovery should use the
 versioned NAS `releases\` archive rather than relying on those promotion
 scratch files.
-Active-release
-scope checks the candidate release package and current `tools\` payload without
+Active-release scope checks the candidate release package and current `tools\` payload without
 blocking on historical legacy release ZIPs already present under the existing
 NAS `releases\` archive. Use the default full release-root readiness scan only
 when intentionally auditing or cleaning that historical archive. New signed
