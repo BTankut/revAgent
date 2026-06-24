@@ -360,6 +360,9 @@ try {
     Assert-True ($updateText -match '\$policy = if \(\$trustedKeys\.Count -gt 0\) \{ "enforce" \} else \{ "compatibility" \}') "Updater must default to enforce mode when trusted release keys are configured."
     Assert-True ($updateText -match 'Set-DistributionIntegrityBlockedReport' -and $updateText -match 'trusted_keys_missing' -and $updateText -match 'trustedKeysPath = \$TrustedKeysPath') "Updater must report missing pinned release keys as a structured fail-closed distribution-integrity state."
     Assert-True ($updateText -match '\$trustedKeys\.Count -gt 0 -and \[string\]::Equals\(\$policy, "compatibility"') "Updater must report enforce policy whenever trusted release keys make unsigned compatibility impossible."
+    Assert-True ($updateText -notmatch '\$trustedKeys\.Count -le \$beforeCount') "Updater must not judge auto-discovered key files empty by cumulative count (C1 regression: collides with configured trustedKeysPath)."
+    Assert-True ($updateText -match '\$consumedKeyPaths') "Updater must track already-consumed trusted-key file paths to skip duplicate auto-discovery candidates."
+    Assert-True ($updateText -match '\.KeyCount -le 0') "Updater must judge auto-discovered key files empty by that file's own parsed key count."
     $distributionInitIndex = $updateText.IndexOf('Initialize-DistributionIntegrityConfig -Config $config')
     $mainTryBeforeDistributionInitIndex = $updateText.LastIndexOf('try {', $distributionInitIndex)
     $mainCatchAfterDistributionInitIndex = $updateText.IndexOf('catch {', $distributionInitIndex)
