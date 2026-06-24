@@ -179,9 +179,12 @@ used. Production NAS releases should be published from a clean tree.
    Review are clear. Do not leave manual `@claude`, `@codex`, or `@gemini`
    review-trigger comments; review runs from GitHub Actions.
 10. Update local `main` with `git pull --ff-only`.
-11. Watch the signed source-free CD run that starts from the `main` update.
+11. Watch the signed source-free CD run that starts from the protected `main`
+    update.
 12. Verify NAS `stable.json`, release manifest, ZIP path/hash, and at least one
-   real Revit workstation before broad rollout.
+   real Revit workstation before broad or manual rollout. If scheduled auto
+   update remains enabled, workstations may consume the new stable channel at
+   the next 12:00 check even without a manual rollout instruction.
 
 Useful baseline commands:
 
@@ -190,6 +193,28 @@ cd C:\Projects\revit-mcp-skill
 git status --short
 git pull --ff-only
 ```
+
+## Production Rollout Hold
+
+The stable channel is consumed by the daily workstation updater. "Verify before
+rollout" only gates manual operator instructions unless scheduled update checks
+are held first.
+
+If a release must not reach workstations until after manual verification, do one
+of these before updating protected `main` or publishing stable:
+
+- keep the change on a topic branch or a non-stable test channel
+- disable the workstation scheduled task on the affected machines
+
+```powershell
+Disable-ScheduledTask -TaskName "revAgent Auto Update"
+Enable-ScheduledTask -TaskName "revAgent Auto Update"
+```
+
+Use the legacy task name `Revit MCP Auto Update` only when maintaining an older
+pre-rename workstation. Re-enable the scheduled task only after the signed CD
+run, `channels\stable.json`, release manifest, package hash, and pilot
+workstation check are accepted.
 
 ## Revit Add-In Development
 
@@ -634,10 +659,12 @@ git switch main
 git pull --ff-only
 ```
 
-For changes that reach `main`, the signed source-free CD workflow publishes to
-NAS stable automatically. Treat the merge as the production publish trigger and
-verify the GitHub Actions CD run plus `channels\stable.json` before any operator
-rollout instruction.
+For any change that reaches protected `main`, including a direct push if branch
+protection allows one, the signed source-free CD workflow publishes to NAS
+stable automatically. Treat a protected `main` update as the production publish
+trigger. Verify the GitHub Actions CD run plus `channels\stable.json` before any
+manual rollout instruction, and use the rollout-hold process above if scheduled
+workstation updates must be paused before verification.
 
 Keep commits coherent:
 

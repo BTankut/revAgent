@@ -49,6 +49,9 @@ install/repair remain available from the NAS GUI and command launchers. The
 managed log folder is pruned automatically to keep the latest 10 `.log` files.
 The NAS deployment report bridge also keeps per-machine latest status JSON and
 the latest two copied operation logs under `reports\machines\<computer>`.
+To hold a production rollout before verification, temporarily disable the
+`revAgent Auto Update` scheduled task on affected machines and re-enable it
+after the signed stable release is accepted.
 
 ## Manual Repo-Root Install
 

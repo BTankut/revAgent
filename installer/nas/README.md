@@ -17,15 +17,21 @@ office workstations.
 Code change
 -> topic branch / pull request
 -> Engineering gates + automatic Claude Code Review
--> protected main merge
+-> protected main update
 -> signed-source-free-cd.yml builds, signs, validates, and publishes
 -> channels\stable.json and stable.sig.json are updated on NAS
--> workstations run update-from-nas.ps1
+-> workstations run update-from-nas.ps1 manually or by scheduled task
 ```
 
 A normal feature-branch `git commit` or `git push` does not update the office by
-itself. Updating protected `main` is the production publish trigger because the
+itself. Any update that reaches protected `main`, including a direct push if
+branch protection allows it, is the production publish trigger because the
 signed source-free CD workflow publishes the validated release to NAS stable.
+
+The stable channel is also consumed by the daily workstation scheduled task. If
+verification must finish before any workstation installs the new stable release,
+hold the `revAgent Auto Update` scheduled task on affected machines or publish
+to a non-stable test channel until the release is accepted.
 
 ## NAS Layout
 

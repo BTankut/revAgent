@@ -154,18 +154,23 @@ pulling and reinstalling on every machine.
 - GitHub remains the source history.
 - The NAS share is the single deployment source workstations read from.
 - A normal feature-branch `git commit` / `git push` does not update the office.
-- Updating protected `main` starts the signed source-free CD workflow and
-  publishes the validated release to the NAS stable channel.
+- Any update that reaches protected `main`, including a direct push if branch
+  protection allows it, starts the signed source-free CD workflow and publishes
+  the validated release to the NAS stable channel.
 - Signed source-free CD runs through
   `.github/workflows/signed-source-free-cd.yml`; manual dispatch remains
   available for build-only validation or an explicit operator-triggered publish.
-- The protected PR review/CI/merge decision is the human gate for production
-  publish. After merge, verify the signed CD run and `channels\stable.json`
-  before telling operators to run workstation updaters.
+- The protected PR review/CI/merge decision is the normal human gate for
+  production publish. After a protected `main` update, verify the signed CD run
+  and `channels\stable.json` before manual or broad rollout instructions.
 - Workstations run `update-from-nas.ps1`, usually through a scheduled task
   installed by `install-updater-task.ps1`; automatic checks run once daily at
   12:00 local time, while manual update/repair remains available from the
   updater UI and command launchers.
+- That verification does not automatically pause the scheduled 12:00 updater.
+  If a release must be held until after manual verification, hold the
+  workstation scheduled task or keep the change off `main` / outside the stable
+  channel until verification is complete.
 - Workstations install under `C:\ProgramData\DPE\RevitMCP`, not under
   `C:\Projects` or user AppData folders.
 - Workstation updater logs are retained under the managed updater folder, with
@@ -499,9 +504,11 @@ The protected `main` branch runs GitHub Actions on pull requests and pushes to
 `main`: `Engineering gates`, Claude Code Review for PRs, and signed source-free
 CD for `main` updates. Normal development should happen on a topic branch, then
 merge through a pull request after the required checks and review are clear.
-After merge, the signed CD workflow publishes to the office NAS stable channel;
-verify the workflow result and `channels\stable.json` before rollout
-instructions.
+Any update that reaches protected `main` publishes to the office NAS stable
+channel through signed CD, so branch protection is the real production gate.
+Verify the workflow result and `channels\stable.json` before manual rollout
+instructions, and pause scheduled updater rollout separately when verification
+must happen before any workstation installs the new stable release.
 
 When the shared bridge command payload changes and Revit 2022 is available, run the
 optional live commandset gate separately:

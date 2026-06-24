@@ -18,12 +18,20 @@ design changes that boundary.
   readiness preflight, GitHub Actions signed source-free CD, and production
   signing/NAS publish automation are implemented.
 - `main` is the development and release source of truth.
-- Protected `main` updates automatically build, sign, validate, and publish a
-  signed source-free release to NAS stable through
-  `.github/workflows/signed-source-free-cd.yml`.
+- Protected `main` updates, including direct pushes if branch protection allows
+  them, automatically build, sign, validate, and publish a signed source-free
+  release to NAS stable through `.github/workflows/signed-source-free-cd.yml`.
 - The current production NAS stable channel is signed and source-free. Verify
   the live `channels\stable.json`, release manifest, ZIP hash, and CD run before
   instructing operators to update workstations.
+- Verification snapshot on 2026-06-24:
+  - CD run:
+    `https://github.com/BTankut/revit-mcp-skill/actions/runs/28057789912`
+  - stable version: `2026.06.24.366-40425d12`
+  - stable commit: `40425d128afd5ae60c86ba40aa0399174748474b`
+  - release sequence: `20260623212138`
+  - signed-stable readiness:
+    `success=true`, `readyForEnforce=true`, key `revagent-prod-rsa-2026q3`
 - Normal office update policy has not been flipped to fail-closed signature
   enforcement.
 - Net01 has been used as the migration/source-free pilot machine; broad office
@@ -38,7 +46,9 @@ Initial target:
 
 1. GitHub Actions builds and validates a signed source-free release artifact.
 2. GitHub Actions publishes that exact signed release to the existing NAS
-   release layout after the protected PR review/CI/merge gate updates `main`.
+   release layout after a protected `main` update. The normal path is PR review,
+   required checks, and merge; direct pushes must remain disabled or
+   exception-only because they trigger the same publish path.
 3. Workstations continue to read the NAS channel while the signed-stable
    baseline and fail-closed updater policy are phased in.
 
@@ -67,6 +77,10 @@ Rejected initial target:
 - GitHub environment reviewer/wait-timer protection rules are unavailable on the
   current GitHub plan; the operator gate is therefore protected PR review,
   required checks, and the explicit merge decision.
+- The daily workstation scheduled task can consume stable before a manual
+  operator rollout message. To hold a release, keep it off stable or disable
+  `revAgent Auto Update` on the affected machines before the protected `main`
+  update.
 - NAS report/log publish warning from the pilot remains a separate share/report
   write issue.
 
@@ -78,7 +92,7 @@ Implemented in this repository:
   `.github/workflows/signed-source-free-cd.yml`.
 - Signed release producer wrapper:
   `scripts/invoke-signed-source-free-cd.ps1`.
-- Reviewed-artifact NAS publish wrapper:
+- Local-staging NAS publish wrapper:
   `scripts/publish-signed-source-free-release-to-nas.ps1`.
 - Portable signed metadata: new release channel and manifest package paths are
   relative so a signed CD artifact can move from staging to NAS without
@@ -349,9 +363,9 @@ before trusting any provider.
 - Private signing keys, license-signing keys, seat secrets, and GitHub write
   tokens must not be stored in the repo, user ZIP, NAS `tools`, updater config,
   or workstation payload.
-- Production publish is gated by protected PR review, required checks, and the
-  explicit merge decision; after `main` updates, signed CD publishes
-  automatically.
+- Production publish is gated by protected branch controls. The normal path is
+  PR review, required checks, and explicit merge; any update that reaches
+  protected `main` causes signed CD to publish automatically.
 - NAS publish and fail-closed policy changes remain separate actions.
 - Source-free packaging, distribution integrity, migration, and optional
   entitlement are separate layers. Do not use one as a substitute for another.
