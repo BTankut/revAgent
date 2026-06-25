@@ -45,7 +45,8 @@ param(
     [switch]$SkipProxySetup,
     [switch]$NoScheduledTask,
     [switch]$RunNow,
-    [switch]$ForceUpdate
+    [switch]$ForceUpdate,
+    [switch]$RunSourceFreeMigration
 )
 
 $ErrorActionPreference = "Stop"
@@ -65,6 +66,10 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
 Set-RevitMcpCurrentProcessUtf8Console | Out-Null
+
+if ($RunSourceFreeMigration) {
+    $RunNow = $true
+}
 
 $script:RevitMcpTranscriptStarted = $false
 $script:RevitMcpLogPath = ""
@@ -258,6 +263,9 @@ function Get-EffectiveInstallOperationMethod {
     if (-not [string]::IsNullOrWhiteSpace($OperationMethod)) {
         return $OperationMethod
     }
+    if ($RunSourceFreeMigration) {
+        return "source-free-migration-bootstrap"
+    }
     if ($ForceUpdate) {
         return "install-repair"
     }
@@ -356,6 +364,7 @@ function Invoke-InitialUpdateCheck {
         [string]$UpdaterPath,
         [string]$UpdaterConfigPath,
         [switch]$ForceUpdate,
+        [switch]$SourceFreeMigration,
         [string]$OperationMethod = "initial-update"
     )
 
@@ -364,8 +373,18 @@ function Invoke-InitialUpdateCheck {
         return
     }
 
+    if ($ForceUpdate -and $SourceFreeMigration) {
+        & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup -Force -SourceFreeMigration -OperationMethod $OperationMethod
+        return
+    }
+
     if ($ForceUpdate) {
         & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup -Force -OperationMethod $OperationMethod
+        return
+    }
+
+    if ($SourceFreeMigration) {
+        & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup -SourceFreeMigration -OperationMethod $OperationMethod
         return
     }
 
@@ -1187,7 +1206,7 @@ if ($NoScheduledTask) {
     if ($RunNow) {
         Write-Host ""
         Write-Host "Running initial update check..."
-        Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -OperationMethod ("{0}-initial-update" -f $script:RevitMcpOperationMethod)
+        Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -SourceFreeMigration:$RunSourceFreeMigration -OperationMethod ("{0}-initial-update" -f $script:RevitMcpOperationMethod)
     }
     Set-RevitMcpInstallRunReport -Status "completed" -Message ("Updater install completed by {0}." -f $script:RevitMcpOperationMethod)
     return
@@ -1235,7 +1254,7 @@ Write-Host "Show version    : $versionCommandPath" -ForegroundColor Green
 if ($RunNow) {
     Write-Host ""
     Write-Host "Running initial update check..."
-    Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -OperationMethod ("{0}-initial-update" -f $script:RevitMcpOperationMethod)
+    Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -SourceFreeMigration:$RunSourceFreeMigration -OperationMethod ("{0}-initial-update" -f $script:RevitMcpOperationMethod)
 }
 Set-RevitMcpInstallRunReport -Status "completed" -Message ("Updater install completed by {0}." -f $script:RevitMcpOperationMethod)
 }
