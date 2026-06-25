@@ -27,6 +27,9 @@ param(
     [string]$ReportsRoot = "",
     [ValidateSet("", "compatibility", "enforce")]
     [string]$DistributionIntegrityPolicy = "",
+    [ValidateSet("", "managed-user-pack", "preserve-local")]
+    [string]$CodexInstructionPolicy = "",
+    [string]$MachineRole = "",
     [switch]$AllowSignedReleaseRollback,
     [ValidateSet("", "disabled", "audit", "enforce")]
     [string]$LicensePolicy = "",
@@ -1569,6 +1572,54 @@ function Get-JsonPropertyValue {
     return $null
 }
 
+function Resolve-CodexInstructionPolicy {
+    param(
+        [string]$RequestedPolicy,
+        [object]$Config
+    )
+
+    $policy = $RequestedPolicy
+    if ([string]::IsNullOrWhiteSpace($policy)) {
+        $configuredPolicy = Get-JsonPropertyValue -Object $Config -Name "codexInstructionPolicy"
+        if ($null -ne $configuredPolicy) {
+            $policy = [string]$configuredPolicy
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($policy) -and -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_CODEX_INSTRUCTION_POLICY)) {
+        $policy = [string]$env:REVIT_MCP_CODEX_INSTRUCTION_POLICY
+    }
+    if ([string]::IsNullOrWhiteSpace($policy)) {
+        $policy = "managed-user-pack"
+    }
+
+    $normalized = $policy.Trim().ToLowerInvariant()
+    if ($normalized -notin @("managed-user-pack", "preserve-local")) {
+        throw "Unsupported CodexInstructionPolicy '$policy'. Use managed-user-pack or preserve-local."
+    }
+
+    return $normalized
+}
+
+function Resolve-MachineRole {
+    param(
+        [string]$RequestedRole,
+        [object]$Config
+    )
+
+    $role = $RequestedRole
+    if ([string]::IsNullOrWhiteSpace($role)) {
+        $configuredRole = Get-JsonPropertyValue -Object $Config -Name "machineRole"
+        if ($null -ne $configuredRole) {
+            $role = [string]$configuredRole
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($role) -and -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_MACHINE_ROLE)) {
+        $role = [string]$env:REVIT_MCP_MACHINE_ROLE
+    }
+
+    return $role
+}
+
 function Get-UpdaterDistributionIntegrityCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -2566,6 +2617,9 @@ function New-CurrentUpdateDiagnostics {
         distributionIntegrity = $script:RevitMcpDistributionIntegrity
         license = $script:RevitMcpLicense
         allowSignedReleaseRollback = [bool]$AllowSignedReleaseRollback
+        codexInstructionPolicy = $CodexInstructionPolicy
+        codexInstructionCleanupSkipped = [bool]($SourceFreeMigration -and $preserveLocalCodexInstructions)
+        machineRole = $MachineRole
         isFirstInstall = [bool]$isFirstInstall
         revitRunning = ($running.Count -gt 0)
         deferredForRevitClose = if ($runningDecision) { [bool]$runningDecision.DeferForRevitClose } else { $false }
@@ -2839,6 +2893,10 @@ if ($config) {
     if ([string]::IsNullOrWhiteSpace($LogPath) -and $config.updateLogPath) { $LogPath = [string]$config.updateLogPath }
 }
 
+$CodexInstructionPolicy = Resolve-CodexInstructionPolicy -RequestedPolicy $CodexInstructionPolicy -Config $config
+$MachineRole = Resolve-MachineRole -RequestedRole $MachineRole -Config $config
+$preserveLocalCodexInstructions = [string]::Equals($CodexInstructionPolicy, "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)
+
 if ($NoNotifyUser) {
     $NotifyUser = $false
 }
@@ -3009,6 +3067,10 @@ try {
     $skipDocsPayloadWork = $false
     $skipCodexSkillInstallForThisUpdate = $false
     $skipCodexMcpRegistrationForThisUpdate = $false
+    if ($preserveLocalCodexInstructions) {
+        $skipCodexSkillInstallForThisUpdate = $true
+        Write-Host "Codex instructions: preserved local developer instruction surface by policy." -ForegroundColor Yellow
+    }
     $revitChangeLabels = @($revitPayloadChanges | ForEach-Object {
             if (-not [string]::IsNullOrWhiteSpace([string]$_.path)) {
                 [string]$_.path
@@ -3026,7 +3088,9 @@ try {
         $sourceFreeGuardArtifacts = @(Get-RevitMcpSourceFreeArtifactInventory `
                 -InstallRoot $InstallRoot `
                 -PackageTarget $PackageTarget `
-                -ServerTarget $ServerTarget)
+                -ServerTarget $ServerTarget `
+                -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
+                -SkipCodexUserIntegration:$SkipCodexUserIntegration)
         if ($sourceFreeGuardArtifacts.Count -gt 0) {
             $sampleArtifacts = @($sourceFreeGuardArtifacts |
                     Select-Object -First 20 |
@@ -3048,6 +3112,8 @@ try {
                 -Channel $channel `
                 -InstalledState $installedState `
                 -Diagnostics ([ordered]@{
+                    codexInstructionPolicy = $CodexInstructionPolicy
+                    codexInstructionCleanupSkipped = [bool]$preserveLocalCodexInstructions
                     sourceFreeMigrationRequired = $true
                     sourceFreeMigrationArtifactCount = $sourceFreeGuardArtifacts.Count
                     sourceFreeMigrationSampleArtifacts = $sampleArtifacts
@@ -3107,7 +3173,12 @@ try {
     }
     if ($SourceFreeMigration) {
         $skipRevitPayloadInstall = $false
-        Write-Host "Source migration : full managed Revit/runtime/Codex payload repair forced." -ForegroundColor Yellow
+        if ($preserveLocalCodexInstructions) {
+            Write-Host "Source migration : full managed Revit/runtime repair forced; Codex instructions preserved by policy." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "Source migration : full managed Revit/runtime/Codex payload repair forced." -ForegroundColor Yellow
+        }
     }
 
     $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
@@ -3159,7 +3230,12 @@ try {
     $packageLayout = Resolve-PackageLayout -Root $extractRoot -ReleaseManifest $releaseManifest
 
     if ($SourceFreeMigration) {
-        Write-Host "Source migration : runtime, docs, Codex skill, and MCP registration refresh forced." -ForegroundColor Yellow
+        if ($preserveLocalCodexInstructions) {
+            Write-Host "Source migration : runtime, docs, and MCP registration refresh forced; Codex instructions preserved by policy." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "Source migration : runtime, docs, Codex skill, and MCP registration refresh forced." -ForegroundColor Yellow
+        }
     }
     else {
         if (Test-DirectoryPayloadUnchanged -Manifest $releaseManifest -ComponentKey "runtimePayload" -PackageTarget $PackageTarget) {
@@ -3190,6 +3266,8 @@ try {
             -PackageTarget $PackageTarget `
             -ServerTarget $ServerTarget `
             -UserProfileRoot $env:USERPROFILE `
+            -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
+            -SkipCodexUserIntegration:$SkipCodexUserIntegration `
             -Commit
         Write-Host ("Source cleanup  : removed {0} pre-install source/developer artifact item(s); {1} failed." -f $sourceFreeMigrationPreCleanup.removedCount, $sourceFreeMigrationPreCleanup.failedCount) -ForegroundColor Yellow
         if ([int]$sourceFreeMigrationPreCleanup.failedCount -gt 0) {
@@ -3248,6 +3326,7 @@ try {
             InstallRoot = $InstallRoot
             ServerTarget = $ServerTarget
             RevitInstallRoot = $RevitInstallRoot
+            CodexInstructionPolicy = $CodexInstructionPolicy
         }
         if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
             $installArgs["WorkspaceAgentsTarget"] = $WorkspaceAgentsTarget
@@ -3345,6 +3424,8 @@ try {
             -PackageTarget $PackageTarget `
             -ServerTarget $ServerTarget `
             -UserProfileRoot $env:USERPROFILE `
+            -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
+            -SkipCodexUserIntegration:$SkipCodexUserIntegration `
             -Commit
         Write-Host ("Source verify   : remaining managed source/developer artifact item(s): {0}; cleanup failures: {1}" -f $sourceFreeMigrationPostCleanup.remainingCount, $sourceFreeMigrationPostCleanup.failedCount) -ForegroundColor Yellow
         if ([int]$sourceFreeMigrationPostCleanup.failedCount -gt 0 -or [int]$sourceFreeMigrationPostCleanup.remainingCount -gt 0) {
@@ -3355,6 +3436,8 @@ try {
     $sourceFreeMigrationState = if ($SourceFreeMigration) {
         [ordered]@{
             enabled = $true
+            codexInstructionPolicy = $CodexInstructionPolicy
+            codexInstructionCleanupSkipped = [bool]$preserveLocalCodexInstructions
             preCleanupArtifactCount = if ($sourceFreeMigrationPreCleanup) { [int]$sourceFreeMigrationPreCleanup.artifactCount } else { 0 }
             preCleanupRemovedCount = if ($sourceFreeMigrationPreCleanup) { [int]$sourceFreeMigrationPreCleanup.removedCount } else { 0 }
             preCleanupFailedCount = if ($sourceFreeMigrationPreCleanup) { [int]$sourceFreeMigrationPreCleanup.failedCount } else { 0 }
@@ -3407,6 +3490,8 @@ try {
         license = $script:RevitMcpLicense
         sourceFreeMigration = $sourceFreeMigrationState
         updaterVersion = $updaterVersion
+        codexInstructionPolicy = $CodexInstructionPolicy
+        machineRole = $MachineRole
         skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
         paths = [ordered]@{
             installRoot = $InstallRoot

@@ -12,6 +12,10 @@ function Get-RevitMcpSourceFreeManagedRoots {
 
         [string]$UserProfileRoot = "",
 
+        [switch]$PreserveLocalCodexInstructions,
+
+        [switch]$SkipCodexUserIntegration,
+
         [switch]$SkipBackups
     )
 
@@ -29,10 +33,13 @@ function Get-RevitMcpSourceFreeManagedRoots {
 
     $roots.Add([pscustomobject]@{ Label = "managed package"; Path = $PackageTarget; Kind = "package" })
     $roots.Add([pscustomobject]@{ Label = "runtime MCP server"; Path = $ServerTarget; Kind = "runtime" })
-    $roots.Add([pscustomobject]@{ Label = "machine Codex skill"; Path = (Join-Path $InstallRoot "codex\skills\revit-mcp"); Kind = "codexSkill" })
 
-    if (-not [string]::IsNullOrWhiteSpace($UserProfileRoot)) {
-        $roots.Add([pscustomobject]@{ Label = "user Codex skill"; Path = (Join-Path $UserProfileRoot ".codex\skills\revit-mcp"); Kind = "codexSkill" })
+    if (-not $PreserveLocalCodexInstructions) {
+        $roots.Add([pscustomobject]@{ Label = "machine Codex skill"; Path = (Join-Path $InstallRoot "codex\skills\revit-mcp"); Kind = "codexSkill" })
+
+        if ((-not $SkipCodexUserIntegration) -and -not [string]::IsNullOrWhiteSpace($UserProfileRoot)) {
+            $roots.Add([pscustomobject]@{ Label = "user Codex skill"; Path = (Join-Path $UserProfileRoot ".codex\skills\revit-mcp"); Kind = "codexSkill" })
+        }
     }
 
     if (-not $SkipBackups) {
@@ -165,6 +172,10 @@ function Get-RevitMcpSourceFreeArtifactInventory {
 
         [string]$UserProfileRoot = "",
 
+        [switch]$PreserveLocalCodexInstructions,
+
+        [switch]$SkipCodexUserIntegration,
+
         [switch]$SkipBackups
     )
 
@@ -179,7 +190,7 @@ function Get-RevitMcpSourceFreeArtifactInventory {
     }
 
     $artifacts = [System.Collections.Generic.List[object]]::new()
-    foreach ($rootInfo in Get-RevitMcpSourceFreeManagedRoots -InstallRoot $InstallRoot -PackageTarget $PackageTarget -ServerTarget $ServerTarget -UserProfileRoot $UserProfileRoot -SkipBackups:$SkipBackups) {
+    foreach ($rootInfo in Get-RevitMcpSourceFreeManagedRoots -InstallRoot $InstallRoot -PackageTarget $PackageTarget -ServerTarget $ServerTarget -UserProfileRoot $UserProfileRoot -PreserveLocalCodexInstructions:$PreserveLocalCodexInstructions -SkipCodexUserIntegration:$SkipCodexUserIntegration -SkipBackups:$SkipBackups) {
         $rootPath = [string]$rootInfo.Path
         if ([string]::IsNullOrWhiteSpace($rootPath) -or -not (Test-Path -LiteralPath $rootPath -PathType Container)) {
             continue
@@ -252,12 +263,16 @@ function Invoke-RevitMcpSourceFreeArtifactCleanup {
 
         [string]$UserProfileRoot = "",
 
+        [switch]$PreserveLocalCodexInstructions,
+
+        [switch]$SkipCodexUserIntegration,
+
         [switch]$SkipBackups,
 
         [switch]$Commit
     )
 
-    $artifacts = @(Get-RevitMcpSourceFreeArtifactInventory -InstallRoot $InstallRoot -PackageTarget $PackageTarget -ServerTarget $ServerTarget -UserProfileRoot $UserProfileRoot -SkipBackups:$SkipBackups)
+    $artifacts = @(Get-RevitMcpSourceFreeArtifactInventory -InstallRoot $InstallRoot -PackageTarget $PackageTarget -ServerTarget $ServerTarget -UserProfileRoot $UserProfileRoot -PreserveLocalCodexInstructions:$PreserveLocalCodexInstructions -SkipCodexUserIntegration:$SkipCodexUserIntegration -SkipBackups:$SkipBackups)
     $removed = [System.Collections.Generic.List[object]]::new()
     $failed = [System.Collections.Generic.List[object]]::new()
 
@@ -287,7 +302,7 @@ function Invoke-RevitMcpSourceFreeArtifactCleanup {
     }
 
     $remaining = @(if ($Commit) {
-            Get-RevitMcpSourceFreeArtifactInventory -InstallRoot $InstallRoot -PackageTarget $PackageTarget -ServerTarget $ServerTarget -UserProfileRoot $UserProfileRoot -SkipBackups:$SkipBackups
+            Get-RevitMcpSourceFreeArtifactInventory -InstallRoot $InstallRoot -PackageTarget $PackageTarget -ServerTarget $ServerTarget -UserProfileRoot $UserProfileRoot -PreserveLocalCodexInstructions:$PreserveLocalCodexInstructions -SkipCodexUserIntegration:$SkipCodexUserIntegration -SkipBackups:$SkipBackups
         }
         else {
             $artifacts
@@ -296,6 +311,7 @@ function Invoke-RevitMcpSourceFreeArtifactCleanup {
     return [pscustomobject][ordered]@{
         mode = if ($Commit) { "commit" } else { "dryRun" }
         success = ($failed.Count -eq 0 -and $remaining.Count -eq 0)
+        codexInstructionCleanupSkipped = [bool]$PreserveLocalCodexInstructions
         artifactCount = $artifacts.Count
         removedCount = $removed.Count
         failedCount = $failed.Count

@@ -285,6 +285,7 @@ try {
             "AllUsersAddinRoot",
             "LegacyServerTargets",
             "WorkspaceAgentsTarget",
+            "CodexInstructionPolicy",
             "SkipCodexSkillInstall",
             "SkipCodexUserIntegration",
             "SkipLegacyCleanup",
@@ -297,7 +298,7 @@ try {
         Assert-True ($installerParams -contains $name) "install-self-contained.ps1 lost public parameter -$name."
     }
     $updaterTaskParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
-    foreach ($name in @("ChannelManifestPath", "RunNow", "ForceUpdate")) {
+    foreach ($name in @("ChannelManifestPath", "RunNow", "ForceUpdate", "CodexInstructionPolicy")) {
         Assert-True ($updaterTaskParams -contains $name) "install-updater-task.ps1 lost public parameter -$name."
     }
 
@@ -310,6 +311,7 @@ try {
     Assert-True ($guiText -match '\$localUpdaterPath = Join-Path \$workRoot "update-from-nas\.ps1"' -and $guiText -match '\$hasLocalUpdater') "GUI update action must prefer the local trusted updater for installed workstations."
     Assert-True ($guiText -match '\$useDirectUpdate = \(\$Operation -eq "update"' -and $guiText -match '\$runSourceFreeMigration') "GUI must reserve direct updater execution for normal updates and explicit source-free migration."
     Assert-True ($guiText -match '"-File", \$directUpdaterPath') "Normal GUI updates must run update-from-nas.ps1 directly."
+    Assert-True ($guiText -match '"-CodexInstructionPolicy", \$codexInstructionPolicy' -and $guiText -match '-PreserveLocalCodexInstructions:\$preserveLocalCodexInstructions') "GUI direct updates and migration inventory must honor updater-config Codex instruction policy."
     Assert-True ($guiText -match 'Source-free migration requires the local trusted updater' -and $guiText -match 'local trusted updater was not found') "GUI must not run source-free migration or installed updates through an unpinned NAS updater."
     Assert-True ($guiText.IndexOf('No update is available.') -lt $guiText.IndexOf('This workstation has an installed revAgent package')) "GUI should report no-op update status before warning about a missing local updater."
     Assert-True ($guiText -match '"-File", \$installerPath') "First install and repair must still use install-updater-task.ps1."
@@ -335,6 +337,8 @@ try {
     Assert-True ($updateText -match '\$installArgs\["SkipRuntimePayloadInstall"\] = \$true') "Updater must pass runtime skip to the self-contained installer."
     Assert-True ($updateText -match 'ComponentKey "docsServerPayload"') "Updater must detect unchanged docs payloads from the release manifest."
     Assert-True ($updateText -match '\$installArgs\["SkipCodexSkillInstall"\] = \$true') "Updater must skip unchanged Codex skill integration when the existing install is present."
+    Assert-True ($updateText -match '\$CodexInstructionPolicy = Resolve-CodexInstructionPolicy' -and $updateText -match 'CodexInstructionPolicy = \$CodexInstructionPolicy') "Updater must resolve Codex instruction policy and pass it to the self-contained installer."
+    Assert-True ($updateText -match 'codexInstructionPolicy = \$CodexInstructionPolicy' -and $updateText -match 'codexInstructionCleanupSkipped') "Updater reports and installed state must expose Codex instruction policy behavior."
     Assert-True ($updateText -match 'Codex MCP registration: skipped; runtime/docs entry points unchanged') "Updater must skip MCP registration when runtime/docs entry points are unchanged."
     Assert-True ($updateText -match 'Revit API index: skipped; docs payload unchanged') "Updater must skip docs index rebuild when docs payload is unchanged and the cache exists."
     Assert-True ($updateText -match 'Fast update path : package/updater metadata only; self-contained installer skipped') "Updater must bypass the self-contained installer when all payload surfaces are unchanged."
@@ -961,6 +965,7 @@ try {
     Assert-True ($installTaskText -notmatch 'RepetitionInterval') "Updater scheduled task must not repeat through the day."
     Assert-True ($installTaskText -notmatch 'StartWhenAvailable') "Updater scheduled task must not start immediately for a missed noon trigger during GUI RunNow installs."
     Assert-True ($installTaskText -match 'dailyAt = \$DailyAt') "Updater config must persist the daily check time for future repairs."
+    Assert-True ($installTaskText -match 'codexInstructionPolicy = \$CodexInstructionPolicy' -and $installTaskText -match 'Resolve-CodexInstructionPolicy') "Updater config must persist the Codex instruction policy for future repairs."
     Assert-True ($installTaskText -match 'Task schedule\s+: daily at \$DailyAt') "Updater install output must report the daily schedule."
     Assert-True ($installTaskText -match '"revAgent Auto Update\.vbs"') "Startup fallback reminder must use the revAgent product name."
     Assert-True ($installTaskText -match 'Revit MCP Auto Update\.cmd", "Revit MCP Auto Update\.vbs"') "Startup fallback must remove legacy Revit MCP reminder launchers."
@@ -1074,6 +1079,9 @@ try {
     Assert-True ($installerText -notmatch 'Remove-Item -LiteralPath \$configDestination -Recurse -Force') "Self-contained installer must not delete local config because that removes pinned release keys."
     Assert-True ($installerText -match 'Copy-RevitMcpRuntimeUserPayload') "Installer must copy only the runtime user payload."
     Assert-True ($installerText -match 'codexUserSourceRoot') "Installer must source Codex orchestration from the user pack."
+    Assert-True ($installerText -match 'Resolve-CodexInstructionPolicy' -and $installerText -match 'Codex instructions: preserved local developer instruction surface by policy') "Installer must support preserve-local Codex instruction policy."
+    Assert-True ($installerText -match 'Source cleanup\s+: Codex instruction roots skipped by preserve-local policy') "Installer source cleanup must skip Codex instruction roots under preserve-local policy."
+    Assert-True ($installerText -match 'if \(-not \$SkipCodexUserIntegration\)' -and $installerText -match '\$managedRoots\.Add\(\$codexSkillTarget\)') "Installer source cleanup must not scan the user Codex skill root when user integration is skipped."
     Assert-True ($installerText -match 'Remove-RevitMcpManagedSourceLeakArtifacts') "Installer must clean managed source/developer artifact leaks."
     Assert-True ($installerText -match 'if \(-not \$SkipRuntimePayloadInstall -and -not \[string\]::IsNullOrWhiteSpace\(\$ServerTarget\)\)' -and $installerText -match 'Test-RevitMcpRuntimeDirectory -Path \$ServerTarget') "Installer source cleanup must honor runtime skip and validate ServerTarget before scanning it."
     Assert-True ($installerText -match 'Get-ChildItem -LiteralPath \$root -Recurse -Directory') "Installer source cleanup must recursively scan managed install roots."

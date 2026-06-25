@@ -26,6 +26,9 @@ param(
     [string]$ProxyUrl = "http://192.168.90.10:6588",
     [string]$ProxyBypass = "<local>",
     [string]$CodexWorkspaceRoot = "C:\Projects",
+    [ValidateSet("", "managed-user-pack", "preserve-local")]
+    [string]$CodexInstructionPolicy = "",
+    [string]$MachineRole = "",
     [string[]]$LegacyServerTargets = @(),
     [string]$ReportsRoot = "",
     [string]$TaskName = "revAgent Auto Update",
@@ -192,6 +195,65 @@ function Read-OptionalJsonFile {
     }
 }
 
+function Get-JsonPropertyString {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Name)) {
+        return ""
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return ""
+    }
+
+    return [string]$property.Value
+}
+
+function Resolve-CodexInstructionPolicy {
+    param(
+        [string]$RequestedPolicy,
+        [object]$PreviousConfig
+    )
+
+    $policy = $RequestedPolicy
+    if ([string]::IsNullOrWhiteSpace($policy)) {
+        $policy = Get-JsonPropertyString -Object $PreviousConfig -Name "codexInstructionPolicy"
+    }
+    if ([string]::IsNullOrWhiteSpace($policy) -and -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_CODEX_INSTRUCTION_POLICY)) {
+        $policy = [string]$env:REVIT_MCP_CODEX_INSTRUCTION_POLICY
+    }
+    if ([string]::IsNullOrWhiteSpace($policy)) {
+        $policy = "managed-user-pack"
+    }
+
+    $normalized = $policy.Trim().ToLowerInvariant()
+    if ($normalized -notin @("managed-user-pack", "preserve-local")) {
+        throw "Unsupported CodexInstructionPolicy '$policy'. Use managed-user-pack or preserve-local."
+    }
+
+    return $normalized
+}
+
+function Resolve-MachineRole {
+    param(
+        [string]$RequestedRole,
+        [object]$PreviousConfig
+    )
+
+    $role = $RequestedRole
+    if ([string]::IsNullOrWhiteSpace($role)) {
+        $role = Get-JsonPropertyString -Object $PreviousConfig -Name "machineRole"
+    }
+    if ([string]::IsNullOrWhiteSpace($role) -and -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_MACHINE_ROLE)) {
+        $role = [string]$env:REVIT_MCP_MACHINE_ROLE
+    }
+
+    return $role
+}
+
 function Get-EffectiveInstallOperationMethod {
     if (-not [string]::IsNullOrWhiteSpace($OperationMethod)) {
         return $OperationMethod
@@ -234,6 +296,8 @@ function Set-RevitMcpInstallRunReport {
         operationMethod = $script:RevitMcpOperationMethod
         status = $Status
         message = $Message
+        codexInstructionPolicy = $CodexInstructionPolicy
+        machineRole = $MachineRole
         computerName = $env:COMPUTERNAME
         userName = $env:USERNAME
         atUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -272,6 +336,8 @@ function Set-RevitMcpInstallRunReport {
             revitPayloadChanged = $null
             fastPackageOnlyUpdate = $false
             runSelfContainedInstaller = $true
+            codexInstructionPolicy = $CodexInstructionPolicy
+            machineRole = $MachineRole
         }
         paths = [ordered]@{
             installRoot = $InstallRoot
@@ -1004,6 +1070,8 @@ $localVersionTool = Join-Path $WorkRoot "show-installed-version.ps1"
 $localMigrationTool = Join-Path $WorkRoot "migrate-source-free-install.ps1"
 $configPath = Join-Path $WorkRoot "updater-config.json"
 $previousConfig = Read-OptionalJsonFile -Path $configPath
+$CodexInstructionPolicy = Resolve-CodexInstructionPolicy -RequestedPolicy $CodexInstructionPolicy -PreviousConfig $previousConfig
+$MachineRole = Resolve-MachineRole -RequestedRole $MachineRole -PreviousConfig $previousConfig
 $previousDistributionIntegrity = if ($previousConfig -and $previousConfig.distributionIntegrity) { $previousConfig.distributionIntegrity } else { $null }
 $previousTrustedReleaseKeysPath = if ($previousDistributionIntegrity -and $previousDistributionIntegrity.trustedKeysPath) { [string]$previousDistributionIntegrity.trustedKeysPath } else { "" }
 $previousReleaseIntegrityPinned = $false
@@ -1077,6 +1145,7 @@ $config = [ordered]@{
     proxyUrl = $ProxyUrl
     proxyBypass = $ProxyBypass
     codexWorkspaceRoot = $CodexWorkspaceRoot
+    codexInstructionPolicy = $CodexInstructionPolicy
     legacyServerTargets = $LegacyServerTargets
     reportsRoot = $ReportsRoot
     skipNpmInstall = [bool]$SkipNpmInstall
@@ -1092,6 +1161,9 @@ $config = [ordered]@{
     installLogPath = $script:RevitMcpLogPath
     installOperationMethod = $script:RevitMcpOperationMethod
     installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+}
+if (-not [string]::IsNullOrWhiteSpace($MachineRole)) {
+    $config["machineRole"] = $MachineRole
 }
 if ((Test-Path -LiteralPath $localTrustedReleaseKeysPath -PathType Leaf) -or $previousReleaseIntegrityPinned) {
     $config["distributionIntegrity"] = [ordered]@{
