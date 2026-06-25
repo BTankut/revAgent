@@ -34,6 +34,8 @@ on:
         default: false
 
 permissions:
+  actions: read
+  checks: read
   contents: read
 
 concurrency:
@@ -54,6 +56,89 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+
+      - name: Validate main commit gates before production publish
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_nas }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVAGENT_REQUIRED_CHECKS: Engineering gates
+          REVAGENT_COMMIT_GATE_TIMEOUT_SECONDS: "1200"
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $requiredChecks = @(
+            $env:REVAGENT_REQUIRED_CHECKS -split "," |
+              ForEach-Object { $_.Trim() } |
+              Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          )
+          if ($requiredChecks.Count -eq 0) {
+            throw "No required commit checks were configured for production publish."
+          }
+
+          $timeoutSeconds = [int]$env:REVAGENT_COMMIT_GATE_TIMEOUT_SECONDS
+          if ($timeoutSeconds -lt 1) {
+            $timeoutSeconds = 1200
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/commits/$env:GITHUB_SHA/check-runs?per_page=100"
+          $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
+
+          while ($true) {
+            $response = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers
+            $checkRuns = @($response.check_runs)
+            $missing = [System.Collections.Generic.List[string]]::new()
+            $pending = [System.Collections.Generic.List[string]]::new()
+            $failed = [System.Collections.Generic.List[string]]::new()
+
+            foreach ($requiredCheck in $requiredChecks) {
+              $latest = @(
+                $checkRuns |
+                  Where-Object { $_.name -eq $requiredCheck } |
+                  Sort-Object `
+                    @{ Expression = { if ($_.started_at) { [DateTime]$_.started_at } else { [DateTime]::MinValue } }; Descending = $true },
+                    @{ Expression = { if ($_.completed_at) { [DateTime]$_.completed_at } else { [DateTime]::MinValue } }; Descending = $true }
+              ) | Select-Object -First 1
+
+              if (-not $latest) {
+                $missing.Add($requiredCheck) | Out-Null
+                continue
+              }
+
+              if ($latest.status -ne "completed") {
+                $pending.Add("$requiredCheck status=$($latest.status)") | Out-Null
+                continue
+              }
+
+              if ($latest.conclusion -ne "success") {
+                $failed.Add("$requiredCheck conclusion=$($latest.conclusion) url=$($latest.html_url)") | Out-Null
+              }
+            }
+
+            if ($failed.Count -gt 0) {
+              throw "Production publish blocked by failed commit check(s): $($failed -join '; ')"
+            }
+
+            if ($missing.Count -eq 0 -and $pending.Count -eq 0) {
+              Write-Host "Production publish commit gates passed: $($requiredChecks -join ', ')"
+              break
+            }
+
+            if ([DateTime]::UtcNow -ge $deadline) {
+              $parts = @()
+              if ($missing.Count -gt 0) { $parts += "missing: $($missing -join ', ')" }
+              if ($pending.Count -gt 0) { $parts += "pending: $($pending -join ', ')" }
+              throw "Production publish blocked while waiting for commit check(s): $($parts -join '; ')"
+            }
+
+            Write-Host "Waiting for production publish commit gates. Missing: $($missing -join ', '); pending: $($pending -join ', ')"
+            Start-Sleep -Seconds 15
+          }
 
       - name: Build and validate signed release root
         id: build

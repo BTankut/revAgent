@@ -8,11 +8,16 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      runner_labels_json:
+        description: 'JSON array of runner labels. Defaults to the office self-hosted Windows runner to avoid GitHub-hosted Actions budget limits.'
+        required: true
+        default: '["self-hosted","Windows","revagent-cd"]'
 
 jobs:
   engineering-gates:
     name: Engineering gates
-    runs-on: windows-latest
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
 
     steps:
       - name: Checkout
