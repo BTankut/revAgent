@@ -12,6 +12,11 @@ All notable revAgent workstation deployment changes are tracked here.
   publish now requires manual workflow dispatch plus publish-time release
   sequence checks, explicit rollback/legacy-bootstrap authorization, and
   rollback backups for channel metadata and replaced payload directories.
+- Preserved pinned local updater config during fast source-free updates so
+  `release-trusted-keys.json` is not deleted when the release ZIP only carries
+  general config, and made the dashboard recover installed-version display from
+  the latest successful install/repair report when a later failed update report
+  has no version fields.
 - Added signed source-free CD automation: a protected GitHub Actions workflow
   can build a signed source-free release root from `main`, preserve that exact
   release root in local runner staging, and publish it to NAS only when the

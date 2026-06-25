@@ -73,16 +73,30 @@ try {
     schemaVersion: "revagent.machine-report.v1",
     computerName: "CLOSEDPC",
     userName: "Closed",
-    atUtc: now.toISOString(),
-    status: "updated",
+    atUtc: new Date(now.getTime() + 1000).toISOString(),
+    status: "failed",
     operation: "update",
-    operationMethod: "old-channel",
-    installedVersion: "2026.05.31.100-oldbuild",
-    targetVersion: "2026.05.31.100-oldbuild",
+    operationMethod: "scheduled-update",
+    message: "Trusted release keys are configured but could not be loaded.",
     diagnostics: {
-      fastPackageOnlyUpdate: true,
+      fastPackageOnlyUpdate: false,
       revitPayloadChanged: false,
       deferredForRevitClose: false,
+    },
+  });
+
+  writeJson(path.join(reportsRoot, "machines", "CLOSEDPC", "reinstall-latest.json"), {
+    schemaVersion: "revagent.machine-report.v1",
+    computerName: "CLOSEDPC",
+    userName: "Closed",
+    atUtc: now.toISOString(),
+    status: "repaired",
+    operation: "reinstall",
+    operationMethod: "gui-install-repair",
+    installedVersion: version,
+    targetVersion: version,
+    localInstall: {
+      version,
     },
   });
 
@@ -456,7 +470,7 @@ try {
   assert.equal(data.overview.machineCount, 3);
   assert.equal(data.overview.liveMachineCount, 1);
   assert.equal(data.overview.activeMachineCount, 1);
-  assert.equal(data.overview.currentVersionCount, 1);
+  assert.equal(data.overview.currentVersionCount, 2);
   assert.equal(data.overview.staleMachineCount, 1);
   assert.equal(data.overview.offlineMachineCount, 1);
   assert.equal(data.overview.productionOperationCount, 9);
@@ -482,7 +496,14 @@ try {
   assert.equal(oldMachine.versionCurrent, false);
   assert.equal(oldMachine.targetVersion, version);
   assert.equal(oldMachine.reportedTargetVersion, "2026.05.31.100-oldbuild");
+  assert.equal(closedMachine.state, "failed");
   assert.equal(closedMachine.connectionState, "offline");
+  assert.equal(closedMachine.updateState, "failed");
+  assert.equal(closedMachine.versionState, "upToDate");
+  assert.equal(closedMachine.installedVersion, version);
+  assert.equal(closedMachine.versionCurrent, true);
+  assert.equal(closedMachine.versionFallback.status, "repaired");
+  assert.equal(closedMachine.versionFallback.operation, "reinstall");
   assert.equal(data.activity.length, 9);
   assert.equal(data.activity[0].taskName, "smoke status cleanup");
   assert.equal(data.activity[0].phase, "completed");
