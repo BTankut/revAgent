@@ -22,12 +22,31 @@ permissions:
 jobs:
   review:
     if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, revagent-cd]
     steps:
       - name: Checkout PR
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
+
+      - name: Prefer Git Bash on Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $gitBashDirs = @(
+            (Join-Path $env:ProgramFiles "Git\bin"),
+            (Join-Path $env:ProgramFiles "Git\usr\bin")
+          )
+          $found = $false
+          foreach ($dir in $gitBashDirs) {
+            if (Test-Path -LiteralPath (Join-Path $dir "bash.exe") -PathType Leaf) {
+              $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              $found = $true
+            }
+          }
+          if (-not $found) {
+            throw "Git Bash was not found on the self-hosted runner."
+          }
 
       - name: Claude PR review
         uses: anthropics/claude-code-action@v1
