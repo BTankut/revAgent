@@ -93,11 +93,58 @@ function Read-JsonFile {
     }
 }
 
+function Get-JsonPropertyString {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Name)) {
+        return ""
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return ""
+    }
+
+    return [string]$property.Value
+}
+
+function Get-CodexInstructionPolicyForGui {
+    $config = Read-JsonFile -Path $configPath
+    $policy = Get-JsonPropertyString -Object $config -Name "codexInstructionPolicy"
+    if ([string]::IsNullOrWhiteSpace($policy) -and -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_CODEX_INSTRUCTION_POLICY)) {
+        $policy = [string]$env:REVIT_MCP_CODEX_INSTRUCTION_POLICY
+    }
+    if ([string]::IsNullOrWhiteSpace($policy)) {
+        $policy = "managed-user-pack"
+    }
+
+    $normalized = $policy.Trim().ToLowerInvariant()
+    if ($normalized -notin @("managed-user-pack", "preserve-local")) {
+        return "managed-user-pack"
+    }
+
+    return $normalized
+}
+
+function Get-MachineRoleForGui {
+    $config = Read-JsonFile -Path $configPath
+    $role = Get-JsonPropertyString -Object $config -Name "machineRole"
+    if ([string]::IsNullOrWhiteSpace($role) -and -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_MACHINE_ROLE)) {
+        $role = [string]$env:REVIT_MCP_MACHINE_ROLE
+    }
+
+    return $role
+}
+
 function Get-SourceFreeMigrationArtifactsForGui {
+    $preserveLocalCodexInstructions = [string]::Equals((Get-CodexInstructionPolicyForGui), "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)
     return @(Get-RevitMcpSourceFreeArtifactInventory `
             -InstallRoot $InstallRoot `
             -PackageTarget $packageTarget `
-            -ServerTarget $serverTarget)
+            -ServerTarget $serverTarget `
+            -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions)
 }
 
 function Confirm-SourceFreeMigrationForGui {
@@ -522,6 +569,8 @@ function Start-InstallerOperation {
 
     $script:ActiveLogPath = New-RunLogPath
     $script:LastLogLength = -1
+    $codexInstructionPolicy = Get-CodexInstructionPolicyForGui
+    $machineRole = Get-MachineRoleForGui
     $operationMethod = if ($runSourceFreeMigration) {
         "source-free-migration"
     }
@@ -574,6 +623,10 @@ function Start-InstallerOperation {
             "-OperationMethod", $operationMethod,
             "-LogPath", $script:ActiveLogPath
         )
+    }
+    $arguments += @("-CodexInstructionPolicy", $codexInstructionPolicy)
+    if (-not [string]::IsNullOrWhiteSpace($machineRole)) {
+        $arguments += @("-MachineRole", $machineRole)
     }
     if ($Operation -eq "restore") {
         $arguments += "-ForceUpdate"

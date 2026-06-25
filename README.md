@@ -310,6 +310,16 @@ When user-profile integration is enabled, the installer also standardizes the
 Codex memory settings in `%USERPROFILE%\.codex\config.toml` without duplicating
 existing sections or keys.
 
+Production workstations use the default Codex instruction policy
+`managed-user-pack`, which refreshes machine `SKILL.md` and `AGENTS.md` from
+`installer/codex-user`. Developer workstations that intentionally keep local
+developer Codex instructions may set `codexInstructionPolicy` to
+`preserve-local` in `updater-config.json` or pass
+`-CodexInstructionPolicy preserve-local` during install/update. That policy
+preserves only the local Codex instruction files and profile links; package
+replacement, runtime/Revit payload updates, signed release checks, source-free
+package cleanup, dashboard reports, and MCP registration still run normally.
+
 ## What the installer deploys
 
 The deployed release is an allowlisted user pack. It does not copy the repo
@@ -332,7 +342,9 @@ real system locations below:
 - Codex skill and workstation role:
   - `C:\ProgramData\DPE\RevitMCP\codex\skills\revit-mcp`
   - `C:\ProgramData\DPE\RevitMCP\codex\AGENTS.md`
-  - sourced from `installer/codex-user`, not from the developer repo root
+  - sourced from `installer/codex-user`, not from the developer repo root,
+    unless `codexInstructionPolicy` is `preserve-local` on a developer
+    workstation
 
 Before copying, the installer cleans the known revAgent/RevitMCP install
 locations it owns: the exact `mcp-servers-for-revit.addin` manifest, old
@@ -347,8 +359,10 @@ integration targets directly instead of creating timestamped backups. This
 prevents old files from surviving directory/layout changes.
 The installer also removes managed source/developer artifact leaks left by
 older packages from `ProgramData` package/runtime/Codex skill locations and
-from managed package backups. It does not delete user Codex sessions, history,
-or memory.
+from managed package backups. With `codexInstructionPolicy=preserve-local`,
+Codex instruction roots are omitted from this cleanup so local developer
+instructions are not treated as release artifacts. It does not delete user
+Codex sessions, history, or memory.
 Cleanup is guarded by path checks and does not delete Autodesk Revit program
 files, Windows system folders, Revit add-in root folders themselves, or broad
 workspace/user directories.
@@ -378,6 +392,10 @@ Commit mode calls the updater with `-SourceFreeMigration`, forces a full
 managed payload repair instead of using unchanged-payload skips, cleans managed
 source/developer artifacts, and writes a JSON report. It does not delete Codex
 sessions, history, memory, Revit models, or user project folders.
+On developer workstations with `codexInstructionPolicy=preserve-local`, the
+migration inventory and cleanup skip Codex instruction roots and record
+`codexInstructionCleanupSkipped=true`; managed package, runtime, and updater
+backup cleanup still applies.
 
 Normal stable updater entrypoints now check the same managed source/developer
 artifact inventory before install/update work starts. If artifacts remain, the

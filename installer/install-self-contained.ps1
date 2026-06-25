@@ -7,6 +7,8 @@ param(
     [string]$AllUsersAddinRoot = "",
     [string[]]$LegacyServerTargets = @(),
     [string]$WorkspaceAgentsTarget = "",
+    [ValidateSet("", "managed-user-pack", "preserve-local")]
+    [string]$CodexInstructionPolicy = "",
     [switch]$SkipCodexSkillInstall,
     [switch]$SkipCodexUserIntegration,
     [switch]$SkipLegacyCleanup,
@@ -76,6 +78,43 @@ $defaultLegacyServerTargets = @(
     "C:\Projects\mcp-server-for-revit",
     "C:\Projects\mcp-servers-for-revit"
 )
+
+function Resolve-CodexInstructionPolicy {
+    param(
+        [string]$RequestedPolicy,
+        [string]$ConfigPath
+    )
+
+    $policy = $RequestedPolicy
+    if ([string]::IsNullOrWhiteSpace($policy) -and
+        -not [string]::IsNullOrWhiteSpace($ConfigPath) -and
+        (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        try {
+            $config = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json
+            if ($config.codexInstructionPolicy) {
+                $policy = [string]$config.codexInstructionPolicy
+            }
+        }
+        catch {}
+    }
+    if ([string]::IsNullOrWhiteSpace($policy) -and -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_CODEX_INSTRUCTION_POLICY)) {
+        $policy = [string]$env:REVIT_MCP_CODEX_INSTRUCTION_POLICY
+    }
+    if ([string]::IsNullOrWhiteSpace($policy)) {
+        $policy = "managed-user-pack"
+    }
+
+    $normalized = $policy.Trim().ToLowerInvariant()
+    if ($normalized -notin @("managed-user-pack", "preserve-local")) {
+        throw "Unsupported CodexInstructionPolicy '$policy'. Use managed-user-pack or preserve-local."
+    }
+
+    return $normalized
+}
+
+$CodexInstructionPolicy = Resolve-CodexInstructionPolicy -RequestedPolicy $CodexInstructionPolicy -ConfigPath $updaterConfigPath
+$preserveLocalCodexInstructions = [string]::Equals($CodexInstructionPolicy, "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)
+
 $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
 if ($runningRevit -and -not $SkipRevitPayloadInstall) {
     throw "Close Revit before running install-self-contained.ps1. The installer replaces files under $addinRoot and cannot do that safely while Revit is running."
@@ -705,12 +744,24 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
     $managedRoots = [System.Collections.Generic.List[string]]::new()
 
     foreach ($root in @(
-            (Join-Path $InstallRoot "package"),
-            $codexMachineSkillTarget,
-            $codexSkillTarget
+            (Join-Path $InstallRoot "package")
         )) {
         if (-not [string]::IsNullOrWhiteSpace($root)) {
             $managedRoots.Add($root)
+        }
+    }
+
+    if ($preserveLocalCodexInstructions) {
+        Write-Host "Source cleanup  : Codex instruction roots skipped by preserve-local policy." -ForegroundColor Yellow
+    }
+    else {
+        if (-not [string]::IsNullOrWhiteSpace($codexMachineSkillTarget)) {
+            $managedRoots.Add($codexMachineSkillTarget)
+        }
+        if (-not $SkipCodexUserIntegration) {
+            if (-not [string]::IsNullOrWhiteSpace($codexSkillTarget)) {
+                $managedRoots.Add($codexSkillTarget)
+            }
         }
     }
 
@@ -984,60 +1035,73 @@ elseif ($SkipRevitPayloadInstall) {
 }
 
 $workspaceAgentsInstalled = $null
-if (-not $SkipCodexSkillInstall) {
-    New-Item -ItemType Directory -Path $codexMachineSkillsRoot -Force | Out-Null
-
-    if (Test-Path -LiteralPath $codexMachineSkillTarget) {
-        Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex Revit MCP skill directory" -Recurse
-    }
-
-    New-Item -ItemType Directory -Path $codexMachineSkillTarget -Force | Out-Null
-    Copy-RevitMcpFilePayload -Source (Join-Path $codexUserSourceRoot "SKILL.md") -Destination (Join-Path $codexMachineSkillTarget "SKILL.md")
-
+if ($preserveLocalCodexInstructions) {
+    Write-Host "Codex instructions: preserved local developer instruction surface by policy." -ForegroundColor Yellow
     if (-not $SkipCodexUserIntegration) {
-        New-Item -ItemType Directory -Path $codexSkillsRoot -Force | Out-Null
+        New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
+        [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $codexConfigTarget)
+        $utf8ProfilePaths = @(Set-RevitMcpPowerShellUtf8ConsoleConfig -UserProfileRoot $env:USERPROFILE -ConfigureConsoleRegistry)
+        if ($utf8ProfilePaths.Count -gt 0) {
+            Write-Host "PowerShell UTF-8 console profiles: $($utf8ProfilePaths -join '; ')"
+        }
+    }
+}
+else {
+    if (-not $SkipCodexSkillInstall) {
+        New-Item -ItemType Directory -Path $codexMachineSkillsRoot -Force | Out-Null
 
-        if (Test-Path -LiteralPath $codexSkillTarget) {
-            Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex Revit MCP skill directory" -Recurse
+        if (Test-Path -LiteralPath $codexMachineSkillTarget) {
+            Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex Revit MCP skill directory" -Recurse
         }
 
-        New-ReparsePointOrCopyDirectory -Source $codexMachineSkillTarget -Destination $codexSkillTarget
-    }
-}
+        New-Item -ItemType Directory -Path $codexMachineSkillTarget -Force | Out-Null
+        Copy-RevitMcpFilePayload -Source (Join-Path $codexUserSourceRoot "SKILL.md") -Destination (Join-Path $codexMachineSkillTarget "SKILL.md")
 
-$agentsSource = Join-Path $codexUserSourceRoot "AGENTS.md"
-if (-not (Test-Path -LiteralPath $agentsSource)) {
-    throw "Required AGENTS.md was not found: $agentsSource"
-}
+        if (-not $SkipCodexUserIntegration) {
+            New-Item -ItemType Directory -Path $codexSkillsRoot -Force | Out-Null
 
-New-Item -ItemType Directory -Path $codexMachineRoot -Force | Out-Null
-Copy-Item -LiteralPath $agentsSource -Destination $codexMachineAgentsTarget -Force
+            if (Test-Path -LiteralPath $codexSkillTarget) {
+                Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex Revit MCP skill directory" -Recurse
+            }
 
-if (-not $SkipCodexUserIntegration) {
-    New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
-
-    New-HardLinkOrCopyFile -Source $codexMachineAgentsTarget -Destination $codexAgentsTarget
-    [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $codexConfigTarget)
-    $utf8ProfilePaths = @(Set-RevitMcpPowerShellUtf8ConsoleConfig -UserProfileRoot $env:USERPROFILE -ConfigureConsoleRegistry)
-    if ($utf8ProfilePaths.Count -gt 0) {
-        Write-Host "PowerShell UTF-8 console profiles: $($utf8ProfilePaths -join '; ')"
-    }
-}
-
-if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
-    $workspaceAgentsFullPath = [System.IO.Path]::GetFullPath($WorkspaceAgentsTarget)
-    $machineAgentsFullPath = [System.IO.Path]::GetFullPath($codexMachineAgentsTarget)
-}
-
-if ((-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) -and
-    (-not [string]::Equals($workspaceAgentsFullPath, $machineAgentsFullPath, [System.StringComparison]::OrdinalIgnoreCase))) {
-    $workspaceAgentsDir = Split-Path -Parent $workspaceAgentsFullPath
-    if (-not [string]::IsNullOrWhiteSpace($workspaceAgentsDir)) {
-        New-Item -ItemType Directory -Path $workspaceAgentsDir -Force | Out-Null
+            New-ReparsePointOrCopyDirectory -Source $codexMachineSkillTarget -Destination $codexSkillTarget
+        }
     }
 
-    Copy-Item -LiteralPath $codexMachineAgentsTarget -Destination $workspaceAgentsFullPath -Force
-    $workspaceAgentsInstalled = $workspaceAgentsFullPath
+    $agentsSource = Join-Path $codexUserSourceRoot "AGENTS.md"
+    if (-not (Test-Path -LiteralPath $agentsSource)) {
+        throw "Required AGENTS.md was not found: $agentsSource"
+    }
+
+    New-Item -ItemType Directory -Path $codexMachineRoot -Force | Out-Null
+    Copy-Item -LiteralPath $agentsSource -Destination $codexMachineAgentsTarget -Force
+
+    if (-not $SkipCodexUserIntegration) {
+        New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
+
+        New-HardLinkOrCopyFile -Source $codexMachineAgentsTarget -Destination $codexAgentsTarget
+        [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $codexConfigTarget)
+        $utf8ProfilePaths = @(Set-RevitMcpPowerShellUtf8ConsoleConfig -UserProfileRoot $env:USERPROFILE -ConfigureConsoleRegistry)
+        if ($utf8ProfilePaths.Count -gt 0) {
+            Write-Host "PowerShell UTF-8 console profiles: $($utf8ProfilePaths -join '; ')"
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
+        $workspaceAgentsFullPath = [System.IO.Path]::GetFullPath($WorkspaceAgentsTarget)
+        $machineAgentsFullPath = [System.IO.Path]::GetFullPath($codexMachineAgentsTarget)
+    }
+
+    if ((-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) -and
+        (-not [string]::Equals($workspaceAgentsFullPath, $machineAgentsFullPath, [System.StringComparison]::OrdinalIgnoreCase))) {
+        $workspaceAgentsDir = Split-Path -Parent $workspaceAgentsFullPath
+        if (-not [string]::IsNullOrWhiteSpace($workspaceAgentsDir)) {
+            New-Item -ItemType Directory -Path $workspaceAgentsDir -Force | Out-Null
+        }
+
+        Copy-Item -LiteralPath $codexMachineAgentsTarget -Destination $workspaceAgentsFullPath -Force
+        $workspaceAgentsInstalled = $workspaceAgentsFullPath
+    }
 }
 
 Remove-RevitMcpManagedSourceLeakArtifacts
@@ -1124,15 +1188,26 @@ if ($SkipRuntimePayloadInstall) {
     Write-Host "Runtime payload: skipped; existing runtime files were left untouched."
 }
 Write-Host "Required docs server path: $docsServerSource"
-if (-not $SkipCodexSkillInstall) {
-    Write-Host "Machine Codex skill path: $codexMachineSkillTarget"
+Write-Host "Codex instruction policy: $CodexInstructionPolicy"
+if ($preserveLocalCodexInstructions) {
+    Write-Host "Machine Codex skill path: $codexMachineSkillTarget (preserved)"
+    Write-Host "Machine AGENTS.md: $codexMachineAgentsTarget (preserved)"
     if (-not $SkipCodexUserIntegration) {
-        Write-Host "Codex user skill integration: $codexSkillTarget"
+        Write-Host "Codex user skill integration: $codexSkillTarget (preserved)"
+        Write-Host "Codex global AGENTS.md integration: $codexAgentsTarget (preserved)"
     }
 }
-Write-Host "Machine AGENTS.md: $codexMachineAgentsTarget"
-if (-not $SkipCodexUserIntegration) {
-    Write-Host "Codex global AGENTS.md integration: $codexAgentsTarget"
+else {
+    if (-not $SkipCodexSkillInstall) {
+        Write-Host "Machine Codex skill path: $codexMachineSkillTarget"
+        if (-not $SkipCodexUserIntegration) {
+            Write-Host "Codex user skill integration: $codexSkillTarget"
+        }
+    }
+    Write-Host "Machine AGENTS.md: $codexMachineAgentsTarget"
+    if (-not $SkipCodexUserIntegration) {
+        Write-Host "Codex global AGENTS.md integration: $codexAgentsTarget"
+    }
 }
 if ($workspaceAgentsInstalled) {
     Write-Host "Workspace AGENTS.md: $workspaceAgentsInstalled"

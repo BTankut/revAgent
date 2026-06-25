@@ -25,6 +25,9 @@ param(
     [string]$ReportsRoot = "",
     [string]$UserProfileRoot = "",
     [string]$ReportPath = "",
+    [ValidateSet("", "managed-user-pack", "preserve-local")]
+    [string]$CodexInstructionPolicy = "",
+    [string]$MachineRole = "",
 
     [switch]$SkipBackups,
     [switch]$SkipNpmInstall,
@@ -79,6 +82,48 @@ function Get-RevitMcpConfigValue {
     }
 
     return [string]$property.Value
+}
+
+function Resolve-RevitMcpCodexInstructionPolicy {
+    param(
+        [string]$RequestedPolicy,
+        [object]$Config
+    )
+
+    $policy = $RequestedPolicy
+    if ([string]::IsNullOrWhiteSpace($policy)) {
+        $policy = Get-RevitMcpConfigValue -Config $Config -Name "codexInstructionPolicy"
+    }
+    if ([string]::IsNullOrWhiteSpace($policy) -and -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_CODEX_INSTRUCTION_POLICY)) {
+        $policy = [string]$env:REVIT_MCP_CODEX_INSTRUCTION_POLICY
+    }
+    if ([string]::IsNullOrWhiteSpace($policy)) {
+        $policy = "managed-user-pack"
+    }
+
+    $normalized = $policy.Trim().ToLowerInvariant()
+    if ($normalized -notin @("managed-user-pack", "preserve-local")) {
+        throw "Unsupported CodexInstructionPolicy '$policy'. Use managed-user-pack or preserve-local."
+    }
+
+    return $normalized
+}
+
+function Resolve-RevitMcpMachineRole {
+    param(
+        [string]$RequestedRole,
+        [object]$Config
+    )
+
+    $role = $RequestedRole
+    if ([string]::IsNullOrWhiteSpace($role)) {
+        $role = Get-RevitMcpConfigValue -Config $Config -Name "machineRole"
+    }
+    if ([string]::IsNullOrWhiteSpace($role) -and -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_MACHINE_ROLE)) {
+        $role = [string]$env:REVIT_MCP_MACHINE_ROLE
+    }
+
+    return $role
 }
 
 function Set-RevitMcpDefaultedPath {
@@ -260,6 +305,9 @@ $ServerTarget = Set-RevitMcpDefaultedPath -Current $requestedServerTarget -Confi
 $ChannelManifestPath = Set-RevitMcpDefaultedPath -Current $requestedChannelManifestPath -ConfigValue (Get-RevitMcpConfigValue -Config $config -Name "channelManifestPath") -Fallback ""
 $RevitInstallRoot = Set-RevitMcpDefaultedPath -Current $requestedRevitInstallRoot -ConfigValue (Get-RevitMcpConfigValue -Config $config -Name "revitInstallRoot") -Fallback ""
 $ReportsRoot = Set-RevitMcpDefaultedPath -Current $requestedReportsRoot -ConfigValue (Get-RevitMcpConfigValue -Config $config -Name "reportsRoot") -Fallback ""
+$CodexInstructionPolicy = Resolve-RevitMcpCodexInstructionPolicy -RequestedPolicy $CodexInstructionPolicy -Config $config
+$MachineRole = Resolve-RevitMcpMachineRole -RequestedRole $MachineRole -Config $config
+$preserveLocalCodexInstructions = [string]::Equals($CodexInstructionPolicy, "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)
 
 if ([string]::IsNullOrWhiteSpace($UserProfileRoot)) {
     $UserProfileRoot = $env:USERPROFILE
@@ -275,6 +323,8 @@ $beforeInventory = @(Get-RevitMcpSourceFreeArtifactInventory `
         -PackageTarget $PackageTarget `
         -ServerTarget $ServerTarget `
         -UserProfileRoot $UserProfileRoot `
+        -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
+        -SkipCodexUserIntegration:$SkipCodexUserIntegration `
         -SkipBackups:$SkipBackups)
 
 $updateExitCode = $null
@@ -317,6 +367,10 @@ if ($Mode -eq "commit") {
     Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "PackageTarget" -Value $PackageTarget
     Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ServerTarget" -Value $ServerTarget
     Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "OperationMethod" -Value "source-free-migration"
+    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "CodexInstructionPolicy" -Value $CodexInstructionPolicy
+    if (-not [string]::IsNullOrWhiteSpace($MachineRole)) {
+        Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "MachineRole" -Value $MachineRole
+    }
     Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SourceFreeMigration" -Enabled $true
     if (-not [string]::IsNullOrWhiteSpace($RevitInstallRoot)) {
         Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "RevitInstallRoot" -Value $RevitInstallRoot
@@ -355,6 +409,8 @@ $afterInventory = @(Get-RevitMcpSourceFreeArtifactInventory `
         -PackageTarget $PackageTarget `
         -ServerTarget $ServerTarget `
         -UserProfileRoot $UserProfileRoot `
+        -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
+        -SkipCodexUserIntegration:$SkipCodexUserIntegration `
         -SkipBackups:$SkipBackups)
 
 $report = [ordered]@{
@@ -364,6 +420,9 @@ $report = [ordered]@{
     startedAtUtc = $startedAtUtc
     finishedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
     success = if ($Mode -eq "dryRun") { $true } else { $afterInventory.Count -eq 0 -and [string]::IsNullOrWhiteSpace($updateError) }
+    codexInstructionPolicy = $CodexInstructionPolicy
+    codexInstructionCleanupSkipped = [bool]$preserveLocalCodexInstructions
+    machineRole = $MachineRole
     paths = [ordered]@{
         configPath = $ConfigPath
         channelManifestPath = $ChannelManifestPath

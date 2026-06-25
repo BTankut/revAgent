@@ -94,6 +94,27 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $packageTarget "src")) "Dry-run removed package source unexpectedly."
     Assert-True (Test-Path -LiteralPath (Join-Path $packageTarget "installer\revit-api-docs-mcp\scripts\build-index.ps1")) "Allowed docs build-index script must stay present."
 
+    $preserveDryRun = Invoke-RevitMcpSourceFreeArtifactCleanup `
+        -InstallRoot $installRoot `
+        -PackageTarget $packageTarget `
+        -ServerTarget $serverTarget `
+        -UserProfileRoot $userProfileRoot `
+        -PreserveLocalCodexInstructions
+    Assert-Equal $preserveDryRun.mode "dryRun" "Preserve-local source-free cleanup mode must remain dryRun by default."
+    Assert-Equal $preserveDryRun.artifactCount 6 "Preserve-local cleanup should exclude machine/user Codex skill roots from source-free artifacts."
+    Assert-True ([bool]$preserveDryRun.codexInstructionCleanupSkipped) "Preserve-local cleanup result must report skipped Codex instruction cleanup."
+    Assert-Equal (@($preserveDryRun.artifacts | Where-Object { [string]$_.rootKind -eq "codexSkill" }).Count) 0 "Preserve-local cleanup must not classify Codex skill roots as cleanup artifacts."
+
+    $skipUserDryRun = Invoke-RevitMcpSourceFreeArtifactCleanup `
+        -InstallRoot $installRoot `
+        -PackageTarget $packageTarget `
+        -ServerTarget $serverTarget `
+        -UserProfileRoot $userProfileRoot `
+        -SkipCodexUserIntegration
+    Assert-Equal $skipUserDryRun.artifactCount 7 "SkipCodexUserIntegration cleanup should exclude only the user Codex skill root from source-free artifacts."
+    Assert-Equal (@($skipUserDryRun.artifacts | Where-Object { [string]$_.rootLabel -eq "user Codex skill" }).Count) 0 "SkipCodexUserIntegration cleanup must not classify user Codex skill roots as cleanup artifacts."
+    Assert-Equal (@($skipUserDryRun.artifacts | Where-Object { [string]$_.rootLabel -eq "machine Codex skill" }).Count) 1 "SkipCodexUserIntegration cleanup must still inspect the machine Codex skill root."
+
     $reportPath = Join-Path $tempRoot "migration-dry-run-report.json"
     & (Join-Path $RepoRoot "installer\nas\migrate-source-free-install.ps1") `
         -Mode dryRun `
@@ -107,6 +128,23 @@ try {
     $report = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
     Assert-Equal ([int]$report.before.artifactCount) 8 "Migration dry-run report should include source/developer artifact count."
     Assert-Equal ([string]$report.mode) "dryRun" "Migration dry-run report should preserve mode."
+
+    $preserveReportPath = Join-Path $tempRoot "migration-preserve-dry-run-report.json"
+    & (Join-Path $RepoRoot "installer\nas\migrate-source-free-install.ps1") `
+        -Mode dryRun `
+        -InstallRoot $installRoot `
+        -WorkRoot (Join-Path $installRoot "updater") `
+        -PackageTarget $packageTarget `
+        -ServerTarget $serverTarget `
+        -UserProfileRoot $userProfileRoot `
+        -CodexInstructionPolicy preserve-local `
+        -MachineRole developer `
+        -ReportPath $preserveReportPath
+    $preserveReport = Get-Content -Raw -LiteralPath $preserveReportPath | ConvertFrom-Json
+    Assert-Equal ([string]$preserveReport.codexInstructionPolicy) "preserve-local" "Migration report should include preserve-local policy."
+    Assert-True ([bool]$preserveReport.codexInstructionCleanupSkipped) "Migration report should show that Codex instruction cleanup was skipped by policy."
+    Assert-Equal ([string]$preserveReport.machineRole) "developer" "Migration report should include descriptive machine role."
+    Assert-Equal ([int]$preserveReport.before.artifactCount) 6 "Migration preserve-local dry-run should exclude Codex skill roots from artifact count."
 
     $commit = Invoke-RevitMcpSourceFreeArtifactCleanup `
         -InstallRoot $installRoot `
@@ -153,6 +191,8 @@ param(
     [string]$OperationMethod = "",
     [string]$RevitInstallRoot = "",
     [string]$ReportsRoot = "",
+    [string]$CodexInstructionPolicy = "",
+    [string]$MachineRole = "",
     [switch]$SourceFreeMigration,
     [switch]$SkipNpmInstall,
     [switch]$SkipCodexMcpRegistration,
@@ -167,6 +207,7 @@ Start-Transcript -Path $transcriptPath -Force | Out-Null
 try {
     Write-Host "fake updater invoked"
     Write-Host "sourceFreeMigration=$([bool]$SourceFreeMigration)"
+    Write-Host "codexInstructionPolicy=$CodexInstructionPolicy"
     if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_FAKE_TASK_STATE_FILE)) {
         "Ready" | Set-Content -LiteralPath $env:REVAGENT_FAKE_TASK_STATE_FILE -Encoding ASCII
     }
@@ -178,7 +219,10 @@ exit 0
 '@
     Set-Content -LiteralPath $fakeUpdaterPath -Value $fakeUpdater -Encoding ASCII
 
-    "{}" | Set-Content -LiteralPath $harnessConfigPath -Encoding ASCII
+    ([ordered]@{
+            codexInstructionPolicy = "preserve-local"
+            machineRole = "developer"
+        } | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $harnessConfigPath -Encoding ASCII
     "{}" | Set-Content -LiteralPath $harnessChannelPath -Encoding ASCII
     "Disabled" | Set-Content -LiteralPath $fakeTaskStatePath -Encoding ASCII
 
@@ -216,8 +260,11 @@ exit 0
     $hostLine = @($fakeTranscript -split "`r?`n" | Where-Object { $_ -like "Host Application:*" } | Select-Object -First 1)[0]
     Assert-True ($hostLine -match '-File' -and $hostLine -match 'update-from-nas\.ps1') "Child updater transcript host should show the update-from-nas.ps1 -File invocation."
     Assert-True ($hostLine -notmatch 'EncodedCommand') "Child updater transcript host must not inherit the outer EncodedCommand wrapper."
+    Assert-True ($fakeTranscript -match 'codexInstructionPolicy=preserve-local') "Migration child updater should receive the preserve-local Codex instruction policy."
     $harnessReport = Get-Content -Raw -LiteralPath $harnessReportPath | ConvertFrom-Json
     Assert-True $harnessReport.success "Encoded wrapper migration harness report should succeed."
+    Assert-Equal ([string]$harnessReport.codexInstructionPolicy) "preserve-local" "Encoded wrapper migration harness report should preserve Codex instruction policy from config."
+    Assert-True ([bool]$harnessReport.codexInstructionCleanupSkipped) "Encoded wrapper migration harness report should mark Codex instruction cleanup skipped by policy."
     Assert-Equal ((Get-Content -Raw -LiteralPath $fakeTaskStatePath).Trim()) "Disabled" "Migration should preserve a previously disabled revAgent Auto Update task after the child updater runs."
     Assert-Equal ([string]$harnessReport.scheduledTask.before.state) "Disabled" "Migration report should capture the disabled scheduled task state before updater."
     Assert-True ([bool]$harnessReport.scheduledTask.restore.attempted) "Migration report should show that disabled scheduled task state was restored."
@@ -231,7 +278,7 @@ finally {
 
 Write-Host "Test source-free migration installer/updater surface"
 $migrationParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\nas\migrate-source-free-install.ps1")
-foreach ($name in @("Mode", "ConfigPath", "ChannelManifestPath", "InstallRoot", "WorkRoot", "PackageTarget", "ServerTarget", "ReportPath")) {
+foreach ($name in @("Mode", "ConfigPath", "ChannelManifestPath", "InstallRoot", "WorkRoot", "PackageTarget", "ServerTarget", "ReportPath", "CodexInstructionPolicy")) {
     Assert-True ($migrationParams -contains $name) "migrate-source-free-install.ps1 lost public parameter -$name."
 }
 
@@ -241,14 +288,21 @@ Assert-True ($migrationText -notmatch '& \$updaterPath @updateArgs') "Migration 
 Assert-True ($migrationText -match 'local trusted updater under WorkRoot' -and $migrationText -notmatch 'Join-Path \$PSScriptRoot "update-from-nas\.ps1"') "Migration commit mode must fail closed instead of falling back to a NAS-side updater."
 Assert-True ($migrationText -match 'update-from-nas\.ps1 exited with code') "Migration commit mode must treat non-zero child updater exit codes as failures."
 Assert-True ($migrationText -match 'Set-RevitMcpCurrentProcessUtf8Console') "Migration entrypoint must force UTF-8 output even when launched with -NoProfile."
+Assert-True ($migrationText -match 'Resolve-RevitMcpCodexInstructionPolicy' -and $migrationText -match 'Add-RevitMcpChildProcessParameter -Arguments \$updateArgs -Name "CodexInstructionPolicy"') "Migration must resolve Codex instruction policy and pass it to child updater."
+Assert-True ($migrationText -match '-SkipCodexUserIntegration:\$SkipCodexUserIntegration') "Migration inventory must honor SkipCodexUserIntegration when scanning source-free artifacts."
+Assert-True ($migrationText -match 'codexInstructionCleanupSkipped = \[bool\]\$preserveLocalCodexInstructions') "Migration report must expose Codex instruction cleanup skip state."
 
 $updaterParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
 Assert-True ($updaterParams -contains "SourceFreeMigration") "update-from-nas.ps1 must expose -SourceFreeMigration."
+Assert-True ($updaterParams -contains "CodexInstructionPolicy") "update-from-nas.ps1 must expose -CodexInstructionPolicy."
 
 $updaterText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
 Assert-True ($updaterText -match 'Source migration : runtime, docs, Codex skill, and MCP registration refresh forced') "Updater migration mode must force full managed payload refresh."
 Assert-True ($updaterText -match 'Invoke-RevitMcpSourceFreeArtifactCleanup') "Updater migration mode must run source-free cleanup."
 Assert-True ($updaterText -match 'sourceFreeMigration = \$sourceFreeMigrationState') "Updater installed state must include migration verification metadata."
+Assert-True ($updaterText -match 'Resolve-CodexInstructionPolicy' -and $updaterText -match 'CodexInstructionPolicy = \$CodexInstructionPolicy') "Updater must resolve and pass Codex instruction policy to the self-contained installer."
+Assert-True ($updaterText -match '-PreserveLocalCodexInstructions:\$preserveLocalCodexInstructions') "Updater must exclude preserved Codex instruction roots from source-free cleanup and guard inventories."
+Assert-True ($updaterText -match '-SkipCodexUserIntegration:\$SkipCodexUserIntegration') "Updater source-free inventories must honor SkipCodexUserIntegration."
 Assert-True ($updaterText -match '-not \$SourceFreeMigration -and \$isPackageCurrent') "Updater must not return early as current during source-free migration."
 Assert-True ($updaterText -match 'source-free-migration-required' -and $updaterText -match 'Get-RevitMcpSourceFreeArtifactInventory') "Normal updater runs must block before update when source-free migration inventory is not clean."
 Assert-True ($updaterText -match 'migrate-source-free-install\.ps1 -Mode dryRun' -and $updaterText -match 'migrate-source-free-install\.ps1 -Mode commit') "Updater migration guard must tell operators to dry-run before commit."
@@ -261,8 +315,10 @@ Assert-True ($publishText -match 'RevitMcp\.SourceFreeMigration\.psm1') "Publish
 
 $installText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\install-self-contained.ps1")
 Assert-True ($installText -match 'migrate-source-free-install\.ps1') "Self-contained installer must refresh the migration tool in the local updater folder."
+Assert-True ($installText -match '\[string\]\$CodexInstructionPolicy = ""' -and $installText -match 'preserve-local') "Self-contained installer must expose Codex instruction policy."
 
 $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
 Assert-True ($installTaskText -match 'localMigrationTool' -and $installTaskText -match 'migrate-source-free-install\.ps1') "Updater task installer must copy the migration tool locally."
+Assert-True ($installTaskText -match 'codexInstructionPolicy = \$CodexInstructionPolicy') "Updater task installer must persist Codex instruction policy."
 
 Write-Host "Source-free migration tests passed." -ForegroundColor Green

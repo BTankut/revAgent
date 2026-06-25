@@ -282,6 +282,13 @@ dashboard use.
 - Enforces the standard Codex memory settings in `%USERPROFILE%\.codex\config.toml`
   idempotently and removes legacy `.codex` backup artifacts created by older
   installers.
+- Uses `codexInstructionPolicy=managed-user-pack` by default, which refreshes
+  machine/user Codex `SKILL.md` and `AGENTS.md` from the user pack. Developer
+  workstations may set `codexInstructionPolicy=preserve-local` in
+  `updater-config.json` or pass `-CodexInstructionPolicy preserve-local` to
+  preserve local developer Codex instruction files and links while still
+  allowing runtime, Revit payload, updater, signing, report, and MCP
+  registration work.
 - Writes local and NAS report JSON files.
 - Repairs older workstation scheduled-task triggers so legacy logon/repeated
   checks are replaced by the daily 12:00 schedule.
@@ -303,7 +310,7 @@ path.
 | Updater or installer scripts only | Fast package-only update | Yes | Refreshes the managed package and updater tools, then restores the docs server dependency junction from cache. `install-self-contained.ps1` is skipped. If the fast step fails, the updater warns and falls back to the full repair/install path. |
 | Runtime MCP server/tool code | Runtime payload update | Yes, if Revit payload is unchanged | Refreshes `C:\ProgramData\DPE\RevitMCP\runtime`, checks npm fingerprints/cache, and refreshes MCP registration when entry points changed. |
 | Revit add-in, command set, command payload, or add-in manifest | Revit payload update | No | If `Revit.exe` is running, the update is deferred and the user is told to save/sync, close Revit, and run update again. |
-| `SKILL.md` or `AGENTS.md` | Codex skill/workstation role refresh | Yes, if Revit payload is unchanged | Refreshes the machine Codex payload and user-profile junction/hardlink integration. |
+| `SKILL.md` or `AGENTS.md` | Codex skill/workstation role refresh | Yes, if Revit payload is unchanged | Refreshes the machine Codex payload and user-profile junction/hardlink integration under `managed-user-pack`. Under `preserve-local`, this instruction payload is skipped and reported while other update scopes continue. |
 | Revit API docs MCP server | Docs payload update | Yes, if Revit payload is unchanged | Refreshes docs server dependencies/index only when the docs payload fingerprint changed. |
 | Mixed changes | Combined path | Depends on Revit payload | Any Revit payload change makes the release Revit-close-required. Non-Revit changes are applied together after that gate passes. |
 
@@ -418,6 +425,11 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   inventory is already clean, migration does not run again. Non-GUI updater runs
   still report `source-free-migration-required` and stop instead of replacing
   the package without explicit migration mode.
+- On developer workstations with `codexInstructionPolicy=preserve-local`, the
+  migration inventory and cleanup omit local Codex instruction roots and report
+  `codexInstructionCleanupSkipped=true`. This is not a source-free bypass for
+  production workstations; package/runtime/updater backup cleanup and signed
+  release verification still apply.
 - Already-current update checks return before proxy, scheduled-task,
   Node/Codex Desktop, and npm preparation work after the lightweight Codex
   config/backup hygiene step.

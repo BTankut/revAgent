@@ -845,17 +845,30 @@ manifests, Revit DLL payloads, installer/updater helpers, release metadata, and
 managed debug-symbol, or unhardened JavaScript artifacts are detected in the
 staged package.
 
+Production machines must stay on the default `codexInstructionPolicy` value
+`managed-user-pack`, so installed Codex `SKILL.md` and `AGENTS.md` come from
+`installer/codex-user`. A developer workstation may be marked with
+`codexInstructionPolicy=preserve-local` and optional `machineRole=developer` in
+`updater-config.json`. That policy preserves local machine/user Codex
+instruction files and their hardlink/junction integration only; it must not be
+used as a source-free bypass for package/runtime/updater cleanup or signed
+release verification.
+
 For existing workstations that may already contain source-bearing managed
 payloads, run `migrate-source-free-install.ps1 -Mode dryRun` first. Commit mode
 launches `update-from-nas.ps1 -SourceFreeMigration` in a child PowerShell
-`-File` process, disables unchanged-payload skips, refreshes runtime/docs/Codex
-integration, cleans managed source/developer artifacts from package/runtime/Codex
-skill/updater backup locations, and writes a JSON migration report. The child
+`-File` process, disables unchanged-payload skips, refreshes runtime/docs and,
+unless policy preserves local instructions, Codex instruction integration, cleans
+managed source/developer artifacts from package/runtime/Codex skill/updater backup
+locations, and writes a JSON migration report. The child
 `-File` launch keeps updater transcript headers readable even when migration is
 orchestrated remotely. If `revAgent Auto Update` was already disabled before
 migration, commit mode restores that disabled state after the updater/installer
 refresh. It must not delete Codex sessions, memory, Revit models, or user
 project folders.
+When `codexInstructionPolicy=preserve-local`, migration omits Codex instruction
+roots from inventory/cleanup and records `codexInstructionCleanupSkipped=true`
+while still cleaning package/runtime/updater backup artifacts.
 
 Normal stable updater entrypoints, including the standalone GUI launcher, check
 the managed source/developer artifact inventory before update/repair work
@@ -1048,6 +1061,10 @@ MCP/Revit output readable in Codex PowerShell terminals. Installer, updater,
 updater-task installer, and migration entrypoints also set UTF-8 in the current
 process before writing transcript/log output, because scheduled or remote
 automation commonly launches PowerShell with `-NoProfile`.
+Under `preserve-local`, install/update leaves the existing machine AGENTS file,
+machine skill directory, user AGENTS hardlink, and user skill junction/copy in
+place. Codex memory and UTF-8 config writes remain enabled unless
+`-SkipCodexUserIntegration` is explicitly passed.
 
 Background updater notifications:
 
