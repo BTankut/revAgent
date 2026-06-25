@@ -352,6 +352,12 @@ try {
     Assert-True ($updateText -match 'diagnostics = \$Diagnostics') "Updater reports must include dashboard-ready update diagnostics."
     Assert-True ($updateText -match 'RevitMcp\.DistributionIntegrity\.psm1') "Updater must import the distribution-integrity verifier."
     Assert-True ($updateText -match 'release-trusted-keys\.json') "Updater must look for packaged public release-key config."
+    Assert-True ($updateText -match 'RevitMcp\.ConfigSync\.psm1' -and $updateText -match 'Sync-RevitMcpUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Fast updater tool refresh must use the shared config sync helper."
+    Assert-True ($updateText -notmatch 'Remove-Item -LiteralPath \$configDestination -Recurse -Force') "Fast updater tool refresh must not delete local config because that removes pinned release keys."
+    $configSyncText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.ConfigSync.psm1")
+    Assert-True ($configSyncText -match 'Mirror shipped config while preserving local trust/license material intentionally not shipped inside source-free release ZIPs') "Config sync helper must document local trust/license preservation."
+    Assert-True ($configSyncText -match '\$preserveNames' -and $configSyncText -match 'release-trusted-keys\.json' -and $configSyncText -match 'license-trusted-keys\.json') "Config sync helper must explicitly preserve known local trust/license config files."
+    Assert-True ($configSyncText -match '\$sourceNames\.Contains\(\$item\.Name\)' -and $configSyncText -match 'Copy-Item -LiteralPath \$item\.FullName -Destination \$DestinationRoot -Recurse -Force') "Config sync helper must mirror shipped config items without nesting existing directories."
     Assert-True ($updateText -match 'distributionIntegrity = \$script:RevitMcpDistributionIntegrity') "Updater reports must include distribution integrity status."
     Assert-True ($updateText -match 'Test-RevitMcpReleaseDistributionIntegrity') "Updater must evaluate release signatures through the shared integrity helper."
     Assert-True ($updateText -match '\[string\]\$DistributionIntegrityPolicy = ""') "Updater must expose an explicit distribution integrity policy override."
@@ -1064,6 +1070,8 @@ try {
     Assert-True ($installerText -match 'Set-RevitMcpPowerShellUtf8ConsoleConfig .* -ConfigureConsoleRegistry' -and $installerText -match 'PowerShell UTF-8 console profiles') "Installer must enforce UTF-8 console defaults for Codex PowerShell sessions."
     Assert-True ($installerText -match 'Set-RevitMcpCurrentProcessUtf8Console') "Self-contained installer entrypoint must force UTF-8 output even when launched with -NoProfile."
     Assert-True ($installerText -match 'Remove-CodexProfileBackupArtifacts') "Installer must clean old Codex profile backup artifacts."
+    Assert-True ($installerText -match 'RevitMcp\.ConfigSync\.psm1' -and $installerText -match 'Sync-RevitMcpUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Self-contained installer must use the shared config sync helper."
+    Assert-True ($installerText -notmatch 'Remove-Item -LiteralPath \$configDestination -Recurse -Force') "Self-contained installer must not delete local config because that removes pinned release keys."
     Assert-True ($installerText -match 'Copy-RevitMcpRuntimeUserPayload') "Installer must copy only the runtime user payload."
     Assert-True ($installerText -match 'codexUserSourceRoot') "Installer must source Codex orchestration from the user pack."
     Assert-True ($installerText -match 'Remove-RevitMcpManagedSourceLeakArtifacts') "Installer must clean managed source/developer artifact leaks."
@@ -1083,6 +1091,8 @@ try {
     Write-RevitMcpJsonFile -Path $reportPath -Value $report
     $reportJson = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
     Assert-Equal $reportJson.status "current" "Report JSON status was not written."
+    $reportingText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.Reporting.psm1")
+    Assert-True ($reportingText -match '\$operationLatestPath = Join-Path \$machineRoot \("\{0\}-latest\.json" -f \$safeOperation\)' -and $reportingText -match 'Write-RevitMcpJsonFile -Path \$operationLatestPath -Value \$published') "Machine report publishing must emit operation-specific latest files used by dashboard version fallback."
     $safePathCases = @(
         @{ input = "HAFIZE"; expected = "HAFIZE" },
         @{ input = "MARINA"; expected = "MARINA" },

@@ -178,9 +178,81 @@ function normalizeMachineName(value) {
   return String(value || "").trim().toUpperCase();
 }
 
+const VERSION_SUCCESS_STATUSES = new Set([
+  "completed",
+  "current",
+  "installed",
+  "reinstalled",
+  "repaired",
+  "success",
+  "succeeded",
+  "updated",
+]);
+
+function installedVersionFor(report) {
+  return report?.installedVersion || report?.localInstall?.version || "";
+}
+
+function targetVersionFor(report) {
+  return report?.targetVersion || report?.release?.version || "";
+}
+
+function reportTimestampMs(report) {
+  const candidates = [
+    report?.atUtc,
+    report?.reportedAtUtc,
+    report?.publishedAtUtc,
+    report?.machineReport?.publishedAtUtc,
+  ];
+  for (const candidate of candidates) {
+    const ms = toUtcMs(candidate);
+    if (ms !== null) {
+      return ms;
+    }
+  }
+  return 0;
+}
+
+function isSuccessfulVersionReport(report) {
+  const status = String(report?.status || "").toLowerCase();
+  return Boolean(installedVersionFor(report) && VERSION_SUCCESS_STATUSES.has(status));
+}
+
+function chooseVersionReport(primaryReport, candidateReports) {
+  if (installedVersionFor(primaryReport)) {
+    return primaryReport;
+  }
+  return [...(candidateReports || [])]
+    .filter(isSuccessfulVersionReport)
+    .sort((a, b) => reportTimestampMs(b) - reportTimestampMs(a))[0] || primaryReport;
+}
+
+function withVersionFallback(primaryReport, versionReport) {
+  if (!primaryReport || !versionReport || primaryReport === versionReport || installedVersionFor(primaryReport)) {
+    return primaryReport;
+  }
+  const fallbackInstalledVersion = installedVersionFor(versionReport);
+  if (!fallbackInstalledVersion) {
+    return primaryReport;
+  }
+  return {
+    ...primaryReport,
+    installedVersion: fallbackInstalledVersion,
+    targetVersion: targetVersionFor(primaryReport) || targetVersionFor(versionReport),
+    localInstall: primaryReport.localInstall || versionReport.localInstall || null,
+    versionFallback: {
+      status: versionReport.status || "",
+      operation: versionReport.operation || "",
+      operationMethod: versionReport.operationMethod || "",
+      atUtc: versionReport.atUtc || "",
+      logPath: versionReport.machineReport?.logPath || versionReport.logPath || "",
+    },
+  };
+}
+
 function chooseState(machine, live, stableVersion, now, staleSeconds, offlineSeconds) {
-  const installed = machine?.installedVersion || machine?.localInstall?.version || "";
-  const target = stableVersion || machine?.targetVersion || "";
+  const installed = installedVersionFor(machine);
+  const target = stableVersion || targetVersionFor(machine);
   const reportStatus = String(machine?.status || "").toLowerCase();
   const liveState = connectionStateFor(live, now, staleSeconds, offlineSeconds);
 
@@ -211,8 +283,8 @@ function connectionStateFor(live, now, staleSeconds, offlineSeconds) {
 }
 
 function versionStateFor(machine, stableVersion) {
-  const installed = machine?.installedVersion || machine?.localInstall?.version || "";
-  const target = stableVersion || machine?.targetVersion || "";
+  const installed = installedVersionFor(machine);
+  const target = stableVersion || targetVersionFor(machine);
   if (!installed || !target) {
     return "unknown";
   }
@@ -235,8 +307,8 @@ function updateStateFor(machine) {
 }
 
 function summarizeMachine(machineName, machineReport, liveStatus, stableVersion, now, staleSeconds, offlineSeconds) {
-  const installedVersion = machineReport?.installedVersion || machineReport?.localInstall?.version || "";
-  const reportedTargetVersion = machineReport?.targetVersion || "";
+  const installedVersion = installedVersionFor(machineReport);
+  const reportedTargetVersion = targetVersionFor(machineReport);
   const targetVersion = stableVersion || reportedTargetVersion || "";
   const liveAgeSeconds = secondsSince(liveStatus?.lastHeartbeatUtc, now);
   return {
@@ -261,6 +333,7 @@ function summarizeMachine(machineName, machineReport, liveStatus, stableVersion,
     revitPayloadChanged: machineReport?.diagnostics?.revitPayloadChanged === true,
     fastPackageOnlyUpdate: machineReport?.diagnostics?.fastPackageOnlyUpdate === true,
     logPath: machineReport?.machineReport?.logPath || machineReport?.logPath || "",
+    versionFallback: machineReport?.versionFallback || null,
     live: liveStatus ? {
       schemaVersion: liveStatus.schemaVersion,
       runtimeVersion: liveStatus.runtime?.version || "",
@@ -853,7 +926,17 @@ export function loadDashboardData(config = {}) {
   }));
 
   const machines = machineNames.map((machineName) => {
-    const machineReport = readJsonFile(path.join(machinesRoot, machineName, "latest.json"));
+    const latestMachineReport = readJsonFile(path.join(machinesRoot, machineName, "latest.json"));
+    // Keep this list aligned with Publish-RevitMcpMachineRunReport:
+    // ConvertTo-RevitMcpSafePathSegment($Operation) + "-latest.json".
+    const versionCandidateReports = [
+      readJsonFile(path.join(machinesRoot, machineName, "update-latest.json")),
+      readJsonFile(path.join(machinesRoot, machineName, "reinstall-latest.json")),
+      readJsonFile(path.join(machinesRoot, machineName, "install-latest.json")),
+      readJsonFile(path.join(machinesRoot, machineName, "source-free-migration-latest.json")),
+    ].filter(Boolean);
+    const versionReport = chooseVersionReport(latestMachineReport, versionCandidateReports);
+    const machineReport = withVersionFallback(latestMachineReport || versionReport, versionReport);
     const liveStatus = mergeLiveStatusCache(
       machineName,
       readJsonFile(path.join(liveRoot, machineName, "status.json")),

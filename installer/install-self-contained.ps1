@@ -27,6 +27,7 @@ Import-Module (Join-Path $installerLibRoot "RevitMcp.RevitVersions.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevitMcp.Permissions.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevitMcp.LogRetention.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevitMcp.CodexRegistration.psm1") -Force
+Import-Module (Join-Path $installerLibRoot "RevitMcp.ConfigSync.psm1") -Force
 Set-RevitMcpCurrentProcessUtf8Console | Out-Null
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -403,13 +404,7 @@ function Install-UpdaterToolsFromPackage {
     if (-not (Test-Path -LiteralPath $configSource -PathType Container)) {
         $configSource = Join-Path (Split-Path -Parent (Split-Path -Parent $SourceRoot)) "config"
     }
-    if (Test-Path -LiteralPath $configSource -PathType Container) {
-        $configDestination = Join-Path $DestinationRoot "config"
-        if (Test-Path -LiteralPath $configDestination) {
-            Remove-Item -LiteralPath $configDestination -Recurse -Force
-        }
-        Copy-Item -LiteralPath $configSource -Destination $configDestination -Recurse -Force
-    }
+    Sync-RevitMcpUpdaterConfigDirectory -SourceRoot $configSource -DestinationRoot (Join-Path $DestinationRoot "config")
 
     $updaterPath = Join-Path $DestinationRoot "update-from-nas.ps1"
     $versionToolPath = Join-Path $DestinationRoot "show-installed-version.ps1"

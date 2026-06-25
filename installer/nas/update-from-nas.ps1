@@ -68,6 +68,7 @@ Import-Module (Join-Path $nasLibRoot "RevitMcp.UpdatePolicy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Proxy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevitMcp.ConfigSync.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
 $script:RevitMcpDistributionIntegrityModule = Import-Module (Join-Path $nasLibRoot "RevitMcp.DistributionIntegrity.psm1") -Force -PassThru
 Import-Module (Join-Path $nasLibRoot "RevitMcp.License.psm1") -Force
@@ -2786,13 +2787,7 @@ function Install-UpdaterToolsFromPackage {
     if (-not (Test-Path -LiteralPath $configSource -PathType Container)) {
         $configSource = Join-Path (Split-Path -Parent (Split-Path -Parent $SourceRoot)) "config"
     }
-    if (Test-Path -LiteralPath $configSource -PathType Container) {
-        $configDestination = Join-Path $DestinationRoot "config"
-        if (Test-Path -LiteralPath $configDestination) {
-            Remove-Item -LiteralPath $configDestination -Recurse -Force
-        }
-        Copy-Item -LiteralPath $configSource -Destination $configDestination -Recurse -Force
-    }
+    Sync-RevitMcpUpdaterConfigDirectory -SourceRoot $configSource -DestinationRoot (Join-Path $DestinationRoot "config")
 
     $updaterPath = Join-Path $DestinationRoot "update-from-nas.ps1"
     $versionToolPath = Join-Path $DestinationRoot "show-installed-version.ps1"
