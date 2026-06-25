@@ -93,6 +93,29 @@ function Read-JsonFile {
     }
 }
 
+function Test-LocalUpdaterSupportsSourceFreeMigration {
+    param([string]$UpdaterPath)
+
+    if ([string]::IsNullOrWhiteSpace($UpdaterPath) -or -not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
+        return $false
+    }
+
+    $updaterRoot = Split-Path -Parent $UpdaterPath
+    $migrationTool = Join-Path $updaterRoot "migrate-source-free-install.ps1"
+    $migrationLib = Join-Path $updaterRoot "lib\RevitMcp.SourceFreeMigration.psm1"
+    if (-not (Test-Path -LiteralPath $migrationTool -PathType Leaf) -or -not (Test-Path -LiteralPath $migrationLib -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $updaterText = Get-Content -Raw -LiteralPath $UpdaterPath
+        return ($updaterText -match 'SourceFreeMigration')
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-JsonPropertyString {
     param(
         [object]$Object,
@@ -530,12 +553,9 @@ function Start-InstallerOperation {
     $status = Get-ChannelStatus
     $sourceFreeArtifacts = @(Get-SourceFreeMigrationArtifactsForGui)
     $runSourceFreeMigration = ($sourceFreeArtifacts.Count -gt 0)
+    $localUpdaterSupportsSourceFreeMigration = Test-LocalUpdaterSupportsSourceFreeMigration -UpdaterPath $localUpdaterPath
+    $needsSourceFreeMigrationBootstrap = ($runSourceFreeMigration -and -not $localUpdaterSupportsSourceFreeMigration)
     if ($runSourceFreeMigration) {
-        if (-not $hasLocalUpdater) {
-            [System.Windows.Forms.MessageBox]::Show("Source-free migration requires the local trusted updater, but it was not found. Run Install/Repair first to bootstrap the local updater.", "revAgent") | Out-Null
-            Set-ButtonsEnabled -Enabled $true
-            return
-        }
         if (-not (Confirm-SourceFreeMigrationForGui -Artifacts $sourceFreeArtifacts)) {
             Set-ButtonsEnabled -Enabled $true
             return
@@ -572,7 +592,7 @@ function Start-InstallerOperation {
     $codexInstructionPolicy = Get-CodexInstructionPolicyForGui
     $machineRole = Get-MachineRoleForGui
     $operationMethod = if ($runSourceFreeMigration) {
-        "source-free-migration"
+        if ($needsSourceFreeMigrationBootstrap) { "source-free-migration-bootstrap" } else { "source-free-migration" }
     }
     elseif ($Operation -eq "restore") {
         if ([string]::IsNullOrWhiteSpace($status.InstalledVersion)) { "gui-install" } else { "gui-install-repair" }
@@ -591,7 +611,8 @@ function Start-InstallerOperation {
 
     $useDirectUpdate = ($Operation -eq "update" -and
         (-not [string]::IsNullOrWhiteSpace($status.InstalledVersion) -or $runSourceFreeMigration)) -and
-        $hasLocalUpdater
+        $hasLocalUpdater -and
+        -not $needsSourceFreeMigrationBootstrap
 
     if ($useDirectUpdate) {
         $arguments = @(
@@ -631,7 +652,10 @@ function Start-InstallerOperation {
     if ($Operation -eq "restore") {
         $arguments += "-ForceUpdate"
     }
-    if ($runSourceFreeMigration) {
+    if ($needsSourceFreeMigrationBootstrap) {
+        $arguments += "-RunSourceFreeMigration"
+    }
+    elseif ($runSourceFreeMigration) {
         $arguments += "-SourceFreeMigration"
     }
 

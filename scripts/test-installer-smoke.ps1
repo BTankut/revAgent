@@ -298,7 +298,7 @@ try {
         Assert-True ($installerParams -contains $name) "install-self-contained.ps1 lost public parameter -$name."
     }
     $updaterTaskParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
-    foreach ($name in @("ChannelManifestPath", "RunNow", "ForceUpdate", "CodexInstructionPolicy")) {
+    foreach ($name in @("ChannelManifestPath", "RunNow", "ForceUpdate", "CodexInstructionPolicy", "RunSourceFreeMigration")) {
         Assert-True ($updaterTaskParams -contains $name) "install-updater-task.ps1 lost public parameter -$name."
     }
 
@@ -312,7 +312,8 @@ try {
     Assert-True ($guiText -match '\$useDirectUpdate = \(\$Operation -eq "update"' -and $guiText -match '\$runSourceFreeMigration') "GUI must reserve direct updater execution for normal updates and explicit source-free migration."
     Assert-True ($guiText -match '"-File", \$directUpdaterPath') "Normal GUI updates must run update-from-nas.ps1 directly."
     Assert-True ($guiText -match '"-CodexInstructionPolicy", \$codexInstructionPolicy' -and $guiText -match '-PreserveLocalCodexInstructions:\$preserveLocalCodexInstructions') "GUI direct updates and migration inventory must honor updater-config Codex instruction policy."
-    Assert-True ($guiText -match 'Source-free migration requires the local trusted updater' -and $guiText -match 'local trusted updater was not found') "GUI must not run source-free migration or installed updates through an unpinned NAS updater."
+    Assert-True ($guiText -match 'Test-LocalUpdaterSupportsSourceFreeMigration' -and $guiText -match '\$needsSourceFreeMigrationBootstrap') "GUI must detect older local updater tools before source-free migration."
+    Assert-True ($guiText -match '\$arguments \+= "-RunSourceFreeMigration"') "GUI must bootstrap old local updater tools and run source-free migration in one confirmed action."
     Assert-True ($guiText.IndexOf('No update is available.') -lt $guiText.IndexOf('This workstation has an installed revAgent package')) "GUI should report no-op update status before warning about a missing local updater."
     Assert-True ($guiText -match '"-File", \$installerPath') "First install and repair must still use install-updater-task.ps1."
     Assert-True ($guiText -match 'RevitMcp\.SourceFreeMigration\.psm1' -and $guiText -match 'Get-RevitMcpSourceFreeArtifactInventory') "GUI must check source-free migration inventory before install/update actions."
