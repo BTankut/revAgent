@@ -22,7 +22,7 @@ permissions:
 jobs:
   review:
     if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Windows, revagent-cd]
     steps:
       - name: Checkout PR
         uses: actions/checkout@v6
