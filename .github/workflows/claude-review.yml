@@ -1,10 +1,11 @@
 name: Claude Code Review
 
-# Substantive automated review on every PR (official "Automatic PR Code Review"
-# pattern: anthropics/claude-code-action docs/solutions.md). Not the plugin
-# slash-command: no skip-gate, no "high-signal only" funnel; always posts a
-# summary + suggestions + risks. Trigger on PR open and later pushed commits
-# so the reviewed diff always tracks the latest PR head. Model: Opus 4.8 + xhigh.
+# High-signal correctness reviewer. Posts ONLY validated, high-confidence issues;
+# stays silent (one-line LGTM) on clean diffs. Has free read-only run of the whole
+# repo (full history + blame) to follow a suspicious diff into the rest of the app.
+# Pattern: anthropics/claude-code /code-review (HIGH SIGNAL only + validate-then-filter).
+# Trigger on PR open and later pushed commits so the review tracks the latest head.
+# Model: Opus 4.8 + xhigh.
 
 on:
   pull_request:
@@ -15,8 +16,8 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
-  pull-requests: write
+  contents: read          # read-only repo + git history; NO write
+  pull-requests: write    # only to post review comments
   id-token: write
 
 jobs:
@@ -27,7 +28,7 @@ jobs:
       - name: Checkout PR
         uses: actions/checkout@v6
         with:
-          fetch-depth: 1
+          fetch-depth: 0          # full history + base branch -> git blame/log/diff base...head work
 
       - name: Prefer Git Bash on Windows
         shell: pwsh
@@ -69,39 +70,56 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           path_to_claude_code_executable: ${{ steps.resolve-claude.outputs.path }}
-          # Post inline comments immediately instead of buffering/classifying
-          # them after the session ends.
-          classify_inline_comments: "false"
+          # classify_inline_comments left at DEFAULT "true": buffers unconfirmed
+          # subagent/probe comments and filters them before posting after the session.
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
-            Perform an automated review of this pull request. The PR branch is
-            already checked out in the working directory.
+            The PR branch is checked out locally with full git history. Gather context:
+            `gh pr view` (title/body) and `gh pr diff` (the canonical changed lines).
+            Then INVESTIGATE FREELY: use Read / Grep / Glob and read-only git
+            (git log / show / blame / diff / grep) to follow any suspicious change into
+            the rest of the codebase before drawing a conclusion. Do not limit yourself
+            to the diff - verify how changed code is actually used elsewhere.
 
-            Gather context first:
-            - `gh pr view` for the title, body, and metadata.
-            - `gh pr diff` for the full diff.
+            CRITICAL: We only want HIGH SIGNAL issues. Flag an issue ONLY when, after
+            checking it against the real code, one of these clearly holds:
+            - the code will fail to compile/parse (syntax/type error, missing import,
+              unresolved reference), OR
+            - the code will definitely produce wrong results regardless of input
+              (clear logic error, broken edge case, wrong condition, off-by-one,
+              transaction/resource misuse), OR
+            - a real security, data-loss, or regression risk you can demonstrate, OR
+            - a clear, unambiguous violation of a documented project rule (quote it).
 
-            Then post EXACTLY ONE top-level comment with `gh pr comment`,
-            containing these four sections in order:
-              1. Summary - 2-5 sentences on what the PR changes.
-              2. Code quality & best practices - observations on the diff.
-              3. Suggestions & improvements - concrete, actionable, incl. minor.
-              4. Risks, edge cases, security & performance - call out anything
-                 to watch; if a section is empty, say so explicitly
-                 (e.g. "No security concerns spotted.").
+            Do NOT flag, and do NOT comment about:
+            - code style, formatting, naming, or subjective "improvements"/refactors
+            - pre-existing issues not introduced by this PR
+            - anything a linter or type-checker already catches
+            - missing tests or general coverage/quality unless a documented rule requires it
+            - issues that merely MIGHT occur depending on inputs/state you cannot verify
+            - pedantic nitpicks a senior engineer would not raise
 
-            Always produce a substantive review. NEVER reply only
-            "No issues found" and never stay silent. If there are no blocking
-            bugs, still deliver the summary and observations.
+            Before posting, re-check each issue once against the actual code. If you are
+            not certain it is real, DO NOT post it - false positives erode trust. There
+            is NO minimum number of comments and NO required sections. Silence is a valid,
+            good review.
 
-            For any line-level issue, ALSO post an inline comment via
-            `mcp__github_inline_comment__create_inline_comment` with
-            `confirmed: true`.
+            Output:
+            - For each VERIFIED issue, post ONE inline comment via
+              mcp__github_inline_comment__create_inline_comment with confirmed: true,
+              prefixed "important:" (fix before merge) or "nit:" (minor). One comment per
+              unique issue, no duplicates. Add a ```suggestion block only when applying it
+              fully fixes the issue.
+            - Post at most ~5 nits; if more, give the remaining count in the summary.
+            - Post exactly ONE top-level `gh pr comment` that OPENS with a one-line tally
+              (e.g. "2 important, 3 nits"), or exactly "No blocking issues found." when there
+              are none. Do not restate the inline comments in sections.
 
-            Only post GitHub comments. Do not output the review as a chat message.
+            Only post GitHub comments. Never emit the review as a chat message.
           claude_args: |
             --model claude-opus-4-8
             --effort xhigh
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowedTools "Read,Grep,Glob,LS,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*),Bash(git diff:*),Bash(git grep:*),Bash(rg:*),Bash(grep:*),Bash(find:*),Bash(cat:*),Bash(ls:*),Bash(head:*),Bash(tail:*),Bash(wc:*)"
+            --disallowedTools "Edit,Write,MultiEdit,Bash(git push:*),Bash(git commit:*),Bash(git add:*),Bash(rm:*)"
