@@ -75,6 +75,7 @@ revit-mcp-skill/
 |-- references/
 |-- scripts/
 |   |-- build-revit-plugin.ps1
+|   |-- check-rollout-readiness.ps1
 |   |-- start-live-dashboard.ps1
 |   |-- test-all.ps1
 |   |-- test-commandset-live.ps1
@@ -515,6 +516,7 @@ compare file mtimes.
 | Distribution canonical JSON and detached signature fixtures stay deterministic | `scripts/test-distribution-integrity.ps1` | `Engineering gates` | Does not publish, sign a real stable channel, or enable updater enforcement. |
 | Publish-path detached signing writes verifiable signature files without real NAS or production keys | `scripts/test-publish-signing.ps1` | `Engineering gates` | Uses a temporary release root and ephemeral test key only. |
 | Signed stable readiness preflight rejects unsigned, partially signed, hash-mismatched, or private-key-bearing release roots | `scripts/test-signed-stable-readiness.ps1` | `Engineering gates` | Uses a temporary release root and ephemeral test key only; does not publish to NAS or enable enforcement. |
+| Rollout readiness audit classifies machine reports, source-free evidence, version fallback, and exclusions deterministically | `scripts/test-rollout-readiness.ps1` | `Engineering gates` | Uses temporary fixture reports only; does not read NAS, update machines, or connect over SSH. |
 | Updater integrity defaults fail-closed when trusted release keys are present and keeps keys-free legacy compatibility only for bootstrap/test paths | `scripts/test-distribution-integrity.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish to NAS or include production private keys. |
 | Signed release anti-rollback and enforce-mode metadata stay valid | `scripts/test-distribution-integrity.ps1`, `scripts/test-publish-signing.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish to NAS or include production private keys. |
 | Optional signed license-seat verification stays public-key-only | `scripts/test-license-seat.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Default policy is disabled; no production license keys are included. |
@@ -726,6 +728,22 @@ Verify channels:
 ```powershell
 Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\channels\stable.json"
 ```
+
+Run the read-only rollout readiness audit before closing an office rollout or
+before telling operators that every in-scope machine is finished:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rollout-readiness.ps1 `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy" `
+  -ExpectedMachines "DESKTOP-OKNV128,EMIN,HAFIZE,MARINA,NET01,OGUZHAN,OMER,YASAR,WS3" `
+  -OutOfScopeMachines ""
+```
+
+The audit reads only `channels\stable.json`, `reports\machines`,
+`reports\live`, source-free migration reports, and copied logs. It does not
+update workstations, run migration, publish stable, or connect over SSH. Use
+`-OutputJson` for machine-readable handoff, or `-OutputPath` to write a local
+JSON snapshot for review.
 
 Publishing refreshes `tools\` on the NAS. Workstations should launch the tools
 from the NAS share, not from copied old script bodies when possible.

@@ -1,0 +1,219 @@
+<#
+.SYNOPSIS
+    CI-safe tests for the read-only rollout readiness audit.
+#>
+
+[CmdletBinding()]
+param(
+    [string]$RepoRoot = ""
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+function Assert-True {
+    param(
+        [bool]$Condition,
+        [string]$Message
+    )
+
+    if (-not $Condition) {
+        throw $Message
+    }
+}
+
+function Assert-Equal {
+    param(
+        $Actual,
+        $Expected,
+        [string]$Message
+    )
+
+    if ($Actual -ne $Expected) {
+        throw ("{0} Expected '{1}', got '{2}'." -f $Message, $Expected, $Actual)
+    }
+}
+
+function Write-TestJson {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][object]$Value
+    )
+
+    $directory = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    $Value | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+function Get-TestMachine {
+    param(
+        [object]$Result,
+        [string]$Name
+    )
+
+    $machine = @($Result.machines | Where-Object { $_.machine -eq $Name }) | Select-Object -First 1
+    if ($null -eq $machine) {
+        throw "Machine '$Name' was not found in readiness result."
+    }
+    return $machine
+}
+
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+}
+$RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
+
+$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-rollout-readiness-test-" + [Guid]::NewGuid().ToString("N"))
+$releaseRoot = Join-Path $tempRoot "release"
+$reportsRoot = Join-Path $releaseRoot "reports"
+$stableVersion = "2026.06.25.404-ef535ad3"
+$stableCommit = "ef535ad3eddb682d1da6b42de2aad5bc75ba8187"
+$nowUtc = ([datetime]"2026-06-26T13:00:00Z").ToUniversalTime()
+
+try {
+    Write-TestJson -Path (Join-Path $releaseRoot "channels\stable.json") -Value ([ordered]@{
+            version = $stableVersion
+            git = [ordered]@{
+                commit = $stableCommit
+            }
+            sha256 = "ABC123"
+            releaseSequence = 20260625193529
+        })
+
+    $net01Root = Join-Path $reportsRoot "machines\NET01"
+    Write-TestJson -Path (Join-Path $net01Root "latest.json") -Value ([ordered]@{
+            computerName = "NET01"
+            userName = "Net01"
+            status = "completed"
+            installedVersion = $stableVersion
+            targetVersion = $stableVersion
+            publishedAtUtc = $nowUtc.ToString("o")
+            diagnostics = [ordered]@{
+                sourceFreeMigration = [ordered]@{
+                    enabled = $true
+                    postCleanupRemainingCount = 0
+                    postCleanupFailedCount = 0
+                }
+            }
+        })
+    Write-TestJson -Path (Join-Path $reportsRoot "live\machines\NET01\status.json") -Value ([ordered]@{
+            schemaVersion = "revagent.live.status.v1"
+            machineName = "NET01"
+            userName = "Net01"
+            lastHeartbeatUtc = $nowUtc.ToString("o")
+        })
+
+    $eminRoot = Join-Path $reportsRoot "machines\EMIN"
+    $eminLog = Join-Path $eminRoot "logs\emin-update.log"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $eminLog) -Force | Out-Null
+    "Source verify   : remaining managed source/developer artifact item(s): 0; cleanup failures: 0" |
+        Set-Content -LiteralPath $eminLog -Encoding UTF8
+    Write-TestJson -Path (Join-Path $eminRoot "latest.json") -Value ([ordered]@{
+            computerName = "EMIN"
+            userName = "User21"
+            status = "failed"
+            targetVersion = $stableVersion
+            publishedAtUtc = $nowUtc.ToString("o")
+            machineReport = [ordered]@{
+                logPath = $eminLog
+            }
+        })
+    Write-TestJson -Path (Join-Path $eminRoot "install-latest.json") -Value ([ordered]@{
+            computerName = "EMIN"
+            userName = "User21"
+            status = "repaired"
+            localInstall = [ordered]@{
+                version = $stableVersion
+            }
+            release = [ordered]@{
+                version = $stableVersion
+            }
+            publishedAtUtc = $nowUtc.AddMinutes(-5).ToString("o")
+            machineReport = [ordered]@{
+                logPath = $eminLog
+            }
+        })
+
+    $yasarRoot = Join-Path $reportsRoot "machines\YASAR"
+    Write-TestJson -Path (Join-Path $yasarRoot "latest.json") -Value ([ordered]@{
+            computerName = "YASAR"
+            userName = "User32"
+            status = "completed"
+            installedVersion = "2026.06.25.403-old"
+            targetVersion = $stableVersion
+            publishedAtUtc = $nowUtc.ToString("o")
+        })
+
+    $legacyRoot = Join-Path $reportsRoot "machines\LEGACY"
+    Write-TestJson -Path (Join-Path $legacyRoot "latest.json") -Value ([ordered]@{
+            computerName = "LEGACY"
+            userName = "User00"
+            status = "completed"
+            installedVersion = $stableVersion
+            targetVersion = $stableVersion
+            publishedAtUtc = $nowUtc.ToString("o")
+        })
+    Write-TestJson -Path (Join-Path $legacyRoot "source-free-migration-latest.json") -Value ([ordered]@{
+            tool = "source-free-migration"
+            mode = "dryRun"
+            success = $true
+            after = [ordered]@{
+                artifactCount = 0
+            }
+        })
+
+    $result = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
+        -ReleaseRoot $releaseRoot `
+        -ReportsRoot $reportsRoot `
+        -ExpectedMachines "NET01,EMIN,YASAR,LEGACY,WS3,OLD" `
+        -OutOfScopeMachines "OLD" `
+        -NowUtc $nowUtc `
+        -OutputJson | ConvertFrom-Json
+
+    Assert-Equal $result.summary.stable.version $stableVersion "Stable version mismatch."
+    Assert-Equal $result.summary.stable.commit $stableCommit "Stable commit mismatch."
+    Assert-Equal $result.summary.stable.packageSha256 "ABC123" "Stable package hash mismatch."
+    Assert-Equal ([int]$result.summary.inScopeMachineCount) 5 "In-scope machine count mismatch."
+    Assert-Equal ([int]$result.summary.excludedMachineCount) 1 "Excluded machine count mismatch."
+    Assert-Equal ([int]$result.summary.upToDateCount) 3 "Up-to-date count mismatch."
+    Assert-Equal ([int]$result.summary.outdatedCount) 1 "Outdated count mismatch."
+    Assert-Equal ([int]$result.summary.unknownVersionCount) 1 "Unknown version count mismatch."
+    Assert-Equal ([int]$result.summary.sourceFreeVerifiedCount) 3 "Source-free verified count mismatch."
+    Assert-Equal ([int]$result.summary.sourceFreeNeedsEvidenceCount) 2 "Source-free evidence count mismatch."
+    Assert-Equal ([int]$result.summary.updateFailedCount) 1 "Update failed count mismatch."
+    Assert-Equal ([int]$result.summary.actionRequiredCount) 3 "Action count mismatch."
+    Assert-True (-not [bool]$result.summary.ready) "Fixture should not be fully ready."
+
+    $net01 = Get-TestMachine -Result $result -Name "NET01"
+    Assert-Equal $net01.versionState "upToDate" "NET01 version state mismatch."
+    Assert-Equal $net01.sourceFreeState "verified" "NET01 source-free state mismatch."
+    Assert-Equal $net01.connectionState "online" "NET01 live state mismatch."
+    Assert-Equal $net01.action "none" "NET01 action mismatch."
+
+    $emin = Get-TestMachine -Result $result -Name "EMIN"
+    Assert-Equal $emin.installedVersion $stableVersion "EMIN should use successful install fallback for version."
+    Assert-Equal $emin.updateState "failed" "EMIN update state mismatch."
+    Assert-Equal $emin.sourceFreeState "verified" "EMIN source-free log evidence mismatch."
+    Assert-Equal $emin.action "inspect_failed_update_log" "EMIN action mismatch."
+
+    $yasar = Get-TestMachine -Result $result -Name "YASAR"
+    Assert-Equal $yasar.versionState "outdated" "YASAR version state mismatch."
+    Assert-Equal $yasar.action "run_stable_update" "YASAR action mismatch."
+
+    $ws3 = Get-TestMachine -Result $result -Name "WS3"
+    Assert-Equal $ws3.versionState "unknown" "WS3 version state mismatch."
+    Assert-Equal $ws3.action "collect_install_report_or_update" "WS3 action mismatch."
+
+    $old = Get-TestMachine -Result $result -Name "OLD"
+    Assert-True ([bool]$old.excluded) "OLD should be excluded."
+    Assert-Equal $old.action "excluded" "OLD action mismatch."
+}
+finally {
+    if (Test-Path -LiteralPath $tempRoot) {
+        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+    }
+}
+
+Write-Host "Rollout readiness audit tests passed." -ForegroundColor Green

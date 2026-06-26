@@ -258,6 +258,19 @@ GUI update, scheduled update, manual update, and install/repair runs. The
 update diagnostics, NAS log path, and a local install-state summary for future
 dashboard use.
 
+Before closing a source-free office rollout, run the repository-side read-only
+audit from a developer checkout:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rollout-readiness.ps1 `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy" `
+  -OutputJson
+```
+
+That audit only reads NAS stable, machine reports, migration evidence, copied
+logs, and live heartbeat files. It does not install, update, migrate, or publish
+anything.
+
 ## Update Behavior
 
 - Reads the target version from `channels\stable.json`.

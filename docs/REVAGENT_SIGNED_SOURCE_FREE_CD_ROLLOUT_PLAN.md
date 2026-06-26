@@ -46,6 +46,10 @@ design changes that boundary.
   report and a source-free dry-run inventory of zero managed source/developer
   artifacts. Machines intentionally out of scope, such as retired/offline
   workstations, must be recorded as excluded instead of left ambiguous.
+- Use `scripts\check-rollout-readiness.ps1` as the current read-only closure
+  audit. It combines NAS stable metadata, machine reports, source-free
+  migration evidence, copied logs, and live heartbeat freshness into a
+  per-machine action list without updating or connecting to any workstation.
 
 This snapshot is archival. Before taking rollout action, re-verify the live
 NAS `channels\stable.json`, release manifest, ZIP hash, signed-stable
@@ -129,7 +133,8 @@ source-free rollout. The remaining current-track work is operational closure:
 1. Re-verify the live production NAS stable root before each rollout action.
 2. Bring every in-scope workstation to the current stable or record it as out of
    scope.
-3. Collect machine reports and source-free dry-run inventory evidence.
+3. Run `scripts\check-rollout-readiness.ps1` and clear its in-scope action
+   list by collecting machine reports and source-free inventory evidence.
 4. Run representative live Revit smoke after the final stable update.
 5. Then close the source-free office rollout and leave Phase 7 as the separate
    optional entitlement/obfuscation track.
@@ -148,6 +153,8 @@ Implemented in this repository:
   `scripts/invoke-signed-source-free-cd.ps1`.
 - Local-staging NAS publish wrapper:
   `scripts/publish-signed-source-free-release-to-nas.ps1`.
+- Read-only office rollout closure audit:
+  `scripts/check-rollout-readiness.ps1`.
 - Portable signed metadata: new release channel and manifest package paths are
   relative so a signed CD artifact can move from staging to NAS without
   rewriting signed JSON.
