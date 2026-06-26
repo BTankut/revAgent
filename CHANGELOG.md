@@ -4,6 +4,9 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added current-stable live Revit smoke evidence to the rollout readiness audit:
+  closure now reports a rollout-level action until a passing smoke record
+  matches the active stable version or commit.
 - Added config-driven rollout readiness scoping so the source-free closure
   audit can read a local/NAS machine list, record out-of-scope workstation
   reasons, and avoid embedding office-specific rollout state in Git.

@@ -268,11 +268,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rollout-read
 ```
 
 That audit only reads NAS stable, machine reports, migration evidence, copied
-logs, and live heartbeat files. It does not install, update, migrate, or publish
-anything. Use `config\rollout-readiness.sample.json` as the template for the
-office-specific config file; keep that real config outside Git and use
+logs, live heartbeat files, and optional live Revit smoke evidence. It does not
+install, update, migrate, or publish anything. Use
+`config\rollout-readiness.sample.json` as the template for the office-specific
+config file; keep that real config outside Git, use
 `outOfScopeMachines[].reason` to record retired or intentionally excluded
-workstations.
+workstations, and record the representative current-stable smoke result in
+`liveSmokeEvidence` or `reports\rollout\live-smoke-latest.json`.
 
 ## Update Behavior
 
