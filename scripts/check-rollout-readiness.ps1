@@ -199,9 +199,9 @@ function Get-RevAgentInstalledVersion {
     param([object]$Report)
 
     $paths = @(
-        , @("installedVersion"),
-        , @("localInstall", "version"),
-        , @("installedState", "version")
+        @("installedVersion"),
+        @("localInstall", "version"),
+        @("installedState", "version")
     )
     foreach ($path in $paths) {
         $value = Get-RevAgentNestedValue -Object $Report -Path $path
@@ -216,9 +216,9 @@ function Get-RevAgentTargetVersion {
     param([object]$Report)
 
     $paths = @(
-        , @("targetVersion"),
-        , @("release", "version"),
-        , @("channel", "version")
+        @("targetVersion"),
+        @("release", "version"),
+        @("channel", "version")
     )
     foreach ($path in $paths) {
         $value = Get-RevAgentNestedValue -Object $Report -Path $path
@@ -233,12 +233,12 @@ function Get-RevAgentReportTimestampMs {
     param([object]$Report)
 
     $paths = @(
-        , @("atUtc"),
-        , @("reportedAtUtc"),
-        , @("publishedAtUtc"),
-        , @("machineReport", "publishedAtUtc"),
-        , @("finishedAtUtc"),
-        , @("startedAtUtc")
+        @("atUtc"),
+        @("reportedAtUtc"),
+        @("publishedAtUtc"),
+        @("machineReport", "publishedAtUtc"),
+        @("finishedAtUtc"),
+        @("startedAtUtc")
     )
     foreach ($path in $paths) {
         $value = Get-RevAgentNestedValue -Object $Report -Path $path

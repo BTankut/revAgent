@@ -124,8 +124,12 @@ try {
             computerName = "EMIN"
             userName = "User21"
             status = "repaired"
-            installedVersion = $stableVersion
-            targetVersion = $stableVersion
+            localInstall = [ordered]@{
+                version = $stableVersion
+            }
+            release = [ordered]@{
+                version = $stableVersion
+            }
             publishedAtUtc = $nowUtc.AddMinutes(-5).ToString("o")
             machineReport = [ordered]@{
                 logPath = $eminLog
