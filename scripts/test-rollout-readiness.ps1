@@ -175,6 +175,18 @@ try {
                     reason = "Retired pilot workstation."
                 }
             )
+            liveSmokeEvidence = @(
+                [ordered]@{
+                    machine = "NET01"
+                    passed = $true
+                    stableVersion = $stableVersion
+                    stableCommit = $stableCommit
+                    revitVersion = "2022"
+                    model = "RME_basic_sample_project.rvt"
+                    completedAtUtc = $nowUtc.AddMinutes(-2).ToString("o")
+                    note = "Fixture live Revit smoke evidence."
+                }
+            )
         })
 
     $result = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
@@ -194,6 +206,8 @@ try {
     Assert-Equal ([int]$result.summary.sourceFreeVerifiedCount) 3 "Source-free verified count mismatch."
     Assert-Equal ([int]$result.summary.sourceFreeNeedsEvidenceCount) 2 "Source-free evidence count mismatch."
     Assert-Equal ([int]$result.summary.updateFailedCount) 1 "Update failed count mismatch."
+    Assert-Equal $result.summary.liveSmoke.state "verified" "Live smoke state mismatch."
+    Assert-Equal $result.summary.liveSmoke.latest.machine "NET01" "Live smoke machine mismatch."
     Assert-Equal ([int]$result.summary.actionRequiredCount) 3 "Action count mismatch."
     Assert-True (-not [bool]$result.summary.ready) "Fixture should not be fully ready."
 
@@ -221,6 +235,28 @@ try {
     Assert-True ([bool]$old.excluded) "OLD should be excluded."
     Assert-Equal $old.exclusionReason "Retired pilot workstation." "OLD exclusion reason mismatch."
     Assert-Equal $old.action "excluded" "OLD action mismatch."
+
+    $missingSmokeConfigPath = Join-Path $tempRoot "rollout-readiness-no-smoke.json"
+    Write-TestJson -Path $missingSmokeConfigPath -Value ([ordered]@{
+            releaseRoot = $releaseRoot
+            reportsRoot = $reportsRoot
+            expectedMachines = @("NET01", "EMIN", "YASAR", "LEGACY", "WS3", "OLD")
+            outOfScopeMachines = @(
+                [ordered]@{
+                    name = "OLD"
+                    reason = "Retired pilot workstation."
+                }
+            )
+        })
+
+    $missingSmokeResult = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
+        -ConfigPath $missingSmokeConfigPath `
+        -NowUtc $nowUtc `
+        -OutputJson | ConvertFrom-Json
+    Assert-Equal $missingSmokeResult.summary.liveSmoke.state "missing" "Missing live smoke state mismatch."
+    Assert-Equal ([int]$missingSmokeResult.summary.actionRequiredCount) 4 "Missing smoke should add one rollout action."
+    $smokeAction = @($missingSmokeResult.actions | Where-Object { $_.scope -eq "rollout" }) | Select-Object -First 1
+    Assert-Equal $smokeAction.action "collect_live_revit_smoke" "Missing smoke action mismatch."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

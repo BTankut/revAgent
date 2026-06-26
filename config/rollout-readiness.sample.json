@@ -15,5 +15,17 @@
       "name": "LAB-OLD",
       "reason": "Lab machine kept offline until a separate maintenance window."
     }
+  ],
+  "liveSmokeEvidence": [
+    {
+      "machine": "NET01",
+      "passed": true,
+      "stableVersion": "2026.06.25.404-ef535ad3",
+      "stableCommit": "ef535ad3eddb682d1da6b42de2aad5bc75ba8187",
+      "revitVersion": "2022",
+      "model": "RME_basic_sample_project.rvt",
+      "completedAtUtc": "2026-06-25T12:00:00Z",
+      "note": "Replace this sample with the real post-update live Revit smoke result in the office config."
+    }
   ]
 }

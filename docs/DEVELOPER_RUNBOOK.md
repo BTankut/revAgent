@@ -738,14 +738,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rollout-read
 ```
 
 The audit reads only `channels\stable.json`, `reports\machines`,
-`reports\live`, source-free migration reports, and copied logs. It does not
-update workstations, run migration, publish stable, or connect over SSH. Use
-`-OutputJson` for machine-readable handoff, or `-OutputPath` to write a local
-JSON snapshot for review. Start from
+`reports\live`, source-free migration reports, copied logs, and optional live
+Revit smoke evidence. It does not update workstations, run migration, publish
+stable, or connect over SSH. Use `-OutputJson` for machine-readable handoff, or
+`-OutputPath` to write a local JSON snapshot for review. Start from
 `config\rollout-readiness.sample.json`, keep the office-specific copy outside
 Git, and record intentionally retired or unreachable machines in
-`outOfScopeMachines` with a short `reason`. For a one-off run, `-ReleaseRoot`,
-`-ExpectedMachines`, and `-OutOfScopeMachines` can still be passed directly.
+`outOfScopeMachines` with a short `reason`. Record the representative
+post-update live Revit smoke result in `liveSmokeEvidence`, or write the same
+shape to `reports\rollout\live-smoke-latest.json`. The smoke evidence must pass
+and identify the current stable version or commit before the audit reports the
+rollout as ready. For a one-off run, `-ReleaseRoot`, `-ExpectedMachines`, and
+`-OutOfScopeMachines` can still be passed directly.
 
 Publishing refreshes `tools\` on the NAS. Workstations should launch the tools
 from the NAS share, not from copied old script bodies when possible.

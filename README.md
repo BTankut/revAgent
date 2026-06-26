@@ -167,10 +167,11 @@ pulling and reinstalling on every machine.
   NAS stable and machine reports:
   `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rollout-readiness.ps1`.
   It reports version state, update failures, source-free evidence, live
-  heartbeat freshness, and the next action per machine without updating any
-  workstation. Use `config\rollout-readiness.sample.json` as the template for
-  a local or NAS-side config file when the rollout needs a fixed in-scope
-  machine list or named out-of-scope machines.
+  heartbeat freshness, current-stable live Revit smoke evidence, and the next
+  action per machine without updating any workstation. Use
+  `config\rollout-readiness.sample.json` as the template for a local or
+  NAS-side config file when the rollout needs a fixed in-scope machine list,
+  named out-of-scope machines, or an embedded live-smoke evidence record.
 - Workstations run `update-from-nas.ps1`, usually through a scheduled task
   installed by `install-updater-task.ps1`; automatic checks run once daily at
   12:00 local time, while manual update/repair remains available from the
@@ -975,9 +976,11 @@ are shown only as `Update failed` or `Pending restart`.
 For deployment closure, use `scripts\check-rollout-readiness.ps1` instead of
 reading dashboard cards by eye. The dashboard is a live monitoring surface; the
 audit script produces a reproducible read-only action list from the same NAS
-stable, machine reports, migration evidence, logs, and live heartbeat files.
-Use a Git-ignored local/NAS copy of `config\rollout-readiness.sample.json` when
-the closure audit needs a fixed machine list or explicit out-of-scope reasons.
+stable, machine reports, migration evidence, logs, live heartbeat files, and
+live Revit smoke evidence. Use a Git-ignored local/NAS copy of
+`config\rollout-readiness.sample.json` when the closure audit needs a fixed
+machine list, explicit out-of-scope reasons, or the representative smoke result.
+The audit also reads `reports\rollout\live-smoke-latest.json` when present.
 
 Connection freshness is calculated from the live heartbeat: `Online` is within
 `staleSeconds` (default 60 seconds), `Stale` is older but still within

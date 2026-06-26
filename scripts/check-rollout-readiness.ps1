@@ -9,7 +9,7 @@
     reports, optional source-free migration reports, copied operation logs, and
     live heartbeat files into a compact action list. Use -ConfigPath to read a
     local or NAS-side JSON file with releaseRoot, reportsRoot,
-    expectedMachines, and outOfScopeMachines entries.
+    expectedMachines, outOfScopeMachines, and liveSmokeEvidence entries.
 #>
 
 [CmdletBinding()]
@@ -572,6 +572,235 @@ function Select-RevAgentFirstText {
     return ""
 }
 
+function Test-RevAgentCommitMatch {
+    param(
+        [string]$EvidenceCommit,
+        [string]$StableCommit
+    )
+
+    if ([string]::IsNullOrWhiteSpace($EvidenceCommit) -or [string]::IsNullOrWhiteSpace($StableCommit)) {
+        return $false
+    }
+    $evidence = $EvidenceCommit.Trim()
+    $stable = $StableCommit.Trim()
+    return ($stable.StartsWith($evidence, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $evidence.StartsWith($stable, [System.StringComparison]::OrdinalIgnoreCase))
+}
+
+function Test-RevAgentSmokePassed {
+    param([object]$Evidence)
+
+    $passed = Get-RevAgentValue -Object $Evidence -Name "passed"
+    if ($null -ne $passed) {
+        return ConvertTo-RevAgentBool -Value $passed
+    }
+    $success = Get-RevAgentValue -Object $Evidence -Name "success"
+    if ($null -ne $success) {
+        return ConvertTo-RevAgentBool -Value $success
+    }
+    $status = ([string](Get-RevAgentValue -Object $Evidence -Name "status")).Trim()
+    return (@("completed", "ok", "pass", "passed", "success", "succeeded") -contains $status.ToLowerInvariant())
+}
+
+function Get-RevAgentSmokeTimestampMs {
+    param([object]$Evidence)
+
+    foreach ($path in @(
+            @("atUtc"),
+            @("completedAtUtc"),
+            @("finishedAtUtc"),
+            @("reportedAtUtc"),
+            @("generatedAtUtc"),
+            @("createdAtUtc"))) {
+        $value = Get-RevAgentNestedValue -Object $Evidence -Path $path
+        $ms = ConvertTo-RevAgentUtcMs -Value $value
+        if ($null -ne $ms) {
+            return $ms
+        }
+    }
+    return [int64]0
+}
+
+function Read-RevAgentSmokeEvidenceFile {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return @()
+    }
+
+    $json = Read-RevAgentJsonFile -Path $Path
+    if ($null -eq $json -or $null -ne (Get-RevAgentValue -Object $json -Name "readError")) {
+        return @()
+    }
+
+    $items = @()
+    if ($json -is [array]) {
+        $items += @($json)
+    }
+    else {
+        $evidence = Get-RevAgentValue -Object $json -Name "evidence"
+        if ($null -ne $evidence) {
+            $items += @($evidence)
+        }
+        else {
+            $items += $json
+        }
+    }
+
+    foreach ($item in $items) {
+        if ($null -eq $item) {
+            continue
+        }
+        [pscustomobject][ordered]@{
+            source = $Path
+            evidence = $item
+        }
+    }
+}
+
+function Resolve-RevAgentLiveSmokeEvidence {
+    param(
+        [object]$Config,
+        [string]$ReportsRoot,
+        [string]$StableVersion,
+        [string]$StableCommit
+    )
+
+    $entries = [System.Collections.Generic.List[object]]::new()
+
+    if ($null -ne $Config) {
+        foreach ($item in @(Get-RevAgentValue -Object $Config -Name "liveSmokeEvidence")) {
+            if ($null -ne $item) {
+                [void]$entries.Add([pscustomobject][ordered]@{ source = "config:liveSmokeEvidence"; evidence = $item })
+            }
+        }
+        foreach ($item in @(Get-RevAgentValue -Object $Config -Name "smokeEvidence")) {
+            if ($null -ne $item) {
+                [void]$entries.Add([pscustomobject][ordered]@{ source = "config:smokeEvidence"; evidence = $item })
+            }
+        }
+    }
+
+    $paths = [System.Collections.Generic.List[string]]::new()
+    if ($null -ne $Config) {
+        foreach ($path in @(Get-RevAgentValue -Object $Config -Name "liveSmokeEvidencePath")) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
+                [void]$paths.Add([string]$path)
+            }
+        }
+        foreach ($path in @(Get-RevAgentValue -Object $Config -Name "liveSmokeEvidencePaths")) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
+                [void]$paths.Add([string]$path)
+            }
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ReportsRoot)) {
+        [void]$paths.Add((Join-Path (Join-Path $ReportsRoot "rollout") "live-smoke-latest.json"))
+    }
+
+    foreach ($path in @($paths.ToArray() | Select-Object -Unique)) {
+        foreach ($entry in @(Read-RevAgentSmokeEvidenceFile -Path $path)) {
+            [void]$entries.Add($entry)
+        }
+    }
+
+    $normalized = foreach ($entry in @($entries.ToArray())) {
+        $evidence = $entry.evidence
+        $version = Select-RevAgentFirstText -Values @(
+            (Get-RevAgentValue -Object $evidence -Name "stableVersion"),
+            (Get-RevAgentValue -Object $evidence -Name "releaseVersion"),
+            (Get-RevAgentValue -Object $evidence -Name "installedVersion"),
+            (Get-RevAgentValue -Object $evidence -Name "version"))
+        $commit = Select-RevAgentFirstText -Values @(
+            (Get-RevAgentValue -Object $evidence -Name "stableCommit"),
+            (Get-RevAgentValue -Object $evidence -Name "releaseCommit"),
+            (Get-RevAgentValue -Object $evidence -Name "commit"))
+        $machine = Select-RevAgentFirstText -Values @(
+            (Get-RevAgentValue -Object $evidence -Name "machine"),
+            (Get-RevAgentValue -Object $evidence -Name "machineName"),
+            (Get-RevAgentValue -Object $evidence -Name "computerName"))
+        $passed = Test-RevAgentSmokePassed -Evidence $evidence
+        $versionMatches = (-not [string]::IsNullOrWhiteSpace($StableVersion) -and
+            [string]::Equals($version, $StableVersion, [System.StringComparison]::OrdinalIgnoreCase))
+        $commitMatches = Test-RevAgentCommitMatch -EvidenceCommit $commit -StableCommit $StableCommit
+
+        [pscustomobject][ordered]@{
+            source = [string]$entry.source
+            machine = $machine
+            passed = $passed
+            version = $version
+            commit = $commit
+            versionMatchesStable = $versionMatches
+            commitMatchesStable = $commitMatches
+            atUtc = Select-RevAgentFirstText -Values @(
+                (Get-RevAgentValue -Object $evidence -Name "atUtc"),
+                (Get-RevAgentValue -Object $evidence -Name "completedAtUtc"),
+                (Get-RevAgentValue -Object $evidence -Name "finishedAtUtc"),
+                (Get-RevAgentValue -Object $evidence -Name "reportedAtUtc"),
+                (Get-RevAgentValue -Object $evidence -Name "generatedAtUtc"))
+            timestampMs = Get-RevAgentSmokeTimestampMs -Evidence $evidence
+            revitVersion = [string](Get-RevAgentValue -Object $evidence -Name "revitVersion")
+            model = Select-RevAgentFirstText -Values @(
+                (Get-RevAgentValue -Object $evidence -Name "model"),
+                (Get-RevAgentValue -Object $evidence -Name "modelName"))
+            note = Select-RevAgentFirstText -Values @(
+                (Get-RevAgentValue -Object $evidence -Name "note"),
+                (Get-RevAgentValue -Object $evidence -Name "notes"))
+        }
+    }
+
+    $all = @($normalized | Sort-Object @{ Expression = { $_.timestampMs }; Descending = $true })
+    $verified = @($all | Where-Object { $_.passed -and ($_.versionMatchesStable -or $_.commitMatchesStable) } | Select-Object -First 1)
+    if ($verified.Count -gt 0) {
+        return [pscustomobject][ordered]@{
+            state = "verified"
+            action = "none"
+            reason = ""
+            evidenceCount = $all.Count
+            latest = $verified[0]
+        }
+    }
+
+    $passed = @($all | Where-Object { $_.passed } | Select-Object -First 1)
+    if ($all.Count -eq 0) {
+        return [pscustomobject][ordered]@{
+            state = "missing"
+            action = "collect_live_revit_smoke"
+            reason = "No live Revit smoke evidence was found for the current stable."
+            evidenceCount = 0
+            latest = $null
+        }
+    }
+    if ($passed.Count -eq 0) {
+        return [pscustomobject][ordered]@{
+            state = "failed"
+            action = "inspect_live_revit_smoke_failure"
+            reason = "Live Revit smoke evidence exists, but none of the records passed."
+            evidenceCount = $all.Count
+            latest = $all[0]
+        }
+    }
+
+    $latestPassed = $passed[0]
+    if ([string]::IsNullOrWhiteSpace($latestPassed.version) -and [string]::IsNullOrWhiteSpace($latestPassed.commit)) {
+        return [pscustomobject][ordered]@{
+            state = "incomplete"
+            action = "record_live_revit_smoke_version_or_commit"
+            reason = "Live Revit smoke evidence passed but does not identify the stable version or commit."
+            evidenceCount = $all.Count
+            latest = $latestPassed
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        state = "stale"
+        action = "rerun_live_revit_smoke_on_current_stable"
+        reason = "Live Revit smoke evidence does not match the current stable version or commit."
+        evidenceCount = $all.Count
+        latest = $latestPassed
+    }
+}
+
 if ($null -ne $config) {
     if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
         $ReleaseRoot = [string](Get-RevAgentValue -Object $config -Name "releaseRoot")
@@ -741,6 +970,38 @@ $machines = foreach ($machineName in @($machineNames | Sort-Object)) {
 
 $inScopeMachines = @($machines | Where-Object { -not $_.excluded })
 $actionRequiredMachines = @($inScopeMachines | Where-Object { $_.action -ne "none" })
+$liveSmoke = Resolve-RevAgentLiveSmokeEvidence -Config $config -ReportsRoot $ReportsRoot -StableVersion $stableVersion -StableCommit $stableCommit
+$rolloutActions = @()
+if ([string](Get-RevAgentValue -Object $liveSmoke -Name "action") -ne "none") {
+    $rolloutActions += [pscustomobject][ordered]@{
+        scope = "rollout"
+        machine = ""
+        userName = ""
+        installedVersion = ""
+        targetVersion = $stableVersion
+        versionState = ""
+        updateState = ""
+        sourceFreeState = ""
+        connectionState = ""
+        action = [string](Get-RevAgentValue -Object $liveSmoke -Name "action")
+        reason = [string](Get-RevAgentValue -Object $liveSmoke -Name "reason")
+        logPath = ""
+    }
+}
+$machineActions = @($actionRequiredMachines | Select-Object `
+        @{ Name = "scope"; Expression = { "machine" } },
+        machine,
+        userName,
+        installedVersion,
+        targetVersion,
+        versionState,
+        updateState,
+        sourceFreeState,
+        connectionState,
+        action,
+        @{ Name = "reason"; Expression = { "" } },
+        logPath)
+$allActions = @($machineActions + $rolloutActions)
 $summary = [pscustomobject][ordered]@{
     schemaVersion = "revagent.rollout.readiness.v1"
     generatedAtUtc = $nowUtc.ToString("o")
@@ -754,6 +1015,7 @@ $summary = [pscustomobject][ordered]@{
         releaseSequence = $stableReleaseSequence
         readError = [string](Get-RevAgentValue -Object $stable -Name "readError")
     }
+    liveSmoke = $liveSmoke
     machineCount = @($machines).Count
     inScopeMachineCount = @($inScopeMachines).Count
     excludedMachineCount = @($machines | Where-Object { $_.excluded }).Count
@@ -768,8 +1030,10 @@ $summary = [pscustomobject][ordered]@{
     onlineCount = @($inScopeMachines | Where-Object { $_.connectionState -eq "online" }).Count
     staleCount = @($inScopeMachines | Where-Object { $_.connectionState -eq "stale" }).Count
     offlineCount = @($inScopeMachines | Where-Object { $_.connectionState -eq "offline" }).Count
-    actionRequiredCount = @($actionRequiredMachines).Count
-    ready = (@($actionRequiredMachines).Count -eq 0 -and @($inScopeMachines).Count -gt 0)
+    machineActionRequiredCount = @($actionRequiredMachines).Count
+    rolloutActionRequiredCount = @($rolloutActions).Count
+    actionRequiredCount = @($allActions).Count
+    ready = (@($allActions).Count -eq 0 -and @($inScopeMachines).Count -gt 0)
 }
 
 $result = [pscustomobject][ordered]@{
@@ -777,7 +1041,7 @@ $result = [pscustomobject][ordered]@{
     generatedAtUtc = $nowUtc.ToString("o")
     summary = $summary
     machines = @($machines)
-    actions = @($actionRequiredMachines | Select-Object machine, userName, installedVersion, targetVersion, versionState, updateState, sourceFreeState, connectionState, action, logPath)
+    actions = @($allActions)
 }
 
 if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
@@ -794,8 +1058,9 @@ if ($OutputJson) {
 }
 
 Write-Host ("Stable: {0} ({1})" -f ($(if ($stableVersion) { $stableVersion } else { "unknown" })), ($(if ($stableCommit) { $stableCommit } else { "commit unknown" })))
-Write-Host ("Machines: {0} in scope, {1} excluded, {2} action required" -f $summary.inScopeMachineCount, $summary.excludedMachineCount, $summary.actionRequiredCount)
+Write-Host ("Machines: {0} in scope, {1} excluded, {2} machine action(s), {3} rollout action(s)" -f $summary.inScopeMachineCount, $summary.excludedMachineCount, $summary.machineActionRequiredCount, $summary.rolloutActionRequiredCount)
 Write-Host ("Source-free: {0} verified, {1} needs evidence, {2} failed" -f $summary.sourceFreeVerifiedCount, $summary.sourceFreeNeedsEvidenceCount, $summary.sourceFreeFailedCount)
+Write-Host ("Live smoke: {0}" -f $summary.liveSmoke.state)
 $machines |
     Select-Object machine, userName, installedVersion, versionState, updateState, sourceFreeState, connectionState, action, exclusionReason |
     Format-Table -AutoSize
