@@ -1,0 +1,19 @@
+{
+  "releaseRoot": "\\\\dpe-nas\\Dpe-Ortak\\Baris Tankut\\revit-mcp-deploy",
+  "reportsRoot": "\\\\dpe-nas\\Dpe-Ortak\\Baris Tankut\\revit-mcp-deploy\\reports",
+  "expectedMachines": [
+    "NET01",
+    "WORKSTATION-01",
+    "WORKSTATION-02"
+  ],
+  "outOfScopeMachines": [
+    {
+      "name": "RETIRED-01",
+      "reason": "Retired workstation; excluded from the current source-free rollout."
+    },
+    {
+      "name": "LAB-OLD",
+      "reason": "Lab machine kept offline until a separate maintenance window."
+    }
+  ]
+}

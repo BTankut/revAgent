@@ -164,14 +164,25 @@ try {
             }
         })
 
+    $configPath = Join-Path $tempRoot "rollout-readiness.json"
+    Write-TestJson -Path $configPath -Value ([ordered]@{
+            releaseRoot = $releaseRoot
+            reportsRoot = $reportsRoot
+            expectedMachines = @("NET01", "EMIN", "YASAR", "LEGACY", "WS3", "OLD")
+            outOfScopeMachines = @(
+                [ordered]@{
+                    name = "OLD"
+                    reason = "Retired pilot workstation."
+                }
+            )
+        })
+
     $result = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
-        -ReleaseRoot $releaseRoot `
-        -ReportsRoot $reportsRoot `
-        -ExpectedMachines "NET01,EMIN,YASAR,LEGACY,WS3,OLD" `
-        -OutOfScopeMachines "OLD" `
+        -ConfigPath $configPath `
         -NowUtc $nowUtc `
         -OutputJson | ConvertFrom-Json
 
+    Assert-Equal $result.summary.configPath $configPath "Config path mismatch."
     Assert-Equal $result.summary.stable.version $stableVersion "Stable version mismatch."
     Assert-Equal $result.summary.stable.commit $stableCommit "Stable commit mismatch."
     Assert-Equal $result.summary.stable.packageSha256 "ABC123" "Stable package hash mismatch."
@@ -208,6 +219,7 @@ try {
 
     $old = Get-TestMachine -Result $result -Name "OLD"
     Assert-True ([bool]$old.excluded) "OLD should be excluded."
+    Assert-Equal $old.exclusionReason "Retired pilot workstation." "OLD exclusion reason mismatch."
     Assert-Equal $old.action "excluded" "OLD action mismatch."
 }
 finally {

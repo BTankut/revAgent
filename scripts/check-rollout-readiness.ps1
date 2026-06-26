@@ -7,7 +7,9 @@
     migration, connect over SSH, or write to NAS unless -OutputPath is provided.
     It combines the stable channel manifest, per-machine install/update
     reports, optional source-free migration reports, copied operation logs, and
-    live heartbeat files into a compact action list.
+    live heartbeat files into a compact action list. Use -ConfigPath to read a
+    local or NAS-side JSON file with releaseRoot, reportsRoot,
+    expectedMachines, and outOfScopeMachines entries.
 #>
 
 [CmdletBinding()]
@@ -15,6 +17,8 @@ param(
     [string]$ReleaseRoot = "",
 
     [string]$ReportsRoot = "",
+
+    [string]$ConfigPath = "",
 
     [string]$ExpectedMachines = "",
 
@@ -35,22 +39,17 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $defaultReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+$config = $null
 
-if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
-    if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_RELEASE_ROOT)) {
-        $ReleaseRoot = $env:REVAGENT_RELEASE_ROOT
-    }
-    else {
-        $ReleaseRoot = $defaultReleaseRoot
-    }
+if ([string]::IsNullOrWhiteSpace($ConfigPath) -and -not [string]::IsNullOrWhiteSpace($env:REVAGENT_ROLLOUT_READINESS_CONFIG)) {
+    $ConfigPath = $env:REVAGENT_ROLLOUT_READINESS_CONFIG
 }
-if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
-    if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_REPORTS_ROOT)) {
-        $ReportsRoot = $env:REVAGENT_REPORTS_ROOT
+if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        throw "Rollout readiness config file was not found: $ConfigPath"
     }
-    else {
-        $ReportsRoot = Join-Path $ReleaseRoot "reports"
-    }
+    $config = Get-Content -Raw -LiteralPath $ConfigPath -Encoding UTF8 | ConvertFrom-Json
+    $ConfigPath = (Resolve-Path -LiteralPath $ConfigPath).Path
 }
 
 function Normalize-RevAgentMachineName {
@@ -60,14 +59,44 @@ function Normalize-RevAgentMachineName {
 }
 
 function Expand-RevAgentMachineNames {
-    param([string[]]$Values)
+    param([object[]]$Values)
 
     $expanded = [System.Collections.Generic.List[string]]::new()
     foreach ($value in $Values) {
-        if ([string]::IsNullOrWhiteSpace($value)) {
+        if ($null -eq $value) {
             continue
         }
-        foreach ($part in ([string]$value -split '[,;]')) {
+
+        $rawValue = ""
+        if ($value -is [string]) {
+            $rawValue = [string]$value
+        }
+        elseif ($value -is [System.Collections.IDictionary]) {
+            foreach ($nameKey in @("name", "machine", "machineName", "computerName")) {
+                if ($value.Contains($nameKey) -and -not [string]::IsNullOrWhiteSpace([string]$value[$nameKey])) {
+                    $rawValue = [string]$value[$nameKey]
+                    break
+                }
+            }
+        }
+        else {
+            foreach ($nameKey in @("name", "machine", "machineName", "computerName")) {
+                $property = $value.PSObject.Properties[$nameKey]
+                if ($null -ne $property -and -not [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+                    $rawValue = [string]$property.Value
+                    break
+                }
+            }
+            if ([string]::IsNullOrWhiteSpace($rawValue)) {
+                $rawValue = [string]$value
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($rawValue)) {
+            continue
+        }
+
+        foreach ($part in ($rawValue -split '[,;]')) {
             $normalized = Normalize-RevAgentMachineName -Value $part
             if (-not [string]::IsNullOrWhiteSpace($normalized)) {
                 [void]$expanded.Add($normalized)
@@ -75,6 +104,61 @@ function Expand-RevAgentMachineNames {
         }
     }
     return @($expanded.ToArray())
+}
+
+function Get-RevAgentObjectText {
+    param(
+        [object]$Object,
+        [string[]]$Names
+    )
+
+    if ($null -eq $Object) {
+        return ""
+    }
+    foreach ($name in $Names) {
+        $value = $null
+        if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($name)) {
+            $value = $Object[$name]
+        }
+        else {
+            $property = $Object.PSObject.Properties[$name]
+            if ($null -ne $property) {
+                $value = $property.Value
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+            return [string]$value
+        }
+    }
+    return ""
+}
+
+function Get-RevAgentOutOfScopeReasonMap {
+    param([object[]]$Values)
+
+    $map = @{}
+    foreach ($value in $Values) {
+        if ($null -eq $value) {
+            continue
+        }
+
+        $names = @(Expand-RevAgentMachineNames -Values @($value))
+        if ($names.Count -eq 0) {
+            continue
+        }
+
+        $reason = ""
+        if ($value -isnot [string]) {
+            $reason = Get-RevAgentObjectText -Object $value -Names @("reason", "note", "status")
+        }
+
+        foreach ($name in $names) {
+            if (-not $map.ContainsKey($name) -or [string]::IsNullOrWhiteSpace([string]$map[$name])) {
+                $map[$name] = $reason
+            }
+        }
+    }
+    return $map
 }
 
 function Get-RevAgentValue {
@@ -488,6 +572,31 @@ function Select-RevAgentFirstText {
     return ""
 }
 
+if ($null -ne $config) {
+    if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
+        $ReleaseRoot = [string](Get-RevAgentValue -Object $config -Name "releaseRoot")
+    }
+    if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
+        $ReportsRoot = [string](Get-RevAgentValue -Object $config -Name "reportsRoot")
+    }
+}
+if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
+    if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_RELEASE_ROOT)) {
+        $ReleaseRoot = $env:REVAGENT_RELEASE_ROOT
+    }
+    else {
+        $ReleaseRoot = $defaultReleaseRoot
+    }
+}
+if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
+    if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_REPORTS_ROOT)) {
+        $ReportsRoot = $env:REVAGENT_REPORTS_ROOT
+    }
+    else {
+        $ReportsRoot = Join-Path $ReleaseRoot "reports"
+    }
+}
+
 $stable = Read-RevAgentJsonFile -Path (Join-Path (Join-Path $ReleaseRoot "channels") "stable.json")
 $stableVersion = [string](Get-RevAgentValue -Object $stable -Name "version")
 $stableCommit = Select-RevAgentFirstText -Values @(
@@ -499,8 +608,21 @@ $machinesRoot = Join-Path $ReportsRoot "machines"
 $liveRoot = Join-Path (Join-Path $ReportsRoot "live") "machines"
 $nowUtc = if ($NowUtc -eq [datetime]::MinValue) { (Get-Date).ToUniversalTime() } else { $NowUtc.ToUniversalTime() }
 
+$expectedMachineInputs = @()
+$outOfScopeMachineInputs = @()
+if ($null -ne $config) {
+    $expectedMachineInputs += @(Get-RevAgentValue -Object $config -Name "expectedMachines")
+    $outOfScopeMachineInputs += @(Get-RevAgentValue -Object $config -Name "outOfScopeMachines")
+}
+if (-not [string]::IsNullOrWhiteSpace($ExpectedMachines)) {
+    $expectedMachineInputs += $ExpectedMachines
+}
+if (-not [string]::IsNullOrWhiteSpace($OutOfScopeMachines)) {
+    $outOfScopeMachineInputs += $OutOfScopeMachines
+}
+
 $machineNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($name in (Expand-RevAgentMachineNames -Values $ExpectedMachines)) {
+foreach ($name in (Expand-RevAgentMachineNames -Values $expectedMachineInputs)) {
     [void]$machineNames.Add($name)
 }
 foreach ($root in @($machinesRoot, $liveRoot)) {
@@ -516,7 +638,8 @@ foreach ($root in @($machinesRoot, $liveRoot)) {
 }
 
 $outOfScope = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($name in (Expand-RevAgentMachineNames -Values $OutOfScopeMachines)) {
+$outOfScopeReasons = Get-RevAgentOutOfScopeReasonMap -Values $outOfScopeMachineInputs
+foreach ($name in @($outOfScopeReasons.Keys)) {
     [void]$outOfScope.Add($name)
 }
 
@@ -535,6 +658,7 @@ $machines = foreach ($machineName in @($machineNames | Sort-Object)) {
     $reportedTargetVersion = Get-RevAgentTargetVersion -Report $versionReport
     $targetVersion = if (-not [string]::IsNullOrWhiteSpace($stableVersion)) { $stableVersion } else { $reportedTargetVersion }
     $excluded = $outOfScope.Contains($machineName)
+    $exclusionReason = if ($excluded -and $outOfScopeReasons.ContainsKey($machineName)) { [string]$outOfScopeReasons[$machineName] } else { "" }
 
     $versionState = if ($excluded) {
         "excluded"
@@ -591,6 +715,7 @@ $machines = foreach ($machineName in @($machineNames | Sort-Object)) {
             (Get-RevAgentValue -Object $versionReport -Name "userName"),
             (Get-RevAgentValue -Object $liveStatus -Name "userName"))
         excluded = $excluded
+        exclusionReason = $exclusionReason
         installedVersion = $installedVersion
         targetVersion = $targetVersion
         stableVersion = $stableVersion
@@ -619,6 +744,7 @@ $actionRequiredMachines = @($inScopeMachines | Where-Object { $_.action -ne "non
 $summary = [pscustomobject][ordered]@{
     schemaVersion = "revagent.rollout.readiness.v1"
     generatedAtUtc = $nowUtc.ToString("o")
+    configPath = $ConfigPath
     releaseRoot = $ReleaseRoot
     reportsRoot = $ReportsRoot
     stable = [ordered]@{
@@ -671,7 +797,7 @@ Write-Host ("Stable: {0} ({1})" -f ($(if ($stableVersion) { $stableVersion } els
 Write-Host ("Machines: {0} in scope, {1} excluded, {2} action required" -f $summary.inScopeMachineCount, $summary.excludedMachineCount, $summary.actionRequiredCount)
 Write-Host ("Source-free: {0} verified, {1} needs evidence, {2} failed" -f $summary.sourceFreeVerifiedCount, $summary.sourceFreeNeedsEvidenceCount, $summary.sourceFreeFailedCount)
 $machines |
-    Select-Object machine, userName, installedVersion, versionState, updateState, sourceFreeState, connectionState, action |
+    Select-Object machine, userName, installedVersion, versionState, updateState, sourceFreeState, connectionState, action, exclusionReason |
     Format-Table -AutoSize
 
 if ($summary.actionRequiredCount -gt 0) {

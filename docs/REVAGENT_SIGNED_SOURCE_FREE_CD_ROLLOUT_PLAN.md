@@ -50,6 +50,9 @@ design changes that boundary.
   audit. It combines NAS stable metadata, machine reports, source-free
   migration evidence, copied logs, and live heartbeat freshness into a
   per-machine action list without updating or connecting to any workstation.
+  Use `config\rollout-readiness.sample.json` as the template for a local or
+  NAS-side config that records the expected machine list and any intentionally
+  out-of-scope workstation reasons.
 
 This snapshot is archival. Before taking rollout action, re-verify the live
 NAS `channels\stable.json`, release manifest, ZIP hash, signed-stable
@@ -103,7 +106,8 @@ Rejected initial target:
   - run or collect a source-free migration dry-run report showing zero managed
     source/developer artifacts on each in-scope workstation;
   - collect at least one current live Revit smoke result after the 404 stable;
-  - mark retired or unreachable machines as intentionally out of scope.
+  - mark retired or unreachable machines as intentionally out of scope in the
+    rollout readiness config with a short reason.
 - Keep the dashboard interpretation explicit: `Offline` is live MCP heartbeat
   freshness, not update success; version/update state comes from machine
   install/update reports.

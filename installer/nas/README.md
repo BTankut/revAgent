@@ -263,13 +263,16 @@ audit from a developer checkout:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rollout-readiness.ps1 `
-  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy" `
+  -ConfigPath "C:\ProgramData\DPE\revAgentOps\rollout-readiness.json" `
   -OutputJson
 ```
 
 That audit only reads NAS stable, machine reports, migration evidence, copied
 logs, and live heartbeat files. It does not install, update, migrate, or publish
-anything.
+anything. Use `config\rollout-readiness.sample.json` as the template for the
+office-specific config file; keep that real config outside Git and use
+`outOfScopeMachines[].reason` to record retired or intentionally excluded
+workstations.
 
 ## Update Behavior
 

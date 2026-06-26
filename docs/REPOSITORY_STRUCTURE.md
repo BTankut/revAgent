@@ -16,6 +16,7 @@ for servers, assemblies, manifests, and installed paths.
 |-- config/
 |   |-- dynamic-tool-promotion-registry.json
 |   |-- dynamic-tool-promotion-rules.json
+|   |-- rollout-readiness.sample.json
 |   `-- revit-versions.json
 |-- dashboard/
 |   |-- server.mjs
