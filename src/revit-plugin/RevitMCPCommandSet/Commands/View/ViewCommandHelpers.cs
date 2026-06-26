@@ -433,7 +433,7 @@ namespace RevitMCPCommandSet.Commands.View
         public static string MakeUniqueViewName(Document document, string requestedName)
         {
             string baseName = string.IsNullOrWhiteSpace(requestedName)
-                ? "Revit MCP 3D Focus"
+                ? "revAgent 3D Focus"
                 : requestedName.Trim();
 
             List<string> existingViewNames;

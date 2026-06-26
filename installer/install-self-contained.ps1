@@ -299,12 +299,12 @@ function Write-AddinManifest {
 <?xml version="1.0" encoding="utf-8"?>
 <RevitAddIns>
   <AddIn Type="Application">
-    <Name>mcp-servers-for-revit</Name>
+    <Name>revAgent</Name>
     <Assembly>$escapedAssembly</Assembly>
     <FullClassName>revit_mcp_plugin.Core.Application</FullClassName>
     <ClientId>090A4C8C-61DC-426D-87DF-E4BAE0F80EC1</ClientId>
     <VendorId>DPE</VendorId>
-    <VendorDescription>DPE internal Revit MCP add-in</VendorDescription>
+    <VendorDescription>DPE internal revAgent add-in</VendorDescription>
   </AddIn>
 </RevitAddIns>
 "@
@@ -535,7 +535,7 @@ function Assert-RevitMcpCleanupPath {
     }
 
     if ($leaf -notmatch $AllowedNamePattern) {
-        throw "Refusing to clean $Label because it is not a known Revit MCP path: $fullPath"
+        throw "Refusing to clean $Label because it is not a known revAgent managed path: $fullPath"
     }
 
     return $fullPath
@@ -583,15 +583,15 @@ function Disable-LegacyAddinManifest {
     }
 
     $disabledAddin = Join-Path $Root "revit-mcp.addin.disabled-self-contained"
-    Assert-RevitMcpCleanupPath -Path $legacyAddin -Label "legacy Revit MCP addin manifest" | Out-Null
-    Assert-RevitMcpCleanupPath -Path $disabledAddin -Label "disabled legacy Revit MCP addin manifest" | Out-Null
+    Assert-RevitMcpCleanupPath -Path $legacyAddin -Label "legacy revAgent add-in manifest" | Out-Null
+    Assert-RevitMcpCleanupPath -Path $disabledAddin -Label "disabled legacy revAgent add-in manifest" | Out-Null
 
     if (Test-Path -LiteralPath $disabledAddin) {
         Remove-Item -LiteralPath $disabledAddin -Force
     }
 
     Move-Item -LiteralPath $legacyAddin -Destination $disabledAddin -Force
-    Write-Host "Disabled legacy Revit MCP addin manifest: $legacyAddin"
+    Write-Host "Disabled legacy revAgent add-in manifest: $legacyAddin"
 }
 
 function Get-RuntimeCleanupTargets {
@@ -638,7 +638,7 @@ function Test-RevitMcpRuntimeDirectory {
     try {
         $package = Get-Content -Raw -LiteralPath $packagePath | ConvertFrom-Json
         return $package.name -eq "revit-mcp" -and
-            [string]$package.description -like "*self-contained Revit MCP*"
+            [string]$package.description -like "*self-contained revAgent*"
     }
     catch {
         return $false
@@ -770,7 +770,7 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
             $managedRoots.Add($ServerTarget)
         }
         else {
-            Write-Warning "Skipping runtime source cleanup because the directory does not look like a Revit MCP runtime install: $ServerTarget"
+            Write-Warning "Skipping runtime source cleanup because the directory does not look like a revAgent runtime install: $ServerTarget"
         }
     }
 
@@ -846,17 +846,17 @@ function Invoke-RevitMcpCleanup {
     )
 
     if (-not $SkipRevitPayloadInstall) {
-        Remove-RevitMcpPath -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -Label "Revit MCP addin manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
-        Remove-RevitMcpPath -Path (Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy Revit MCP addin manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
+        Remove-RevitMcpPath -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -Label "revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
+        Remove-RevitMcpPath -Path (Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy revAgent add-in manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
         if (-not $SkipLegacyCleanup) {
-            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "mcp-servers-for-revit.addin") -Label "legacy user Revit MCP addin manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
-            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy user Revit MCP addin manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
-            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit_mcp_plugin") -Label "legacy user Revit MCP addin payload directory" -Recurse
+            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "mcp-servers-for-revit.addin") -Label "legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
+            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
+            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit_mcp_plugin") -Label "legacy user revAgent add-in payload directory" -Recurse
         }
-        Remove-RevitMcpPath -Path $pluginTarget -Label "Revit MCP addin payload directory" -Recurse
-        Remove-RevitMcpPath -Path $commandSetRoot -Label "Revit MCP machine command directory" -Recurse -AllowedNamePattern "(?i)(^CommandSet$)"
+        Remove-RevitMcpPath -Path $pluginTarget -Label "revAgent add-in payload directory" -Recurse
+        Remove-RevitMcpPath -Path $commandSetRoot -Label "revAgent machine command directory" -Recurse -AllowedNamePattern "(?i)(^CommandSet$)"
         if (-not $SkipLegacyCleanup) {
-            Remove-RevitMcpPath -Path (Join-Path $env:LOCALAPPDATA "revit-mcp-plugin") -Label "Revit MCP LocalAppData command directory" -Recurse
+            Remove-RevitMcpPath -Path (Join-Path $env:LOCALAPPDATA "revit-mcp-plugin") -Label "revAgent LocalAppData command directory" -Recurse
         }
     }
     else {
@@ -866,7 +866,7 @@ function Invoke-RevitMcpCleanup {
     if (-not $SkipRuntimePayloadInstall) {
         foreach ($target in Get-RuntimeCleanupTargets) {
             if (-not (Test-RevitMcpRuntimeDirectory -Path $target)) {
-                Write-Warning "Skipping runtime cleanup because the directory does not look like a Revit MCP runtime install: $target"
+                Write-Warning "Skipping runtime cleanup because the directory does not look like a revAgent runtime install: $target"
                 continue
             }
 
@@ -882,8 +882,8 @@ function Invoke-RevitMcpCleanup {
     }
 
     if ($ForUninstall) {
-        Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex Revit MCP skill directory" -Recurse
-        Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex Revit MCP skill directory" -Recurse
+        Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex revAgent skill directory" -Recurse
+        Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex revAgent skill directory" -Recurse
         if ($RemoveAgents) {
             Remove-RevitMcpPath -Path $codexAgentsTarget -Label "Codex global AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
             Remove-RevitMcpPath -Path $codexMachineAgentsTarget -Label "machine AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
@@ -904,9 +904,9 @@ Repair-RevitMcpManagedInstallPermissions -IncludeExistingPayloadTrees:((-not $Sk
 Invoke-RevitMcpCleanup -ForUninstall:$Uninstall
 
 if ($Uninstall) {
-    Write-Host "Self-contained Revit MCP bundle uninstalled for Revit $RevitVersion" -ForegroundColor Green
+    Write-Host "Self-contained revAgent bundle uninstalled for Revit $RevitVersion" -ForegroundColor Green
     Write-Host "Autodesk Revit program files and Windows system files were not touched."
-    Write-Host "If MCP entries were registered in Codex, remove them with: codex mcp remove revit-mcp ; codex mcp remove revit-api-docs"
+    Write-Host "If revAgent entries were registered in Codex, remove them with: codex mcp remove revAgent ; codex mcp remove revAgent-api-docs"
     return
 }
 
@@ -936,7 +936,7 @@ else {
 }
 Set-Content -LiteralPath (Join-Path $InstallRoot ".revit-mcp-programdata-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
 
-# The required Revit API docs MCP server remains in the repo under installer\revit-api-docs-mcp.
+# The required revAgent API docs server remains in the repo under installer\revit-api-docs-mcp.
 # It is registered from that path after npm install; see the final Next steps.
 if (-not (Test-Path $docsServerSource)) {
     throw "Required docs server source was not found: $docsServerSource"
@@ -1051,7 +1051,7 @@ else {
         New-Item -ItemType Directory -Path $codexMachineSkillsRoot -Force | Out-Null
 
         if (Test-Path -LiteralPath $codexMachineSkillTarget) {
-            Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex Revit MCP skill directory" -Recurse
+            Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex revAgent skill directory" -Recurse
         }
 
         New-Item -ItemType Directory -Path $codexMachineSkillTarget -Force | Out-Null
@@ -1061,7 +1061,7 @@ else {
             New-Item -ItemType Directory -Path $codexSkillsRoot -Force | Out-Null
 
             if (Test-Path -LiteralPath $codexSkillTarget) {
-                Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex Revit MCP skill directory" -Recurse
+                Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex revAgent skill directory" -Recurse
             }
 
             New-ReparsePointOrCopyDirectory -Source $codexMachineSkillTarget -Destination $codexSkillTarget
@@ -1173,7 +1173,7 @@ Invoke-RevitMcpLogRetention -LogsRoot (Join-Path $updaterRoot "logs") -KeepLast 
 Repair-RevitMcpManagedInstallPermissions
 Repair-RevitMcpScheduledTaskAction -ConfigPath $updaterConfigPath -UpdaterPath (Join-Path $updaterRoot "update-from-nas.ps1")
 
-Write-Host "Self-contained Revit MCP bundle installed for Revit $RevitVersion" -ForegroundColor Green
+Write-Host "Self-contained revAgent bundle installed for Revit $RevitVersion" -ForegroundColor Green
 Write-Host "Install root: $InstallRoot"
 Write-Host "Revit install root: $revitInstallRoot"
 if ($SkipRevitPayloadInstall) {
@@ -1217,13 +1217,13 @@ if (-not $SuppressNextSteps) {
     Write-Host "Next steps:" -ForegroundColor Yellow
     Write-Host "1. cd $ServerTarget"
     Write-Host "2. npm install --omit=dev --no-audit --no-fund"
-    Write-Host "3. codex mcp add revit-mcp -- node `"$ServerTarget\build\index.js`""
+    Write-Host "3. codex mcp add revAgent -- node `"$ServerTarget\build\index.js`""
     Write-Host "4. cd $docsServerSource"
     Write-Host "5. npm install --omit=dev --no-audit --no-fund"
     Write-Host "6. powershell -ExecutionPolicy Bypass -File `"$docsServerSource\scripts\build-index.ps1`" -RevitRoot `"$revitInstallRoot`" -OutputPath `"$stateRoot\revit-api-docs\cache\revit-api-docs-$RevitVersion.json`""
-    Write-Host "7. codex mcp add revit-api-docs -- node `"$docsServerSource\build\index.js`""
+    Write-Host "7. codex mcp add revAgent-api-docs -- node `"$docsServerSource\build\index.js`""
     Write-Host "8. Confirm both servers with: codex mcp list"
     Write-Host "9. Run /skills reload in Codex, or restart Codex"
     Write-Host "10. Open Revit; if prompted for the unsigned add-in, choose Always Load"
-    Write-Host "11. Revit MCP starts automatically. Use the ribbon Settings button only to review command availability"
+    Write-Host "11. revAgent starts automatically. Use the ribbon Settings button only to review command availability"
 }

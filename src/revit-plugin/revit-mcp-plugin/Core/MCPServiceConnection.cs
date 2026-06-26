@@ -18,13 +18,13 @@ namespace revit_mcp_plugin.Core
                 if (service.IsRunning)
                 {
                     service.Stop();
-                    TaskDialog.Show("revitMCP", "Close Server");
+                    TaskDialog.Show("revAgent", "revAgent bridge stopped");
                 }
                 else
                 {
                     service.Initialize(commandData.Application);
                     service.Start();
-                    TaskDialog.Show("revitMCP", "Open Server");
+                    TaskDialog.Show("revAgent", "revAgent bridge started");
                 }
 
                 return Result.Succeeded;

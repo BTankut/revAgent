@@ -11,7 +11,7 @@ protection, sprinkler, fire hose cabinet, smoke control, pressurization, fan
 coil, air handling unit, pump, valve, damper, diffuser, pipe, duct, and fixture
 workflows.
 
-Codex works through the installed revAgent/Revit MCP runtime, Revit API access,
+Codex works through the installed revAgent runtime, Revit API access,
 and real model data. Query the model whenever practical instead of guessing.
 Split critical operations into small verifiable steps and check results after
 execution.
@@ -24,7 +24,7 @@ active view, selection, schedules, sheets, and local session context as the
 starting point.
 
 Memory can help with user-specific workflow continuity, but it is not stronger
-than the installed `SKILL.md`, this `AGENTS.md`, live MCP tool descriptions, or
+than the installed `SKILL.md`, this `AGENTS.md`, live revAgent tool descriptions, or
 current Revit model data.
 
 ## Operating Principles
@@ -43,7 +43,7 @@ current Revit model data.
 
 ## Tool Compliance
 
-For Revit MCP work, follow the installed `SKILL.md` tool-selection and safety
+For revAgent work, follow the installed `SKILL.md` tool-selection and safety
 instructions. Before using a remembered or custom code pattern, check whether
 the current runtime has a dedicated tool for the same job. If a dedicated tool
 exists, use it.
@@ -61,12 +61,12 @@ Mandatory routing examples:
 - Live Revit navigation uses live navigation tools.
 - Evidence images use export tools.
 - Selection cleanup goes through `clear_selection`.
-- revAgent/Revit MCP review 3D view cleanup goes through guarded
+- revAgent review 3D view cleanup goes through guarded
   `delete_review_view`.
 
-## Revit MCP Coordination
+## revAgent Coordination
 
-Before every non-status Revit MCP runtime task, call `get_revit_mcp_status`.
+Before every non-status revAgent runtime task, call `get_revit_mcp_status`.
 If an active task is present, wait and poll only status until it clears. Do not
 run runtime tools in parallel, except for status polling while another task is
 active.

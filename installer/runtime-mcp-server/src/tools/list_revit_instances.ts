@@ -141,10 +141,10 @@ async function probeTarget(target: JsonObject, timeoutMs: number) {
 }
 
 export function registerListRevitInstancesTool(server: ToolServer) {
-    server.tool("list_revit_instances", "Discover reachable Revit MCP socket instances by probing configured ports. Use this before targeting a specific Revit instance.", {
+    server.tool("list_revit_instances", "Discover reachable revAgent Revit bridge instances by probing configured ports. Use this before targeting a specific Revit instance.", {
         host: z.string().optional().describe("Host to scan. Defaults to REVIT_MCP_HOST or localhost."),
         ports: z.array(z.union([z.number(), z.string()])).optional().describe("Ports to scan. Defaults to REVIT_MCP_PORTS, or 8080-8085."),
-        includeRegistry: z.boolean().optional().describe("Include targets from the Revit MCP instance registry file. Defaults true."),
+        includeRegistry: z.boolean().optional().describe("Include targets from the revAgent instance registry file. Defaults true."),
         includeUnreachable: z.boolean().optional().describe("Include unreachable ports in the result. Defaults false."),
         timeoutMs: z.number().int().positive().max(15000).optional().describe("Per-port connection timeout in milliseconds. Defaults 3000."),
     }, async (args) => {

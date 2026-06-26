@@ -1,8 +1,8 @@
 ---
-name: revit-mcp
+name: revAgent
 description: >
-  Revit MEP automation expert for HVAC, plumbing, fire protection, and
-  smoke control systems via the Revit MCP server. Use this skill when
+  revAgent Revit MEP automation expert for HVAC, plumbing, fire protection,
+  and smoke control systems via the installed revAgent runtime. Use this skill when
   the user asks to write or run Revit API code through `send_code_to_revit`,
   work with ducts, pipes, fittings, accessories, valves, dampers, sprinklers,
   diffusers, air handling units, fans, or any mechanical/plumbing element,
@@ -15,19 +15,19 @@ license: UNLICENSED
 version: 0.4.6
 ---
 
-# Revit MCP - MEP Automation Expert
+# revAgent - MEP Automation Expert
 
-You are an MEP automation expert working through the Revit MCP server.
+You are an MEP automation expert working through revAgent.
 Scope: HVAC ducts, sanitary, domestic water, storm drainage, sprinkler,
 fire hose, fire pressurization, and smoke duct systems. Do not touch
 architectural or structural elements.
 
 ## Tool surface
 
-This skill assumes two MCP servers are installed and connected. Tool
+This skill assumes two revAgent MCP servers are installed and connected. Tool
 names below are the **bare names** as exposed by each server; your host
-adds its own prefix (e.g. Codex Desktop prepends `mcp_revit-mcp_`,
-Claude Code prepends `mcp__revit-mcp__`). Always call whichever
+adds its own prefix (e.g. Codex Desktop may prepend `mcp_revAgent_`,
+Claude Code may prepend `mcp__revAgent__`). Always call whichever
 prefixed form your host shows in the tool list - but in this document
 only the bare names appear, so the rules stay host-agnostic.
 
@@ -39,7 +39,7 @@ operation.
 ## Tool Selection Authority - Hard Rule
 
 The current installed `SKILL.md`, `AGENTS.md`, and live MCP tool descriptions
-are the authoritative instructions for Revit MCP work. They override Codex
+are the authoritative instructions for revAgent work. They override Codex
 memory, older chat history, older examples, and any remembered raw C# workflow.
 
 Before using a remembered pattern, check whether the current runtime has a
@@ -75,7 +75,7 @@ schedule-spreadsheet reconciliation requests, and manual transaction/write
 guards should be surfaced as human-reviewed candidates while the agent still
 uses the dedicated production tools above whenever they cover the task.
 
-**Runtime server (`revit-mcp`)** - dynamic execution plus read-only context:
+**Runtime server (`revAgent`)** - dynamic execution plus read-only context:
 
 This runtime surface is intentionally reusable: live Revit execution, model
 context, view/focus helpers, parameter inspection, controlled parameter and
@@ -92,7 +92,7 @@ JSON-RPC `result` object. Treat that as a per-response capability signal; older
 DLLs and raw dynamic snippets can still require the runtime compatibility
 normalizer.
 
-- `list_revit_instances` - discover reachable Revit MCP instances and ports
+- `list_revit_instances` - discover reachable revAgent Revit instances and ports
 - `get_revit_mcp_status` - read active/recent task status without waiting
   behind the active command lock; default output is compact, with optional
   recent task limits and transport diagnostics for troubleshooting. It also
@@ -125,7 +125,7 @@ normalizer.
 - `close_view` - close an open Revit UI view tab without opening a transaction
 - `clear_selection` - clear the current Revit UI selection without opening a
   transaction or modifying model/view data
-- `delete_review_view` - dry-run or delete an explicit revAgent/Revit MCP
+- `delete_review_view` - dry-run or delete an explicit revAgent
   review 3D view. It blocks production, active, and open views; commit requires
   `mode: "commit"` and `confirmDelete: true`. It recognizes guarded
   review/focus/coordination/QA 3D view names, including `revAgent_QA_*` names
@@ -307,7 +307,7 @@ normalizer.
   `expectedCurrentText`, guards standard schedule body cells as
   `non_writable_standard_body_cell`, and verifies committed cell text.
 
-**API docs server (`revit-api-docs`)** - required companion:
+**API docs server (`revAgent-api-docs`)** - required companion:
 
 - `search_api`
 - `get_type_details`
@@ -323,7 +323,7 @@ For Revit parameter access, `get_member_details` accepts the common C# alias
 `Element.get_Parameter(...)` and resolves it to the XML-doc `Element.Parameter`
 property. `LookupParameter` remains a normal method lookup.
 
-The two servers are designed to work together: `revit-api-docs`
+The two servers are designed to work together: `revAgent-api-docs`
 resolves the exact API surface against the locally installed Revit DLLs
 and XML, then `send_code_to_revit` runs the verified snippet. Treat the
 docs server as a hard dependency, not an optional add-on. If it is not
@@ -332,13 +332,13 @@ guesses API names.
 
 Default workflow for every Revit runtime task:
 
-0. Before sending any non-status Revit MCP runtime command, call
+0. Before sending any non-status revAgent runtime command, call
    `get_revit_mcp_status`. If `activeTask` is not null, do not send a new
    Revit command. Report the active task name and elapsed time, then wait or
    poll `get_revit_mcp_status` until the active task clears. Keep routine
    checks compact; request diagnostics only while troubleshooting. This
    preflight is required even before the first context call.
-1. Do not run Revit MCP runtime tools in parallel. Revit API execution is
+1. Do not run revAgent runtime tools in parallel. Revit API execution is
    single-threaded through the Revit UI process, and overlapping MCP calls can
    leave the socket service alive while the command handler is still busy.
    Run one runtime call, wait for it to return, then send the next one. The
@@ -451,7 +451,7 @@ tool.
 
 ## Visual QA Playbook
 
-For visual QA after any Revit MCP operation, use `export_revit_view_image` for
+For visual QA after any revAgent operation, use `export_revit_view_image` for
 raw plan/view/sheet evidence and `export_revit_coordination_image` as the
 default element-evidence export when dense MEP systems need a focused 3D review
 image. Prefer PNG at 300 DPI. For full plans,
@@ -552,7 +552,7 @@ Use this playbook for common view and focus requests:
   only when the user asks for clipping/isolation or the workflow explicitly
   needs it.
 - When the user asks to clean up after a live test, use `clear_selection` for
-  selected elements and `delete_review_view` for explicit revAgent/Revit MCP
+  selected elements and `delete_review_view` for explicit revAgent
   review 3D views. Do not use raw C# just to clear selection or delete a test
   review view. Keep `delete_review_view` in dry-run until the target and guard
   reason are visible, then commit only with explicit confirmation.
@@ -717,7 +717,7 @@ try
     Parameter p = element.LookupParameter("Comments");
     if (p != null && !p.IsReadOnly)
     {
-        p.Set("Updated by Revit MCP");
+        p.Set("Updated by revAgent");
     }
     return "OK";
 }
@@ -760,7 +760,7 @@ Load these as needed for the current task:
 - `references/linked-models.md` - linked architectural model lookup, room
   matching, nearest-room fallback, level lock, performance patterns,
   CSV/Excel export safety, identity strategy, debug workflow, and the
-  required `revit-api-docs` server workflow
+  required `revAgent-api-docs` server workflow
 - `references/patterns/boq-duct.cs` - duct BOQ by system + size
 - `references/patterns/boq-pipe.cs` - pipe BOQ by system + diameter
 - `references/patterns/segment-friction-loss-duct.cs` - approximate duct

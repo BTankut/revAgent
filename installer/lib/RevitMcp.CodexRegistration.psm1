@@ -50,6 +50,29 @@ function Set-RevitMcpCodexMcpServerConfig {
     return $ConfigPath
 }
 
+function Remove-RevitMcpCodexMcpServerConfig {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigPath,
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        return $ConfigPath
+    }
+
+    $existing = Get-Content -Raw -LiteralPath $ConfigPath
+    $sectionPattern = "(?ms)^\[mcp_servers\.$([regex]::Escape($Name))\]\s*.*?(?=^\[|\z)"
+    $updated = [regex]::Replace($existing, $sectionPattern, "")
+    $updated = [regex]::Replace($updated, '(\r?\n){3,}', "`r`n`r`n").TrimEnd() + "`r`n"
+
+    if ($updated -ne $existing) {
+        Set-Content -LiteralPath $ConfigPath -Value $updated -Encoding UTF8
+    }
+    return $ConfigPath
+}
+
 function Set-RevitMcpTomlScalar {
     param(
         [Parameter(Mandatory = $true)]
@@ -278,10 +301,14 @@ function Register-RevitMcpCodexMcpServersInConfig {
         [string]$DocsServerPath
     )
 
-    [void](Set-RevitMcpCodexMcpServerConfig -ConfigPath $ConfigPath -Name "revit-mcp" -Command $NodePath -McpArgs @($RuntimeServerPath))
-    [void](Set-RevitMcpCodexMcpServerConfig -ConfigPath $ConfigPath -Name "revit-api-docs" -Command $NodePath -McpArgs @($DocsServerPath))
+    foreach ($legacyName in @("revit-mcp", "revit-api-docs")) {
+        [void](Remove-RevitMcpCodexMcpServerConfig -ConfigPath $ConfigPath -Name $legacyName)
+    }
+
+    [void](Set-RevitMcpCodexMcpServerConfig -ConfigPath $ConfigPath -Name "revAgent" -Command $NodePath -McpArgs @($RuntimeServerPath))
+    [void](Set-RevitMcpCodexMcpServerConfig -ConfigPath $ConfigPath -Name "revAgent-api-docs" -Command $NodePath -McpArgs @($DocsServerPath))
     [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $ConfigPath)
     return $ConfigPath
 }
 
-Export-ModuleMember -Function ConvertTo-RevitMcpTomlString, Set-RevitMcpCodexMcpServerConfig, Set-RevitMcpCodexMemoryConfig, Set-RevitMcpCurrentProcessUtf8Console, Set-RevitMcpPowerShellUtf8ConsoleConfig, Register-RevitMcpCodexMcpServersInConfig
+Export-ModuleMember -Function ConvertTo-RevitMcpTomlString, Set-RevitMcpCodexMcpServerConfig, Remove-RevitMcpCodexMcpServerConfig, Set-RevitMcpCodexMemoryConfig, Set-RevitMcpCurrentProcessUtf8Console, Set-RevitMcpPowerShellUtf8ConsoleConfig, Register-RevitMcpCodexMcpServersInConfig

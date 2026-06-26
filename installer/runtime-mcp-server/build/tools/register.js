@@ -61,5 +61,5 @@ export async function registerTools(server) {
     registerSetElementParameterTool(telemetryServer);
     registerSetScheduleCellsTool(telemetryServer);
     registerSetScheduleCellsByTextTool(telemetryServer);
-    console.error("Registered 30 Revit MCP tools");
+    console.error("Registered 30 revAgent tools");
 }

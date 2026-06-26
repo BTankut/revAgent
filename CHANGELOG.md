@@ -4,6 +4,11 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Renamed user-facing front-layer branding to revAgent across Codex MCP
+  registration (`revAgent`, `revAgent-api-docs`), user-pack instructions,
+  runtime tool descriptions, Revit UI/add-in labels, installer launchers, and
+  operator docs while keeping deep `revit-mcp` implementation identifiers for
+  a later migration phase.
 - Added a rollout closure audit wrapper that persists a timestamped readiness
   snapshot and can fail handoff automation when machine or rollout actions
   remain open.

@@ -89,7 +89,7 @@ namespace RevitMCPCommandSet.Commands.View
 
                 if (!isReviewView)
                 {
-                    Complete(BuildGuarded(document, uiDocument, targetSummary, "non_review_view_delete_blocked", "Only revAgent/Revit MCP review, focus, or coordination 3D views can be deleted by this tool.", reviewSignals));
+                    Complete(BuildGuarded(document, uiDocument, targetSummary, "non_review_view_delete_blocked", "Only revAgent review, focus, or coordination 3D views can be deleted by this tool.", reviewSignals));
                     return;
                 }
 

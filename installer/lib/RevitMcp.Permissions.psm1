@@ -47,7 +47,7 @@ function Get-RevitMcpManagedPermissionTargets {
 
     $targets = [System.Collections.Generic.List[object]]::new()
     foreach ($entry in @(
-            @{ Path = $InstallRoot; Label = "Revit MCP install root" },
+            @{ Path = $InstallRoot; Label = "revAgent install root" },
             @{ Path = $WorkRoot; Label = "updater work root" },
             @{ Path = $PackageTarget; Label = "package target" },
             @{ Path = $ServerTarget; Label = "runtime target" },
@@ -66,7 +66,7 @@ function Get-RevitMcpManagedPermissionTargets {
 
     if (-not [string]::IsNullOrWhiteSpace($AllUsersAddinRoot)) {
         $targets.Add((New-RevitMcpPermissionTarget -Path $AllUsersAddinRoot -Label "Revit $RevitVersion addin root" -CreateDirectory))
-        $targets.Add((New-RevitMcpPermissionTarget -Path (Join-Path $AllUsersAddinRoot "mcp-servers-for-revit.addin") -Label "Revit MCP addin manifest" -Kind File))
+        $targets.Add((New-RevitMcpPermissionTarget -Path (Join-Path $AllUsersAddinRoot "mcp-servers-for-revit.addin") -Label "revAgent add-in manifest" -Kind File))
     }
 
     foreach ($fileName in @(

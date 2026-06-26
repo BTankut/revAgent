@@ -18,11 +18,11 @@ function parsePort(value, fallback) {
         if (fallback !== undefined) {
             return fallback;
         }
-        throw new Error("Invalid Revit MCP port: empty value");
+        throw new Error("Invalid revAgent port: empty value");
     }
     const port = Number.parseInt(String(value), 10);
     if (!Number.isFinite(port) || port < 1 || port > 65535) {
-        throw new Error(`Invalid Revit MCP port: ${value}`);
+        throw new Error(`Invalid revAgent port: ${value}`);
     }
     return port;
 }
@@ -163,7 +163,7 @@ export function resolveRevitConnectionTarget(options = {}) {
         if (registryTarget) {
             return registryTarget;
         }
-        throw new Error(`Unknown Revit MCP target '${requestedTarget}'. Use a port number, host:port, or a registered instance name.`);
+        throw new Error(`Unknown revAgent target '${requestedTarget}'. Use a port number, host:port, or a registered instance name.`);
     }
     return {
         host: fallbackHost,
@@ -240,7 +240,7 @@ async function acquireRevitCommandLock(target, waitMs = LOCK_WAIT_MS) {
             }
             removeStaleLock(lockDir);
             if (Date.now() - started >= waitMs) {
-                throw new Error(`Revit MCP target ${target.host}:${target.port} is busy; a previous Revit command is still running. Refusing to send another request.`);
+                throw new Error(`revAgent target ${target.host}:${target.port} is busy; a previous Revit command is still running. Refusing to send another request.`);
             }
             await sleep(LOCK_POLL_MS);
         }
@@ -268,7 +268,7 @@ export async function withRevitConnection(operation, options = {}) {
                     revitClient.socket.removeListener("connect", onConnect);
                     revitClient.socket.removeListener("error", onError);
                     clearTimeout(timeoutHandle);
-                    reject(new Error(`connect to Revit MCP target ${target.host}:${target.port} failed`));
+                    reject(new Error(`connect to revAgent target ${target.host}:${target.port} failed`));
                 };
                 revitClient.socket.on("connect", onConnect);
                 revitClient.socket.on("error", onError);
@@ -276,7 +276,7 @@ export async function withRevitConnection(operation, options = {}) {
                 timeoutHandle = setTimeout(() => {
                     revitClient.socket.removeListener("connect", onConnect);
                     revitClient.socket.removeListener("error", onError);
-                    reject(new Error(`connect to Revit MCP target ${target.host}:${target.port} timed out`));
+                    reject(new Error(`connect to revAgent target ${target.host}:${target.port} timed out`));
                 }, options.connectTimeoutMs || 5000);
                 if (typeof timeoutHandle.unref === "function") {
                     timeoutHandle.unref();

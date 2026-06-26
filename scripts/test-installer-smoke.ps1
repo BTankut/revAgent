@@ -461,6 +461,22 @@ try {
     Assert-True ($guiText -notmatch 'Guncelle|Surum|Kapat|Kurulum|Kanal|Hazir|Islem|Calisiyor|Baslatilamadi|bulunamadi|hata') "GUI product strings must remain English."
     Assert-True ($guiText -notmatch 'Revit MCP Installer|Revit MCP install and update|Stable Restore|Stable channel|Stable version') "GUI product labels must not expose internal MCP wording or legacy channel wording."
 
+    Write-Host "Test revAgent user-facing MCP naming"
+    $codexRegistrationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.CodexRegistration.psm1")
+    $runtimeIndexText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\index.ts")
+    $statusToolText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_revit_mcp_status.ts")
+    $listInstancesToolText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\list_revit_instances.ts")
+    $userSkillText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\codex-user\SKILL.md")
+    $userAgentsText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\codex-user\AGENTS.md")
+    Assert-True ($codexRegistrationText -match '-Name "revAgent"' -and $codexRegistrationText -match '-Name "revAgent-api-docs"') "Codex MCP registration must use revAgent-facing names."
+    Assert-True ($codexRegistrationText -match '"revit-mcp", "revit-api-docs"') "Codex MCP registration must remove legacy user-facing names."
+    Assert-True ($codexRegistrationText -notmatch 'Set-RevitMcpCodexMcpServerConfig[^\r\n]+-Name "revit-mcp"') "Codex MCP registration must not add the legacy runtime name."
+    Assert-True ($runtimeIndexText -match 'name:\s*"revAgent"' -and $runtimeIndexText -notmatch 'name:\s*"revit-mcp"') "Runtime MCP server metadata must expose revAgent."
+    Assert-True ($statusToolText -notmatch 'Read the Revit MCP task status' -and $statusToolText -match 'Read the revAgent task status') "Status tool description must use revAgent wording."
+    Assert-True ($listInstancesToolText -notmatch 'Revit MCP socket instances' -and $listInstancesToolText -match 'revAgent Revit bridge instances') "Instance discovery tool description must use revAgent wording."
+    Assert-True ($userSkillText -notmatch 'Revit MCP runtime|Revit MCP review|Revit MCP runtime tools|name: revit-mcp') "User-pack SKILL.md must not expose legacy product wording."
+    Assert-True ($userAgentsText -notmatch 'Revit MCP runtime|Revit MCP work|Revit MCP Coordination|revAgent/Revit MCP') "User-pack AGENTS.md must not expose legacy product wording."
+
     Write-Host "Test Revit task status window product surface"
     $taskStatusXaml = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\UI\McpTaskStatusWindow.xaml")
     $taskStatusCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\UI\McpTaskStatusWindow.xaml.cs")
@@ -946,6 +962,7 @@ try {
     Assert-True ($publishText -match 'installer\\codex-user\\SKILL\.md') "Publish must use the user orchestration SKILL.md."
     Assert-True ($publishText -match 'Copy-UserPackFile -SourceRelativePath "CHANGELOG\.md"' -and $publishText -match 'changelog = "CHANGELOG\.md"') "User pack must include the changelog and hash it in the release manifest."
     Assert-True ($publishText -match 'update-from-nas\.ps1' -and $publishText -match 'show-installed-version\.ps1' -and $publishText -match 'install-updater-task\.ps1') "User pack must include only workstation updater entrypoints from installer\\nas."
+    Assert-True ($publishText -match 'revAgent Updater STABLE\.cmd' -and $publishText -match 'Install-revAgent-Updater-GUI\.cmd' -and $publishText -match 'Install-revAgent-Updater\.cmd') "NAS tools must publish revAgent-named user launcher files."
     Assert-True ($publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\runtime-mcp-server"' -and $publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\revit-api-docs-mcp"') "User pack must use hardened MCP release bundles instead of developer build trees."
     Assert-True ($publishText -match 'Assert-RevitMcpUserPackNoSourceLeak -Root \$packageRoot') "Publish must gate the user pack against source/developer artifact leaks."
     Assert-True ($publishText -match 'Assert-RevitMcpUserPackDotNetPayloadHardened -Root \$packageRoot') "Publish must gate the user pack against .NET debug symbol artifacts."
@@ -1012,13 +1029,14 @@ try {
     Assert-Equal (ConvertTo-RevitMcpProxyUrl -Value "192.168.90.10 6588") "http://192.168.90.10:6588" "Proxy URL normalization failed."
     Assert-Equal (ConvertTo-RevitMcpWinHttpProxyServer -Value "http://192.168.90.10:6588") "192.168.90.10:6588" "WinHTTP proxy normalization failed."
     $codexConfig = Join-Path $tempRoot "config.toml"
-    Set-Content -LiteralPath $codexConfig -Value "model = `"gpt-5.5`"`r`nservice_tier = `"priority`"`r`n" -Encoding UTF8
+    Set-Content -LiteralPath $codexConfig -Value "model = `"gpt-5.5`"`r`nservice_tier = `"priority`"`r`n`r`n[mcp_servers.revit-mcp]`r`ncommand = `"old-node.exe`"`r`nargs = [`"old-runtime.js`"]`r`n`r`n[mcp_servers.revit-api-docs]`r`ncommand = `"old-node.exe`"`r`nargs = [`"old-docs.js`"]`r`n" -Encoding UTF8
     Register-RevitMcpCodexMcpServersInConfig -ConfigPath $codexConfig -NodePath "node.exe" -RuntimeServerPath "runtime\build\index.js" -DocsServerPath "docs\build\index.js" | Out-Null
     $codexText = Get-Content -Raw -LiteralPath $codexConfig
     Assert-True ($codexText -match '(?m)^service_tier\s*=\s*"fast"\s*$') "Codex service_tier must be normalized to the current Codex CLI-supported fast tier."
     Assert-True ($codexText -notmatch '(?m)^service_tier\s*=\s*"priority"\s*$') "Codex service_tier must not keep the obsolete priority value."
-    Assert-True ($codexText -match '\[mcp_servers\.revit-mcp\]') "Codex runtime MCP section was not written."
-    Assert-True ($codexText -match '\[mcp_servers\.revit-api-docs\]') "Codex docs MCP section was not written."
+    Assert-True ($codexText -match '\[mcp_servers\.revAgent\]') "Codex revAgent MCP section was not written."
+    Assert-True ($codexText -match '\[mcp_servers\.revAgent-api-docs\]') "Codex revAgent API docs MCP section was not written."
+    Assert-True ($codexText -notmatch '\[mcp_servers\.revit-mcp\]' -and $codexText -notmatch '\[mcp_servers\.revit-api-docs\]') "Legacy Codex MCP section names must be removed from user-facing config."
     Assert-True ($codexText -match '(?m)^\[features\]\s*$') "Codex features section was not written."
     Assert-True ($codexText -match '(?m)^memories\s*=\s*true\s*$') "Codex memories feature was not enabled."
     Assert-True ($codexText -match '(?m)^chronicle\s*=\s*false\s*$') "Codex chronicle feature was not disabled."

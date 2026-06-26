@@ -133,7 +133,7 @@
                                            "website":  "",
                                            "organization":  "mcp-servers-for-revit"
                                        },
-                         "description":  "Dry-run or delete an explicit revAgent/Revit MCP review 3D view with guarded production-view protection"
+                         "description":  "Dry-run or delete an explicit revAgent review 3D view with guarded production-view protection"
                      },
                      {
                          "commandName":  "get_ui_state",

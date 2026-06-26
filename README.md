@@ -1,7 +1,7 @@
 # revAgent Workstation Package - Production Monorepo
 
-This repo packages the revAgent workstation product: the `revit-mcp` skill,
-Revit add-in source and payload, bundled local runtime MCP server, required
+This repo packages the revAgent workstation product: the installed Codex skill,
+Revit add-in source and payload, bundled local revAgent runtime server, required
 companion Revit API docs MCP server, installer, NAS updater, and deployment
 documentation in one place.
 
@@ -12,7 +12,8 @@ JavaScript bundles, runtime-only npm manifests, Revit DLL payloads,
 installer/updater helpers, release metadata, and the minimal installed Codex
 orchestration files.
 
-Product-facing documentation should use **revAgent**. The names `revit-mcp`,
+Product-facing documentation should use **revAgent**. Codex MCP entries should
+appear as `revAgent` and `revAgent-api-docs`. The internal names `revit-mcp`,
 `RevitMCP*`, `mcp-servers-for-revit`, and `C:\ProgramData\DPE\RevitMCP`
 remain exact implementation, tool, package, manifest, and path identifiers.
 
@@ -136,12 +137,12 @@ powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-conta
 
 cd C:\ProgramData\DPE\RevitMCP\runtime
 npm install --omit=dev --no-audit --no-fund
-codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
+codex mcp add revAgent -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
 
 cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev --no-audit --no-fund
 powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
-codex mcp add revit-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
+codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
 
 Both MCP servers are required: the runtime server executes code, the docs server resolves the API surface against the locally installed Revit DLLs and XML. The skill assumes both are connected.
@@ -271,7 +272,7 @@ are written to the add-in log under
 The runtime performs a status preflight before every non-status Revit command.
 If `activeTask` is present, the new command is rejected with a busy message
 instead of being sent into Revit. `get_revit_mcp_status` remains the only tool
-that may be called while another Revit MCP task is running.
+that may be called while another revAgent task is running.
 Wrapper tools that send nested dynamic Revit commands preserve
 `wrapperAction`, `logicalToolName`, and parent task metadata so audit surfaces
 can show the public tool name instead of only `send_code_to_revit`.
@@ -303,7 +304,7 @@ Then:
 2. If Revit asks about the unsigned add-in publisher, choose `Always Load`.
    This can appear once after a fresh install or DLL update.
 3. The MCP socket service starts automatically. The current legacy ribbon
-   button label `Revit MCP Switch` is only a manual on/off override for
+   button label `revAgent Bridge` is only a manual on/off override for
    revAgent's socket bridge.
 4. Click `Settings` in the `mcp-servers-for-revit` ribbon tab if you need to
    enable or review command availability. Treat that tab name as the installed
@@ -447,7 +448,7 @@ Use this order on a fresh machine. In the office, the preferred path is to
 double-click the NAS updater:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater.cmd
 ```
 
 Manual repo-root install:
@@ -476,7 +477,7 @@ npm install --omit=dev --no-audit --no-fund
 6. Register the runtime MCP server in Codex:
 
 ```powershell
-codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
+codex mcp add revAgent -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
 ```
 
 7. Install and register the required docs MCP server:
@@ -485,7 +486,7 @@ codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index
 cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev --no-audit --no-fund
 powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
-codex mcp add revit-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
+codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
 
 8. Reload Codex skills:
@@ -551,7 +552,7 @@ optional live commandset gate separately:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-live.ps1
 ```
 
-This live gate connects to the Revit MCP socket, performs a status preflight
+This live gate connects to the revAgent Revit bridge, performs a status preflight
 before each non-status command, and validates `transactionMode` behavior,
 guarded manual-transaction handling, manual rollback in `none`, and
 `Newtonsoft.Json.JsonConvert` dynamic compilation. For bridge result contract
@@ -585,8 +586,8 @@ codex mcp list
 
 Expected MCP servers:
 
-- `revit-mcp`
-- `revit-api-docs`
+- `revAgent`
+- `revAgent-api-docs`
 
 11. If the installer stops with a Roslyn runtime error, repair the Revit 2022 installation first. Do not try to fix a normal end-user install by adding NuGet packages into the deployed bundle.
 
@@ -642,7 +643,7 @@ $RepoRoot = (Resolve-Path .).Path
 cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev --no-audit --no-fund
 powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
-codex mcp add revit-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
+codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
 
 On first query, the docs server builds a local cache from the installed `RevitAPI*.dll` and matching `RevitAPI*.xml` files under the Revit install folder.
@@ -747,12 +748,12 @@ After the script finishes:
 
 The office installation flow registers MCP servers through the current user's installed Codex Desktop command on Windows, with a direct `config.toml` update fallback when that command helper is missing. It also writes the standard Codex memory configuration and normalizes `service_tier = "fast"` idempotently under `%USERPROFILE%\.codex\config.toml`. The skill itself is host-agnostic: any MCP/skill-capable LLM host can use it if both MCP servers are registered:
 
-- `revit-mcp` for live Revit execution and inspection
-- `revit-api-docs` for required API class/member lookup
+- `revAgent` for live Revit execution and inspection
+- `revAgent-api-docs` for required API class/member lookup
 
 Host-specific notes:
 
-- **Claude Code**: copy the repo root into `~/.claude/skills/revit-mcp/` and register both MCP servers with `claude mcp add`. The `send_code_to_revit` tool will surface as `mcp__revit-mcp__send_code_to_revit`.
+- **Claude Code**: copy the repo root into the desired skill location and register both MCP servers with `claude mcp add`. The `send_code_to_revit` tool should surface under the `revAgent` MCP server prefix.
 - **Cursor**: place the repo under your skills/rules location and register both MCP servers in Cursor's MCP settings.
 - **Codex Desktop**: see the Quick start section above.
 
@@ -772,7 +773,7 @@ small production surface instead of many narrow one-off commands.
 | Review and reconciliation | `reconcile_schedule_excel` | Runtime-only, review-first, and write-free. It ingests explicit `.xlsx`, `.csv`, `.tsv`, or `rows` input plus normalized `inspect_schedules` evidence, applies deterministic matching/scoring, and returns compact `reviewTable`, `evidenceRows`, and count metadata by default. Use `responseMode="full"`/`"debug"` for raw `reviewRows`, token profiles, raw cells, and nested candidates. Accepted edits route separately through `set_schedule_cells`, `set_schedule_cells_by_text`, or a workbook-specific workflow after human review. |
 | Controlled data writes | `set_element_parameter`, `set_schedule_cells`, `set_schedule_cells_by_text` | `set_element_parameter` is the production-safe single-parameter set/clear path. It defaults to `mode="dryRun"` and `operation="set"`, performs exact `inspect_parameter_schema`-style identity resolution, blocks duplicate display names/read-only parameters/type writes without explicit approval, commits only with `mode="commit"`, and verifies the value by reading it back. `operation="clear"` attempts Revit `Parameter.ClearValue` for a true no-value state and reports `clear_value_not_supported` instead of faking clear with an empty string when Revit does not support it. `operation="clearVisibleValue"` is the explicit string-only visible cleanup path; it writes an empty string and reports that Revit may keep `HasValue=true`. `set_schedule_cells` writes exact schedule cells only by `scheduleId`, `section`, `row`, and `column`; it defaults to dry-run, can require `expectedCurrentText`, guards non-writable standard schedule body cells as `non_writable_standard_body_cell`, commits through the wrapper transaction, and verifies committed cell text. `set_schedule_cells_by_text` is the higher-level schedule workflow for bounded sheet/schedule scope plus row-text matching; it blocks ambiguous matches by default, supports `expectedCurrentText`, defaults to dry-run, guards the same standard body-cell restriction, and verifies commit readback. |
 | Live view navigation | `list_open_views`, `activate_view`, `close_view`, `clear_selection`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. `clear_selection` only clears the current UI selection and opens no transaction. |
-| View-data writes | `section_box_elements`, `create_3d_view_for_elements`, `delete_review_view` | Can modify project view data by applying section boxes, creating/reusing 3D review views, or deleting guarded revAgent/Revit MCP review views. `delete_review_view` defaults to dry-run, recognizes guarded review/focus/coordination/QA 3D view names such as `revAgent_QA_*`, blocks production/active/open views, and requires `mode="commit"` plus `confirmDelete=true`. Compact responses group delete-specific diagnostics under `cleanup`; request `responseMode="full"` for the raw native cleanup contract. Use explicit intent and verify afterward. |
+| View-data writes | `section_box_elements`, `create_3d_view_for_elements`, `delete_review_view` | Can modify project view data by applying section boxes, creating/reusing 3D review views, or deleting guarded revAgent review views. `delete_review_view` defaults to dry-run, recognizes guarded review/focus/coordination/QA 3D view names such as `revAgent_QA_*`, blocks production/active/open views, and requires `mode="commit"` plus `confirmDelete=true`. Compact responses group delete-specific diagnostics under `cleanup`; request `responseMode="full"` for the raw native cleanup contract. Use explicit intent and verify afterward. |
 | Image artifacts | `export_revit_view_image`, `export_revit_coordination_image` | `export_revit_view_image` supports active/requested views, DrawingSheet export, and direct Schedule export through a temporary sheet that is deleted before the wrapper transaction commits. Ordinary view/sheet exports are read-only. `export_revit_coordination_image` writes only review view settings and image export settings, never ducts, pipes, fittings, terminals, or other physical model elements; if requested `elementIds` are all missing it returns guarded `no_requested_elements_found` unless `allowFullViewFallback=true` is explicit. `cleanupAfterExport=true` deletes a review view created by that export after the image file is produced. It can still leave Revit's document dirty flag set because temporary review view data was created/deleted inside a transaction. |
 
 The Revit add-in command payload still provides the low-level dynamic execution
@@ -1040,7 +1041,7 @@ matching, nearest-room fallback, custom filters, unusual type/instance parameter
 fallbacks, bulk exports, or CSV/XLSX output preparation.
 
 When raw execution is needed, the agent should state the missing capability,
-verify non-trivial API symbols through `revit-api-docs`, keep the snippet small,
+verify non-trivial API symbols through `revAgent-api-docs`, keep the snippet small,
 use `send_code_to_revit_safe` for read-only probes and previews, and promote
 repeated raw-code patterns into native runtime tools.
 
@@ -1048,7 +1049,7 @@ repeated raw-code patterns into native runtime tools.
 
 `SKILL.md` and `AGENTS.md` should strongly document:
 
-- call `get_revit_mcp_status` before every non-status Revit MCP runtime task
+- call `get_revit_mcp_status` before every non-status revAgent runtime task
 - use dedicated runtime tools before raw dynamic code
 - use `inspect_sheet_text`, `inspect_schedules`, `count_annotations`,
   `reconcile_schedule_excel`, `set_schedule_cells`,

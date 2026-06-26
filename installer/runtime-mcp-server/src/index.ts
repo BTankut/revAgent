@@ -4,7 +4,7 @@ import { registerTools } from "./tools/register.js";
 import { recordRuntimeSessionStart } from "./utils/telemetry.js";
 
 const server = new McpServer({
-    name: "revit-mcp",
+    name: "revAgent",
     version: "1.0.0",
 });
 
@@ -13,9 +13,9 @@ async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     recordRuntimeSessionStart();
-    console.error("Revit MCP Server start success");
+    console.error("revAgent runtime start success");
 }
 main().catch((error) => {
-    console.error("Error starting Revit MCP Server:", error);
+    console.error("Error starting revAgent runtime:", error);
     process.exit(1);
 });

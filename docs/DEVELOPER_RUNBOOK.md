@@ -45,7 +45,7 @@ before making changes:
 8. `SKILL.md`
 
 If Revit automation will be tested live, also read the installed or repo copy of
-`SKILL.md` and follow the Revit MCP status preflight rule before every
+`SKILL.md` and follow the revAgent status preflight rule before every
 non-status runtime command.
 
 ## Repository Map
@@ -551,9 +551,9 @@ The hook runs `scripts/test-pre-push.ps1`, which performs the fast forced
 strict TypeScript checks and the `@ts-nocheck` policy check. It is an early
 local warning only; CI plus branch protection remains the authoritative gate.
 
-## Revit MCP Runtime Rule
+## revAgent Runtime Rule
 
-Before every non-status Revit MCP runtime command:
+Before every non-status revAgent runtime command:
 
 1. Call `get_revit_mcp_status`.
 2. If `activeTask` is present, do not send a new command.
@@ -569,7 +569,7 @@ transport, or runtime issue. The status payload includes `runtimeIdentity` (`run
 `resultContractVersion`; check it when a workstation may be running an older
 runtime after an update or restart.
 
-Do not run Revit MCP runtime commands in parallel. The only exception is
+Do not run revAgent runtime commands in parallel. The only exception is
 status polling while a task is already active.
 
 This rule catches MCP tasks, not every manual user action in Revit. If the user
@@ -587,7 +587,7 @@ powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-conta
 For office-style testing, prefer the NAS GUI updater:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater-GUI.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater-GUI.cmd
 ```
 
 Live smoke test after install:
@@ -1007,17 +1007,17 @@ Dependency restore note:
 Stable workstation GUI:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater-GUI.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater-GUI.cmd
 ```
 
 Single-file desktop launchers:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater STABLE.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\revAgent Updater STABLE.cmd
 ```
 
 Use the single-file launchers when copying a `.cmd` to a workstation desktop.
-The generic `Install-Revit-MCP-Updater-GUI.cmd` is meant to run from the NAS
+The generic `Install-revAgent-Updater-GUI.cmd` is meant to run from the NAS
 `tools\` folder because it expects `Install-Revit-MCP-Updater-GUI.ps1` beside
 it.
 
@@ -1241,7 +1241,7 @@ When behavior changes, update the relevant docs in the same commit:
 - `README.md` for main repo orientation
 - `docs/DEVELOPER_RUNBOOK.md` for development and release process changes
 - `installer/nas/README.md` for workstation updater workflow changes
-- `SKILL.md` and `AGENTS.md` for live Revit MCP coordination rules
+- `SKILL.md` and `AGENTS.md` for live revAgent coordination rules
 - Product-facing docs should say `revAgent`; exact implementation identities
   should stay unchanged when they are tool, path, manifest, package, or server
   names.

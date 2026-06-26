@@ -87,7 +87,7 @@ namespace revit_mcp_plugin.Core
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Trace.WriteLine($"Failed to auto-start Revit MCP socket service: {ex}");
+                System.Diagnostics.Trace.WriteLine($"Failed to auto-start revAgent bridge service: {ex}");
             }
         }
 

@@ -267,7 +267,7 @@ namespace RevitMCPCommandSet.Commands.View
                 return failure;
             }
 
-            using (Transaction transaction = new Transaction(document, "Revit MCP section box elements"))
+            using (Transaction transaction = new Transaction(document, "revAgent section box elements"))
             {
                 transaction.Start();
                 string boundaryWarning;

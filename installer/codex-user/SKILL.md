@@ -1,9 +1,9 @@
 ---
-name: revit-mcp
+name: revAgent
 description: >
   revAgent Revit MEP production assistant for HVAC, plumbing, fire protection,
   smoke control, quantity takeoff, schedules, documentation, and visual QA
-  through the installed Revit MCP runtime. Use this skill for live Revit model
+  through the installed revAgent runtime. Use this skill for live Revit model
   inspection, controlled model edits, sheet/schedule review, image export, and
   mechanical MEP engineering workflows.
 license: UNLICENSED
@@ -31,19 +31,19 @@ from other users, models, systems, or older sessions into the current task
 without checking the active model state.
 
 Use memory as background only. The current installed `SKILL.md`, installed
-`AGENTS.md`, live MCP tool descriptions, and live Revit model data are the
+`AGENTS.md`, live revAgent tool descriptions, and live Revit model data are the
 authority for tool choice and safety.
 
 ## Status Preflight
 
-Before every non-status Revit MCP runtime task:
+Before every non-status revAgent runtime task:
 
 1. Call `get_revit_mcp_status`.
 2. If `activeTask` is populated, do not send a new Revit command.
 3. Tell the user the active task name and elapsed time.
 4. During waits, poll only with `get_revit_mcp_status`.
 5. Continue only after `activeTask` is clear.
-6. Do not run Revit MCP runtime tools in parallel. The only exception is
+6. Do not run revAgent runtime tools in parallel. The only exception is
    `get_revit_mcp_status` while another task is active.
 
 ## Tool Routing
@@ -67,7 +67,7 @@ Use dedicated production tools before raw code:
 - Visual evidence/image output: `export_revit_view_image` and
   `export_revit_coordination_image`.
 - Selection cleanup: `clear_selection`.
-- revAgent/Revit MCP review 3D view cleanup: `delete_review_view`.
+- revAgent review 3D view cleanup: `delete_review_view`.
 
 Raw `send_code_to_revit` is a fallback only for unsupported cases. Before using
 it, state the missing dedicated capability, keep the snippet scoped, and verify
