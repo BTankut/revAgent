@@ -163,6 +163,12 @@ pulling and reinstalling on every machine.
 - The protected PR review/CI/merge decision is the normal human gate for
   production publish. After a protected `main` update, verify the signed CD run
   and `channels\stable.json` before manual or broad rollout instructions.
+- Before closing a workstation rollout, run the read-only readiness audit over
+  NAS stable and machine reports:
+  `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rollout-readiness.ps1`.
+  It reports version state, update failures, source-free evidence, live
+  heartbeat freshness, and the next action per machine without updating any
+  workstation.
 - Workstations run `update-from-nas.ps1`, usually through a scheduled task
   installed by `install-updater-task.ps1`; automatic checks run once daily at
   12:00 local time, while manual update/repair remains available from the
@@ -963,6 +969,11 @@ Machine cards keep independent state badges instead of one combined label:
 connection is `Online`, `Stale`, or `Offline`; version is `Up to date`,
 `Outdated`, or `Unknown`; task state is `Running` or `Idle`; update exceptions
 are shown only as `Update failed` or `Pending restart`.
+
+For deployment closure, use `scripts\check-rollout-readiness.ps1` instead of
+reading dashboard cards by eye. The dashboard is a live monitoring surface; the
+audit script produces a reproducible read-only action list from the same NAS
+stable, machine reports, migration evidence, logs, and live heartbeat files.
 
 Connection freshness is calculated from the live heartbeat: `Online` is within
 `staleSeconds` (default 60 seconds), `Stale` is older but still within

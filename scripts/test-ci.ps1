@@ -67,6 +67,7 @@ try {
     & (Join-Path $RepoRoot "scripts\test-publish-signing.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-signed-stable-readiness.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-signed-source-free-cd.ps1") -RepoRoot $RepoRoot
+    & (Join-Path $RepoRoot "scripts\test-rollout-readiness.ps1") -RepoRoot $RepoRoot
 
     foreach ($package in $packageCopies) {
         Invoke-McpPackageCommand -PackageName "$($package.Name) npm test" -PackageRoot $package.WorkCopy.PackageRoot -RepoRoot $RepoRoot -Command {

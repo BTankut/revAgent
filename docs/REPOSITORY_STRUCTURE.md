@@ -34,6 +34,7 @@ for servers, assemblies, manifests, and installed paths.
 |-- references/
 |-- scripts/
 |   |-- build-revit-plugin.ps1
+|   |-- check-rollout-readiness.ps1
 |   |-- publish-live-backfill.ps1
 |   |-- start-live-dashboard.ps1
 |   |-- test-all.ps1

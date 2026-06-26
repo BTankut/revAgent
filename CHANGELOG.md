@@ -4,6 +4,10 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added a read-only rollout readiness audit that summarizes NAS stable,
+  machine install/update reports, source-free migration evidence, live
+  heartbeat freshness, and per-machine next actions before final office
+  rollout closure.
 - Clarified developer workstation update behavior: machines with
   `codexInstructionPolicy=preserve-local` now keep local developer `AGENTS.md`
   and `SKILL.md` surfaces while still receiving signed package, runtime, Revit
