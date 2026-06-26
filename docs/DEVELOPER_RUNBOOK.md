@@ -872,8 +872,14 @@ while still cleaning package/runtime/updater backup artifacts.
 
 Normal stable updater entrypoints, including the standalone GUI launcher, check
 the managed source/developer artifact inventory before update/repair work
-starts. If artifacts remain, the GUI exposes a one-time migration path and runs
+starts. If artifacts remain, the GUI exposes a one-time migration path. If the
+installed local updater supports migration, the GUI runs
 `update-from-nas.ps1 -SourceFreeMigration` after operator confirmation. If the
+installed local updater is too old or lacks `migrate-source-free-install.ps1`
+and `installer/lib/RevitMcp.SourceFreeMigration.psm1`, the GUI falls back to the
+installer bootstrap path and passes `-RunSourceFreeMigration` to
+`install-updater-task.ps1`. That refreshes the local updater tools first and
+then runs the migration immediately in the same confirmed flow. If the
 inventory is already clean, migration does not run again and the machine follows
 the normal stable update path. Non-GUI updater runs still stop with
 `source-free-migration-required` and write a report instead of replacing the
@@ -1217,4 +1223,5 @@ After their durable decisions are reflected in `README.md`,
 `docs/PLATFORM_ARCHITECTURE.md`, `docs/DEVELOPER_RUNBOOK.md`,
 `docs/REPOSITORY_STRUCTURE.md`, `SKILL.md`, `AGENTS.md`, or `CHANGELOG.md`, keep
 local copies only under ignored `docs/_retired/` if they are still useful for
-manual reference.
+manual reference. Do not force-add retired audit or plan files to a PR; copy
+the durable decision into the active docs instead.

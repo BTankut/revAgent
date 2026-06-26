@@ -33,7 +33,7 @@ remain exact implementation, tool, package, manifest, and path identifiers.
 - `docs/PLATFORM_ARCHITECTURE.md`: current platform, bridge, runtime, telemetry, dashboard, and deployment architecture
 - `docs/REVAGENT_SIGNED_SOURCE_FREE_CD_ROLLOUT_PLAN.md`: current signed
   source-free rollout record and next-phase plan for GitHub Actions CD, NAS
-  publish verification, pilot rollout, and enforcement
+  publish verification, office rollout audit, and enforcement
 - `docs/REVAGENT_KNOW_HOW_BOUNDARY_REVIEW.md`: Phase 4 local vs service-backed
   product know-how classification
 - `docs/REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md`: Phase 5 release-origin,
@@ -399,11 +399,15 @@ backup cleanup still applies.
 
 Normal stable updater entrypoints now check the same managed source/developer
 artifact inventory before install/update work starts. If artifacts remain, the
-GUI shows a one-time migration path and runs the update with
-`-SourceFreeMigration` after operator confirmation. If the inventory is already
-clean, migration does not run again and the machine follows the normal stable
-update path. Non-GUI updater runs still stop with a migration-required report
-instead of replacing the package without that explicit migration mode.
+GUI shows a one-time migration path. When the installed local updater already
+supports source-free migration, the GUI runs that local updater with
+`-SourceFreeMigration` after operator confirmation. When the installed local
+updater is too old or is missing the migration helper, the GUI bootstraps the
+current updater tools through `install-updater-task.ps1 -RunSourceFreeMigration`
+and then runs the migration in the same confirmed flow. If the inventory is
+already clean, migration does not run again and the machine follows the normal
+stable update path. Non-GUI updater runs still stop with a migration-required
+report instead of replacing the package without that explicit migration mode.
 
 ## Roslyn dependency model
 

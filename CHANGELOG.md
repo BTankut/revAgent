@@ -4,6 +4,21 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Clarified developer workstation update behavior: machines with
+  `codexInstructionPolicy=preserve-local` now keep local developer `AGENTS.md`
+  and `SKILL.md` surfaces while still receiving signed package, runtime, Revit
+  payload, reporting, and source-free cleanup updates.
+- Clarified the GUI source-free migration path for older local updater
+  toolchains: if migration is required but the installed local updater does not
+  support `-SourceFreeMigration`, the GUI bootstraps the current updater tools
+  with `-RunSourceFreeMigration` and runs the migration after the same operator
+  confirmation.
+- Updated the updater GUI package label so developer workstations explicitly
+  show that local Codex instructions are preserved instead of only showing the
+  generic workstation package text.
+- Cleaned documentation ownership: retired audit/plan files stay under ignored
+  `docs/_retired/`, and durable rollout decisions are carried by the active
+  README, runbook, architecture, and rollout documents.
 - Hardened signed source-free deployment after the PR #74-#97 audit: trusted
   release keys now make updater integrity enforcement the default, unsigned
   fallback is blocked after any signed release is accepted, stored signed

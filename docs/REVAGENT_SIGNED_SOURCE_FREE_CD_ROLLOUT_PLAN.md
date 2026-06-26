@@ -15,37 +15,42 @@ design changes that boundary.
 - Source-free user pack, JavaScript hardening, managed debug-symbol stripping,
   know-how boundary review, distribution-integrity primitives, optional
   license-seat verification, source-free migration tooling, signed-stable
-  readiness preflight, GitHub Actions signed source-free CD, and production
-  signing/NAS publish automation are implemented.
+  readiness preflight, GitHub Actions signed source-free CD, production
+  signing/NAS publish automation, self-hosted CI/CD runners, developer
+  `preserve-local` Codex instruction policy, and GUI migration bootstrap for
+  older local updater toolchains are implemented.
 - `main` is the development and release source of truth.
 - Protected `main` updates build, sign, and validate a signed source-free
   release root through `.github/workflows/signed-source-free-cd.yml`; they do
   not publish to NAS stable by themselves.
 - Production NAS stable publish requires explicit manual workflow dispatch with
-  `publish_to_nas=true`. Normal forward publish keeps `allow_rollback=false`.
+  `publish_to_nas=true`. Normal forward publish keeps `allow_rollback=false`,
+  and the publish job waits for required commit gates before replacing
+  production `stable.json`.
 - The current production NAS stable channel is signed and source-free, but it
-  may lag the latest `main`. Verify the live `channels\stable.json`, release
-  manifest, ZIP hash, and CD run before instructing operators to update
-  workstations.
-- Point-in-time NAS stable verification snapshot recorded on 2026-06-24:
-  - CD run:
-    `https://github.com/BTankut/revit-mcp-skill/actions/runs/28087195446`
-  - stable version: `2026.06.24.370-4aaa5120`
-  - stable commit: `4aaa5120b728d0384b457c0140e3b3c2dc2c7f17`
-  - release sequence: `20260624090024`
-  - signed-stable readiness:
-    `success=true`, `readyForEnforce=true`, key `revagent-prod-rsa-2026q3`
-- As of the 2026-06-24 snapshot above, latest `main` after PR #98/#99 is not
-  yet published to NAS stable.
-- Updater code now defaults to fail-closed signature enforcement when trusted
-  release keys are present, but as of the same snapshot broad workstations have
-  not yet consumed the PR #98/#99 stable release.
-- Net01 has been used as the migration/source-free pilot machine; broad office
-  rollout has not started.
+  may lag future `main` changes. Verify the live `channels\stable.json`,
+  release manifest, ZIP hash, release sequence, and CD run before instructing
+  operators to update workstations.
+- Point-in-time NAS stable verification snapshot recorded on 2026-06-25 after
+  PR #106:
+  - CD publish run:
+    `https://github.com/BTankut/revit-mcp-skill/actions/runs/28195357910`
+  - stable version: `2026.06.25.404-ef535ad3`
+  - stable commit: `ef535ad3eddb682d1da6b42de2aad5bc75ba8187`
+  - release sequence: `20260625193529`
+  - package SHA256:
+    `1DBAE677CE4CE922FCD512DB5AA26E3925B5C1CFEA2C7538291B56D8D23A8D86`
+- Office rollout is in cleanup/verification. Current reports show the 404
+  stable on the main pilot/production-context machines, but final rollout is
+  not considered closed until every in-scope workstation has a current update
+  report and a source-free dry-run inventory of zero managed source/developer
+  artifacts. Machines intentionally out of scope, such as retired/offline
+  workstations, must be recorded as excluded instead of left ambiguous.
 
 This snapshot is archival. Before taking rollout action, re-verify the live
 NAS `channels\stable.json`, release manifest, ZIP hash, signed-stable
-readiness, and latest CD run rather than treating these values as current truth.
+readiness, latest CD run, and current machine reports rather than treating
+these values as current truth.
 
 ## Security Roadmap Boundary
 
@@ -89,14 +94,15 @@ Rejected initial target:
 
 ## Open Items
 
-- Publish the latest `main` signed source-free release to NAS stable through
-  manual workflow dispatch with `publish_to_nas=true` and `allow_rollback=false`.
-- Re-run signed-stable readiness against the production NAS root after publish.
-- Net01 must consume the new production NAS stable release through the updater
-  and pass install/update, Codex config, source-free boundary, and live Revit
-  smoke checks.
-- At least one additional workstation should pass the same pilot before broad
-  office rollout.
+- Close the office rollout audit:
+  - update any in-scope workstation that is not on the current NAS stable;
+  - run or collect a source-free migration dry-run report showing zero managed
+    source/developer artifacts on each in-scope workstation;
+  - collect at least one current live Revit smoke result after the 404 stable;
+  - mark retired or unreachable machines as intentionally out of scope.
+- Keep the dashboard interpretation explicit: `Offline` is live MCP heartbeat
+  freshness, not update success; version/update state comes from machine
+  install/update reports.
 - License or seat verification exists but remains optional and disabled by
   default; no production entitlement enforcement is active.
 - .NET obfuscation is not shipped. It remains a separate source-exposure
@@ -111,29 +117,28 @@ Rejected initial target:
 - The daily workstation scheduled task can consume stable before a manual
   operator rollout message. To hold a release, keep it off NAS stable or disable
   `revAgent Auto Update` on the affected machines before manual NAS publish.
-- NAS report/log publish warning from the pilot remains a separate share/report
-  write issue.
+- Any remaining NAS report/log publish warnings are share/report-write
+  operational issues. They do not change signed package verification, but they
+  must be resolved if they hide machine audit evidence.
 
 ## Current Execution Position
 
-The repository is past Phase 2 and the CD producer is active on protected
-`main`. The current work is in Phase 3/4:
+The repository implementation is through Phase 6 for the current office
+source-free rollout. The remaining current-track work is operational closure:
 
-1. Run manual signed source-free CD publish from `main` with
-   `publish_to_nas=true` and `allow_rollback=false`.
-2. Verify the production NAS stable root with active-release signed-stable
-   readiness.
-3. Run Net01 update/migration/live Revit validation against that exact stable
-   release.
-4. Repeat on one or two additional production-context workstations.
-5. Start broad office rollout only after those pilot reports show source-free
-   package boundaries, signed verification, and Codex/Revit behavior are clean.
+1. Re-verify the live production NAS stable root before each rollout action.
+2. Bring every in-scope workstation to the current stable or record it as out of
+   scope.
+3. Collect machine reports and source-free dry-run inventory evidence.
+4. Run representative live Revit smoke after the final stable update.
+5. Then close the source-free office rollout and leave Phase 7 as the separate
+   optional entitlement/obfuscation track.
 
 Phase 7 remains optional and separate. License enforcement, obfuscation, and
-commercial supply-chain hardening are not required to publish the current
-source-free user pack.
+commercial supply-chain hardening are not required to publish or finish the
+current office source-free user pack.
 
-## Repository Implementation Status - 2026-06-24
+## Repository Implementation Status - 2026-06-26
 
 Implemented in this repository:
 
@@ -155,6 +160,18 @@ Implemented in this repository:
 - CI-safe coverage:
   `scripts/test-signed-source-free-cd.ps1` validates the producer and temp NAS
   publish wrappers, and `scripts/test-ci.ps1` runs it.
+- Production publish gate:
+  production `workflow_dispatch` waits for required commit checks such as
+  `Engineering gates` before publishing to NAS.
+- Developer workstation preservation:
+  `codexInstructionPolicy=preserve-local` and optional
+  `machineRole=developer` preserve local developer Codex instruction files
+  while keeping runtime, Revit payload, signing, reporting, and migration
+  cleanup active.
+- GUI migration bootstrap:
+  when source-free migration is required but the installed local updater is too
+  old to support `-SourceFreeMigration`, the GUI runs the installer bootstrap
+  with `-RunSourceFreeMigration` after operator confirmation.
 
 Chosen CD model:
 
@@ -210,23 +227,26 @@ Operational setup status:
 - A self-hosted Windows runner was registered for this repo with the
   `revagent-cd` label on the office workstation.
 - PowerShell 7 was installed for the runner because the workflow uses `pwsh`.
-- Signed source-free CD has run from protected `main` in build/validate mode.
-  Production NAS stable publish now requires manual workflow dispatch with
-  `publish_to_nas=true`. The workflow uses local self-hosted runner staging for
-  the signed release-root handoff instead of GitHub artifact storage.
+- Signed source-free CD has run from protected `main` in build/validate mode
+  and has published production NAS stable by manual workflow dispatch. The
+  workflow uses local self-hosted runner staging for the signed release-root
+  handoff instead of GitHub artifact storage.
 
 Still open after CD/NAS automation:
 
 - Use `Current Execution Position` as the source of truth for the next
   operational rollout steps.
-- Installing/updating pilot workstations from the signed stable release.
-- Running multi-machine migration rollout after pilot validation.
+- Finish machine-by-machine rollout audit evidence for the current stable.
+- Record any intentionally excluded workstation instead of leaving stale
+  dashboard entries ambiguous.
 - Returning to entitlement, obfuscation, and commercial supply-chain
   hardening as separate later workstreams.
 
 ## Phase 1 - CD Design And Key Decisions
 
 Goal: make the next deployment step explicit before touching production NAS.
+
+Status: complete for the current office rollout.
 
 Required outcomes:
 
@@ -259,6 +279,8 @@ Gate:
 Goal: GitHub Actions can produce the same source-free signed release artifact
 that the manual publish primitive can produce for fallback/recovery work.
 
+Status: complete.
+
 Required outcomes:
 
 - Add a protected CD workflow that runs the existing non-Revit engineering
@@ -282,6 +304,9 @@ Gate:
 
 Goal: GitHub Actions publishes the signed source-free release to the existing
 NAS deployment layout without changing workstation updater behavior.
+
+Status: complete for the NAS-backed path; provider-neutral publishing remains
+the follow-up.
 
 Required outcomes:
 
@@ -322,6 +347,9 @@ Gate:
 Goal: publish one signed production stable release and move workstation updater
 verification to fail-closed behavior wherever trusted release keys are present.
 
+Status: complete for the current signed stable baseline. Continue verifying
+machine reports during rollout.
+
 Required outcomes:
 
 - Production public trusted release key material is installed on pilot
@@ -336,20 +364,24 @@ Required outcomes:
 
 Pilot machines:
 
-- Net01 first.
-- One or two additional workstations from different production contexts before
-  broad rollout.
+- Net01 was the initial signed/source-free pilot.
+- Additional production-context workstations have consumed the signed stable.
+  Treat pilot status as closed only when the current stable has source-free
+  dry-run inventory evidence and live smoke evidence.
 
 Gate:
 
-- Do not start broad workstation rollout until pilot reports confirm signed
-  verification, local trusted key pinning, and no source/developer artifacts
-  after update.
+- Do not close the office rollout or expand to a new deployment population until
+  pilot and production-context reports confirm signed verification, local
+  trusted key pinning, and no source/developer artifacts after update.
 
 ## Phase 5 - Fail-Closed Enforcement
 
 Goal: require valid signed channel and release manifests before workstation
 package replacement.
+
+Status: implemented for machines with trusted release keys. Unsigned
+compatibility is limited to keys-free bootstrap/test paths.
 
 Required outcomes:
 
@@ -364,13 +396,17 @@ Required outcomes:
 
 Gate:
 
-- Enforcement must be a separate approved deployment step from the signed
-  baseline publish.
+- Future key-policy changes still require a separate approved deployment step
+  from ordinary signed stable publish.
 
 ## Phase 6 - Migration Rollout
 
 Goal: move existing workstations from old source-carrying installs to the
 source-free signed update path without damaging user Codex context.
+
+Status: implemented and in operational closure. Existing source-carrying
+installs can migrate through normal GUI flow; old local updater toolchains are
+bootstrapped through `-RunSourceFreeMigration`.
 
 Required outcomes:
 
@@ -383,13 +419,17 @@ Required outcomes:
 
 Gate:
 
-- Broad rollout starts only after Net01 and at least one additional pilot pass
-  migration, install/update, Codex config, and live Revit smoke checks.
+- Close rollout only after in-scope machines have update reports, zero
+  source/developer artifact dry-run evidence, preserved Codex context evidence
+  where relevant, and at least one representative live Revit smoke check on the
+  current stable.
 
 ## Phase 7 - Optional Entitlement And Obfuscation
 
 Goal: evaluate additional copying-cost controls after the signed source-free
 release channel is stable.
+
+Status: deferred to a separate product/security-hardening track.
 
 Required outcomes:
 

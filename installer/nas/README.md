@@ -415,16 +415,20 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   reports these as `Pending update`, not as completed version transitions.
 - Normal GUI updates run the local trusted `update-from-nas.ps1` after the
   updater is already installed. If an installed workstation is missing that
-  local updater, normal update and migration are blocked until `Install/Repair`
-  restores the local updater wrapper, task registration, permissions, and the
-  full package.
+  local updater, normal update is blocked until `Install/Repair` restores the
+  local updater wrapper, task registration, permissions, and the full package.
 - Normal GUI and updater runs check managed source/developer artifact inventory
   before install/update work starts. If an older workstation still needs
-  source-free migration, the GUI shows a one-time migration path and runs
+  source-free migration, the GUI shows a one-time migration path. If the local
+  updater already supports migration, the GUI runs
   `update-from-nas.ps1 -SourceFreeMigration` after operator confirmation. If the
-  inventory is already clean, migration does not run again. Non-GUI updater runs
-  still report `source-free-migration-required` and stop instead of replacing
-  the package without explicit migration mode.
+  local updater toolchain is too old or missing the migration helper, the GUI
+  runs `install-updater-task.ps1 -RunSourceFreeMigration` so the current updater
+  tools are installed first and migration runs immediately after that same
+  operator confirmation. If the inventory is already clean, migration does not
+  run again. Non-GUI updater runs still report
+  `source-free-migration-required` and stop instead of replacing the package
+  without explicit migration mode.
 - On developer workstations with `codexInstructionPolicy=preserve-local`, the
   migration inventory and cleanup omit local Codex instruction roots and report
   `codexInstructionCleanupSkipped=true`. This is not a source-free bypass for
