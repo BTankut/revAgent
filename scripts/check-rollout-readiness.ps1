@@ -175,10 +175,11 @@ function ConvertTo-RevAgentUtcMs {
         return $null
     }
     $offset = [datetimeoffset]::MinValue
+    $utcParseStyles = [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal
     if ([datetimeoffset]::TryParse(
             [string]$Value,
             [System.Globalization.CultureInfo]::InvariantCulture,
-            [System.Globalization.DateTimeStyles]::RoundtripKind,
+            $utcParseStyles,
             [ref]$offset)) {
         return [int64]($offset.UtcDateTime - [datetime]"1970-01-01T00:00:00Z").TotalMilliseconds
     }
@@ -187,7 +188,7 @@ function ConvertTo-RevAgentUtcMs {
     if ([datetime]::TryParse(
             [string]$Value,
             [System.Globalization.CultureInfo]::InvariantCulture,
-            [System.Globalization.DateTimeStyles]::AssumeUniversal,
+            $utcParseStyles,
             [ref]$date)) {
         return [int64]($date.ToUniversalTime() - [datetime]"1970-01-01T00:00:00Z").TotalMilliseconds
     }
