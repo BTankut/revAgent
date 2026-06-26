@@ -11,7 +11,7 @@ drainage, rainwater, fire protection, sprinkler, fire hose cabinet, smoke
 control, pressurization, fan coil, air handling unit, pump, valve, damper,
 diffuser, pipe, duct, and fixture workflows.
 
-Codex uses Revit at an advanced level. It works through the Revit MCP runtime,
+Codex uses Revit at an advanced level. It works through the revAgent runtime,
 the Revit API, and real model data. It should query the model whenever
 practical instead of guessing. Critical operations should be split into small,
 verifiable steps, and results should be checked after execution.
@@ -37,7 +37,7 @@ style, and output readability matter as much as engineering correctness.
 
 ## Skill Compliance - Hard Rule
 
-For Revit MCP work, Codex's primary obligation is to follow the installed
+For revAgent work, Codex's primary obligation is to follow the installed
 `SKILL.md` tool-selection and safety instructions. `SKILL.md`, this
 `AGENTS.md`, and the live MCP tool descriptions override Codex memory, older
 chat history, older examples, and any remembered raw C# workflow.
@@ -58,7 +58,7 @@ Mandatory routing examples:
 - Element parameter writes go through `set_element_parameter`.
 - Live Revit navigation uses live navigation tools; evidence images use export
   tools.
-- Selection cleanup goes through `clear_selection`; revAgent/Revit MCP review
+- Selection cleanup goes through `clear_selection`; revAgent review
   3D view cleanup goes through guarded `delete_review_view`.
 
 Usage-intelligence promotion fields are human-review evidence only. Repeated
@@ -67,16 +67,16 @@ schedule-spreadsheet reconciliation, and manual transaction/write-guard signals
 should surface as candidates without automatically escalating priority or
 authorizing model/workbook writes.
 
-## Revit MCP Coordination - Hard Rule
+## revAgent Coordination - Hard Rule
 
-Before every non-status Revit MCP runtime task, run a short status check:
+Before every non-status revAgent runtime task, run a short status check:
 
 1. Call `get_revit_mcp_status` first.
 2. If `activeTask` is populated, do not send a new Revit command.
 3. Tell the user the active task name and elapsed time.
 4. During longer waits, poll only with `get_revit_mcp_status`.
 5. Send the next task only after `activeTask` is clear.
-6. Do not run Revit MCP runtime tools in parallel. The only exception is
+6. Do not run revAgent runtime tools in parallel. The only exception is
    `get_revit_mcp_status` while another task is active.
 
 This rule catches active MCP-side tasks. It does not automatically detect every
@@ -138,7 +138,7 @@ Practical use:
    protected behavior; do not use a full 3D fallback image as target evidence
    unless the caller explicitly allowed it.
 4. Record the exported file path in the user response or review note.
-5. Image export tools are still covered by the Revit MCP hard rule: status
+5. Image export tools are still covered by the revAgent hard rule: status
    preflight first, no parallel runtime commands.
 
 Live Revit navigation is a different intent from image export:
@@ -165,7 +165,7 @@ trust-affecting warnings.
 
 ## Current Runtime Surface
 
-The current `revit-mcp` runtime surface is a reusable production access layer
+The current revAgent runtime surface is a reusable production access layer
 for live Revit execution, model context, view/focus workflows, parameter
 inspection, sheet/schedule inspection, controlled parameter and schedule-cell
 writes, image export, and safe custom-code workflows. It is intended for model
@@ -279,7 +279,7 @@ previews matches, blocks ambiguous rows by default, and verifies committed cell
 text. It uses the same standard schedule body-cell guard.
 For cleanup after live QA or test workflows, use `clear_selection` to leave the
 UI with no selected elements. Use `delete_review_view` only for explicit
-revAgent/Revit MCP review/focus/coordination/QA 3D views, including
+revAgent review/focus/coordination/QA 3D views, including
 `revAgent_QA_*` names created by `create_3d_view_for_elements`; it defaults to
 dry-run, blocks production/active/open views, and requires `mode="commit"` plus
 `confirmDelete=true` for deletion. Compact responses group delete-specific

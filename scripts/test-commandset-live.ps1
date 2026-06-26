@@ -3,7 +3,7 @@
     Run optional live Revit commandset integration checks.
 
 .DESCRIPTION
-    This script connects directly to the Revit MCP socket and validates the
+    This script connects directly to the revAgent Revit bridge socket and validates the
     shared bridge command payload in a real Revit session. It is intentionally not
     part of scripts/test-all.ps1 because it requires Revit 2022 with revAgent
     loaded and an active document.
@@ -171,7 +171,7 @@ function Invoke-RevitMcpRequest {
         $response = $responseJson | ConvertFrom-Json
 
         if ($response.error) {
-            throw "Revit MCP request '$Method' failed: $($response.error.message)"
+            throw "revAgent request '$Method' failed: $($response.error.message)"
         }
 
         return $response.result
@@ -195,7 +195,7 @@ function Assert-RevitMcpReady {
             $taskName = $status.activeTask.method
         }
         $elapsedMs = $status.activeTask.elapsedMs
-        throw "Revit MCP is busy with '$taskName' ($elapsedMs ms). Wait before running '$NextCommand'."
+        throw "revAgent is busy with '$taskName' ($elapsedMs ms). Wait before running '$NextCommand'."
     }
     return $status
 }
@@ -425,7 +425,7 @@ console.log(JSON.stringify({
 Write-Host "Live commandset integration target: $HostName`:$Port"
 
 $initialStatus = Assert-RevitMcpReady -NextCommand "live commandset tests"
-Assert-True ($initialStatus.service.isRunning -eq $true) "Revit MCP service did not report running."
+Assert-True ($initialStatus.service.isRunning -eq $true) "revAgent service did not report running."
 
 $prefix = "revAgent commandset live " + (Get-Date -Format "HHmmss")
 
@@ -1209,6 +1209,6 @@ Assert-Equal ([string]$manualNonePayload.rolledBack) "RolledBack" "Manual transa
 Assert-Equal ([bool]$manualNonePayload.isModifiableAfterRollback) $false "Document should not remain modifiable after rollback."
 
 $finalStatus = Get-RevitMcpStatus
-Assert-True ($null -eq $finalStatus.activeTask) "Revit MCP active task should be clear after live commandset tests."
+Assert-True ($null -eq $finalStatus.activeTask) "revAgent active task should be clear after live commandset tests."
 
 Write-Host "Live commandset integration tests passed." -ForegroundColor Green

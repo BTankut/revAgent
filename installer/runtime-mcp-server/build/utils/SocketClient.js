@@ -37,7 +37,7 @@ export class RevitClientConnection {
     processBuffer() {
         while (this.buffer.length > 0) {
             if (this.buffer.length > MAX_RESPONSE_BYTES) {
-                this.rejectPending(new Error(`Revit MCP response exceeded ${MAX_RESPONSE_BYTES} bytes`));
+                this.rejectPending(new Error(`revAgent response exceeded ${MAX_RESPONSE_BYTES} bytes`));
                 this.buffer = Buffer.alloc(0);
                 return;
             }
@@ -141,7 +141,7 @@ export class RevitClientConnection {
         }
         const length = this.buffer.readUInt32BE(0);
         if (length <= 0 || length > MAX_RESPONSE_BYTES) {
-            this.rejectPending(new Error(`Invalid Revit MCP response frame length: ${length}`));
+            this.rejectPending(new Error(`Invalid revAgent response frame length: ${length}`));
             this.buffer = Buffer.alloc(0);
             return false;
         }
@@ -155,7 +155,7 @@ export class RevitClientConnection {
             this.handleResponseObject(response, responseData);
         }
         catch (error) {
-            this.rejectPending(new Error(`Failed to parse Revit MCP response: ${error instanceof Error ? error.message : String(error)}`));
+            this.rejectPending(new Error(`Failed to parse revAgent response: ${error instanceof Error ? error.message : String(error)}`));
         }
         this.buffer = this.buffer.subarray(4 + length);
         return true;
@@ -234,11 +234,11 @@ export class RevitClientConnection {
         if (!activeTask) {
             return;
         }
-        const taskName = activeTask.taskName || activeTask.method || "Revit MCP task";
+        const taskName = activeTask.taskName || activeTask.method || "revAgent task";
         const elapsedText = typeof activeTask.elapsedMs === "number"
             ? `, elapsed ${this.formatElapsed(activeTask.elapsedMs)}`
             : "";
-        throw new Error(`Revit MCP is busy with "${taskName}"${elapsedText}. Wait for it to finish before sending "${command}".`);
+        throw new Error(`revAgent is busy with "${taskName}"${elapsedText}. Wait for it to finish before sending "${command}".`);
     }
     formatElapsed(elapsedMs) {
         const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
@@ -270,7 +270,7 @@ export class RevitClientConnection {
     }
     isFramingFallbackError(error) {
         const message = error instanceof Error ? error.message : String(error);
-        return /Invalid JSON|Invalid JSON-RPC request|Invalid Revit MCP response frame length/i.test(message);
+        return /Invalid JSON|Invalid JSON-RPC request|Invalid (?:Revit MCP|revAgent) response frame length/i.test(message);
     }
     sendCommandRequestOnce(command, params = {}, options = {}) {
         return new Promise((resolve, reject) => {

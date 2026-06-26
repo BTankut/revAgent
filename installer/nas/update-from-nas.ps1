@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Update a workstation from a NAS-hosted Revit MCP channel manifest.
+    Update a workstation from a NAS-hosted revAgent channel manifest.
 
 .DESCRIPTION
     Reads channels\stable.json from the NAS, compares it with the local
@@ -634,7 +634,7 @@ function Set-RevitMcpWinHttpProxy {
     }
 
     if (-not (Test-CurrentProcessElevated)) {
-        Write-Warning "WinHTTP proxy needs admin rights. Run the Revit MCP installer as administrator to set it for winget/Windows services."
+        Write-Warning "WinHTTP proxy needs admin rights. Run the revAgent installer as administrator to set it for winget/Windows services."
         return
     }
 
@@ -1422,6 +1422,27 @@ function Set-CodexMcpServerConfig {
     return $configPath
 }
 
+function Remove-CodexMcpServerConfig {
+    param(
+        [string]$Name
+    )
+
+    $configRoot = Join-Path $env:USERPROFILE ".codex"
+    $configPath = Join-Path $configRoot "config.toml"
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        return $configPath
+    }
+
+    $content = Get-Content -Raw -LiteralPath $configPath
+    $pattern = "(?ms)^\[mcp_servers\.$([regex]::Escape($Name))\]\r?\n.*?(?=^\[|\z)"
+    $updated = [regex]::Replace($content, $pattern, "")
+    $updated = [regex]::Replace($updated, '(\r?\n){3,}', "`r`n`r`n").TrimEnd() + "`r`n"
+    if ($updated -ne $content) {
+        Set-Content -LiteralPath $configPath -Value $updated -Encoding UTF8
+    }
+    return $configPath
+}
+
 function Register-CodexMcpServersInConfig {
     param(
         [string]$NodePath,
@@ -1429,8 +1450,12 @@ function Register-CodexMcpServersInConfig {
         [string]$DocsServerPath
     )
 
-    $configPath = Set-CodexMcpServerConfig -Name "revit-mcp" -Command $NodePath -McpArgs @($RuntimeServerPath)
-    [void](Set-CodexMcpServerConfig -Name "revit-api-docs" -Command $NodePath -McpArgs @($DocsServerPath))
+    foreach ($legacyName in @("revit-mcp", "revit-api-docs")) {
+        [void](Remove-CodexMcpServerConfig -Name $legacyName)
+    }
+
+    $configPath = Set-CodexMcpServerConfig -Name "revAgent" -Command $NodePath -McpArgs @($RuntimeServerPath)
+    [void](Set-CodexMcpServerConfig -Name "revAgent-api-docs" -Command $NodePath -McpArgs @($DocsServerPath))
     [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $configPath)
     Write-Host "Codex MCP config : $configPath"
 }
@@ -3393,17 +3418,15 @@ try {
             $codexPath = Resolve-CodexDesktopCommand
             if (-not [string]::IsNullOrWhiteSpace($codexPath)) {
                 try {
-                    try {
-                        & $codexPath mcp remove revit-mcp 2>$null | Out-Null
+                    foreach ($mcpName in @("revit-mcp", "revit-api-docs", "revAgent", "revAgent-api-docs")) {
+                        try {
+                            & $codexPath mcp remove $mcpName 2>$null | Out-Null
+                        }
+                        catch {}
                     }
-                    catch {}
-                    try {
-                        & $codexPath mcp remove revit-api-docs 2>$null | Out-Null
-                    }
-                    catch {}
 
-                    Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-mcp", "--", $nodePath, $runtimeServerPath) -WorkingDirectory $WorkRoot
-                    Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revit-api-docs", "--", $nodePath, $docsServerEntryPath) -WorkingDirectory $WorkRoot
+                    Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revAgent", "--", $nodePath, $runtimeServerPath) -WorkingDirectory $WorkRoot
+                    Invoke-External -FilePath $codexPath -Arguments @("mcp", "add", "revAgent-api-docs", "--", $nodePath, $docsServerEntryPath) -WorkingDirectory $WorkRoot
                     $registeredWithCommand = $true
                 }
                 catch {

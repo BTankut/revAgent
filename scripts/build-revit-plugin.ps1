@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build the Revit MCP add-in source in this monorepo and refresh the installer payload binaries.
+    Build the revAgent add-in source in this monorepo and refresh the installer payload binaries.
 
 .DESCRIPTION
     The source of the Revit add-in lives under src\revit-plugin. The installer

@@ -49,7 +49,7 @@ function getRuntimeIdentity() {
 }
 
 export function registerGetRevitMcpStatusTool(server: ToolServer) {
-    server.tool("get_revit_mcp_status", "Read the Revit MCP task status without waiting behind the active Revit command lock. Includes runtimeVersion, schemaVersion, toolSurfaceVersion, processStartedAtUtc, buildTimestampUtc, buildHash, bridge resultContractVersion when available, and summary runtimeActivity for MCP-side/client-side guarded operations that may not reach Revit.", {
+    server.tool("get_revit_mcp_status", "Read the revAgent task status without waiting behind the active Revit command lock. Includes runtimeVersion, schemaVersion, toolSurfaceVersion, processStartedAtUtc, buildTimestampUtc, buildHash, bridge resultContractVersion when available, and summary runtimeActivity for revAgent-side/client-side guarded operations that may not reach Revit.", {
         ...connectionTargetSchema(z),
         includeRecentTasks: z.boolean().optional().describe("Include recent completed task records. Defaults true, with a compact limit."),
         recentLimit: z.number().int().min(0).max(100).optional().describe("Maximum recent task records to return when includeRecentTasks is true. Defaults 3."),

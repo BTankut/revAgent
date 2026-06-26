@@ -316,7 +316,7 @@ namespace RevitMCPCommandSet.Commands.View
             boundaryWarning = "";
             cameraApplied = false;
             cameraWarning = "";
-            Transaction transaction = new Transaction(document, "Revit MCP create 3D view for elements");
+            Transaction transaction = new Transaction(document, "revAgent create 3D view for elements");
             try
             {
                 transaction.Start();
@@ -388,7 +388,7 @@ namespace RevitMCPCommandSet.Commands.View
             boundaryWarning = "";
             cameraApplied = false;
             cameraWarning = "";
-            Transaction transaction = new Transaction(document, "Revit MCP update 3D focus view");
+            Transaction transaction = new Transaction(document, "revAgent update 3D focus view");
             try
             {
                 transaction.Start();

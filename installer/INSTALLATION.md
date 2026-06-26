@@ -4,9 +4,10 @@ This folder contains the installable workstation payload for revAgent. End
 users should normally install through the NAS updater rather than running these
 scripts manually.
 
-The implementation still uses exact names such as `revit-mcp`,
-`revit-api-docs`, `RevitMCP*`, and `C:\ProgramData\DPE\RevitMCP`; do not rename
-those when documenting commands or paths.
+The implementation still uses exact internal names such as `RevitMCP*` and
+`C:\ProgramData\DPE\RevitMCP`; do not rename those when documenting commands
+or paths. Codex-facing MCP entries should appear as `revAgent` and
+`revAgent-api-docs`.
 
 ## Contents
 
@@ -29,7 +30,7 @@ those when documenting commands or paths.
 On a workstation, close Revit and run the NAS updater installer:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater-GUI.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater-GUI.cmd
 ```
 
 The updater installs into:
@@ -63,18 +64,18 @@ powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-conta
 
 cd C:\ProgramData\DPE\RevitMCP\runtime
 npm install --omit=dev --no-audit --no-fund
-codex mcp add revit-mcp -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
+codex mcp add revAgent -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
 
 cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev --no-audit --no-fund
 powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
-codex mcp add revit-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
+codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
 
 Both MCP servers are required:
 
-- `revit-mcp`: live Revit execution and inspection.
-- `revit-api-docs`: local Revit API class/member lookup.
+- `revAgent`: live Revit execution and inspection.
+- `revAgent-api-docs`: local Revit API class/member lookup.
 
 ## Uninstall
 

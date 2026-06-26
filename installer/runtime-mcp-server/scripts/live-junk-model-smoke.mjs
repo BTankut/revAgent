@@ -23,11 +23,11 @@ async function statusPreflight(nextTool) {
     timeoutMs: 5000,
   }));
   if (!status.service?.isRunning) {
-    throw new Error("Revit MCP service is not running.");
+    throw new Error("revAgent service is not running.");
   }
   if (status.activeTask) {
     const taskName = status.activeTask.taskName || status.activeTask.method || "unknown";
-    throw new Error(`Revit MCP is busy with ${taskName}; wait before running ${nextTool}.`);
+    throw new Error(`revAgent is busy with ${taskName}; wait before running ${nextTool}.`);
   }
   return status;
 }

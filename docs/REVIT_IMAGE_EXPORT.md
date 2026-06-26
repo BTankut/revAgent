@@ -1,7 +1,7 @@
 # Revit Image Export Tools
 
 This repo includes two runtime MCP tools for visual QA from live Revit models.
-Both tools use the Revit API image export path and follow the normal Revit MCP
+Both tools use the Revit API image export path and follow the normal revAgent
 status preflight and single-command rule.
 
 ## Tools

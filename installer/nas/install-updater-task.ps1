@@ -661,7 +661,7 @@ function Set-RevitMcpWinHttpProxy {
     }
 
     if (-not (Test-CurrentProcessElevated)) {
-        Write-Warning "WinHTTP proxy needs admin rights. Run the Revit MCP installer as administrator to set it for winget/Windows services."
+        Write-Warning "WinHTTP proxy needs admin rights. Run the revAgent installer as administrator to set it for winget/Windows services."
         return
     }
 

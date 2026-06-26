@@ -22,7 +22,7 @@ server, package, assembly, manifest, or installed path is being named.
   review views, and 3D section boxes. Focus/view activation commands avoid the
   dynamic code transaction wrapper; section box and 3D view changes use normal
   Revit transactions against project view data.
-- `installer/runtime-mcp-server/src/`: TypeScript source for the live Revit MCP
+- `installer/runtime-mcp-server/src/`: TypeScript source for the live revAgent
   runtime server. `npm run build` emits `build/`, which remains the installer
   and Codex registration contract.
 - `installer/revit-api-docs-mcp/src/`: TypeScript source for the Revit API docs
@@ -215,7 +215,7 @@ the Revit payload manifest still match source.
 
 ## Runtime Transport And Status
 
-The Node runtime and Revit add-in communicate over the local Revit MCP socket.
+The Node runtime and Revit add-in communicate over the local revAgent bridge socket.
 New clients send length-prefixed JSON-RPC frames: a 4-byte big-endian payload
 length followed by the UTF-8 JSON payload. The add-in keeps legacy raw JSON
 support so older clients can still reach the socket during rolling updates.
@@ -355,7 +355,7 @@ summary logs.
 - `installer/nas/update-from-nas.ps1`: NAS channel updater.
 - `installer/nas/Install-Revit-MCP-Updater-GUI.ps1`: revAgent GUI bootstrap
   wrapper.
-- `installer/nas/Revit MCP Updater STABLE.cmd`: standalone stable launcher.
+- `installer/nas/revAgent Updater STABLE.cmd`: standalone stable launcher.
 - `installer/nas/publish-nas-release.ps1`: release packaging tool. Do not run
   it during local modernization or smoke-test work.
 
@@ -399,7 +399,7 @@ produced and validated.
 
 These public entrypoints must keep their names and existing 2022 behavior:
 
-- `installer/nas/Revit MCP Updater STABLE.cmd`
+- `installer/nas/revAgent Updater STABLE.cmd`
 - `installer/nas/Install-Revit-MCP-Updater-GUI.ps1`
 - `installer/nas/install-updater-task.ps1`
 - `installer/nas/update-from-nas.ps1`

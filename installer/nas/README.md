@@ -3,10 +3,10 @@
 This folder contains the tools used to publish revAgent releases to the NAS and
 keep office workstations updated from that single deployment source.
 
-Use `revAgent` for product-facing wording. Keep `revit-mcp-skill`,
-`RevitMCP*`, `revit-mcp`, `mcp-servers-for-revit`, and
-`C:\ProgramData\DPE\RevitMCP` only as exact release, server, assembly, manifest,
-or path identifiers.
+Use `revAgent` for product-facing wording. Codex MCP entries should appear as
+`revAgent` and `revAgent-api-docs`. Keep `revit-mcp-skill`, `RevitMCP*`,
+`revit-mcp`, `mcp-servers-for-revit`, and `C:\ProgramData\DPE\RevitMCP` only
+as exact release, server, assembly, manifest, or path identifiers.
 
 ## Deployment Model
 
@@ -48,6 +48,9 @@ to a non-stable test channel until the release is accepted.
   reports\
     PC-01_USER22.json
   tools\
+    Install-revAgent-Updater.cmd
+    Install-revAgent-Updater-GUI.cmd
+    revAgent Updater STABLE.cmd
     Install-Revit-MCP-Updater.cmd
     Install-Revit-MCP-Updater-GUI.cmd
     Install-Revit-MCP-Updater-GUI.ps1
@@ -175,7 +178,7 @@ NAS `tools\dependencies\`; the release ZIP does not include those binaries.
 On each workstation, close Revit and run:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater-GUI.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater-GUI.cmd
 ```
 
 The GUI shows the live install/update log and provides a button to open the log
@@ -205,17 +208,17 @@ If you want to copy a single launcher to a workstation desktop, copy the
 standalone launcher instead:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater STABLE.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\revAgent Updater STABLE.cmd
 ```
 
-Do not copy `Install-Revit-MCP-Updater-GUI.cmd` by itself. That file is meant
+Do not copy `Install-revAgent-Updater-GUI.cmd` by itself. That file is meant
 to run from the NAS `tools\` folder and expects
 `Install-Revit-MCP-Updater-GUI.ps1` beside it.
 
 The non-GUI bootstrap is also available:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-Revit-MCP-Updater.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater.cmd
 ```
 
 The updater uses the standard machine-wide root:

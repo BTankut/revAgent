@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <RevitAddIns>
   <AddIn Type="Application">
-    <Name>revit-mcp</Name>
+    <Name>revAgent</Name>
     <Assembly>revit_mcp_plugin/revit-mcp-plugin.dll</Assembly>
     <FullClassName>revit_mcp_plugin.Core.Application</FullClassName>
     <ClientId>090A4C8C-61DC-426D-87DF-E4BAE0F80EC1</ClientId>
     <VendorId>DPE</VendorId>
-    <VendorDescription>DPE internal Revit MCP add-in</VendorDescription>
+    <VendorDescription>DPE internal revAgent add-in</VendorDescription>
   </AddIn>
 </RevitAddIns>
