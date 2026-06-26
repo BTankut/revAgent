@@ -70,7 +70,7 @@ $releaseRoot = Join-Path $tempRoot "release"
 $reportsRoot = Join-Path $releaseRoot "reports"
 $stableVersion = "2026.06.25.404-ef535ad3"
 $stableCommit = "ef535ad3eddb682d1da6b42de2aad5bc75ba8187"
-$nowUtc = (Get-Date).ToUniversalTime()
+$nowUtc = ([datetime]"2026-06-26T13:00:00Z").ToUniversalTime()
 
 try {
     Write-TestJson -Path (Join-Path $releaseRoot "channels\stable.json") -Value ([ordered]@{
@@ -165,6 +165,7 @@ try {
         -ReportsRoot $reportsRoot `
         -ExpectedMachines "NET01,EMIN,YASAR,LEGACY,WS3,OLD" `
         -OutOfScopeMachines "OLD" `
+        -NowUtc $nowUtc `
         -OutputJson | ConvertFrom-Json
 
     Assert-Equal $result.summary.stable.version $stableVersion "Stable version mismatch."

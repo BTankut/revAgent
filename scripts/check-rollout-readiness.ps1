@@ -24,6 +24,8 @@ param(
 
     [int]$OfflineSeconds = 300,
 
+    [datetime]$NowUtc = [datetime]::MinValue,
+
     [string]$OutputPath = "",
 
     [switch]$OutputJson
@@ -172,8 +174,21 @@ function ConvertTo-RevAgentUtcMs {
     if ($null -eq $Value) {
         return $null
     }
+    $offset = [datetimeoffset]::MinValue
+    if ([datetimeoffset]::TryParse(
+            [string]$Value,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$offset)) {
+        return [int64]($offset.UtcDateTime - [datetime]"1970-01-01T00:00:00Z").TotalMilliseconds
+    }
+
     $date = [datetime]::MinValue
-    if ([datetime]::TryParse([string]$Value, [ref]$date)) {
+    if ([datetime]::TryParse(
+            [string]$Value,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal,
+            [ref]$date)) {
         return [int64]($date.ToUniversalTime() - [datetime]"1970-01-01T00:00:00Z").TotalMilliseconds
     }
     return $null
@@ -481,7 +496,7 @@ $stablePackageSha256 = [string](Get-RevAgentValue -Object $stable -Name "sha256"
 $stableReleaseSequence = Get-RevAgentValue -Object $stable -Name "releaseSequence"
 $machinesRoot = Join-Path $ReportsRoot "machines"
 $liveRoot = Join-Path (Join-Path $ReportsRoot "live") "machines"
-$nowUtc = (Get-Date).ToUniversalTime()
+$nowUtc = if ($NowUtc -eq [datetime]::MinValue) { (Get-Date).ToUniversalTime() } else { $NowUtc.ToUniversalTime() }
 
 $machineNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 foreach ($name in (Expand-RevAgentMachineNames -Values $ExpectedMachines)) {
