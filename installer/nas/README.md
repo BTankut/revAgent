@@ -262,14 +262,15 @@ Before closing a source-free office rollout, run the repository-side read-only
 audit from a developer checkout:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rollout-readiness.ps1 `
-  -ConfigPath "C:\ProgramData\DPE\revAgentOps\rollout-readiness.json" `
-  -OutputJson
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-rollout-closure-audit.ps1 `
+  -ConfigPath "C:\ProgramData\DPE\revAgentOps\rollout-readiness.json"
 ```
 
-That audit only reads NAS stable, machine reports, migration evidence, copied
-logs, live heartbeat files, and optional live Revit smoke evidence. It does not
-install, update, migrate, or publish anything. Use
+That wrapper writes a timestamped JSON snapshot under
+`C:\ProgramData\DPE\revAgentOps\readiness` and only reads NAS stable, machine
+reports, migration evidence, copied logs, live heartbeat files, and optional
+live Revit smoke evidence. It does not install, update, migrate, or publish
+anything. Use
 `config\rollout-readiness.sample.json` as the template for the office-specific
 config file; keep that real config outside Git, use
 `outOfScopeMachines[].reason` to record retired or intentionally excluded

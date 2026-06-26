@@ -165,7 +165,7 @@ pulling and reinstalling on every machine.
   and `channels\stable.json` before manual or broad rollout instructions.
 - Before closing a workstation rollout, run the read-only readiness audit over
   NAS stable and machine reports:
-  `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rollout-readiness.ps1`.
+  `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-rollout-closure-audit.ps1`.
   It reports version state, update failures, source-free evidence, live
   heartbeat freshness, current-stable live Revit smoke evidence, and the next
   action per machine without updating any workstation. Use
@@ -973,11 +973,11 @@ connection is `Online`, `Stale`, or `Offline`; version is `Up to date`,
 `Outdated`, or `Unknown`; task state is `Running` or `Idle`; update exceptions
 are shown only as `Update failed` or `Pending restart`.
 
-For deployment closure, use `scripts\check-rollout-readiness.ps1` instead of
-reading dashboard cards by eye. The dashboard is a live monitoring surface; the
-audit script produces a reproducible read-only action list from the same NAS
-stable, machine reports, migration evidence, logs, live heartbeat files, and
-live Revit smoke evidence. Use a Git-ignored local/NAS copy of
+For deployment closure, use `scripts\invoke-rollout-closure-audit.ps1` instead
+of reading dashboard cards by eye. The dashboard is a live monitoring surface;
+the audit wrapper produces a timestamped read-only JSON snapshot from the same
+NAS stable, machine reports, migration evidence, logs, live heartbeat files,
+and live Revit smoke evidence. Use a Git-ignored local/NAS copy of
 `config\rollout-readiness.sample.json` when the closure audit needs a fixed
 machine list, explicit out-of-scope reasons, or the representative smoke result.
 The audit also reads `reports\rollout\live-smoke-latest.json` when present.

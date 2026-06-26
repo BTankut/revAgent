@@ -141,9 +141,9 @@ source-free rollout. The remaining current-track work is operational closure:
 1. Re-verify the live production NAS stable root before each rollout action.
 2. Bring every in-scope workstation to the current stable or record it as out of
    scope.
-3. Run `scripts\check-rollout-readiness.ps1` and clear its in-scope action
-   list by collecting machine reports and source-free inventory evidence.
-4. Run representative live Revit smoke after the final stable update.
+3. Collect machine reports, source-free inventory evidence, and representative
+   live Revit smoke evidence after the final stable update.
+4. Run `scripts\invoke-rollout-closure-audit.ps1` and clear its action list.
 5. Then close the source-free office rollout and leave Phase 7 as the separate
    optional entitlement/obfuscation track.
 
@@ -163,6 +163,8 @@ Implemented in this repository:
   `scripts/publish-signed-source-free-release-to-nas.ps1`.
 - Read-only office rollout closure audit:
   `scripts/check-rollout-readiness.ps1`.
+- Timestamped closure snapshot wrapper:
+  `scripts/invoke-rollout-closure-audit.ps1`.
 - Portable signed metadata: new release channel and manifest package paths are
   relative so a signed CD artifact can move from staging to NAS without
   rewriting signed JSON.

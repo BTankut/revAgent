@@ -257,6 +257,16 @@ try {
     Assert-Equal ([int]$missingSmokeResult.summary.actionRequiredCount) 4 "Missing smoke should add one rollout action."
     $smokeAction = @($missingSmokeResult.actions | Where-Object { $_.scope -eq "rollout" }) | Select-Object -First 1
     Assert-Equal $smokeAction.action "collect_live_revit_smoke" "Missing smoke action mismatch."
+
+    $closureOutputPath = Join-Path $tempRoot "closure\rollout-readiness-final.json"
+    $closureResult = & (Join-Path $RepoRoot "scripts\invoke-rollout-closure-audit.ps1") `
+        -ConfigPath $configPath `
+        -OutputPath $closureOutputPath `
+        -NowUtc $nowUtc `
+        -OutputJson | ConvertFrom-Json
+    Assert-True (Test-Path -LiteralPath $closureOutputPath -PathType Leaf) "Closure audit output file was not written."
+    Assert-Equal $closureResult.summary.liveSmoke.state "verified" "Closure audit live smoke state mismatch."
+    Assert-Equal ([int]$closureResult.summary.actionRequiredCount) 3 "Closure audit action count mismatch."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

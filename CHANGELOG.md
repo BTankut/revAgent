@@ -4,6 +4,9 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added a rollout closure audit wrapper that persists a timestamped readiness
+  snapshot and can fail handoff automation when machine or rollout actions
+  remain open.
 - Added current-stable live Revit smoke evidence to the rollout readiness audit:
   closure now reports a rollout-level action until a passing smoke record
   matches the active stable version or commit.

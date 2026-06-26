@@ -733,11 +733,17 @@ Run the read-only rollout readiness audit before closing an office rollout or
 before telling operators that every in-scope machine is finished:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rollout-readiness.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-rollout-closure-audit.ps1 `
   -ConfigPath "C:\ProgramData\DPE\revAgentOps\rollout-readiness.json"
 ```
 
-The audit reads only `channels\stable.json`, `reports\machines`,
+This wrapper calls `scripts\check-rollout-readiness.ps1`, writes a timestamped
+JSON snapshot under `C:\ProgramData\DPE\revAgentOps\readiness`, and prints the
+stable version, ready state, action count, and live-smoke state. Pass
+`-FailOnActionRequired` when a non-zero exit code should block a rollout
+handoff until all audit actions are clear.
+
+The underlying audit reads only `channels\stable.json`, `reports\machines`,
 `reports\live`, source-free migration reports, copied logs, and optional live
 Revit smoke evidence. It does not update workstations, run migration, publish
 stable, or connect over SSH. Use `-OutputJson` for machine-readable handoff, or
