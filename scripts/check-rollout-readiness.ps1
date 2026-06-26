@@ -16,9 +16,9 @@ param(
 
     [string]$ReportsRoot = "",
 
-    [string[]]$ExpectedMachines = @(),
+    [string]$ExpectedMachines = "",
 
-    [string[]]$OutOfScopeMachines = @(),
+    [string]$OutOfScopeMachines = "",
 
     [int]$StaleSeconds = 60,
 
