@@ -734,16 +734,18 @@ before telling operators that every in-scope machine is finished:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-rollout-readiness.ps1 `
-  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy" `
-  -ExpectedMachines "DESKTOP-OKNV128,EMIN,HAFIZE,MARINA,NET01,OGUZHAN,OMER,YASAR,WS3" `
-  -OutOfScopeMachines ""
+  -ConfigPath "C:\ProgramData\DPE\revAgentOps\rollout-readiness.json"
 ```
 
 The audit reads only `channels\stable.json`, `reports\machines`,
 `reports\live`, source-free migration reports, and copied logs. It does not
 update workstations, run migration, publish stable, or connect over SSH. Use
 `-OutputJson` for machine-readable handoff, or `-OutputPath` to write a local
-JSON snapshot for review.
+JSON snapshot for review. Start from
+`config\rollout-readiness.sample.json`, keep the office-specific copy outside
+Git, and record intentionally retired or unreachable machines in
+`outOfScopeMachines` with a short `reason`. For a one-off run, `-ReleaseRoot`,
+`-ExpectedMachines`, and `-OutOfScopeMachines` can still be passed directly.
 
 Publishing refreshes `tools\` on the NAS. Workstations should launch the tools
 from the NAS share, not from copied old script bodies when possible.

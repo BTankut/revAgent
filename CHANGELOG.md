@@ -4,6 +4,9 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added config-driven rollout readiness scoping so the source-free closure
+  audit can read a local/NAS machine list, record out-of-scope workstation
+  reasons, and avoid embedding office-specific rollout state in Git.
 - Added a read-only rollout readiness audit that summarizes NAS stable,
   machine install/update reports, source-free migration evidence, live
   heartbeat freshness, and per-machine next actions before final office
