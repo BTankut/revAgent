@@ -161,6 +161,17 @@ function Get-MachineRoleForGui {
     return $role
 }
 
+function Get-PackageDescriptionForGui {
+    $policy = Get-CodexInstructionPolicyForGui
+    $role = Get-MachineRoleForGui
+    if ([string]::Equals($policy, "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $roleLabel = if ([string]::IsNullOrWhiteSpace($role)) { "developer" } else { $role.Trim() }
+        return "Release track: managed`r`nDeveloper workstation ($roleLabel)`r`nCodex instructions: preserve local"
+    }
+
+    return "Release track: managed`r`nWorkstation package"
+}
+
 function Get-SourceFreeMigrationArtifactsForGui {
     $preserveLocalCodexInstructions = [string]::Equals((Get-CodexInstructionPolicyForGui), "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)
     return @(Get-RevitMcpSourceFreeArtifactInventory `
@@ -427,7 +438,7 @@ $tagline.Margin = New-Object System.Windows.Forms.Padding(0, 2, 0, 8)
 $root.Controls.Add($tagline, 0, 1)
 
 $details = New-Object System.Windows.Forms.Label
-$details.Text = "Release track: managed`r`nWorkstation package"
+$details.Text = Get-PackageDescriptionForGui
 $details.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $details.AutoSize = $true
 $details.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 8)
