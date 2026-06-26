@@ -102,20 +102,22 @@ jobs:
             - pedantic nitpicks a senior engineer would not raise
 
             Before posting, re-check each issue once against the actual code. If you are
-            not certain it is real, DO NOT post it - false positives erode trust. There
-            is NO minimum number of comments and NO required sections. Silence is a valid,
-            good review.
+            not certain it is real, DO NOT post it - false positives erode trust. Do not
+            invent issues to fill space and do not write filler sections: zero findings is
+            a perfectly good result.
 
-            Output:
-            - For each VERIFIED issue, post ONE inline comment via
+            Output - ALWAYS post exactly ONE top-level `gh pr comment` (never stay silent,
+            so there is always visible proof the review ran):
+            - If there are NO high-signal issues, the top-level comment is EXACTLY
+              "No blocking issues found." and nothing else.
+            - If there ARE issues, OPEN the top-level comment with a one-line tally
+              (e.g. "2 important, 3 nits") and do not restate the inline comments as
+              sections. For each VERIFIED issue post ONE inline comment via
               mcp__github_inline_comment__create_inline_comment with confirmed: true,
               prefixed "important:" (fix before merge) or "nit:" (minor). One comment per
               unique issue, no duplicates. Add a ```suggestion block only when applying it
-              fully fixes the issue.
-            - Post at most ~5 nits; if more, give the remaining count in the summary.
-            - Post exactly ONE top-level `gh pr comment` that OPENS with a one-line tally
-              (e.g. "2 important, 3 nits"), or exactly "No blocking issues found." when there
-              are none. Do not restate the inline comments in sections.
+              fully fixes the issue. Post at most ~5 nits; if more, give the remaining
+              count in the tally.
 
             Only post GitHub comments. Never emit the review as a chat message.
           claude_args: |
