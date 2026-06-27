@@ -11,7 +11,7 @@ namespace revit_mcp_plugin.Core
 {
     internal sealed class McpVersionInfo
     {
-        public const string ProductWebsiteUrl = "https://dashboard.revagent.app";
+        public const string ProductWebsiteUrl = "https://www.revagent.app";
 
         public const string ProductCopyrightText = "Copyright (c) 2026 Baris Tankut. All rights reserved.";
 
