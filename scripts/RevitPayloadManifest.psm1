@@ -59,7 +59,7 @@ function Get-RevitPayloadSourceGroups {
             SourceRoot = "src/revit-plugin/revit-mcp-plugin"
             InputExtensions = @(".cs", ".csproj", ".xaml", ".resx")
             PayloadPaths = @(
-                "installer/revit-plugin/revit_mcp_plugin/RevitMCPPlugin.dll"
+                "installer/revit-plugin/revAgentPlugin/revAgentPlugin.dll"
             )
         },
         [pscustomobject]@{
@@ -67,8 +67,8 @@ function Get-RevitPayloadSourceGroups {
             SourceRoot = "src/revit-plugin/RevitMCPCommandSet"
             InputExtensions = @(".cs", ".csproj", ".xaml", ".json", ".resx")
             PayloadPaths = @(
-                "installer/command-payload/RevitMCPCommandSet.dll",
-                "installer/revit-plugin/revit_mcp_plugin/Commands/revAgentCommandSet/$RevitVersion/RevitMCPCommandSet.dll"
+                "installer/command-payload/revAgentCommandSet.dll",
+                "installer/revit-plugin/revAgentPlugin/Commands/revAgentCommandSet/$RevitVersion/revAgentCommandSet.dll"
             )
         }
     )

@@ -78,7 +78,8 @@ function Update-BridgeCommandRegistry {
         [string]$RegistryPath,
         [string]$CommandJsonPath,
         [string]$Version,
-        [string]$CommandSetFolderName = "revAgentCommandSet"
+        [string]$CommandSetFolderName = "revAgentCommandSet",
+        [string]$CommandSetDllFileName = "revAgentCommandSet.dll"
     )
 
     if (-not (Test-Path -LiteralPath $RegistryPath -PathType Leaf)) {
@@ -107,9 +108,7 @@ function Update-BridgeCommandRegistry {
     $commands = @()
     foreach ($command in $commandSet.commands) {
         $assemblyFile = [string]$command.assemblyPath
-        if ([string]::IsNullOrWhiteSpace($assemblyFile)) {
-            $assemblyFile = "$commandSetName.dll"
-        }
+        $assemblyFile = $CommandSetDllFileName
         $commands += [pscustomobject]@{
             commandName = [string]$command.commandName
             assemblyPath = "$CommandSetFolderName\\$Version\\$assemblyFile"
@@ -175,8 +174,11 @@ if (-not $SkipPayloadCopy) {
         throw "Installer payload directory was not found: $payloadDir"
     }
 
+    $pluginDllFileName = "revAgentPlugin.dll"
+    $commandSetDllFileName = "revAgentCommandSet.dll"
+
     $payloadCopies = [ordered]@{
-        "revit-mcp-plugin.dll" = "RevitMCPPlugin.dll"
+        "revit-mcp-plugin.dll" = $pluginDllFileName
         "Newtonsoft.Json.dll" = "Newtonsoft.Json.dll"
         "RevitMCPSDK.dll" = "RevitMCPSDK.dll"
     }
@@ -194,7 +196,7 @@ if (-not $SkipPayloadCopy) {
     $commandPayloadDir = Join-Path $RepoRoot "installer\command-payload"
     $commandPayloadRuntimeDir = Join-Path $commandPayloadDir "runtime\$RevitVersion"
     New-Item -ItemType Directory -Path $commandPayloadRuntimeDir -Force | Out-Null
-    Copy-Item -LiteralPath $builtCommandSetDll -Destination (Join-Path $commandPayloadDir "RevitMCPCommandSet.dll") -Force
+    Copy-Item -LiteralPath $builtCommandSetDll -Destination (Join-Path $commandPayloadDir $commandSetDllFileName) -Force
     Copy-Item -LiteralPath $commandJsonSource -Destination (Join-Path $commandPayloadDir "command.json") -Force
 
     $runtimeAssemblies = @(
@@ -237,18 +239,23 @@ if (-not $SkipPayloadCopy) {
         Remove-Item -LiteralPath $legacyCommandSetRoot -Recurse -Force
     }
 
-    $legacyRootCommandSetDll = Join-Path $commandSetRoot "RevitMCPCommandSet.dll"
-    if (Test-Path -LiteralPath $legacyRootCommandSetDll) {
-        Remove-Item -LiteralPath $legacyRootCommandSetDll -Force
+    foreach ($legacyRootCommandSetDll in @(
+            (Join-Path $commandSetRoot "RevitMCPCommandSet.dll"),
+            (Join-Path $commandSetVersionRoot "RevitMCPCommandSet.dll")
+        )) {
+        if (Test-Path -LiteralPath $legacyRootCommandSetDll) {
+            Remove-Item -LiteralPath $legacyRootCommandSetDll -Force
+        }
     }
     New-Item -ItemType Directory -Path $commandSetVersionRoot -Force | Out-Null
-    Copy-Item -LiteralPath $builtCommandSetDll -Destination (Join-Path $commandSetVersionRoot "RevitMCPCommandSet.dll") -Force
+    Copy-Item -LiteralPath $builtCommandSetDll -Destination (Join-Path $commandSetVersionRoot $commandSetDllFileName) -Force
     Copy-Item -LiteralPath $commandJsonSource -Destination (Join-Path $commandSetRoot "command.json") -Force
     Update-BridgeCommandRegistry `
         -RegistryPath (Join-Path $payloadDir "Commands\commandRegistry.json") `
         -CommandJsonPath (Join-Path $commandSetRoot "command.json") `
         -Version $RevitVersion `
-        -CommandSetFolderName $commandSetPayloadFolderName
+        -CommandSetFolderName $commandSetPayloadFolderName `
+        -CommandSetDllFileName $commandSetDllFileName
 
     Remove-RevitPayloadDebugArtifacts -RepoRoot $RepoRoot
     Assert-RevitPayloadNoDebugArtifacts -RepoRoot $RepoRoot

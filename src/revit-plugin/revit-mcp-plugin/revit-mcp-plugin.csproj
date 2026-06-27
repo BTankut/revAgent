@@ -2,6 +2,7 @@
     <PropertyGroup>
         <OutputType>Library</OutputType>
         <RootNamespace>revit_mcp_plugin</RootNamespace>
+        <AddinPayloadFolderName>revAgentPlugin</AddinPayloadFolderName>
         <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
         <UseWindowsForms>true</UseWindowsForms>
         <UseWPF>true</UseWPF>
@@ -70,7 +71,7 @@
 
         <PropertyGroup>
             <RootDir>bin\AddIn $(RevitVersion) $(Configuration)\</RootDir>
-            <AddinDir>$(RootDir)$(RootNameSpace)\</AddinDir>
+            <AddinDir>$(RootDir)$(AddinPayloadFolderName)\</AddinDir>
         </PropertyGroup>
 
         <Copy SourceFiles="@(RootItem)" DestinationFolder="$(RootDir)"/>

@@ -66,7 +66,8 @@ function Get-RevitMcpManagedPermissionTargets {
 
     if (-not [string]::IsNullOrWhiteSpace($AllUsersAddinRoot)) {
         $targets.Add((New-RevitMcpPermissionTarget -Path $AllUsersAddinRoot -Label "Revit $RevitVersion addin root" -CreateDirectory))
-        $targets.Add((New-RevitMcpPermissionTarget -Path (Join-Path $AllUsersAddinRoot "mcp-servers-for-revit.addin") -Label "revAgent add-in manifest" -Kind File))
+        $targets.Add((New-RevitMcpPermissionTarget -Path (Join-Path $AllUsersAddinRoot "revAgent.addin") -Label "revAgent add-in manifest" -Kind File))
+        $targets.Add((New-RevitMcpPermissionTarget -Path (Join-Path $AllUsersAddinRoot "mcp-servers-for-revit.addin") -Label "legacy revAgent add-in manifest" -Kind File))
     }
 
     foreach ($fileName in @(
@@ -87,7 +88,8 @@ function Get-RevitMcpManagedPermissionTargets {
 
     if ($IncludeExistingPayloadTrees) {
         foreach ($entry in @(
-                @{ Path = (Join-Path $InstallRoot "revit-plugin\revit_mcp_plugin"); Label = "existing Revit addin payload" },
+                @{ Path = (Join-Path $InstallRoot "revit-plugin\revAgentPlugin"); Label = "existing Revit addin payload" },
+                @{ Path = (Join-Path $InstallRoot "revit-plugin\revit_mcp_plugin"); Label = "legacy Revit addin payload" },
                 @{ Path = (Join-Path $InstallRoot "commands\CommandSet"); Label = "existing Revit command payload" },
                 @{ Path = $ServerTarget; Label = "existing runtime payload" },
                 @{ Path = (Join-Path $InstallRoot "codex\skills\revAgent"); Label = "existing Codex skill payload" }

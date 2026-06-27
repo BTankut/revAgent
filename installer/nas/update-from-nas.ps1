@@ -2325,7 +2325,8 @@ function Get-ActualRevitPayloadPathMapping {
 
     $normalizedPath = $RelativePath.Replace("/", "\")
 
-    if ([string]::Equals($normalizedPath, "installer\revit-plugin\mcp-servers-for-revit.addin", [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ([string]::Equals($normalizedPath, "installer\revit-plugin\revAgent.addin", [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($normalizedPath, "installer\revit-plugin\mcp-servers-for-revit.addin", [System.StringComparison]::OrdinalIgnoreCase)) {
         return [pscustomobject][ordered]@{
             isMapped = $true
             shouldCompare = $false
@@ -2334,10 +2335,10 @@ function Get-ActualRevitPayloadPathMapping {
     }
 
     $paths = [System.Collections.Generic.List[string]]::new()
-    $pluginPrefix = "installer\revit-plugin\revit_mcp_plugin\"
+    $pluginPrefix = "installer\revit-plugin\revAgentPlugin\"
     if ($normalizedPath.StartsWith($pluginPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
         $suffix = $normalizedPath.Substring($pluginPrefix.Length)
-        [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\" + $suffix)))
+        [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revAgentPlugin\" + $suffix)))
         return [pscustomobject][ordered]@{
             isMapped = $true
             shouldCompare = $true
@@ -2352,13 +2353,13 @@ function Get-ActualRevitPayloadPathMapping {
         if ($suffix.StartsWith($runtimePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
             $runtimeSuffix = $suffix.Substring($runtimePrefix.Length)
             [void]$paths.Add((Join-Path $InstallRoot ("commands\CommandSet\$RevitVersion\" + $runtimeSuffix)))
-            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\revAgentCommandSet\$RevitVersion\" + $runtimeSuffix)))
+            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revAgentPlugin\Commands\revAgentCommandSet\$RevitVersion\" + $runtimeSuffix)))
         }
         else {
             [void]$paths.Add((Join-Path $InstallRoot ("commands\CommandSet\$RevitVersion\" + $suffix)))
             [void]$paths.Add((Join-Path $InstallRoot ("commands\CommandSet\" + $suffix)))
-            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\revAgentCommandSet\$RevitVersion\" + $suffix)))
-            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\revAgentCommandSet\" + $suffix)))
+            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revAgentPlugin\Commands\revAgentCommandSet\$RevitVersion\" + $suffix)))
+            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revAgentPlugin\Commands\revAgentCommandSet\" + $suffix)))
         }
 
         return [pscustomobject][ordered]@{

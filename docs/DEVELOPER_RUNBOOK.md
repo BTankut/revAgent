@@ -631,7 +631,7 @@ The current production status window behavior:
   `17:19:07  ✓  Final metric UI log probe  (2.9s)  [1 MB]`
 - detailed transport metrics remain available through
   `get_revit_mcp_status(includeDiagnostics=true)` and in the add-in log:
-  `C:\ProgramData\DPE\revAgent\revit-plugin\revit_mcp_plugin\Logs\mcp_YYYYMMDD.log`
+  `C:\ProgramData\DPE\revAgent\revit-plugin\revAgentPlugin\Logs\mcp_YYYYMMDD.log`
 
 Transport metrics in logs include `framing`, `requestBytes`, `receiveMs`,
 `parseMs`, `executeMs`, `responseBytes`, and `totalMs`. The status window is
@@ -1058,8 +1058,8 @@ C:\ProgramData\DPE\revAgent
 Important deployed locations:
 
 ```text
-C:\ProgramData\Autodesk\Revit\Addins\2022\mcp-servers-for-revit.addin
-C:\ProgramData\DPE\revAgent\revit-plugin\revit_mcp_plugin
+C:\ProgramData\Autodesk\Revit\Addins\2022\revAgent.addin
+C:\ProgramData\DPE\revAgent\revit-plugin\revAgentPlugin
 C:\ProgramData\DPE\revAgent\commands\CommandSet
 C:\ProgramData\DPE\revAgent\runtime
 C:\ProgramData\DPE\revAgent\package
@@ -1193,8 +1193,8 @@ Get-Process -Name Revit -ErrorAction SilentlyContinue |
 Compare deployed plugin DLL with package DLL:
 
 ```powershell
-$installed = "C:\ProgramData\DPE\revAgent\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
-$package = "C:\ProgramData\DPE\revAgent\package\installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
+$installed = "C:\ProgramData\DPE\revAgent\revit-plugin\revAgentPlugin\revAgentPlugin.dll"
+$package = "C:\ProgramData\DPE\revAgent\package\installer\revit-plugin\revAgentPlugin\revAgentPlugin.dll"
 (Get-FileHash -Algorithm SHA256 $installed).Hash
 (Get-FileHash -Algorithm SHA256 $package).Hash
 ```
@@ -1202,8 +1202,8 @@ $package = "C:\ProgramData\DPE\revAgent\package\installer\revit-plugin\revit_mcp
 Compare deployed command DLL with package DLL:
 
 ```powershell
-$installed = "C:\ProgramData\DPE\revAgent\commands\CommandSet\RevitMCPCommandSet.dll"
-$package = "C:\ProgramData\DPE\revAgent\package\installer\command-payload\RevitMCPCommandSet.dll"
+$installed = "C:\ProgramData\DPE\revAgent\commands\CommandSet\revAgentCommandSet.dll"
+$package = "C:\ProgramData\DPE\revAgent\package\installer\command-payload\revAgentCommandSet.dll"
 (Get-FileHash -Algorithm SHA256 $installed).Hash
 (Get-FileHash -Algorithm SHA256 $package).Hash
 ```

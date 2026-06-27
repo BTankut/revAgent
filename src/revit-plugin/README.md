@@ -3,9 +3,10 @@
 This folder contains the Revit add-in source that used to live in the separate
 `BTankut/revit-mcp-plugin` repository.
 
-Product-facing UI and docs should use `revAgent`. The source folder,
-assemblies, namespaces, manifests, and command-set names here intentionally keep
-their `revit-mcp` / `RevitMCP*` implementation identities.
+Product-facing UI and docs should use `revAgent`. The installed package uses
+revAgent-named add-in and command DLL artifacts. The deep source folder,
+project, and namespace identities here still keep their `revit-mcp` /
+`RevitMCP*` implementation names until the larger repository/source rename.
 
 Production source projects:
 
@@ -27,17 +28,17 @@ export, or multi-step workflows. Keep future discipline modules separated at
 the MCP tool layer and reuse the shared Revit bridge for common execution,
 context, selection, view, and navigation commands.
 
-The canonical production payload is still kept under:
+The canonical production host payload is kept under:
 
 ```text
-installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll
+installer\revit-plugin\revAgentPlugin\revAgentPlugin.dll
 ```
 
 The shared bridge command payload is kept under:
 
 ```text
 installer\command-payload
-installer\revit-plugin\revit_mcp_plugin\Commands\revAgentCommandSet
+installer\revit-plugin\revAgentPlugin\Commands\revAgentCommandSet
 ```
 
 Do not edit those binaries by hand. Change the source here, then refresh the

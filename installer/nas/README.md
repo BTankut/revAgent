@@ -6,7 +6,7 @@ keep office workstations updated from that single deployment source.
 Use `revAgent` for product-facing wording. Codex MCP entries should appear as
 `revAgent` and `revAgent-api-docs`. Keep `revit-mcp-skill`, `RevitMCP*`,
 `revit-mcp`, `mcp-servers-for-revit`, and `C:\ProgramData\DPE\revAgent` only
-as exact release, server, assembly, manifest, or path identifiers.
+as exact release, server, legacy cleanup, or deep source identifiers.
 
 ## Deployment Model
 
@@ -196,7 +196,7 @@ The Scheduled Task does not use Windows `StartWhenAvailable`: GUI update runs
 already execute an immediate `RunNow` check, so missed daily checks must not
 start a second updater process in parallel.
 The elevated install also repairs permissions on the managed revAgent install
-root and the exact `mcp-servers-for-revit.addin` manifest so that the per-user
+root and the exact `revAgent.addin` manifest, plus legacy cleanup targets, so that the per-user
 task can update the local package, runtime, add-in payload, cache, reports,
 logs, and hidden launcher files without another UAC prompt. Permission repair
 is targeted to the managed roots, known updater files, and active payload

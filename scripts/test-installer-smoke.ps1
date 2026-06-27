@@ -123,7 +123,7 @@ try {
     Assert-True (($targets | Where-Object { $_.Path -match 'node_modules|backups' }).Count -eq 0) "Permission repair plan must not target node_modules or backups."
     $recursiveLeaves = @($targets | Where-Object { $_.Recurse } | ForEach-Object { Split-Path -Leaf $_.Path })
     foreach ($leaf in $recursiveLeaves) {
-        Assert-True ($leaf -in @("revit_mcp_plugin", "CommandSet", "runtime", "revAgent")) "Unexpected recursive permission target: $leaf"
+        Assert-True ($leaf -in @("revAgentPlugin", "revit_mcp_plugin", "CommandSet", "runtime", "revAgent")) "Unexpected recursive permission target: $leaf"
     }
 
     Write-Host "Test Revit payload update policy"
@@ -264,17 +264,23 @@ try {
     Assert-Equal ($commandSetSourceFiles -join "|") ($expectedCommandSetSourceFiles -join "|") "RevitMCPCommandSet must contain the complete production bridge command source surface."
 
     Write-Host "Test Revit command registry includes the unified bridge command tools"
-    $bridgeCommandJson = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\revAgentCommandSet\command.json") | ConvertFrom-Json
-    $commandRegistry = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\commandRegistry.json") | ConvertFrom-Json
+    Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revAgent.addin") -PathType Leaf) "revAgent add-in manifest must be packaged with the product name."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\mcp-servers-for-revit.addin"))) "Legacy mcp-servers-for-revit add-in manifest must not be packaged."
+    Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revAgentPlugin\revAgentPlugin.dll") -PathType Leaf) "revAgent plugin DLL must be packaged with the product name."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin"))) "Legacy revit_mcp_plugin payload folder must not be packaged."
+    Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\command-payload\revAgentCommandSet.dll") -PathType Leaf) "revAgent command payload DLL must be packaged with the product name."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\command-payload\RevitMCPCommandSet.dll"))) "Legacy RevitMCPCommandSet command payload DLL must not be packaged."
+    $bridgeCommandJson = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revAgentPlugin\Commands\revAgentCommandSet\command.json") | ConvertFrom-Json
+    $commandRegistry = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revAgentPlugin\Commands\commandRegistry.json") | ConvertFrom-Json
     $registeredCommandNames = @($commandRegistry.Commands | ForEach-Object { [string]$_.commandName })
     foreach ($name in @($bridgeCommandJson.commands | ForEach-Object { [string]$_.commandName })) {
         Assert-True ($registeredCommandNames -contains $name) "commandRegistry.json is missing Revit bridge command '$name'."
     }
     foreach ($path in @($commandRegistry.Commands | ForEach-Object { [string]$_.assemblyPath })) {
-        Assert-Equal $path "revAgentCommandSet\\2022\\RevitMCPCommandSet.dll" "Bridge command registry must load every command from the revAgent bridge payload folder."
+        Assert-Equal $path "revAgentCommandSet\\2022\\revAgentCommandSet.dll" "Bridge command registry must load every command from the revAgent bridge payload folder."
     }
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet"))) "Legacy RevitMCPCommandSet payload folder must not be packaged."
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPViewCommandSet"))) "Legacy RevitMCPViewCommandSet payload folder must not be packaged."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revAgentPlugin\Commands\RevitMCPCommandSet"))) "Legacy RevitMCPCommandSet payload folder must not be packaged."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revAgentPlugin\Commands\RevitMCPViewCommandSet"))) "Legacy RevitMCPViewCommandSet payload folder must not be packaged."
 
     Write-Host "Test installer public parameters"
     $installerParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\install-self-contained.ps1")

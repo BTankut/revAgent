@@ -9,6 +9,11 @@ All notable revAgent workstation deployment changes are tracked here.
   runtime tool descriptions, Revit UI/add-in labels, installer launchers, and
   operator docs while keeping deep `revit-mcp` implementation identifiers for
   a later migration phase.
+- Renamed installed Revit add-in artifacts to the revAgent layer:
+  `revAgent.addin`, `revAgentPlugin`, `revAgentPlugin.dll`, and
+  `revAgentCommandSet.dll`; installer/update cleanup now removes the legacy
+  `mcp-servers-for-revit.addin`, `revit_mcp_plugin`, `RevitMCPPlugin.dll`, and
+  `RevitMCPCommandSet.dll` active payload surfaces.
 - Added a rollout closure audit wrapper that persists a timestamped readiness
   snapshot and can fail handoff automation when machine or rollout actions
   remain open.

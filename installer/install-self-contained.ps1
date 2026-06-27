@@ -60,7 +60,14 @@ if ([string]::IsNullOrWhiteSpace($AllUsersAddinRoot)) {
 $addinRoot = $AllUsersAddinRoot
 $legacyUserAddinRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitVersion"
 $pluginRoot = Join-Path $InstallRoot "revit-plugin"
-$pluginTarget = Join-Path $pluginRoot "revit_mcp_plugin"
+$pluginFolderName = "revAgentPlugin"
+$legacyPluginFolderName = "revit_mcp_plugin"
+$pluginTarget = Join-Path $pluginRoot $pluginFolderName
+$legacyPluginTarget = Join-Path $pluginRoot $legacyPluginFolderName
+$addinManifestFileName = "revAgent.addin"
+$legacyAddinManifestFileName = "mcp-servers-for-revit.addin"
+$pluginDllFileName = "revAgentPlugin.dll"
+$commandSetDllFileName = "revAgentCommandSet.dll"
 $commandSetRoot = Join-Path $InstallRoot "commands\CommandSet"
 $pluginCommandSetFolderName = "revAgentCommandSet"
 $stateRoot = Join-Path $InstallRoot "state"
@@ -537,7 +544,7 @@ function Assert-RevitMcpCleanupPath {
         [string]$Path,
         [Parameter(Mandatory = $true)]
         [string]$Label,
-        [string]$AllowedNamePattern = "(?i)(^revAgent$|^revit[-_]mcp($|[-_.])|^revit_mcp_plugin$|^mcp[-_]servers?[-_]for[-_]revit|^mcp-server-for-revit|^RevitMCP|^runtime$|^package$|^updater$|^state$|^revit-plugin$|^codex$|^AGENTS\.md$)",
+        [string]$AllowedNamePattern = "(?i)(^revAgent$|^revAgentPlugin$|^revAgent\.addin$|^revAgentCommandSet(\.dll)?$|^revit[-_]mcp($|[-_.])|^revit_mcp_plugin$|^mcp[-_]servers?[-_]for[-_]revit|^mcp-server-for-revit|^RevitMCP|^runtime$|^package$|^updater$|^state$|^revit-plugin$|^codex$|^AGENTS\.md$)",
         [switch]$AllowBroadTarget
     )
 
@@ -940,14 +947,18 @@ function Invoke-RevitMcpCleanup {
     )
 
     if (-not $SkipRevitPayloadInstall) {
-        Remove-RevitMcpPath -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -Label "revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
+        Remove-RevitMcpPath -Path (Join-Path $addinRoot $addinManifestFileName) -Label "revAgent add-in manifest" -AllowedNamePattern "(?i)(^revAgent\.addin$)"
+        Remove-RevitMcpPath -Path (Join-Path $addinRoot $legacyAddinManifestFileName) -Label "legacy revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
         Remove-RevitMcpPath -Path (Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy revAgent add-in manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
         if (-not $SkipLegacyCleanup) {
-            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "mcp-servers-for-revit.addin") -Label "legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
+            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot $addinManifestFileName) -Label "legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^revAgent\.addin$)"
+            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot $legacyAddinManifestFileName) -Label "legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
             Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
-            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit_mcp_plugin") -Label "legacy user revAgent add-in payload directory" -Recurse
+            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot $pluginFolderName) -Label "legacy user revAgent add-in payload directory" -Recurse
+            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot $legacyPluginFolderName) -Label "legacy user revAgent add-in payload directory" -Recurse
         }
         Remove-RevitMcpPath -Path $pluginTarget -Label "revAgent add-in payload directory" -Recurse
+        Remove-RevitMcpPath -Path $legacyPluginTarget -Label "legacy revAgent add-in payload directory" -Recurse
         Remove-RevitMcpPath -Path $commandSetRoot -Label "revAgent machine command directory" -Recurse -AllowedNamePattern "(?i)(^CommandSet$)"
         if (-not $SkipLegacyCleanup) {
             Remove-RevitMcpPath -Path (Join-Path $env:LOCALAPPDATA "revit-mcp-plugin") -Label "revAgent LocalAppData command directory" -Recurse
@@ -1018,8 +1029,8 @@ if (-not $SkipRevitPayloadInstall) {
     if (Test-Path $pluginTarget) {
         Remove-Item -LiteralPath $pluginTarget -Recurse -Force
     }
-    Copy-Item -LiteralPath (Join-Path $pluginSource "revit_mcp_plugin") -Destination $pluginRoot -Recurse -Force
-    Write-AddinManifest -Path (Join-Path $addinRoot "mcp-servers-for-revit.addin") -AssemblyPath (Join-Path $pluginTarget "RevitMCPPlugin.dll")
+    Copy-Item -LiteralPath (Join-Path $pluginSource $pluginFolderName) -Destination $pluginRoot -Recurse -Force
+    Write-AddinManifest -Path (Join-Path $addinRoot $addinManifestFileName) -AssemblyPath (Join-Path $pluginTarget $pluginDllFileName)
 }
 else {
     Write-Host "Revit add-in payload install skipped; existing Revit files were left untouched." -ForegroundColor Yellow
@@ -1050,8 +1061,8 @@ if ((-not $SkipRevitPayloadInstall) -and (Test-Path $customDllDir)) {
 
     New-Item -ItemType Directory -Path $machineCmdSet2022 -Force | Out-Null
 
-    Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $machineCmdSet2022 -Force
-    Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $machineCmdSet -Force
+    Copy-Item -Path (Join-Path $customDllDir $commandSetDllFileName) -Destination $machineCmdSet2022 -Force
+    Copy-Item -Path (Join-Path $customDllDir $commandSetDllFileName) -Destination $machineCmdSet -Force
     Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $machineCmdSet2022 -Force
     Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $machineCmdSet -Force
 
@@ -1065,8 +1076,8 @@ if ((-not $SkipRevitPayloadInstall) -and (Test-Path $customDllDir)) {
     }
 
     New-Item -ItemType Directory -Path $roamingCmdSet2022 -Force | Out-Null
-    Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $roamingCmdSet2022 -Force
-    Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $roamingCmdSet -Force
+    Copy-Item -Path (Join-Path $customDllDir $commandSetDllFileName) -Destination $roamingCmdSet2022 -Force
+    Copy-Item -Path (Join-Path $customDllDir $commandSetDllFileName) -Destination $roamingCmdSet -Force
     Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $roamingCmdSet2022 -Force
     Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $roamingCmdSet -Force
 
