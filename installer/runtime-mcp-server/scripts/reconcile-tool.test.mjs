@@ -263,11 +263,11 @@ assert.equal(partialSourcePayload.state, "review_ready");
 assert.equal(partialSourcePayload.partial, true);
 assert.equal(partialSourcePayload.scanStoppedReason, "max_rows");
 
-const guardedRevitSchedulePayload = await reconcileScheduleExcel({
+const liveRevitSchedulePayload = await reconcileScheduleExcel({
   excel: {
     kind: "rows",
     sheetName: "Rows",
-    rows: [{ Identity: "LIVE-01", Description: "Live schedule deferred" }],
+    rows: [{ Identity: "FCU-01", Description: "Fan coil \u00d8100" }],
     columnMapping: {
       identity: "Identity",
       comparisonText: "Description",
@@ -281,12 +281,28 @@ const guardedRevitSchedulePayload = await reconcileScheduleExcel({
       comparisonText: 1,
     },
   },
+}, {
+  scheduleAdapter: {
+    sendCommand: async (commandName, params) => {
+      assert.equal(commandName, "inspect_schedules");
+      assert.deepEqual(params.scheduleIds, [7001]);
+      assert.equal(params.includeCells, true);
+      assert.equal(params.responseMode, "full");
+      return {
+        result: scheduleFixture([
+          { Identity: "FCU-01", Description: "Fan coil DN100" },
+          { Identity: "SCH-02", Description: "Schedule-only row" },
+        ]),
+      };
+    },
+  },
 });
-assert.equal(guardedRevitSchedulePayload.success, true);
-assert.equal(guardedRevitSchedulePayload.guarded, true);
-assert.equal(guardedRevitSchedulePayload.state, "guarded");
-assert.equal(guardedRevitSchedulePayload.reason, "revit_schedule_bridge_deferred");
-assert.equal(guardedRevitSchedulePayload.stage, "schedule_record_adapter");
+assert.equal(liveRevitSchedulePayload.success, true);
+assert.equal(liveRevitSchedulePayload.guarded, false);
+assert.equal(liveRevitSchedulePayload.state, "review_ready");
+assert.equal(liveRevitSchedulePayload.sourceResults.schedule.sourceKind, "revit_schedule");
+assert.equal(liveRevitSchedulePayload.sourceResults.schedule.recordCount, 2);
+assert.equal(liveRevitSchedulePayload.summary.scheduleRows, 2);
 
 console.log("reconcile tool tests passed");
 } finally {

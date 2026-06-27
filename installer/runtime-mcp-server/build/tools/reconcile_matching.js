@@ -84,7 +84,7 @@ export function reconcileScheduleExcelRecords(rawInput) {
             stage: "matching_scoring",
             reconciliationContractVersion: 1,
             reason: "reconciliation_input_required",
-            message: "Provide excelRecords and scheduleRecords, or PR1/PR2 result envelopes containing those arrays.",
+            message: "Provide excelRecords and scheduleRecords, or normalized ingestion result envelopes containing those arrays.",
             validationIssues: parsed.error.issues.map((issue) => issue.message),
             partial: false,
             scanStoppedReason: "needs_scope",

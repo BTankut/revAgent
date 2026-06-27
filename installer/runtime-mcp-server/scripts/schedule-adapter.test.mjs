@@ -63,7 +63,7 @@ const realShapeResult = {
   ],
 };
 
-const adapted = adaptScheduleSource({
+const adapted = await adaptScheduleSource({
   kind: "inspect_schedules_result",
   result: realShapeResult,
 });
@@ -100,7 +100,7 @@ const secondRecord = adapted.scheduleRecords[1];
 assert.match(secondRecord.normalizedKey, /ABC/);
 assert.equal(secondRecord.tokenProfile.tokens.some((token) => token.type === "dimension" && token.value === "2M3H"), true);
 
-const fallbackHeadersDoNotOverrideActualHeaders = adaptScheduleSource({
+const fallbackHeadersDoNotOverrideActualHeaders = await adaptScheduleSource({
   kind: "inspect_schedules_result",
   result: realShapeResult,
   columnHeaders: ["Wrong identity", "Wrong comparison"],
@@ -151,7 +151,7 @@ const partialResult = {
   ],
 };
 
-const partialAdapted = adaptScheduleSource({
+const partialAdapted = await adaptScheduleSource({
   kind: "inspect_schedules_result",
   result: partialResult,
 });
@@ -165,7 +165,7 @@ assert.equal(partialAdapted.lastReadColumn, 1);
 assert.equal(partialAdapted.lastReadItemId, 303);
 assert.equal(partialAdapted.scheduleRecords[0].scheduleRowId, "303:body:10");
 
-const explicitMapping = adaptScheduleSource({
+const explicitMapping = await adaptScheduleSource({
   kind: "inspect_schedules_result",
   result: {
     success: true,
@@ -196,7 +196,7 @@ assert.equal(explicitMapping.success, true);
 assert.equal(explicitMapping.guarded, false);
 assert.equal(explicitMapping.scheduleRecords[0].scheduleRowId, "404:body:5");
 
-const outOfBoundsExplicitMapping = adaptScheduleSource({
+const outOfBoundsExplicitMapping = await adaptScheduleSource({
   kind: "inspect_schedules_result",
   result: realShapeResult,
   columnMapping: { identity: 0, comparisonText: 99 },
@@ -206,7 +206,7 @@ assert.equal(outOfBoundsExplicitMapping.guarded, true);
 assert.equal(outOfBoundsExplicitMapping.reason, "schedule_column_mapping_required");
 assert.equal(outOfBoundsExplicitMapping.mappingError.reason, "unresolved_column_ref");
 
-const mappingGuard = adaptScheduleSource({
+const mappingGuard = await adaptScheduleSource({
   kind: "inspect_schedules_result",
   result: {
     success: true,
@@ -234,15 +234,36 @@ assert.equal(mappingGuard.guarded, true);
 assert.equal(mappingGuard.reason, "schedule_column_mapping_required");
 assert.equal(mappingGuard.scanStoppedReason, "needs_scope");
 
-const deferredRevitMode = adaptScheduleSource({
+const missingScopeRevitMode = await adaptScheduleSource({
+  kind: "revit_schedule",
+  columnMapping: { identity: 0, comparisonText: 1 },
+});
+assert.equal(missingScopeRevitMode.success, true);
+assert.equal(missingScopeRevitMode.guarded, true);
+assert.equal(missingScopeRevitMode.reason, "needs_scope");
+assert.match(missingScopeRevitMode.message, /scheduleIds or nameQuery/);
+
+const liveRevitMode = await adaptScheduleSource({
   kind: "revit_schedule",
   scheduleIds: [202],
   columnMapping: { identity: 0, comparisonText: 1 },
+}, {
+  sendCommand: async (commandName, params) => {
+    assert.equal(commandName, "inspect_schedules");
+    assert.deepEqual(params.scheduleIds, [202]);
+    assert.equal(params.includeCells, true);
+    assert.equal(params.responseMode, "full");
+    assert.deepEqual(params.sections, ["header", "body"]);
+    return { result: realShapeResult };
+  },
 });
-assert.equal(deferredRevitMode.success, true);
-assert.equal(deferredRevitMode.guarded, true);
-assert.equal(deferredRevitMode.reason, "revit_schedule_bridge_deferred");
-assert.equal(deferredRevitMode.scanStoppedReason, "needs_scope");
+assert.equal(liveRevitMode.success, true);
+assert.equal(liveRevitMode.guarded, false);
+assert.equal(liveRevitMode.sourceKind, "revit_schedule");
+assert.equal(liveRevitMode.bridgeSourceKind, "inspect_schedules_result");
+assert.equal(liveRevitMode.scanPolicy.bridgeExecution, "inspect_schedules");
+assert.equal(liveRevitMode.scheduleRecords.length, 2);
+assert.match(liveRevitMode.notices.join("\n"), /bounded inspect_schedules/);
 
 assert.equal(normalizeReconciliationText("  Fan\tcoil -- DN\u00a0100  "), "FAN COIL DN 100");
 assert.equal(normalizeReconciliationText("i I \u0131 \u0130"), "I I I I");

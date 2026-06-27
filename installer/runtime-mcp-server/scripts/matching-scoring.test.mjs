@@ -19,7 +19,7 @@ async function buildExcelResult(rows) {
   });
 }
 
-function buildScheduleResult(rows) {
+async function buildScheduleResult(rows) {
   return adaptScheduleSource({
     kind: "inspect_schedules_result",
     result: {
@@ -70,7 +70,7 @@ function buildScheduleResult(rows) {
 
 async function reconcileCase(excelRows, scheduleRows, config) {
   const excelResult = await buildExcelResult(excelRows);
-  const scheduleResult = buildScheduleResult(scheduleRows);
+  const scheduleResult = await buildScheduleResult(scheduleRows);
   assert.equal(excelResult.success, true);
   assert.equal(excelResult.guarded, false);
   assert.equal(scheduleResult.success, true);

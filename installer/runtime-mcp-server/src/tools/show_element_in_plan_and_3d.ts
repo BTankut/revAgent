@@ -41,7 +41,7 @@ function buildDefault3DViewName(elementId: string | number, element: JsonObject 
     const label = element && (element.FamilyName || element.TypeName || element.Name)
         ? String(element.FamilyName || element.TypeName || element.Name)
         : "Element";
-    return `3D - ${label} ${elementId}`.replace(/[{}[\];<>?`~]/g, "").slice(0, 90);
+    return `3D - Focus ${label} ${elementId}`.replace(/[{}[\];<>?`~]/g, "").slice(0, 90);
 }
 
 function compactElement(element: any) {

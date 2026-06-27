@@ -1058,6 +1058,46 @@ $deleteQaCommit = Invoke-DeleteReviewView `
 Assert-Equal ([bool]$deleteQaCommit.success) $true "delete_review_view QA commit by id should succeed."
 Assert-Equal ([bool]$deleteQaCommit.deleted) $true "delete_review_view QA commit should verify deletion."
 
+Write-Host "Test delete_review_view recognizes show_element_in_plan_and_3d focus view names"
+$wrapperFocusReviewViewName = "3D - Focus Element $selectionTargetId DELETE_TEST_" + (Get-Date -Format "HHmmssfff")
+$createWrapperFocusReviewView = Invoke-Create3DViewForElements `
+    -TaskName "$prefix create wrapper-style focus review view via tool" `
+    -Params ([ordered]@{
+        elementIds = @($selectionTargetId)
+        viewName = $wrapperFocusReviewViewName
+        reuseExisting = $false
+        createIfMissing = $true
+        sectionBox = $false
+        activate = $false
+        select = $false
+        zoom = $false
+        timeoutMs = 15000
+    })
+Assert-Equal ([bool]$createWrapperFocusReviewView.success) $true "create_3d_view_for_elements wrapper-style focus review view should succeed."
+Assert-Equal ([bool]$createWrapperFocusReviewView.createdView) $true "create_3d_view_for_elements should create the wrapper-style focus review view."
+$wrapperFocusReviewViewId = [int]$createWrapperFocusReviewView.targetView.id
+$deleteWrapperFocusDryRun = Invoke-DeleteReviewView `
+    -TaskName "$prefix delete_review_view wrapper-style focus dry-run by name" `
+    -Params ([ordered]@{
+        viewName = $wrapperFocusReviewViewName
+        exactName = $true
+        mode = "dryRun"
+        timeoutMs = 10000
+    })
+Assert-Equal ([bool]$deleteWrapperFocusDryRun.success) $true "delete_review_view wrapper-style focus dry-run by name should succeed."
+Assert-Equal ([bool]$deleteWrapperFocusDryRun.targetIsReviewView) $true "delete_review_view should recognize show_element_in_plan_and_3d wrapper focus names."
+Assert-True ($deleteWrapperFocusDryRun.reviewSignals -contains "default_focus_view_name") "delete_review_view should report the default focus review signal for wrapper-created names."
+$deleteWrapperFocusCommit = Invoke-DeleteReviewView `
+    -TaskName "$prefix delete_review_view wrapper-style focus commit by id" `
+    -Params ([ordered]@{
+        viewId = $wrapperFocusReviewViewId
+        mode = "commit"
+        confirmDelete = $true
+        timeoutMs = 15000
+    })
+Assert-Equal ([bool]$deleteWrapperFocusCommit.success) $true "delete_review_view wrapper-style focus commit by id should succeed."
+Assert-Equal ([bool]$deleteWrapperFocusCommit.deleted) $true "delete_review_view wrapper-style focus commit should verify deletion."
+
 Write-Host "Test delete_review_view blocks sheet-placed review views"
 $placedReviewViewName = "3D - Focus revAgent Placed Delete Guard " + (Get-Date -Format "HHmmssfff")
 $placedReviewProbe = Invoke-RevitCode `

@@ -8,6 +8,8 @@ import {
     readNativeResultField,
     type BroadScanStopReason,
 } from "../utils/broadScanResult.js";
+import { sendRevitCommand } from "../utils/revitToolHelpers.js";
+import { normalizeScheduleResult } from "./inspect_schedules.js";
 import {
     buildReconciliationTokenProfile,
     cleanReconciliationText,
@@ -58,6 +60,25 @@ export const revitScheduleSourceSchema = z.object({
     sections: z.array(z.enum(["header", "body", "footer"])).optional(),
     columnMapping: scheduleColumnMappingSchema.optional(),
     columnHeaders: z.array(z.string()).optional(),
+    target: z.string().optional(),
+    host: z.string().optional(),
+    port: z.number().int().positive().max(65535).optional(),
+    taskName: z.string().optional(),
+    taskId: z.string().optional(),
+    parentTaskName: z.string().optional(),
+    parentTaskId: z.string().optional(),
+    allowExpensiveSearch: z.boolean().optional(),
+    searchBudget: z.enum(["fast", "balanced", "deep"]).optional(),
+    maxElapsedMs: z.number().int().positive().max(119000).optional(),
+    maxSchedules: z.number().int().positive().max(200).optional(),
+    maxRowsPerSection: z.number().int().min(0).max(1000).optional(),
+    maxColumnsPerSection: z.number().int().min(0).max(200).optional(),
+    startRow: z.number().int().min(0).max(100000).optional(),
+    startColumn: z.number().int().min(0).max(10000).optional(),
+    maxCells: z.number().int().positive().max(500000).optional(),
+    maxResponseBytes: z.number().int().min(4096).max(16 * 1024 * 1024).optional(),
+    maxCellTextChars: z.number().int().min(20).max(1000).optional(),
+    timeoutMs: z.number().int().positive().max(120000).optional(),
 }).strict();
 
 export const scheduleAdapterSourceSchema = z.discriminatedUnion("kind", [
@@ -102,7 +123,11 @@ type AliasMatch = {
     priority: number;
 };
 
-export function adaptScheduleSource(rawInput: ScheduleAdapterSource): JsonObject {
+type ScheduleAdapterOptions = {
+    sendCommand?: typeof sendRevitCommand;
+};
+
+export async function adaptScheduleSource(rawInput: ScheduleAdapterSource, options: ScheduleAdapterOptions = {}): Promise<JsonObject> {
     const startedAtMs = Date.now();
     const parsed = scheduleAdapterSourceSchema.safeParse(rawInput);
     if (!parsed.success) {
@@ -114,24 +139,99 @@ export function adaptScheduleSource(rawInput: ScheduleAdapterSource): JsonObject
     }
 
     if (parsed.data.kind === "revit_schedule") {
-        return buildGuardedResult("revit_schedule_bridge_deferred", "Live revit_schedule bridge execution is deferred to PR4. Pass kind:\"inspect_schedules_result\" with a normalized inspect_schedules result for PR2.", {
-            sourceKind: parsed.data.kind,
-            sections: normalizeSections(parsed.data.sections),
-            scanPolicy: {
-                sourceKind: parsed.data.kind,
-                bridgeExecution: "deferred_to_pr4",
-                scheduleIds: parsed.data.scheduleIds || [],
-                nameQuery: parsed.data.nameQuery || null,
-                sections: normalizeSections(parsed.data.sections),
-                columnMapping: parsed.data.columnMapping || null,
-                visibilityBasis: VISIBILITY_BASIS,
-            },
-            elapsedMs: Date.now() - startedAtMs,
-            suggestedNextScopes: ["schedule.kind=inspect_schedules_result", "schedule.result"],
-        });
+        return adaptLiveRevitScheduleSource(parsed.data, startedAtMs, options);
     }
 
     return adaptInspectSchedulesResult(parsed.data, Date.now() - startedAtMs);
+}
+
+async function adaptLiveRevitScheduleSource(source: z.infer<typeof revitScheduleSourceSchema>, startedAtMs: number, options: ScheduleAdapterOptions): Promise<JsonObject> {
+    const hasScheduleScope = Boolean(
+        (Array.isArray(source.scheduleIds) && source.scheduleIds.length > 0) ||
+        String(source.nameQuery || "").trim()
+    );
+    if (!hasScheduleScope && source.allowExpensiveSearch !== true) {
+        return buildGuardedResult("needs_scope", "Direct live schedule reconciliation requires scheduleIds or nameQuery. Set allowExpensiveSearch=true only when a broad schedule scan is intentional.", {
+            sourceKind: source.kind,
+            elapsedMs: Date.now() - startedAtMs,
+            suggestedNextScopes: ["schedule.scheduleIds", "schedule.nameQuery", "schedule.allowExpensiveSearch=true"],
+            scanPolicy: {
+                sourceKind: source.kind,
+                bridgeExecution: "inspect_schedules",
+                scheduleIds: [],
+                nameQuery: null,
+                allowExpensiveSearch: false,
+                visibilityBasis: VISIBILITY_BASIS,
+            },
+        });
+    }
+
+    const adapterSections = normalizeSections(source.sections);
+    const inspectSections = ["header", ...adapterSections.filter((section) => section !== "header")];
+    const inspectArgs: JsonObject = {
+        query: source.nameQuery,
+        nameQuery: source.nameQuery,
+        scheduleIds: source.scheduleIds,
+        sections: inspectSections,
+        includeCells: true,
+        scanCells: false,
+        allowExpensiveSearch: source.allowExpensiveSearch,
+        searchBudget: source.searchBudget,
+        maxElapsedMs: source.maxElapsedMs,
+        maxSchedules: source.maxSchedules,
+        maxRowsPerSection: source.maxRowsPerSection,
+        maxColumnsPerSection: source.maxColumnsPerSection,
+        startRow: source.startRow,
+        startColumn: source.startColumn,
+        maxCells: source.maxCells,
+        maxResponseBytes: source.maxResponseBytes,
+        maxCellTextChars: source.maxCellTextChars,
+        responseMode: "full",
+        timeoutMs: source.timeoutMs,
+        taskName: source.taskName || "Inspect live Revit schedule for reconciliation",
+        taskId: source.taskId,
+        parentTaskName: source.parentTaskName,
+        parentTaskId: source.parentTaskId,
+    };
+
+    const sendCommand = options.sendCommand || sendRevitCommand;
+    const response = await sendCommand("inspect_schedules", inspectArgs, {
+        target: source.target,
+        host: source.host,
+        port: source.port,
+        timeoutMs: source.timeoutMs,
+        taskName: inspectArgs.taskName,
+        taskId: source.taskId,
+        parentTaskName: source.parentTaskName,
+        parentTaskId: source.parentTaskId,
+        toolName: "reconcile_schedule_excel",
+    });
+    const elapsedMs = Date.now() - startedAtMs;
+    const inspectPayload = normalizeScheduleResult(response && response.result ? response.result : response, inspectArgs, elapsedMs);
+    const adapted = adaptInspectSchedulesResult({
+        kind: "inspect_schedules_result",
+        result: inspectPayload,
+        columnMapping: source.columnMapping,
+        columnHeaders: source.columnHeaders,
+        sections: source.sections,
+    }, elapsedMs);
+
+    adapted.sourceKind = "revit_schedule";
+    adapted.bridgeSourceKind = "inspect_schedules_result";
+    adapted.scanPolicy = {
+        ...(adapted.scanPolicy || {}),
+        sourceKind: "revit_schedule",
+        bridgeExecution: "inspect_schedules",
+        inspectSections,
+        scheduleIds: source.scheduleIds || [],
+        nameQuery: source.nameQuery || null,
+        allowExpensiveSearch: source.allowExpensiveSearch === true,
+    };
+    adapted.notices = [
+        ...readNativeStringArray(adapted, "notices"),
+        "Live Revit schedule input was read through bounded inspect_schedules before reconciliation.",
+    ];
+    return adapted;
 }
 
 function adaptInspectSchedulesResult(source: z.infer<typeof inspectSchedulesResultSourceSchema>, elapsedMs: number): JsonObject {
