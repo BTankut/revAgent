@@ -147,7 +147,7 @@
                        FontFamily="Segoe UI"
                        FontSize="11"
                        Foreground="#FF666666"
-                       Text="revAgent  |  &#x00A9; 2026 Baris Tankut  |  All rights reserved."/>
+                       Text="revAgent  |  &#x00A9; 2026 Baris Tankut  |  dashboard.revagent.app"/>
 
             <Button x:Name="AckButton"
                     Grid.Row="7"

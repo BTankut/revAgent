@@ -77,7 +77,8 @@ function Update-BridgeCommandRegistry {
     param(
         [string]$RegistryPath,
         [string]$CommandJsonPath,
-        [string]$Version
+        [string]$Version,
+        [string]$CommandSetFolderName = "revAgentCommandSet"
     )
 
     if (-not (Test-Path -LiteralPath $RegistryPath -PathType Leaf)) {
@@ -111,7 +112,7 @@ function Update-BridgeCommandRegistry {
         }
         $commands += [pscustomobject]@{
             commandName = [string]$command.commandName
-            assemblyPath = "$commandSetName\\$Version\\$assemblyFile"
+            assemblyPath = "$CommandSetFolderName\\$Version\\$assemblyFile"
             enabled = $true
             supportedRevitVersions = @($Version)
             developer = $developer
@@ -217,17 +218,25 @@ if (-not $SkipPayloadCopy) {
         Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $commandPayloadRuntimeDir $assemblyName) -Force
     }
 
-    $commandSetRoot = Join-Path $payloadDir "Commands\RevitMCPCommandSet"
+    $commandsRoot = Join-Path $payloadDir "Commands"
+    $commandSetPayloadFolderName = "revAgentCommandSet"
+    $commandSetRoot = Join-Path $commandsRoot $commandSetPayloadFolderName
     $commandSetVersionRoot = Join-Path $commandSetRoot $RevitVersion
-    $legacyViewCommandSetRoot = Join-Path $payloadDir "Commands\RevitMCPViewCommandSet"
-    if (Test-Path -LiteralPath $legacyViewCommandSetRoot) {
-        $commandsRootFullPath = [System.IO.Path]::GetFullPath((Join-Path $payloadDir "Commands"))
-        $legacyViewCommandSetRootFullPath = [System.IO.Path]::GetFullPath($legacyViewCommandSetRoot)
-        if (-not $legacyViewCommandSetRootFullPath.StartsWith($commandsRootFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Refusing to remove legacy command set outside installer Commands payload: $legacyViewCommandSetRootFullPath"
+    $commandsRootFullPath = [System.IO.Path]::GetFullPath($commandsRoot)
+    foreach ($legacyCommandSetRoot in @(
+            (Join-Path $commandsRoot "RevitMCPViewCommandSet"),
+            (Join-Path $commandsRoot "RevitMCPCommandSet")
+        )) {
+        if (-not (Test-Path -LiteralPath $legacyCommandSetRoot)) {
+            continue
         }
-        Remove-Item -LiteralPath $legacyViewCommandSetRoot -Recurse -Force
+        $legacyCommandSetRootFullPath = [System.IO.Path]::GetFullPath($legacyCommandSetRoot)
+        if (-not $legacyCommandSetRootFullPath.StartsWith($commandsRootFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove legacy command set outside installer Commands payload: $legacyCommandSetRootFullPath"
+        }
+        Remove-Item -LiteralPath $legacyCommandSetRoot -Recurse -Force
     }
+
     $legacyRootCommandSetDll = Join-Path $commandSetRoot "RevitMCPCommandSet.dll"
     if (Test-Path -LiteralPath $legacyRootCommandSetDll) {
         Remove-Item -LiteralPath $legacyRootCommandSetDll -Force
@@ -238,7 +247,8 @@ if (-not $SkipPayloadCopy) {
     Update-BridgeCommandRegistry `
         -RegistryPath (Join-Path $payloadDir "Commands\commandRegistry.json") `
         -CommandJsonPath (Join-Path $commandSetRoot "command.json") `
-        -Version $RevitVersion
+        -Version $RevitVersion `
+        -CommandSetFolderName $commandSetPayloadFolderName
 
     Remove-RevitPayloadDebugArtifacts -RepoRoot $RepoRoot
     Assert-RevitPayloadNoDebugArtifacts -RepoRoot $RepoRoot

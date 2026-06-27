@@ -264,15 +264,16 @@ try {
     Assert-Equal ($commandSetSourceFiles -join "|") ($expectedCommandSetSourceFiles -join "|") "RevitMCPCommandSet must contain the complete production bridge command source surface."
 
     Write-Host "Test Revit command registry includes the unified bridge command tools"
-    $bridgeCommandJson = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet\command.json") | ConvertFrom-Json
+    $bridgeCommandJson = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\revAgentCommandSet\command.json") | ConvertFrom-Json
     $commandRegistry = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\commandRegistry.json") | ConvertFrom-Json
     $registeredCommandNames = @($commandRegistry.Commands | ForEach-Object { [string]$_.commandName })
     foreach ($name in @($bridgeCommandJson.commands | ForEach-Object { [string]$_.commandName })) {
         Assert-True ($registeredCommandNames -contains $name) "commandRegistry.json is missing Revit bridge command '$name'."
     }
     foreach ($path in @($commandRegistry.Commands | ForEach-Object { [string]$_.assemblyPath })) {
-        Assert-Equal $path "RevitMCPCommandSet\\2022\\RevitMCPCommandSet.dll" "Bridge command registry must load every command from the unified bridge DLL."
+        Assert-Equal $path "revAgentCommandSet\\2022\\RevitMCPCommandSet.dll" "Bridge command registry must load every command from the revAgent bridge payload folder."
     }
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet"))) "Legacy RevitMCPCommandSet payload folder must not be packaged."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPViewCommandSet"))) "Legacy RevitMCPViewCommandSet payload folder must not be packaged."
 
     Write-Host "Test installer public parameters"
@@ -486,9 +487,12 @@ try {
     $socketServiceCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\SocketService.cs")
     $commandExecutorCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\CommandExecutor.cs")
     $bridgeResultContractCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\BridgeResultContract.cs")
+    $applicationCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\Application.cs")
+    $metadataCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\RevAgentMetadataCommand.cs")
     Assert-True ($taskStatusXaml -match 'Title="revAgent Status"') "Task status window title must use revAgent."
     Assert-True ($taskStatusXaml -match 'Your AI agent inside Revit\.') "Task status window must show the revAgent product tagline."
     Assert-True ($taskStatusXaml -match '2026 Baris Tankut') "Task status window must show the revAgent copyright footer."
+    Assert-True ($taskStatusXaml -match 'dashboard\.revagent\.app') "Task status window must show the revAgent web address."
     Assert-True ($taskStatusXaml -match 'UpdateStatusText') "Task status window must expose the update state line."
     Assert-True ($taskStatusXaml -match 'Up to date') "Task status window must use user-facing update state wording."
     Assert-True ($taskStatusXaml -match 'WindowStyle="SingleBorderWindow"') "Task status window must expose a normal minimizable window frame."
@@ -497,12 +501,15 @@ try {
     Assert-True ($taskStatusCode -notmatch 'Revit MCP is working|Revit MCP task|Revit MCP version') "Task status code must not expose internal MCP wording."
     Assert-True ($taskStatusCode -match 'VersionDisplay') "Task status code must present the installed product version label."
     Assert-True ($taskStatusCode -match 'FormatUpdateStatusLine') "Task status code must present a concise update-state label."
+    Assert-True ($applicationCode -match 'ID_EXCMD_REVAGENT_INFO' -and $applicationCode -notmatch 'ID_EXCMD_TOGGLE_REVIT_MCP|ID_EXCMD_MCP_SETTINGS') "Revit ribbon must expose only the revAgent metadata button."
+    Assert-True ($metadataCommandCode -match 'FormatMetadataDetails' -and $metadataCommandCode -match 'ProductWebsiteUrl') "Revit metadata button must show the shared revAgent version metadata and web address."
     $versionInfoCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpVersionInfo.cs")
     Assert-True ($versionInfoCode -match 'channelManifestPath') "Version info must read the configured channel manifest path."
     Assert-True ($versionInfoCode -match 'publishedAtUtc') "Version info must use release/channel publish timestamps when available."
     Assert-True ($versionInfoCode -match 'Version ') "Version info must label the installed product version clearly."
     Assert-True ($versionInfoCode -match '\(" \+ build \+ "\)"') "Version info must place the build identifier in the Version line."
     Assert-True ($versionInfoCode -match 'Installed on this PC') "Version info must keep local install time in support details only."
+    Assert-True ($versionInfoCode -match 'FormatMetadataDetails' -and $versionInfoCode -match 'dashboard\.revagent\.app' -and $versionInfoCode -match 'Copyright \(c\) 2026 Baris Tankut') "Version metadata must include active version, web, and copyright details."
     Assert-True ($versionInfoCode -notmatch 'Updated ') "Task status metadata must not expose local install time as the user-facing version."
     Assert-True ($versionInfoCode -match 'Up to date') "Version info must label current release state clearly."
     Assert-True ($versionInfoCode -notmatch 'Stable ') "Version info must not expose legacy channel labels in the product UI."

@@ -2352,13 +2352,13 @@ function Get-ActualRevitPayloadPathMapping {
         if ($suffix.StartsWith($runtimePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
             $runtimeSuffix = $suffix.Substring($runtimePrefix.Length)
             [void]$paths.Add((Join-Path $InstallRoot ("commands\CommandSet\$RevitVersion\" + $runtimeSuffix)))
-            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet\$RevitVersion\" + $runtimeSuffix)))
+            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\revAgentCommandSet\$RevitVersion\" + $runtimeSuffix)))
         }
         else {
             [void]$paths.Add((Join-Path $InstallRoot ("commands\CommandSet\$RevitVersion\" + $suffix)))
             [void]$paths.Add((Join-Path $InstallRoot ("commands\CommandSet\" + $suffix)))
-            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet\$RevitVersion\" + $suffix)))
-            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet\" + $suffix)))
+            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\revAgentCommandSet\$RevitVersion\" + $suffix)))
+            [void]$paths.Add((Join-Path $InstallRoot ("revit-plugin\revit_mcp_plugin\Commands\revAgentCommandSet\" + $suffix)))
         }
 
         return [pscustomobject][ordered]@{

@@ -68,7 +68,7 @@ function Get-RevitPayloadSourceGroups {
             InputExtensions = @(".cs", ".csproj", ".xaml", ".json", ".resx")
             PayloadPaths = @(
                 "installer/command-payload/RevitMCPCommandSet.dll",
-                "installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPCommandSet/$RevitVersion/RevitMCPCommandSet.dll"
+                "installer/revit-plugin/revit_mcp_plugin/Commands/revAgentCommandSet/$RevitVersion/RevitMCPCommandSet.dll"
             )
         }
     )

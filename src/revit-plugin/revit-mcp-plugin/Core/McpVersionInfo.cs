@@ -11,6 +11,10 @@ namespace revit_mcp_plugin.Core
 {
     internal sealed class McpVersionInfo
     {
+        public const string ProductWebsiteUrl = "https://dashboard.revagent.app";
+
+        public const string ProductCopyrightText = "Copyright (c) 2026 Baris Tankut. All rights reserved.";
+
         private McpVersionInfo(
             string fullVersion,
             string shortVersion,
@@ -365,6 +369,57 @@ namespace revit_mcp_plugin.Core
                 builder.AppendLine();
                 builder.Append("Release published: ").Append(FormatSortTimestamp(ChannelPublishedAtUtc.Value.ToLocalTime()));
             }
+
+            return builder.ToString();
+        }
+
+        public string FormatMetadataDetails()
+        {
+            StringBuilder builder = new StringBuilder();
+            builder.Append("Active version: ").Append(FullVersion);
+
+            string status = FormatUpdateStatusLine();
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                builder.AppendLine();
+                builder.Append("Release status: ").Append(status);
+            }
+
+            string buildIdentifier = ExtractBuildIdentifier(FullVersion);
+            if (!string.IsNullOrWhiteSpace(buildIdentifier))
+            {
+                builder.AppendLine();
+                builder.Append("Build: ").Append(buildIdentifier);
+            }
+
+            if (PackagePublishedAtUtc.HasValue)
+            {
+                builder.AppendLine();
+                builder.Append("Package published: ").Append(FormatSortTimestamp(PackagePublishedAtUtc.Value.ToLocalTime()));
+            }
+
+            if (InstalledAtUtc.HasValue)
+            {
+                builder.AppendLine();
+                builder.Append("Installed on this PC: ").Append(FormatSortTimestamp(InstalledAtUtc.Value.ToLocalTime()));
+            }
+
+            if (!string.IsNullOrWhiteSpace(ChannelVersion))
+            {
+                builder.AppendLine();
+                builder.Append("Release target: ").Append(ChannelVersion);
+            }
+
+            if (ChannelPublishedAtUtc.HasValue)
+            {
+                builder.AppendLine();
+                builder.Append("Release published: ").Append(FormatSortTimestamp(ChannelPublishedAtUtc.Value.ToLocalTime()));
+            }
+
+            builder.AppendLine();
+            builder.Append("Web: ").Append(ProductWebsiteUrl);
+            builder.AppendLine();
+            builder.Append(ProductCopyrightText);
 
             return builder.ToString();
         }

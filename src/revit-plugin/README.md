@@ -37,7 +37,7 @@ The shared bridge command payload is kept under:
 
 ```text
 installer\command-payload
-installer\revit-plugin\revit_mcp_plugin\Commands\RevitMCPCommandSet
+installer\revit-plugin\revit_mcp_plugin\Commands\revAgentCommandSet
 ```
 
 Do not edit those binaries by hand. Change the source here, then refresh the
