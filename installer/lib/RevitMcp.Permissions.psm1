@@ -70,15 +70,15 @@ function Get-RevitMcpManagedPermissionTargets {
     }
 
     foreach ($fileName in @(
-            "Run-Revit-MCP-Update-Hidden.vbs",
+            "Run-revAgent-Update-Hidden.vbs",
             "last-update-report.json",
             "installed.json",
             "updater-config.json",
             "update-from-nas.ps1",
             "show-installed-version.ps1",
             "install-updater-task.ps1",
-            "Update-Revit-MCP-Now.cmd",
-            "Show-Revit-MCP-Version.cmd",
+            "Update-revAgent-Now.cmd",
+            "Show-revAgent-Version.cmd",
             "auto-update-loop.ps1",
             "config\release-trusted-keys.json"
         )) {
@@ -90,7 +90,7 @@ function Get-RevitMcpManagedPermissionTargets {
                 @{ Path = (Join-Path $InstallRoot "revit-plugin\revit_mcp_plugin"); Label = "existing Revit addin payload" },
                 @{ Path = (Join-Path $InstallRoot "commands\CommandSet"); Label = "existing Revit command payload" },
                 @{ Path = $ServerTarget; Label = "existing runtime payload" },
-                @{ Path = (Join-Path $InstallRoot "codex\skills\revit-mcp"); Label = "existing Codex skill payload" }
+                @{ Path = (Join-Path $InstallRoot "codex\skills\revAgent"); Label = "existing Codex skill payload" }
             )) {
             $targets.Add((New-RevitMcpPermissionTarget -Path $entry.Path -Label $entry.Label -Recurse))
         }

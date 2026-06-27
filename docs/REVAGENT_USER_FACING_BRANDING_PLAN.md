@@ -7,9 +7,10 @@ operator, technician, or LLM host user sees the application.
 
 This phase is intentionally limited to the front layer. Deep implementation
 identifiers such as repository name, source folder names, package ids,
-PowerShell module names, DLL names, install roots, environment variables, and
-legacy cleanup markers remain unchanged until the later repository/runtime
-rename phase.
+PowerShell module names, DLL names, environment variables, and legacy cleanup
+markers remain unchanged until the later repository/runtime rename phase. The
+workstation install root is part of Phase 1B and now migrates to the
+`revAgent` product root.
 
 ## Phase 1 Scope
 
@@ -30,8 +31,8 @@ rename phase.
 ## Phase 1 Non-Goals
 
 - Do not rename the GitHub repository or local repository folder.
-- Do not rename `C:\ProgramData\DPE\RevitMCP`, DLLs, namespaces, csproj files,
-  npm package names, or bundled source tree folders.
+- Do not rename DLLs, namespaces, csproj files, npm package names, or bundled
+  source tree folders.
 - Do not rename PowerShell modules such as `RevitMcp.*`.
 - Do not rename tool ids such as `get_revit_mcp_status`; these are API
   contracts and require a separate compatibility plan.
@@ -51,11 +52,46 @@ rename phase.
    compiled into shipped artifacts.
 6. Extend smoke tests for `/mcp list` naming and front-layer branding.
 
-## Phase 2 Backlog
+## Phase 1B Root Migration
+
+Goal: stop treating the old `RevitMCP` workstation root as the active product
+layer. New installs and repairs should use `C:\ProgramData\DPE\revAgent`.
+Existing `C:\ProgramData\DPE\RevitMCP` installs are legacy input only.
+
+Implementation rules:
+
+1. NAS GUI and non-GUI launchers default to `C:\ProgramData\DPE\revAgent`.
+2. Updater helper files use `revAgent` names:
+   `Run-revAgent-Update-Hidden.vbs`, `Update-revAgent-Now.cmd`, and
+   `Show-revAgent-Version.cmd`.
+3. Existing updater config under the legacy root may be read only to preserve
+   `codexInstructionPolicy`, `machineRole`, trusted key paths, and other
+   workstation policy. It must not force new runs back onto the legacy root.
+4. Managed Codex skill installation uses `.codex\skills\revAgent` and
+   `C:\ProgramData\DPE\revAgent\codex\skills\revAgent`. Legacy
+   `revit-mcp` skill directories are cleanup targets except when
+   `preserve-local` protects a developer workstation's local Codex
+   instruction surface.
+5. After the new root is installed and scheduled task registration succeeds,
+   the installer removes the legacy `C:\ProgramData\DPE\RevitMCP` root when
+   the current process is not executing from that root.
+6. Legacy launchers remain as aliases only. They should invoke the new
+   `revAgent` entrypoints and should not create old helper files.
+
+Non-goals for this phase:
+
+- Do not rename the GitHub repository or local repository folder.
+- Do not rename DLLs, .NET namespaces, NuGet/SDK package names, or Revit bridge
+  command-set identifiers.
+- Do not rename tool ids such as `get_revit_mcp_status`; these are API
+  contracts and require a separate compatibility plan.
+- Do not remove support for legacy Codex MCP entries; registration continues to
+  remove `revit-mcp` / `revit-api-docs` and add `revAgent` /
+  `revAgent-api-docs`.
+
+## Later Deep Rename Backlog
 
 - Rename local and remote repository from `revit-mcp-skill` to a revAgent name.
-- Decide final install root migration away from `C:\ProgramData\DPE\RevitMCP`.
 - Rename package ids, npm package names, source folders, and .NET namespaces.
 - Decide compatibility aliases for existing tool ids and MCP server names.
-- Plan migration for existing Codex skill paths under `.codex\skills`.
 - Update NAS release root if the deployment share should also be renamed.

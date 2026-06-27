@@ -5,7 +5,7 @@ The production technology choices stay the same: C# Revit add-in, local Node
 MCP servers, and PowerShell installer/updater orchestration.
 
 Use **revAgent** for product-facing wording. Keep `revit-mcp`, `RevitMCP*`,
-`mcp-servers-for-revit`, and `C:\ProgramData\DPE\RevitMCP` only where an exact
+`mcp-servers-for-revit`, and `C:\ProgramData\DPE\revAgent` only where an exact
 server, package, assembly, manifest, or installed path is being named.
 
 ## Runtime Components
@@ -13,7 +13,7 @@ server, package, assembly, manifest, or installed path is being named.
 - `src/revit-plugin/`: C# Revit add-in source. The add-in hosts the local Revit
   socket service, command registry, status window, and command execution bridge.
 - `installer/revit-plugin/`: bundled Revit add-in payload copied to
-  `C:\ProgramData\DPE\RevitMCP\revit-plugin`.
+  `C:\ProgramData\DPE\revAgent\revit-plugin`.
 - `installer/command-payload/`: bundled shared bridge command set and Roslyn
   runtime assemblies used by `send_code_to_revit`.
 - `installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPCommandSet/`:
@@ -266,7 +266,7 @@ assistant task name, project/view/location hints, target and selected elements,
 category/discipline hints, output files, duration, and result state.
 
 Local spool files live under
-`C:\ProgramData\DPE\RevitMCP\state\telemetry\events`. When the updater config
+`C:\ProgramData\DPE\revAgent\state\telemetry\events`. When the updater config
 provides `reportsRoot`, the runtime also writes best-effort NAS copies under
 `reports\events\YYYY\MM\DD\<machine>\<sessionId>.ndjson`. Telemetry write
 failures are swallowed; a NAS outage must not fail a Revit operation or show UI
@@ -353,8 +353,8 @@ summary logs.
 - `installer/nas/install-updater-task.ps1`: workstation updater bootstrap and
   scheduled task registration.
 - `installer/nas/update-from-nas.ps1`: NAS channel updater.
-- `installer/nas/Install-Revit-MCP-Updater-GUI.ps1`: revAgent GUI bootstrap
-  wrapper.
+- `installer/nas/Install-revAgent-Updater-GUI.ps1`: revAgent GUI bootstrap.
+  `Install-Revit-MCP-Updater-GUI.ps1` remains only as a legacy wrapper.
 - `installer/nas/revAgent Updater STABLE.cmd`: standalone stable launcher.
 - `installer/nas/publish-nas-release.ps1`: release packaging tool. Do not run
   it during local modernization or smoke-test work.
@@ -362,7 +362,7 @@ summary logs.
 ## Shared PowerShell Modules
 
 Shared helpers live under `installer/lib/` and are copied beside local updater
-tools under `C:\ProgramData\DPE\RevitMCP\updater\lib` and NAS `tools\lib`.
+tools under `C:\ProgramData\DPE\revAgent\updater\lib` and NAS `tools\lib`.
 The Revit version matrix is copied beside those tools as `config\`.
 
 - `RevitMcp.HiddenLauncher.psm1`: single-line VBS hidden launcher generation
@@ -400,7 +400,7 @@ produced and validated.
 These public entrypoints must keep their names and existing 2022 behavior:
 
 - `installer/nas/revAgent Updater STABLE.cmd`
-- `installer/nas/Install-Revit-MCP-Updater-GUI.ps1`
+- `installer/nas/Install-revAgent-Updater-GUI.ps1`
 - `installer/nas/install-updater-task.ps1`
 - `installer/nas/update-from-nas.ps1`
 - `installer/install-self-contained.ps1`

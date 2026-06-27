@@ -130,9 +130,9 @@ function defaultRevitRoot(version: string): string {
 
 function defaultCacheDir() {
     if (process.env.ProgramData) {
-        return path.join(process.env.ProgramData, "DPE", "RevitMCP", "state", "revit-api-docs", "cache");
+        return path.join(process.env.ProgramData, "DPE", "revAgent", "state", "revit-api-docs", "cache");
     }
-    return path.join("C:\\ProgramData", "DPE", "RevitMCP", "state", "revit-api-docs", "cache");
+    return path.join("C:\\ProgramData", "DPE", "revAgent", "state", "revit-api-docs", "cache");
 }
 
 async function discoverAssemblyPairs(rootPath: string): Promise<AssemblyPair[]> {

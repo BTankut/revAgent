@@ -337,7 +337,7 @@ function Assert-SuccessfulCodeResult {
 }
 
 function Assert-RuntimeFindElementsPolicy {
-    $runtimeRegisterPath = "C:\ProgramData\DPE\RevitMCP\runtime\build\tools\register.js"
+    $runtimeRegisterPath = "C:\ProgramData\DPE\revAgent\runtime\build\tools\register.js"
     Assert-True (Test-Path -LiteralPath $runtimeRegisterPath) "Installed runtime register.js was not found: $runtimeRegisterPath"
 
     $env:REVAGENT_LIVE_RUNTIME_REGISTER = $runtimeRegisterPath

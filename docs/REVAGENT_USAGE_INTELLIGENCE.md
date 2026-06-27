@@ -39,7 +39,7 @@ Events are written as newline-delimited JSON.
 Local spool:
 
 ```text
-C:\ProgramData\DPE\RevitMCP\state\telemetry\events\YYYY-MM-DD.ndjson
+C:\ProgramData\DPE\revAgent\state\telemetry\events\YYYY-MM-DD.ndjson
 ```
 
 Remote NAS event store, when `reportsRoot` is available from updater config:
@@ -64,7 +64,7 @@ Example:
 powershell -ExecutionPolicy Bypass -File .\scripts\summarize-usage-intelligence.ps1 `
   -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports" `
   -DateUtc "2026-05-27" `
-  -OutputPath "C:\ProgramData\DPE\RevitMCP\debug\usage-summary-2026-05-27.json"
+  -OutputPath "C:\ProgramData\DPE\revAgent\debug\usage-summary-2026-05-27.json"
 ```
 
 The summary schema is `revagent.usage.summary.v1`. It includes:
@@ -277,7 +277,7 @@ The runtime writes a best-effort live feed for dashboard polling:
 Local fallback uses:
 
 ```text
-C:\ProgramData\DPE\RevitMCP\state\telemetry\live\machines\<machine>\
+C:\ProgramData\DPE\revAgent\state\telemetry\live\machines\<machine>\
 ```
 
 `status.json` uses schema `revagent.live.status.v1` and is the dashboard fast

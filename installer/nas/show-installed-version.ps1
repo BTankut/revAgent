@@ -87,10 +87,17 @@ function Compare-RevitMcpVersion {
 }
 
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
-$defaultInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
+$defaultInstallRoot = Join-Path $programDataRoot "DPE\revAgent"
+$legacyInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
 $defaultWorkRoot = Join-Path $defaultInstallRoot "updater"
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $defaultWorkRoot "updater-config.json"
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        $legacyConfigPath = Join-Path $legacyInstallRoot "updater\updater-config.json"
+        if (Test-Path -LiteralPath $legacyConfigPath -PathType Leaf) {
+            $ConfigPath = $legacyConfigPath
+        }
+    }
 }
 
 $config = Read-JsonFile -Path $ConfigPath
@@ -101,7 +108,7 @@ $proxyUrl = if ($config -and $config.proxyUrl) { [string]$config.proxyUrl } else
 
 $installedPath = Join-Path $workRoot "installed.json"
 $reportPath = Join-Path $workRoot "last-update-report.json"
-$manualUpdatePath = Join-Path $workRoot "Update-Revit-MCP-Now.cmd"
+$manualUpdatePath = Join-Path $workRoot "Update-revAgent-Now.cmd"
 
 $installed = Read-JsonFile -Path $installedPath
 $report = Read-JsonFile -Path $reportPath

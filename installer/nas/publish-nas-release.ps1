@@ -1035,7 +1035,7 @@ try {
     }
 
     Write-Section "Refresh NAS tools"
-    foreach ($toolName in @("Install-revAgent-Updater.cmd", "Install-revAgent-Updater-GUI.cmd", "revAgent Updater STABLE.cmd", "Install-Revit-MCP-Updater.cmd", "Install-Revit-MCP-Updater-GUI.cmd", "Install-Revit-MCP-Updater-GUI.ps1", "Revit MCP Updater STABLE.cmd", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "promote-nas-release.ps1", "README.md")) {
+    foreach ($toolName in @("Install-revAgent-Updater.cmd", "Install-revAgent-Updater-GUI.cmd", "Install-revAgent-Updater-GUI.ps1", "revAgent Updater STABLE.cmd", "Install-Revit-MCP-Updater.cmd", "Install-Revit-MCP-Updater-GUI.cmd", "Install-Revit-MCP-Updater-GUI.ps1", "Revit MCP Updater STABLE.cmd", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "promote-nas-release.ps1", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $scriptRoot $toolName) -Destination (Join-Path $toolsRoot $toolName) -Force
     }
     $libSource = Join-Path (Split-Path -Parent $scriptRoot) "lib"

@@ -6,7 +6,7 @@
 [CmdletBinding()]
 param(
     [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports",
-    [string]$LocalLiveRoot = "C:\ProgramData\DPE\RevitMCP\state\telemetry\live",
+    [string]$LocalLiveRoot = "C:\ProgramData\DPE\revAgent\state\telemetry\live",
     [string]$MachineName = $env:COMPUTERNAME,
     [ValidateRange(1, 30)]
     [int]$Days = 2,

@@ -35,10 +35,12 @@ function Get-RevitMcpSourceFreeManagedRoots {
     $roots.Add([pscustomobject]@{ Label = "runtime MCP server"; Path = $ServerTarget; Kind = "runtime" })
 
     if (-not $PreserveLocalCodexInstructions) {
-        $roots.Add([pscustomobject]@{ Label = "machine Codex skill"; Path = (Join-Path $InstallRoot "codex\skills\revit-mcp"); Kind = "codexSkill" })
+        $roots.Add([pscustomobject]@{ Label = "machine Codex skill"; Path = (Join-Path $InstallRoot "codex\skills\revAgent"); Kind = "codexSkill" })
+        $roots.Add([pscustomobject]@{ Label = "legacy machine Codex skill"; Path = (Join-Path $InstallRoot "codex\skills\revit-mcp"); Kind = "codexSkill" })
 
         if ((-not $SkipCodexUserIntegration) -and -not [string]::IsNullOrWhiteSpace($UserProfileRoot)) {
-            $roots.Add([pscustomobject]@{ Label = "user Codex skill"; Path = (Join-Path $UserProfileRoot ".codex\skills\revit-mcp"); Kind = "codexSkill" })
+            $roots.Add([pscustomobject]@{ Label = "user Codex skill"; Path = (Join-Path $UserProfileRoot ".codex\skills\revAgent"); Kind = "codexSkill" })
+            $roots.Add([pscustomobject]@{ Label = "legacy user Codex skill"; Path = (Join-Path $UserProfileRoot ".codex\skills\revit-mcp"); Kind = "codexSkill" })
         }
     }
 

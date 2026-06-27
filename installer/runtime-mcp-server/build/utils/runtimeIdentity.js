@@ -42,6 +42,7 @@ export function readUpdaterConfig() {
     const candidates = [
         process.env.REVAGENT_UPDATER_CONFIG,
         path.join(installRoot, "updater", "updater-config.json"),
+        path.join(getProgramDataRoot(), "DPE", "revAgent", "updater", "updater-config.json"),
         path.join(getProgramDataRoot(), "DPE", "RevitMCP", "updater", "updater-config.json"),
     ].filter(Boolean);
     for (const candidate of candidates) {
@@ -57,6 +58,7 @@ export function readInstalledState(extraCandidates = []) {
     const candidates = [
         path.join(installRoot, "updater", "installed.json"),
         ...extraCandidates,
+        path.join(getProgramDataRoot(), "DPE", "revAgent", "updater", "installed.json"),
         path.join(getProgramDataRoot(), "DPE", "RevitMCP", "updater", "installed.json"),
     ];
     for (const candidate of candidates) {
@@ -72,7 +74,7 @@ export function parseBuildHash(version) {
     return match ? match[1] : null;
 }
 export function defaultLocalTelemetryRoot() {
-    return path.join(getProgramDataRoot(), "DPE", "RevitMCP", "state", "telemetry");
+    return path.join(getProgramDataRoot(), "DPE", "revAgent", "state", "telemetry");
 }
 export function normalizeMachineName(value) {
     const text = String(value || "").trim();

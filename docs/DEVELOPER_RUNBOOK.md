@@ -15,7 +15,7 @@ that can clone this repository and reach the NAS share.
 - Office deployment source:
   `\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy`
 - Standard workstation install root:
-  `C:\ProgramData\DPE\RevitMCP`
+  `C:\ProgramData\DPE\revAgent`
 
 GitHub is the source history. The NAS share is the deployment source read by
 office workstations. A normal feature-branch `git commit` or `git push` does
@@ -27,7 +27,7 @@ Development and production releases are managed from `main`. Historical
 branches or older repositories are not part of the current production flow.
 Use `revAgent` for product-facing text and UI-facing documentation. Keep
 `revit-mcp`, `RevitMCP*`, `mcp-servers-for-revit`, and
-`C:\ProgramData\DPE\RevitMCP` only when an exact repo, MCP server, skill,
+`C:\ProgramData\DPE\revAgent` only when an exact repo, MCP server, skill,
 assembly, manifest, task, package, or path identity is required.
 
 ## First Files To Read After Cloning
@@ -118,7 +118,7 @@ Important source vs payload rule:
   flagging repeated or risky dynamic C# snippets as native runtime-tool
   candidates.
 
-Do not edit deployed files under `C:\ProgramData\DPE\RevitMCP` as a source of
+Do not edit deployed files under `C:\ProgramData\DPE\revAgent` as a source of
 truth. Fix the repo, rebuild or refresh payloads when needed, commit the repo,
 then install or publish through the normal flow.
 
@@ -261,8 +261,8 @@ The office package includes two local MCP servers:
 Installed workstation registrations normally point to:
 
 ```text
-C:\ProgramData\DPE\RevitMCP\runtime\build\index.js
-C:\ProgramData\DPE\RevitMCP\package\installer\revit-api-docs-mcp\build\index.js
+C:\ProgramData\DPE\revAgent\runtime\build\index.js
+C:\ProgramData\DPE\revAgent\package\installer\revit-api-docs-mcp\build\index.js
 ```
 
 Both servers are required. If only the runtime server is available, non-trivial
@@ -322,8 +322,8 @@ Revit version matrix is available before a package is extracted. The local
 updater expects:
 
 ```text
-C:\ProgramData\DPE\RevitMCP\updater\lib
-C:\ProgramData\DPE\RevitMCP\updater\config
+C:\ProgramData\DPE\revAgent\updater\lib
+C:\ProgramData\DPE\revAgent\updater\config
 ```
 
 NAS tools expect:
@@ -631,7 +631,7 @@ The current production status window behavior:
   `17:19:07  ✓  Final metric UI log probe  (2.9s)  [1 MB]`
 - detailed transport metrics remain available through
   `get_revit_mcp_status(includeDiagnostics=true)` and in the add-in log:
-  `C:\ProgramData\DPE\RevitMCP\revit-plugin\revit_mcp_plugin\Logs\mcp_YYYYMMDD.log`
+  `C:\ProgramData\DPE\revAgent\revit-plugin\revit_mcp_plugin\Logs\mcp_YYYYMMDD.log`
 
 Transport metrics in logs include `framing`, `requestBytes`, `receiveMs`,
 `parseMs`, `executeMs`, `responseBytes`, and `totalMs`. The status window is
@@ -996,7 +996,7 @@ Release ZIP layout:
 Dependency restore note:
 
 - The runtime server lives outside the managed package folder, but
-  `revit-api-docs-mcp` lives inside `C:\ProgramData\DPE\RevitMCP\package`.
+  `revit-api-docs-mcp` lives inside `C:\ProgramData\DPE\revAgent\package`.
   Every versioned update replaces that package folder, so the updater must
   restore `installer\revit-api-docs-mcp\node_modules` and the
   `.revagent-npm-dependencies.json` marker even when the docs payload itself is
@@ -1018,16 +1018,16 @@ Single-file desktop launchers:
 
 Use the single-file launchers when copying a `.cmd` to a workstation desktop.
 The generic `Install-revAgent-Updater-GUI.cmd` is meant to run from the NAS
-`tools\` folder because it expects `Install-Revit-MCP-Updater-GUI.ps1` beside
+`tools\` folder because it expects `Install-revAgent-Updater-GUI.ps1` beside
 it.
 
 The GUI installs or refreshes the local updater and then runs an initial update.
 The updater writes:
 
 ```text
-C:\ProgramData\DPE\RevitMCP\updater\installed.json
-C:\ProgramData\DPE\RevitMCP\updater\last-update-report.json
-C:\ProgramData\DPE\RevitMCP\updater\logs\
+C:\ProgramData\DPE\revAgent\updater\installed.json
+C:\ProgramData\DPE\revAgent\updater\last-update-report.json
+C:\ProgramData\DPE\revAgent\updater\logs\
 ```
 
 The updater keeps only the latest 10 `.log` files in the managed log folder.
@@ -1052,18 +1052,18 @@ and a local install-state summary.
 The workstation install root is:
 
 ```text
-C:\ProgramData\DPE\RevitMCP
+C:\ProgramData\DPE\revAgent
 ```
 
 Important deployed locations:
 
 ```text
 C:\ProgramData\Autodesk\Revit\Addins\2022\mcp-servers-for-revit.addin
-C:\ProgramData\DPE\RevitMCP\revit-plugin\revit_mcp_plugin
-C:\ProgramData\DPE\RevitMCP\commands\CommandSet
-C:\ProgramData\DPE\RevitMCP\runtime
-C:\ProgramData\DPE\RevitMCP\package
-C:\ProgramData\DPE\RevitMCP\codex
+C:\ProgramData\DPE\revAgent\revit-plugin\revit_mcp_plugin
+C:\ProgramData\DPE\revAgent\commands\CommandSet
+C:\ProgramData\DPE\revAgent\runtime
+C:\ProgramData\DPE\revAgent\package
+C:\ProgramData\DPE\revAgent\codex
 ```
 
 If registering a scheduled task fails because the user is not elevated, the
@@ -1166,19 +1166,19 @@ removed.
 Check installed version:
 
 ```powershell
-Get-Content -Raw "C:\ProgramData\DPE\RevitMCP\updater\installed.json"
+Get-Content -Raw "C:\ProgramData\DPE\revAgent\updater\installed.json"
 ```
 
 Check last update report:
 
 ```powershell
-Get-Content -Raw "C:\ProgramData\DPE\RevitMCP\updater\last-update-report.json"
+Get-Content -Raw "C:\ProgramData\DPE\revAgent\updater\last-update-report.json"
 ```
 
 Check logs:
 
 ```powershell
-Get-ChildItem "C:\ProgramData\DPE\RevitMCP\updater\logs" |
+Get-ChildItem "C:\ProgramData\DPE\revAgent\updater\logs" |
   Sort-Object LastWriteTime -Descending |
   Select-Object -First 10
 ```
@@ -1193,8 +1193,8 @@ Get-Process -Name Revit -ErrorAction SilentlyContinue |
 Compare deployed plugin DLL with package DLL:
 
 ```powershell
-$installed = "C:\ProgramData\DPE\RevitMCP\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
-$package = "C:\ProgramData\DPE\RevitMCP\package\installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
+$installed = "C:\ProgramData\DPE\revAgent\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
+$package = "C:\ProgramData\DPE\revAgent\package\installer\revit-plugin\revit_mcp_plugin\RevitMCPPlugin.dll"
 (Get-FileHash -Algorithm SHA256 $installed).Hash
 (Get-FileHash -Algorithm SHA256 $package).Hash
 ```
@@ -1202,8 +1202,8 @@ $package = "C:\ProgramData\DPE\RevitMCP\package\installer\revit-plugin\revit_mcp
 Compare deployed command DLL with package DLL:
 
 ```powershell
-$installed = "C:\ProgramData\DPE\RevitMCP\commands\CommandSet\RevitMCPCommandSet.dll"
-$package = "C:\ProgramData\DPE\RevitMCP\package\installer\command-payload\RevitMCPCommandSet.dll"
+$installed = "C:\ProgramData\DPE\revAgent\commands\CommandSet\RevitMCPCommandSet.dll"
+$package = "C:\ProgramData\DPE\revAgent\package\installer\command-payload\RevitMCPCommandSet.dll"
 (Get-FileHash -Algorithm SHA256 $installed).Hash
 (Get-FileHash -Algorithm SHA256 $package).Hash
 ```

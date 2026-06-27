@@ -113,17 +113,17 @@ try {
 
     Write-Host "Test permission repair target plan"
     $targets = Get-RevitMcpManagedPermissionTargets `
-        -InstallRoot "C:\ProgramData\DPE\RevitMCP" `
-        -WorkRoot "C:\ProgramData\DPE\RevitMCP\updater" `
-        -PackageTarget "C:\ProgramData\DPE\RevitMCP\package" `
-        -ServerTarget "C:\ProgramData\DPE\RevitMCP\runtime" `
+        -InstallRoot "C:\ProgramData\DPE\revAgent" `
+        -WorkRoot "C:\ProgramData\DPE\revAgent\updater" `
+        -PackageTarget "C:\ProgramData\DPE\revAgent\package" `
+        -ServerTarget "C:\ProgramData\DPE\revAgent\runtime" `
         -AllUsersAddinRoot "C:\ProgramData\Autodesk\Revit\Addins\2022" `
         -RevitVersion 2022 `
         -IncludeExistingPayloadTrees
     Assert-True (($targets | Where-Object { $_.Path -match 'node_modules|backups' }).Count -eq 0) "Permission repair plan must not target node_modules or backups."
     $recursiveLeaves = @($targets | Where-Object { $_.Recurse } | ForEach-Object { Split-Path -Leaf $_.Path })
     foreach ($leaf in $recursiveLeaves) {
-        Assert-True ($leaf -in @("revit_mcp_plugin", "CommandSet", "runtime", "revit-mcp")) "Unexpected recursive permission target: $leaf"
+        Assert-True ($leaf -in @("revit_mcp_plugin", "CommandSet", "runtime", "revAgent")) "Unexpected recursive permission target: $leaf"
     }
 
     Write-Host "Test Revit payload update policy"
@@ -303,7 +303,7 @@ try {
     }
 
     Write-Host "Test GUI updater exposes update and restore actions"
-    $guiText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Install-Revit-MCP-Updater-GUI.ps1")
+    $guiText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1")
     Assert-True ($guiText -match 'Install/Repair') "GUI must expose a separate install/repair button."
     Assert-True ($guiText -match '-ForceUpdate') "GUI restore action must force the channel package install."
     Assert-True ($guiText -match '-OperationMethod", \$operationMethod') "GUI operations must pass the visible install/update method to child logs."
@@ -316,6 +316,7 @@ try {
     Assert-True ($guiText -match '\$arguments \+= "-RunSourceFreeMigration"') "GUI must bootstrap old local updater tools and run source-free migration in one confirmed action."
     Assert-True ($guiText.IndexOf('No update is available.') -lt $guiText.IndexOf('This workstation has an installed revAgent package')) "GUI should report no-op update status before warning about a missing local updater."
     Assert-True ($guiText -match 'Get-PackageDescriptionForGui' -and $guiText -match 'Developer workstation' -and $guiText -match 'Codex instructions: preserve local') "GUI must label preserve-local developer machines distinctly from normal workstation packages."
+    Assert-True ($guiText -match 'DPE\\revAgent' -and $guiText -match 'legacyConfigPath') "GUI must default to the revAgent install root while preserving legacy updater config policy."
     Assert-True ($guiText -match '"-File", \$installerPath') "First install and repair must still use install-updater-task.ps1."
     Assert-True ($guiText -match 'RevitMcp\.SourceFreeMigration\.psm1' -and $guiText -match 'Get-RevitMcpSourceFreeArtifactInventory') "GUI must check source-free migration inventory before install/update actions."
     Assert-True ($guiText -match 'UpdateButtonText = "Migrate"' -and $guiText -match 'SourceFreeMigrationRequired = \$true') "GUI must expose a migration-required state instead of hiding the update path."
@@ -962,7 +963,7 @@ try {
     Assert-True ($publishText -match 'installer\\codex-user\\SKILL\.md') "Publish must use the user orchestration SKILL.md."
     Assert-True ($publishText -match 'Copy-UserPackFile -SourceRelativePath "CHANGELOG\.md"' -and $publishText -match 'changelog = "CHANGELOG\.md"') "User pack must include the changelog and hash it in the release manifest."
     Assert-True ($publishText -match 'update-from-nas\.ps1' -and $publishText -match 'show-installed-version\.ps1' -and $publishText -match 'install-updater-task\.ps1') "User pack must include only workstation updater entrypoints from installer\\nas."
-    Assert-True ($publishText -match 'revAgent Updater STABLE\.cmd' -and $publishText -match 'Install-revAgent-Updater-GUI\.cmd' -and $publishText -match 'Install-revAgent-Updater\.cmd') "NAS tools must publish revAgent-named user launcher files."
+    Assert-True ($publishText -match 'revAgent Updater STABLE\.cmd' -and $publishText -match 'Install-revAgent-Updater-GUI\.cmd' -and $publishText -match 'Install-revAgent-Updater-GUI\.ps1' -and $publishText -match 'Install-revAgent-Updater\.cmd') "NAS tools must publish revAgent-named user launcher files."
     Assert-True ($publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\runtime-mcp-server"' -and $publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\revit-api-docs-mcp"') "User pack must use hardened MCP release bundles instead of developer build trees."
     Assert-True ($publishText -match 'Assert-RevitMcpUserPackNoSourceLeak -Root \$packageRoot') "Publish must gate the user pack against source/developer artifact leaks."
     Assert-True ($publishText -match 'Assert-RevitMcpUserPackDotNetPayloadHardened -Root \$packageRoot') "Publish must gate the user pack against .NET debug symbol artifacts."
@@ -979,6 +980,8 @@ try {
     Assert-True ($installTaskText -notmatch '& \$UpdaterPath @arguments') "Initial update check must not array-splat named parameter strings into a script call."
     Assert-True ($installTaskText -match '\[string\]\$DailyAt = "12:00"') "Updater scheduled-task installer must default to daily noon checks."
     Assert-True ($installTaskText -match '\[string\]\$TaskName = "revAgent Auto Update"') "Updater scheduled task must use the revAgent product name by default."
+    Assert-True ($installTaskText -match 'DPE\\revAgent') "Updater scheduled-task installer must default to the revAgent install root."
+    Assert-True ($installTaskText -match 'Update-revAgent-Now\.cmd' -and $installTaskText -match 'Show-revAgent-Version\.cmd') "Updater scheduled-task installer must create revAgent-named helper commands."
     Assert-True ($installTaskText -match 'New-RevitMcpDailyUpdateTrigger -DailyAt \$DailyAt') "Updater scheduled-task installer must use the shared daily trigger helper."
     Assert-True ($installTaskText -notmatch 'New-ScheduledTaskTrigger -AtLogOn') "Updater scheduled task must not run at logon."
     Assert-True ($installTaskText -notmatch 'RepetitionInterval') "Updater scheduled task must not repeat through the day."
@@ -993,6 +996,8 @@ try {
     Assert-True ($scheduledTaskModuleText -match '\[string\]\$Name = "revAgent Auto Update"') "Scheduled-task repair must default to the revAgent task name."
     Assert-True ($scheduledTaskModuleText -match '\[string\[\]\]\$LegacyNames = @\("Revit MCP Auto Update"\)') "Scheduled-task repair must know the legacy Revit MCP task name."
     Assert-True ($scheduledTaskModuleText -match 'Scheduled task migrated to revAgent product name') "Scheduled-task repair must migrate existing installed reminders to the revAgent task name."
+    $hiddenLauncherModuleText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.HiddenLauncher.psm1")
+    Assert-True ($hiddenLauncherModuleText -match 'Run-revAgent-Update-Hidden\.vbs' -and $scheduledTaskModuleText -match 'Removed legacy hidden updater launcher') "Scheduled-task repair must use and clean revAgent-named hidden launcher files."
     Assert-True ($scheduledTaskModuleText -match 'Set-ScheduledTask -TaskName \$Name -Trigger \$trigger') "Updater repair must replace legacy repeated triggers with the daily trigger."
     Assert-True ($scheduledTaskModuleText -match 'Set-ScheduledTask -TaskName \$Name -Trigger \$trigger -Settings \$settings') "Updater repair must clear legacy StartWhenAvailable settings."
     Assert-True ($scheduledTaskModuleText -match 'Set-ScheduledTask -TaskName \$Name -Trigger \$trigger -Settings \$settings -ErrorAction Stop') "Scheduled-task repair permission errors must be caught as warnings."
@@ -1008,6 +1013,7 @@ try {
     Assert-True ($updaterText -match '\.revagent-npm-dependencies\.json') "Updater must persist an npm dependency marker for future skips."
     Assert-True ($updaterText -match 'npm install skipped') "Updater logs must make skipped npm dependency installs visible."
     Assert-True ($updaterText -match '\[string\]\$TaskName = "revAgent Auto Update"') "Updater reminder task name must default to revAgent."
+    Assert-True ($updaterText -match 'DPE\\revAgent' -and $updaterText -match 'Legacy install root detected in updater config') "Updater must migrate legacy RevitMCP configs to the revAgent root."
     Assert-True ($updaterText -match 'Then run the revAgent updater again') "Updater missing-dependency guidance must use the revAgent product name."
     Assert-True ($updaterText -notmatch 'Then run the Revit MCP updater again') "Updater reminder/error windows must not ask users to run the Revit MCP updater."
     Assert-True ($updaterText -match 'app = "revAgent"') "Notification throttle state must use the revAgent product name."
@@ -1111,6 +1117,9 @@ try {
     Assert-True ($installerText -match 'Could not remove managed source/developer artifact directory' -and $installerText -match 'Could not remove managed source/developer artifact file') "Installer source cleanup must warn and continue when cleanup artifacts are locked."
     Assert-True ($installerText -notmatch 'Get-ChildItem -LiteralPath \$repoRoot -Force[\s\S]{0,160}Copy-Item -Destination \$codexMachineSkillTarget') "Installer must not copy the repo root into the Codex skill."
     Assert-True ($installerText -match '\$taskName = "revAgent Auto Update"') "Self-contained installer scheduled-task repair must use the revAgent task name."
+    Assert-True ($installerText -match 'DPE\\revAgent' -and $installerText -match 'Remove-LegacyRevitMcpInstallRoot') "Self-contained installer must install under the revAgent root and clean the legacy RevitMCP root."
+    Assert-True ($installerText -match 'AllowBroadTarget' -and $installerText -match 'legacy RevitMCP install root.*-AllowBroadTarget') "Legacy root cleanup must use an explicit broad-target override instead of weakening normal cleanup guards."
+    Assert-True ($installerText -match 'Update-revAgent-Now\.cmd' -and $installerText -match 'Show-revAgent-Version\.cmd') "Self-contained installer must create revAgent-named updater helper commands."
     Assert-True ($installerText -match 'LegacyNames @\("Revit MCP Auto Update"\)') "Self-contained installer must migrate the legacy Revit MCP task name."
     Assert-True ($installerText -notmatch 'Copy-Item[^\r\n]*AGENTS\.md\.backup-') "Installer must not create AGENTS.md backup files."
     Assert-True ($installerText -notmatch 'Move-Item[^\r\n]*revit-mcp\.backup|codexSkillBackupsRoot') "Installer must not create Codex skill backup directories."

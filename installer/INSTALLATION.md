@@ -5,7 +5,7 @@ users should normally install through the NAS updater rather than running these
 scripts manually.
 
 The implementation still uses exact internal names such as `RevitMCP*` and
-`C:\ProgramData\DPE\RevitMCP`; do not rename those when documenting commands
+`C:\ProgramData\DPE\revAgent`; do not rename those when documenting commands
 or paths. Codex-facing MCP entries should appear as `revAgent` and
 `revAgent-api-docs`.
 
@@ -36,13 +36,13 @@ On a workstation, close Revit and run the NAS updater installer:
 The updater installs into:
 
 ```text
-C:\ProgramData\DPE\RevitMCP
+C:\ProgramData\DPE\revAgent
 ```
 
 It writes install and update logs under:
 
 ```text
-C:\ProgramData\DPE\RevitMCP\updater\logs
+C:\ProgramData\DPE\revAgent\updater\logs
 ```
 
 Automatic update checks run once daily at 12:00 local time. Manual update and
@@ -62,13 +62,13 @@ Use this only for development or emergency repair. Close Revit first.
 $RepoRoot = (Resolve-Path .).Path
 powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022
 
-cd C:\ProgramData\DPE\RevitMCP\runtime
+cd C:\ProgramData\DPE\revAgent\runtime
 npm install --omit=dev --no-audit --no-fund
-codex mcp add revAgent -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
+codex mcp add revAgent -- node "C:\ProgramData\DPE\revAgent\runtime\build\index.js"
 
 cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev --no-audit --no-fund
-powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
+powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\revAgent\state\revit-api-docs\cache\revit-api-docs-2022.json"
 codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
 

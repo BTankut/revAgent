@@ -53,7 +53,7 @@ function Get-ScriptParamNames {
 
 Write-Host "Test source-free migration artifact scan and cleanup"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-source-free-migration-test-" + [Guid]::NewGuid().ToString("N"))
-$installRoot = Join-Path $tempRoot "ProgramData\DPE\RevitMCP"
+$installRoot = Join-Path $tempRoot "ProgramData\DPE\revAgent"
 $packageTarget = Join-Path $installRoot "package"
 $serverTarget = Join-Path $installRoot "runtime"
 $userProfileRoot = Join-Path $tempRoot "Users\Operator"
@@ -66,8 +66,8 @@ try {
             (Join-Path $packageTarget "installer\runtime-mcp-server"),
             (Join-Path $serverTarget "src"),
             (Join-Path $serverTarget "build"),
-            (Join-Path $installRoot "codex\skills\revit-mcp\src"),
-            (Join-Path $userProfileRoot ".codex\skills\revit-mcp\src"),
+            (Join-Path $installRoot "codex\skills\revAgent\src"),
+            (Join-Path $userProfileRoot ".codex\skills\revAgent\src"),
             (Join-Path $installRoot "updater\backups\revit-mcp-skill.backup-20260623\src")
         )) {
         New-Item -ItemType Directory -Path $path -Force | Out-Null
@@ -79,8 +79,8 @@ try {
     Set-Content -LiteralPath (Join-Path $packageTarget "installer\runtime-mcp-server\tsconfig.json") -Value "{}" -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $serverTarget "src\index.ts") -Value "export {};" -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $serverTarget "build\index.js.map") -Value "{}" -Encoding ASCII
-    Set-Content -LiteralPath (Join-Path $installRoot "codex\skills\revit-mcp\src\skill.ts") -Value "source" -Encoding ASCII
-    Set-Content -LiteralPath (Join-Path $userProfileRoot ".codex\skills\revit-mcp\src\skill.ts") -Value "source" -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $installRoot "codex\skills\revAgent\src\skill.ts") -Value "source" -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $userProfileRoot ".codex\skills\revAgent\src\skill.ts") -Value "source" -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $installRoot "updater\backups\revit-mcp-skill.backup-20260623\src\old.ts") -Value "source" -Encoding ASCII
 
     $dryRun = Invoke-RevitMcpSourceFreeArtifactCleanup `
