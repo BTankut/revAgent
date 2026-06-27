@@ -2,7 +2,7 @@
     "Commands":  [
                      {
                          "commandName":  "get_current_view_elements",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -17,7 +17,7 @@
                      },
                      {
                          "commandName":  "get_current_view_info",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -32,7 +32,7 @@
                      },
                      {
                          "commandName":  "get_selected_elements",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -47,7 +47,7 @@
                      },
                      {
                          "commandName":  "send_code_to_revit",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -62,7 +62,7 @@
                      },
                      {
                          "commandName":  "list_open_views",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -77,7 +77,7 @@
                      },
                      {
                          "commandName":  "activate_view",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -92,7 +92,7 @@
                      },
                      {
                          "commandName":  "close_view",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -107,7 +107,7 @@
                      },
                      {
                          "commandName":  "clear_selection",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -122,7 +122,7 @@
                      },
                      {
                          "commandName":  "delete_review_view",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -137,7 +137,7 @@
                      },
                      {
                          "commandName":  "get_ui_state",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -152,7 +152,7 @@
                      },
                      {
                          "commandName":  "find_elements",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -167,7 +167,7 @@
                      },
                      {
                          "commandName":  "inspect_sheet_text",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -182,7 +182,7 @@
                      },
                      {
                          "commandName":  "inspect_schedules",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -197,7 +197,7 @@
                      },
                      {
                          "commandName":  "count_annotations",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -212,7 +212,7 @@
                      },
                      {
                          "commandName":  "open_existing_plan_for_element_level",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -227,7 +227,7 @@
                      },
                      {
                          "commandName":  "focus_elements",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -242,7 +242,7 @@
                      },
                      {
                          "commandName":  "section_box_elements",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"
@@ -257,7 +257,7 @@
                      },
                      {
                          "commandName":  "create_3d_view_for_elements",
-                         "assemblyPath":  "RevitMCPCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\RevitMCPCommandSet.dll",
                          "enabled":  true,
                          "supportedRevitVersions":  [
                                                         "2022"

@@ -16,7 +16,7 @@ server, package, assembly, manifest, or installed path is being named.
   `C:\ProgramData\DPE\revAgent\revit-plugin`.
 - `installer/command-payload/`: bundled shared bridge command set and Roslyn
   runtime assemblies used by `send_code_to_revit`.
-- `installer/revit-plugin/revit_mcp_plugin/Commands/RevitMCPCommandSet/`:
+- `installer/revit-plugin/revit_mcp_plugin/Commands/revAgentCommandSet/`:
   bundled shared Revit bridge command set for dynamic execution, lightweight
   model context, UI view state, selection, focus, view navigation, focused 3D
   review views, and 3D section boxes. Focus/view activation commands avoid the
@@ -38,8 +38,9 @@ live in the local Node server and may call one bridge command, run a dynamic C#
 snippet through `send_code_to_revit`, read socket status, or orchestrate several
 bridge commands into a workflow.
 
-The current shared Revit bridge is a single installed command set,
-`RevitMCPCommandSet`, with 13 bridge commands: `send_code_to_revit`,
+The current shared Revit bridge is a single installed command set, packaged
+under `revAgentCommandSet` while the internal .NET assembly remains
+`RevitMCPCommandSet.dll`, with 13 bridge commands: `send_code_to_revit`,
 `get_current_view_elements`, `get_current_view_info`,
 `get_selected_elements`, `list_open_views`, `activate_view`, `close_view`,
 `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`,

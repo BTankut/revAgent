@@ -60,8 +60,8 @@
     <Target Name="DeployCommandSet" AfterTargets="Build" Condition="'$(RevitMcpDeployCommandSet)' == 'true'">
         <PropertyGroup>
             <PluginAddInRoot>$(ProjectDir)..\revit-mcp-plugin\bin\AddIn $(RevitVersion) $(Configuration)\revit_mcp_plugin\</PluginAddInRoot>
-            <CommandSetPluginDir>$(PluginAddInRoot)Commands\RevitMCPCommandSet\</CommandSetPluginDir>
-            <RevitAddinsDir>$(AppData)\Autodesk\Revit\Addins\$(RevitVersion)\revit_mcp_plugin\Commands\RevitMCPCommandSet\</RevitAddinsDir>
+            <CommandSetPluginDir>$(PluginAddInRoot)Commands\revAgentCommandSet\</CommandSetPluginDir>
+            <RevitAddinsDir>$(AppData)\Autodesk\Revit\Addins\$(RevitVersion)\revit_mcp_plugin\Commands\revAgentCommandSet\</RevitAddinsDir>
         </PropertyGroup>
 
         <ItemGroup>

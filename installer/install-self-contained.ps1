@@ -62,6 +62,7 @@ $legacyUserAddinRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitVersi
 $pluginRoot = Join-Path $InstallRoot "revit-plugin"
 $pluginTarget = Join-Path $pluginRoot "revit_mcp_plugin"
 $commandSetRoot = Join-Path $InstallRoot "commands\CommandSet"
+$pluginCommandSetFolderName = "revAgentCommandSet"
 $stateRoot = Join-Path $InstallRoot "state"
 $updaterRoot = Join-Path $InstallRoot "updater"
 $updaterConfigPath = Join-Path $updaterRoot "updater-config.json"
@@ -1055,8 +1056,13 @@ if ((-not $SkipRevitPayloadInstall) -and (Test-Path $customDllDir)) {
     Copy-Item -Path (Join-Path $customDllDir "command.json") -Destination $machineCmdSet -Force
 
     # 2. Mirror the same files into the Revit add-in command folders
-    $roamingCmdSet2022 = Join-Path $pluginTarget "Commands\RevitMCPCommandSet\$RevitVersion"
-    $roamingCmdSet = Join-Path $pluginTarget "Commands\RevitMCPCommandSet"
+    $roamingCommandsRoot = Join-Path $pluginTarget "Commands"
+    $roamingCmdSet2022 = Join-Path $roamingCommandsRoot "$pluginCommandSetFolderName\$RevitVersion"
+    $roamingCmdSet = Join-Path $roamingCommandsRoot $pluginCommandSetFolderName
+    $legacyRoamingCmdSet = Join-Path $roamingCommandsRoot "RevitMCPCommandSet"
+    if (Test-Path -LiteralPath $legacyRoamingCmdSet) {
+        Remove-RevitMcpPath -Path $legacyRoamingCmdSet -Label "legacy revAgent command payload folder" -Recurse -AllowedNamePattern "(?i)^RevitMCPCommandSet$"
+    }
 
     New-Item -ItemType Directory -Path $roamingCmdSet2022 -Force | Out-Null
     Copy-Item -Path (Join-Path $customDllDir "RevitMCPCommandSet.dll") -Destination $roamingCmdSet2022 -Force
@@ -1327,5 +1333,5 @@ if (-not $SuppressNextSteps) {
     Write-Host "8. Confirm both servers with: codex mcp list"
     Write-Host "9. Run /skills reload in Codex, or restart Codex"
     Write-Host "10. Open Revit; if prompted for the unsigned add-in, choose Always Load"
-    Write-Host "11. revAgent starts automatically. Use the ribbon Settings button only to review command availability"
+    Write-Host "11. revAgent starts automatically. Use the ribbon revAgent Info button to view active version metadata"
 }

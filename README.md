@@ -303,12 +303,9 @@ Then:
 1. Open Revit.
 2. If Revit asks about the unsigned add-in publisher, choose `Always Load`.
    This can appear once after a fresh install or DLL update.
-3. The MCP socket service starts automatically. The current legacy ribbon
-   button label `revAgent Bridge` is only a manual on/off override for
-   revAgent's socket bridge.
-4. Click `Settings` in the `mcp-servers-for-revit` ribbon tab if you need to
-   enable or review command availability. Treat that tab name as the installed
-   add-in manifest identity, not the product name.
+3. The revAgent bridge starts automatically.
+4. Use the single `revAgent Info` ribbon button only when you need active
+   version, release, copyright, and web metadata.
 5. Run `/skills reload` inside Codex, or restart Codex.
 
 The installer keeps the canonical Codex payload under
@@ -577,7 +574,7 @@ and does not create a permanent `HasValue=true` trace when a fixture starts at
 true no-value. It is
 intentionally optional and is not part of `test-all` or CI.
 
-9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
+9. Open Revit. The revAgent bridge and bundled commands start automatically; use the single `revAgent Info` ribbon button only to view active version and release metadata.
 10. Verify that both MCP servers are registered:
 
 ```powershell
