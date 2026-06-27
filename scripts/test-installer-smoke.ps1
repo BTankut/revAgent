@@ -1191,6 +1191,29 @@ try {
     Assert-True ($remainingBackups -contains "revit-mcp-skill.backup-06") "Backup retention must keep the latest package backup folder."
     Assert-True (-not ($remainingBackups -contains "revit-mcp-skill.backup-01")) "Backup retention must remove old package backup folders."
 
+    Write-Host "Test revAgent clean-install transition backup reset"
+    $transitionBackupRoot = Join-Path $tempRoot "transition-backups"
+    $transitionCacheRoot = Join-Path $tempRoot "transition-cache"
+    New-Item -ItemType Directory -Path (Join-Path $transitionBackupRoot "revit-mcp-skill.backup-old\package") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $transitionBackupRoot "manual-backup") -Force | Out-Null
+    New-Item -ItemType Directory -Path $transitionCacheRoot -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $transitionBackupRoot "leftover.txt") -Value "old" -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $transitionCacheRoot "revit-mcp-skill-old.zip") -Value "zip" -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $transitionCacheRoot "keep.txt") -Value "keep" -Encoding ASCII
+    $transitionReset = Invoke-RevitMcpBackupRootReset -BackupRoot $transitionBackupRoot -CacheRoot $transitionCacheRoot
+    Assert-Equal $transitionReset.failedBackupItemCount 0 "Transition backup reset must not fail on temp backup content."
+    Assert-Equal $transitionReset.removedBackupItemCount 3 "Transition backup reset must remove all backup root children."
+    Assert-Equal @(Get-ChildItem -LiteralPath $transitionBackupRoot -Force).Count 0 "Transition backup root must be empty after reset."
+    Assert-Equal @(Get-ChildItem -LiteralPath $transitionCacheRoot -File -Filter "revit-mcp-skill-*.zip").Count 0 "Transition reset must clear stale release cache zips."
+    Assert-True (Test-Path -LiteralPath (Join-Path $transitionCacheRoot "keep.txt") -PathType Leaf) "Transition reset must leave unrelated cache files alone."
+
+    $updaterTextForCleanInstall = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
+    Assert-True ($updaterTextForCleanInstall -match 'revagent-clean-install-transition\.json') "Updater must persist a one-time revAgent clean-install transition marker."
+    Assert-True ($updaterTextForCleanInstall -match 'Test-RevAgentCleanInstallTransitionRequired') "Updater must decide when the revAgent clean-install transition is required."
+    Assert-True ($updaterTextForCleanInstall -match 'Invoke-RevitMcpBackupRootReset') "Updater must clear package backups during the revAgent clean-install transition."
+    Assert-True ($updaterTextForCleanInstall -match 'packageBackupSkipped') "Updater state/report diagnostics must expose skipped local package backup behavior."
+    Assert-True ($updaterTextForCleanInstall -match 'Remove-Item -LiteralPath \$PackageTarget -Recurse -Force') "Updater must remove the previous managed package directly during the clean-install transition."
+
     Write-Host "Installer/updater smoke tests passed." -ForegroundColor Green
 }
 finally {

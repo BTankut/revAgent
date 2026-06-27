@@ -14,6 +14,11 @@ All notable revAgent workstation deployment changes are tracked here.
   `revAgentCommandSet.dll`; installer/update cleanup now removes the legacy
   `mcp-servers-for-revit.addin`, `revit_mcp_plugin`, `RevitMCPPlugin.dll`, and
   `RevitMCPCommandSet.dll` active payload surfaces.
+- Added a one-time revAgent clean-install transition for workstations: the
+  updater clears local package backups and stale cached release ZIPs, skips
+  creating a new package backup for that transition run, forces a full managed
+  payload repair, and records completion with
+  `revagent-clean-install-transition.json`.
 - Added a rollout closure audit wrapper that persists a timestamped readiness
   snapshot and can fail handoff automation when machine or rollout actions
   remain open.

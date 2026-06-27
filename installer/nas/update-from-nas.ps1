@@ -1565,6 +1565,33 @@ function Write-JsonFile {
     $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
+function Test-RevAgentCleanInstallTransitionRequired {
+    param(
+        [string]$MarkerPath,
+        [string]$BackupRoot,
+        [string]$PackageTarget,
+        [switch]$AuditOnly
+    )
+
+    if ($AuditOnly) {
+        return $false
+    }
+    if (-not [string]::IsNullOrWhiteSpace($MarkerPath) -and
+        (Test-Path -LiteralPath $MarkerPath -PathType Leaf)) {
+        return $false
+    }
+
+    $hasExistingPackage = -not [string]::IsNullOrWhiteSpace($PackageTarget) -and
+        (Test-Path -LiteralPath $PackageTarget -PathType Container)
+    $hasExistingBackups = $false
+    if (-not [string]::IsNullOrWhiteSpace($BackupRoot) -and
+        (Test-Path -LiteralPath $BackupRoot -PathType Container)) {
+        $hasExistingBackups = @(Get-ChildItem -LiteralPath $BackupRoot -Force -ErrorAction SilentlyContinue).Count -gt 0
+    }
+
+    return ($hasExistingPackage -or $hasExistingBackups)
+}
+
 function Get-VersionLabel {
     param([string]$Version)
 
@@ -2660,6 +2687,7 @@ function New-CurrentUpdateDiagnostics {
         fastUpdateFallbackUsed = [bool]$fastUpdateFallbackUsed
         fastUpdateFallbackMessage = $fastUpdateFallbackMessage
         revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
+        revAgentCleanInstallTransition = $revAgentCleanInstallTransitionState
     }
 }
 
@@ -3026,6 +3054,22 @@ $localReportPath = Join-Path $WorkRoot "last-update-report.json"
 $cacheRoot = Join-Path $WorkRoot "cache"
 $stagingRoot = Join-Path $WorkRoot "staging"
 $backupRoot = Join-Path $WorkRoot "backups"
+$revAgentCleanInstallTransitionMarkerPath = Join-Path $WorkRoot "revagent-clean-install-transition.json"
+$revAgentCleanInstallTransitionRequired = $false
+$revAgentCleanInstallTransitionCleanup = $null
+$revAgentCleanInstallTransitionState = [ordered]@{
+    enabled = $false
+    required = $false
+    markerPath = $revAgentCleanInstallTransitionMarkerPath
+    backupRoot = $backupRoot
+    cacheRoot = $cacheRoot
+    packageBackupSkipped = $false
+    packageRemovedWithoutBackup = $false
+    removedBackupItemCount = 0
+    failedBackupItemCount = 0
+    removedCacheItemCount = 0
+    failedCacheItemCount = 0
+}
 New-Item -ItemType Directory -Path $cacheRoot, $stagingRoot, $backupRoot -Force | Out-Null
 Invoke-RevitMcpDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
 
@@ -3114,6 +3158,16 @@ try {
     $installedSha = if ($installedState) { [string]$installedState.packageSha256 } else { "" }
     $installedVersionLabel = Get-VersionLabel $installedVersion
     $isFirstInstall = [string]::IsNullOrWhiteSpace($installedVersion)
+    $revAgentCleanInstallTransitionRequired = Test-RevAgentCleanInstallTransitionRequired `
+        -MarkerPath $revAgentCleanInstallTransitionMarkerPath `
+        -BackupRoot $backupRoot `
+        -PackageTarget $PackageTarget `
+        -AuditOnly:$AuditOnly
+    if ($revAgentCleanInstallTransitionRequired) {
+        $revAgentCleanInstallTransitionState.enabled = $true
+        $revAgentCleanInstallTransitionState.required = $true
+        $revAgentCleanInstallTransitionState.packageBackupSkipped = $true
+    }
     $script:RevitMcpOperation = if ($AuditOnly) { "audit" } elseif ($SourceFreeMigration) { "source-free-migration" } elseif ($isFirstInstall) { "install" } elseif ($Force) { "reinstall" } else { "update" }
     if ([string]::IsNullOrWhiteSpace($OperationMethod)) {
         $script:RevitMcpOperationMethod = if ($AuditOnly) {
@@ -3141,10 +3195,22 @@ try {
     Write-Host "Version change   : $installedVersionLabel -> $targetVersion"
     Write-Host "Operation method : $script:RevitMcpOperationMethod"
     Write-Host "Package          : $packagePath"
+    if ($revAgentCleanInstallTransitionRequired) {
+        Write-Host "revAgent transition: clean install mode; existing package backups will be cleared and this package replacement will not create a backup." -ForegroundColor Yellow
+        $revAgentCleanInstallTransitionCleanup = Invoke-RevitMcpBackupRootReset -BackupRoot $backupRoot -CacheRoot $cacheRoot
+        $revAgentCleanInstallTransitionState.removedBackupItemCount = [int]$revAgentCleanInstallTransitionCleanup.removedBackupItemCount
+        $revAgentCleanInstallTransitionState.failedBackupItemCount = [int]$revAgentCleanInstallTransitionCleanup.failedBackupItemCount
+        $revAgentCleanInstallTransitionState.removedCacheItemCount = [int]$revAgentCleanInstallTransitionCleanup.removedCacheItemCount
+        $revAgentCleanInstallTransitionState.failedCacheItemCount = [int]$revAgentCleanInstallTransitionCleanup.failedCacheItemCount
+        if ([int]$revAgentCleanInstallTransitionCleanup.failedBackupItemCount -gt 0 -or
+            [int]$revAgentCleanInstallTransitionCleanup.failedCacheItemCount -gt 0) {
+            throw "revAgent clean-install transition backup cleanup failed."
+        }
+    }
 
     $installedManifest = Get-InstalledReleaseManifest -InstalledState $installedState -PackageTarget $PackageTarget
     $revitPayloadChanges = @(Get-RevitPayloadChanges -TargetManifest $releaseManifest -InstalledManifest $installedManifest -PackageTarget $PackageTarget -InstallRoot $InstallRoot -RevitVersion $RevitVersion)
-    $effectiveRevitPayloadChangeCount = if ($SourceFreeMigration) {
+    $effectiveRevitPayloadChangeCount = if ($SourceFreeMigration -or $revAgentCleanInstallTransitionRequired) {
         [Math]::Max(1, $revitPayloadChanges.Count)
     }
     else {
@@ -3229,7 +3295,7 @@ try {
         [void](Set-CodexMemoryConfig)
     }
 
-    if (-not $Force -and -not $SourceFreeMigration -and $isPackageCurrent -and -not $requiresRevitClosed) {
+    if (-not $Force -and -not $SourceFreeMigration -and -not $revAgentCleanInstallTransitionRequired -and $isPackageCurrent -and -not $requiresRevitClosed) {
         $message = "Already up to date."
         Write-Host $message -ForegroundColor Green
         Write-UpdateReport -Status "current" -Message $message -Channel $channel -InstalledState $installedState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
@@ -3273,6 +3339,21 @@ try {
         }
         else {
             Write-Host "Source migration : full managed Revit/runtime/Codex payload repair forced." -ForegroundColor Yellow
+        }
+    }
+    elseif ($revAgentCleanInstallTransitionRequired) {
+        $skipRevitPayloadInstall = $false
+        $skipRuntimePayloadInstall = $false
+        $skipDocsPayloadWork = $false
+        if (-not $preserveLocalCodexInstructions) {
+            $skipCodexSkillInstallForThisUpdate = $false
+        }
+        $skipCodexMcpRegistrationForThisUpdate = $false
+        if ($preserveLocalCodexInstructions) {
+            Write-Host "revAgent transition: full managed Revit/runtime repair forced; Codex instructions preserved by policy." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "revAgent transition: full managed Revit/runtime/Codex payload repair forced." -ForegroundColor Yellow
         }
     }
 
@@ -3332,6 +3413,14 @@ try {
             Write-Host "Source migration : runtime, docs, Codex skill, and MCP registration refresh forced." -ForegroundColor Yellow
         }
     }
+    elseif ($revAgentCleanInstallTransitionRequired) {
+        if ($preserveLocalCodexInstructions) {
+            Write-Host "revAgent transition: runtime, docs, and MCP registration refresh forced; Codex instructions preserved by policy." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "revAgent transition: runtime, docs, Codex skill, and MCP registration refresh forced." -ForegroundColor Yellow
+        }
+    }
     else {
         if (Test-DirectoryPayloadUnchanged -Manifest $releaseManifest -ComponentKey "runtimePayload" -PackageTarget $PackageTarget) {
             $skipRuntimePayloadInstall = $true
@@ -3372,8 +3461,15 @@ try {
 
     if (Test-Path -LiteralPath $PackageTarget) {
         $backupPath = Join-Path $backupRoot ("revit-mcp-skill.backup-" + $stamp)
-        Move-Item -LiteralPath $PackageTarget -Destination $backupPath
-        Invoke-RevitMcpDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
+        if ($revAgentCleanInstallTransitionRequired) {
+            Remove-Item -LiteralPath $PackageTarget -Recurse -Force -ErrorAction Stop
+            $revAgentCleanInstallTransitionState.packageRemovedWithoutBackup = $true
+            Write-Host "revAgent transition: removed existing managed package without creating a local backup." -ForegroundColor Yellow
+        }
+        else {
+            Move-Item -LiteralPath $PackageTarget -Destination $backupPath
+            Invoke-RevitMcpDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
+        }
     }
 
     New-Item -ItemType Directory -Path (Split-Path -Parent $PackageTarget) -Force | Out-Null
@@ -3553,6 +3649,13 @@ try {
         [string]::Equals([string]$script:RevitMcpDistributionIntegrity.state, "verified", [System.StringComparison]::OrdinalIgnoreCase) -or
         [string]::Equals([string]$script:RevitMcpDistributionIntegrity.state, "rollback-allowed", [System.StringComparison]::OrdinalIgnoreCase)
 
+    if ($revAgentCleanInstallTransitionRequired) {
+        $revAgentCleanInstallTransitionState.appliedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        $revAgentCleanInstallTransitionState.previousVersion = $installedVersion
+        $revAgentCleanInstallTransitionState.installedVersion = $targetVersion
+        $revAgentCleanInstallTransitionState.packageTarget = $PackageTarget
+    }
+
     $newState = [ordered]@{
         schemaVersion = 1
         app = "revit-mcp-skill"
@@ -3582,6 +3685,7 @@ try {
         signedReleaseRollbackAllowed = [bool]$script:RevitMcpDistributionIntegrity.rollbackAllowed
         license = $script:RevitMcpLicense
         sourceFreeMigration = $sourceFreeMigrationState
+        revAgentCleanInstallTransition = $revAgentCleanInstallTransitionState
         updaterVersion = $updaterVersion
         codexInstructionPolicy = $CodexInstructionPolicy
         machineRole = $MachineRole
@@ -3600,6 +3704,9 @@ try {
         $updateMessage += " Fast update path failed; full repair/install path completed."
     }
     Write-JsonFile -Path $statePath -Value $newState
+    if ($revAgentCleanInstallTransitionRequired) {
+        Write-JsonFile -Path $revAgentCleanInstallTransitionMarkerPath -Value $revAgentCleanInstallTransitionState
+    }
     Write-UpdateReport -Status "updated" -Message $updateMessage -Channel $channel -InstalledState $newState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $targetVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
     Write-Host $updateMessage -ForegroundColor Green
     Show-UserNotification -Title "revAgent updated" -Message ($updateMessage + "`r`n`r`nInstalled version: " + $targetVersion) -Key ("updated|{0}" -f $targetVersion) -Icon "Information"
