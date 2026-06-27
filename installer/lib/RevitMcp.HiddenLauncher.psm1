@@ -71,7 +71,15 @@ function Write-RevitMcpHiddenPowerShellLauncher {
 function Get-RevitMcpHiddenUpdaterLauncherPath {
     param([Parameter(Mandatory = $true)][string]$ConfigPath)
 
-    return Join-Path (Split-Path -Parent $ConfigPath) "Run-Revit-MCP-Update-Hidden.vbs"
+    return Join-Path (Split-Path -Parent $ConfigPath) "Run-revAgent-Update-Hidden.vbs"
+}
+
+function Get-RevitMcpLegacyHiddenUpdaterLauncherPaths {
+    param([Parameter(Mandatory = $true)][string]$ConfigPath)
+
+    return @(
+        (Join-Path (Split-Path -Parent $ConfigPath) "Run-Revit-MCP-Update-Hidden.vbs")
+    )
 }
 
 function New-RevitMcpHiddenUpdaterScheduledTaskAction {
@@ -87,4 +95,5 @@ Export-ModuleMember -Function `
     Resolve-RevitMcpWScriptPath, `
     Write-RevitMcpHiddenPowerShellLauncher, `
     Get-RevitMcpHiddenUpdaterLauncherPath, `
+    Get-RevitMcpLegacyHiddenUpdaterLauncherPaths, `
     New-RevitMcpHiddenUpdaterScheduledTaskAction

@@ -14,7 +14,7 @@ orchestration files.
 
 Product-facing documentation should use **revAgent**. Codex MCP entries should
 appear as `revAgent` and `revAgent-api-docs`. The internal names `revit-mcp`,
-`RevitMCP*`, `mcp-servers-for-revit`, and `C:\ProgramData\DPE\RevitMCP`
+`RevitMCP*`, `mcp-servers-for-revit`, and `C:\ProgramData\DPE\revAgent`
 remain exact implementation, tool, package, manifest, and path identifiers.
 
 ## What this repo provides
@@ -125,7 +125,7 @@ For office workstations, prefer the NAS updater in `installer/nas/README.md`.
 It installs into the standard machine-wide root:
 
 ```text
-C:\ProgramData\DPE\RevitMCP
+C:\ProgramData\DPE\revAgent
 ```
 
 For a manual repo-root install, close Revit and run:
@@ -135,13 +135,13 @@ $RepoRoot = (Resolve-Path .).Path
 
 powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022
 
-cd C:\ProgramData\DPE\RevitMCP\runtime
+cd C:\ProgramData\DPE\revAgent\runtime
 npm install --omit=dev --no-audit --no-fund
-codex mcp add revAgent -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
+codex mcp add revAgent -- node "C:\ProgramData\DPE\revAgent\runtime\build\index.js"
 
 cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev --no-audit --no-fund
-powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
+powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\revAgent\state\revit-api-docs\cache\revit-api-docs-2022.json"
 codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
 
@@ -181,7 +181,7 @@ pulling and reinstalling on every machine.
   If a release must be held until after manual verification, hold the
   workstation scheduled task or keep the change off `main` / outside the stable
   channel until verification is complete.
-- Workstations install under `C:\ProgramData\DPE\RevitMCP`, not under
+- Workstations install under `C:\ProgramData\DPE\revAgent`, not under
   `C:\Projects` or user AppData folders.
 - Workstation updater logs are retained under the managed updater folder, with
   automatic cleanup keeping the latest 10 `.log` files.
@@ -267,7 +267,7 @@ receive time, parse time, execution time, response size, and elapsed time. The
 Revit status window stays concise for users and shows only task state, task
 name, total Revit-side duration, and request size; detailed transport metrics
 are written to the add-in log under
-`C:\ProgramData\DPE\RevitMCP\revit-plugin\revit_mcp_plugin\Logs\`.
+`C:\ProgramData\DPE\revAgent\revit-plugin\revit_mcp_plugin\Logs\`.
 
 The runtime performs a status preflight before every non-status Revit command.
 If `activeTask` is present, the new command is rejected with a busy message
@@ -312,7 +312,7 @@ Then:
 5. Run `/skills reload` inside Codex, or restart Codex.
 
 The installer keeps the canonical Codex payload under
-`C:\ProgramData\DPE\RevitMCP\codex`. Because Codex currently reads user-profile
+`C:\ProgramData\DPE\revAgent\codex`. Because Codex currently reads user-profile
 skill and `AGENTS.md` locations, the installer may create a junction/hardlink
 under `%USERPROFILE%\.codex` as a compatibility integration. Pass
 `-SkipCodexUserIntegration` to leave the user profile untouched.
@@ -340,18 +340,18 @@ real system locations below:
 - Revit add-in manifest:
   - `C:\ProgramData\Autodesk\Revit\Addins\2022\mcp-servers-for-revit.addin`
 - Revit add-in payload:
-  - `C:\ProgramData\DPE\RevitMCP\revit-plugin\revit_mcp_plugin\...`
+  - `C:\ProgramData\DPE\revAgent\revit-plugin\revit_mcp_plugin\...`
 - Dynamic command payload mirror:
-  - `C:\ProgramData\DPE\RevitMCP\commands\CommandSet\...`
+  - `C:\ProgramData\DPE\revAgent\commands\CommandSet\...`
 - Local runtime MCP server bundle:
-  - `C:\ProgramData\DPE\RevitMCP\runtime` containing a single bundled
+  - `C:\ProgramData\DPE\revAgent\runtime` containing a single bundled
     `build\index.js` and runtime-only npm manifests, not TypeScript source,
     tests, source maps, or developer package scripts
 - Required docs MCP server:
   - kept under the managed package copy and registered from there by the NAS updater
 - Codex skill and workstation role:
-  - `C:\ProgramData\DPE\RevitMCP\codex\skills\revit-mcp`
-  - `C:\ProgramData\DPE\RevitMCP\codex\AGENTS.md`
+  - `C:\ProgramData\DPE\revAgent\codex\skills\revAgent`
+  - `C:\ProgramData\DPE\revAgent\codex\AGENTS.md`
   - sourced from `installer/codex-user`, not from the developer repo root,
     unless `codexInstructionPolicy` is `preserve-local` on a developer
     workstation
@@ -391,11 +391,11 @@ under the same safety checks.
 ### Source-free migration
 
 Older workstations may already have source-bearing managed payloads under
-`C:\ProgramData\DPE\RevitMCP\package`, `runtime`, Codex skill locations, or
+`C:\ProgramData\DPE\revAgent\package`, `runtime`, Codex skill locations, or
 updater package backups. Use the migration tool before broad rollout:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "C:\ProgramData\DPE\RevitMCP\updater\migrate-source-free-install.ps1" -Mode dryRun
+powershell -ExecutionPolicy Bypass -File "C:\ProgramData\DPE\revAgent\updater\migrate-source-free-install.ps1" -Mode dryRun
 ```
 
 Commit mode calls the updater with `-SourceFreeMigration`, forces a full
@@ -470,14 +470,14 @@ powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-conta
 5. Install Node dependencies in the deployed runtime server target:
 
 ```powershell
-cd C:\ProgramData\DPE\RevitMCP\runtime
+cd C:\ProgramData\DPE\revAgent\runtime
 npm install --omit=dev --no-audit --no-fund
 ```
 
 6. Register the runtime MCP server in Codex:
 
 ```powershell
-codex mcp add revAgent -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.js"
+codex mcp add revAgent -- node "C:\ProgramData\DPE\revAgent\runtime\build\index.js"
 ```
 
 7. Install and register the required docs MCP server:
@@ -485,7 +485,7 @@ codex mcp add revAgent -- node "C:\ProgramData\DPE\RevitMCP\runtime\build\index.
 ```powershell
 cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev --no-audit --no-fund
-powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
+powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\revAgent\state\revit-api-docs\cache\revit-api-docs-2022.json"
 codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
 
@@ -496,7 +496,7 @@ codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\
 ```
 
 The installer already installs the machine-level Codex payload under
-`C:\ProgramData\DPE\RevitMCP\codex` and creates user-profile integration unless
+`C:\ProgramData\DPE\revAgent\codex` and creates user-profile integration unless
 `-SkipCodexUserIntegration` is passed.
 
 ## Local build and smoke tests
@@ -642,7 +642,7 @@ Install it after the runtime server (Quick start already shows this step):
 $RepoRoot = (Resolve-Path .).Path
 cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev --no-audit --no-fund
-powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache\revit-api-docs-2022.json"
+powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\revAgent\state\revit-api-docs\cache\revit-api-docs-2022.json"
 codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
 
@@ -653,7 +653,7 @@ On first query, the docs server builds a local cache from the installed `RevitAP
 
 Default cache path:
 
-- `C:\ProgramData\DPE\RevitMCP\state\revit-api-docs\cache`
+- `C:\ProgramData\DPE\revAgent\state\revit-api-docs\cache`
 
 Bundled docs tools:
 
@@ -735,7 +735,7 @@ powershell -ExecutionPolicy Bypass -File .\installer\refresh-skill.ps1
 Useful flags:
 
 - `-RepoRoot <path>` - point at a specific local clone (defaults to the parent of the script).
-- `-ExtraPaths <path1,path2>` - add project-level installs, e.g. `<project>\.claude\skills\revit-mcp`.
+- `-ExtraPaths <path1,path2>` - add project-level installs, e.g. `<project>\.claude\skills\revAgent`.
 - `-NoConfirm` - skip per-target prompts (for unattended runs).
 
 After the script finishes:
@@ -939,7 +939,7 @@ still avoids full Revit response payloads, model geometry dumps, and exported
 images.
 
 Local events are written under
-`C:\ProgramData\DPE\RevitMCP\state\telemetry\events`. When workstation updater
+`C:\ProgramData\DPE\revAgent\state\telemetry\events`. When workstation updater
 configuration contains `reportsRoot`, best-effort NAS copies are also written
 under `reports\events`. Telemetry failures are swallowed and must not affect
 Revit work. See `docs/REVAGENT_USAGE_INTELLIGENCE.md` for schema and controls.

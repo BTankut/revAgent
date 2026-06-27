@@ -2,7 +2,7 @@
 
 This repository is the single canonical source for the revAgent workstation
 package. Internal implementation names such as `revit-mcp`, `RevitMCP*`,
-`mcp-servers-for-revit`, and `C:\ProgramData\DPE\RevitMCP` remain exact names
+`mcp-servers-for-revit`, and `C:\ProgramData\DPE\revAgent` remain exact names
 for servers, assemblies, manifests, and installed paths.
 
 ## Main Areas
@@ -95,7 +95,7 @@ assembly scanning noisier, and have historically carried localized or mojibake
 strings into developer-facing source.
 
 `installer/revit-plugin` is install payload. Production installers copy from this
-folder into `C:\ProgramData\DPE\RevitMCP`. Do not edit the binary payload by
+folder into `C:\ProgramData\DPE\revAgent`. Do not edit the binary payload by
 hand. Build the host and shared bridge source, then refresh those payload
 binaries with:
 

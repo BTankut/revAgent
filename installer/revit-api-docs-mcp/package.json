@@ -14,7 +14,7 @@
     "build": "tsc",
     "release:clean": "rimraf release",
     "build:release": "npm run build && npm run release:clean && node ../../scripts/build-mcp-release-bundle.mjs",
-    "build-index": "powershell -ExecutionPolicy Bypass -File ./scripts/build-index.ps1 -OutputPath \"%ProgramData%\\DPE\\RevitMCP\\state\\revit-api-docs\\cache\\revit-api-docs-2022.json\"",
+    "build-index": "powershell -ExecutionPolicy Bypass -File ./scripts/build-index.ps1 -OutputPath \"%ProgramData%\\DPE\\revAgent\\state\\revit-api-docs\\cache\\revit-api-docs-2022.json\"",
     "smoke": "node scripts/smoke.mjs",
     "test": "npm run build && npm run smoke"
   },

@@ -49,6 +49,13 @@ function Repair-RevitMcpHiddenScheduledTaskAction {
             -ScriptPath $UpdaterPath `
             -ScriptArguments @("-ConfigPath", $UpdaterConfigPath, "-NotifyUser", "-OperationMethod", "scheduled-update") `
             -WaitForExit
+        foreach ($legacyLauncherPath in @(Get-RevitMcpLegacyHiddenUpdaterLauncherPaths -ConfigPath $UpdaterConfigPath)) {
+            if ((-not [string]::Equals($legacyLauncherPath, $launcherPath, [System.StringComparison]::OrdinalIgnoreCase)) -and
+                (Test-Path -LiteralPath $legacyLauncherPath -PathType Leaf)) {
+                Remove-Item -LiteralPath $legacyLauncherPath -Force -ErrorAction Stop
+                Write-Host "Removed legacy hidden updater launcher: $legacyLauncherPath"
+            }
+        }
         $action = New-RevitMcpHiddenUpdaterScheduledTaskAction -LauncherPath $launcherPath
         $trigger = New-RevitMcpDailyUpdateTrigger -DailyAt $DailyAt
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries

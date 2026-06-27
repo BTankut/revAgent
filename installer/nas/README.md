@@ -5,7 +5,7 @@ keep office workstations updated from that single deployment source.
 
 Use `revAgent` for product-facing wording. Codex MCP entries should appear as
 `revAgent` and `revAgent-api-docs`. Keep `revit-mcp-skill`, `RevitMCP*`,
-`revit-mcp`, `mcp-servers-for-revit`, and `C:\ProgramData\DPE\RevitMCP` only
+`revit-mcp`, `mcp-servers-for-revit`, and `C:\ProgramData\DPE\revAgent` only
 as exact release, server, assembly, manifest, or path identifiers.
 
 ## Deployment Model
@@ -50,6 +50,7 @@ to a non-stable test channel until the release is accepted.
   tools\
     Install-revAgent-Updater.cmd
     Install-revAgent-Updater-GUI.cmd
+    Install-revAgent-Updater-GUI.ps1
     revAgent Updater STABLE.cmd
     Install-Revit-MCP-Updater.cmd
     Install-Revit-MCP-Updater-GUI.cmd
@@ -213,7 +214,7 @@ standalone launcher instead:
 
 Do not copy `Install-revAgent-Updater-GUI.cmd` by itself. That file is meant
 to run from the NAS `tools\` folder and expects
-`Install-Revit-MCP-Updater-GUI.ps1` beside it.
+`Install-revAgent-Updater-GUI.ps1` beside it.
 
 The non-GUI bootstrap is also available:
 
@@ -224,7 +225,7 @@ The non-GUI bootstrap is also available:
 The updater uses the standard machine-wide root:
 
 ```text
-C:\ProgramData\DPE\RevitMCP\
+C:\ProgramData\DPE\revAgent\
   package\
   runtime\
   updater\
@@ -237,7 +238,7 @@ C:\ProgramData\DPE\RevitMCP\
 Logs are written to:
 
 ```text
-C:\ProgramData\DPE\RevitMCP\updater\logs\
+C:\ProgramData\DPE\revAgent\updater\logs\
 ```
 
 Updater log retention is automatic. Install and update runs keep the latest
@@ -286,7 +287,7 @@ workstations, and record the representative current-stable smoke result in
 - Shows the installed version and target version as `old -> new`.
 - Copies the versioned ZIP from NAS.
 - Verifies the package SHA256 hash before install.
-- Replaces the managed local package copy under `C:\ProgramData\DPE\RevitMCP\package`.
+- Replaces the managed local package copy under `C:\ProgramData\DPE\revAgent\package`.
 - Runs `install-self-contained.ps1`, but skips unchanged payload surfaces when
   the release manifest proves they are identical. Revit add-in/command files
   are left untouched whenever their component hashes are unchanged, even if
@@ -330,7 +331,7 @@ path.
 | --- | --- | --- | --- |
 | No change already installed | Current/no-op | Yes | Returns before proxy, task, Codex Desktop, npm, and package work after lightweight Codex config/backup hygiene. |
 | Updater or installer scripts only | Fast package-only update | Yes | Refreshes the managed package and updater tools, then restores the docs server dependency junction from cache. `install-self-contained.ps1` is skipped. If the fast step fails, the updater warns and falls back to the full repair/install path. |
-| Runtime MCP server/tool code | Runtime payload update | Yes, if Revit payload is unchanged | Refreshes `C:\ProgramData\DPE\RevitMCP\runtime`, checks npm fingerprints/cache, and refreshes MCP registration when entry points changed. |
+| Runtime MCP server/tool code | Runtime payload update | Yes, if Revit payload is unchanged | Refreshes `C:\ProgramData\DPE\revAgent\runtime`, checks npm fingerprints/cache, and refreshes MCP registration when entry points changed. |
 | Revit add-in, command set, command payload, or add-in manifest | Revit payload update | No | If `Revit.exe` is running, the update is deferred and the user is told to save/sync, close Revit, and run update again. |
 | `SKILL.md` or `AGENTS.md` | Codex skill/workstation role refresh | Yes, if Revit payload is unchanged | Refreshes the machine Codex payload and user-profile junction/hardlink integration under `managed-user-pack`. Under `preserve-local`, this instruction payload is skipped and reported while other update scopes continue. |
 | Revit API docs MCP server | Docs payload update | Yes, if Revit payload is unchanged | Refreshes docs server dependencies/index only when the docs payload fingerprint changed. |
@@ -350,8 +351,8 @@ release package. When tools are copied to NAS `tools\`, the matching
 installs copy those folders to:
 
 ```text
-C:\ProgramData\DPE\RevitMCP\updater\lib
-C:\ProgramData\DPE\RevitMCP\updater\config
+C:\ProgramData\DPE\revAgent\updater\lib
+C:\ProgramData\DPE\revAgent\updater\config
 ```
 
 The updater loads public release-verification material from its local updater

@@ -45,7 +45,9 @@ if (-not (Test-Path -LiteralPath (Join-Path $codexUserSourceRoot "SKILL.md") -Pa
     $codexUserSourceRoot = $repoRoot
 }
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
-$defaultInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
+$defaultInstallRoot = Join-Path $programDataRoot "DPE\revAgent"
+$legacyInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
+$legacyUpdaterConfigPath = Join-Path $legacyInstallRoot "updater\updater-config.json"
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
     $InstallRoot = $defaultInstallRoot
 }
@@ -65,11 +67,16 @@ $updaterRoot = Join-Path $InstallRoot "updater"
 $updaterConfigPath = Join-Path $updaterRoot "updater-config.json"
 $codexMachineRoot = Join-Path $InstallRoot "codex"
 $codexMachineSkillsRoot = Join-Path $codexMachineRoot "skills"
-$codexMachineSkillTarget = Join-Path $codexMachineSkillsRoot "revit-mcp"
+$codexSkillName = "revAgent"
+$legacyCodexSkillName = "revit-mcp"
+$codexMachineSkillTarget = Join-Path $codexMachineSkillsRoot $codexSkillName
+$legacyCodexMachineSkillTarget = Join-Path $codexMachineSkillsRoot $legacyCodexSkillName
+$legacyInstallRootMachineSkillTarget = Join-Path $legacyInstallRoot "codex\skills\$legacyCodexSkillName"
 $codexMachineAgentsTarget = Join-Path $codexMachineRoot "AGENTS.md"
 $codexRoot = Join-Path $env:USERPROFILE ".codex"
 $codexSkillsRoot = Join-Path $codexRoot "skills"
-$codexSkillTarget = Join-Path $codexSkillsRoot "revit-mcp"
+$codexSkillTarget = Join-Path $codexSkillsRoot $codexSkillName
+$legacyCodexSkillTarget = Join-Path $codexSkillsRoot $legacyCodexSkillName
 $codexAgentsTarget = Join-Path $codexRoot "AGENTS.md"
 $codexConfigTarget = Join-Path $codexRoot "config.toml"
 $defaultLegacyServerTargets = @(
@@ -82,15 +89,19 @@ $defaultLegacyServerTargets = @(
 function Resolve-CodexInstructionPolicy {
     param(
         [string]$RequestedPolicy,
-        [string]$ConfigPath
+        [string[]]$ConfigPaths
     )
 
     $policy = $RequestedPolicy
-    if ([string]::IsNullOrWhiteSpace($policy) -and
-        -not [string]::IsNullOrWhiteSpace($ConfigPath) -and
-        (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+    foreach ($configPath in @($ConfigPaths)) {
+        if (-not [string]::IsNullOrWhiteSpace($policy)) {
+            break
+        }
+        if ([string]::IsNullOrWhiteSpace($configPath) -or -not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+            continue
+        }
         try {
-            $config = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json
+            $config = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
             if ($config.codexInstructionPolicy) {
                 $policy = [string]$config.codexInstructionPolicy
             }
@@ -112,7 +123,7 @@ function Resolve-CodexInstructionPolicy {
     return $normalized
 }
 
-$CodexInstructionPolicy = Resolve-CodexInstructionPolicy -RequestedPolicy $CodexInstructionPolicy -ConfigPath $updaterConfigPath
+$CodexInstructionPolicy = Resolve-CodexInstructionPolicy -RequestedPolicy $CodexInstructionPolicy -ConfigPaths @($updaterConfigPath, $legacyUpdaterConfigPath)
 $preserveLocalCodexInstructions = [string]::Equals($CodexInstructionPolicy, "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)
 
 $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
@@ -452,14 +463,27 @@ function Install-UpdaterToolsFromPackage {
             "@echo off",
             "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -NoNotifyUser -AllowManualCodexSetup -OperationMethod manual-update",
             "pause"
-        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Update-Revit-MCP-Now.cmd") -Encoding ASCII
+        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Update-revAgent-Now.cmd") -Encoding ASCII
     }
     if (Test-Path -LiteralPath $versionToolPath -PathType Leaf) {
         @(
             "@echo off",
             "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$versionToolPath`" -ConfigPath `"$ConfigPath`"",
             "pause"
-        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Show-Revit-MCP-Version.cmd") -Encoding ASCII
+        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Show-revAgent-Version.cmd") -Encoding ASCII
+    }
+    foreach ($legacyCommandName in @("Update-Revit-MCP-Now.cmd", "Show-Revit-MCP-Version.cmd")) {
+        $legacyCommandPath = Join-Path $DestinationRoot $legacyCommandName
+        if (Test-Path -LiteralPath $legacyCommandPath -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyCommandPath -Force
+            Write-Host "Removed legacy updater helper: $legacyCommandPath"
+        }
+    }
+    foreach ($legacyLauncherPath in @(Get-RevitMcpLegacyHiddenUpdaterLauncherPaths -ConfigPath $ConfigPath)) {
+        if (Test-Path -LiteralPath $legacyLauncherPath -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyLauncherPath -Force
+            Write-Host "Removed legacy hidden updater launcher: $legacyLauncherPath"
+        }
     }
 
     Write-Host "Updater tools refreshed: $DestinationRoot"
@@ -473,8 +497,17 @@ function Repair-RevitMcpScheduledTaskAction {
 
     $taskName = "revAgent Auto Update"
     $dailyAt = "12:00"
-    try {
-        $config = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json
+    $configCandidates = @($ConfigPath, $legacyUpdaterConfigPath)
+    foreach ($configCandidate in $configCandidates) {
+        if ([string]::IsNullOrWhiteSpace($configCandidate) -or -not (Test-Path -LiteralPath $configCandidate -PathType Leaf)) {
+            continue
+        }
+        try {
+            $config = Get-Content -Raw -LiteralPath $configCandidate | ConvertFrom-Json
+        }
+        catch {
+            continue
+        }
         if ($config.taskName) {
             $taskName = [string]$config.taskName
         }
@@ -484,8 +517,8 @@ function Repair-RevitMcpScheduledTaskAction {
         if ($config.dailyAt) {
             $dailyAt = [string]$config.dailyAt
         }
+        break
     }
-    catch {}
 
     Repair-RevitMcpHiddenScheduledTaskAction -Name $taskName -LegacyNames @("Revit MCP Auto Update") -UpdaterPath $UpdaterPath -UpdaterConfigPath $ConfigPath -DailyAt $dailyAt
 }
@@ -503,7 +536,8 @@ function Assert-RevitMcpCleanupPath {
         [string]$Path,
         [Parameter(Mandatory = $true)]
         [string]$Label,
-        [string]$AllowedNamePattern = "(?i)(^revit[-_]mcp($|[-_.])|^revit_mcp_plugin$|^mcp[-_]servers?[-_]for[-_]revit|^mcp-server-for-revit|^RevitMCP|^runtime$|^package$|^updater$|^state$|^revit-plugin$|^codex$|^AGENTS\.md$)"
+        [string]$AllowedNamePattern = "(?i)(^revAgent$|^revit[-_]mcp($|[-_.])|^revit_mcp_plugin$|^mcp[-_]servers?[-_]for[-_]revit|^mcp-server-for-revit|^RevitMCP|^runtime$|^package$|^updater$|^state$|^revit-plugin$|^codex$|^AGENTS\.md$)",
+        [switch]$AllowBroadTarget
     )
 
     $fullPath = Get-NormalizedPath -Path $Path
@@ -523,13 +557,14 @@ function Assert-RevitMcpCleanupPath {
         (Get-NormalizedPath -Path (Join-Path $env:APPDATA "Autodesk\Revit")),
         (Get-NormalizedPath -Path $addinRoot),
         (Get-NormalizedPath -Path $InstallRoot),
+        (Get-NormalizedPath -Path $legacyInstallRoot),
         (Get-NormalizedPath -Path $codexRoot),
         (Get-NormalizedPath -Path $codexSkillsRoot),
         (Get-NormalizedPath -Path (Split-Path -Parent $ServerTarget))
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
     foreach ($blocked in $blockedRoots) {
-        if ([string]::Equals($fullPath, $blocked, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ((-not $AllowBroadTarget) -and [string]::Equals($fullPath, $blocked, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "Refusing to clean $Label because the target is too broad: $fullPath"
         }
     }
@@ -548,14 +583,15 @@ function Remove-RevitMcpPath {
         [Parameter(Mandatory = $true)]
         [string]$Label,
         [switch]$Recurse,
-        [string]$AllowedNamePattern
+        [string]$AllowedNamePattern,
+        [switch]$AllowBroadTarget
     )
 
     if ([string]::IsNullOrWhiteSpace($AllowedNamePattern)) {
-        $fullPath = Assert-RevitMcpCleanupPath -Path $Path -Label $Label
+        $fullPath = Assert-RevitMcpCleanupPath -Path $Path -Label $Label -AllowBroadTarget:$AllowBroadTarget
     }
     else {
-        $fullPath = Assert-RevitMcpCleanupPath -Path $Path -Label $Label -AllowedNamePattern $AllowedNamePattern
+        $fullPath = Assert-RevitMcpCleanupPath -Path $Path -Label $Label -AllowedNamePattern $AllowedNamePattern -AllowBroadTarget:$AllowBroadTarget
     }
 
     if (-not (Test-Path -LiteralPath $fullPath)) {
@@ -570,6 +606,63 @@ function Remove-RevitMcpPath {
     }
 
     Write-Host "Removed ${Label}: $fullPath"
+}
+
+function Test-RevitMcpPathInside {
+    param(
+        [string]$ChildPath,
+        [string]$ParentPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ChildPath) -or [string]::IsNullOrWhiteSpace($ParentPath)) {
+        return $false
+    }
+
+    try {
+        $child = Get-NormalizedPath -Path $ChildPath
+        $parent = (Get-NormalizedPath -Path $ParentPath).TrimEnd("\")
+        return $child.StartsWith($parent + "\", [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($child, $parent, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Remove-LegacyRevitMcpInstallRoot {
+    if ($SkipLegacyCleanup) {
+        return
+    }
+
+    if ([string]::Equals((Get-NormalizedPath -Path $InstallRoot), (Get-NormalizedPath -Path $legacyInstallRoot), [System.StringComparison]::OrdinalIgnoreCase)) {
+        return
+    }
+    if (-not (Test-Path -LiteralPath $legacyInstallRoot -PathType Container)) {
+        return
+    }
+
+    $activePaths = @(
+        $PSScriptRoot,
+        $PSCommandPath,
+        $env:REVIT_MCP_LOG_PATH
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    foreach ($activePath in $activePaths) {
+        if (Test-RevitMcpPathInside -ChildPath $activePath -ParentPath $legacyInstallRoot) {
+            Write-Warning "Legacy RevitMCP install root cleanup skipped because the current process is still using it: $legacyInstallRoot"
+            return
+        }
+    }
+    try {
+        $currentProcess = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId={0}" -f $PID) -ErrorAction Stop
+        $commandLine = [string]$currentProcess.CommandLine
+        if ($commandLine.IndexOf($legacyInstallRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            Write-Warning "Legacy RevitMCP install root cleanup skipped because the current PowerShell command line still references it: $legacyInstallRoot"
+            return
+        }
+    }
+    catch {}
+
+    Remove-RevitMcpPath -Path $legacyInstallRoot -Label "legacy RevitMCP install root" -Recurse -AllowedNamePattern "(?i)^RevitMCP$" -AllowBroadTarget
 }
 
 function Disable-LegacyAddinManifest {
@@ -883,7 +976,10 @@ function Invoke-RevitMcpCleanup {
 
     if ($ForUninstall) {
         Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex revAgent skill directory" -Recurse
+        Remove-RevitMcpPath -Path $legacyCodexSkillTarget -Label "legacy Codex revAgent skill directory" -Recurse
         Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex revAgent skill directory" -Recurse
+        Remove-RevitMcpPath -Path $legacyCodexMachineSkillTarget -Label "legacy machine Codex revAgent skill directory" -Recurse
+        Remove-RevitMcpPath -Path $legacyInstallRootMachineSkillTarget -Label "legacy install-root Codex skill directory" -Recurse
         if ($RemoveAgents) {
             Remove-RevitMcpPath -Path $codexAgentsTarget -Label "Codex global AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
             Remove-RevitMcpPath -Path $codexMachineAgentsTarget -Label "machine AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
@@ -929,12 +1025,14 @@ else {
 }
 if (-not $SkipRuntimePayloadInstall) {
     Copy-RevitMcpRuntimeUserPayload -SourceRoot $serverSource -DestinationRoot $ServerTarget
-    Set-Content -LiteralPath (Join-Path $ServerTarget ".revit-mcp-self-contained-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
+    Remove-RevitMcpPath -Path (Join-Path $ServerTarget ".revit-mcp-self-contained-install") -Label "legacy runtime install marker" -AllowedNamePattern "(?i)^\.revit-mcp-self-contained-install$"
+    Set-Content -LiteralPath (Join-Path $ServerTarget ".revagent-self-contained-install") -Value ("Installed by revAgent at " + (Get-Date).ToString("s")) -Encoding UTF8
 }
 else {
     Write-Host "Runtime payload install skipped; existing runtime files were left untouched." -ForegroundColor Yellow
 }
-Set-Content -LiteralPath (Join-Path $InstallRoot ".revit-mcp-programdata-install") -Value ("Installed by revit-mcp-skill at " + (Get-Date).ToString("s")) -Encoding UTF8
+Remove-RevitMcpPath -Path (Join-Path $InstallRoot ".revit-mcp-programdata-install") -Label "legacy ProgramData install marker" -AllowedNamePattern "(?i)^\.revit-mcp-programdata-install$"
+Set-Content -LiteralPath (Join-Path $InstallRoot ".revagent-programdata-install") -Value ("Installed by revAgent at " + (Get-Date).ToString("s")) -Encoding UTF8
 
 # The required revAgent API docs server remains in the repo under installer\revit-api-docs-mcp.
 # It is registered from that path after npm install; see the final Next steps.
@@ -1053,6 +1151,8 @@ else {
         if (Test-Path -LiteralPath $codexMachineSkillTarget) {
             Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex revAgent skill directory" -Recurse
         }
+        Remove-RevitMcpPath -Path $legacyCodexMachineSkillTarget -Label "legacy machine Codex revAgent skill directory" -Recurse
+        Remove-RevitMcpPath -Path $legacyInstallRootMachineSkillTarget -Label "legacy install-root Codex skill directory" -Recurse
 
         New-Item -ItemType Directory -Path $codexMachineSkillTarget -Force | Out-Null
         Copy-RevitMcpFilePayload -Source (Join-Path $codexUserSourceRoot "SKILL.md") -Destination (Join-Path $codexMachineSkillTarget "SKILL.md")
@@ -1063,6 +1163,7 @@ else {
             if (Test-Path -LiteralPath $codexSkillTarget) {
                 Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex revAgent skill directory" -Recurse
             }
+            Remove-RevitMcpPath -Path $legacyCodexSkillTarget -Label "legacy Codex revAgent skill directory" -Recurse
 
             New-ReparsePointOrCopyDirectory -Source $codexMachineSkillTarget -Destination $codexSkillTarget
         }
@@ -1172,6 +1273,7 @@ Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $up
 Invoke-RevitMcpLogRetention -LogsRoot (Join-Path $updaterRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
 Repair-RevitMcpManagedInstallPermissions
 Repair-RevitMcpScheduledTaskAction -ConfigPath $updaterConfigPath -UpdaterPath (Join-Path $updaterRoot "update-from-nas.ps1")
+Remove-LegacyRevitMcpInstallRoot
 
 Write-Host "Self-contained revAgent bundle installed for Revit $RevitVersion" -ForegroundColor Green
 Write-Host "Install root: $InstallRoot"

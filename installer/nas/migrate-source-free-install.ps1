@@ -290,7 +290,7 @@ $requestedServerTarget = $ServerTarget
 $requestedChannelManifestPath = $ChannelManifestPath
 $requestedRevitInstallRoot = $RevitInstallRoot
 $requestedReportsRoot = $ReportsRoot
-$defaultInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
+$defaultInstallRoot = Join-Path $programDataRoot "DPE\revAgent"
 $configInstallRoot = if ([string]::IsNullOrWhiteSpace($requestedInstallRoot)) { $defaultInstallRoot } else { $requestedInstallRoot }
 $configWorkRoot = if ([string]::IsNullOrWhiteSpace($requestedWorkRoot)) { Join-Path $configInstallRoot "updater" } else { $requestedWorkRoot }
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {

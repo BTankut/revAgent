@@ -2226,13 +2226,13 @@ function Test-CodexSkillInstallPresent {
         [switch]$SkipUserIntegration
     )
 
-    $machineSkillPath = Join-Path $InstallRoot "codex\skills\revit-mcp"
+    $machineSkillPath = Join-Path $InstallRoot "codex\skills\revAgent"
     if (-not (Test-Path -LiteralPath (Join-Path $machineSkillPath "SKILL.md") -PathType Leaf)) {
         return $false
     }
 
     if (-not $SkipUserIntegration) {
-        $userSkillPath = Join-Path $env:USERPROFILE ".codex\skills\revit-mcp"
+        $userSkillPath = Join-Path $env:USERPROFILE ".codex\skills\revAgent"
         if (-not (Test-Path -LiteralPath $userSkillPath)) {
             return $false
         }
@@ -2875,18 +2875,38 @@ function Install-UpdaterToolsFromPackage {
             "@echo off",
             "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -NoNotifyUser -AllowManualCodexSetup -OperationMethod manual-update",
             "pause"
-        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Update-Revit-MCP-Now.cmd") -Encoding ASCII
+        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Update-revAgent-Now.cmd") -Encoding ASCII
     }
     if (Test-Path -LiteralPath $versionToolPath -PathType Leaf) {
         @(
             "@echo off",
             "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$versionToolPath`" -ConfigPath `"$ConfigPath`"",
             "pause"
-        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Show-Revit-MCP-Version.cmd") -Encoding ASCII
+        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Show-revAgent-Version.cmd") -Encoding ASCII
+    }
+    foreach ($legacyCommandName in @("Update-Revit-MCP-Now.cmd", "Show-Revit-MCP-Version.cmd")) {
+        $legacyCommandPath = Join-Path $DestinationRoot $legacyCommandName
+        if (Test-Path -LiteralPath $legacyCommandPath -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyCommandPath -Force
+            Write-Host "Removed legacy updater helper: $legacyCommandPath"
+        }
+    }
+    foreach ($legacyLauncherPath in @(Get-RevitMcpLegacyHiddenUpdaterLauncherPaths -ConfigPath $ConfigPath)) {
+        if (Test-Path -LiteralPath $legacyLauncherPath -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyLauncherPath -Force
+            Write-Host "Removed legacy hidden updater launcher: $legacyLauncherPath"
+        }
     }
 
     Write-Host "Updater tools refreshed: $DestinationRoot"
 }
+
+$explicitInstallRoot = $PSBoundParameters.ContainsKey("InstallRoot")
+$explicitConfigPath = $PSBoundParameters.ContainsKey("ConfigPath")
+$explicitWorkRoot = $PSBoundParameters.ContainsKey("WorkRoot")
+$explicitPackageTarget = $PSBoundParameters.ContainsKey("PackageTarget")
+$explicitServerTarget = $PSBoundParameters.ContainsKey("ServerTarget")
+$explicitLogPath = $PSBoundParameters.ContainsKey("LogPath")
 
 $config = Import-UpdaterConfig -Path $ConfigPath
 $taskDailyAt = "12:00"
@@ -2931,8 +2951,50 @@ if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) {
 }
 
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
+$defaultInstallRoot = Join-Path $programDataRoot "DPE\revAgent"
+$legacyInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
+function Test-RevitMcpSamePath {
+    param([string]$Left, [string]$Right)
+
+    if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) {
+        return $false
+    }
+    try {
+        return [string]::Equals([System.IO.Path]::GetFullPath($Left).TrimEnd("\"), [System.IO.Path]::GetFullPath($Right).TrimEnd("\"), [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+function Test-RevitMcpPathUnder {
+    param([string]$ChildPath, [string]$ParentPath)
+
+    if ([string]::IsNullOrWhiteSpace($ChildPath) -or [string]::IsNullOrWhiteSpace($ParentPath)) {
+        return $false
+    }
+    try {
+        $child = [System.IO.Path]::GetFullPath($ChildPath).TrimEnd("\")
+        $parent = [System.IO.Path]::GetFullPath($ParentPath).TrimEnd("\")
+        return [string]::Equals($child, $parent, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $child.StartsWith($parent + "\", [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+if ((-not $explicitInstallRoot) -and (Test-RevitMcpSamePath -Left $InstallRoot -Right $legacyInstallRoot)) {
+    Write-Host "Legacy install root detected in updater config; migrating to revAgent root: $defaultInstallRoot"
+    if (-not ($LegacyServerTargets | Where-Object { Test-RevitMcpSamePath -Left $_ -Right (Join-Path $legacyInstallRoot "runtime") })) {
+        $LegacyServerTargets += (Join-Path $legacyInstallRoot "runtime")
+    }
+    $InstallRoot = $defaultInstallRoot
+    if ((-not $explicitWorkRoot) -and (Test-RevitMcpPathUnder -ChildPath $WorkRoot -ParentPath $legacyInstallRoot)) { $WorkRoot = "" }
+    if ((-not $explicitPackageTarget) -and (Test-RevitMcpPathUnder -ChildPath $PackageTarget -ParentPath $legacyInstallRoot)) { $PackageTarget = "" }
+    if ((-not $explicitServerTarget) -and (Test-RevitMcpPathUnder -ChildPath $ServerTarget -ParentPath $legacyInstallRoot)) { $ServerTarget = "" }
+    if ((-not $explicitLogPath) -and (Test-RevitMcpPathUnder -ChildPath $LogPath -ParentPath $legacyInstallRoot)) { $LogPath = "" }
+}
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
-    $InstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
+    $InstallRoot = $defaultInstallRoot
 }
 if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
     $WorkRoot = Join-Path $InstallRoot "updater"
@@ -2942,6 +3004,13 @@ if ([string]::IsNullOrWhiteSpace($PackageTarget)) {
 }
 if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
     $ServerTarget = Join-Path $InstallRoot "runtime"
+}
+if ([string]::IsNullOrWhiteSpace($ConfigPath) -or
+    ((Test-RevitMcpPathUnder -ChildPath $ConfigPath -ParentPath $legacyInstallRoot) -and (Test-RevitMcpPathUnder -ChildPath $WorkRoot -ParentPath $InstallRoot))) {
+    if ($explicitConfigPath -and (Test-RevitMcpPathUnder -ChildPath $ConfigPath -ParentPath $legacyInstallRoot)) {
+        Write-Host "Legacy updater config path detected; migrated updater commands will use the revAgent config path."
+    }
+    $ConfigPath = Join-Path $WorkRoot "updater-config.json"
 }
 
 Initialize-RevitMcpTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $LogPath -Prefix "update"

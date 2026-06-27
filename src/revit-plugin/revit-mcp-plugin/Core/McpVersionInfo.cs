@@ -121,8 +121,8 @@ namespace revit_mcp_plugin.Core
             string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
             if (!string.IsNullOrWhiteSpace(programData))
             {
-                string installRoot = Path.Combine(programData, "DPE", "RevitMCP");
-                AddInstallRootCandidates(candidates, seen, installRoot);
+                AddInstallRootCandidates(candidates, seen, Path.Combine(programData, "DPE", "revAgent"));
+                AddInstallRootCandidates(candidates, seen, Path.Combine(programData, "DPE", "RevitMCP"));
             }
 
             string assemblyPath = Assembly.GetExecutingAssembly().Location;

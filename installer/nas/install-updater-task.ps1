@@ -959,7 +959,7 @@ function Write-UpdaterCommandFiles {
         [switch]$InstallStartupFallback
     )
 
-    $manualCommandPath = Join-Path $UpdaterWorkRoot "Update-Revit-MCP-Now.cmd"
+    $manualCommandPath = Join-Path $UpdaterWorkRoot "Update-revAgent-Now.cmd"
     $manualCommandLines = @(
         "@echo off",
         "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -NoNotifyUser -AllowManualCodexSetup -OperationMethod manual-update",
@@ -968,13 +968,27 @@ function Write-UpdaterCommandFiles {
     $manualCommandLines | Set-Content -LiteralPath $manualCommandPath -Encoding ASCII
 
     if (-not [string]::IsNullOrWhiteSpace($VersionToolPath)) {
-        $versionCommandPath = Join-Path $UpdaterWorkRoot "Show-Revit-MCP-Version.cmd"
+        $versionCommandPath = Join-Path $UpdaterWorkRoot "Show-revAgent-Version.cmd"
         $versionCommandLines = @(
             "@echo off",
             "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$VersionToolPath`" -ConfigPath `"$UpdaterConfigPath`"",
             "pause"
         )
         $versionCommandLines | Set-Content -LiteralPath $versionCommandPath -Encoding ASCII
+    }
+
+    foreach ($legacyCommandName in @("Update-Revit-MCP-Now.cmd", "Show-Revit-MCP-Version.cmd")) {
+        $legacyCommandPath = Join-Path $UpdaterWorkRoot $legacyCommandName
+        if (Test-Path -LiteralPath $legacyCommandPath -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyCommandPath -Force
+            Write-Host "Removed legacy updater helper: $legacyCommandPath"
+        }
+    }
+    foreach ($legacyLauncherPath in @(Get-RevitMcpLegacyHiddenUpdaterLauncherPaths -ConfigPath $UpdaterConfigPath)) {
+        if (Test-Path -LiteralPath $legacyLauncherPath -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyLauncherPath -Force
+            Write-Host "Removed legacy hidden updater launcher: $legacyLauncherPath"
+        }
     }
 
     if ($InstallStartupFallback) {
@@ -1050,8 +1064,9 @@ function Resolve-RevitInstallRoot {
 }
 
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
+$legacyInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
-    $InstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
+    $InstallRoot = Join-Path $programDataRoot "DPE\revAgent"
 }
 if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
     $WorkRoot = Join-Path $InstallRoot "updater"
@@ -1089,6 +1104,9 @@ $localVersionTool = Join-Path $WorkRoot "show-installed-version.ps1"
 $localMigrationTool = Join-Path $WorkRoot "migrate-source-free-install.ps1"
 $configPath = Join-Path $WorkRoot "updater-config.json"
 $previousConfig = Read-OptionalJsonFile -Path $configPath
+if (-not $previousConfig) {
+    $previousConfig = Read-OptionalJsonFile -Path (Join-Path $legacyInstallRoot "updater\updater-config.json")
+}
 $CodexInstructionPolicy = Resolve-CodexInstructionPolicy -RequestedPolicy $CodexInstructionPolicy -PreviousConfig $previousConfig
 $MachineRole = Resolve-MachineRole -RequestedRole $MachineRole -PreviousConfig $previousConfig
 $previousDistributionIntegrity = if ($previousConfig -and $previousConfig.distributionIntegrity) { $previousConfig.distributionIntegrity } else { $null }
@@ -1196,7 +1214,7 @@ if ((Test-Path -LiteralPath $localTrustedReleaseKeysPath -PathType Leaf) -or $pr
 }
 Write-JsonFile -Path $configPath -Value $config
 $manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -DailyAt $DailyAt -CheckIntervalMinutes $CheckIntervalMinutes
-$versionCommandPath = Join-Path $WorkRoot "Show-Revit-MCP-Version.cmd"
+$versionCommandPath = Join-Path $WorkRoot "Show-revAgent-Version.cmd"
 Repair-RevitMcpUpdaterPermissions
 
 if ($NoScheduledTask) {

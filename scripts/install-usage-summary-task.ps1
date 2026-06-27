@@ -27,6 +27,8 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $libRootCandidates = @(
     (Join-Path $repoRoot "installer\lib"),
     (Join-Path (Split-Path -Parent $repoRoot) "installer\lib"),
+    "C:\ProgramData\DPE\revAgent\package\installer\lib",
+    "C:\ProgramData\DPE\revAgent\updater\lib",
     "C:\ProgramData\DPE\RevitMCP\package\installer\lib",
     "C:\ProgramData\DPE\RevitMCP\updater\lib"
 ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
@@ -41,12 +43,13 @@ Import-Module (Join-Path $libRoot "RevitMcp.ScheduledTask.psm1") -Force
 
 if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
     $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
-    $WorkRoot = Join-Path $programDataRoot "DPE\RevitMCP\usage-summary"
+    $WorkRoot = Join-Path $programDataRoot "DPE\revAgent\usage-summary"
 }
 
 if ([string]::IsNullOrWhiteSpace($PublishScriptPath)) {
     $candidates = @(
         (Join-Path $PSScriptRoot "publish-usage-summary.ps1"),
+        "C:\ProgramData\DPE\revAgent\package\scripts\publish-usage-summary.ps1",
         "C:\ProgramData\DPE\RevitMCP\package\scripts\publish-usage-summary.ps1"
     )
     $PublishScriptPath = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
