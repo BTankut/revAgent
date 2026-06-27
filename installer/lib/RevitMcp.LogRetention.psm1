@@ -99,4 +99,62 @@ function Invoke-RevitMcpDirectoryRetention {
     }
 }
 
-Export-ModuleMember -Function Invoke-RevitMcpLogRetention, Invoke-RevitMcpDirectoryRetention
+function Invoke-RevitMcpBackupRootReset {
+    param(
+        [Parameter(Mandatory = $true)][string]$BackupRoot,
+        [string]$CacheRoot = "",
+        [string]$CacheFilter = "revit-mcp-skill-*.zip"
+    )
+
+    $result = [ordered]@{
+        backupRoot = $BackupRoot
+        cacheRoot = $CacheRoot
+        removedBackupItemCount = 0
+        failedBackupItemCount = 0
+        removedCacheItemCount = 0
+        failedCacheItemCount = 0
+        failures = @()
+    }
+
+    if (-not (Test-Path -LiteralPath $BackupRoot -PathType Container)) {
+        New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
+    }
+
+    foreach ($item in @(Get-ChildItem -LiteralPath $BackupRoot -Force -ErrorAction SilentlyContinue)) {
+        try {
+            Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop
+            $result.removedBackupItemCount++
+        }
+        catch {
+            $result.failedBackupItemCount++
+            $result.failures += [ordered]@{
+                path = $item.FullName
+                kind = "backup"
+                error = $_.Exception.Message
+            }
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($CacheRoot) -and
+        (Test-Path -LiteralPath $CacheRoot -PathType Container) -and
+        -not [string]::IsNullOrWhiteSpace($CacheFilter)) {
+        foreach ($item in @(Get-ChildItem -LiteralPath $CacheRoot -File -Filter $CacheFilter -Force -ErrorAction SilentlyContinue)) {
+            try {
+                Remove-Item -LiteralPath $item.FullName -Force -ErrorAction Stop
+                $result.removedCacheItemCount++
+            }
+            catch {
+                $result.failedCacheItemCount++
+                $result.failures += [ordered]@{
+                    path = $item.FullName
+                    kind = "cache"
+                    error = $_.Exception.Message
+                }
+            }
+        }
+    }
+
+    return [pscustomobject]$result
+}
+
+Export-ModuleMember -Function Invoke-RevitMcpLogRetention, Invoke-RevitMcpDirectoryRetention, Invoke-RevitMcpBackupRootReset

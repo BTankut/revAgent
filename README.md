@@ -372,6 +372,14 @@ from managed package backups. With `codexInstructionPolicy=preserve-local`,
 Codex instruction roots are omitted from this cleanup so local developer
 instructions are not treated as release artifacts. It does not delete user
 Codex sessions, history, or memory.
+During the revAgent brand transition, the updater performs a one-time clean
+install transition on each workstation: existing updater package backups are
+deleted, stale cached release ZIPs are cleared, and the current managed package
+is removed directly instead of being moved into a new local backup. A marker is
+written under the updater work folder after the install succeeds, so later
+updates return to the normal backup-retention behavior. This transition still
+does not delete Codex sessions, history, memory, Revit models, or user project
+folders.
 Cleanup is guarded by path checks and does not delete Autodesk Revit program
 files, Windows system folders, Revit add-in root folders themselves, or broad
 workspace/user directories.

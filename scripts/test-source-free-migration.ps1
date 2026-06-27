@@ -303,7 +303,7 @@ Assert-True ($updaterText -match 'sourceFreeMigration = \$sourceFreeMigrationSta
 Assert-True ($updaterText -match 'Resolve-CodexInstructionPolicy' -and $updaterText -match 'CodexInstructionPolicy = \$CodexInstructionPolicy') "Updater must resolve and pass Codex instruction policy to the self-contained installer."
 Assert-True ($updaterText -match '-PreserveLocalCodexInstructions:\$preserveLocalCodexInstructions') "Updater must exclude preserved Codex instruction roots from source-free cleanup and guard inventories."
 Assert-True ($updaterText -match '-SkipCodexUserIntegration:\$SkipCodexUserIntegration') "Updater source-free inventories must honor SkipCodexUserIntegration."
-Assert-True ($updaterText -match '-not \$SourceFreeMigration -and \$isPackageCurrent') "Updater must not return early as current during source-free migration."
+Assert-True ($updaterText -match '-not \$SourceFreeMigration[\s\S]{0,160}\$isPackageCurrent') "Updater must not return early as current during source-free migration."
 Assert-True ($updaterText -match 'source-free-migration-required' -and $updaterText -match 'Get-RevitMcpSourceFreeArtifactInventory') "Normal updater runs must block before update when source-free migration inventory is not clean."
 Assert-True ($updaterText -match 'migrate-source-free-install\.ps1 -Mode dryRun' -and $updaterText -match 'migrate-source-free-install\.ps1 -Mode commit') "Updater migration guard must tell operators to dry-run before commit."
 Assert-True ($updaterText -match 'function Get-UpdaterDetachedSignaturePath' -and $updaterText -match 'Get-UpdaterDetachedSignaturePath -ContentPath \$configuredLicensePath') "Updater must compute default detached signature paths without relying on imported helper scope."

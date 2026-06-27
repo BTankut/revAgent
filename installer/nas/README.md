@@ -433,6 +433,12 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
 - Older timestamped `.codex` backup files from prior installers are deleted
   during update/repair. Managed package backups under the updater work folder
   are retained only for the latest 3 package replacements.
+- During the revAgent brand transition, each workstation performs a one-time
+  clean-install transition before package replacement: updater package backups
+  are deleted, stale cached release ZIPs are cleared, the current managed
+  package is removed without creating a new local package backup, and
+  `revagent-clean-install-transition.json` records that the transition has
+  completed. Later updates return to normal backup retention.
 - Pending updates that require the user to close Revit show a throttled user
   notification instead of failing silently in the background. Status output
   reports these as `Pending update`, not as completed version transitions.
