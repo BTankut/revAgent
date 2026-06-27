@@ -101,7 +101,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revit-mcp-plugin/revit-mcp-plugin.csproj",
-                                                "gitBlobSha":  "89a450b1e4cd795cdfda3abecb3401317e379be8"
+                                                "gitBlobSha":  "82d2c097adf2461e19c343d75b4f3e185a66686a"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revit-mcp-plugin/UI/CommandSetSettingsPage.xaml",
@@ -138,8 +138,8 @@
                                         ],
                              "payloads":  [
                                               {
-                                                  "path":  "installer/revit-plugin/revit_mcp_plugin/RevitMCPPlugin.dll",
-                                                  "sha256":  "6be4e858c192cb5a0010e1dbc195fb2d3c060d968d29bf4dc6831dfd0d945ab0",
+                                                  "path":  "installer/revit-plugin/revAgentPlugin/revAgentPlugin.dll",
+                                                  "sha256":  "8f8eabe1140f3dc75ac2367d32ab0f9de5aa667f9f6ade2d68a3b199d54ad6e0",
                                                   "sizeBytes":  96256
                                               }
                                           ]
@@ -164,7 +164,7 @@
                              "inputs":  [
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/command.json",
-                                                "gitBlobSha":  "a0a09117aa15c747014fb4ac6a0e8a6627f8ebc0"
+                                                "gitBlobSha":  "7a90a7ab66ac069b841b65e73e667ff647da82d7"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/Access/GetCurrentViewElementsCommand.cs",
@@ -332,7 +332,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/RevitMCPCommandSet.csproj",
-                                                "gitBlobSha":  "fd2d83b2455973d8ca03bca0370ffc7cddf3bcfc"
+                                                "gitBlobSha":  "ecea96c3764e4d945734436bde27740dcc5b0479"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Services/GetCurrentViewElementsEventHandler.cs",
@@ -349,13 +349,13 @@
                                         ],
                              "payloads":  [
                                               {
-                                                  "path":  "installer/command-payload/RevitMCPCommandSet.dll",
-                                                  "sha256":  "c95fe5864285f27a637e5b890c68d736fe56503133eb1866e00bdf9eea4bcd7e",
+                                                  "path":  "installer/command-payload/revAgentCommandSet.dll",
+                                                  "sha256":  "f5255da29cb202cac75bdd81277e977d60267835ace98ba6071f8c67816469a3",
                                                   "sizeBytes":  271360
                                               },
                                               {
-                                                  "path":  "installer/revit-plugin/revit_mcp_plugin/Commands/revAgentCommandSet/2022/RevitMCPCommandSet.dll",
-                                                  "sha256":  "c95fe5864285f27a637e5b890c68d736fe56503133eb1866e00bdf9eea4bcd7e",
+                                                  "path":  "installer/revit-plugin/revAgentPlugin/Commands/revAgentCommandSet/2022/revAgentCommandSet.dll",
+                                                  "sha256":  "f5255da29cb202cac75bdd81277e977d60267835ace98ba6071f8c67816469a3",
                                                   "sizeBytes":  271360
                                               }
                                           ]

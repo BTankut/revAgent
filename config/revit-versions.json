@@ -25,7 +25,7 @@
         "RevitMCPSDK": "RevitMCPSDK:2022.*"
       },
       "payload": {
-        "installerPluginPath": "installer\\revit-plugin\\revit_mcp_plugin",
+        "installerPluginPath": "installer\\revit-plugin\\revAgentPlugin",
         "commandPayloadPath": "installer\\command-payload",
         "commandRuntimePath": "installer\\command-payload\\runtime\\2022",
         "runtimeMcpPath": "installer\\runtime-mcp-server"
@@ -55,7 +55,7 @@
         "RevitMCPSDK": "RevitMCPSDK:2023.*"
       },
       "payload": {
-        "installerPluginPath": "installer\\revit-plugin\\revit_mcp_plugin",
+        "installerPluginPath": "installer\\revit-plugin\\revAgentPlugin",
         "commandPayloadPath": "installer\\command-payload",
         "commandRuntimePath": "installer\\command-payload\\runtime\\2023",
         "runtimeMcpPath": "installer\\runtime-mcp-server"
@@ -85,7 +85,7 @@
         "RevitMCPSDK": "RevitMCPSDK:2024.*"
       },
       "payload": {
-        "installerPluginPath": "installer\\revit-plugin\\revit_mcp_plugin",
+        "installerPluginPath": "installer\\revit-plugin\\revAgentPlugin",
         "commandPayloadPath": "installer\\command-payload",
         "commandRuntimePath": "installer\\command-payload\\runtime\\2024",
         "runtimeMcpPath": "installer\\runtime-mcp-server"
@@ -115,7 +115,7 @@
         "RevitMCPSDK": "RevitMCPSDK:2025.*"
       },
       "payload": {
-        "installerPluginPath": "installer\\revit-plugin\\revit_mcp_plugin",
+        "installerPluginPath": "installer\\revit-plugin\\revAgentPlugin",
         "commandPayloadPath": "installer\\command-payload",
         "commandRuntimePath": "installer\\command-payload\\runtime\\2025",
         "runtimeMcpPath": "installer\\runtime-mcp-server"

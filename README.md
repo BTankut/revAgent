@@ -267,7 +267,7 @@ receive time, parse time, execution time, response size, and elapsed time. The
 Revit status window stays concise for users and shows only task state, task
 name, total Revit-side duration, and request size; detailed transport metrics
 are written to the add-in log under
-`C:\ProgramData\DPE\revAgent\revit-plugin\revit_mcp_plugin\Logs\`.
+`C:\ProgramData\DPE\revAgent\revit-plugin\revAgentPlugin\Logs\`.
 
 The runtime performs a status preflight before every non-status Revit command.
 If `activeTask` is present, the new command is rejected with a busy message
@@ -335,9 +335,9 @@ root and must not contain `src/`, developer docs, tests, repo metadata, `.pdb`,
 real system locations below:
 
 - Revit add-in manifest:
-  - `C:\ProgramData\Autodesk\Revit\Addins\2022\mcp-servers-for-revit.addin`
+  - `C:\ProgramData\Autodesk\Revit\Addins\2022\revAgent.addin`
 - Revit add-in payload:
-  - `C:\ProgramData\DPE\revAgent\revit-plugin\revit_mcp_plugin\...`
+  - `C:\ProgramData\DPE\revAgent\revit-plugin\revAgentPlugin\...`
 - Dynamic command payload mirror:
   - `C:\ProgramData\DPE\revAgent\commands\CommandSet\...`
 - Local runtime MCP server bundle:
@@ -354,7 +354,9 @@ real system locations below:
     workstation
 
 Before copying, the installer cleans the known revAgent/RevitMCP install
-locations it owns: the exact `mcp-servers-for-revit.addin` manifest, old
+locations it owns: the exact `revAgent.addin` manifest, the legacy
+`mcp-servers-for-revit.addin` manifest, old
+`%APPDATA%\Autodesk\Revit\Addins\2022\revAgentPlugin` /
 `%APPDATA%\Autodesk\Revit\Addins\2022\revit_mcp_plugin`,
 old `%LOCALAPPDATA%\revit-mcp-plugin`, the runtime `-ServerTarget`, known
 legacy `C:\Projects\...` runtime targets, and stale `revit-mcp.backup-*`
@@ -418,7 +420,7 @@ report instead of replacing the package without that explicit migration mode.
 
 ## Roslyn dependency model
 
-`send_code_to_revit` works through the bundled `RevitMCPCommandSet.dll`, and that DLL is already prebuilt.
+`send_code_to_revit` works through the bundled `revAgentCommandSet.dll`, and that DLL is already prebuilt.
 
 End-user installation from this repo does **not** require installing a separate NuGet package.
 
@@ -433,11 +435,11 @@ What the command set depends on:
 
 On a healthy Revit 2022 machine, these assemblies are normally present under the local Autodesk/Revit installation, commonly under either `C:\Program Files\Autodesk\Revit 2022\...` or `C:\Program Files\Autodesk\AECGenerativeDesign 2022\RestDynamoCore\...`.
 
-The installer now verifies that Revit 2022 provides these files and mirrors them next to `RevitMCPCommandSet.dll` in the deployed command folders.
+The installer now verifies that Revit 2022 provides these files and mirrors them next to `revAgentCommandSet.dll` in the deployed command folders.
 
 If a target machine throws a missing `Microsoft.CodeAnalysis` or similar runtime error after the installer checks those Autodesk paths, treat that as a machine/install problem, not as a step where the end user should run NuGet.
 
-NuGet is only relevant if you are rebuilding `RevitMCPCommandSet.dll` from source in a separate development project.
+NuGet is only relevant if you are rebuilding the command-set source project in a separate development project.
 
 ## Clean machine checklist
 
@@ -715,8 +717,8 @@ revit-mcp-skill/
     |-- nas/
     |-- revit-api-docs-mcp/
     |-- revit-plugin/
-    |   |-- mcp-servers-for-revit.addin
-    |   `-- revit_mcp_plugin/
+    |   |-- revAgent.addin
+    |   `-- revAgentPlugin/
     |-- command-payload/
     `-- runtime-mcp-server/
 ```

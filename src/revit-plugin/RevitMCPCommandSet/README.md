@@ -28,5 +28,5 @@ user Revit add-in folder unless `RevitMcpDeployCommandSet=true` is passed
 explicitly.
 
 The current production binary payload under `installer/command-payload` and the
-add-in payload under `installer/revit-plugin/revit_mcp_plugin/Commands` are
+add-in payload under `installer/revit-plugin/revAgentPlugin/Commands` are
 refreshed by `scripts/build-revit-plugin.ps1`.
