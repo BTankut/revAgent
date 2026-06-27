@@ -574,7 +574,7 @@ and does not create a permanent `HasValue=true` trace when a fixture starts at
 true no-value. It is
 intentionally optional and is not part of `test-all` or CI.
 
-9. Open Revit and enable the bundled commands from the `mcp-servers-for-revit` ribbon `Settings` button.
+9. Open Revit. The revAgent bridge and bundled commands start automatically; use the single `revAgent Info` ribbon button only to view active version and release metadata.
 10. Verify that both MCP servers are registered:
 
 ```powershell
