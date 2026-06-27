@@ -29,9 +29,13 @@ type JsonObject = Record<string, any>;
 const ACTION = "reconcile_schedule_excel";
 const DEFAULT_COMPACT_REVIEW_ROWS = 50;
 
+type ReconcileScheduleExcelOptions = {
+    scheduleAdapter?: Parameters<typeof adaptScheduleSource>[1];
+};
+
 const TOOL_SCHEMA = z.object({
     excel: excelIngestionSourceSchema.describe("Excel/CSV source. Use kind:\"file\" for .xlsx/.csv/.tsv or kind:\"rows\" for deterministic CI/dry-run records."),
-    schedule: scheduleAdapterSourceSchema.describe("Schedule source. Use kind:\"inspect_schedules_result\" with a normalized inspect_schedules result; kind:\"revit_schedule\" is currently guarded and does not call Revit."),
+    schedule: scheduleAdapterSourceSchema.describe("Schedule source. Use kind:\"inspect_schedules_result\" with a normalized inspect_schedules result, or kind:\"revit_schedule\" to read bounded live Revit schedule rows through inspect_schedules before reconciliation."),
     config: reconciliationConfigSchema.optional().describe("Optional scoring/cap/threshold override. Defaults are conservative and can be tuned from real-data dry-runs."),
     responseMode: responseModeSchema,
     maxReviewRows: z.number().int().positive().max(1000).optional().describe("Compact-mode cap for returned reviewTable/evidenceRows rows. Defaults 50; full/debug returns all reviewRows."),
@@ -250,7 +254,7 @@ export function compactReconciliationResult(result: JsonObject, args: JsonObject
     };
 }
 
-export async function reconcileScheduleExcel(rawArgs: unknown): Promise<JsonObject> {
+export async function reconcileScheduleExcel(rawArgs: unknown, options: ReconcileScheduleExcelOptions = {}): Promise<JsonObject> {
     const parsed = TOOL_SCHEMA.safeParse(rawArgs);
     if (!parsed.success) {
         return guardedStageResult("input_validation", "reconciliation_input_required", "Provide excel and schedule sources before reconciliation.", {
@@ -283,7 +287,7 @@ export async function reconcileScheduleExcel(rawArgs: unknown): Promise<JsonObje
         });
     }
 
-    const scheduleResult = adaptScheduleSource(parsed.data.schedule);
+    const scheduleResult = await adaptScheduleSource(parsed.data.schedule, options.scheduleAdapter);
     if (isGuarded(scheduleResult)) {
         return guardedStageResult("schedule_record_adapter", scheduleResult.reason || "schedule_adapter_guarded", scheduleResult.message || "Schedule adaptation was guarded before reconciliation.", {
             scheduleResult,
@@ -360,7 +364,7 @@ export async function reconcileScheduleExcel(rawArgs: unknown): Promise<JsonObje
 export function registerReconcileScheduleExcelTool(server: ToolServer) {
     server.tool(
         "reconcile_schedule_excel",
-        "[SCHEDULE_EXCEL_RECONCILIATION_REVIEW_ONLY] Review-first/write-free schedule-to-Excel reconciliation. Ingests explicit Excel/CSV data plus normalized inspect_schedules output, normalizes rows, scores deterministic matches, and returns compact review tables by default. excel.kind=\"rows\" expects an object with rows:[...] plus columnMapping.identity and columnMapping.comparisonText; file sources use path/format/selection with the same required mapping. Default responseMode=compact returns summary, reviewTable, evidenceRows, and count metadata only; use responseMode=full/debug for reviewRows, token profiles, raw cells, and nested candidateRows. Does not write Revit or workbook data; route any accepted follow-up write through set_schedule_cells or set_schedule_cells_by_text after human review.",
+        "[SCHEDULE_EXCEL_RECONCILIATION_REVIEW_ONLY] Review-first/write-free schedule-to-Excel reconciliation. Ingests explicit Excel/CSV data plus either normalized inspect_schedules output or bounded live revit_schedule input, normalizes rows, scores deterministic matches, and returns compact review tables by default. excel.kind=\"rows\" expects an object with rows:[...] plus columnMapping.identity and columnMapping.comparisonText; file sources use path/format/selection with the same required mapping. schedule.kind=\"revit_schedule\" requires scheduleIds or nameQuery unless allowExpensiveSearch=true. Default responseMode=compact returns summary, reviewTable, evidenceRows, and count metadata only; use responseMode=full/debug for reviewRows, token profiles, raw cells, and nested candidateRows. Does not write Revit or workbook data; route any accepted follow-up write through set_schedule_cells or set_schedule_cells_by_text after human review.",
         {
             excel: TOOL_SCHEMA.shape.excel,
             schedule: TOOL_SCHEMA.shape.schedule,
