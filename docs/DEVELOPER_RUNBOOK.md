@@ -236,6 +236,13 @@ Notes:
   (`claude-code-action` skips when the workflow differs from the default branch),
   so its `Claude review gate` will be RED; merge such a PR by hand after human
   review and confirm the change on the next normal PR.
+- Because `strict` (up-to-date) is on, if `main` advances while an auto-merge is
+  armed, GitHub updates the branch to a new head commit. The review does NOT
+  re-fire on that branch update (only `Engineering gates` re-runs), so the new
+  head has no `Claude review gate` status and auto-merge stalls until you
+  re-request a review: `gh pr ready <num> --undo && gh pr ready <num>`. In
+  one-PR-at-a-time work this never triggers; it only matters when several PRs
+  land overnight. It fails safe (the PR waits; it never merges unreviewed).
 
 ## Production Rollout Hold
 
