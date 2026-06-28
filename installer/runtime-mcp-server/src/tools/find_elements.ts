@@ -24,32 +24,76 @@ const DEFAULT_COMPACT_RESULT_ROWS = 25;
 const DEFAULT_COMPACT_PLAN_CANDIDATE_SUMMARY_ROWS = 25;
 type JsonObject = Record<string, any>;
 
-function addWriteSafetyGuidance(payload: any) {
+function appendUniqueStringField(payload: any, fieldName: "warnings" | "notices", value: string) {
+    const current = payload[fieldName];
+    if (Array.isArray(current)) {
+        if (!current.includes(value)) {
+            current.push(value);
+        }
+        return;
+    }
+    if (typeof current === "string" && current.trim()) {
+        payload[fieldName] = current === value ? [current] : [current, value];
+        return;
+    }
+    payload[fieldName] = [value];
+}
+
+export function addWriteSafetyGuidance(payload: any) {
     if (!payload || typeof payload !== "object") return payload;
     const success = readField(payload, "Success", "success");
     if (success === false) return payload;
 
-    const count = Number(payload.count ?? payload.Count ?? 0);
+    const elementRows = Array.isArray(payload.elements)
+        ? payload.elements
+        : Array.isArray(payload.Elements) ? payload.Elements : null;
+    const rawCount = payload.count ?? payload.Count;
+    const parsedCount = rawCount === undefined || rawCount === null || rawCount === ""
+        ? Number.NaN
+        : Number(rawCount);
+    const count = Number.isFinite(parsedCount) ? parsedCount : elementRows?.length ?? 0;
     const truncated = Boolean(payload.truncated ?? payload.Truncated);
     const ambiguous = Boolean(payload.ambiguous ?? payload.Ambiguous);
     const topConfidence = String(payload.topConfidence ?? payload.TopConfidence ?? "");
+    const confidenceRisk = Boolean(topConfidence && topConfidence.toLowerCase() !== "high");
+    const broadOrAmbiguous = ambiguous || truncated || count !== 1 || confidenceRisk;
+    const unsafeForParameterWriteReason = broadOrAmbiguous
+        ? "broad_or_ambiguous_discovery_result"
+        : "discovery_tool_result_not_parameter_write_evidence";
     const warning =
-        "find_elements is discovery-only and is not sufficient evidence for parameter writes. Before writing, inspect the target with inspect_elements and inspect_parameter_schema using exact matching, then choose a stable element id and parameter identity. Do not write from a visible/display parameter name alone.";
+        "find_elements is discovery-only. Never commit parameter writes from find_elements rows alone; broad, ambiguous, truncated, or non-high-confidence results are especially unsafe. Before writing, narrow to one exact elementId or uniqueId, verify it with inspect_elements, run inspect_parameter_schema for the target parameter, then run set_element_parameter in dryRun before commit. Do not write from a visible/display parameter name alone.";
+    const broadWarning =
+        "find_elements result is broad or ambiguous for write purposes; do not use it as parameter-write evidence. Narrow to one exact element and run inspect_parameter_schema before set_element_parameter.";
 
     payload.writeSafetyWarning = warning;
     payload.writeSafety = {
         sufficientForWrite: false,
+        discoveryEvidenceOnly: true,
+        writeBlockedUntil: "exact_element_and_parameter_schema_preflight",
         requiresExactElementIdentity: true,
         requiresParameterSchemaPreflight: true,
-        requiredPreflightTools: ["inspect_elements", "inspect_parameter_schema"],
+        requiredPreflightTools: ["inspect_elements", "inspect_parameter_schema", "set_element_parameter"],
+        requiredBeforeParameterWrite: [
+            "narrow_to_exact_element_id_or_unique_id",
+            "inspect_elements_exact_target",
+            "inspect_parameter_schema_exact_target_parameter",
+            "set_element_parameter_dry_run_with_expected_current_value",
+            "commit_only_after_dry_run_verification",
+        ],
+        parameterWritePolicy: "Never commit set_element_parameter from find_elements rows alone. Use find_elements only to discover candidates, then prove exact element and parameter identity before a dry-run or commit.",
         parameterIdentityRule: "Use builtInParameterId when available; otherwise confirm source/shared/storage/readOnly identity. Display name alone is not a write target.",
         resultRisk: {
             count,
             truncated,
             ambiguous,
             topConfidence,
+            broadOrAmbiguous,
+            confidenceRisk,
+            unsafeForParameterWriteReason,
         },
     };
+    appendUniqueStringField(payload, "warnings", broadOrAmbiguous ? broadWarning : warning);
+    appendUniqueStringField(payload, "notices", "find_elements_discovery_only_parameter_write_preflight_required");
 
     if (typeof payload.SelectionHint === "string" && !payload.SelectionHint.includes("find_elements is discovery-only")) {
         payload.SelectionHint = `${payload.SelectionHint} ${warning}`;
@@ -228,7 +272,7 @@ export function compactFindElementsResult(payload: any, args: Record<string, any
 }
 
 export function registerFindElementsTool(server: ToolServer) {
-    server.tool("find_elements", "Find Revit elements by MEP-aware progressive discovery. The tool infers obvious engineering scope first, e.g. fan coil/FCU -> Mechanical Equipment, uses API-level category/view filters plus safe in-memory level filters in the Revit bridge, keeps planCandidateMode=none by default, and asks for allowExpensiveSearch/searchBudget=deep before broad, linked, or verified visibility scans. Default responseMode=compact bounds element rows and deduplicates plan candidates into planCandidateSummary; use responseMode=full for per-element plan candidate details. Discovery-only: inspect exact elements and parameter schema before writes.", {
+    server.tool("find_elements", "Find Revit elements by MEP-aware progressive discovery. The tool infers obvious engineering scope first, e.g. fan coil/FCU -> Mechanical Equipment, uses API-level category/view filters plus safe in-memory level filters in the Revit bridge, keeps planCandidateMode=none by default, and asks for allowExpensiveSearch/searchBudget=deep before broad, linked, or verified visibility scans. Default responseMode=compact bounds element rows and deduplicates plan candidates into planCandidateSummary; use responseMode=full for per-element plan candidate details. Discovery-only: never use broad or ambiguous find_elements rows as write evidence; before writes, narrow to one exact element, inspect it, inspect the parameter schema, then use set_element_parameter dryRun before commit.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Text to search in id, unique id, name, category, family, type, mark, and comments."),
