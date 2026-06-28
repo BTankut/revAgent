@@ -139,7 +139,7 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/revit-plugin/revAgentPlugin/revAgentPlugin.dll",
-                                                  "sha256":  "8f8eabe1140f3dc75ac2367d32ab0f9de5aa667f9f6ade2d68a3b199d54ad6e0",
+                                                  "sha256":  "879dccb69626d0917db1271e0cfbeba2c7215c70d03e422b7a157f0026701fe3",
                                                   "sizeBytes":  96256
                                               }
                                           ]
@@ -196,7 +196,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/AnnotationEvidenceHelpers.cs",
-                                                "gitBlobSha":  "9015cb08a228df23f3d573174504827584bb1874"
+                                                "gitBlobSha":  "1db490bf0e37e1ec708e8e2d67c86a0a8dfa5bf9"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ClearSelectionCommand.cs",
@@ -350,13 +350,13 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/command-payload/revAgentCommandSet.dll",
-                                                  "sha256":  "f5255da29cb202cac75bdd81277e977d60267835ace98ba6071f8c67816469a3",
-                                                  "sizeBytes":  271360
+                                                  "sha256":  "0519ac1e8a66eb6346c184502dabe6706b439e7b3897d4314aea7ab871f4690b",
+                                                  "sizeBytes":  272896
                                               },
                                               {
                                                   "path":  "installer/revit-plugin/revAgentPlugin/Commands/revAgentCommandSet/2022/revAgentCommandSet.dll",
-                                                  "sha256":  "f5255da29cb202cac75bdd81277e977d60267835ace98ba6071f8c67816469a3",
-                                                  "sizeBytes":  271360
+                                                  "sha256":  "0519ac1e8a66eb6346c184502dabe6706b439e7b3897d4314aea7ab871f4690b",
+                                                  "sizeBytes":  272896
                                               }
                                           ]
                          }

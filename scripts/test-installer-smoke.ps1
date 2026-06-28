@@ -580,6 +580,7 @@ try {
     $parameterSchemaToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_parameter_schema.ts")
     $inspectSheetTextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_sheet_text.ts")
     $inspectSchedulesToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_schedules.ts")
+    $reconcileScheduleAdapterCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\reconcile_schedule_adapter.ts")
     $countAnnotationsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\count_annotations.ts")
     $countAnnotationsHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\CountAnnotationsEventHandler.cs")
     $inspectSchedulesHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSchedulesEventHandler.cs")
@@ -787,6 +788,8 @@ try {
     Assert-True ($inspectSchedulesToolCode -match 'startRow' -and $inspectSchedulesToolCode -match 'startColumn') "inspect_schedules must expose row/column continuation scope."
     Assert-True ($inspectSchedulesHandlerCode -match 'Stop\("max_elapsed"\)' -and $inspectSchedulesHandlerCode -match 'Stop\("max_cells"\)' -and $inspectSchedulesHandlerCode -match 'Stop\("max_bytes"\)') "Native inspect_schedules handler must own elapsed, cell, and byte stop reasons."
     Assert-True ($inspectSchedulesHandlerCode -match 'lastReadRow' -and $inspectSchedulesHandlerCode -match 'lastReadColumn') "Native inspect_schedules handler must expose schedule continuation position."
+    Assert-True ($annotationEvidenceHelpersCode -match 'BuildScheduleFieldRecords' -and $annotationEvidenceHelpersCode -match 'GetFieldOrder\(\)' -and $annotationEvidenceHelpersCode -match 'ColumnHeading' -and $annotationEvidenceHelpersCode -match 'GetName\(\)' -and $annotationEvidenceHelpersCode -match 'IsHidden') "Native inspect_schedules records must expose visible ViewSchedule field metadata for column-name mapping."
+    Assert-True ($reconcileScheduleAdapterCode -match 'extractNativeFieldHeaderLabels' -and $reconcileScheduleAdapterCode -match 'readNativeResultArray\(schedule, "fields"\)' -and $reconcileScheduleAdapterCode -match 'readNativeResultField\(field, "columnHeading"\)') "Schedule reconciliation adapter must resolve string column mappings from native field metadata when table header cells are only schedule titles."
     Assert-True ($inspectSchedulesToolCode -match 'allowExpensiveSearch' -and $inspectSchedulesToolCode -match 'reason: "needs_scope"') "inspect_schedules must guard broad cell scans without explicit approval."
     Assert-True (($inspectSchedulesToolCode -match 'Cell scan is bounded') -or ($inspectSchedulesHandlerCode -match 'Cell scan is bounded')) "inspect_schedules must warn when broad cell scan is requested."
     Assert-True ($countAnnotationsToolCode -match 'ANNOTATION_COUNT_READ_ONLY') "count_annotations must identify itself as a read-only annotation count tool."

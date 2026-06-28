@@ -476,6 +476,9 @@ function extractHeaderLabels(schedule, fallbackHeaders) {
         seen.add(key);
         labels.push({ column, header: cleanHeader });
     };
+    for (const label of extractNativeFieldHeaderLabels(schedule)) {
+        addLabel(label.column, label.header);
+    }
     for (const section of readNativeResultArray(schedule, "sections")) {
         if (normalizeSectionName(readNativeResultField(section, "section")) !== "header") {
             continue;
@@ -490,6 +493,32 @@ function extractHeaderLabels(schedule, fallbackHeaders) {
         addLabel(label.column, label.header);
     }
     return labels.sort((left, right) => left.column - right.column);
+}
+function extractNativeFieldHeaderLabels(schedule) {
+    const labels = [];
+    const addLabel = (column, header) => {
+        if (column === null) {
+            return;
+        }
+        const cleanHeader = cleanReconciliationText(header);
+        if (cleanHeader.length > 0) {
+            labels.push({ column, header: cleanHeader });
+        }
+    };
+    for (const field of readNativeResultArray(schedule, "fields")) {
+        if (readNativeResultField(field, "isHidden") === true) {
+            continue;
+        }
+        const column = finiteNumberOrNull(readNativeResultField(field, "column"))
+            ?? finiteNumberOrNull(readNativeResultField(field, "visibleColumn"));
+        addLabel(column, readNativeResultField(field, "columnHeading"));
+        addLabel(column, readNativeResultField(field, "heading"));
+        addLabel(column, readNativeResultField(field, "label"));
+        addLabel(column, readNativeResultField(field, "name"));
+        addLabel(column, readNativeResultField(field, "fieldName"));
+        addLabel(column, readNativeResultField(field, "parameterName"));
+    }
+    return labels;
 }
 function normalizeFallbackHeaderLabels(fallbackHeaders) {
     if (!fallbackHeaders) {

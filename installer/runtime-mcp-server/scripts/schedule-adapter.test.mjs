@@ -171,6 +171,67 @@ assert.equal(fallbackHeaderObjectArray.success, true);
 assert.equal(fallbackHeaderObjectArray.guarded, false);
 assert.equal(fallbackHeaderObjectArray.scheduleRecords[0].identityText, "Distribution Board");
 
+const scheduleWithNativeFieldMetadata = {
+  success: true,
+  schedules: [
+    {
+      id: 607,
+      name: "Mechanical Equipment Schedule",
+      fields: [
+        {
+          fieldOrder: 0,
+          column: 0,
+          visibleColumn: 0,
+          isHidden: false,
+          columnHeading: "Family and Type",
+          name: "Family and Type",
+        },
+        {
+          fieldOrder: 1,
+          column: 1,
+          visibleColumn: 1,
+          isHidden: false,
+          columnHeading: "Panel",
+          name: "Panel",
+        },
+      ],
+      sections: [
+        {
+          section: "header",
+          rows: [
+            {
+              row: 0,
+              cells: [{ column: 0, text: "Mechanical Equipment Schedule" }],
+            },
+          ],
+        },
+        {
+          section: "body",
+          rows: [
+            {
+              row: 1,
+              cells: [
+                { column: 0, text: "Distribution Board" },
+                { column: 1, text: "LP-01" },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+const nativeFieldHeadersResolveStringMapping = await adaptScheduleSource({
+  kind: "inspect_schedules_result",
+  result: scheduleWithNativeFieldMetadata,
+  columnMapping: { identity: "Family and Type", comparisonText: "Family and Type" },
+});
+assert.equal(nativeFieldHeadersResolveStringMapping.success, true);
+assert.equal(nativeFieldHeadersResolveStringMapping.guarded, false);
+assert.equal(nativeFieldHeadersResolveStringMapping.scheduleRecords[0].identityText, "Distribution Board");
+assert.equal(nativeFieldHeadersResolveStringMapping.scheduleRecords[0].comparisonText, "Distribution Board");
+
 const headerOnlyScheduleResult = {
   success: true,
   schedules: [
@@ -232,6 +293,72 @@ assert.equal(headerOnlyAutoFallback.scheduleRecords[0].section, "header");
 assert.equal(headerOnlyAutoFallback.scheduleRecords[0].identityText, "FCU-H01");
 assert.equal(headerOnlyAutoFallback.scheduleRecords[1].comparisonText, "Header-stored pump");
 assert.match(headerOnlyAutoFallback.notices.join("\n"), /Read Header section rows as schedule data/);
+
+const headerOnlyNativeFieldScheduleResult = {
+  success: true,
+  schedules: [
+    {
+      id: 708,
+      name: "Header Only Equipment Schedule",
+      fields: [
+        {
+          fieldOrder: 0,
+          column: 0,
+          visibleColumn: 0,
+          isHidden: false,
+          columnHeading: "Family and Type",
+          name: "Family and Type",
+        },
+        {
+          fieldOrder: 1,
+          column: 1,
+          visibleColumn: 1,
+          isHidden: false,
+          columnHeading: "Description",
+          name: "Description",
+        },
+      ],
+      sections: [
+        {
+          section: "header",
+          rows: [
+            {
+              row: 0,
+              cells: [{ column: 0, text: "Header Only Equipment Schedule" }],
+            },
+            {
+              row: 1,
+              cells: [
+                { column: 0, text: "Number" },
+                { column: 1, text: "Name" },
+              ],
+            },
+            {
+              row: 2,
+              cells: [
+                { column: 0, text: "FCU-H03" },
+                { column: 1, text: "Header-stored fan coil from native fields" },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+const headerOnlyNativeFieldMapping = await adaptScheduleSource({
+  kind: "inspect_schedules_result",
+  result: headerOnlyNativeFieldScheduleResult,
+  columnMapping: { identity: "Family and Type", comparisonText: "Description" },
+  headerDataMode: "always",
+});
+assert.equal(headerOnlyNativeFieldMapping.success, true);
+assert.equal(headerOnlyNativeFieldMapping.guarded, false);
+assert.equal(headerOnlyNativeFieldMapping.summary.headerAsDataScheduleCount, 1);
+assert.equal(headerOnlyNativeFieldMapping.scheduleRecords.length, 1);
+assert.equal(headerOnlyNativeFieldMapping.scheduleRecords[0].identityText, "FCU-H03");
+assert.equal(headerOnlyNativeFieldMapping.scheduleRecords[0].comparisonText, "Header-stored fan coil from native fields");
 
 const headerOnlyFallbackDisabled = await adaptScheduleSource({
   kind: "inspect_schedules_result",
