@@ -10,8 +10,13 @@ const DEFAULT_SECTIONS = ["body"];
 const ALL_ROLES = RECONCILIATION_ALL_ROLES;
 const REQUIRED_ROLES = RECONCILIATION_REQUIRED_ROLES;
 const ROLE_ALIASES = RECONCILIATION_ROLE_ALIASES;
+const columnHeaderObjectSchema = z.object({
+    column: z.number().int().nonnegative(),
+    header: z.string().min(1),
+}).strict();
 const columnHeadersSchema = z.union([
     z.array(z.string()),
+    z.array(columnHeaderObjectSchema),
     z.record(z.union([z.string().min(1), z.number().int().nonnegative()])),
 ]);
 export const scheduleColumnMappingSchema = z.object({
@@ -301,27 +306,32 @@ function isHeaderLikeBodyRow(row, mapping, headerLabels) {
     if (requiredMappedRoles.length === 0) {
         return false;
     }
-    return requiredMappedRoles.every((role) => {
+    const rolesByColumn = new Map();
+    for (const role of requiredMappedRoles) {
         const column = mapping[role];
-        if (typeof column !== "number") {
-            return false;
+        if (typeof column === "number") {
+            rolesByColumn.set(column, [...(rolesByColumn.get(column) || []), role]);
         }
+    }
+    return [...rolesByColumn.entries()].every(([column, roles]) => {
         const text = cleanReconciliationText(byColumn.get(column));
         if (!text) {
             return false;
         }
         const normalizedText = normalizeReconciliationHeader(text);
-        const sameColumnHeader = headerLabels.find((label) => label.column === column);
-        if (sameColumnHeader && normalizeReconciliationHeader(sameColumnHeader.header) === normalizedText) {
+        const sameColumnHeader = headerLabels.some((label) => label.column === column && normalizeReconciliationHeader(label.header) === normalizedText);
+        if (sameColumnHeader) {
             return true;
         }
-        if (Number.isFinite(getAliasPriority(role, text))) {
-            return true;
-        }
-        if (role === "identity" && ["number", "no", "numara"].includes(normalizedText)) {
-            return true;
-        }
-        return role === "comparisonText" && ["name", "description", "desc", "text", "aciklama"].includes(normalizedText);
+        return roles.some((role) => {
+            if (Number.isFinite(getAliasPriority(role, text))) {
+                return true;
+            }
+            if (role === "identity" && ["number", "no", "numara"].includes(normalizedText)) {
+                return true;
+            }
+            return role === "comparisonText" && ["name", "description", "desc", "text", "aciklama"].includes(normalizedText);
+        });
     });
 }
 function buildScheduleRecord(row, mapping) {
@@ -376,27 +386,34 @@ function readSectionRows(section, scheduleId, scheduleName, sectionName) {
     });
 }
 function extractHeaderLabels(schedule, fallbackHeaders) {
-    const labels = new Map();
+    const labels = [];
+    const seen = new Set();
+    const addLabel = (column, header) => {
+        const cleanHeader = cleanReconciliationText(header);
+        if (cleanHeader.length === 0) {
+            return;
+        }
+        const key = `${column}:${normalizeReconciliationHeader(cleanHeader)}`;
+        if (seen.has(key)) {
+            return;
+        }
+        seen.add(key);
+        labels.push({ column, header: cleanHeader });
+    };
     for (const section of readNativeResultArray(schedule, "sections")) {
         if (normalizeSectionName(readNativeResultField(section, "section")) !== "header") {
             continue;
         }
         for (const row of readSectionRows(section, stringifyId(readNativeResultField(schedule, "id")) || "unknown", cleanOrNull(readNativeResultField(schedule, "name")), "header")) {
             for (const cell of row.cells) {
-                if (!labels.has(cell.column) && cell.text.length > 0) {
-                    labels.set(cell.column, cell.text);
-                }
+                addLabel(cell.column, cell.text);
             }
         }
     }
     for (const label of normalizeFallbackHeaderLabels(fallbackHeaders)) {
-        if (!labels.has(label.column)) {
-            labels.set(label.column, label.header);
-        }
+        addLabel(label.column, label.header);
     }
-    return [...labels.entries()]
-        .sort(([left], [right]) => left - right)
-        .map(([column, header]) => ({ column, header }));
+    return labels.sort((left, right) => left.column - right.column);
 }
 function normalizeFallbackHeaderLabels(fallbackHeaders) {
     if (!fallbackHeaders) {
@@ -404,7 +421,15 @@ function normalizeFallbackHeaderLabels(fallbackHeaders) {
     }
     if (Array.isArray(fallbackHeaders)) {
         return fallbackHeaders
-            .map((header, index) => ({ column: index, header: cleanReconciliationText(header) }))
+            .map((entry, index) => {
+            if (typeof entry === "string") {
+                return { column: index, header: cleanReconciliationText(entry) };
+            }
+            return {
+                column: entry.column,
+                header: cleanReconciliationText(entry.header),
+            };
+        })
             .filter((label) => label.header.length > 0);
     }
     const labels = [];
@@ -497,6 +522,10 @@ function selectAliasMatch(matches, assignedColumns) {
     const bestPriority = Math.min(...candidates.map((match) => match.priority));
     const bestCandidates = candidates.filter((match) => match.priority === bestPriority);
     if (bestCandidates.length === 1) {
+        return { kind: "resolved", match: bestCandidates[0] };
+    }
+    const bestColumns = [...new Set(bestCandidates.map((match) => match.column))];
+    if (bestColumns.length === 1) {
         return { kind: "resolved", match: bestCandidates[0] };
     }
     return { kind: "ambiguous", candidates: bestCandidates.map((match) => match.header) };

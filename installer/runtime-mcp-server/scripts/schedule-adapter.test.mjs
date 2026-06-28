@@ -100,14 +100,16 @@ const secondRecord = adapted.scheduleRecords[1];
 assert.match(secondRecord.normalizedKey, /ABC/);
 assert.equal(secondRecord.tokenProfile.tokens.some((token) => token.type === "dimension" && token.value === "2M3H"), true);
 
-const fallbackHeadersDoNotOverrideActualHeaders = await adaptScheduleSource({
+const explicitHeadersOverrideNativeHeaders = await adaptScheduleSource({
   kind: "inspect_schedules_result",
   result: realShapeResult,
-  columnHeaders: ["Wrong identity", "Wrong comparison"],
+  columnHeaders: ["Family and Type", "Panel"],
+  columnMapping: { identity: "Family and Type", comparisonText: "Family and Type" },
 });
-assert.equal(fallbackHeadersDoNotOverrideActualHeaders.success, true);
-assert.equal(fallbackHeadersDoNotOverrideActualHeaders.guarded, false);
-assert.equal(fallbackHeadersDoNotOverrideActualHeaders.scheduleRecords.length, 2);
+assert.equal(explicitHeadersOverrideNativeHeaders.success, true);
+assert.equal(explicitHeadersOverrideNativeHeaders.guarded, false);
+assert.equal(explicitHeadersOverrideNativeHeaders.scheduleRecords[0].identityText, "FCU-01");
+assert.equal(explicitHeadersOverrideNativeHeaders.scheduleRecords[0].comparisonText, "FCU-01");
 
 const scheduleWithoutHeaderSection = {
   success: true,
@@ -154,6 +156,20 @@ const fallbackHeaderMapByIndex = await adaptScheduleSource({
 assert.equal(fallbackHeaderMapByIndex.success, true);
 assert.equal(fallbackHeaderMapByIndex.guarded, false);
 assert.equal(fallbackHeaderMapByIndex.scheduleRecords[0].identityText, "Distribution Board");
+
+const fallbackHeaderObjectArray = await adaptScheduleSource({
+  kind: "inspect_schedules_result",
+  result: scheduleWithoutHeaderSection,
+  columnHeaders: [
+    { column: 0, header: "Family and Type" },
+    { column: 1, header: "Panel" },
+    { column: 2, header: "Circuit Number" },
+  ],
+  columnMapping: { identity: "Family and Type", comparisonText: "Family and Type" },
+});
+assert.equal(fallbackHeaderObjectArray.success, true);
+assert.equal(fallbackHeaderObjectArray.guarded, false);
+assert.equal(fallbackHeaderObjectArray.scheduleRecords[0].identityText, "Distribution Board");
 
 const partialResult = {
   success: true,
@@ -292,7 +308,8 @@ assert.match(missingScopeRevitMode.message, /scheduleIds or nameQuery/);
 const liveRevitMode = await adaptScheduleSource({
   kind: "revit_schedule",
   scheduleIds: [202],
-  columnMapping: { identity: 0, comparisonText: 1 },
+  columnHeaders: [{ column: 0, header: "Family and Type" }],
+  columnMapping: { identity: "Family and Type", comparisonText: "Family and Type" },
 }, {
   sendCommand: async (commandName, params) => {
     assert.equal(commandName, "inspect_schedules");
@@ -309,6 +326,8 @@ assert.equal(liveRevitMode.sourceKind, "revit_schedule");
 assert.equal(liveRevitMode.bridgeSourceKind, "inspect_schedules_result");
 assert.equal(liveRevitMode.scanPolicy.bridgeExecution, "inspect_schedules");
 assert.equal(liveRevitMode.scheduleRecords.length, 2);
+assert.equal(liveRevitMode.scheduleRecords[0].identityText, "FCU-01");
+assert.equal(liveRevitMode.scheduleRecords[0].comparisonText, "FCU-01");
 assert.match(liveRevitMode.notices.join("\n"), /bounded inspect_schedules/);
 
 assert.equal(normalizeReconciliationText("  Fan\tcoil -- DN\u00a0100  "), "FAN COIL DN 100");
