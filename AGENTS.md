@@ -307,6 +307,10 @@ cleanup diagnostics.
 
 ## File And Deployment Discipline
 
+- Dev/PR process for this repo: open PRs as draft, iterate (each push runs only
+  the fast `Engineering gates`), then mark ready (`gh pr ready`) to trigger one
+  risk-tiered Claude review and arm `gh pr merge --auto --squash`. See
+  `docs/DEVELOPER_RUNBOOK.md` "Nightly autonomous PR loop".
 - Do not revert main application files or model files unless the user asks for
   that explicitly.
 - Treat Revit add-in DLL changes and runtime MCP server changes separately.
