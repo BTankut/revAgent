@@ -78,7 +78,7 @@ assert.equal(adapted.summary.scheduleRecordCount, 2);
 assert.equal(adapted.summary.skippedHeaderLikeRows, 1);
 assert.equal(adapted.evidenceRows.length, 2);
 assert.equal(adapted.warnings[0], "native warning");
-assert.match(adapted.notices.join("\n"), /Skipped 1 header-like body row/);
+assert.match(adapted.notices.join("\n"), /Skipped 1 header-like schedule row/);
 
 const firstRecord = adapted.scheduleRecords[0];
 assert.equal(firstRecord.scheduleRowId, "202:body:1");
@@ -170,6 +170,79 @@ const fallbackHeaderObjectArray = await adaptScheduleSource({
 assert.equal(fallbackHeaderObjectArray.success, true);
 assert.equal(fallbackHeaderObjectArray.guarded, false);
 assert.equal(fallbackHeaderObjectArray.scheduleRecords[0].identityText, "Distribution Board");
+
+const headerOnlyScheduleResult = {
+  success: true,
+  schedules: [
+    {
+      id: 707,
+      name: "Header Only Equipment Schedule",
+      sections: [
+        {
+          section: "header",
+          rows: [
+            {
+              row: 0,
+              cells: [{ column: 0, text: "Header Only Equipment Schedule" }],
+            },
+            {
+              row: 1,
+              cells: [
+                { column: 0, text: "Number" },
+                { column: 1, text: "Name" },
+              ],
+            },
+            {
+              row: 2,
+              cells: [
+                { column: 0, text: "FCU-H01" },
+                { column: 1, text: "Header-stored fan coil" },
+              ],
+            },
+            {
+              row: 3,
+              cells: [
+                { column: 0, text: "PMP-H02" },
+                { column: 1, text: "Header-stored pump" },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+const headerOnlyAutoFallback = await adaptScheduleSource({
+  kind: "inspect_schedules_result",
+  result: headerOnlyScheduleResult,
+  columnHeaders: [
+    { column: 0, header: "Family and Type" },
+    { column: 1, header: "Description" },
+  ],
+  columnMapping: { identity: "Family and Type", comparisonText: "Description" },
+});
+assert.equal(headerOnlyAutoFallback.success, true);
+assert.equal(headerOnlyAutoFallback.guarded, false);
+assert.equal(headerOnlyAutoFallback.summary.headerAsDataScheduleCount, 1);
+assert.equal(headerOnlyAutoFallback.summary.headerAsDataRows, 2);
+assert.equal(headerOnlyAutoFallback.summary.skippedHeaderLikeRows, 2);
+assert.equal(headerOnlyAutoFallback.scheduleRecords.length, 2);
+assert.equal(headerOnlyAutoFallback.scheduleRecords[0].section, "header");
+assert.equal(headerOnlyAutoFallback.scheduleRecords[0].identityText, "FCU-H01");
+assert.equal(headerOnlyAutoFallback.scheduleRecords[1].comparisonText, "Header-stored pump");
+assert.match(headerOnlyAutoFallback.notices.join("\n"), /Read Header section rows as schedule data/);
+
+const headerOnlyFallbackDisabled = await adaptScheduleSource({
+  kind: "inspect_schedules_result",
+  result: headerOnlyScheduleResult,
+  columnHeaders: [{ column: 0, header: "Family and Type" }],
+  columnMapping: { identity: "Family and Type", comparisonText: "Family and Type" },
+  headerDataMode: "never",
+});
+assert.equal(headerOnlyFallbackDisabled.success, true);
+assert.equal(headerOnlyFallbackDisabled.guarded, false);
+assert.equal(headerOnlyFallbackDisabled.scheduleRecords.length, 0);
 
 const partialResult = {
   success: true,
