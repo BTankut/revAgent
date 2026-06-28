@@ -19,6 +19,7 @@ const columnHeadersSchema = z.union([
     z.array(columnHeaderObjectSchema),
     z.record(z.union([z.string().min(1), z.number().int().nonnegative()])),
 ]);
+const headerDataModeSchema = z.enum(["auto", "always", "never"]);
 export const scheduleColumnMappingSchema = z.object({
     identity: z.union([z.string().min(1), z.number().int().nonnegative()]).optional(),
     comparisonText: z.union([z.string().min(1), z.number().int().nonnegative()]).optional(),
@@ -36,6 +37,7 @@ export const inspectSchedulesResultSourceSchema = z.object({
     columnMapping: scheduleColumnMappingSchema.optional(),
     columnHeaders: columnHeadersSchema.optional(),
     sections: z.array(z.enum(["header", "body", "footer"])).optional(),
+    headerDataMode: headerDataModeSchema.optional(),
 }).strict();
 export const revitScheduleSourceSchema = z.object({
     kind: z.literal("revit_schedule"),
@@ -44,6 +46,7 @@ export const revitScheduleSourceSchema = z.object({
     sections: z.array(z.enum(["header", "body", "footer"])).optional(),
     columnMapping: scheduleColumnMappingSchema.optional(),
     columnHeaders: columnHeadersSchema.optional(),
+    headerDataMode: headerDataModeSchema.optional(),
     target: z.string().optional(),
     host: z.string().optional(),
     port: z.number().int().positive().max(65535).optional(),
@@ -148,6 +151,7 @@ async function adaptLiveRevitScheduleSource(source, startedAtMs, options) {
         columnMapping: source.columnMapping,
         columnHeaders: source.columnHeaders,
         sections: source.sections,
+        headerDataMode: source.headerDataMode,
     }, elapsedMs);
     adapted.sourceKind = "revit_schedule";
     adapted.bridgeSourceKind = "inspect_schedules_result";
@@ -188,6 +192,8 @@ function adaptInspectSchedulesResult(source, elapsedMs) {
         });
     }
     const sections = normalizeSections(source.sections);
+    const explicitSections = Array.isArray(source.sections) && source.sections.length > 0;
+    const headerDataMode = normalizeHeaderDataMode(source.headerDataMode);
     const schedules = readNativeResultArray(payload, "schedules");
     const warnings = readNativeStringArray(payload, "warnings");
     const notices = readNativeStringArray(payload, "notices");
@@ -195,6 +201,8 @@ function adaptInspectSchedulesResult(source, elapsedMs) {
     let scannedRows = 0;
     let scannedCells = 0;
     let skippedHeaderLikeRows = 0;
+    let headerAsDataScheduleCount = 0;
+    let headerAsDataRows = 0;
     for (const schedule of schedules) {
         const scheduleId = stringifyId(readNativeResultField(schedule, "id"));
         if (!scheduleId) {
@@ -221,20 +229,36 @@ function adaptInspectSchedulesResult(source, elapsedMs) {
                 notices,
             });
         }
+        const sectionPlan = resolveScheduleDataSections(schedule, sections, explicitSections, headerDataMode);
+        if (sectionPlan.headerAsData) {
+            headerAsDataScheduleCount++;
+        }
         for (const section of readNativeResultArray(schedule, "sections")) {
             const sectionName = normalizeSectionName(readNativeResultField(section, "section"));
-            if (!sections.includes(sectionName)) {
+            if (!sectionPlan.sections.includes(sectionName)) {
                 continue;
             }
+            const readingHeaderAsData = sectionName === "header" && sectionPlan.headerAsData;
             for (const row of readSectionRows(section, scheduleId, scheduleName, sectionName)) {
                 scannedRows++;
                 scannedCells += row.cells.length;
-                if (sectionName === "body" && isHeaderLikeBodyRow(row, resolvedMapping.mapping, headerLabels)) {
+                if (readingHeaderAsData && isScheduleTitleRow(row, scheduleName)) {
+                    skippedHeaderLikeRows++;
+                    continue;
+                }
+                if (sectionName === "body" && isHeaderLikeBodyRow(row, resolvedMapping.mapping, headerLabels, { matchSameColumnHeader: true })) {
+                    skippedHeaderLikeRows++;
+                    continue;
+                }
+                if (readingHeaderAsData && isHeaderLikeBodyRow(row, resolvedMapping.mapping, headerLabels, { matchSameColumnHeader: false })) {
                     skippedHeaderLikeRows++;
                     continue;
                 }
                 const record = buildScheduleRecord(row, resolvedMapping.mapping);
                 if (record) {
+                    if (readingHeaderAsData) {
+                        headerAsDataRows++;
+                    }
                     records.push(record);
                 }
             }
@@ -268,6 +292,8 @@ function adaptInspectSchedulesResult(source, elapsedMs) {
             scannedRows,
             scannedCells,
             skippedHeaderLikeRows,
+            headerAsDataScheduleCount,
+            headerAsDataRows,
             scheduleRecordCount: records.length,
             visibilityBasis: VISIBILITY_BASIS,
             partial,
@@ -286,9 +312,15 @@ function adaptInspectSchedulesResult(source, elapsedMs) {
             visibilityBasis: VISIBILITY_BASIS,
         })),
         warnings,
-        notices: skippedHeaderLikeRows > 0
-            ? [...notices, `Skipped ${skippedHeaderLikeRows} header-like body row(s) during schedule adaptation.`]
-            : notices,
+        notices: [
+            ...notices,
+            ...(headerAsDataScheduleCount > 0
+                ? [`Read Header section rows as schedule data for ${headerAsDataScheduleCount} schedule(s).`]
+                : []),
+            ...(skippedHeaderLikeRows > 0
+                ? [`Skipped ${skippedHeaderLikeRows} header-like schedule row(s) during schedule adaptation.`]
+                : []),
+        ],
         lastRead: {
             lastReadSection: readNativeResultField(payload, "lastReadSection") ?? lastRecord?.section ?? null,
             lastReadRow: readNativeResultField(payload, "lastReadRow") ?? lastRecord?.row ?? null,
@@ -297,7 +329,7 @@ function adaptInspectSchedulesResult(source, elapsedMs) {
         },
     });
 }
-function isHeaderLikeBodyRow(row, mapping, headerLabels) {
+function isHeaderLikeBodyRow(row, mapping, headerLabels, options) {
     const byColumn = new Map();
     for (const cell of row.cells) {
         byColumn.set(cell.column, cell.text);
@@ -319,7 +351,7 @@ function isHeaderLikeBodyRow(row, mapping, headerLabels) {
             return false;
         }
         const normalizedText = normalizeReconciliationHeader(text);
-        const sameColumnHeader = headerLabels.some((label) => label.column === column && normalizeReconciliationHeader(label.header) === normalizedText);
+        const sameColumnHeader = options.matchSameColumnHeader && headerLabels.some((label) => label.column === column && normalizeReconciliationHeader(label.header) === normalizedText);
         if (sameColumnHeader) {
             return true;
         }
@@ -333,6 +365,16 @@ function isHeaderLikeBodyRow(row, mapping, headerLabels) {
             return role === "comparisonText" && ["name", "description", "desc", "text", "aciklama"].includes(normalizedText);
         });
     });
+}
+function isScheduleTitleRow(row, scheduleName) {
+    const normalizedScheduleName = normalizeReconciliationHeader(scheduleName || "");
+    if (!normalizedScheduleName) {
+        return false;
+    }
+    const nonEmptyCells = row.cells
+        .map((cell) => normalizeReconciliationHeader(cell.text))
+        .filter((text) => text.length > 0);
+    return nonEmptyCells.length === 1 && nonEmptyCells[0] === normalizedScheduleName;
 }
 function buildScheduleRecord(row, mapping) {
     const byColumn = new Map();
@@ -384,6 +426,40 @@ function readSectionRows(section, scheduleId, scheduleName, sectionName) {
             .filter((cell) => cell.column !== null);
         return [{ scheduleId, scheduleName, section: sectionName, row, cells }];
     });
+}
+function resolveScheduleDataSections(schedule, sections, explicitSections, headerDataMode) {
+    const includesHeader = sections.includes("header");
+    if (includesHeader) {
+        return { sections, headerAsData: true };
+    }
+    if (headerDataMode === "never") {
+        return { sections, headerAsData: false };
+    }
+    const hasHeaderRows = hasReadableRowsInSections(schedule, ["header"]);
+    if (!hasHeaderRows) {
+        return { sections, headerAsData: false };
+    }
+    if (headerDataMode === "always") {
+        return { sections: [...sections, "header"], headerAsData: true };
+    }
+    if (!explicitSections && !hasReadableRowsInSections(schedule, sections)) {
+        return { sections: [...sections, "header"], headerAsData: true };
+    }
+    return { sections, headerAsData: false };
+}
+function hasReadableRowsInSections(schedule, sections) {
+    const scheduleId = stringifyId(readNativeResultField(schedule, "id")) || "unknown";
+    const scheduleName = cleanOrNull(readNativeResultField(schedule, "name"));
+    for (const section of readNativeResultArray(schedule, "sections")) {
+        const sectionName = normalizeSectionName(readNativeResultField(section, "section"));
+        if (!sections.includes(sectionName)) {
+            continue;
+        }
+        if (readSectionRows(section, scheduleId, scheduleName, sectionName).some((row) => row.cells.length > 0)) {
+            return true;
+        }
+    }
+    return false;
 }
 function extractHeaderLabels(schedule, fallbackHeaders) {
     const labels = [];
@@ -534,6 +610,7 @@ function buildScanPolicy(source, sections) {
     return {
         sourceKind: source.kind,
         sections,
+        headerDataMode: normalizeHeaderDataMode(source.headerDataMode),
         columnMapping: source.columnMapping || null,
         numericColumnBase: "zero_based_revit_schedule_column",
         visibilityBasis: VISIBILITY_BASIS,
@@ -583,6 +660,9 @@ function normalizeSections(values) {
     const rawValues = Array.isArray(values) && values.length > 0 ? values : DEFAULT_SECTIONS;
     return [...new Set(rawValues.map(normalizeSectionName))]
         .filter((value) => ["header", "body", "footer"].includes(value));
+}
+function normalizeHeaderDataMode(value) {
+    return value === "always" || value === "never" ? value : "auto";
 }
 function normalizeSectionName(value) {
     const normalized = cleanReconciliationText(value).toLowerCase();
