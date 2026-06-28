@@ -226,6 +226,10 @@ namespace RevitMCPCommandSet.Commands.View
             int matchCount,
             List<Dictionary<string, object>> sections)
         {
+            bool fieldsReadFailed;
+            string fieldsReadError;
+            List<Dictionary<string, object>> fields = BuildScheduleFieldRecords(schedule, out fieldsReadFailed, out fieldsReadError);
+
             Dictionary<string, object> record = new Dictionary<string, object>();
             record["id"] = schedule.Id.GetIdValue();
             record["uniqueId"] = schedule.UniqueId;
@@ -234,8 +238,129 @@ namespace RevitMCPCommandSet.Commands.View
             record["isTemplate"] = schedule.IsTemplate;
             record["nameMatched"] = nameMatches;
             record["cellMatchCount"] = matchCount;
+            record["fieldCount"] = fields.Count;
+            record["fields"] = fields;
+            record["fieldsReadFailed"] = fieldsReadFailed;
+            if (fieldsReadFailed && !string.IsNullOrWhiteSpace(fieldsReadError))
+            {
+                record["fieldsReadError"] = fieldsReadError;
+            }
             record["sections"] = sections;
             return record;
+        }
+
+        private static List<Dictionary<string, object>> BuildScheduleFieldRecords(
+            ViewSchedule schedule,
+            out bool readFailed,
+            out string readError)
+        {
+            readFailed = false;
+            readError = "";
+            List<Dictionary<string, object>> fields = new List<Dictionary<string, object>>();
+
+            try
+            {
+                ScheduleDefinition definition = schedule.Definition;
+                if (definition == null)
+                {
+                    return fields;
+                }
+
+                int visibleColumn = 0;
+                foreach (ScheduleFieldId fieldId in definition.GetFieldOrder())
+                {
+                    ScheduleField field = null;
+                    try
+                    {
+                        field = definition.GetField(fieldId);
+                    }
+                    catch
+                    {
+                    }
+
+                    if (field == null)
+                    {
+                        continue;
+                    }
+
+                    bool isHidden = SafeScheduleFieldIsHidden(field);
+                    string heading = SafeScheduleFieldColumnHeading(field);
+                    string name = SafeScheduleFieldName(field);
+                    string label = !string.IsNullOrWhiteSpace(heading) ? heading : name;
+
+                    Dictionary<string, object> record = new Dictionary<string, object>();
+                    record["fieldOrder"] = fields.Count;
+                    record["column"] = isHidden ? (object)null : visibleColumn;
+                    record["visibleColumn"] = isHidden ? (object)null : visibleColumn;
+                    record["isHidden"] = isHidden;
+                    record["heading"] = heading;
+                    record["columnHeading"] = heading;
+                    record["name"] = name;
+                    record["label"] = label;
+                    record["fieldType"] = SafeScheduleFieldType(field);
+                    fields.Add(record);
+
+                    if (!isHidden)
+                    {
+                        visibleColumn++;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                readFailed = true;
+                readError = ex.Message;
+            }
+
+            return fields;
+        }
+
+        private static bool SafeScheduleFieldIsHidden(ScheduleField field)
+        {
+            try
+            {
+                return field.IsHidden;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string SafeScheduleFieldColumnHeading(ScheduleField field)
+        {
+            try
+            {
+                return TrimText(field.ColumnHeading, 200);
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static string SafeScheduleFieldName(ScheduleField field)
+        {
+            try
+            {
+                return TrimText(field.GetName(), 200);
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static string SafeScheduleFieldType(ScheduleField field)
+        {
+            try
+            {
+                return field.FieldType.ToString();
+            }
+            catch
+            {
+                return "";
+            }
         }
 
         public static Dictionary<string, object> BuildScheduleCellEvidenceRow(ViewSchedule schedule, Dictionary<string, object> match)
