@@ -57,12 +57,14 @@ function resolveConfig(argv) {
   };
 }
 
+// Clamp an integer into the inclusive [min, max] range, falling back to the
+// provided default when the value is not a finite number.
 function clampInt(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed)) {
     return fallback;
   }
-  return Math.max(min, Math.min(max, parsed));
+  return Math.min(min, Math.max(max, parsed));
 }
 
 function readJsonFile(filePath) {
