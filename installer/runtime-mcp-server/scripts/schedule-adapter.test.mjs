@@ -109,6 +109,52 @@ assert.equal(fallbackHeadersDoNotOverrideActualHeaders.success, true);
 assert.equal(fallbackHeadersDoNotOverrideActualHeaders.guarded, false);
 assert.equal(fallbackHeadersDoNotOverrideActualHeaders.scheduleRecords.length, 2);
 
+const scheduleWithoutHeaderSection = {
+  success: true,
+  schedules: [
+    {
+      id: 606,
+      name: "Electrical Circuit Schedule",
+      sections: [
+        {
+          section: "body",
+          rows: [
+            {
+              row: 1,
+              cells: [
+                { column: 0, text: "Distribution Board" },
+                { column: 1, text: "LP-01" },
+                { column: 2, text: "C-12" },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+const fallbackHeaderMapByName = await adaptScheduleSource({
+  kind: "inspect_schedules_result",
+  result: scheduleWithoutHeaderSection,
+  columnHeaders: { "Family and Type": 0, Panel: 1, "Circuit Number": 2 },
+  columnMapping: { identity: "Family and Type", comparisonText: "Family and Type" },
+});
+assert.equal(fallbackHeaderMapByName.success, true);
+assert.equal(fallbackHeaderMapByName.guarded, false);
+assert.equal(fallbackHeaderMapByName.scheduleRecords[0].identityText, "Distribution Board");
+assert.equal(fallbackHeaderMapByName.scheduleRecords[0].comparisonText, "Distribution Board");
+
+const fallbackHeaderMapByIndex = await adaptScheduleSource({
+  kind: "inspect_schedules_result",
+  result: scheduleWithoutHeaderSection,
+  columnHeaders: { "0": "Family and Type", "1": "Panel", "2": "Circuit Number" },
+  columnMapping: { identity: "Family and Type", comparisonText: "Family and Type" },
+});
+assert.equal(fallbackHeaderMapByIndex.success, true);
+assert.equal(fallbackHeaderMapByIndex.guarded, false);
+assert.equal(fallbackHeaderMapByIndex.scheduleRecords[0].identityText, "Distribution Board");
+
 const partialResult = {
   success: true,
   partial: true,

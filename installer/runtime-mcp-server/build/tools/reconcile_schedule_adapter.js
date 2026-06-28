@@ -10,6 +10,10 @@ const DEFAULT_SECTIONS = ["body"];
 const ALL_ROLES = RECONCILIATION_ALL_ROLES;
 const REQUIRED_ROLES = RECONCILIATION_REQUIRED_ROLES;
 const ROLE_ALIASES = RECONCILIATION_ROLE_ALIASES;
+const columnHeadersSchema = z.union([
+    z.array(z.string()),
+    z.record(z.union([z.string().min(1), z.number().int().nonnegative()])),
+]);
 export const scheduleColumnMappingSchema = z.object({
     identity: z.union([z.string().min(1), z.number().int().nonnegative()]).optional(),
     comparisonText: z.union([z.string().min(1), z.number().int().nonnegative()]).optional(),
@@ -25,7 +29,7 @@ export const inspectSchedulesResultSourceSchema = z.object({
     kind: z.literal("inspect_schedules_result"),
     result: z.record(z.unknown()),
     columnMapping: scheduleColumnMappingSchema.optional(),
-    columnHeaders: z.array(z.string()).optional(),
+    columnHeaders: columnHeadersSchema.optional(),
     sections: z.array(z.enum(["header", "body", "footer"])).optional(),
 }).strict();
 export const revitScheduleSourceSchema = z.object({
@@ -34,7 +38,7 @@ export const revitScheduleSourceSchema = z.object({
     nameQuery: z.string().min(1).optional(),
     sections: z.array(z.enum(["header", "body", "footer"])).optional(),
     columnMapping: scheduleColumnMappingSchema.optional(),
-    columnHeaders: z.array(z.string()).optional(),
+    columnHeaders: columnHeadersSchema.optional(),
     target: z.string().optional(),
     host: z.string().optional(),
     port: z.number().int().positive().max(65535).optional(),
@@ -385,17 +389,42 @@ function extractHeaderLabels(schedule, fallbackHeaders) {
             }
         }
     }
-    if (Array.isArray(fallbackHeaders)) {
-        fallbackHeaders.forEach((header, index) => {
-            const cleanHeader = cleanReconciliationText(header);
-            if (cleanHeader.length > 0 && !labels.has(index)) {
-                labels.set(index, cleanHeader);
-            }
-        });
+    for (const label of normalizeFallbackHeaderLabels(fallbackHeaders)) {
+        if (!labels.has(label.column)) {
+            labels.set(label.column, label.header);
+        }
     }
     return [...labels.entries()]
         .sort(([left], [right]) => left - right)
         .map(([column, header]) => ({ column, header }));
+}
+function normalizeFallbackHeaderLabels(fallbackHeaders) {
+    if (!fallbackHeaders) {
+        return [];
+    }
+    if (Array.isArray(fallbackHeaders)) {
+        return fallbackHeaders
+            .map((header, index) => ({ column: index, header: cleanReconciliationText(header) }))
+            .filter((label) => label.header.length > 0);
+    }
+    const labels = [];
+    for (const [rawKey, rawValue] of Object.entries(fallbackHeaders)) {
+        const keyAsColumn = finiteNumberOrNull(rawKey);
+        if (keyAsColumn !== null && typeof rawValue === "string") {
+            const header = cleanReconciliationText(rawValue);
+            if (header.length > 0) {
+                labels.push({ column: keyAsColumn, header });
+            }
+            continue;
+        }
+        if (typeof rawValue === "number") {
+            const header = cleanReconciliationText(rawKey);
+            if (header.length > 0) {
+                labels.push({ column: rawValue, header });
+            }
+        }
+    }
+    return labels.sort((left, right) => left.column - right.column);
 }
 function resolveColumnMapping(headers, explicitMapping) {
     const warnings = [];
