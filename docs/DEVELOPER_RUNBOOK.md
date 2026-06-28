@@ -176,10 +176,11 @@ used. Production NAS releases should be published from a clean tree.
 7. Commit source and generated payload together when payload is affected.
 8. Push the topic branch and open a pull request. See `Git Commit And Push` for
    the exact protected branch workflow.
-9. Merge only after `Engineering gates` and GitGuardian are green, automatic
-   Claude Code Review has run, and actionable review comments are addressed. Do
+9. Merge only after `Engineering gates` and GitGuardian are green, the
+   `Claude review gate` has run, and actionable review comments are addressed. Do
    not leave manual `@claude`, `@codex`, or `@gemini` review-trigger comments;
-   review runs from GitHub Actions.
+   review runs from GitHub Actions. For the fast autonomous
+   draft->ready->auto-merge variant, see "Nightly autonomous PR loop" below.
 10. Update local `main` with `git pull --ff-only`.
 11. Watch the signed source-free CD run that starts from the protected `main`
     update.
@@ -195,6 +196,43 @@ cd C:\Projects\revit-mcp-skill
 git status --short
 git pull --ff-only
 ```
+
+## Nightly autonomous PR loop
+
+This is the fast, fully-autonomous variant of the workflow above: the same quality
+gates, but each gate runs once at the right moment so a clean change reaches
+`main` in ~4 minutes with no human merge click.
+
+> Prerequisite (one-time repo settings): repository auto-merge enabled and the
+> `Claude review gate` check added to `main` branch protection's required checks.
+> Until those are set, follow steps 1-5 but merge manually once both checks pass.
+
+1. Branch, then open the PR as a DRAFT: `gh pr create --draft --fill`
+2. Iterate freely. Each push runs only `Engineering gates` (~2 min) - fast
+   feedback. No Claude review runs while the PR is a draft.
+3. When the work is complete and `Engineering gates` is green:
+   - `gh pr ready <num>`            # triggers exactly one Claude review
+   - `gh pr merge <num> --auto --squash`
+4. Review effort is automatic: `high` by default, `xhigh` when the diff touches
+   risk paths (`src/revit-plugin/**`, `installer/**`, signing/publish/NAS scripts,
+   `signed-source-free-cd.yml`).
+5. If the `Claude review gate` check is RED (blocking issue): push a fix, then
+   re-request one review by toggling ready state:
+   `gh pr ready <num> --undo && gh pr ready <num>`
+6. Auto-merge completes once `Engineering gates` + `Claude review gate` are both
+   green and the branch is up to date with `main`. No human click required; read
+   the review comments in the morning.
+
+Notes:
+- The review fires on `ready_for_review` (and `opened`/`reopened`), never on
+  follow-up pushes - that is why a draft never burns a review and a fix needs the
+  ready toggle in step 5.
+- The gate is fail closed: if the review errors or returns no structured verdict
+  the check is RED and the PR will not auto-merge.
+- A PR that edits `.github/workflows/claude-review.yml` cannot self-review
+  (`claude-code-action` skips when the workflow differs from the default branch),
+  so its `Claude review gate` will be RED; merge such a PR by hand after human
+  review and confirm the change on the next normal PR.
 
 ## Production Rollout Hold
 
