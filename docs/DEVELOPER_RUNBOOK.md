@@ -229,7 +229,7 @@ Notes:
   ready toggle in step 5.
 - The chosen effort tier is logged in the review run's "Determine review effort
   tier" step (Actions tab) - check it there if you are unsure whether a diff was
-  treated as a risk path.
+  treated as a risk path. It logs e.g. `Review effort tier: high (changed files: 3)`.
 - The gate is fail closed: if the review errors or returns no structured verdict
   the check is RED and the PR will not auto-merge.
 - A PR that edits `.github/workflows/claude-review.yml` cannot self-review
