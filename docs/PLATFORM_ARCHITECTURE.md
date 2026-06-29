@@ -329,6 +329,9 @@ passes health checks, and the operator explicitly opts into legacy stop or
 cleanup switches.
 The tunnel installer uses the same HKCU startup fallback when logon scheduled
 task creation is blocked.
+When a legacy tunnel config points at a missing ProgramData credential file,
+the installer can recover the credential from the current user's default
+`.cloudflared\<tunnel-id>.json` location before writing the add-on-local config.
 The browser polls `/api/overview` every 3 seconds with bounded responses and
 single-flight refreshes. The main UI is intentionally limited to compact
 Machine Status Windows and All Status Activity; deeper usage, friction, and

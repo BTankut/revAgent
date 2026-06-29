@@ -175,6 +175,54 @@ function Resolve-PathRelativeTo {
     return [System.IO.Path]::GetFullPath((Join-Path $BaseDirectory $Path))
 }
 
+function Resolve-TunnelCredentialsPath {
+    param(
+        [AllowNull()][AllowEmptyString()][string]$CredentialValue,
+        [Parameter(Mandatory = $true)][string]$SourceConfigDirectory,
+        [AllowNull()][AllowEmptyString()][string]$ExplicitCredentialsPath,
+        [AllowNull()][AllowEmptyString()][string]$TunnelId
+    )
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($ExplicitCredentialsPath)) {
+        $candidates.Add((Resolve-PathRelativeTo -Path $ExplicitCredentialsPath -BaseDirectory (Get-Location).Path))
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($CredentialValue)) {
+        $resolvedCredentialValue = Resolve-PathRelativeTo -Path $CredentialValue -BaseDirectory $SourceConfigDirectory
+        $candidates.Add($resolvedCredentialValue)
+
+        $credentialFileName = Split-Path -Leaf $CredentialValue
+        if (-not [string]::IsNullOrWhiteSpace($credentialFileName)) {
+            $candidates.Add((Join-Path $SourceConfigDirectory $credentialFileName))
+            if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+                $candidates.Add((Join-Path (Join-Path $env:USERPROFILE ".cloudflared") $credentialFileName))
+            }
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($TunnelId) -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $candidates.Add((Join-Path (Join-Path $env:USERPROFILE ".cloudflared") "$TunnelId.json"))
+    }
+
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        try {
+            $fullCandidate = [System.IO.Path]::GetFullPath($candidate)
+            if (Test-Path -LiteralPath $fullCandidate -PathType Leaf) {
+                return $fullCandidate
+            }
+        }
+        catch {
+            continue
+        }
+    }
+
+    return ""
+}
+
 function Write-RewrittenTunnelConfig {
     param(
         [Parameter(Mandatory = $true)][string]$SourceConfigPath,
@@ -186,6 +234,15 @@ function Write-RewrittenTunnelConfig {
 
     $sourceConfigDirectory = Split-Path -Parent $SourceConfigPath
     $lines = @(Get-Content -LiteralPath $SourceConfigPath -Encoding UTF8)
+    $tunnelId = ""
+    foreach ($line in $lines) {
+        $tunnelValue = Get-YamlScalarValue -Line $line -Key "tunnel"
+        if (-not [string]::IsNullOrWhiteSpace($tunnelValue)) {
+            $tunnelId = $tunnelValue
+            break
+        }
+    }
+
     $rewritten = [System.Collections.Generic.List[string]]::new()
     $logfileSeen = $false
     $credentialsSeen = $false
@@ -198,14 +255,13 @@ function Write-RewrittenTunnelConfig {
         $credentialsValue = Get-YamlScalarValue -Line $line -Key "credentials-file"
         if ($null -ne $credentialsValue) {
             $credentialsSeen = $true
-            $sourceCredentialsPath = if ([string]::IsNullOrWhiteSpace($ExplicitCredentialsPath)) {
-                Resolve-PathRelativeTo -Path $credentialsValue -BaseDirectory $sourceConfigDirectory
-            }
-            else {
-                Resolve-PathRelativeTo -Path $ExplicitCredentialsPath -BaseDirectory (Get-Location).Path
-            }
+            $sourceCredentialsPath = Resolve-TunnelCredentialsPath `
+                -CredentialValue $credentialsValue `
+                -SourceConfigDirectory $sourceConfigDirectory `
+                -ExplicitCredentialsPath $ExplicitCredentialsPath `
+                -TunnelId $tunnelId
 
-            if (Test-Path -LiteralPath $sourceCredentialsPath -PathType Leaf) {
+            if (-not [string]::IsNullOrWhiteSpace($sourceCredentialsPath) -and (Test-Path -LiteralPath $sourceCredentialsPath -PathType Leaf)) {
                 $credentialFileName = Split-Path -Leaf $sourceCredentialsPath
                 $destinationCredentialsPath = Join-Path $ConfigRoot $credentialFileName
                 if (-not (Test-SamePath -Left $sourceCredentialsPath -Right $destinationCredentialsPath)) {
@@ -231,8 +287,12 @@ function Write-RewrittenTunnelConfig {
     }
 
     if (-not $credentialsSeen -and -not [string]::IsNullOrWhiteSpace($ExplicitCredentialsPath)) {
-        $sourceCredentialsPath = Resolve-PathRelativeTo -Path $ExplicitCredentialsPath -BaseDirectory (Get-Location).Path
-        if (Test-Path -LiteralPath $sourceCredentialsPath -PathType Leaf) {
+        $sourceCredentialsPath = Resolve-TunnelCredentialsPath `
+            -CredentialValue "" `
+            -SourceConfigDirectory $sourceConfigDirectory `
+            -ExplicitCredentialsPath $ExplicitCredentialsPath `
+            -TunnelId $tunnelId
+        if (-not [string]::IsNullOrWhiteSpace($sourceCredentialsPath) -and (Test-Path -LiteralPath $sourceCredentialsPath -PathType Leaf)) {
             $credentialFileName = Split-Path -Leaf $sourceCredentialsPath
             $destinationCredentialsPath = Join-Path $ConfigRoot $credentialFileName
             if (-not (Test-SamePath -Left $sourceCredentialsPath -Right $destinationCredentialsPath)) {

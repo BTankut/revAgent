@@ -1014,6 +1014,9 @@ the new add-on tunnel is started and health checks pass with explicit
 `-StopLegacyOnSuccess` or `-RemoveLegacyOnSuccess`.
 Like the dashboard server installer, it can fall back to a per-user HKCU startup
 entry when logon scheduled task creation is blocked.
+If a legacy config references a stale ProgramData credential path, the tunnel
+installer also checks the current user's default `.cloudflared` credential
+store by tunnel id before rewriting the installed config.
 
 The browser UI is designed for desktop and iPhone Safari/Chrome. It shows a
 left-side Machine Status Windows list, a right-side All Status Activity stream
