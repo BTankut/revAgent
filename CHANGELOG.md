@@ -4,6 +4,10 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Hardened NAS stable publishing so release and tools directory replacement
+  uses retryable staged promotion on SMB shares; rollback restore now uses the
+  same retry-safe path instead of immediately reusing a freshly removed
+  directory name.
 - Renamed private installer, updater, migration, readiness, and signed-CD helper
   symbols from `RevitMcp*` to `RevAgent*` while preserving legacy paths,
   environment fallbacks, cleanup targets, and exported compatibility helper
