@@ -8,6 +8,9 @@ All notable revAgent workstation deployment changes are tracked here.
   tunnel installers now fall back to per-user HKCU startup entries when Windows
   blocks logon scheduled task creation, and the usage publisher installer has
   the same fallback path for task-creation failures.
+- Hardened dashboard tunnel migration so stale legacy `credentials-file`
+  entries can be recovered from the default user-profile Cloudflare credential
+  store before rewriting the installed revAgent tunnel config.
 - Added explicit admin dashboard tunnel migration: the dashboard add-on can now
   install `cloudflared.exe`, config, credentials, and the
   `revAgent Dashboard Tunnel` scheduled task under the revAgent add-on root,

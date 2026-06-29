@@ -159,6 +159,39 @@ try {
     Assert-True ($installedTunnelConfig -match [regex]::Escape((Join-Path $installedDashboardRoot "tunnel\config\dashboard-credentials.json"))) "Installed dashboard tunnel config must rewrite credentials-file to the add-on config root."
     Assert-True ($installedTunnelConfig -notmatch [regex]::Escape((Join-Path $legacyTunnelRoot "old-cloudflared.log"))) "Installed dashboard tunnel config must not keep the legacy logfile path."
 
+    $previousUserProfile = $env:USERPROFILE
+    $tunnelId = "02061634-3336-402b-8976-81ca9579ae81"
+    try {
+        $profileRoot = Join-Path $tempRoot "profile"
+        $cloudflaredProfileRoot = Join-Path $profileRoot ".cloudflared"
+        New-Item -ItemType Directory -Path $cloudflaredProfileRoot -Force | Out-Null
+        $env:USERPROFILE = $profileRoot
+        $profileCredential = Join-Path $cloudflaredProfileRoot "$tunnelId.json"
+        Set-Content -LiteralPath $profileCredential -Value '{"AccountTag":"redacted","TunnelSecret":"redacted-from-profile"}' -Encoding ASCII
+        @(
+            "tunnel: $tunnelId",
+            "credentials-file: C:\ProgramData\DPE\RevitMCP\cloudflared\$tunnelId.json",
+            "ingress:",
+            "  - hostname: dashboard.revagent.app",
+            "    service: http://127.0.0.1:8765",
+            "  - service: http_status:404"
+        ) | Set-Content -LiteralPath $legacyConfig -Encoding UTF8
+
+        $profileCredentialResult = & (Join-Path $RepoRoot "addons\dashboard\installer\install-dashboard-tunnel.ps1") `
+            -InstallRoot $installedDashboardRoot `
+            -LegacyTunnelRoot $legacyTunnelRoot `
+            -SkipScheduledTasks `
+            -NoHealthCheck | ConvertFrom-Json
+        Assert-Equal $profileCredentialResult.credentialFileName "$tunnelId.json" "Tunnel installer must discover default user-profile Cloudflare credentials when legacy config points to a stale ProgramData path."
+        Assert-True (Test-Path -LiteralPath (Join-Path $installedDashboardRoot "tunnel\config\$tunnelId.json") -PathType Leaf) "Tunnel installer must copy discovered user-profile credentials into the add-on config root."
+        $profileCredentialConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $installedDashboardRoot "tunnel\config\config.yml")
+        Assert-True ($profileCredentialConfig -match [regex]::Escape((Join-Path $installedDashboardRoot "tunnel\config\$tunnelId.json"))) "Tunnel installer must rewrite stale credentials-file paths to the discovered add-on-local credential path."
+        Assert-True ($profileCredentialConfig -notmatch 'C:\\ProgramData\\DPE\\RevitMCP\\cloudflared') "Tunnel installer must not preserve stale legacy credential paths when user-profile credentials are discovered."
+    }
+    finally {
+        $env:USERPROFILE = $previousUserProfile
+    }
+
     Push-Location $installedDashboardRoot
     try {
         $installedBrief = node --input-type=module -e "import('./server/server.mjs').then(({buildDashboardBrief}) => { const brief = buildDashboardBrief({generatedAtUtc:'installed', stable:{version:'v'}, summary:{dateUtc:'d'}, overview:{machineCount:0}, machines:[], activity:[]}); console.log(JSON.stringify(brief)); })" | ConvertFrom-Json
