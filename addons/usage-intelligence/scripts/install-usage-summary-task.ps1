@@ -52,6 +52,76 @@ if ([string]::IsNullOrWhiteSpace($libRoot)) {
 Import-Module (Join-Path $libRoot "RevitMcp.HiddenLauncher.psm1") -Force
 Import-Module (Join-Path $libRoot "RevitMcp.ScheduledTask.psm1") -Force
 
+function Invoke-SchtasksCreateDailyTask {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskName,
+        [Parameter(Mandatory = $true)][string]$LauncherPath,
+        [Parameter(Mandatory = $true)][string]$DailyAt,
+        [Parameter(Mandatory = $true)][string]$PrimaryErrorMessage
+    )
+
+    $wscriptPath = Resolve-RevitMcpWScriptPath
+    $taskRun = Join-RevitMcpWindowsCommandArguments -Arguments @($wscriptPath, "//B", "//Nologo", $LauncherPath)
+    $startTime = ([datetime]::Parse($DailyAt)).ToString("HH:mm", [System.Globalization.CultureInfo]::InvariantCulture)
+    $output = & schtasks.exe /Create /TN $TaskName /SC DAILY /ST $startTime /TR $taskRun /F 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $outputText = (($output | ForEach-Object { [string]$_ }) -join " ").Trim()
+        throw "Could not register scheduled task '$TaskName'. Register-ScheduledTask error: $PrimaryErrorMessage. schtasks.exe error: $outputText"
+    }
+
+    return "schtasks.exe"
+}
+
+function Register-HkcuRunStartup {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskName,
+        [Parameter(Mandatory = $true)][string]$LauncherPath
+    )
+
+    $wscriptPath = Resolve-RevitMcpWScriptPath
+    $taskRun = Join-RevitMcpWindowsCommandArguments -Arguments @($wscriptPath, "//B", "//Nologo", $LauncherPath)
+    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    New-Item -Path $runKey -Force | Out-Null
+    Set-ItemProperty -Path $runKey -Name $TaskName -Value $taskRun -Force
+    return "HKCU Run"
+}
+
+function Register-UsageSummaryScheduledTask {
+    param(
+        [Parameter(Mandatory = $true)]$Action,
+        [Parameter(Mandatory = $true)]$Trigger,
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)]$Principal,
+        [Parameter(Mandatory = $true)][string]$LauncherPath
+    )
+
+    try {
+        Register-ScheduledTask `
+            -TaskName $TaskName `
+            -Action $Action `
+            -Trigger @($Trigger) `
+            -Settings $Settings `
+            -Principal $Principal `
+            -Description "Publishes daily revAgent usage summaries from NAS reports at $DailyAt on the coordinator workstation." `
+            -Force `
+            -ErrorAction Stop | Out-Null
+        return "Register-ScheduledTask"
+    }
+    catch {
+        $primaryErrorMessage = $_.Exception.Message
+        try {
+            return Invoke-SchtasksCreateDailyTask `
+                -TaskName $TaskName `
+                -LauncherPath $LauncherPath `
+                -DailyAt $DailyAt `
+                -PrimaryErrorMessage $primaryErrorMessage
+        }
+        catch {
+            return Register-HkcuRunStartup -TaskName $TaskName -LauncherPath $LauncherPath
+        }
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
     $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
     $WorkRoot = Join-Path $programDataRoot "DPE\revAgent\addons\usage-intelligence\state"
@@ -113,17 +183,21 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
 
-Register-ScheduledTask `
-    -TaskName $TaskName `
+$registrationMethod = Register-UsageSummaryScheduledTask `
     -Action $action `
-    -Trigger @($trigger) `
+    -Trigger $trigger `
     -Settings $settings `
     -Principal $principal `
-    -Description "Publishes daily revAgent usage summaries from NAS reports at $DailyAt on the coordinator workstation." `
-    -Force | Out-Null
+    -LauncherPath $launcherPath
 
 Write-Host "Task registered : $TaskName" -ForegroundColor Green
-Write-Host "Task schedule   : daily at $DailyAt" -ForegroundColor Green
+if ([string]::Equals($registrationMethod, "HKCU Run", [System.StringComparison]::OrdinalIgnoreCase)) {
+    Write-Host "Task schedule   : user logon startup fallback" -ForegroundColor Yellow
+}
+else {
+    Write-Host "Task schedule   : daily at $DailyAt" -ForegroundColor Green
+}
+Write-Host "Task method     : $registrationMethod" -ForegroundColor Green
 Write-Host "Launcher        : $launcherPath" -ForegroundColor Green
 Write-Host "Config          : $configPath" -ForegroundColor Green
 

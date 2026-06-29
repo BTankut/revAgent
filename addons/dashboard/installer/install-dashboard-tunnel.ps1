@@ -287,6 +287,99 @@ function Write-HiddenPowerShellLauncher {
     Set-Content -LiteralPath $LauncherPath -Value $line -Encoding ASCII -NoNewline
 }
 
+function Invoke-SchtasksCreateLogonTask {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskName,
+        [Parameter(Mandatory = $true)][string]$LauncherPath,
+        [Parameter(Mandatory = $true)][string]$PrimaryErrorMessage
+    )
+
+    $wscriptPath = Join-Path $env:WINDIR "System32\wscript.exe"
+    $taskRun = Join-WindowsCommandArguments -Arguments @($wscriptPath, "//B", "//Nologo", $LauncherPath)
+    $output = & schtasks.exe /Create /TN $TaskName /SC ONLOGON /TR $taskRun /F 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $outputText = (($output | ForEach-Object { [string]$_ }) -join " ").Trim()
+        throw "Could not register scheduled task '$TaskName'. Register-ScheduledTask error: $PrimaryErrorMessage. schtasks.exe error: $outputText"
+    }
+
+    return "schtasks.exe"
+}
+
+function Register-HkcuRunStartup {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskName,
+        [Parameter(Mandatory = $true)][string]$LauncherPath
+    )
+
+    $wscriptPath = Join-Path $env:WINDIR "System32\wscript.exe"
+    $taskRun = Join-WindowsCommandArguments -Arguments @($wscriptPath, "//B", "//Nologo", $LauncherPath)
+    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    New-Item -Path $runKey -Force | Out-Null
+    Set-ItemProperty -Path $runKey -Name $TaskName -Value $taskRun -Force
+    return "HKCU Run"
+}
+
+function Register-LogonStartup {
+    param(
+        [Parameter(Mandatory = $true)]$Action,
+        [Parameter(Mandatory = $true)]$Trigger,
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)]$Principal,
+        [Parameter(Mandatory = $true)][string]$LauncherPath
+    )
+
+    try {
+        Register-ScheduledTask `
+            -TaskName $TaskName `
+            -Action $Action `
+            -Trigger @($Trigger) `
+            -Settings $Settings `
+            -Principal $Principal `
+            -Description "Starts the local revAgent dashboard Cloudflare tunnel on the coordinator machine." `
+            -Force `
+            -ErrorAction Stop | Out-Null
+        return "Register-ScheduledTask"
+    }
+    catch {
+        $primaryErrorMessage = $_.Exception.Message
+        try {
+            return Invoke-SchtasksCreateLogonTask `
+                -TaskName $TaskName `
+                -LauncherPath $LauncherPath `
+                -PrimaryErrorMessage $primaryErrorMessage
+        }
+        catch {
+            return Register-HkcuRunStartup -TaskName $TaskName -LauncherPath $LauncherPath
+        }
+    }
+}
+
+function Start-RegisteredScheduledTask {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskName,
+        [Parameter(Mandatory = $true)][string]$LauncherPath,
+        [Parameter(Mandatory = $true)][string]$RegistrationMethod
+    )
+
+    if ([string]::Equals($RegistrationMethod, "HKCU Run", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $wscriptPath = Join-Path $env:WINDIR "System32\wscript.exe"
+        Start-Process -FilePath $wscriptPath -ArgumentList @("//B", "//Nologo", $LauncherPath) -WindowStyle Hidden
+        return
+    }
+
+    try {
+        Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        return
+    }
+    catch {
+        $output = & schtasks.exe /Run /TN $TaskName 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $outputText = (($output | ForEach-Object { [string]$_ }) -join " ").Trim()
+            throw "Could not start scheduled task '$TaskName'. Start-ScheduledTask error: $($_.Exception.Message). schtasks.exe error: $outputText"
+        }
+    }
+}
+
 function Register-TunnelScheduledTask {
     param(
         [Parameter(Mandatory = $true)][string]$ResolvedCloudflaredExe,
@@ -307,18 +400,18 @@ function Register-TunnelScheduledTask {
     $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
 
-    Register-ScheduledTask `
-        -TaskName $TaskName `
+    $registrationMethod = Register-LogonStartup `
         -Action $action `
-        -Trigger @($trigger) `
+        -Trigger $trigger `
         -Settings $settings `
         -Principal $principal `
-        -Description "Starts the local revAgent dashboard Cloudflare tunnel on the coordinator machine." `
-        -Force | Out-Null
+        -LauncherPath $launcherPath
 
     if ($RunNow) {
-        Start-ScheduledTask -TaskName $TaskName
+        Start-RegisteredScheduledTask -TaskName $TaskName -LauncherPath $launcherPath -RegistrationMethod $registrationMethod
     }
+
+    return $registrationMethod
 }
 
 function Test-HttpHealth {
@@ -438,8 +531,9 @@ $configRewrite = Write-RewrittenTunnelConfig `
     -LogRoot $logRoot `
     -ExplicitCredentialsPath $CredentialsPath
 
+$scheduledTaskRegistrationMethod = ""
 if (-not $SkipScheduledTasks) {
-    Register-TunnelScheduledTask -ResolvedCloudflaredExe $installedCloudflaredExe -ResolvedConfigPath $installedConfigPath
+    $scheduledTaskRegistrationMethod = Register-TunnelScheduledTask -ResolvedCloudflaredExe $installedCloudflaredExe -ResolvedConfigPath $installedConfigPath
 }
 
 $healthChecked = $false
@@ -487,7 +581,10 @@ $result = [ordered]@{
     cloudflaredExe = $installedCloudflaredExe
     configPath = $installedConfigPath
     taskName = if ($SkipScheduledTasks) { "" } else { $TaskName }
-    scheduledTaskInstalled = -not [bool]$SkipScheduledTasks
+    scheduledTaskInstalled = (-not [bool]$SkipScheduledTasks) -and (-not [string]::Equals($scheduledTaskRegistrationMethod, "HKCU Run", [System.StringComparison]::OrdinalIgnoreCase))
+    startupRegistered = -not [bool]$SkipScheduledTasks
+    startupRegistrationMethod = $scheduledTaskRegistrationMethod
+    scheduledTaskRegistrationMethod = $scheduledTaskRegistrationMethod
     runNow = [bool]$RunNow
     healthChecked = $healthChecked
     healthy = $healthy
