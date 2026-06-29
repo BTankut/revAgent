@@ -159,6 +159,12 @@ function Get-YamlScalarValue {
     return $null
 }
 
+function ConvertTo-YamlSingleQuotedScalar {
+    param([AllowNull()][string]$Value)
+
+    return [string]::Concat("'", ([string]$Value).Replace("'", "''"), "'")
+}
+
 function Resolve-PathRelativeTo {
     param(
         [string]$Path,
@@ -268,7 +274,7 @@ function Write-RewrittenTunnelConfig {
                     Copy-Item -LiteralPath $sourceCredentialsPath -Destination $destinationCredentialsPath -Force
                 }
                 $credentialCopied = $true
-                $rewritten.Add(("credentials-file: ""{0}""" -f $destinationCredentialsPath))
+                $rewritten.Add(("credentials-file: {0}" -f (ConvertTo-YamlSingleQuotedScalar -Value $destinationCredentialsPath)))
             }
             else {
                 $warnings.Add("Credential file referenced by dashboard tunnel config was not found; original credentials-file path was preserved.")
@@ -279,7 +285,7 @@ function Write-RewrittenTunnelConfig {
 
         if ($null -ne (Get-YamlScalarValue -Line $line -Key "logfile")) {
             $logfileSeen = $true
-            $rewritten.Add(("logfile: ""{0}""" -f $desiredLogPath))
+            $rewritten.Add(("logfile: {0}" -f (ConvertTo-YamlSingleQuotedScalar -Value $desiredLogPath)))
             continue
         }
 
@@ -299,7 +305,7 @@ function Write-RewrittenTunnelConfig {
                 Copy-Item -LiteralPath $sourceCredentialsPath -Destination $destinationCredentialsPath -Force
             }
             $credentialCopied = $true
-            $rewritten.Add(("credentials-file: ""{0}""" -f $destinationCredentialsPath))
+            $rewritten.Add(("credentials-file: {0}" -f (ConvertTo-YamlSingleQuotedScalar -Value $destinationCredentialsPath)))
         }
         else {
             $warnings.Add("Explicit dashboard tunnel credential file was not found.")
@@ -307,7 +313,7 @@ function Write-RewrittenTunnelConfig {
     }
 
     if (-not $logfileSeen) {
-        $rewritten.Add(("logfile: ""{0}""" -f $desiredLogPath))
+        $rewritten.Add(("logfile: {0}" -f (ConvertTo-YamlSingleQuotedScalar -Value $desiredLogPath)))
     }
 
     Set-Content -LiteralPath $DestinationConfigPath -Value $rewritten.ToArray() -Encoding UTF8

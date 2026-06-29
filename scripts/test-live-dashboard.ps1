@@ -157,6 +157,7 @@ try {
     Assert-True ($installedTunnelConfig -match 'dashboard\.revagent\.app') "Installed dashboard tunnel config must preserve dashboard hostname."
     Assert-True ($installedTunnelConfig -match [regex]::Escape((Join-Path $installedDashboardRoot "tunnel\logs\cloudflared.log"))) "Installed dashboard tunnel config must rewrite logfile to the add-on log root."
     Assert-True ($installedTunnelConfig -match [regex]::Escape((Join-Path $installedDashboardRoot "tunnel\config\dashboard-credentials.json"))) "Installed dashboard tunnel config must rewrite credentials-file to the add-on config root."
+    Assert-True ($installedTunnelConfig -match "credentials-file: '" -and $installedTunnelConfig -match "logfile: '") "Installed dashboard tunnel config must write Windows paths as YAML single-quoted scalars."
     Assert-True ($installedTunnelConfig -notmatch [regex]::Escape((Join-Path $legacyTunnelRoot "old-cloudflared.log"))) "Installed dashboard tunnel config must not keep the legacy logfile path."
 
     $previousUserProfile = $env:USERPROFILE
