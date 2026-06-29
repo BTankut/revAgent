@@ -50,7 +50,7 @@ if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
 
 Import-Module (Join-Path $nasLibRoot "RevAgent.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.SourceFreeMigration.psm1") -Force
-Set-RevitMcpCurrentProcessUtf8Console | Out-Null
+Set-RevAgentCurrentProcessUtf8Console | Out-Null
 
 function Read-RevitMcpJsonFileOrNull {
     param([string]$Path)
@@ -318,7 +318,7 @@ if ([string]::IsNullOrWhiteSpace($ReportPath)) {
 }
 
 $startedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-$beforeInventory = @(Get-RevitMcpSourceFreeArtifactInventory `
+$beforeInventory = @(Get-RevAgentSourceFreeArtifactInventory `
         -InstallRoot $InstallRoot `
         -PackageTarget $PackageTarget `
         -ServerTarget $ServerTarget `
@@ -404,7 +404,7 @@ if ($Mode -eq "commit") {
     }
 }
 
-$afterInventory = @(Get-RevitMcpSourceFreeArtifactInventory `
+$afterInventory = @(Get-RevAgentSourceFreeArtifactInventory `
         -InstallRoot $InstallRoot `
         -PackageTarget $PackageTarget `
         -ServerTarget $ServerTarget `

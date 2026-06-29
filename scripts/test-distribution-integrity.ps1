@@ -72,12 +72,12 @@ function New-TestSignatureEnvelope {
         keyId = $KeyId
         publicKeyFingerprint = $PublicKeyFingerprint
         canonicalization = "RFC8785-JCS-SHA256-v1"
-        contentSha256 = Get-RevitMcpCanonicalJsonSha256 -Value $Content
+        contentSha256 = Get-RevAgentCanonicalJsonSha256 -Value $Content
         createdAtUtc = "2026-06-22T00:00:00.0000000Z"
         signature = ""
     }
 
-    $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes((Get-RevitMcpSignaturePayloadCanonicalJson -SignatureEnvelope $envelope))
+    $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes((Get-RevAgentSignaturePayloadCanonicalJson -SignatureEnvelope $envelope))
     $signatureBytes = $PrivateKey.SignData($payloadBytes, "SHA256")
     $envelope["signature"] = [Convert]::ToBase64String($signatureBytes)
     return $envelope
@@ -115,16 +115,16 @@ $canonicalInput = [ordered]@{
     windows = "C:\Temp\file"
     a = 1
 }
-$canonicalJson = ConvertTo-RevitMcpCanonicalJson -Value $canonicalInput
+$canonicalJson = ConvertTo-RevAgentCanonicalJson -Value $canonicalInput
 Assert-Equal $canonicalJson '{"a":1,"b":true,"emptyArray":[],"emptyCustomObject":{},"emptyObject":{},"emptyString":"","nested":{"alpha":"z","beta":[3,null,"x"]},"nullValue":null,"path":"tools/lib","singleArray":["x"],"singleNullArray":[null],"windows":"C:\\Temp\\file"}' "Canonical JSON must sort object keys ordinally, preserve array shape, preserve empty objects, preserve empty strings, preserve nulls, preserve forward slashes, escape backslashes, and remove insignificant whitespace."
-Assert-Equal (Get-RevitMcpCanonicalJsonSha256 -Value $canonicalInput).Length 64 "Canonical SHA256 must be a hex digest."
+Assert-Equal (Get-RevAgentCanonicalJsonSha256 -Value $canonicalInput).Length 64 "Canonical SHA256 must be a hex digest."
 
 Write-Host "Test canonical JSON rejects non-string dictionary keys"
 $nonStringKeyDictionary = [System.Collections.Specialized.OrderedDictionary]::new()
 $nonStringKeyDictionary.Add(1, "one")
 $rejectedNonStringKey = $false
 try {
-    [void](ConvertTo-RevitMcpCanonicalJson -Value $nonStringKeyDictionary)
+    [void](ConvertTo-RevAgentCanonicalJson -Value $nonStringKeyDictionary)
 }
 catch {
     $rejectedNonStringKey = ($_.Exception.Message -match "dictionary keys must be strings")
@@ -134,7 +134,7 @@ Assert-True $rejectedNonStringKey "Canonical JSON must reject non-string diction
 Write-Host "Test canonical JSON rejects unsupported numeric ambiguity"
 $rejectedFloat = $false
 try {
-    [void](ConvertTo-RevitMcpCanonicalJson -Value ([ordered]@{ value = 1.25 }))
+    [void](ConvertTo-RevAgentCanonicalJson -Value ([ordered]@{ value = 1.25 }))
 }
 catch {
     $rejectedFloat = ($_.Exception.Message -match "integers only")
@@ -145,11 +145,11 @@ Write-Host "Test detached channel signature verification"
 $rsa = New-TestRsaProvider
 try {
     $publicKeyXml = $rsa.ToXmlString($false)
-    $publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+    $publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
     $publicKeyXmlLf = $publicKeyXml -replace '><', ">`n  <"
     $publicKeyXmlCrLf = $publicKeyXmlLf -replace "`n", "`r`n"
-    Assert-Equal (Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXmlLf) $publicKeyFingerprint "Public key fingerprints must be stable across XML formatting whitespace."
-    Assert-Equal (Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXmlCrLf) $publicKeyFingerprint "Public key fingerprints must be stable across LF and CRLF line endings."
+    Assert-Equal (Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXmlLf) $publicKeyFingerprint "Public key fingerprints must be stable across XML formatting whitespace."
+    Assert-Equal (Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXmlCrLf) $publicKeyFingerprint "Public key fingerprints must be stable across LF and CRLF line endings."
     $trustedKeys = @{
         "test-rsa-2026" = [pscustomobject][ordered]@{
             publicKeyXml = $publicKeyXml
@@ -170,20 +170,20 @@ try {
         publishedAtUtc = "2026-06-22T00:00:00.0000000Z"
     }
     $envelope = New-TestSignatureEnvelope -Content $channel -PrivateKey $rsa -PublicKeyFingerprint $publicKeyFingerprint
-    $valid = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $envelope -TrustedKeys $trustedKeys
+    $valid = Test-RevAgentDetachedJsonSignature -Content $channel -SignatureEnvelope $envelope -TrustedKeys $trustedKeys
     Assert-True $valid.success "Valid detached channel signature should verify."
     Assert-Equal $valid.signedObject "channel" "Valid signature result should preserve signedObject."
 
     Write-Host "Test detached signature helper generation"
-    $generatedEnvelope = New-RevitMcpDetachedJsonSignature -Content $channel -SignedObject "channel" -KeyId "test-rsa-2026" -PrivateKeyXml ($rsa.ToXmlString($true)) -CreatedAtUtc "2026-06-22T00:00:00.0000000Z"
-    $generatedValid = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $generatedEnvelope -TrustedKeys $trustedKeys
+    $generatedEnvelope = New-RevAgentDetachedJsonSignature -Content $channel -SignedObject "channel" -KeyId "test-rsa-2026" -PrivateKeyXml ($rsa.ToXmlString($true)) -CreatedAtUtc "2026-06-22T00:00:00.0000000Z"
+    $generatedValid = Test-RevAgentDetachedJsonSignature -Content $channel -SignatureEnvelope $generatedEnvelope -TrustedKeys $trustedKeys
     Assert-True $generatedValid.success "Generated detached channel signature should verify."
-    Assert-Equal $generatedEnvelope.contentSha256 (Get-RevitMcpCanonicalJsonSha256 -Value $channel) "Generated signature envelope must bind the canonical content hash."
+    Assert-Equal $generatedEnvelope.contentSha256 (Get-RevAgentCanonicalJsonSha256 -Value $channel) "Generated signature envelope must bind the canonical content hash."
 
     Write-Host "Test signedObject allowlist is case-sensitive"
     $wrongCaseSignedObjectEnvelope = Copy-OrderedMap -Value $envelope
     $wrongCaseSignedObjectEnvelope["signedObject"] = "Channel"
-    $wrongCaseSignedObject = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $wrongCaseSignedObjectEnvelope -TrustedKeys $trustedKeys -AllowedSignedObjects @("channel")
+    $wrongCaseSignedObject = Test-RevAgentDetachedJsonSignature -Content $channel -SignatureEnvelope $wrongCaseSignedObjectEnvelope -TrustedKeys $trustedKeys -AllowedSignedObjects @("channel")
     Assert-True (-not $wrongCaseSignedObject.success) "Different-case signedObject values must be rejected."
     Assert-Equal $wrongCaseSignedObject.reason "unsupported_signed_object" "Different-case signedObject should fail the allowlist check."
 
@@ -203,7 +203,7 @@ try {
         minimumAcceptedReleaseSequence = 1000
     }
     $manifestEnvelope = New-TestSignatureEnvelope -Content $manifest -PrivateKey $rsa -PublicKeyFingerprint $publicKeyFingerprint -SignedObject "release-manifest"
-    $validManifest = Test-RevitMcpDetachedJsonSignature -Content $manifest -SignatureEnvelope $manifestEnvelope -TrustedKeys $trustedKeys
+    $validManifest = Test-RevAgentDetachedJsonSignature -Content $manifest -SignatureEnvelope $manifestEnvelope -TrustedKeys $trustedKeys
     Assert-True $validManifest.success "Valid detached release-manifest signature should verify."
     Assert-Equal $validManifest.signedObject "release-manifest" "Manifest signature result should preserve signedObject."
 
@@ -215,7 +215,7 @@ try {
         $signaturePath = Join-Path $tempRoot "stable.sig.json"
         $channel | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $channelPath -Encoding UTF8
         $envelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $signaturePath -Encoding UTF8
-        $validFile = Test-RevitMcpDetachedJsonSignatureFile -ContentPath $channelPath -SignaturePath $signaturePath -TrustedKeys $trustedKeys
+        $validFile = Test-RevAgentDetachedJsonSignatureFile -ContentPath $channelPath -SignaturePath $signaturePath -TrustedKeys $trustedKeys
         Assert-True $validFile.success "File-based detached signature verification should pass for signed fixture files."
 
         Write-Host "Test updater compatibility aggregate accepts valid signed release"
@@ -224,7 +224,7 @@ try {
         $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
         $manifestEnvelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestSignaturePath -Encoding UTF8
         $jsonTrustedKeys = (($trustedKeys | ConvertTo-Json -Depth 8) | ConvertFrom-Json)
-        $validAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+        $validAggregate = Test-RevAgentReleaseDistributionIntegrity `
             -ChannelPath $channelPath `
             -Channel $channel `
             -ReleaseManifestPath $manifestPath `
@@ -237,7 +237,7 @@ try {
         Assert-Equal $validAggregate.highestAcceptedReleaseSequence ([long]1001) "Valid signed release aggregate should advance highest accepted sequence."
 
         Write-Host "Test updater aggregate blocks older signed release replay"
-        $replayAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+        $replayAggregate = Test-RevAgentReleaseDistributionIntegrity `
             -ChannelPath $channelPath `
             -Channel $channel `
             -ReleaseManifestPath $manifestPath `
@@ -249,7 +249,7 @@ try {
         Assert-Equal $replayAggregate.reason "signed_release_replay" "Older signed release sequence should fail with signed_release_replay."
 
         Write-Host "Test updater aggregate allows explicit signed rollback"
-        $rollbackAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+        $rollbackAggregate = Test-RevAgentReleaseDistributionIntegrity `
             -ChannelPath $channelPath `
             -Channel $channel `
             -ReleaseManifestPath $manifestPath `
@@ -264,7 +264,7 @@ try {
 
         Write-Host "Test updater compatibility aggregate rejects stripped signatures when trusted keys exist"
         Remove-Item -LiteralPath $signaturePath, $manifestSignaturePath -Force
-        $strippedSignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+        $strippedSignedAggregate = Test-RevAgentReleaseDistributionIntegrity `
             -ChannelPath $channelPath `
             -Channel $channel `
             -ReleaseManifestPath $manifestPath `
@@ -276,7 +276,7 @@ try {
         Assert-Equal $strippedSignedAggregate.consistency.reason "unsigned_release_rejected" "Trusted-key stripped signature rejection should not report legacy-compatible consistency."
 
         Write-Host "Test updater compatibility aggregate rejects unsigned release after signed acceptance"
-        $unsignedAfterSignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+        $unsignedAfterSignedAggregate = Test-RevAgentReleaseDistributionIntegrity `
             -ChannelPath $channelPath `
             -Channel $channel `
             -ReleaseManifestPath $manifestPath `
@@ -290,7 +290,7 @@ try {
         Assert-Equal $unsignedAfterSignedAggregate.highestAcceptedReleaseSequence ([long]1001) "Unsigned-after-signed rejection should preserve the accepted signed sequence watermark."
 
         Write-Host "Test updater compatibility aggregate accepts keys-free unsigned legacy release"
-        $unsignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+        $unsignedAggregate = Test-RevAgentReleaseDistributionIntegrity `
             -ChannelPath $channelPath `
             -Channel $channel `
             -ReleaseManifestPath $manifestPath `
@@ -303,7 +303,7 @@ try {
 
         Write-Host "Test updater compatibility aggregate rejects partial signature set"
         $envelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $signaturePath -Encoding UTF8
-        $partialAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+        $partialAggregate = Test-RevAgentReleaseDistributionIntegrity `
             -ChannelPath $channelPath `
             -Channel $channel `
             -ReleaseManifestPath $manifestPath `
@@ -316,7 +316,7 @@ try {
 
         Write-Host "Test updater enforce aggregate rejects unsigned release"
         Remove-Item -LiteralPath $signaturePath -Force
-        $enforcedUnsignedAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+        $enforcedUnsignedAggregate = Test-RevAgentReleaseDistributionIntegrity `
             -ChannelPath $channelPath `
             -Channel $channel `
             -ReleaseManifestPath $manifestPath `
@@ -336,7 +336,7 @@ try {
         $envelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $signaturePath -Encoding UTF8
         $mismatchedManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
         $mismatchedManifestEnvelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestSignaturePath -Encoding UTF8
-        $mismatchAggregate = Test-RevitMcpReleaseDistributionIntegrity `
+        $mismatchAggregate = Test-RevAgentReleaseDistributionIntegrity `
             -ChannelPath $channelPath `
             -Channel $channel `
             -ReleaseManifestPath $manifestPath `
@@ -351,14 +351,14 @@ try {
         $duplicateSignaturePath = Join-Path $tempRoot "duplicate-content.sig.json"
         '{"schemaVersion":1,"schemaVersion":2}' | Set-Content -LiteralPath $duplicateContentPath -Encoding UTF8
         $envelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $duplicateSignaturePath -Encoding UTF8
-        $duplicateContent = Test-RevitMcpDetachedJsonSignatureFile -ContentPath $duplicateContentPath -SignaturePath $duplicateSignaturePath -TrustedKeys $trustedKeys
+        $duplicateContent = Test-RevAgentDetachedJsonSignatureFile -ContentPath $duplicateContentPath -SignaturePath $duplicateSignaturePath -TrustedKeys $trustedKeys
         Assert-True (-not $duplicateContent.success) "Duplicate keys in signed content JSON must be rejected before ConvertFrom-Json can collapse them."
         Assert-Equal $duplicateContent.reason "duplicate_json_key" "Duplicate signed content keys should have a stable reason."
 
         $duplicateEnvelopePath = Join-Path $tempRoot "duplicate-envelope.sig.json"
         $channel | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $channelPath -Encoding UTF8
         '{"schemaVersion":1,"schemaVersion":2}' | Set-Content -LiteralPath $duplicateEnvelopePath -Encoding UTF8
-        $duplicateEnvelope = Test-RevitMcpDetachedJsonSignatureFile -ContentPath $channelPath -SignaturePath $duplicateEnvelopePath -TrustedKeys $trustedKeys
+        $duplicateEnvelope = Test-RevAgentDetachedJsonSignatureFile -ContentPath $channelPath -SignaturePath $duplicateEnvelopePath -TrustedKeys $trustedKeys
         Assert-True (-not $duplicateEnvelope.success) "Duplicate keys in signature envelope JSON must be rejected before ConvertFrom-Json can collapse them."
         Assert-Equal $duplicateEnvelope.reason "duplicate_json_key" "Duplicate signature envelope keys should have a stable reason."
     }
@@ -371,44 +371,44 @@ try {
     Write-Host "Test tampered content rejection"
     $tamperedChannel = Copy-OrderedMap -Value $channel
     $tamperedChannel["version"] = "2026.06.22.2-tampered"
-    $tamperedContent = Test-RevitMcpDetachedJsonSignature -Content $tamperedChannel -SignatureEnvelope $envelope -TrustedKeys $trustedKeys
+    $tamperedContent = Test-RevAgentDetachedJsonSignature -Content $tamperedChannel -SignatureEnvelope $envelope -TrustedKeys $trustedKeys
     Assert-True (-not $tamperedContent.success) "Tampered content must be rejected."
     Assert-Equal $tamperedContent.reason "content_hash_mismatch" "Tampered content should fail at content hash verification."
 
     Write-Host "Test tampered envelope metadata rejection"
     $tamperedEnvelope = Copy-OrderedMap -Value $envelope
     $tamperedEnvelope["createdAtUtc"] = "2026-06-23T00:00:00.0000000Z"
-    $tamperedMetadata = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $tamperedEnvelope -TrustedKeys $trustedKeys
+    $tamperedMetadata = Test-RevAgentDetachedJsonSignature -Content $channel -SignatureEnvelope $tamperedEnvelope -TrustedKeys $trustedKeys
     Assert-True (-not $tamperedMetadata.success) "Tampered envelope metadata must be rejected."
     Assert-Equal $tamperedMetadata.reason "signature_verification_failed" "Tampered signed envelope metadata should fail signature verification."
 
     Write-Host "Test bad signature rejection"
     $badSignatureEnvelope = Copy-OrderedMap -Value $envelope
     $badSignatureEnvelope["signature"] = Get-TamperedBase64Signature -Signature ([string]$envelope["signature"])
-    $badSignature = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $badSignatureEnvelope -TrustedKeys $trustedKeys
+    $badSignature = Test-RevAgentDetachedJsonSignature -Content $channel -SignatureEnvelope $badSignatureEnvelope -TrustedKeys $trustedKeys
     Assert-True (-not $badSignature.success) "Bad signature bytes must be rejected."
     Assert-Equal $badSignature.reason "signature_verification_failed" "Bad signature bytes should fail signature verification."
 
     Write-Host "Test unknown key rejection"
     $unknownKeyEnvelope = Copy-OrderedMap -Value $envelope
     $unknownKeyEnvelope["keyId"] = "missing-key"
-    $unknownKeyEnvelope["signature"] = [Convert]::ToBase64String($rsa.SignData([System.Text.Encoding]::UTF8.GetBytes((Get-RevitMcpSignaturePayloadCanonicalJson -SignatureEnvelope $unknownKeyEnvelope)), "SHA256"))
-    $unknownKey = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $unknownKeyEnvelope -TrustedKeys $trustedKeys
+    $unknownKeyEnvelope["signature"] = [Convert]::ToBase64String($rsa.SignData([System.Text.Encoding]::UTF8.GetBytes((Get-RevAgentSignaturePayloadCanonicalJson -SignatureEnvelope $unknownKeyEnvelope)), "SHA256"))
+    $unknownKey = Test-RevAgentDetachedJsonSignature -Content $channel -SignatureEnvelope $unknownKeyEnvelope -TrustedKeys $trustedKeys
     Assert-True (-not $unknownKey.success) "Unknown key id must be rejected."
     Assert-Equal $unknownKey.reason "unknown_key_id" "Unknown key id should fail before signature verification."
 
     Write-Host "Test wrong public key fingerprint rejection"
     $wrongFingerprintEnvelope = Copy-OrderedMap -Value $envelope
     $wrongFingerprintEnvelope["publicKeyFingerprint"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-    $wrongFingerprintEnvelope["signature"] = [Convert]::ToBase64String($rsa.SignData([System.Text.Encoding]::UTF8.GetBytes((Get-RevitMcpSignaturePayloadCanonicalJson -SignatureEnvelope $wrongFingerprintEnvelope)), "SHA256"))
-    $wrongFingerprint = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $wrongFingerprintEnvelope -TrustedKeys $trustedKeys
+    $wrongFingerprintEnvelope["signature"] = [Convert]::ToBase64String($rsa.SignData([System.Text.Encoding]::UTF8.GetBytes((Get-RevAgentSignaturePayloadCanonicalJson -SignatureEnvelope $wrongFingerprintEnvelope)), "SHA256"))
+    $wrongFingerprint = Test-RevAgentDetachedJsonSignature -Content $channel -SignatureEnvelope $wrongFingerprintEnvelope -TrustedKeys $trustedKeys
     Assert-True (-not $wrongFingerprint.success) "Wrong public key fingerprint must be rejected."
     Assert-Equal $wrongFingerprint.reason "wrong_public_key_fingerprint" "Wrong public key fingerprint should fail explicitly."
 
     Write-Host "Test unexpected unsigned envelope fields are rejected"
     $extraFieldEnvelope = Copy-OrderedMap -Value $envelope
     $extraFieldEnvelope["unsignedNote"] = "not covered"
-    $extraField = Test-RevitMcpDetachedJsonSignature -Content $channel -SignatureEnvelope $extraFieldEnvelope -TrustedKeys $trustedKeys
+    $extraField = Test-RevAgentDetachedJsonSignature -Content $channel -SignatureEnvelope $extraFieldEnvelope -TrustedKeys $trustedKeys
     Assert-True (-not $extraField.success) "Unexpected signature envelope fields must be rejected."
     Assert-Equal $extraField.reason "unexpected_signature_field" "Unexpected signature envelope fields should have a stable reason."
 }

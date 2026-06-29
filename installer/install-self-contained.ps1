@@ -30,12 +30,12 @@ Import-Module (Join-Path $installerLibRoot "RevAgent.Permissions.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevAgent.LogRetention.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevAgent.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevAgent.ConfigSync.psm1") -Force
-Set-RevitMcpCurrentProcessUtf8Console | Out-Null
+Set-RevAgentCurrentProcessUtf8Console | Out-Null
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$revitVersionConfig = Get-RevitMcpVersionConfig -Version $RevitVersion -RepoRoot $repoRoot
+$revitVersionConfig = Get-RevAgentVersionConfig -Version $RevitVersion -RepoRoot $repoRoot
 if (-not $Uninstall) {
-    Assert-RevitMcpInstallerPayloadAvailable -Version $RevitVersion -RepoRoot $repoRoot
+    Assert-RevAgentInstallerPayloadAvailable -Version $RevitVersion -RepoRoot $repoRoot
 }
 $pluginSource = Join-Path $PSScriptRoot "revit-plugin"
 $serverSource = Join-Path $PSScriptRoot "runtime-mcp-server"
@@ -302,7 +302,7 @@ function Resolve-RevitInstallRoot {
         [string]$Version
     )
 
-    return Resolve-RevitMcpInstallRoot -RequestedRoot $RequestedRoot -Version $Version -RepoRoot $repoRoot -RequireXmlDocs
+    return Resolve-RevAgentInstallRoot -RequestedRoot $RequestedRoot -Version $Version -RepoRoot $repoRoot -RequireXmlDocs
 }
 
 function Write-AddinManifest {
@@ -462,7 +462,7 @@ function Install-UpdaterToolsFromPackage {
     if (-not (Test-Path -LiteralPath $configSource -PathType Container)) {
         $configSource = Join-Path (Split-Path -Parent (Split-Path -Parent $SourceRoot)) "config"
     }
-    Sync-RevitMcpUpdaterConfigDirectory -SourceRoot $configSource -DestinationRoot (Join-Path $DestinationRoot "config")
+    Sync-RevAgentUpdaterConfigDirectory -SourceRoot $configSource -DestinationRoot (Join-Path $DestinationRoot "config")
 
     $updaterPath = Join-Path $DestinationRoot "update-from-nas.ps1"
     $versionToolPath = Join-Path $DestinationRoot "show-installed-version.ps1"
@@ -487,7 +487,7 @@ function Install-UpdaterToolsFromPackage {
             Write-Host "Removed legacy updater helper: $legacyCommandPath"
         }
     }
-    foreach ($legacyLauncherPath in @(Get-RevitMcpLegacyHiddenUpdaterLauncherPaths -ConfigPath $ConfigPath)) {
+    foreach ($legacyLauncherPath in @(Get-RevAgentLegacyHiddenUpdaterLauncherPaths -ConfigPath $ConfigPath)) {
         if (Test-Path -LiteralPath $legacyLauncherPath -PathType Leaf) {
             Remove-Item -LiteralPath $legacyLauncherPath -Force
             Write-Host "Removed legacy hidden updater launcher: $legacyLauncherPath"
@@ -528,7 +528,7 @@ function Repair-RevitMcpScheduledTaskAction {
         break
     }
 
-    Repair-RevitMcpHiddenScheduledTaskAction -Name $taskName -LegacyNames @("Revit MCP Auto Update") -UpdaterPath $UpdaterPath -UpdaterConfigPath $ConfigPath -DailyAt $dailyAt
+    Repair-RevAgentHiddenScheduledTaskAction -Name $taskName -LegacyNames @("Revit MCP Auto Update") -UpdaterPath $UpdaterPath -UpdaterConfigPath $ConfigPath -DailyAt $dailyAt
 }
 
 if ($Uninstall -and [string]::IsNullOrWhiteSpace($RevitInstallRoot)) {
@@ -930,7 +930,7 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
 function Repair-RevitMcpManagedInstallPermissions {
     param([switch]$IncludeExistingPayloadTrees)
 
-    $targets = Get-RevitMcpManagedPermissionTargets `
+    $targets = Get-RevAgentManagedPermissionTargets `
         -InstallRoot $InstallRoot `
         -WorkRoot $updaterRoot `
         -PackageTarget (Join-Path $InstallRoot "package") `
@@ -938,7 +938,7 @@ function Repair-RevitMcpManagedInstallPermissions {
         -AllUsersAddinRoot $addinRoot `
         -RevitVersion $RevitVersion `
         -IncludeExistingPayloadTrees:$IncludeExistingPayloadTrees
-    Invoke-RevitMcpManagedPermissionRepair -Targets $targets
+    Invoke-RevAgentManagedPermissionRepair -Targets $targets
 }
 
 function Invoke-RevitMcpCleanup {
@@ -1154,8 +1154,8 @@ if ($preserveLocalCodexInstructions) {
     Write-Host "Codex instructions: preserved local developer instruction surface by policy." -ForegroundColor Yellow
     if (-not $SkipCodexUserIntegration) {
         New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
-        [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $codexConfigTarget)
-        $utf8ProfilePaths = @(Set-RevitMcpPowerShellUtf8ConsoleConfig -UserProfileRoot $env:USERPROFILE -ConfigureConsoleRegistry)
+        [void](Set-RevAgentCodexMemoryConfig -ConfigPath $codexConfigTarget)
+        $utf8ProfilePaths = @(Set-RevAgentPowerShellUtf8ConsoleConfig -UserProfileRoot $env:USERPROFILE -ConfigureConsoleRegistry)
         if ($utf8ProfilePaths.Count -gt 0) {
             Write-Host "PowerShell UTF-8 console profiles: $($utf8ProfilePaths -join '; ')"
         }
@@ -1198,8 +1198,8 @@ else {
         New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
 
         New-HardLinkOrCopyFile -Source $codexMachineAgentsTarget -Destination $codexAgentsTarget
-        [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $codexConfigTarget)
-        $utf8ProfilePaths = @(Set-RevitMcpPowerShellUtf8ConsoleConfig -UserProfileRoot $env:USERPROFILE -ConfigureConsoleRegistry)
+        [void](Set-RevAgentCodexMemoryConfig -ConfigPath $codexConfigTarget)
+        $utf8ProfilePaths = @(Set-RevAgentPowerShellUtf8ConsoleConfig -UserProfileRoot $env:USERPROFILE -ConfigureConsoleRegistry)
         if ($utf8ProfilePaths.Count -gt 0) {
             Write-Host "PowerShell UTF-8 console profiles: $($utf8ProfilePaths -join '; ')"
         }
@@ -1248,11 +1248,11 @@ function Join-WindowsCommandArguments {
 }
 
 function Resolve-WindowsPowerShellPath {
-    return Resolve-RevitMcpWindowsPowerShellPath
+    return Resolve-RevAgentWindowsPowerShellPath
 }
 
 function Resolve-WScriptPath {
-    return Resolve-RevitMcpWScriptPath
+    return Resolve-RevAgentWScriptPath
 }
 
 function Write-HiddenPowerShellLauncher {
@@ -1265,7 +1265,7 @@ function Write-HiddenPowerShellLauncher {
         [switch]$WaitForExit
     )
 
-    Write-RevitMcpHiddenPowerShellLauncher `
+    Write-RevAgentHiddenPowerShellLauncher `
         -LauncherPath $LauncherPath `
         -ScriptPath $ScriptPath `
         -ScriptArguments $ScriptArguments `
@@ -1275,19 +1275,19 @@ function Write-HiddenPowerShellLauncher {
 function Get-HiddenUpdaterLauncherPath {
     param([string]$ConfigPath)
 
-    return Get-RevitMcpHiddenUpdaterLauncherPath -ConfigPath $ConfigPath
+    return Get-RevAgentHiddenUpdaterLauncherPath -ConfigPath $ConfigPath
 }
 
 function New-HiddenUpdaterScheduledTaskAction {
     param([string]$LauncherPath)
 
-    return New-RevitMcpHiddenUpdaterScheduledTaskAction -LauncherPath $LauncherPath
+    return New-RevAgentHiddenUpdaterScheduledTaskAction -LauncherPath $LauncherPath
 }
 
 $nasToolsSource = Join-Path $PSScriptRoot "nas"
 Repair-RevitMcpManagedInstallPermissions
 Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $updaterRoot -ConfigPath $updaterConfigPath
-Invoke-RevitMcpLogRetention -LogsRoot (Join-Path $updaterRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
+Invoke-RevAgentLogRetention -LogsRoot (Join-Path $updaterRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
 Repair-RevitMcpManagedInstallPermissions
 Repair-RevitMcpScheduledTaskAction -ConfigPath $updaterConfigPath -UpdaterPath (Join-Path $updaterRoot "update-from-nas.ps1")
 Remove-LegacyRevitMcpInstallRoot

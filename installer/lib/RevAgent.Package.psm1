@@ -135,7 +135,17 @@ function Expand-RevitMcpReleaseArchive {
     }
 }
 
+$revAgentFunctionAliases = @{
+    "Expand-RevAgentReleaseArchive" = "Expand-RevitMcpReleaseArchive"
+    "Resolve-RevAgentPackageLayout" = "Resolve-RevitMcpPackageLayout"
+    "Resolve-RevAgentReleasePath" = "Resolve-RevitMcpReleasePath"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function `
     Resolve-RevitMcpReleasePath, `
     Resolve-RevitMcpPackageLayout, `
     Expand-RevitMcpReleaseArchive
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

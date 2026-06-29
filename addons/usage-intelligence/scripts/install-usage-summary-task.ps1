@@ -60,8 +60,8 @@ function Invoke-SchtasksCreateDailyTask {
         [Parameter(Mandatory = $true)][string]$PrimaryErrorMessage
     )
 
-    $wscriptPath = Resolve-RevitMcpWScriptPath
-    $taskRun = Join-RevitMcpWindowsCommandArguments -Arguments @($wscriptPath, "//B", "//Nologo", $LauncherPath)
+    $wscriptPath = Resolve-RevAgentWScriptPath
+    $taskRun = Join-RevAgentWindowsCommandArguments -Arguments @($wscriptPath, "//B", "//Nologo", $LauncherPath)
     $startTime = ([datetime]::Parse($DailyAt)).ToString("HH:mm", [System.Globalization.CultureInfo]::InvariantCulture)
     $output = & schtasks.exe /Create /TN $TaskName /SC DAILY /ST $startTime /TR $taskRun /F 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -78,8 +78,8 @@ function Register-HkcuRunStartup {
         [Parameter(Mandatory = $true)][string]$LauncherPath
     )
 
-    $wscriptPath = Resolve-RevitMcpWScriptPath
-    $taskRun = Join-RevitMcpWindowsCommandArguments -Arguments @($wscriptPath, "//B", "//Nologo", $LauncherPath)
+    $wscriptPath = Resolve-RevAgentWScriptPath
+    $taskRun = Join-RevAgentWindowsCommandArguments -Arguments @($wscriptPath, "//B", "//Nologo", $LauncherPath)
     $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
     if (-not (Test-Path -LiteralPath $runKey)) {
         New-Item -Path $runKey -Force | Out-Null
@@ -173,14 +173,14 @@ if ($IncludeYesterday) {
     $scriptArguments += "-IncludeYesterday"
 }
 
-Write-RevitMcpHiddenPowerShellLauncher `
+Write-RevAgentHiddenPowerShellLauncher `
     -LauncherPath $launcherPath `
     -ScriptPath $PublishScriptPath `
     -ScriptArguments $scriptArguments `
     -WaitForExit
 
-$action = New-RevitMcpHiddenUpdaterScheduledTaskAction -LauncherPath $launcherPath
-$trigger = New-RevitMcpDailyUpdateTrigger -DailyAt $DailyAt
+$action = New-RevAgentHiddenUpdaterScheduledTaskAction -LauncherPath $launcherPath
+$trigger = New-RevAgentDailyUpdateTrigger -DailyAt $DailyAt
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited

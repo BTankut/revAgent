@@ -21,4 +21,12 @@ function Get-RevitMcpUpdateDecision {
     }
 }
 
+$revAgentFunctionAliases = @{
+    "Get-RevAgentUpdateDecision" = "Get-RevitMcpUpdateDecision"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function Get-RevitMcpUpdateDecision
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

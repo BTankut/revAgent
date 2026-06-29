@@ -162,9 +162,21 @@ function Invoke-RevitMcpManagedPermissionRepair {
     }
 }
 
+$revAgentFunctionAliases = @{
+    "Get-RevAgentManagedPermissionTargets" = "Get-RevitMcpManagedPermissionTargets"
+    "Grant-RevAgentManagedPathAccess" = "Grant-RevitMcpManagedPathAccess"
+    "Invoke-RevAgentManagedPermissionRepair" = "Invoke-RevitMcpManagedPermissionRepair"
+    "New-RevAgentPermissionTarget" = "New-RevitMcpPermissionTarget"
+    "Test-RevAgentAdministrator" = "Test-RevitMcpAdministrator"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function `
     Test-RevitMcpAdministrator, `
     New-RevitMcpPermissionTarget, `
     Get-RevitMcpManagedPermissionTargets, `
     Grant-RevitMcpManagedPathAccess, `
     Invoke-RevitMcpManagedPermissionRepair
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

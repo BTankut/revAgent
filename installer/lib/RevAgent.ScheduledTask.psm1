@@ -110,4 +110,13 @@ function Repair-RevitMcpHiddenScheduledTaskAction {
     }
 }
 
+$revAgentFunctionAliases = @{
+    "New-RevAgentDailyUpdateTrigger" = "New-RevitMcpDailyUpdateTrigger"
+    "Repair-RevAgentHiddenScheduledTaskAction" = "Repair-RevitMcpHiddenScheduledTaskAction"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function Repair-RevitMcpHiddenScheduledTaskAction, New-RevitMcpDailyUpdateTrigger
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

@@ -187,6 +187,20 @@ function Assert-RevitMcpInstallerPayloadAvailable {
     }
 }
 
+$revAgentFunctionAliases = @{
+    "Assert-RevAgentInstallerPayloadAvailable" = "Assert-RevitMcpInstallerPayloadAvailable"
+    "Expand-RevAgentVersionPattern" = "Expand-RevitMcpVersionPattern"
+    "Get-RevAgentInstallRootCandidates" = "Get-RevitMcpInstallRootCandidates"
+    "Get-RevAgentRegistryInstallCandidates" = "Get-RevitMcpRegistryInstallCandidates"
+    "Get-RevAgentVersionConfig" = "Get-RevitMcpVersionConfig"
+    "Get-RevAgentVersionMatrix" = "Get-RevitMcpVersionMatrix"
+    "Get-RevAgentVersionMatrixPath" = "Get-RevitMcpVersionMatrixPath"
+    "Resolve-RevAgentInstallRoot" = "Resolve-RevitMcpInstallRoot"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function `
     Get-RevitMcpVersionMatrixPath, `
     Get-RevitMcpVersionMatrix, `
@@ -196,3 +210,4 @@ Export-ModuleMember -Function `
     Get-RevitMcpRegistryInstallCandidates, `
     Resolve-RevitMcpInstallRoot, `
     Assert-RevitMcpInstallerPayloadAvailable
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

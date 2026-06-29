@@ -33,7 +33,7 @@ $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
 Import-Module (Join-Path $RepoRoot "installer\lib\RevAgent.RevitVersions.psm1") -Force
 Import-Module (Join-Path $RepoRoot "scripts\RevitPayloadManifest.psm1") -Force
-$revitVersionConfig = Get-RevitMcpVersionConfig -Version $RevitVersion -RepoRoot $RepoRoot
+$revitVersionConfig = Get-RevAgentVersionConfig -Version $RevitVersion -RepoRoot $RepoRoot
 
 function Resolve-DotnetSdk {
     param([string]$RequestedPath)
@@ -70,7 +70,7 @@ function Resolve-DotnetSdk {
 function Get-Configuration {
     param([string]$Version)
 
-    return [string](Get-RevitMcpVersionConfig -Version $Version -RepoRoot $RepoRoot).buildConfiguration
+    return [string](Get-RevAgentVersionConfig -Version $Version -RepoRoot $RepoRoot).buildConfiguration
 }
 
 function Update-BridgeCommandRegistry {
@@ -168,7 +168,7 @@ if (-not (Test-Path -LiteralPath $builtCommandSetDll -PathType Leaf)) {
 
 if (-not $SkipPayloadCopy) {
     Assert-NoUntrackedRevitPayloadSourceInputs -RepoRoot $RepoRoot -RevitVersion $RevitVersion
-    Assert-RevitMcpInstallerPayloadAvailable -Version $RevitVersion -RepoRoot $RepoRoot
+    Assert-RevAgentInstallerPayloadAvailable -Version $RevitVersion -RepoRoot $RepoRoot
     $payloadDir = Join-Path $RepoRoot ([string]$revitVersionConfig.payload.installerPluginPath)
     if (-not (Test-Path -LiteralPath $payloadDir -PathType Container)) {
         throw "Installer payload directory was not found: $payloadDir"

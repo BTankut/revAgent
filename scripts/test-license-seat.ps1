@@ -61,7 +61,7 @@ function Write-TestLicensePair {
     )
 
     $License | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $LicensePath -Encoding UTF8
-    $signature = New-RevitMcpDetachedJsonSignature `
+    $signature = New-RevAgentDetachedJsonSignature `
         -Content $License `
         -SignedObject "license-seat" `
         -KeyId $KeyId `
@@ -81,7 +81,7 @@ try {
     $trustedKeys = @{
         $keyId = [pscustomobject][ordered]@{
             publicKeyXml = $publicKeyXml
-            publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+            publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
             algorithm = "RS256"
         }
     }
@@ -101,11 +101,11 @@ try {
     }
     Write-TestLicensePair -License $license -PrivateKey $rsa -KeyId $keyId -LicensePath $licensePath -SignaturePath $signaturePath
 
-    $disabled = Test-RevitMcpLicenseSeatFile -TrustedKeys $trustedKeys -Policy "disabled"
+    $disabled = Test-RevAgentLicenseSeatFile -TrustedKeys $trustedKeys -Policy "disabled"
     Assert-True $disabled.success "Disabled license policy should not block."
     Assert-Equal $disabled.state "disabled" "Disabled license policy should be reported."
 
-    $valid = Test-RevitMcpLicenseSeatFile `
+    $valid = Test-RevAgentLicenseSeatFile `
         -LicensePath $licensePath `
         -SignaturePath $signaturePath `
         -TrustedKeys $trustedKeys `
@@ -116,7 +116,7 @@ try {
     Assert-Equal $valid.licenseId "LIC-TEST-001" "License id should be reported."
     Assert-Equal $valid.seatId "SEAT-TEST-001" "Seat id should be reported."
 
-    $expired = Test-RevitMcpLicenseSeatFile `
+    $expired = Test-RevAgentLicenseSeatFile `
         -LicensePath $licensePath `
         -SignaturePath $signaturePath `
         -TrustedKeys $trustedKeys `
@@ -125,7 +125,7 @@ try {
     Assert-True (-not $expired.success) "Expired license should block enforce mode."
     Assert-Equal $expired.reason "license_expired" "Expired license should have a stable reason."
 
-    $expiredAudit = Test-RevitMcpLicenseSeatFile `
+    $expiredAudit = Test-RevAgentLicenseSeatFile `
         -LicensePath $licensePath `
         -SignaturePath $signaturePath `
         -TrustedKeys $trustedKeys `
@@ -141,7 +141,7 @@ try {
     }
     $tampered["seatId"] = "SEAT-TAMPERED"
     $tampered | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $licensePath -Encoding UTF8
-    $tamperedResult = Test-RevitMcpLicenseSeatFile `
+    $tamperedResult = Test-RevAgentLicenseSeatFile `
         -LicensePath $licensePath `
         -SignaturePath $signaturePath `
         -TrustedKeys $trustedKeys `
@@ -151,7 +151,7 @@ try {
     Assert-Equal $tamperedResult.reason "content_hash_mismatch" "Tampered license should fail content hash verification."
 
     Remove-Item -LiteralPath $licensePath, $signaturePath -Force
-    $missing = Test-RevitMcpLicenseSeatFile `
+    $missing = Test-RevAgentLicenseSeatFile `
         -LicensePath $licensePath `
         -SignaturePath $signaturePath `
         -TrustedKeys $trustedKeys `

@@ -727,8 +727,8 @@ function New-RevitMcpPublishSigningContext {
 
     Import-Module $distributionIntegrityModule -Force
     $privateKeyXml = Get-Content -Raw -LiteralPath $privateKeyFullPath -Encoding UTF8
-    $publicKeyXml = Get-RevitMcpPublicKeyXmlFromPrivateKeyXml -PrivateKeyXml $privateKeyXml
-    $publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+    $publicKeyXml = Get-RevAgentPublicKeyXmlFromPrivateKeyXml -PrivateKeyXml $privateKeyXml
+    $publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
 
     $trustedKeys = @{}
     $trustedKeys[$KeyId] = [pscustomobject][ordered]@{
@@ -754,14 +754,14 @@ function Write-RevitMcpDetachedSignatureFile {
         [Parameter(Mandatory = $true)][object]$SigningContext
     )
 
-    $signatureEnvelope = New-RevitMcpDetachedJsonSignature `
+    $signatureEnvelope = New-RevAgentDetachedJsonSignature `
         -Content $Content `
         -SignedObject $SignedObject `
         -KeyId ([string]$SigningContext.keyId) `
         -PrivateKeyXml ([string]$SigningContext.privateKeyXml)
     Write-JsonFile -Value $signatureEnvelope -Path $SignaturePath -Depth 8
 
-    $verification = Test-RevitMcpDetachedJsonSignatureFile `
+    $verification = Test-RevAgentDetachedJsonSignatureFile `
         -ContentPath $ContentPath `
         -SignaturePath $SignaturePath `
         -TrustedKeys ([hashtable]$SigningContext.trustedKeys) `

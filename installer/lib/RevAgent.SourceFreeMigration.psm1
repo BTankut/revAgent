@@ -325,7 +325,17 @@ function Invoke-RevitMcpSourceFreeArtifactCleanup {
     }
 }
 
+$revAgentFunctionAliases = @{
+    "Get-RevAgentSourceFreeArtifactInventory" = "Get-RevitMcpSourceFreeArtifactInventory"
+    "Get-RevAgentSourceFreeManagedRoots" = "Get-RevitMcpSourceFreeManagedRoots"
+    "Invoke-RevAgentSourceFreeArtifactCleanup" = "Invoke-RevitMcpSourceFreeArtifactCleanup"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function `
     Get-RevitMcpSourceFreeManagedRoots, `
     Get-RevitMcpSourceFreeArtifactInventory, `
     Invoke-RevitMcpSourceFreeArtifactCleanup
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

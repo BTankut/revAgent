@@ -231,5 +231,13 @@ function Test-RevitMcpLicenseSeatFile {
         -Signature $signature
 }
 
+$revAgentFunctionAliases = @{
+    "Test-RevAgentLicenseSeatFile" = "Test-RevitMcpLicenseSeatFile"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function `
     Test-RevitMcpLicenseSeatFile
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

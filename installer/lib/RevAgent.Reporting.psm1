@@ -217,9 +217,21 @@ function Publish-RevitMcpMachineRunReport {
     }
 }
 
+$revAgentFunctionAliases = @{
+    "ConvertTo-RevAgentSafePathSegment" = "ConvertTo-RevitMcpSafePathSegment"
+    "Invoke-RevAgentRemoteLogRetention" = "Invoke-RevitMcpRemoteLogRetention"
+    "New-RevAgentUpdateReport" = "New-RevitMcpUpdateReport"
+    "Publish-RevAgentMachineRunReport" = "Publish-RevitMcpMachineRunReport"
+    "Write-RevAgentJsonFile" = "Write-RevitMcpJsonFile"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function `
     Write-RevitMcpJsonFile, `
     New-RevitMcpUpdateReport, `
     ConvertTo-RevitMcpSafePathSegment, `
     Publish-RevitMcpMachineRunReport, `
     Invoke-RevitMcpRemoteLogRetention
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

@@ -85,7 +85,7 @@ try {
     Set-Content -LiteralPath (Join-Path $userProfileRoot ".codex\skills\revAgent\src\skill.ts") -Value "source" -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $installRoot "updater\backups\revit-mcp-skill.backup-20260623\src\old.ts") -Value "source" -Encoding ASCII
 
-    $dryRun = Invoke-RevitMcpSourceFreeArtifactCleanup `
+    $dryRun = Invoke-RevAgentSourceFreeArtifactCleanup `
         -InstallRoot $installRoot `
         -PackageTarget $packageTarget `
         -ServerTarget $serverTarget `
@@ -96,7 +96,7 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $packageTarget "src")) "Dry-run removed package source unexpectedly."
     Assert-True (Test-Path -LiteralPath (Join-Path $packageTarget "installer\revit-api-docs-mcp\scripts\build-index.ps1")) "Allowed docs build-index script must stay present."
 
-    $preserveDryRun = Invoke-RevitMcpSourceFreeArtifactCleanup `
+    $preserveDryRun = Invoke-RevAgentSourceFreeArtifactCleanup `
         -InstallRoot $installRoot `
         -PackageTarget $packageTarget `
         -ServerTarget $serverTarget `
@@ -107,7 +107,7 @@ try {
     Assert-True ([bool]$preserveDryRun.codexInstructionCleanupSkipped) "Preserve-local cleanup result must report skipped Codex instruction cleanup."
     Assert-Equal (@($preserveDryRun.artifacts | Where-Object { [string]$_.rootKind -eq "codexSkill" }).Count) 0 "Preserve-local cleanup must not classify Codex skill roots as cleanup artifacts."
 
-    $skipUserDryRun = Invoke-RevitMcpSourceFreeArtifactCleanup `
+    $skipUserDryRun = Invoke-RevAgentSourceFreeArtifactCleanup `
         -InstallRoot $installRoot `
         -PackageTarget $packageTarget `
         -ServerTarget $serverTarget `
@@ -148,7 +148,7 @@ try {
     Assert-Equal ([string]$preserveReport.machineRole) "developer" "Migration report should include descriptive machine role."
     Assert-Equal ([int]$preserveReport.before.artifactCount) 8 "Migration preserve-local dry-run should exclude Codex skill roots from artifact count."
 
-    $commit = Invoke-RevitMcpSourceFreeArtifactCleanup `
+    $commit = Invoke-RevAgentSourceFreeArtifactCleanup `
         -InstallRoot $installRoot `
         -PackageTarget $packageTarget `
         -ServerTarget $serverTarget `
@@ -290,7 +290,7 @@ Assert-True ($migrationText -match 'Get-Command powershell\.exe' -and $migration
 Assert-True ($migrationText -notmatch '& \$updaterPath @updateArgs') "Migration commit mode must not call update-from-nas.ps1 inside the current PowerShell process."
 Assert-True ($migrationText -match 'local trusted updater under WorkRoot' -and $migrationText -notmatch 'Join-Path \$PSScriptRoot "update-from-nas\.ps1"') "Migration commit mode must fail closed instead of falling back to a NAS-side updater."
 Assert-True ($migrationText -match 'update-from-nas\.ps1 exited with code') "Migration commit mode must treat non-zero child updater exit codes as failures."
-Assert-True ($migrationText -match 'Set-RevitMcpCurrentProcessUtf8Console') "Migration entrypoint must force UTF-8 output even when launched with -NoProfile."
+Assert-True ($migrationText -match 'Set-RevAgentCurrentProcessUtf8Console') "Migration entrypoint must force UTF-8 output even when launched with -NoProfile."
 Assert-True ($migrationText -match 'Resolve-RevitMcpCodexInstructionPolicy' -and $migrationText -match 'Add-RevitMcpChildProcessParameter -Arguments \$updateArgs -Name "CodexInstructionPolicy"') "Migration must resolve Codex instruction policy and pass it to child updater."
 Assert-True ($migrationText -match '-SkipCodexUserIntegration:\$SkipCodexUserIntegration') "Migration inventory must honor SkipCodexUserIntegration when scanning source-free artifacts."
 Assert-True ($migrationText -match 'codexInstructionCleanupSkipped = \[bool\]\$preserveLocalCodexInstructions') "Migration report must expose Codex instruction cleanup skip state."
@@ -301,16 +301,16 @@ Assert-True ($updaterParams -contains "CodexInstructionPolicy") "update-from-nas
 
 $updaterText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
 Assert-True ($updaterText -match 'Source migration : runtime, docs, Codex skill, and MCP registration refresh forced') "Updater migration mode must force full managed payload refresh."
-Assert-True ($updaterText -match 'Invoke-RevitMcpSourceFreeArtifactCleanup') "Updater migration mode must run source-free cleanup."
+Assert-True ($updaterText -match 'Invoke-RevAgentSourceFreeArtifactCleanup') "Updater migration mode must run source-free cleanup."
 Assert-True ($updaterText -match 'sourceFreeMigration = \$sourceFreeMigrationState') "Updater installed state must include migration verification metadata."
 Assert-True ($updaterText -match 'Resolve-CodexInstructionPolicy' -and $updaterText -match 'CodexInstructionPolicy = \$CodexInstructionPolicy') "Updater must resolve and pass Codex instruction policy to the self-contained installer."
 Assert-True ($updaterText -match '-PreserveLocalCodexInstructions:\$preserveLocalCodexInstructions') "Updater must exclude preserved Codex instruction roots from source-free cleanup and guard inventories."
 Assert-True ($updaterText -match '-SkipCodexUserIntegration:\$SkipCodexUserIntegration') "Updater source-free inventories must honor SkipCodexUserIntegration."
 Assert-True ($updaterText -match '-not \$SourceFreeMigration[\s\S]{0,160}\$isPackageCurrent') "Updater must not return early as current during source-free migration."
-Assert-True ($updaterText -match 'source-free-migration-required' -and $updaterText -match 'Get-RevitMcpSourceFreeArtifactInventory') "Normal updater runs must block before update when source-free migration inventory is not clean."
+Assert-True ($updaterText -match 'source-free-migration-required' -and $updaterText -match 'Get-RevAgentSourceFreeArtifactInventory') "Normal updater runs must block before update when source-free migration inventory is not clean."
 Assert-True ($updaterText -match 'migrate-source-free-install\.ps1 -Mode dryRun' -and $updaterText -match 'migrate-source-free-install\.ps1 -Mode commit') "Updater migration guard must tell operators to dry-run before commit."
 Assert-True ($updaterText -match 'function Get-UpdaterDetachedSignaturePath' -and $updaterText -match 'Get-UpdaterDetachedSignaturePath -ContentPath \$configuredLicensePath') "Updater must compute default detached signature paths without relying on imported helper scope."
-Assert-True ($updaterText -match 'RevitMcpDistributionIntegrityModule = Import-Module .*RevAgent\.DistributionIntegrity\.psm1.*-PassThru' -and $updaterText -match 'function Get-UpdaterDistributionIntegrityCommand' -and $updaterText -match 'Get-UpdaterDistributionIntegrityCommand -Name "Test-RevitMcpReleaseDistributionIntegrity" -Required') "Updater must call distribution integrity helpers through the imported module object during nested migration runs."
+Assert-True ($updaterText -match 'RevitMcpDistributionIntegrityModule = Import-Module .*RevAgent\.DistributionIntegrity\.psm1.*-PassThru' -and $updaterText -match 'function Get-UpdaterDistributionIntegrityCommand' -and $updaterText -match 'Get-UpdaterDistributionIntegrityCommand -Name "Test-RevAgentReleaseDistributionIntegrity" -Required') "Updater must call distribution integrity helpers through the imported module object during nested migration runs."
 
 $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
 Assert-True ($publishText -match 'migrate-source-free-install\.ps1') "Publisher must include the source-free migration tool in user packs and NAS tools."

@@ -123,7 +123,7 @@ try {
     $trustedKeys = @{ trustedKeys = @{} }
     $trustedKeys.trustedKeys[$keyId] = [pscustomobject][ordered]@{
         publicKeyXml = $publicKeyXml
-        publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+        publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
         algorithm = "RS256"
     }
     $trustedKeysPath = Join-Path $secretRoot "release-trusted-keys.json"
