@@ -105,6 +105,7 @@ jobs:
 
       - name: Claude PR review
         id: review
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -194,17 +195,53 @@ jobs:
           REVIEW_OUTCOME: ${{ steps.review.outcome }}
           REVIEW_OUT: ${{ steps.review.outputs.structured_output }}
           REVIEW_EXEC: ${{ steps.review.outputs.execution_file }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           $ErrorActionPreference = "Stop"
+          function Add-ClaudeReviewGateFailureComment {
+            param([Parameter(Mandatory = $true)][string]$Message)
+
+            $body = @"
+          Claude review gate could not produce a structured verdict.
+
+          $Message
+
+          Run: $($env:RUN_URL)
+
+          Merge remains blocked fail-closed.
+          <!-- revagent-claude-review-gate-technical-failure -->
+          "@
+            try {
+              gh pr comment $env:PR_NUMBER --body $body | Out-Null
+            }
+            catch {
+              Write-Warning "Failed to post Claude review gate failure comment: $($_.Exception.Message)"
+            }
+          }
+
+          function Stop-ClaudeReviewGate {
+            param([Parameter(Mandatory = $true)][string]$Message)
+
+            Add-ClaudeReviewGateFailureComment -Message $Message
+            throw $Message
+          }
+
           $outcome = $env:REVIEW_OUTCOME
           if ($outcome -ne "success") {
-            throw "Claude review step did not succeed (outcome=$outcome); blocking merge (fail closed)."
+            Stop-ClaudeReviewGate -Message "Claude review step did not succeed (outcome=$outcome); blocking merge (fail closed)."
           }
           $out = $env:REVIEW_OUT
           if ([string]::IsNullOrWhiteSpace($out)) {
-            throw "Claude review produced no structured verdict (empty structured_output); blocking merge (fail closed). Likely cause: a workflow-validation skip (this PR edits claude-review.yml) or a non-JSON final message. execution_file=$($env:REVIEW_EXEC)"
+            Stop-ClaudeReviewGate -Message "Claude review produced no structured verdict (empty structured_output); blocking merge (fail closed). Likely cause: a workflow-validation skip (this PR edits claude-review.yml) or a non-JSON final message. execution_file=$($env:REVIEW_EXEC)"
           }
-          $verdict = $out | ConvertFrom-Json
+          try {
+            $verdict = $out | ConvertFrom-Json
+          }
+          catch {
+            Stop-ClaudeReviewGate -Message "Claude review returned invalid structured JSON; blocking merge (fail closed). Error: $($_.Exception.Message)"
+          }
           if ($verdict.blocking) {
             throw "Claude review found blocking issue(s): $($verdict.tally)"
           }
