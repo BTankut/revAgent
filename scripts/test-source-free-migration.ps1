@@ -62,6 +62,7 @@ try {
     foreach ($path in @(
             (Join-Path $packageTarget "src"),
             (Join-Path $packageTarget "docs"),
+            (Join-Path $packageTarget "addons\dashboard"),
             (Join-Path $packageTarget "installer\revit-api-docs-mcp\scripts"),
             (Join-Path $packageTarget "installer\runtime-mcp-server"),
             (Join-Path $serverTarget "src"),
@@ -75,6 +76,7 @@ try {
 
     Set-Content -LiteralPath (Join-Path $packageTarget "src\tool.ts") -Value "export const x = 1;" -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $packageTarget "docs\developer.md") -Value "developer notes" -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $packageTarget "addons\dashboard\server.mjs") -Value "export {};" -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $packageTarget "installer\revit-api-docs-mcp\scripts\build-index.ps1") -Value "# allowed runtime script" -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $packageTarget "installer\runtime-mcp-server\tsconfig.json") -Value "{}" -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $serverTarget "src\index.ts") -Value "export {};" -Encoding ASCII
@@ -89,7 +91,7 @@ try {
         -ServerTarget $serverTarget `
         -UserProfileRoot $userProfileRoot
     Assert-Equal $dryRun.mode "dryRun" "Default source-free cleanup mode must be dryRun."
-    Assert-Equal $dryRun.artifactCount 8 "Dry-run should detect all managed source/developer artifacts."
+    Assert-Equal $dryRun.artifactCount 10 "Dry-run should detect all managed source/developer artifacts."
     Assert-Equal $dryRun.removedCount 0 "Dry-run must not remove artifacts."
     Assert-True (Test-Path -LiteralPath (Join-Path $packageTarget "src")) "Dry-run removed package source unexpectedly."
     Assert-True (Test-Path -LiteralPath (Join-Path $packageTarget "installer\revit-api-docs-mcp\scripts\build-index.ps1")) "Allowed docs build-index script must stay present."
@@ -101,7 +103,7 @@ try {
         -UserProfileRoot $userProfileRoot `
         -PreserveLocalCodexInstructions
     Assert-Equal $preserveDryRun.mode "dryRun" "Preserve-local source-free cleanup mode must remain dryRun by default."
-    Assert-Equal $preserveDryRun.artifactCount 6 "Preserve-local cleanup should exclude machine/user Codex skill roots from source-free artifacts."
+    Assert-Equal $preserveDryRun.artifactCount 8 "Preserve-local cleanup should exclude machine/user Codex skill roots from source-free artifacts."
     Assert-True ([bool]$preserveDryRun.codexInstructionCleanupSkipped) "Preserve-local cleanup result must report skipped Codex instruction cleanup."
     Assert-Equal (@($preserveDryRun.artifacts | Where-Object { [string]$_.rootKind -eq "codexSkill" }).Count) 0 "Preserve-local cleanup must not classify Codex skill roots as cleanup artifacts."
 
@@ -111,7 +113,7 @@ try {
         -ServerTarget $serverTarget `
         -UserProfileRoot $userProfileRoot `
         -SkipCodexUserIntegration
-    Assert-Equal $skipUserDryRun.artifactCount 7 "SkipCodexUserIntegration cleanup should exclude only the user Codex skill root from source-free artifacts."
+    Assert-Equal $skipUserDryRun.artifactCount 9 "SkipCodexUserIntegration cleanup should exclude only the user Codex skill root from source-free artifacts."
     Assert-Equal (@($skipUserDryRun.artifacts | Where-Object { [string]$_.rootLabel -eq "user Codex skill" }).Count) 0 "SkipCodexUserIntegration cleanup must not classify user Codex skill roots as cleanup artifacts."
     Assert-Equal (@($skipUserDryRun.artifacts | Where-Object { [string]$_.rootLabel -eq "machine Codex skill" }).Count) 1 "SkipCodexUserIntegration cleanup must still inspect the machine Codex skill root."
 
@@ -126,7 +128,7 @@ try {
         -ReportPath $reportPath
     Assert-True (Test-Path -LiteralPath $reportPath -PathType Leaf) "Migration dry-run should write a JSON report."
     $report = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
-    Assert-Equal ([int]$report.before.artifactCount) 8 "Migration dry-run report should include source/developer artifact count."
+    Assert-Equal ([int]$report.before.artifactCount) 10 "Migration dry-run report should include source/developer artifact count."
     Assert-Equal ([string]$report.mode) "dryRun" "Migration dry-run report should preserve mode."
 
     $preserveReportPath = Join-Path $tempRoot "migration-preserve-dry-run-report.json"
@@ -144,7 +146,7 @@ try {
     Assert-Equal ([string]$preserveReport.codexInstructionPolicy) "preserve-local" "Migration report should include preserve-local policy."
     Assert-True ([bool]$preserveReport.codexInstructionCleanupSkipped) "Migration report should show that Codex instruction cleanup was skipped by policy."
     Assert-Equal ([string]$preserveReport.machineRole) "developer" "Migration report should include descriptive machine role."
-    Assert-Equal ([int]$preserveReport.before.artifactCount) 6 "Migration preserve-local dry-run should exclude Codex skill roots from artifact count."
+    Assert-Equal ([int]$preserveReport.before.artifactCount) 8 "Migration preserve-local dry-run should exclude Codex skill roots from artifact count."
 
     $commit = Invoke-RevitMcpSourceFreeArtifactCleanup `
         -InstallRoot $installRoot `
@@ -156,6 +158,7 @@ try {
     Assert-Equal $commit.failedCount 0 "Commit cleanup should not fail in the isolated fixture."
     Assert-Equal $commit.remainingCount 0 "Commit cleanup should remove all managed source/developer artifacts."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $packageTarget "src"))) "Package src directory should be removed."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $packageTarget "addons"))) "Package admin add-on directory should be removed from source-free workstation installs."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $serverTarget "src"))) "Runtime src directory should be removed."
     Assert-True (Test-Path -LiteralPath (Join-Path $packageTarget "installer\revit-api-docs-mcp\scripts\build-index.ps1")) "Allowed docs build-index script should not be removed by cleanup."
 

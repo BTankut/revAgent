@@ -30,7 +30,10 @@ remain exact implementation, tool, package, manifest, and path identifiers.
 - `installer/command-payload/`: command set DLL and manifest backup
 - `installer/revit-payload-manifest.json`: source-to-payload freshness manifest for Revit DLL payloads
 - `installer/runtime-mcp-server/`: TypeScript source and bundled local runtime MCP server build for live Revit execution
-- `dashboard/`: read-only live dashboard server and browser UI for office monitoring
+- `addons/dashboard/`: admin-only read-only dashboard server and browser UI
+  for office monitoring
+- `addons/usage-intelligence/`: admin-only usage summary publisher and
+  coordinator task scripts
 - `docs/PLATFORM_ARCHITECTURE.md`: current platform, bridge, runtime, telemetry, dashboard, and deployment architecture
 - `docs/REVAGENT_SIGNED_SOURCE_FREE_CD_ROLLOUT_PLAN.md`: current signed
   source-free rollout record and next-phase plan for GitHub Actions CD, NAS
@@ -692,10 +695,16 @@ revit-mcp-skill/
 |   |-- REVAGENT_SIGNED_SOURCE_FREE_CD_ROLLOUT_PLAN.md
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
-|-- dashboard/
-|   |-- server.mjs
-|   |-- smoke-test.mjs
-|   `-- public/
+|-- addons/
+|   |-- dashboard/
+|   |   |-- addon.json
+|   |   |-- server/
+|   |   |-- tests/
+|   |   `-- public/
+|   `-- usage-intelligence/
+|       |-- addon.json
+|       |-- scripts/
+|       `-- tests/
 |-- references/
 |   |-- parameters.md
 |   |-- units.md
@@ -965,7 +974,9 @@ The read-only live dashboard can be started on the coordinator workstation with:
 powershell -ExecutionPolicy Bypass -File .\scripts\start-live-dashboard.ps1
 ```
 
-It serves `http://127.0.0.1:8765`, reads only `reports\machines`,
+The dashboard implementation lives under `addons\dashboard`; the root script is
+the compatibility launcher used from the repository. It serves
+`http://127.0.0.1:8765`, reads only `reports\machines`,
 `reports\live`, `reports\summaries`, and the stable channel manifest, and
 refreshes the browser every 3 seconds. The coordinator dashboard may also be
 published through the office Cloudflare Tunnel as
@@ -1016,7 +1027,8 @@ workstation was offline from NAS while still writing local live files, run
 live status/activity files back into `reports\live`. Use
 `scripts\test-live-dashboard.ps1` for the non-Revit dashboard regression check.
 
-The first reader layer is `scripts/summarize-usage-intelligence.ps1`. It reads
+The first reader layer is
+`addons/usage-intelligence/scripts/summarize-usage-intelligence.ps1`. It reads
 `reports\machines` plus one UTC day of `reports\events` and emits
 `revagent.usage.summary.v1` JSON with machine health, tool usage, project and
 discipline rollups, guarded/failed/slow operation samples, generated-output
@@ -1028,12 +1040,17 @@ bounded evidence snippets plus session/tool context. Weak or small-sample
 evidence is marked through `evidenceStrength`, and `humanReviewRequired`
 remains true; the summary never performs automatic priority escalation or
 authorizes writes.
-`scripts/publish-usage-summary.ps1` publishes that summary under
+`addons/usage-intelligence/scripts/publish-usage-summary.ps1` publishes that
+summary under
 `reports\summaries\daily` and refreshes `reports\summaries\latest.json` plus a
 short Markdown support view.
-Install `scripts/install-usage-summary-task.ps1` on exactly one coordinator
-workstation to run the publisher daily. The scheduled publisher uses
+Install `addons/usage-intelligence/scripts/install-usage-summary-task.ps1` on
+exactly one coordinator workstation to run the publisher daily. The scheduled publisher uses
 `reports\summaries\publish.lock` and writes logs under `reports\summaries\logs`.
+The root `scripts\summarize-usage-intelligence.ps1`,
+`scripts\publish-usage-summary.ps1`, `scripts\install-usage-summary-task.ps1`,
+and `scripts\test-usage-intelligence.ps1` files are compatibility wrappers that
+delegate into the add-on folder.
 
 ## Why `send_code_to_revit` remains available
 

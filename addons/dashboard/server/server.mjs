@@ -2,7 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { mergeRevitStatusSnapshots, unexpiredCachedRevitStatus } from "../installer/runtime-mcp-server/build/utils/revitTaskMerge.js";
+import { mergeRevitStatusSnapshots, unexpiredCachedRevitStatus } from "../../../installer/runtime-mcp-server/build/utils/revitTaskMerge.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1081,7 +1081,7 @@ function contentTypeFor(filePath) {
 }
 
 function serveStatic(response, requestPath) {
-  const publicRoot = path.join(__dirname, "public");
+  const publicRoot = path.join(__dirname, "..", "public");
   const cleanPath = requestPath === "/" ? "/index.html" : requestPath;
   const decoded = decodeURIComponent(cleanPath);
   const filePath = path.resolve(publicRoot, `.${decoded}`);

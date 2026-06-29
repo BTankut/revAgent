@@ -838,10 +838,10 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
     }
 
     $sourceLeakDirectoryNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($name in @("src", "docs", "references", "evals", "dashboard", "scripts", ".github", ".githooks", ".tmp")) {
+    foreach ($name in @("src", "docs", "references", "evals", "dashboard", "addons", "scripts", ".github", ".githooks", ".tmp")) {
         [void]$sourceLeakDirectoryNames.Add($name)
     }
-    $sourceLeakNamePattern = "(?i)(^src$|^docs$|^references$|^evals$|^dashboard$|^scripts$|^\.github$|^\.githooks$|^\.tmp$)"
+    $sourceLeakNamePattern = "(?i)(^src$|^docs$|^references$|^evals$|^dashboard$|^addons$|^scripts$|^\.github$|^\.githooks$|^\.tmp$)"
     $managedRoots = [System.Collections.Generic.List[string]]::new()
 
     foreach ($root in @(

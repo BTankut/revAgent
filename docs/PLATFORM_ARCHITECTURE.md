@@ -305,6 +305,9 @@ telemetry or release state.
 
 The coordinator starts the local dashboard with
 `scripts\start-live-dashboard.ps1`, normally on `http://127.0.0.1:8765`.
+The implementation is owned by the admin-only `addons\dashboard` package; the
+root script is a repository compatibility launcher and the core workstation
+package does not install dashboard or tunnel payloads.
 The browser polls `/api/overview` every 3 seconds with bounded responses and
 single-flight refreshes. The main UI is intentionally limited to compact
 Machine Status Windows and All Status Activity; deeper usage, friction, and
@@ -330,7 +333,7 @@ contract. Protect the hostname with Cloudflare Access or an equivalent office
 policy before broader external sharing.
 
 The deterministic daily reader is
-`scripts/summarize-usage-intelligence.ps1`. It combines
+`addons/usage-intelligence/scripts/summarize-usage-intelligence.ps1`. It combines
 `reports\machines\<machine>\latest.json` with one UTC day of
 `reports\events` into `revagent.usage.summary.v1` JSON for dashboards and
 future master-LLM review.
@@ -341,11 +344,12 @@ transaction/write-guard signals. Candidate objects carry bounded evidence
 snippets plus session/tool context, `evidenceStrength`, and
 `humanReviewRequired=true`; weak evidence is marked for human review instead of
 automatically escalating priority.
-`scripts/publish-usage-summary.ps1` is the publishing wrapper that writes the
-daily JSON/Markdown files and refreshes `reports\summaries\latest.json`.
-`scripts/install-usage-summary-task.ps1` installs the single-machine scheduled
-publisher, using a hidden launcher, a daily trigger, a publish lock, and NAS
-summary logs.
+`addons/usage-intelligence/scripts/publish-usage-summary.ps1` writes the daily
+JSON/Markdown files and refreshes `reports\summaries\latest.json`.
+`addons/usage-intelligence/scripts/install-usage-summary-task.ps1` installs the
+single-machine scheduled publisher, using a hidden launcher, a daily trigger, a
+publish lock, and NAS summary logs. The root scripts with the same names remain
+compatibility wrappers for local developer workflows.
 
 ## Deployment Components
 

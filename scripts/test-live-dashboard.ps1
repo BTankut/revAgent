@@ -38,7 +38,7 @@ $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
 Push-Location $RepoRoot
 try {
-    node .\dashboard\smoke-test.mjs
+    node .\addons\dashboard\tests\smoke-test.mjs
 }
 finally {
     Pop-Location
@@ -97,17 +97,17 @@ try {
 
     Push-Location $RepoRoot
     try {
-        $brief = node -e "import('./dashboard/server.mjs').then(({buildDashboardBrief}) => { const brief = buildDashboardBrief({generatedAtUtc:'x', stable:{version:'v'}, summary:{dateUtc:'d', toolUsage:[], friction:{}}, overview:{machineCount:0}, machines:[], activity:[]}); console.log(JSON.stringify(brief)); })" | ConvertFrom-Json
+        $brief = node -e "import('./addons/dashboard/server/server.mjs').then(({buildDashboardBrief}) => { const brief = buildDashboardBrief({generatedAtUtc:'x', stable:{version:'v'}, summary:{dateUtc:'d', toolUsage:[], friction:{}}, overview:{machineCount:0}, machines:[], activity:[]}); console.log(JSON.stringify(brief)); })" | ConvertFrom-Json
     }
     finally {
         Pop-Location
     }
     Assert-Equal $brief.schemaVersion "revagent.dashboard.brief.v1" "Brief schema mismatch."
 
-    $dashboardApp = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "dashboard\public\app.js")
-    $dashboardHtml = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "dashboard\public\index.html")
-    $dashboardCss = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "dashboard\public\styles.css")
-    $dashboardServer = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "dashboard\server.mjs")
+    $dashboardApp = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\public\app.js")
+    $dashboardHtml = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\public\index.html")
+    $dashboardCss = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\public\styles.css")
+    $dashboardServer = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\server\server.mjs")
     Assert-True ($dashboardApp -match 'ACTIVITY_DEFAULT_LIMIT = 50') "Dashboard must default all activity to 50 records."
     Assert-True ($dashboardApp -match 'ACTIVITY_EXPANDED_LIMIT = 200') "Dashboard expanded activity must cap at 200 records."
     Assert-True ($dashboardApp -match 'REFRESH_TIMEOUT_MS') "Dashboard refreshes must have a timeout."

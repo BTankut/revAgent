@@ -343,7 +343,7 @@ function Assert-RevitMcpUserPackNoSourceLeak {
 
     $blocked = [System.Collections.Generic.List[string]]::new()
     $blockedDirectoryNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($name in @(".git", ".github", ".githooks", ".tmp", "src", "docs", "evals", "references", "dashboard")) {
+    foreach ($name in @(".git", ".github", ".githooks", ".tmp", "src", "docs", "evals", "references", "dashboard", "addons")) {
         [void]$blockedDirectoryNames.Add($name)
     }
 

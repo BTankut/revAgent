@@ -50,7 +50,7 @@ if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
     $ReleaseRoot = Split-Path -Parent $ReportsRoot
 }
 
-$serverPath = Join-Path $RepoRoot "dashboard\server.mjs"
+$serverPath = Join-Path $RepoRoot "addons\dashboard\server\server.mjs"
 if (-not (Test-Path -LiteralPath $serverPath -PathType Leaf)) {
     throw "Dashboard server was not found: $serverPath"
 }

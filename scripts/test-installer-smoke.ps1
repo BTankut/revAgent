@@ -988,6 +988,7 @@ try {
     Assert-True ($publishText -match 'revAgent Updater STABLE\.cmd' -and $publishText -match 'Install-revAgent-Updater-GUI\.cmd' -and $publishText -match 'Install-revAgent-Updater-GUI\.ps1' -and $publishText -match 'Install-revAgent-Updater\.cmd') "NAS tools must publish revAgent-named user launcher files."
     Assert-True ($publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\runtime-mcp-server"' -and $publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\revit-api-docs-mcp"') "User pack must use hardened MCP release bundles instead of developer build trees."
     Assert-True ($publishText -match 'Assert-RevitMcpUserPackNoSourceLeak -Root \$packageRoot') "Publish must gate the user pack against source/developer artifact leaks."
+    Assert-True ($publishText -match '"addons"') "Publish source-leak gate must block admin add-on payloads from the workstation user pack."
     Assert-True ($publishText -match 'Assert-RevitMcpUserPackDotNetPayloadHardened -Root \$packageRoot') "Publish must gate the user pack against .NET debug symbol artifacts."
     Assert-True ($publishText -match 'Assert-RevitMcpUserPackHardenedJsPayload -Root \$packageRoot') "Publish must gate the user pack against unhardened JavaScript payloads."
     Assert-True ($publishText -match 'runtimeBundle = "installer\\runtime-mcp-server\\build\\index\.js"' -and $publishText -match 'docsServerBundle = "installer\\revit-api-docs-mcp\\build\\index\.js"') "Release manifest must hash hardened JavaScript bundle entrypoints."
@@ -1131,6 +1132,7 @@ try {
     Assert-True ($installerText -match 'Source cleanup\s+: Codex instruction roots skipped by preserve-local policy') "Installer source cleanup must skip Codex instruction roots under preserve-local policy."
     Assert-True ($installerText -match 'if \(-not \$SkipCodexUserIntegration\)' -and $installerText -match '\$managedRoots\.Add\(\$codexSkillTarget\)') "Installer source cleanup must not scan the user Codex skill root when user integration is skipped."
     Assert-True ($installerText -match 'Remove-RevitMcpManagedSourceLeakArtifacts') "Installer must clean managed source/developer artifact leaks."
+    Assert-True ($installerText -match '\^addons\$') "Installer source cleanup must treat admin add-on folders as non-workstation artifacts."
     Assert-True ($installerText -match 'if \(-not \$SkipRuntimePayloadInstall -and -not \[string\]::IsNullOrWhiteSpace\(\$ServerTarget\)\)' -and $installerText -match 'Test-RevitMcpRuntimeDirectory -Path \$ServerTarget') "Installer source cleanup must honor runtime skip and validate ServerTarget before scanning it."
     Assert-True ($installerText -match 'Get-ChildItem -LiteralPath \$root -Recurse -Directory') "Installer source cleanup must recursively scan managed install roots."
     Assert-True ($installerText -match 'Sort-Object \{ \$_.FullName.Length \} -Descending') "Installer source cleanup must remove nested developer directories deepest-first."
@@ -1145,6 +1147,18 @@ try {
     Assert-True ($installerText -match 'LegacyNames @\("Revit MCP Auto Update"\)') "Self-contained installer must migrate the legacy Revit MCP task name."
     Assert-True ($installerText -notmatch 'Copy-Item[^\r\n]*AGENTS\.md\.backup-') "Installer must not create AGENTS.md backup files."
     Assert-True ($installerText -notmatch 'Move-Item[^\r\n]*revit-mcp\.backup|codexSkillBackupsRoot') "Installer must not create Codex skill backup directories."
+    $dashboardAddonManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\addon.json") | ConvertFrom-Json
+    $usageAddonManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\usage-intelligence\addon.json") | ConvertFrom-Json
+    Assert-Equal $dashboardAddonManifest.installRole "admin" "Dashboard add-on must be admin-scoped."
+    Assert-Equal $usageAddonManifest.installRole "admin" "Usage-intelligence add-on must be admin-scoped."
+    Assert-Equal ([bool]$dashboardAddonManifest.corePackage) $false "Dashboard add-on must not be part of the core workstation package."
+    Assert-Equal ([bool]$usageAddonManifest.corePackage) $false "Usage-intelligence add-on must not be part of the core workstation package."
+    $usageSummaryWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\summarize-usage-intelligence.ps1")
+    $usagePublishWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-usage-summary.ps1")
+    $usageTaskWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-usage-summary-task.ps1")
+    Assert-True ($usageSummaryWrapper -match 'addons\\usage-intelligence\\scripts\\summarize-usage-intelligence\.ps1') "Usage summary compatibility wrapper must delegate to the add-on script."
+    Assert-True ($usagePublishWrapper -match 'addons\\usage-intelligence\\scripts\\publish-usage-summary\.ps1') "Usage publish compatibility wrapper must delegate to the add-on script."
+    Assert-True ($usageTaskWrapper -match 'addons\\usage-intelligence\\scripts\\install-usage-summary-task\.ps1') "Usage task compatibility wrapper must delegate to the add-on script."
     $report = New-RevitMcpUpdateReport -Status "current" -Message "ok" -PreviousVersion "1" -InstalledVersion "1"
     $reportPath = Join-Path $tempRoot "report.json"
     Write-RevitMcpJsonFile -Path $reportPath -Value $report

@@ -189,7 +189,7 @@ function Get-RevitMcpForbiddenReleaseArtifactReason {
         return "developer_publish_tool_in_user_package"
     }
 
-    $blockedDirectoryNames = @(".git", ".github", ".githooks", ".tmp", "src", "docs", "evals", "references", "dashboard")
+    $blockedDirectoryNames = @(".git", ".github", ".githooks", ".tmp", "src", "docs", "evals", "references", "dashboard", "addons")
     $directoryParts = @()
     if ($parts.Count -gt 1) {
         $directoryParts = @($parts[0..($parts.Count - 2)])
