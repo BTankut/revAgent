@@ -13,6 +13,8 @@ All notable revAgent workstation deployment changes are tracked here.
   store before rewriting the installed revAgent tunnel config.
 - Fixed dashboard tunnel config rewriting to emit Windows paths as YAML
   single-quoted scalars so backslashes are not parsed as escape sequences.
+- Fixed admin add-on HKCU startup fallback registration so adding the tunnel or
+  usage startup value preserves any existing dashboard startup value.
 - Added explicit admin dashboard tunnel migration: the dashboard add-on can now
   install `cloudflared.exe`, config, credentials, and the
   `revAgent Dashboard Tunnel` scheduled task under the revAgent add-on root,

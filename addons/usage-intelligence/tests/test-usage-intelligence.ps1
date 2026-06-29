@@ -737,6 +737,7 @@ try {
     Assert-True ($taskScriptText -match 'Write-RevitMcpHiddenPowerShellLauncher') "Usage summary task must run hidden through the shared launcher."
     Assert-True ($taskScriptText -match 'Invoke-SchtasksCreateDailyTask') "Usage summary task installer must fall back to schtasks.exe for non-elevated coordinator installs."
     Assert-True ($taskScriptText -match 'Register-HkcuRunStartup') "Usage summary task installer must have a no-admin HKCU startup fallback."
+    Assert-True ($taskScriptText -match 'Test-Path -LiteralPath \$runKey') "Usage summary task installer must preserve existing HKCU Run values when adding startup fallback."
     Assert-True ($taskScriptText -match 'Task method') "Usage summary task installer must report the scheduled task registration method."
     Assert-True ($taskScriptText -match '\$publishParameters = @\{' -and $taskScriptText -match '& \$PublishScriptPath @publishParameters') "Usage summary task RunNow must use named splatting."
     Assert-True ($taskScriptText -match 'DPE\\revAgent\\addons\\usage-intelligence\\state') "Usage summary task must default work state under the installed add-on root."
