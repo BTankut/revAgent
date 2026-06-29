@@ -189,13 +189,21 @@ function Get-RevitMcpForbiddenReleaseArtifactReason {
         return "developer_publish_tool_in_user_package"
     }
 
+    $isAdminAddonToolsPath = $parts.Count -ge 2 -and
+        [string]::Equals([string]$parts[0], "tools", [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals([string]$parts[1], "addons", [System.StringComparison]::OrdinalIgnoreCase)
+
     $blockedDirectoryNames = @(".git", ".github", ".githooks", ".tmp", "src", "docs", "evals", "references", "dashboard", "addons")
     $directoryParts = @()
     if ($parts.Count -gt 1) {
         $directoryParts = @($parts[0..($parts.Count - 2)])
     }
     foreach ($part in $directoryParts) {
-        if ($part -in $blockedDirectoryNames) {
+        $allowedAdminAddonPart = $isAdminAddonToolsPath -and (
+            [string]::Equals($part, "addons", [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($part, "dashboard", [System.StringComparison]::OrdinalIgnoreCase)
+        )
+        if ($part -in $blockedDirectoryNames -and -not $allowedAdminAddonPart) {
             return "developer_directory_artifact"
         }
     }

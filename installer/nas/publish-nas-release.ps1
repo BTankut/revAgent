@@ -524,6 +524,47 @@ function Copy-RevitMcpUserPack {
     Copy-UserPackFile -SourceRelativePath "installer\revit-api-docs-mcp\scripts\build-index.ps1"
 }
 
+function Copy-RevitMcpAdminAddonPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$AddonId,
+        [Parameter(Mandatory = $true)][string[]]$DirectoryNames
+    )
+
+    $addonSource = Join-Path $RepoRoot (Join-Path "addons" $AddonId)
+    if (-not (Test-Path -LiteralPath $addonSource -PathType Container)) {
+        throw "Admin add-on source directory was not found: $addonSource"
+    }
+
+    $addonsTargetRoot = Join-Path $toolsRoot "addons"
+    $addonTarget = Join-Path $addonsTargetRoot $AddonId
+    if (Test-Path -LiteralPath $addonTarget) {
+        Remove-Item -LiteralPath $addonTarget -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $addonTarget -Force | Out-Null
+
+    Copy-Item -LiteralPath (Join-Path $addonSource "addon.json") -Destination (Join-Path $addonTarget "addon.json") -Force
+    foreach ($directoryName in $DirectoryNames) {
+        $sourceDirectory = Join-Path $addonSource $directoryName
+        if (-not (Test-Path -LiteralPath $sourceDirectory -PathType Container)) {
+            throw "Required admin add-on directory was not found: $sourceDirectory"
+        }
+
+        Copy-DirectoryFiltered -Source $sourceDirectory -Destination (Join-Path $addonTarget $directoryName)
+    }
+}
+
+function Copy-RevitMcpAdminAddonTools {
+    $addonsTargetRoot = Join-Path $toolsRoot "addons"
+    if (Test-Path -LiteralPath $addonsTargetRoot) {
+        Remove-Item -LiteralPath $addonsTargetRoot -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $addonsTargetRoot -Force | Out-Null
+
+    Copy-RevitMcpAdminAddonPayload -AddonId "dashboard" -DirectoryNames @("installer", "server", "public")
+    Copy-RevitMcpAdminAddonPayload -AddonId "usage-intelligence" -DirectoryNames @("installer", "scripts")
+    Write-Host "Admin add-ons path: $addonsTargetRoot" -ForegroundColor Green
+}
+
 function Get-RelativeFileHash {
     param(
         [string]$Root,
@@ -1079,6 +1120,7 @@ try {
         Copy-DirectoryFiltered -Source $dependenciesSource -Destination $dependenciesTarget
         Write-Host "Dependencies path: $dependenciesTarget" -ForegroundColor Green
     }
+    Copy-RevitMcpAdminAddonTools
     Write-Host "Tools path: $toolsRoot" -ForegroundColor Green
 
     Write-Host "Release package: $zipPath" -ForegroundColor Green

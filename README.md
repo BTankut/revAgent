@@ -1084,6 +1084,9 @@ The installed add-on lives under
 `C:\ProgramData\DPE\revAgent\addons\usage-intelligence`, writes
 `config\usage-intelligence.json`, and defaults task state/launcher files under
 the add-on `state` folder.
+Published releases copy admin add-on payloads under the release tools surface
+at `tools\addons\dashboard` and `tools\addons\usage-intelligence`; the signed
+standard user ZIP remains add-on-free.
 The root `scripts\summarize-usage-intelligence.ps1`,
 `scripts\publish-usage-summary.ps1`, `scripts\install-usage-summary-task.ps1`,
 `scripts\install-usage-intelligence-addon.ps1`, and

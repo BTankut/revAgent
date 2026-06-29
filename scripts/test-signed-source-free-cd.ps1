@@ -171,6 +171,8 @@ try {
     Assert-True (-not [System.IO.Path]::IsPathRooted([string]$sourceChannel.manifestPath)) "CD channel manifestPath must be relative."
     Assert-Equal ([string]$sourceChannel.packagePath) ([string]$sourceManifest.package.path) "CD channel and manifest package paths must match."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\config\release-trusted-keys.json") -PathType Leaf) "CD release root should carry public trusted keys in tools config."
+    Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\installer\install-dashboard-addon.ps1") -PathType Leaf) "CD release root should carry dashboard admin add-on tools."
+    Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "CD release root should carry usage-intelligence admin add-on tools."
 
     $legacyReleaseDir = Join-Path $nasRoot "releases\2026.05.01.legacy"
     New-Item -ItemType Directory -Path $legacyReleaseDir -Force | Out-Null
@@ -189,6 +191,8 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "channels\stable.sig.json") -PathType Leaf) "NAS stable channel signature should exist after publish."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $nasRoot "channels\stable.candidate.json"))) "NAS candidate channel should be removed after publish."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $nasRoot "channels\stable.candidate.sig.json"))) "NAS candidate channel signature should be removed after publish."
+    Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\addons\dashboard\installer\install-dashboard-addon.ps1") -PathType Leaf) "NAS publish should carry dashboard admin add-on tools."
+    Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "NAS publish should carry usage-intelligence admin add-on tools."
 
     $nasReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
         -ReleaseRoot $nasRoot `

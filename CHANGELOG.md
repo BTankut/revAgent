@@ -13,6 +13,9 @@ All notable revAgent workstation deployment changes are tracked here.
   summary publisher under `C:\ProgramData\DPE\revAgent\addons`, writes
   add-on-local config/state, and installs the scheduled publisher from the
   installed add-on path.
+- Added admin add-on publishing under NAS `tools\addons` so dashboard and
+  usage-intelligence installers can be distributed separately from the signed
+  source-free standard user ZIP.
 - Renamed user-facing front-layer branding to revAgent across Codex MCP
   registration (`revAgent`, `revAgent-api-docs`), user-pack instructions,
   runtime tool descriptions, Revit UI/add-in labels, installer launchers, and

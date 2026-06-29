@@ -995,6 +995,7 @@ try {
     Assert-True ($publishText -match 'Get-RevitMcpUserPackPathParts' -and $publishText -match 'Test-RevitMcpUserPackIgnoredDependencyPath') "Publish source-leak gate must use path-component dependency exclusions."
     Assert-True ($publishText -notmatch 'Copy-DirectoryFiltered -Source \$RepoRoot -Destination \$packageRoot') "Publish must not stage releases by copying the repo root."
     Assert-True ($publishText -notmatch 'Copy-UserPackDirectory -SourceRelativePath "installer\\nas"') "Versioned user pack must not copy deployment tooling wholesale."
+    Assert-True ($publishText -match 'Copy-RevitMcpAdminAddonTools' -and $publishText -match 'toolsRoot "addons"') "Publish must copy admin add-ons only into NAS tools\\addons."
     Assert-True ($publishText -notmatch 'src\\revit-plugin\\revit-mcp-plugin\\revit-mcp-plugin\.csproj') "Release manifest components must not include developer source project files."
 
     Write-Host "Test initial updater invocation binding"
