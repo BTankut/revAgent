@@ -511,9 +511,11 @@ for one element or a small element set.
 Fresh sessions should prefer a small set of strong primitives plus model
 verification over waiting for a one-click tool. At the start of a Revit task,
 read the optional local working context at
-`C:/ProgramData/DPE/RevitMCP/codex/working-context.md` when it exists. Treat
-that file as recent memory, not truth: verify status, active document, active
-view, selection, ids, and writable state before acting.
+`C:/ProgramData/DPE/revAgent/codex/working-context.md` when it exists. When
+maintaining a pre-rename workstation, the legacy
+`C:/ProgramData/DPE/RevitMCP/codex/working-context.md` path may also exist.
+Treat either file as recent memory, not truth: verify status, active document,
+active view, selection, ids, and writable state before acting.
 
 Use this playbook for common view and focus requests:
 

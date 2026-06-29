@@ -43,6 +43,8 @@ before making changes:
 6. `CHANGELOG.md`
 7. `AGENTS.md`
 8. `SKILL.md`
+9. `docs/REVAGENT_LEGACY_NAME_INVENTORY.md` when touching rename,
+   compatibility, install path, or package identity work
 
 If Revit automation will be tested live, also read the installed or repo copy of
 `SKILL.md` and follow the revAgent status preflight rule before every
