@@ -81,7 +81,9 @@ function Register-HkcuRunStartup {
     $wscriptPath = Resolve-RevitMcpWScriptPath
     $taskRun = Join-RevitMcpWindowsCommandArguments -Arguments @($wscriptPath, "//B", "//Nologo", $LauncherPath)
     $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-    New-Item -Path $runKey -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $runKey)) {
+        New-Item -Path $runKey -Force | Out-Null
+    }
     Set-ItemProperty -Path $runKey -Name $TaskName -Value $taskRun -Force
     return "HKCU Run"
 }

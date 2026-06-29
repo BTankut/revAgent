@@ -380,7 +380,9 @@ function Register-HkcuRunStartup {
     $wscriptPath = Join-Path $env:WINDIR "System32\wscript.exe"
     $taskRun = Join-WindowsCommandArguments -Arguments @($wscriptPath, "//B", "//Nologo", $LauncherPath)
     $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-    New-Item -Path $runKey -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $runKey)) {
+        New-Item -Path $runKey -Force | Out-Null
+    }
     Set-ItemProperty -Path $runKey -Name $TaskName -Value $taskRun -Force
     return "HKCU Run"
 }
