@@ -995,6 +995,20 @@ The installed add-on owns the `revAgent Dashboard Server` scheduled task and
 writes `config\dashboard.json` under the add-on root. The standard user package
 does not install this dashboard add-on or the Cloudflare tunnel payload.
 
+On the coordinator/admin machine, the Cloudflare tunnel is migrated explicitly
+after the dashboard add-on is installed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-dashboard-tunnel.ps1
+```
+
+The tunnel installer copies `cloudflared.exe`, config, and credential files into
+`C:\ProgramData\DPE\revAgent\addons\dashboard\tunnel`, rewrites path-owned
+settings such as `logfile`, and owns the `revAgent Dashboard Tunnel` scheduled
+task. It does not stop or remove the legacy `RevitMCP\cloudflared` tunnel unless
+the new add-on tunnel is started and health checks pass with explicit
+`-StopLegacyOnSuccess` or `-RemoveLegacyOnSuccess`.
+
 The browser UI is designed for desktop and iPhone Safari/Chrome. It shows a
 left-side Machine Status Windows list, a right-side All Status Activity stream
 with all/one/multiple-machine filters, and System/Light/Dark theme selection.

@@ -314,6 +314,16 @@ The admin install path is
 `addons\dashboard\installer\install-dashboard-addon.ps1`. The installed server
 uses only add-on-local dashboard files plus NAS report inputs, so it does not
 depend on the source repository path.
+The admin tunnel path is
+`C:\ProgramData\DPE\revAgent\addons\dashboard\tunnel`; install or migrate it
+through `scripts\install-dashboard-tunnel.ps1` or by passing `-MigrateTunnel`
+to the dashboard add-on installer. The tunnel installer copies the Cloudflare
+binary, config, and credential file references into the add-on root, rewrites
+path-owned settings such as the log file, and owns the
+`revAgent Dashboard Tunnel` scheduled task. Legacy `RevitMCP\cloudflared`
+processes and files are left untouched unless the new add-on tunnel is started,
+passes health checks, and the operator explicitly opts into legacy stop or
+cleanup switches.
 The browser polls `/api/overview` every 3 seconds with bounded responses and
 single-flight refreshes. The main UI is intentionally limited to compact
 Machine Status Windows and All Status Activity; deeper usage, friction, and

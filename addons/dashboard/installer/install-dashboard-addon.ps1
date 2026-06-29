@@ -14,6 +14,18 @@ param(
     [int]$StaleSeconds = 60,
     [int]$OfflineSeconds = 300,
     [string]$TaskName = "revAgent Dashboard Server",
+    [switch]$MigrateTunnel,
+    [string]$TunnelTaskName = "revAgent Dashboard Tunnel",
+    [string]$LegacyTunnelRoot = "C:\ProgramData\DPE\RevitMCP\cloudflared",
+    [string]$CloudflaredExe = "",
+    [string]$TunnelConfigPath = "",
+    [string]$TunnelCredentialsPath = "",
+    [string]$TunnelPublicHealthUrl = "",
+    [switch]$SkipTunnelScheduledTasks,
+    [switch]$RunTunnelNow,
+    [switch]$NoTunnelHealthCheck,
+    [switch]$StopLegacyTunnelOnSuccess,
+    [switch]$RemoveLegacyTunnelOnSuccess,
     [switch]$SkipScheduledTasks,
     [switch]$RunNow,
     [switch]$NoHealthCheck
@@ -241,6 +253,50 @@ function Test-DashboardHealth {
     return $false
 }
 
+function Invoke-DashboardTunnelMigration {
+    $tunnelInstaller = Join-Path $InstallRoot "installer\install-dashboard-tunnel.ps1"
+    if (-not (Test-Path -LiteralPath $tunnelInstaller -PathType Leaf)) {
+        throw "Dashboard tunnel installer was not found after add-on payload install: $tunnelInstaller"
+    }
+
+    $parameters = @{
+        InstallRoot = $InstallRoot
+        LegacyTunnelRoot = $LegacyTunnelRoot
+        TaskName = $TunnelTaskName
+        DashboardHealthUrl = "http://$HostName`:$Port/api/health"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CloudflaredExe)) {
+        $parameters.CloudflaredExe = $CloudflaredExe
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TunnelConfigPath)) {
+        $parameters.ConfigPath = $TunnelConfigPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TunnelCredentialsPath)) {
+        $parameters.CredentialsPath = $TunnelCredentialsPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TunnelPublicHealthUrl)) {
+        $parameters.PublicHealthUrl = $TunnelPublicHealthUrl
+    }
+    if ($SkipTunnelScheduledTasks) {
+        $parameters.SkipScheduledTasks = $true
+    }
+    if ($RunTunnelNow) {
+        $parameters.RunNow = $true
+    }
+    if ($NoTunnelHealthCheck) {
+        $parameters.NoHealthCheck = $true
+    }
+    if ($StopLegacyTunnelOnSuccess) {
+        $parameters.StopLegacyOnSuccess = $true
+    }
+    if ($RemoveLegacyTunnelOnSuccess) {
+        $parameters.RemoveLegacyOnSuccess = $true
+    }
+
+    $raw = & $tunnelInstaller @parameters
+    return $raw | ConvertFrom-Json
+}
+
 if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
     $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
@@ -274,6 +330,11 @@ if ($RunNow -and -not $NoHealthCheck) {
     }
 }
 
+$tunnel = $null
+if ($MigrateTunnel) {
+    $tunnel = Invoke-DashboardTunnelMigration
+}
+
 $result = [ordered]@{
     schemaVersion = "revagent.dashboard.addon.install.v1"
     installed = $true
@@ -284,6 +345,7 @@ $result = [ordered]@{
     runNow = [bool]$RunNow
     healthChecked = $healthChecked
     healthy = $healthy
+    tunnel = $tunnel
 }
 
 $result | ConvertTo-Json -Depth 8

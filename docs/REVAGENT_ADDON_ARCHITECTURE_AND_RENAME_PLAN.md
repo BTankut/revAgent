@@ -268,6 +268,10 @@ is already being moved for the add-on architecture.
      dashboard add-on path.
    - Verify new tunnel before stopping old tunnel.
    - Clean legacy tunnel only after successful migration.
+   - Implementation note: the add-on now exposes
+     `installer\install-dashboard-tunnel.ps1` and root wrapper
+     `scripts\install-dashboard-tunnel.ps1`. Live admin execution still needs a
+     coordinator-machine run with health checks before old tunnel cleanup.
 
 5. **Usage-intelligence add-on installer**
    - Install summary publisher under
