@@ -11,6 +11,8 @@ All notable revAgent workstation deployment changes are tracked here.
 - Hardened dashboard tunnel migration so stale legacy `credentials-file`
   entries can be recovered from the default user-profile Cloudflare credential
   store before rewriting the installed revAgent tunnel config.
+- Fixed dashboard tunnel config rewriting to emit Windows paths as YAML
+  single-quoted scalars so backslashes are not parsed as escape sequences.
 - Added explicit admin dashboard tunnel migration: the dashboard add-on can now
   install `cloudflared.exe`, config, credentials, and the
   `revAgent Dashboard Tunnel` scheduled task under the revAgent add-on root,
