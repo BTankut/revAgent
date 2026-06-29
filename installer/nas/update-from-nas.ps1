@@ -3011,6 +3011,39 @@ function Test-RevitMcpPathUnder {
         return $false
     }
 }
+
+$revAgentCanonicalNasRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+$revAgentLegacyNasRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+
+function Resolve-RevAgentCanonicalNasTransitionPath {
+    param([string]$Path)
+
+    if (-not (Test-RevitMcpPathUnder -ChildPath $Path -ParentPath $revAgentLegacyNasRoot)) {
+        return $Path
+    }
+
+    $legacyPrefix = [System.IO.Path]::GetFullPath($revAgentLegacyNasRoot).TrimEnd("\") + "\"
+    $relativePath = [System.IO.Path]::GetFullPath($Path).Substring($legacyPrefix.Length)
+    $candidatePath = Join-Path $revAgentCanonicalNasRoot $relativePath
+    if (Test-Path -LiteralPath $candidatePath) {
+        return $candidatePath
+    }
+
+    return $Path
+}
+
+$originalChannelManifestPath = $ChannelManifestPath
+$ChannelManifestPath = Resolve-RevAgentCanonicalNasTransitionPath -Path $ChannelManifestPath
+$channelMovedToCanonicalNasRoot = -not [string]::Equals($originalChannelManifestPath, $ChannelManifestPath, [System.StringComparison]::OrdinalIgnoreCase)
+if ($channelMovedToCanonicalNasRoot) {
+    Write-Host "Canonical NAS release root detected; updater config will use: $ChannelManifestPath"
+}
+if ($channelMovedToCanonicalNasRoot -and (Test-RevitMcpPathUnder -ChildPath $ReportsRoot -ParentPath $revAgentLegacyNasRoot)) {
+    $channelDirForReports = Split-Path -Parent $ChannelManifestPath
+    $releaseRootForReports = Split-Path -Parent $channelDirForReports
+    $ReportsRoot = Join-Path $releaseRootForReports "reports"
+}
+
 if ((-not $explicitInstallRoot) -and (Test-RevitMcpSamePath -Left $InstallRoot -Right $legacyInstallRoot)) {
     Write-Host "Legacy install root detected in updater config; migrating to revAgent root: $defaultInstallRoot"
     if (-not ($LegacyServerTargets | Where-Object { Test-RevitMcpSamePath -Left $_ -Right (Join-Path $legacyInstallRoot "runtime") })) {

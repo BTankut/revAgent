@@ -818,7 +818,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Section "Prepare release folders"
 if (-not $ReleaseRoot.StartsWith("\\")) {
-    Write-Warning "ReleaseRoot is not a UNC path. For office deployment, prefer a path that every workstation can read, e.g. \\dpe-nas\...\revit-mcp-deploy"
+    Write-Warning "ReleaseRoot is not a UNC path. For office deployment, prefer a path that every workstation can read, e.g. \\dpe-nas\...\revAgent-deploy"
 }
 
 $ReleaseRoot = [System.IO.Path]::GetFullPath($ReleaseRoot)

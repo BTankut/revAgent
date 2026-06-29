@@ -38,7 +38,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$defaultReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+$defaultCanonicalReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+$defaultLegacyReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
 $config = $null
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath) -and -not [string]::IsNullOrWhiteSpace($env:REVAGENT_ROLLOUT_READINESS_CONFIG)) {
@@ -813,8 +814,11 @@ if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
     if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_RELEASE_ROOT)) {
         $ReleaseRoot = $env:REVAGENT_RELEASE_ROOT
     }
+    elseif (Test-Path -LiteralPath (Join-Path $defaultCanonicalReleaseRoot "channels\stable.json") -PathType Leaf) {
+        $ReleaseRoot = $defaultCanonicalReleaseRoot
+    }
     else {
-        $ReleaseRoot = $defaultReleaseRoot
+        $ReleaseRoot = $defaultLegacyReleaseRoot
     }
 }
 if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {

@@ -30,7 +30,7 @@ or paths. Codex-facing MCP entries should appear as `revAgent` and
 On a workstation, close Revit and run the NAS updater installer:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater-GUI.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\Install-revAgent-Updater-GUI.cmd
 ```
 
 The updater installs into:
@@ -105,7 +105,7 @@ dispatch with `publish_to_nas=true`. Use the manual publish command only for
 controlled recovery/backstop work from a clean development checkout:
 
 ```powershell
-$ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+$ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
 $PrivateKeyPath = "C:\ProgramData\DPE\revAgentReleaseSigning\private\revagent-prod-rsa-2026q3-private.xml"
 $TrustedKeysPath = "C:\ProgramData\DPE\revAgentReleaseSigning\public\release-trusted-keys.json"
 powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps1" `

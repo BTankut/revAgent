@@ -458,7 +458,7 @@ Use this order on a fresh machine. In the office, the preferred path is to
 double-click the NAS updater:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\Install-revAgent-Updater.cmd
 ```
 
 Manual repo-root install:
@@ -550,10 +550,12 @@ required checks pass and actionable review comments are addressed.
 Any update that reaches protected `main` builds and validates a signed
 source-free release root. Publishing that release to the office NAS stable
 channel is a separate manual workflow-dispatch action with
-`publish_to_nas=true`. Verify the workflow result and `channels\stable.json`
-after publish before manual rollout instructions, and pause scheduled updater
-rollout separately when verification must happen before any workstation
-installs the new stable release.
+`publish_to_nas=true`. The canonical NAS root is `revAgent-deploy`; keep
+`revit-mcp-deploy` only as an explicit compatibility publish target during the
+transition. Verify the workflow result and `channels\stable.json` after publish
+before manual rollout instructions, and pause scheduled updater rollout
+separately when verification must happen before any workstation installs the new
+stable release.
 
 When the shared bridge command payload changes and Revit 2022 is available, run the
 optional live commandset gate separately:

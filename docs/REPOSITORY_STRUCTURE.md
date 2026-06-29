@@ -213,7 +213,7 @@ below remains available as a controlled fallback/recovery primitive:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\installer\nas\publish-nas-release.ps1 `
-  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy" `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy" `
   -Channel stable
 ```
 

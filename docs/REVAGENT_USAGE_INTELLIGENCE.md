@@ -64,7 +64,7 @@ Example:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\summarize-usage-intelligence.ps1 `
-  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports" `
+  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports" `
   -DateUtc "2026-05-27" `
   -OutputPath "C:\ProgramData\DPE\revAgent\debug\usage-summary-2026-05-27.json"
 ```
@@ -132,7 +132,7 @@ Example:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\publish-usage-summary.ps1 `
-  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports" `
+  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports" `
   -DateUtc "2026-05-27"
 ```
 
@@ -143,7 +143,7 @@ On the single coordinator workstation, install the daily scheduled publisher:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-usage-summary-task.ps1 `
-  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports" `
+  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports" `
   -DailyAt "20:30" `
   -RunNow
 ```

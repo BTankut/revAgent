@@ -36,7 +36,7 @@ to a non-stable test channel until the release is accepted.
 ## NAS Layout
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\
   channels\
     stable.json
     stable.sig.json
@@ -66,6 +66,11 @@ to a non-stable test channel until the release is accepted.
     show-installed-version.ps1
 ```
 
+During the NAS root rename transition, the old
+`\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy` root remains only as a
+compatibility publish target for already-installed updaters and old desktop
+launchers.
+
 ## Manual Publish Fallback
 
 The normal production path is GitHub Actions signed source-free CD. Use
@@ -73,7 +78,7 @@ The normal production path is GitHub Actions signed source-free CD. Use
 from a clean repo root on the development machine:
 
 ```powershell
-$ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+$ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
 powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps1" `
   -ReleaseRoot $ReleaseRoot `
   -Channel stable
@@ -111,24 +116,32 @@ rebuild or re-sign the artifact. The local runner staging handoff avoids GitHub
 Actions artifact storage quota, so the selected runner labels must resolve to
 the office runner that owns both signing-key and NAS access.
 
+For NAS root migration, set `REVAGENT_NAS_RELEASE_ROOT` to the canonical
+`revAgent-deploy` path and set optional `REVAGENT_NAS_COMPAT_RELEASE_ROOTS` to
+the legacy `revit-mcp-deploy` path. The publish job writes the same signed
+release to each configured root.
+
 Candidate and final stable readiness checks use active-release artifact
 hygiene. They verify the candidate release package and current `tools\`
 payload, but do not block on historical legacy release ZIPs that may already
 exist under the NAS `releases\` archive. Use the default full-root readiness
 scan separately when auditing or cleaning those historical archives.
 
-Required protected variables:
+Protected variables:
 
 ```text
 REVAGENT_RELEASE_SIGNING_PRIVATE_KEY_PATH
 REVAGENT_RELEASE_SIGNING_KEY_ID
 REVAGENT_TRUSTED_RELEASE_KEYS_PATH
 REVAGENT_NAS_RELEASE_ROOT
+REVAGENT_NAS_COMPAT_RELEASE_ROOTS
 ```
 
 Keep the private signing key path on the approved self-hosted Windows runner,
 outside the Git checkout and outside NAS `tools`. Only public trusted release
-keys belong in `release-trusted-keys.json`.
+keys belong in `release-trusted-keys.json`. `REVAGENT_NAS_COMPAT_RELEASE_ROOTS`
+is optional and should be removed after all machines have migrated away from the
+legacy NAS root.
 
 Current production signing setup on this workstation uses key id
 `revagent-prod-rsa-2026q3`, private key path
@@ -179,7 +192,7 @@ NAS `tools\dependencies\`; the release ZIP does not include those binaries.
 On each workstation, close Revit and run:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater-GUI.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\Install-revAgent-Updater-GUI.cmd
 ```
 
 The GUI shows the live install/update log and provides a button to open the log
@@ -209,8 +222,11 @@ If you want to copy a single launcher to a workstation desktop, copy the
 standalone launcher instead:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\revAgent Updater STABLE.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\revAgent Updater STABLE.cmd
 ```
+
+The standalone STABLE launcher tries `revAgent-deploy` first and falls back to
+`revit-mcp-deploy` during the transition.
 
 Do not copy `Install-revAgent-Updater-GUI.cmd` by itself. That file is meant
 to run from the NAS `tools\` folder and expects
@@ -219,7 +235,7 @@ to run from the NAS `tools\` folder and expects
 The non-GUI bootstrap is also available:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\Install-revAgent-Updater.cmd
 ```
 
 The updater uses the standard machine-wide root:
@@ -248,7 +264,7 @@ Each workstation also publishes its latest install/update state and copied
 operation logs to the NAS report bridge:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports\machines\<computer>\
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports\machines\<computer>\
   latest.json
   install-latest.json
   update-latest.json
