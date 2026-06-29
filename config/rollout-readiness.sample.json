@@ -1,6 +1,6 @@
 {
-  "releaseRoot": "\\\\dpe-nas\\Dpe-Ortak\\Baris Tankut\\revit-mcp-deploy",
-  "reportsRoot": "\\\\dpe-nas\\Dpe-Ortak\\Baris Tankut\\revit-mcp-deploy\\reports",
+  "releaseRoot": "\\\\dpe-nas\\Dpe-Ortak\\Baris Tankut\\revAgent-deploy",
+  "reportsRoot": "\\\\dpe-nas\\Dpe-Ortak\\Baris Tankut\\revAgent-deploy\\reports",
   "expectedMachines": [
     "NET01",
     "WORKSTATION-01",
@@ -20,8 +20,8 @@
     {
       "machine": "NET01",
       "passed": true,
-      "stableVersion": "2026.06.25.404-ef535ad3",
-      "stableCommit": "ef535ad3eddb682d1da6b42de2aad5bc75ba8187",
+      "stableVersion": "2026.06.29.452-7bde7d6b",
+      "stableCommit": "7bde7d6ba4fde59830bd100e1e9307d4c3070532",
       "revitVersion": "2022",
       "model": "RME_basic_sample_project.rvt",
       "completedAtUtc": "2026-06-25T12:00:00Z",

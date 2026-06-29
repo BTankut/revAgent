@@ -43,6 +43,8 @@ remain exact implementation, tool, package, manifest, and path identifiers.
 - `docs/REVAGENT_DISTRIBUTION_INTEGRITY_PLAN.md`: Phase 5 release-origin,
   manifest-signing, updater-verification, and license-boundary plan
 - `docs/REVAGENT_USAGE_INTELLIGENCE.md`: usage-intelligence event, summary, live dashboard, and analyst pipeline
+- `docs/REVAGENT_LEGACY_NAME_INVENTORY.md`: remaining legacy-name categories,
+  safe cleanup boundaries, and follow-up rename PR plan
 - `docs/REVIT_IMAGE_EXPORT.md`: visual QA export workflow for active views,
   selected views, and coordination-focused 3D review images
 - `installer/revit-api-docs-mcp/`: TypeScript source and required companion local MCP server for Revit API DLL + XML documentation search

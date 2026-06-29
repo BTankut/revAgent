@@ -334,6 +334,9 @@ available.
 Dashboard admin add-on config also uses the canonical
 `revAgent-deploy\reports` root by default and migrates legacy
 `revit-mcp-deploy\reports` config values during install/startup.
+Remaining legacy names are tracked in
+`docs/REVAGENT_LEGACY_NAME_INVENTORY.md`; do not bulk-rename them outside the
+listed follow-up PRs.
 GitHub/local repository rename and deep internal implementation renames remain
 separate follow-up workstreams.
 

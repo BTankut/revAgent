@@ -31,18 +31,18 @@ design changes that boundary.
   may lag future `main` changes. Verify the live `channels\stable.json`,
   release manifest, ZIP hash, release sequence, and CD run before instructing
   operators to update workstations.
-- Point-in-time NAS stable verification snapshot recorded on 2026-06-25 after
-  PR #106:
+- Point-in-time NAS stable verification snapshot recorded on 2026-06-29 after
+  PR #142:
   - CD publish run:
-    `https://github.com/BTankut/revit-mcp-skill/actions/runs/28195357910`
-  - stable version: `2026.06.25.404-ef535ad3`
-  - stable commit: `ef535ad3eddb682d1da6b42de2aad5bc75ba8187`
-  - release sequence: `20260625193529`
+    `https://github.com/BTankut/revit-mcp-skill/actions/runs/28399758304`
+  - stable version: `2026.06.29.452-7bde7d6b`
+  - stable commit: `7bde7d6ba4fde59830bd100e1e9307d4c3070532`
+  - release sequence: `20260629201953`
   - package SHA256:
-    `1DBAE677CE4CE922FCD512DB5AA26E3925B5C1CFEA2C7538291B56D8D23A8D86`
-- Office rollout is in cleanup/verification. Current reports show the 404
-  stable on the main pilot/production-context machines, but final rollout is
-  not considered closed until every in-scope workstation has a current update
+    `D13AF3411917E263CA1A83DC0D586400DAB6B8E671E5440F92BCAE5A1AC50624`
+- Office rollout is in cleanup/verification. Stable has advanced to 452 and
+  operator-driven workstation updates are in progress. Final rollout is not
+  considered closed until every in-scope workstation has a current update
   report and a source-free dry-run inventory of zero managed source/developer
   artifacts. Machines intentionally out of scope, such as retired/offline
   workstations, must be recorded as excluded instead of left ambiguous.
