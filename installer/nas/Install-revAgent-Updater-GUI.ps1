@@ -38,7 +38,7 @@ $nasLibRoot = @(
 if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
     throw "revAgent updater lib folder was not found beside or above: $scriptDir"
 }
-Import-Module (Join-Path $nasLibRoot "RevitMcp.SourceFreeMigration.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.SourceFreeMigration.psm1") -Force
 $script:ActiveProcess = $null
 $script:ActiveLogPath = ""
 $script:LastLogLength = -1
@@ -112,7 +112,7 @@ function Test-LocalUpdaterSupportsSourceFreeMigration {
 
     $updaterRoot = Split-Path -Parent $UpdaterPath
     $migrationTool = Join-Path $updaterRoot "migrate-source-free-install.ps1"
-    $migrationLib = Join-Path $updaterRoot "lib\RevitMcp.SourceFreeMigration.psm1"
+    $migrationLib = Join-Path $updaterRoot "lib\RevAgent.SourceFreeMigration.psm1"
     if (-not (Test-Path -LiteralPath $migrationTool -PathType Leaf) -or -not (Test-Path -LiteralPath $migrationLib -PathType Leaf)) {
         return $false
     }

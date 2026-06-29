@@ -31,7 +31,7 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 }
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
-Import-Module (Join-Path $RepoRoot "installer\lib\RevitMcp.RevitVersions.psm1") -Force
+Import-Module (Join-Path $RepoRoot "installer\lib\RevAgent.RevitVersions.psm1") -Force
 Import-Module (Join-Path $RepoRoot "scripts\RevitPayloadManifest.psm1") -Force
 $revitVersionConfig = Get-RevitMcpVersionConfig -Version $RevitVersion -RepoRoot $RepoRoot
 

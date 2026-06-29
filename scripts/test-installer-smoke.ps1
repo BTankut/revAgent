@@ -21,17 +21,17 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 $libRoot = Join-Path $RepoRoot "installer\lib"
 
-Import-Module (Join-Path $libRoot "RevitMcp.HiddenLauncher.psm1") -Force
-Import-Module (Join-Path $libRoot "RevitMcp.ScheduledTask.psm1") -Force
-Import-Module (Join-Path $libRoot "RevitMcp.Permissions.psm1") -Force
-Import-Module (Join-Path $libRoot "RevitMcp.Package.psm1") -Force
-Import-Module (Join-Path $libRoot "RevitMcp.RevitVersions.psm1") -Force
-Import-Module (Join-Path $libRoot "RevitMcp.UpdatePolicy.psm1") -Force
-Import-Module (Join-Path $libRoot "RevitMcp.Proxy.psm1") -Force
-Import-Module (Join-Path $libRoot "RevitMcp.LogRetention.psm1") -Force
-Import-Module (Join-Path $libRoot "RevitMcp.CodexRegistration.psm1") -Force
-Import-Module (Join-Path $libRoot "RevitMcp.Reporting.psm1") -Force
-Import-Module (Join-Path $libRoot "RevitMcp.License.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.HiddenLauncher.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.ScheduledTask.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.Permissions.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.Package.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.RevitVersions.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.UpdatePolicy.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.Proxy.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.LogRetention.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.CodexRegistration.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.Reporting.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.License.psm1") -Force
 
 function Assert-True {
     param(
@@ -84,10 +84,47 @@ function Assert-NoLocalizedRevitPluginSourceText {
     Assert-Equal $offenders.Count 0 ("Revit plugin source must stay English-only. Offending files: " + ($offenders -join ", "))
 }
 
+function Assert-InstallerLibModuleRenameContract {
+    param([string]$Root)
+
+    $libRoot = Join-Path $Root "installer\lib"
+    $moduleNames = @(
+        "CodexRegistration",
+        "ConfigSync",
+        "DistributionIntegrity",
+        "HiddenLauncher",
+        "License",
+        "LogRetention",
+        "Package",
+        "Permissions",
+        "Proxy",
+        "Reporting",
+        "RevitVersions",
+        "ScheduledTask",
+        "SourceFreeMigration",
+        "UpdatePolicy"
+    )
+
+    foreach ($moduleName in $moduleNames) {
+        $canonicalName = "RevAgent.$moduleName.psm1"
+        $legacyName = "RevitMcp.$moduleName.psm1"
+        $canonicalPath = Join-Path $libRoot $canonicalName
+        $legacyPath = Join-Path $libRoot $legacyName
+        Assert-True (Test-Path -LiteralPath $canonicalPath -PathType Leaf) "Canonical installer lib module is missing: $canonicalName"
+        Assert-True (Test-Path -LiteralPath $legacyPath -PathType Leaf) "Legacy compatibility installer lib wrapper is missing: $legacyName"
+        $legacyText = Get-Content -Raw -LiteralPath $legacyPath
+        Assert-True ($legacyText -match [regex]::Escape($canonicalName)) "Legacy installer lib wrapper must import $canonicalName."
+        Assert-True ($legacyText -match 'Compatibility wrapper') "Legacy installer lib wrapper must declare compatibility intent."
+    }
+}
+
 $tempRoot = Join-Path $env:TEMP ("revit-mcp-smoke-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
 try {
+    Write-Host "Test installer lib module rename contract"
+    Assert-InstallerLibModuleRenameContract -Root $RepoRoot
+
     Write-Host "Test hidden VBS launcher"
     $exitScript = Join-Path $tempRoot "exit-7.ps1"
     Set-Content -LiteralPath $exitScript -Value "exit 7" -Encoding ASCII
@@ -166,12 +203,12 @@ try {
     Assert-True $blocked "Revit 2023 must remain blocked until real payload artifacts are bundled."
     $portableRoot = Join-Path $tempRoot "portable-tools"
     New-Item -ItemType Directory -Path (Join-Path $portableRoot "lib") -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $libRoot "RevitMcp.RevitVersions.psm1") -Destination (Join-Path $portableRoot "lib\RevitMcp.RevitVersions.psm1") -Force
+    Copy-Item -LiteralPath (Join-Path $libRoot "RevAgent.RevitVersions.psm1") -Destination (Join-Path $portableRoot "lib\RevAgent.RevitVersions.psm1") -Force
     Copy-Item -LiteralPath (Join-Path $RepoRoot "config") -Destination (Join-Path $portableRoot "config") -Recurse -Force
-    Import-Module (Join-Path $portableRoot "lib\RevitMcp.RevitVersions.psm1") -Force
-    $portable2022 = RevitMcp.RevitVersions\Get-RevitMcpVersionConfig -Version 2022
+    Import-Module (Join-Path $portableRoot "lib\RevAgent.RevitVersions.psm1") -Force
+    $portable2022 = RevAgent.RevitVersions\Get-RevitMcpVersionConfig -Version 2022
     Assert-Equal $portable2022.buildConfiguration "Release R22" "Portable updater lib/config version matrix lookup failed."
-    Import-Module (Join-Path $libRoot "RevitMcp.RevitVersions.psm1") -Force
+    Import-Module (Join-Path $libRoot "RevAgent.RevitVersions.psm1") -Force
 
     Write-Host "Test C# Revit project configurations"
     $legacyRevitConfigPattern = '(?<!\d)(2020|2021)(?!\d)|\bR20\b|\bR21\b'
@@ -344,7 +381,7 @@ try {
     Assert-True ($guiText -match 'Get-PackageDescriptionForGui' -and $guiText -match 'Developer workstation' -and $guiText -match 'Codex instructions: preserve local') "GUI must label preserve-local developer machines distinctly from normal workstation packages."
     Assert-True ($guiText -match 'DPE\\revAgent' -and $guiText -match 'legacyConfigPath') "GUI must default to the revAgent install root while preserving legacy updater config policy."
     Assert-True ($guiText -match '"-File", \$installerPath') "First install and repair must still use install-updater-task.ps1."
-    Assert-True ($guiText -match 'RevitMcp\.SourceFreeMigration\.psm1' -and $guiText -match 'Get-RevitMcpSourceFreeArtifactInventory') "GUI must check source-free migration inventory before install/update actions."
+    Assert-True ($guiText -match 'RevAgent\.SourceFreeMigration\.psm1' -and $guiText -match 'Get-RevitMcpSourceFreeArtifactInventory') "GUI must check source-free migration inventory before install/update actions."
     Assert-True ($guiText -match 'UpdateButtonText = "Migrate"' -and $guiText -match 'SourceFreeMigrationRequired = \$true') "GUI must expose a migration-required state instead of hiding the update path."
     Assert-True ($guiText -match 'Confirm-SourceFreeMigrationForGui' -and $guiText -match 'Continue with source-free migration and update') "GUI must ask before running source-free migration."
     Assert-True ($guiText -match '\$arguments \+= "-SourceFreeMigration"') "GUI migration path must run update-from-nas.ps1 with -SourceFreeMigration."
@@ -384,11 +421,11 @@ try {
     Assert-True ($updateText -match 'localInstall = if \(\$InstalledState\)') "Updater reports must include a local install state summary."
     Assert-True ($updateText -match 'System\.Collections\.IDictionary' -and $updateText -match '\$Object\.Contains\(\$Name\)') "Updater report JSON helper must read ordered dictionary installed state after successful updates."
     Assert-True ($updateText -match 'diagnostics = \$Diagnostics') "Updater reports must include dashboard-ready update diagnostics."
-    Assert-True ($updateText -match 'RevitMcp\.DistributionIntegrity\.psm1') "Updater must import the distribution-integrity verifier."
+    Assert-True ($updateText -match 'RevAgent\.DistributionIntegrity\.psm1') "Updater must import the distribution-integrity verifier."
     Assert-True ($updateText -match 'release-trusted-keys\.json') "Updater must look for packaged public release-key config."
-    Assert-True ($updateText -match 'RevitMcp\.ConfigSync\.psm1' -and $updateText -match 'Sync-RevitMcpUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Fast updater tool refresh must use the shared config sync helper."
+    Assert-True ($updateText -match 'RevAgent\.ConfigSync\.psm1' -and $updateText -match 'Sync-RevitMcpUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Fast updater tool refresh must use the shared config sync helper."
     Assert-True ($updateText -notmatch 'Remove-Item -LiteralPath \$configDestination -Recurse -Force') "Fast updater tool refresh must not delete local config because that removes pinned release keys."
-    $configSyncText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.ConfigSync.psm1")
+    $configSyncText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.ConfigSync.psm1")
     Assert-True ($configSyncText -match 'Mirror shipped config while preserving local trust/license material intentionally not shipped inside source-free release ZIPs') "Config sync helper must document local trust/license preservation."
     Assert-True ($configSyncText -match '\$preserveNames' -and $configSyncText -match 'release-trusted-keys\.json' -and $configSyncText -match 'license-trusted-keys\.json') "Config sync helper must explicitly preserve known local trust/license config files."
     Assert-True ($configSyncText -match '\$sourceNames\.Contains\(\$item\.Name\)' -and $configSyncText -match 'Copy-Item -LiteralPath \$item\.FullName -Destination \$DestinationRoot -Recurse -Force') "Config sync helper must mirror shipped config items without nesting existing directories."
@@ -409,7 +446,7 @@ try {
     Assert-True ($distributionInitIndex -ge 0 -and $mainTryBeforeDistributionInitIndex -ge 0 -and $mainTryBeforeDistributionInitIndex -lt $distributionInitIndex -and $mainCatchAfterDistributionInitIndex -gt $distributionInitIndex) "Updater must catch distribution-integrity initialization failures and write the normal failure report."
     Assert-True ($updateText -match 'HighestAcceptedReleaseSequence\s*=\s*\$highestAcceptedReleaseSequence') "Updater must pass anti-rollback state into integrity verification."
     Assert-True ($updateText -match 'hasAcceptedSignedRelease' -and $updateText -match 'Test-TruthyJsonValue' -and $updateText -match '\$highest\s*=\s*\[long\]1' -and $updateText -match '\[Math\]::Max\(\s+\$highestAcceptedReleaseSequence') "Updater must consume signed-acceptance state and not lower the stored signed-release high-watermark."
-    Assert-True ($updateText -match 'RevitMcp\.License\.psm1') "Updater must import the license verifier."
+    Assert-True ($updateText -match 'RevAgent\.License\.psm1') "Updater must import the license verifier."
     Assert-True ($updateText -match '\[string\]\$LicensePolicy = ""' -and $updateText -match '\[string\]\$LicensePath = ""' -and $updateText -match '\[string\]\$LicenseSignaturePath = ""') "Updater must expose explicit license verification inputs."
     Assert-True ($updateText -match 'license-trusted-keys\.json') "Updater must look for packaged public license-key config."
     Assert-True ($updateText -match 'Initialize-LicenseConfig -Config \$config') "Updater must initialize license verification before package work."
@@ -484,13 +521,13 @@ try {
     Assert-True ($buildRevitPluginText -match 'Write-RevitPayloadManifest') "Revit payload build must refresh the manifest with payload copies."
     Assert-True ($ciText -match 'test-mcp-build-payload-freshness\.ps1"\) -RepoRoot \$RepoRoot') "CI must run the payload freshness gate."
     Assert-True ($ciText -notmatch 'test-mcp-build-payload-freshness\.ps1"\) -RepoRoot \$RepoRoot -McpOnly') "CI must not skip the Revit manifest freshness gate."
-    $packageLibText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.Package.psm1")
+    $packageLibText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.Package.psm1")
     Assert-True ($packageLibText -notmatch 'kurulum') "Package layout resolution must not keep the removed legacy kurulum path."
     Assert-True ($guiText -notmatch 'Guncelle|Surum|Kapat|Kurulum|Kanal|Hazir|Islem|Calisiyor|Baslatilamadi|bulunamadi|hata') "GUI product strings must remain English."
     Assert-True ($guiText -notmatch 'Revit MCP Installer|Revit MCP install and update|Stable Restore|Stable channel|Stable version') "GUI product labels must not expose internal MCP wording or legacy channel wording."
 
     Write-Host "Test revAgent user-facing MCP naming"
-    $codexRegistrationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.CodexRegistration.psm1")
+    $codexRegistrationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.CodexRegistration.psm1")
     $runtimeIndexText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\index.ts")
     $statusToolText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_revit_mcp_status.ts")
     $listInstancesToolText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\list_revit_instances.ts")
@@ -1039,11 +1076,11 @@ try {
     Assert-True ($installTaskText -match '"revAgent Auto Update\.vbs"') "Startup fallback reminder must use the revAgent product name."
     Assert-True ($installTaskText -match 'Revit MCP Auto Update\.cmd", "Revit MCP Auto Update\.vbs"') "Startup fallback must remove legacy Revit MCP reminder launchers."
     Assert-True ($installTaskText -match 'Removed legacy task: \$legacyTaskName') "Updater install must remove the legacy Revit MCP scheduled task after registering the revAgent task."
-    $scheduledTaskModuleText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.ScheduledTask.psm1")
+    $scheduledTaskModuleText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.ScheduledTask.psm1")
     Assert-True ($scheduledTaskModuleText -match '\[string\]\$Name = "revAgent Auto Update"') "Scheduled-task repair must default to the revAgent task name."
     Assert-True ($scheduledTaskModuleText -match '\[string\[\]\]\$LegacyNames = @\("Revit MCP Auto Update"\)') "Scheduled-task repair must know the legacy Revit MCP task name."
     Assert-True ($scheduledTaskModuleText -match 'Scheduled task migrated to revAgent product name') "Scheduled-task repair must migrate existing installed reminders to the revAgent task name."
-    $hiddenLauncherModuleText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.HiddenLauncher.psm1")
+    $hiddenLauncherModuleText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.HiddenLauncher.psm1")
     Assert-True ($hiddenLauncherModuleText -match 'Run-revAgent-Update-Hidden\.vbs' -and $scheduledTaskModuleText -match 'Removed legacy hidden updater launcher') "Scheduled-task repair must use and clean revAgent-named hidden launcher files."
     Assert-True ($scheduledTaskModuleText -match 'Set-ScheduledTask -TaskName \$Name -Trigger \$trigger') "Updater repair must replace legacy repeated triggers with the daily trigger."
     Assert-True ($scheduledTaskModuleText -match 'Set-ScheduledTask -TaskName \$Name -Trigger \$trigger -Settings \$settings') "Updater repair must clear legacy StartWhenAvailable settings."
@@ -1136,7 +1173,7 @@ try {
     Assert-Equal ($OutputEncoding.CodePage) 65001 "Current process PowerShell output encoding must be UTF-8."
     Assert-Equal $env:PYTHONUTF8 "1" "Current process must opt Python into UTF-8 mode."
     Assert-Equal $env:PYTHONIOENCODING "utf-8" "Current process must opt Python stdio into UTF-8."
-    $codexRegistrationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.CodexRegistration.psm1")
+    $codexRegistrationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.CodexRegistration.psm1")
     Assert-True ($codexRegistrationText -match 'function Set-RevitMcpCurrentProcessUtf8Console' -and $codexRegistrationText -match 'Export-ModuleMember .*Set-RevitMcpCurrentProcessUtf8Console') "Codex registration module must export the current-process UTF-8 helper."
     $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
     Assert-True ($installTaskText -match 'Set-RevitMcpCurrentProcessUtf8Console') "Updater task installer entrypoint must force UTF-8 output even when launched with -NoProfile."
@@ -1148,7 +1185,7 @@ try {
     Assert-True ($installerText -match 'Set-RevitMcpPowerShellUtf8ConsoleConfig .* -ConfigureConsoleRegistry' -and $installerText -match 'PowerShell UTF-8 console profiles') "Installer must enforce UTF-8 console defaults for Codex PowerShell sessions."
     Assert-True ($installerText -match 'Set-RevitMcpCurrentProcessUtf8Console') "Self-contained installer entrypoint must force UTF-8 output even when launched with -NoProfile."
     Assert-True ($installerText -match 'Remove-CodexProfileBackupArtifacts') "Installer must clean old Codex profile backup artifacts."
-    Assert-True ($installerText -match 'RevitMcp\.ConfigSync\.psm1' -and $installerText -match 'Sync-RevitMcpUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Self-contained installer must use the shared config sync helper."
+    Assert-True ($installerText -match 'RevAgent\.ConfigSync\.psm1' -and $installerText -match 'Sync-RevitMcpUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Self-contained installer must use the shared config sync helper."
     Assert-True ($installerText -notmatch 'Remove-Item -LiteralPath \$configDestination -Recurse -Force') "Self-contained installer must not delete local config because that removes pinned release keys."
     Assert-True ($installerText -match 'Copy-RevitMcpRuntimeUserPayload') "Installer must copy only the runtime user payload."
     Assert-True ($installerText -match 'codexUserSourceRoot') "Installer must source Codex orchestration from the user pack."
@@ -1191,7 +1228,7 @@ try {
     Write-RevitMcpJsonFile -Path $reportPath -Value $report
     $reportJson = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
     Assert-Equal $reportJson.status "current" "Report JSON status was not written."
-    $reportingText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.Reporting.psm1")
+    $reportingText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.Reporting.psm1")
     Assert-True ($reportingText -match '\$operationLatestPath = Join-Path \$machineRoot \("\{0\}-latest\.json" -f \$safeOperation\)' -and $reportingText -match 'Write-RevitMcpJsonFile -Path \$operationLatestPath -Value \$published') "Machine report publishing must emit operation-specific latest files used by dashboard version fallback."
     $safePathCases = @(
         @{ input = "HAFIZE"; expected = "HAFIZE" },

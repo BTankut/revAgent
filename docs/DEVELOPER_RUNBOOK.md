@@ -985,7 +985,7 @@ starts. If artifacts remain, the GUI exposes a one-time migration path. If the
 installed local updater supports migration, the GUI runs
 `update-from-nas.ps1 -SourceFreeMigration` after operator confirmation. If the
 installed local updater is too old or lacks `migrate-source-free-install.ps1`
-and `installer/lib/RevitMcp.SourceFreeMigration.psm1`, the GUI falls back to the
+and `installer/lib/RevAgent.SourceFreeMigration.psm1`, the GUI falls back to the
 installer bootstrap path and passes `-RunSourceFreeMigration` to
 `install-updater-task.ps1`. That refreshes the local updater tools first and
 then runs the migration immediately in the same confirmed flow. If the
@@ -995,7 +995,7 @@ the normal stable update path. Non-GUI updater runs still stop with
 package without explicit migration mode.
 
 Distribution integrity support is now active when trusted release keys are
-present. `installer/lib/RevitMcp.DistributionIntegrity.psm1` owns the canonical
+present. `installer/lib/RevAgent.DistributionIntegrity.psm1` owns the canonical
 JSON and detached signature helper surface, while
 `scripts/test-distribution-integrity.ps1` proves valid and tampered channel and
 release-manifest fixtures. `publish-nas-release.ps1` can write

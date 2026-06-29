@@ -23,13 +23,13 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $installerLibRoot = Join-Path $PSScriptRoot "lib"
-Import-Module (Join-Path $installerLibRoot "RevitMcp.HiddenLauncher.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevitMcp.ScheduledTask.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevitMcp.RevitVersions.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevitMcp.Permissions.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevitMcp.LogRetention.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevitMcp.CodexRegistration.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevitMcp.ConfigSync.psm1") -Force
+Import-Module (Join-Path $installerLibRoot "RevAgent.HiddenLauncher.psm1") -Force
+Import-Module (Join-Path $installerLibRoot "RevAgent.ScheduledTask.psm1") -Force
+Import-Module (Join-Path $installerLibRoot "RevAgent.RevitVersions.psm1") -Force
+Import-Module (Join-Path $installerLibRoot "RevAgent.Permissions.psm1") -Force
+Import-Module (Join-Path $installerLibRoot "RevAgent.LogRetention.psm1") -Force
+Import-Module (Join-Path $installerLibRoot "RevAgent.CodexRegistration.psm1") -Force
+Import-Module (Join-Path $installerLibRoot "RevAgent.ConfigSync.psm1") -Force
 Set-RevitMcpCurrentProcessUtf8Console | Out-Null
 
 $repoRoot = Split-Path -Parent $PSScriptRoot

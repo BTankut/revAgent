@@ -152,7 +152,7 @@ properties:
 
 The publish and updater paths must share the same canonicalization helper.
 The first implementation helper is
-`installer/lib/RevitMcp.DistributionIntegrity.psm1`; it provides deterministic
+`installer/lib/RevAgent.DistributionIntegrity.psm1`; it provides deterministic
 canonical JSON, SHA256 hashing, public-key fingerprinting, and detached
 signature verification primitives. It deliberately rejects floating-point and
 decimal values until full JCS number handling is implemented, because current

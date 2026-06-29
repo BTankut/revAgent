@@ -63,19 +63,19 @@ $nasLibRoot = @(
 if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
     throw "revAgent updater lib folder was not found beside or above: $PSScriptRoot"
 }
-Import-Module (Join-Path $nasLibRoot "RevitMcp.HiddenLauncher.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.ScheduledTask.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.RevitVersions.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.Package.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.UpdatePolicy.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.Proxy.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.ConfigSync.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
-$script:RevitMcpDistributionIntegrityModule = Import-Module (Join-Path $nasLibRoot "RevitMcp.DistributionIntegrity.psm1") -Force -PassThru
-Import-Module (Join-Path $nasLibRoot "RevitMcp.License.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.SourceFreeMigration.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.HiddenLauncher.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.ScheduledTask.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.RevitVersions.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.Package.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.UpdatePolicy.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.Proxy.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.LogRetention.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.CodexRegistration.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.ConfigSync.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.Reporting.psm1") -Force
+$script:RevitMcpDistributionIntegrityModule = Import-Module (Join-Path $nasLibRoot "RevAgent.DistributionIntegrity.psm1") -Force -PassThru
+Import-Module (Join-Path $nasLibRoot "RevAgent.License.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.SourceFreeMigration.psm1") -Force
 Set-RevitMcpCurrentProcessUtf8Console | Out-Null
 
 $updaterVersion = "0.1.0"
@@ -451,13 +451,13 @@ function Test-CurrentProcessElevated {
 function ConvertTo-RevitMcpProxyUrl {
     param([string]$Value)
 
-    return RevitMcp.Proxy\ConvertTo-RevitMcpProxyUrl -Value $Value
+    return RevAgent.Proxy\ConvertTo-RevitMcpProxyUrl -Value $Value
 }
 
 function ConvertTo-RevitMcpWinHttpProxyServer {
     param([string]$Value)
 
-    return RevitMcp.Proxy\ConvertTo-RevitMcpWinHttpProxyServer -Value $Value
+    return RevAgent.Proxy\ConvertTo-RevitMcpWinHttpProxyServer -Value $Value
 }
 
 function Send-RevitMcpEnvironmentChanged {
@@ -1690,13 +1690,13 @@ function Get-UpdaterDistributionIntegrityCommand {
     }
 
     if (-not $command) {
-        $command = Get-Command ("RevitMcp.DistributionIntegrity\{0}" -f $Name) -ErrorAction SilentlyContinue
+        $command = Get-Command ("RevAgent.DistributionIntegrity\{0}" -f $Name) -ErrorAction SilentlyContinue
     }
     if (-not $command) {
         $command = Get-Command $Name -ErrorAction SilentlyContinue
     }
     if (-not $command -and $Required) {
-        throw "Distribution integrity helper '$Name' was not loaded from RevitMcp.DistributionIntegrity.psm1."
+        throw "Distribution integrity helper '$Name' was not loaded from RevAgent.DistributionIntegrity.psm1."
     }
 
     return $command

@@ -21,9 +21,9 @@ The highest-value helper cases are now covered with lower deployment risk:
 - Hidden background launch is handled by a single-line VBS launcher that runs
   PowerShell hidden and propagates the child exit code.
 - Scheduled task action generation and repair are centralized in
-  `installer/lib/RevitMcp.ScheduledTask.psm1`.
+  `installer/lib/RevAgent.ScheduledTask.psm1`.
 - Permission repair uses a targeted plan in
-  `installer/lib/RevitMcp.Permissions.psm1` and avoids broad recursive scans.
+  `installer/lib/RevAgent.Permissions.psm1` and avoids broad recursive scans.
 - Package/update decisions remain inspectable PowerShell logic with local smoke
   tests that do not require admin rights or Revit.
 
