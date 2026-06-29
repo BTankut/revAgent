@@ -67,6 +67,68 @@ function Assert-RevAgentChildPath {
     }
 }
 
+function Invoke-RevAgentFileSystemRetry {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [int]$MaxAttempts = 6
+    )
+
+    $delayMilliseconds = 250
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            & $Action
+            return
+        }
+        catch {
+            if ($attempt -ge $MaxAttempts) {
+                throw
+            }
+
+            Write-Warning ("{0} failed on attempt {1}/{2}: {3}. Retrying." -f $Label, $attempt, $MaxAttempts, $_.Exception.Message)
+            Start-Sleep -Milliseconds $delayMilliseconds
+            $delayMilliseconds = [Math]::Min($delayMilliseconds * 2, 5000)
+        }
+    }
+}
+
+function Wait-RevAgentPathAbsent {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $delayMilliseconds = 250
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
+        if (-not (Test-Path -LiteralPath $Path)) {
+            return
+        }
+
+        Start-Sleep -Milliseconds $delayMilliseconds
+        $delayMilliseconds = [Math]::Min($delayMilliseconds * 2, 5000)
+    }
+
+    throw "$Label was still present after removal: $Path"
+}
+
+function Remove-RevAgentDirectoryWithRetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    Assert-RevAgentChildPath -Path $Path -Root $Root
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    Invoke-RevAgentFileSystemRetry -Label "Remove $Label" -Action {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+    }
+    Wait-RevAgentPathAbsent -Path $Path -Label $Label
+}
+
 function Copy-RevAgentDirectoryExact {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
@@ -84,11 +146,36 @@ function Copy-RevAgentDirectoryExact {
         if (-not $AllowReplace) {
             throw "Target already exists: $Destination. Pass -Force to replace it."
         }
-        Remove-Item -LiteralPath $Destination -Recurse -Force
     }
 
-    New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null
-    Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
+    $destinationParent = Split-Path -Parent $Destination
+    $destinationName = Split-Path -Leaf $Destination
+    $stagePath = Join-Path $destinationParent (".{0}.copy-staging-{1}" -f $destinationName, [Guid]::NewGuid().ToString("N"))
+    Assert-RevAgentChildPath -Path $stagePath -Root $Root
+
+    New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+    try {
+        Invoke-RevAgentFileSystemRetry -Label "Stage copy $destinationName" -Action {
+            if (Test-Path -LiteralPath $stagePath) {
+                Remove-Item -LiteralPath $stagePath -Recurse -Force -ErrorAction Stop
+            }
+            Copy-Item -LiteralPath $Source -Destination $stagePath -Recurse -Force -ErrorAction Stop
+        }
+
+        if (Test-Path -LiteralPath $Destination) {
+            Remove-RevAgentDirectoryWithRetry -Path $Destination -Root $Root -Label $destinationName
+        }
+
+        Invoke-RevAgentFileSystemRetry -Label "Promote staged copy $destinationName" -Action {
+            Move-Item -LiteralPath $stagePath -Destination $Destination -Force -ErrorAction Stop
+        }
+    }
+    catch {
+        if (Test-Path -LiteralPath $stagePath) {
+            Remove-Item -LiteralPath $stagePath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
 }
 
 function Backup-RevAgentDirectoryForRollback {
@@ -104,8 +191,7 @@ function Backup-RevAgentDirectoryForRollback {
         return $false
     }
 
-    New-Item -ItemType Directory -Path (Split-Path -Parent $Backup) -Force | Out-Null
-    Copy-Item -LiteralPath $Source -Destination $Backup -Recurse -Force
+    Copy-RevAgentDirectoryExact -Source $Source -Destination $Backup -Root $Root
     return $true
 }
 
@@ -119,14 +205,14 @@ function Restore-RevAgentDirectoryFromRollback {
 
     Assert-RevAgentChildPath -Path $Destination -Root $Root
     Assert-RevAgentChildPath -Path $Backup -Root $Root
-    if (Test-Path -LiteralPath $Destination) {
-        Remove-Item -LiteralPath $Destination -Recurse -Force
-    }
     if ($HadOriginal) {
         if (-not (Test-Path -LiteralPath $Backup -PathType Container)) {
             throw "Rollback backup was not found: $Backup"
         }
-        Copy-Item -LiteralPath $Backup -Destination $Destination -Recurse -Force
+        Copy-RevAgentDirectoryExact -Source $Backup -Destination $Destination -Root $Root -AllowReplace
+    }
+    else {
+        Remove-RevAgentDirectoryWithRetry -Path $Destination -Root $Root -Label (Split-Path -Leaf $Destination)
     }
 }
 
