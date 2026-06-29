@@ -984,6 +984,17 @@ published through the office Cloudflare Tunnel as
 surface. Put Cloudflare Access or an equivalent access policy in front of it
 before sharing it beyond trusted office users.
 
+For the coordinator/admin machine, install the dashboard add-on payload under
+`C:\ProgramData\DPE\revAgent\addons\dashboard` with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-dashboard-addon.ps1
+```
+
+The installed add-on owns the `revAgent Dashboard Server` scheduled task and
+writes `config\dashboard.json` under the add-on root. The standard user package
+does not install this dashboard add-on or the Cloudflare tunnel payload.
+
 The browser UI is designed for desktop and iPhone Safari/Chrome. It shows a
 left-side Machine Status Windows list, a right-side All Status Activity stream
 with all/one/multiple-machine filters, and System/Light/Dark theme selection.
@@ -1025,7 +1036,8 @@ The dashboard also exposes a read-only LLM handoff at `/api/brief`. If a
 workstation was offline from NAS while still writing local live files, run
 `scripts\publish-live-backfill.ps1` on that workstation to merge its local
 live status/activity files back into `reports\live`. Use
-`scripts\test-live-dashboard.ps1` for the non-Revit dashboard regression check.
+`scripts\test-live-dashboard.ps1` for the non-Revit dashboard regression check,
+including installed add-on payload import and config verification.
 
 The first reader layer is
 `addons/usage-intelligence/scripts/summarize-usage-intelligence.ps1`. It reads

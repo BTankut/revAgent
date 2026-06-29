@@ -2,7 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { mergeRevitStatusSnapshots, unexpiredCachedRevitStatus } from "../../../installer/runtime-mcp-server/build/utils/revitTaskMerge.js";
+import { mergeRevitStatusSnapshots, unexpiredCachedRevitStatus } from "./revitTaskMerge.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

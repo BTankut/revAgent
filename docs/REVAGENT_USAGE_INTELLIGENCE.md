@@ -257,6 +257,9 @@ The current usage-intelligence stack includes:
    is limited to 50 visible records by default with expansion to 200, preserves
    manual scroll position during refresh, and supports all/one/multiple-machine
    monitoring filters without changing the live feed.
+   The admin/coordinator install script is
+   `addons/dashboard/installer/install-dashboard-addon.ps1`; the root
+   `scripts/install-dashboard-addon.ps1` wrapper delegates to it.
 3. A compact `/api/brief` dashboard export for separate analyst/LLM sessions.
 4. `scripts\publish-live-backfill.ps1`, a repair task that backfills local live
    spool files when NAS was offline.

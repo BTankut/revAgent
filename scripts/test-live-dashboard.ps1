@@ -104,10 +104,39 @@ try {
     }
     Assert-Equal $brief.schemaVersion "revagent.dashboard.brief.v1" "Brief schema mismatch."
 
+    $installedDashboardRoot = Join-Path $tempRoot "installed\addons\dashboard"
+    $installResult = & (Join-Path $RepoRoot "addons\dashboard\installer\install-dashboard-addon.ps1") `
+        -SourceRoot (Join-Path $RepoRoot "addons\dashboard") `
+        -InstallRoot $installedDashboardRoot `
+        -ReportsRoot $reportsRoot `
+        -SkipScheduledTasks `
+        -NoHealthCheck | ConvertFrom-Json
+    Assert-Equal $installResult.schemaVersion "revagent.dashboard.addon.install.v1" "Dashboard add-on installer result schema mismatch."
+    Assert-Equal ([bool]$installResult.installed) $true "Dashboard add-on installer should report installed=true."
+    Assert-True (Test-Path -LiteralPath (Join-Path $installedDashboardRoot "server\server.mjs") -PathType Leaf) "Installed dashboard server missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $installedDashboardRoot "server\revitTaskMerge.js") -PathType Leaf) "Installed dashboard must carry local Revit task merge helper."
+    Assert-True (Test-Path -LiteralPath (Join-Path $installedDashboardRoot "public\index.html") -PathType Leaf) "Installed dashboard public UI missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $installedDashboardRoot "installer\start-dashboard.ps1") -PathType Leaf) "Installed dashboard start script missing."
+    $installedConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $installedDashboardRoot "config\dashboard.json") | ConvertFrom-Json
+    Assert-Equal $installedConfig.schemaVersion "revagent.dashboard.addon.config.v1" "Dashboard add-on config schema mismatch."
+    Assert-Equal $installedConfig.reportsRoot $reportsRoot "Dashboard add-on config must preserve reports root."
+
+    Push-Location $installedDashboardRoot
+    try {
+        $installedBrief = node --input-type=module -e "import('./server/server.mjs').then(({buildDashboardBrief}) => { const brief = buildDashboardBrief({generatedAtUtc:'installed', stable:{version:'v'}, summary:{dateUtc:'d'}, overview:{machineCount:0}, machines:[], activity:[]}); console.log(JSON.stringify(brief)); })" | ConvertFrom-Json
+    }
+    finally {
+        Pop-Location
+    }
+    Assert-Equal $installedBrief.schemaVersion "revagent.dashboard.brief.v1" "Installed dashboard server must import without repository-relative runtime dependencies."
+
     $dashboardApp = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\public\app.js")
     $dashboardHtml = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\public\index.html")
     $dashboardCss = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\public\styles.css")
     $dashboardServer = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\server\server.mjs")
+    $dashboardInstaller = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\installer\install-dashboard-addon.ps1")
+    $dashboardInstallerWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-dashboard-addon.ps1")
+    $dashboardManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\addon.json") | ConvertFrom-Json
     Assert-True ($dashboardApp -match 'ACTIVITY_DEFAULT_LIMIT = 50') "Dashboard must default all activity to 50 records."
     Assert-True ($dashboardApp -match 'ACTIVITY_EXPANDED_LIMIT = 200') "Dashboard expanded activity must cap at 200 records."
     Assert-True ($dashboardApp -match 'REFRESH_TIMEOUT_MS') "Dashboard refreshes must have a timeout."
@@ -163,6 +192,12 @@ try {
     Assert-True ($dashboardServer -match 'summarizeLiveOperations') "Dashboard top activity metrics must be calculated from live activity."
     Assert-True ($dashboardServer -match 'metricSource: \"liveActivity\"') "Dashboard overview must expose the metric source."
     Assert-True ($dashboardServer -match 'x-content-type-options') "Dashboard responses must include nosniff headers."
+    Assert-True ($dashboardServer -match '\./revitTaskMerge\.js') "Dashboard server must depend on add-on-local helper code for installed execution."
+    Assert-Equal $dashboardManifest.entrypoints.installScript "installer\install-dashboard-addon.ps1" "Dashboard add-on manifest must expose installer entrypoint."
+    Assert-True ($dashboardInstaller -match '\[string\]\$TaskName = "revAgent Dashboard Server"') "Dashboard add-on installer must own the dashboard scheduled task name."
+    Assert-True ($dashboardInstaller -match 'New-ScheduledTaskTrigger -AtLogOn') "Dashboard add-on installer must register a logon dashboard task."
+    Assert-True ($dashboardInstaller -match 'Run-revAgent-Dashboard-Server-Hidden\.vbs') "Dashboard add-on installer must use a hidden revAgent dashboard launcher."
+    Assert-True ($dashboardInstallerWrapper -match 'addons\\dashboard\\installer\\install-dashboard-addon\.ps1') "Dashboard root installer wrapper must delegate to the add-on installer."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {
