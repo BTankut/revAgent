@@ -308,6 +308,12 @@ The coordinator starts the local dashboard with
 The implementation is owned by the admin-only `addons\dashboard` package; the
 root script is a repository compatibility launcher and the core workstation
 package does not install dashboard or tunnel payloads.
+The admin install path is
+`C:\ProgramData\DPE\revAgent\addons\dashboard`; install it through
+`scripts\install-dashboard-addon.ps1` or the add-on-owned
+`addons\dashboard\installer\install-dashboard-addon.ps1`. The installed server
+uses only add-on-local dashboard files plus NAS report inputs, so it does not
+depend on the source repository path.
 The browser polls `/api/overview` every 3 seconds with bounded responses and
 single-flight refreshes. The main UI is intentionally limited to compact
 Machine Status Windows and All Status Activity; deeper usage, friction, and

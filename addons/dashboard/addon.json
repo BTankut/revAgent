@@ -6,6 +6,7 @@
   "targetRoot": "C:\\ProgramData\\DPE\\revAgent\\addons\\dashboard",
   "entrypoints": {
     "server": "server\\server.mjs",
+    "installScript": "installer\\install-dashboard-addon.ps1",
     "startScript": "installer\\start-dashboard.ps1"
   },
   "ownedScheduledTasks": [

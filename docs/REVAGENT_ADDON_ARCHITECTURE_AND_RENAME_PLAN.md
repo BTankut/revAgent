@@ -260,6 +260,8 @@ is already being moved for the add-on architecture.
      `C:\ProgramData\DPE\revAgent\addons\dashboard`.
    - Own `revAgent Dashboard Server` scheduled task.
    - Add local health checks.
+   - Keep Cloudflare tunnel migration out of this PR unless the new tunnel is
+     independently verified healthy.
 
 4. **Dashboard tunnel migration**
    - Migrate Cloudflare tunnel from legacy `RevitMCP\cloudflared` to the
