@@ -1141,6 +1141,7 @@ try {
     Assert-True ($installerText -match '\$taskName = "revAgent Auto Update"') "Self-contained installer scheduled-task repair must use the revAgent task name."
     Assert-True ($installerText -match 'DPE\\revAgent' -and $installerText -match 'Remove-LegacyRevitMcpInstallRoot') "Self-contained installer must install under the revAgent root and clean the legacy RevitMCP root."
     Assert-True ($installerText -match 'AllowBroadTarget' -and $installerText -match 'legacy RevitMCP install root.*-AllowBroadTarget') "Legacy root cleanup must use an explicit broad-target override instead of weakening normal cleanup guards."
+    Assert-True ($installerText -match 'Legacy RevitMCP install root cleanup incomplete' -and $installerText -match 'revAgent install will continue') "Legacy RevitMCP root cleanup must warn and continue when old helper files are locked."
     Assert-True ($installerText -match 'Update-revAgent-Now\.cmd' -and $installerText -match 'Show-revAgent-Version\.cmd') "Self-contained installer must create revAgent-named updater helper commands."
     Assert-True ($installerText -match 'LegacyNames @\("Revit MCP Auto Update"\)') "Self-contained installer must migrate the legacy Revit MCP task name."
     Assert-True ($installerText -notmatch 'Copy-Item[^\r\n]*AGENTS\.md\.backup-') "Installer must not create AGENTS.md backup files."

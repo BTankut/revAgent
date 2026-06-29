@@ -670,7 +670,13 @@ function Remove-LegacyRevitMcpInstallRoot {
     }
     catch {}
 
-    Remove-RevitMcpPath -Path $legacyInstallRoot -Label "legacy RevitMCP install root" -Recurse -AllowedNamePattern "(?i)^RevitMCP$" -AllowBroadTarget
+    try {
+        Remove-RevitMcpPath -Path $legacyInstallRoot -Label "legacy RevitMCP install root" -Recurse -AllowedNamePattern "(?i)^RevitMCP$" -AllowBroadTarget
+    }
+    catch {
+        Write-Warning "Legacy RevitMCP install root cleanup incomplete: $($_.Exception.Message)"
+        Write-Warning "revAgent install will continue. Close any legacy helper process using C:\ProgramData\DPE\RevitMCP, such as cloudflared.exe, then run install/repair again to remove the remaining legacy files."
+    }
 }
 
 function Disable-LegacyAddinManifest {
