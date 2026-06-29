@@ -16,7 +16,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports",
+    [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports",
     [string[]]$DateUtc = @((Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")),
     [switch]$IncludeYesterday,
     [string]$OutputRoot = "",

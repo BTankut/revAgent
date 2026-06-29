@@ -762,6 +762,25 @@ try {
     Assert-Equal $usageAddonConfig.reportsRoot $reportsRoot "Usage-intelligence add-on config must preserve reports root."
     Assert-Equal $usageAddonConfig.workRoot (Join-Path $usageAddonInstallRoot "state") "Usage-intelligence add-on config must default workRoot under the add-on state root."
 
+    $canonicalReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports"
+    $usageAddonDefaultInstallRoot = Join-Path $tempRoot "installed-default\addons\usage-intelligence"
+    $usageAddonDefaultResult = & (Join-Path $RepoRoot "addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") `
+        -SourceRoot (Join-Path $RepoRoot "addons\usage-intelligence") `
+        -InstallRoot $usageAddonDefaultInstallRoot `
+        -SkipScheduledTasks | ConvertFrom-Json
+    Assert-Equal $usageAddonDefaultResult.schemaVersion "revagent.usage-intelligence.addon.install.v1" "Usage-intelligence default install result schema mismatch."
+    $usageAddonDefaultConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $usageAddonDefaultInstallRoot "config\usage-intelligence.json") | ConvertFrom-Json
+    Assert-Equal $usageAddonDefaultConfig.reportsRoot $canonicalReportsRoot "Usage-intelligence default config must use the canonical revAgent reports root."
+
+    $providerQualifiedUsageRoot = Join-Path $tempRoot "installed-provider\addons\usage-intelligence"
+    $providerQualifiedUsageSourceRoot = "Microsoft.PowerShell.Core\FileSystem::$(Join-Path $RepoRoot "addons\usage-intelligence")"
+    $providerQualifiedUsageResult = & (Join-Path $RepoRoot "addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") `
+        -SourceRoot $providerQualifiedUsageSourceRoot `
+        -InstallRoot $providerQualifiedUsageRoot `
+        -SkipScheduledTasks | ConvertFrom-Json
+    Assert-Equal ([bool]$providerQualifiedUsageResult.installed) $true "Usage-intelligence add-on installer must accept provider-qualified FileSystem source roots from NAS/tool launch contexts."
+    Assert-True (Test-Path -LiteralPath (Join-Path $providerQualifiedUsageRoot "scripts\publish-usage-summary.ps1") -PathType Leaf) "Provider-qualified usage install should copy the publisher payload."
+
     $usageAddonManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\usage-intelligence\addon.json") | ConvertFrom-Json
     Assert-Equal $usageAddonManifest.entrypoints.installScript "installer\install-usage-intelligence-addon.ps1" "Usage-intelligence manifest must expose installer entrypoint."
     $usageAddonWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-usage-intelligence-addon.ps1")

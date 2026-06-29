@@ -134,6 +134,16 @@ try {
     $defaultConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $defaultDashboardRoot "config\dashboard.json") | ConvertFrom-Json
     Assert-Equal $defaultConfig.reportsRoot $canonicalReportsRoot "Dashboard default config must persist the canonical revAgent reports root."
 
+    $providerQualifiedDashboardRoot = Join-Path $tempRoot "installed-provider\addons\dashboard"
+    $providerQualifiedSourceRoot = "Microsoft.PowerShell.Core\FileSystem::$(Join-Path $RepoRoot "addons\dashboard")"
+    $providerQualifiedInstallResult = & (Join-Path $RepoRoot "addons\dashboard\installer\install-dashboard-addon.ps1") `
+        -SourceRoot $providerQualifiedSourceRoot `
+        -InstallRoot $providerQualifiedDashboardRoot `
+        -SkipScheduledTasks `
+        -NoHealthCheck | ConvertFrom-Json
+    Assert-Equal ([bool]$providerQualifiedInstallResult.installed) $true "Dashboard add-on installer must accept provider-qualified FileSystem source roots from NAS/tool launch contexts."
+    Assert-True (Test-Path -LiteralPath (Join-Path $providerQualifiedDashboardRoot "server\server.mjs") -PathType Leaf) "Provider-qualified dashboard install should copy the server payload."
+
     $legacyDashboardRoot = Join-Path $tempRoot "installed-legacy\addons\dashboard"
     $legacyConfigPath = Join-Path $legacyDashboardRoot "config\dashboard.json"
     New-Item -ItemType Directory -Path (Split-Path -Parent $legacyConfigPath) -Force | Out-Null
