@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "usage-intelligence",
+  "displayName": "revAgent Usage Intelligence",
+  "installRole": "admin",
+  "targetRoot": "C:\\ProgramData\\DPE\\revAgent\\addons\\usage-intelligence",
+  "entrypoints": {
+    "summary": "scripts\\summarize-usage-intelligence.ps1",
+    "publish": "scripts\\publish-usage-summary.ps1",
+    "installTask": "scripts\\install-usage-summary-task.ps1"
+  },
+  "ownedScheduledTasks": [
+    "revAgent Usage Summary Publish"
+  ],
+  "corePackage": false
+}

@@ -54,9 +54,11 @@ Revit operation from the user's point of view.
 ## Daily Summary
 
 The first deterministic reader layer is
-`scripts/summarize-usage-intelligence.ps1`. It reads the machine health reports
-and runtime event store for one UTC day and produces compact JSON for dashboards
-and LLM review.
+`addons/usage-intelligence/scripts/summarize-usage-intelligence.ps1`. It reads
+the machine health reports and runtime event store for one UTC day and produces
+compact JSON for dashboards and LLM review. The root
+`scripts/summarize-usage-intelligence.ps1` file is a compatibility wrapper that
+delegates to this add-on script.
 
 Example:
 
@@ -112,8 +114,11 @@ Each candidate carries an `evidenceSnippet`, `sessionContext`, `toolContext`,
 evidence is marked as `evidenceStrength: "weak"` instead of being escalated
 automatically; promotion only surfaces a candidate for human review.
 
-The publish wrapper is `scripts/publish-usage-summary.ps1`. It runs the
-summarizer and writes stable NAS outputs:
+The publish script is
+`addons/usage-intelligence/scripts/publish-usage-summary.ps1`. It runs the
+summarizer and writes stable NAS outputs. The root
+`scripts/publish-usage-summary.ps1` wrapper remains available for local
+developer compatibility:
 
 ```text
 <reportsRoot>\summaries\daily\YYYY-MM-DD.json
@@ -142,6 +147,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-usage-summary-task.ps
   -DailyAt "20:30" `
   -RunNow
 ```
+
+The add-on-owned task installer is
+`addons/usage-intelligence/scripts/install-usage-summary-task.ps1`; the root
+script delegates to it.
 
 The task name is `revAgent Usage Summary Publish`. It should be installed on
 one machine only. The publisher uses `reports\summaries\publish.lock` to avoid
@@ -239,9 +248,9 @@ The current usage-intelligence stack includes:
 1. A live dashboard feed under `reports\live\machines\<machine>` with
    non-blocking `status.json` snapshots and daily activity NDJSON for 2-5
    second dashboard polling.
-2. A read-only web dashboard in `dashboard/` with a Machine Status Windows list,
-   deployment health per machine, and a revAgent-status-style All Status
-   Activity stream. The browser UI intentionally stays simple: machine status
+2. A read-only web dashboard in `addons/dashboard` with a Machine Status
+   Windows list, deployment health per machine, and a revAgent-status-style All
+   Status Activity stream. The browser UI intentionally stays simple: machine status
    cards in the left column and the filtered activity stream in the wider right
    column. Machine cards show separate connection, version, task, and
    update-exception badges instead of one combined state. All Status Activity
@@ -304,6 +313,10 @@ The coordinator dashboard can be exposed as
 `https://dashboard.revagent.app` through a Cloudflare Tunnel to the local
 read-only server. This changes only access to the dashboard; it does not add a
 new writer or direct Revit polling path.
+
+Dashboard and usage-intelligence are admin/coordinator add-ons. They are not
+part of the standard workstation package, and source-free user pack guards treat
+the repository `addons` folder as a non-workstation artifact.
 
 The live feed is intentionally not the durable audit record. It is a UI feed.
 Writes are fire-and-forget, bounded by `REVAGENT_LIVE_STATUS_MAX_IN_FLIGHT`,

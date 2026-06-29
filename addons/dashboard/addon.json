@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "dashboard",
+  "displayName": "revAgent Dashboard",
+  "installRole": "admin",
+  "targetRoot": "C:\\ProgramData\\DPE\\revAgent\\addons\\dashboard",
+  "entrypoints": {
+    "server": "server\\server.mjs",
+    "startScript": "installer\\start-dashboard.ps1"
+  },
+  "ownedScheduledTasks": [
+    "revAgent Dashboard Server",
+    "revAgent Dashboard Tunnel"
+  ],
+  "legacyMigrationSources": [
+    "C:\\ProgramData\\DPE\\RevitMCP\\cloudflared"
+  ],
+  "corePackage": false
+}

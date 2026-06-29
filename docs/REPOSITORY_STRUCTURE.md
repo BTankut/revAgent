@@ -18,10 +18,16 @@ for servers, assemblies, manifests, and installed paths.
 |   |-- dynamic-tool-promotion-rules.json
 |   |-- rollout-readiness.sample.json
 |   `-- revit-versions.json
-|-- dashboard/
-|   |-- server.mjs
-|   |-- smoke-test.mjs
-|   `-- public/
+|-- addons/
+|   |-- dashboard/
+|   |   |-- addon.json
+|   |   |-- server/
+|   |   |-- tests/
+|   |   `-- public/
+|   `-- usage-intelligence/
+|       |-- addon.json
+|       |-- scripts/
+|       `-- tests/
 |-- docs/
 |   |-- ADR-0001-UPDATER-DOTNET-HELPER.md
 |   |-- DEVELOPER_RUNBOOK.md

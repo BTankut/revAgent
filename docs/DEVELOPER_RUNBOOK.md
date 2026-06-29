@@ -73,6 +73,9 @@ revit-mcp-skill/
 |   |-- REVAGENT_USAGE_INTELLIGENCE.md
 |   `-- REVIT_IMAGE_EXPORT.md
 |-- references/
+|-- addons/
+|   |-- dashboard/
+|   `-- usage-intelligence/
 |-- scripts/
 |   |-- build-revit-plugin.ps1
 |   |-- check-rollout-readiness.ps1
@@ -572,9 +575,9 @@ compare file mtimes.
 | Production write tools keep guard/verification contracts | runtime `write-tool-contract-test` via `npm test` | `Engineering gates` | - |
 | Tool argument schema inference does not collapse to `any` | runtime `tool-inference-test` via `npm test` | `Engineering gates` | - |
 | Runtime tools do not reintroduce raw PascalCase bridge response member-access | runtime `casing-member-access-test` via `npm test` | `Engineering gates` | Compatibility helpers may still read legacy casing through string-literal helper calls. |
-| Usage-intelligence promotion summary and dashboard brief stay deterministic | `scripts/test-usage-intelligence.ps1` or `scripts/test-all.ps1` | No | Runs without Revit or NAS, but remains outside the protected `Engineering gates` job. |
+| Usage-intelligence promotion summary and dashboard brief stay deterministic | `scripts/test-usage-intelligence.ps1` or `scripts/test-all.ps1` | No | Runs the admin add-on tests through root compatibility wrappers without Revit or NAS, but remains outside the protected `Engineering gates` job. |
 | Live commandset behavior is valid in Revit | `scripts/test-commandset-live.ps1` | No | Requires Revit 2022 open with an active document. |
-| Live dashboard helpers and publish backfill are valid | `scripts/test-live-dashboard.ps1` or `scripts/test-all.ps1` | No | Local-only; not part of the CI-safe gate. |
+| Live dashboard helpers and publish backfill are valid | `scripts/test-live-dashboard.ps1` or `scripts/test-all.ps1` | No | Local-only admin add-on coverage; not part of the CI-safe gate. |
 | NAS publish/update/install behavior is valid | Signed source-free CD, updater tools, and manual workstation verification | No | Protected `main` builds and validates; production publish requires manual `workflow_dispatch` with `publish_to_nas=true`. Manual publish scripts remain a controlled fallback and require NAS access. |
 
 The GitHub Actions workflow at `.github/workflows/ci.yml` runs the

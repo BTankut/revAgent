@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildDashboardBrief, loadDashboardData } from "./server.mjs";
+import { buildDashboardBrief, loadDashboardData } from "../server/server.mjs";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "revagent-dashboard-smoke-"));
 const releaseRoot = path.join(tempRoot, "release");

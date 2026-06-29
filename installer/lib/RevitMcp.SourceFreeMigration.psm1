@@ -182,7 +182,7 @@ function Get-RevitMcpSourceFreeArtifactInventory {
     )
 
     $blockedDirectoryNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($name in @("src", "docs", "references", "evals", "dashboard", "scripts", ".github", ".githooks", ".tmp")) {
+    foreach ($name in @("src", "docs", "references", "evals", "dashboard", "addons", "scripts", ".github", ".githooks", ".tmp")) {
         [void]$blockedDirectoryNames.Add($name)
     }
 
