@@ -236,7 +236,7 @@ function Get-VersionNumericParts {
     return $parts
 }
 
-function Compare-RevitMcpVersion {
+function Compare-RevAgentVersion {
     param(
         [string]$Left,
         [string]$Right
@@ -328,7 +328,7 @@ function Get-ChannelStatus {
         }
     }
 
-    $comparison = Compare-RevitMcpVersion -Left $installedVersion -Right $channelVersion
+    $comparison = Compare-RevAgentVersion -Left $installedVersion -Right $channelVersion
     if ($comparison -lt 0) {
         return [pscustomobject]@{
             Code = "update-available"

@@ -340,7 +340,7 @@ function New-ReparsePointOrCopyDirectory {
     )
 
     if (Test-Path -LiteralPath $Destination) {
-        Remove-RevitMcpPath -Path $Destination -Label "Codex skill integration directory" -Recurse
+        Remove-RevAgentPath -Path $Destination -Label "Codex skill integration directory" -Recurse
     }
 
     $parent = Split-Path -Parent $Destination
@@ -367,7 +367,7 @@ function New-HardLinkOrCopyFile {
     )
 
     if (Test-Path -LiteralPath $Destination) {
-        Remove-RevitMcpPath -Path $Destination -Label "Codex AGENTS.md integration file" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
+        Remove-RevAgentPath -Path $Destination -Label "Codex AGENTS.md integration file" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
     }
 
     New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null
@@ -381,7 +381,7 @@ function New-HardLinkOrCopyFile {
     }
 }
 
-function Copy-RevitMcpFilePayload {
+function Copy-RevAgentFilePayload {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Source,
@@ -397,7 +397,7 @@ function Copy-RevitMcpFilePayload {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
-function Copy-RevitMcpDirectoryPayload {
+function Copy-RevAgentDirectoryPayload {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Source,
@@ -417,7 +417,7 @@ function Copy-RevitMcpDirectoryPayload {
     Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
 }
 
-function Copy-RevitMcpRuntimeUserPayload {
+function Copy-RevAgentRuntimeUserPayload {
     param(
         [Parameter(Mandatory = $true)]
         [string]$SourceRoot,
@@ -425,9 +425,9 @@ function Copy-RevitMcpRuntimeUserPayload {
         [string]$DestinationRoot
     )
 
-    Copy-RevitMcpDirectoryPayload -Source (Join-Path $SourceRoot "build") -Destination (Join-Path $DestinationRoot "build")
+    Copy-RevAgentDirectoryPayload -Source (Join-Path $SourceRoot "build") -Destination (Join-Path $DestinationRoot "build")
     foreach ($fileName in @("package.json", "package-lock.json")) {
-        Copy-RevitMcpFilePayload -Source (Join-Path $SourceRoot $fileName) -Destination (Join-Path $DestinationRoot $fileName)
+        Copy-RevAgentFilePayload -Source (Join-Path $SourceRoot $fileName) -Destination (Join-Path $DestinationRoot $fileName)
     }
 }
 
@@ -497,7 +497,7 @@ function Install-UpdaterToolsFromPackage {
     Write-Host "Updater tools refreshed: $DestinationRoot"
 }
 
-function Repair-RevitMcpScheduledTaskAction {
+function Repair-RevAgentScheduledTaskAction {
     param(
         [string]$ConfigPath,
         [string]$UpdaterPath
@@ -538,7 +538,7 @@ else {
     $revitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
 }
 
-function Assert-RevitMcpCleanupPath {
+function Assert-RevAgentCleanupPath {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path,
@@ -584,7 +584,7 @@ function Assert-RevitMcpCleanupPath {
     return $fullPath
 }
 
-function Remove-RevitMcpPath {
+function Remove-RevAgentPath {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path,
@@ -596,10 +596,10 @@ function Remove-RevitMcpPath {
     )
 
     if ([string]::IsNullOrWhiteSpace($AllowedNamePattern)) {
-        $fullPath = Assert-RevitMcpCleanupPath -Path $Path -Label $Label -AllowBroadTarget:$AllowBroadTarget
+        $fullPath = Assert-RevAgentCleanupPath -Path $Path -Label $Label -AllowBroadTarget:$AllowBroadTarget
     }
     else {
-        $fullPath = Assert-RevitMcpCleanupPath -Path $Path -Label $Label -AllowedNamePattern $AllowedNamePattern -AllowBroadTarget:$AllowBroadTarget
+        $fullPath = Assert-RevAgentCleanupPath -Path $Path -Label $Label -AllowedNamePattern $AllowedNamePattern -AllowBroadTarget:$AllowBroadTarget
     }
 
     if (-not (Test-Path -LiteralPath $fullPath)) {
@@ -616,7 +616,7 @@ function Remove-RevitMcpPath {
     Write-Host "Removed ${Label}: $fullPath"
 }
 
-function Test-RevitMcpPathInside {
+function Test-RevAgentPathInside {
     param(
         [string]$ChildPath,
         [string]$ParentPath
@@ -655,7 +655,7 @@ function Remove-LegacyRevitMcpInstallRoot {
         $env:REVIT_MCP_LOG_PATH
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     foreach ($activePath in $activePaths) {
-        if (Test-RevitMcpPathInside -ChildPath $activePath -ParentPath $legacyInstallRoot) {
+        if (Test-RevAgentPathInside -ChildPath $activePath -ParentPath $legacyInstallRoot) {
             Write-Warning "Legacy RevitMCP install root cleanup skipped because the current process is still using it: $legacyInstallRoot"
             return
         }
@@ -670,7 +670,7 @@ function Remove-LegacyRevitMcpInstallRoot {
     }
     catch {}
 
-    Remove-RevitMcpPath -Path $legacyInstallRoot -Label "legacy RevitMCP install root" -Recurse -AllowedNamePattern "(?i)^RevitMCP$" -AllowBroadTarget
+    Remove-RevAgentPath -Path $legacyInstallRoot -Label "legacy RevitMCP install root" -Recurse -AllowedNamePattern "(?i)^RevitMCP$" -AllowBroadTarget
 }
 
 function Disable-LegacyAddinManifest {
@@ -684,8 +684,8 @@ function Disable-LegacyAddinManifest {
     }
 
     $disabledAddin = Join-Path $Root "revit-mcp.addin.disabled-self-contained"
-    Assert-RevitMcpCleanupPath -Path $legacyAddin -Label "legacy revAgent add-in manifest" | Out-Null
-    Assert-RevitMcpCleanupPath -Path $disabledAddin -Label "disabled legacy revAgent add-in manifest" | Out-Null
+    Assert-RevAgentCleanupPath -Path $legacyAddin -Label "legacy revAgent add-in manifest" | Out-Null
+    Assert-RevAgentCleanupPath -Path $disabledAddin -Label "disabled legacy revAgent add-in manifest" | Out-Null
 
     if (Test-Path -LiteralPath $disabledAddin) {
         Remove-Item -LiteralPath $disabledAddin -Force
@@ -716,7 +716,7 @@ function Get-RuntimeCleanupTargets {
     return $targets
 }
 
-function Test-RevitMcpRuntimeDirectory {
+function Test-RevAgentRuntimeDirectory {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path
@@ -763,14 +763,14 @@ function Remove-CodexProfileBackupArtifacts {
     if (Test-Path -LiteralPath $codexSkillsRoot) {
         Get-ChildItem -LiteralPath $codexSkillsRoot -Directory -Filter "revit-mcp.backup-*" -ErrorAction SilentlyContinue |
             ForEach-Object {
-                Remove-RevitMcpPath -Path $_.FullName -Label "active skill backup directory" -Recurse
+                Remove-RevAgentPath -Path $_.FullName -Label "active skill backup directory" -Recurse
                 $removed++
             }
     }
 
     $legacySkillBackupsRoot = Join-Path $codexRoot "skill-backups"
     if (Test-Path -LiteralPath $legacySkillBackupsRoot) {
-        Remove-RevitMcpPath -Path $legacySkillBackupsRoot -Label "legacy Codex skill backup root" -Recurse -AllowedNamePattern "(?i)(^skill-backups$)"
+        Remove-RevAgentPath -Path $legacySkillBackupsRoot -Label "legacy Codex skill backup root" -Recurse -AllowedNamePattern "(?i)(^skill-backups$)"
         $removed++
     }
 
@@ -779,8 +779,8 @@ function Remove-CodexProfileBackupArtifacts {
     }
 }
 
-function Remove-RevitMcpManagedSourceLeakArtifacts {
-    function Get-RevitMcpPathParts {
+function Remove-RevAgentManagedSourceLeakArtifacts {
+    function Get-RevAgentPathParts {
         param([string]$Path)
 
         if ([string]::IsNullOrWhiteSpace($Path)) {
@@ -790,7 +790,7 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
         return @($Path -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     }
 
-    function Get-RevitMcpRelativeManagedPath {
+    function Get-RevAgentRelativeManagedPath {
         param(
             [Parameter(Mandatory = $true)]
             [string]$Root,
@@ -807,10 +807,10 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
         return $normalizedPath.Substring($normalizedRoot.Length).TrimStart([char[]]@('\', '/'))
     }
 
-    function Test-RevitMcpIgnoredManagedPath {
+    function Test-RevAgentIgnoredManagedPath {
         param([string]$RelativePath)
 
-        foreach ($part in Get-RevitMcpPathParts -Path $RelativePath) {
+        foreach ($part in Get-RevAgentPathParts -Path $RelativePath) {
             if ($part -ieq "node_modules" -or $part -ieq "dependencies") {
                 return $true
             }
@@ -819,7 +819,7 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
         return $false
     }
 
-    function Test-RevitMcpAllowedManagedDirectory {
+    function Test-RevAgentAllowedManagedDirectory {
         param(
             [Parameter(Mandatory = $true)]
             [string]$Root,
@@ -827,8 +827,8 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
             [System.IO.DirectoryInfo]$Directory
         )
 
-        $relative = Get-RevitMcpRelativeManagedPath -Root $Root -Path $Directory.FullName
-        $parts = Get-RevitMcpPathParts -Path $relative
+        $relative = Get-RevAgentRelativeManagedPath -Root $Root -Path $Directory.FullName
+        $parts = Get-RevAgentPathParts -Path $relative
         return (
             $parts.Count -eq 3 -and
             $parts[0] -ieq "installer" -and
@@ -867,7 +867,7 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
     }
 
     if (-not $SkipRuntimePayloadInstall -and -not [string]::IsNullOrWhiteSpace($ServerTarget)) {
-        if (Test-RevitMcpRuntimeDirectory -Path $ServerTarget) {
+        if (Test-RevAgentRuntimeDirectory -Path $ServerTarget) {
             $managedRoots.Add($ServerTarget)
         }
         else {
@@ -887,16 +887,16 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
 
         Get-ChildItem -LiteralPath $root -Recurse -Directory -Force -ErrorAction SilentlyContinue |
             Where-Object {
-                $relative = Get-RevitMcpRelativeManagedPath -Root $root -Path $_.FullName
+                $relative = Get-RevAgentRelativeManagedPath -Root $root -Path $_.FullName
                 $sourceLeakDirectoryNames.Contains($_.Name) -and
-                -not (Test-RevitMcpIgnoredManagedPath -RelativePath $relative) -and
-                -not (Test-RevitMcpAllowedManagedDirectory -Root $root -Directory $_)
+                -not (Test-RevAgentIgnoredManagedPath -RelativePath $relative) -and
+                -not (Test-RevAgentAllowedManagedDirectory -Root $root -Directory $_)
             } |
             Sort-Object { $_.FullName.Length } -Descending |
             ForEach-Object {
                 $artifactPath = $_.FullName
                 try {
-                    Remove-RevitMcpPath -Path $artifactPath -Label "managed source/developer artifact directory" -Recurse -AllowedNamePattern $sourceLeakNamePattern
+                    Remove-RevAgentPath -Path $artifactPath -Label "managed source/developer artifact directory" -Recurse -AllowedNamePattern $sourceLeakNamePattern
                     $removed++
                 }
                 catch {
@@ -906,9 +906,9 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
 
         Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue |
             Where-Object {
-                $relative = Get-RevitMcpRelativeManagedPath -Root $root -Path $_.FullName
+                $relative = Get-RevAgentRelativeManagedPath -Root $root -Path $_.FullName
                 $_.Extension -in @(".cs", ".csproj", ".sln", ".ts", ".tsx", ".pdb", ".map") -and
-                -not (Test-RevitMcpIgnoredManagedPath -RelativePath $relative)
+                -not (Test-RevAgentIgnoredManagedPath -RelativePath $relative)
             } |
             ForEach-Object {
                 $artifactPath = $_.FullName
@@ -927,7 +927,7 @@ function Remove-RevitMcpManagedSourceLeakArtifacts {
     }
 }
 
-function Repair-RevitMcpManagedInstallPermissions {
+function Repair-RevAgentManagedInstallPermissions {
     param([switch]$IncludeExistingPayloadTrees)
 
     $targets = Get-RevAgentManagedPermissionTargets `
@@ -941,27 +941,27 @@ function Repair-RevitMcpManagedInstallPermissions {
     Invoke-RevAgentManagedPermissionRepair -Targets $targets
 }
 
-function Invoke-RevitMcpCleanup {
+function Invoke-RevAgentCleanup {
     param(
         [switch]$ForUninstall
     )
 
     if (-not $SkipRevitPayloadInstall) {
-        Remove-RevitMcpPath -Path (Join-Path $addinRoot $addinManifestFileName) -Label "revAgent add-in manifest" -AllowedNamePattern "(?i)(^revAgent\.addin$)"
-        Remove-RevitMcpPath -Path (Join-Path $addinRoot $legacyAddinManifestFileName) -Label "legacy revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
-        Remove-RevitMcpPath -Path (Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy revAgent add-in manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
+        Remove-RevAgentPath -Path (Join-Path $addinRoot $addinManifestFileName) -Label "revAgent add-in manifest" -AllowedNamePattern "(?i)(^revAgent\.addin$)"
+        Remove-RevAgentPath -Path (Join-Path $addinRoot $legacyAddinManifestFileName) -Label "legacy revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
+        Remove-RevAgentPath -Path (Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy revAgent add-in manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
         if (-not $SkipLegacyCleanup) {
-            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot $addinManifestFileName) -Label "legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^revAgent\.addin$)"
-            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot $legacyAddinManifestFileName) -Label "legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
-            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
-            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot $pluginFolderName) -Label "legacy user revAgent add-in payload directory" -Recurse
-            Remove-RevitMcpPath -Path (Join-Path $legacyUserAddinRoot $legacyPluginFolderName) -Label "legacy user revAgent add-in payload directory" -Recurse
+            Remove-RevAgentPath -Path (Join-Path $legacyUserAddinRoot $addinManifestFileName) -Label "legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^revAgent\.addin$)"
+            Remove-RevAgentPath -Path (Join-Path $legacyUserAddinRoot $legacyAddinManifestFileName) -Label "legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
+            Remove-RevAgentPath -Path (Join-Path $legacyUserAddinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
+            Remove-RevAgentPath -Path (Join-Path $legacyUserAddinRoot $pluginFolderName) -Label "legacy user revAgent add-in payload directory" -Recurse
+            Remove-RevAgentPath -Path (Join-Path $legacyUserAddinRoot $legacyPluginFolderName) -Label "legacy user revAgent add-in payload directory" -Recurse
         }
-        Remove-RevitMcpPath -Path $pluginTarget -Label "revAgent add-in payload directory" -Recurse
-        Remove-RevitMcpPath -Path $legacyPluginTarget -Label "legacy revAgent add-in payload directory" -Recurse
-        Remove-RevitMcpPath -Path $commandSetRoot -Label "revAgent machine command directory" -Recurse -AllowedNamePattern "(?i)(^CommandSet$)"
+        Remove-RevAgentPath -Path $pluginTarget -Label "revAgent add-in payload directory" -Recurse
+        Remove-RevAgentPath -Path $legacyPluginTarget -Label "legacy revAgent add-in payload directory" -Recurse
+        Remove-RevAgentPath -Path $commandSetRoot -Label "revAgent machine command directory" -Recurse -AllowedNamePattern "(?i)(^CommandSet$)"
         if (-not $SkipLegacyCleanup) {
-            Remove-RevitMcpPath -Path (Join-Path $env:LOCALAPPDATA "revit-mcp-plugin") -Label "revAgent LocalAppData command directory" -Recurse
+            Remove-RevAgentPath -Path (Join-Path $env:LOCALAPPDATA "revit-mcp-plugin") -Label "revAgent LocalAppData command directory" -Recurse
         }
     }
     else {
@@ -970,12 +970,12 @@ function Invoke-RevitMcpCleanup {
 
     if (-not $SkipRuntimePayloadInstall) {
         foreach ($target in Get-RuntimeCleanupTargets) {
-            if (-not (Test-RevitMcpRuntimeDirectory -Path $target)) {
+            if (-not (Test-RevAgentRuntimeDirectory -Path $target)) {
                 Write-Warning "Skipping runtime cleanup because the directory does not look like a revAgent runtime install: $target"
                 continue
             }
 
-            Remove-RevitMcpPath -Path $target -Label "runtime MCP server directory" -Recurse
+            Remove-RevAgentPath -Path $target -Label "runtime MCP server directory" -Recurse
         }
     }
     else {
@@ -987,16 +987,16 @@ function Invoke-RevitMcpCleanup {
     }
 
     if ($ForUninstall) {
-        Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex revAgent skill directory" -Recurse
-        Remove-RevitMcpPath -Path $legacyCodexSkillTarget -Label "legacy Codex revAgent skill directory" -Recurse
-        Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex revAgent skill directory" -Recurse
-        Remove-RevitMcpPath -Path $legacyCodexMachineSkillTarget -Label "legacy machine Codex revAgent skill directory" -Recurse
-        Remove-RevitMcpPath -Path $legacyInstallRootMachineSkillTarget -Label "legacy install-root Codex skill directory" -Recurse
+        Remove-RevAgentPath -Path $codexSkillTarget -Label "Codex revAgent skill directory" -Recurse
+        Remove-RevAgentPath -Path $legacyCodexSkillTarget -Label "legacy Codex revAgent skill directory" -Recurse
+        Remove-RevAgentPath -Path $codexMachineSkillTarget -Label "machine Codex revAgent skill directory" -Recurse
+        Remove-RevAgentPath -Path $legacyCodexMachineSkillTarget -Label "legacy machine Codex revAgent skill directory" -Recurse
+        Remove-RevAgentPath -Path $legacyInstallRootMachineSkillTarget -Label "legacy install-root Codex skill directory" -Recurse
         if ($RemoveAgents) {
-            Remove-RevitMcpPath -Path $codexAgentsTarget -Label "Codex global AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
-            Remove-RevitMcpPath -Path $codexMachineAgentsTarget -Label "machine AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
+            Remove-RevAgentPath -Path $codexAgentsTarget -Label "Codex global AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
+            Remove-RevAgentPath -Path $codexMachineAgentsTarget -Label "machine AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
             if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
-                Remove-RevitMcpPath -Path $WorkspaceAgentsTarget -Label "workspace AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
+                Remove-RevAgentPath -Path $WorkspaceAgentsTarget -Label "workspace AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
             }
         }
     }
@@ -1008,8 +1008,8 @@ function Invoke-RevitMcpCleanup {
     }
 }
 
-Repair-RevitMcpManagedInstallPermissions -IncludeExistingPayloadTrees:((-not $SkipRevitPayloadInstall) -and (-not $SkipRuntimePayloadInstall))
-Invoke-RevitMcpCleanup -ForUninstall:$Uninstall
+Repair-RevAgentManagedInstallPermissions -IncludeExistingPayloadTrees:((-not $SkipRevitPayloadInstall) -and (-not $SkipRuntimePayloadInstall))
+Invoke-RevAgentCleanup -ForUninstall:$Uninstall
 
 if ($Uninstall) {
     Write-Host "Self-contained revAgent bundle uninstalled for Revit $RevitVersion" -ForegroundColor Green
@@ -1036,14 +1036,14 @@ else {
     Write-Host "Revit add-in payload install skipped; existing Revit files were left untouched." -ForegroundColor Yellow
 }
 if (-not $SkipRuntimePayloadInstall) {
-    Copy-RevitMcpRuntimeUserPayload -SourceRoot $serverSource -DestinationRoot $ServerTarget
-    Remove-RevitMcpPath -Path (Join-Path $ServerTarget ".revit-mcp-self-contained-install") -Label "legacy runtime install marker" -AllowedNamePattern "(?i)^\.revit-mcp-self-contained-install$"
+    Copy-RevAgentRuntimeUserPayload -SourceRoot $serverSource -DestinationRoot $ServerTarget
+    Remove-RevAgentPath -Path (Join-Path $ServerTarget ".revit-mcp-self-contained-install") -Label "legacy runtime install marker" -AllowedNamePattern "(?i)^\.revit-mcp-self-contained-install$"
     Set-Content -LiteralPath (Join-Path $ServerTarget ".revagent-self-contained-install") -Value ("Installed by revAgent at " + (Get-Date).ToString("s")) -Encoding UTF8
 }
 else {
     Write-Host "Runtime payload install skipped; existing runtime files were left untouched." -ForegroundColor Yellow
 }
-Remove-RevitMcpPath -Path (Join-Path $InstallRoot ".revit-mcp-programdata-install") -Label "legacy ProgramData install marker" -AllowedNamePattern "(?i)^\.revit-mcp-programdata-install$"
+Remove-RevAgentPath -Path (Join-Path $InstallRoot ".revit-mcp-programdata-install") -Label "legacy ProgramData install marker" -AllowedNamePattern "(?i)^\.revit-mcp-programdata-install$"
 Set-Content -LiteralPath (Join-Path $InstallRoot ".revagent-programdata-install") -Value ("Installed by revAgent at " + (Get-Date).ToString("s")) -Encoding UTF8
 
 # The required revAgent API docs server remains in the repo under installer\revit-api-docs-mcp.
@@ -1072,7 +1072,7 @@ if ((-not $SkipRevitPayloadInstall) -and (Test-Path $customDllDir)) {
     $roamingCmdSet = Join-Path $roamingCommandsRoot $pluginCommandSetFolderName
     $legacyRoamingCmdSet = Join-Path $roamingCommandsRoot "RevitMCPCommandSet"
     if (Test-Path -LiteralPath $legacyRoamingCmdSet) {
-        Remove-RevitMcpPath -Path $legacyRoamingCmdSet -Label "legacy revAgent command payload folder" -Recurse -AllowedNamePattern "(?i)^RevitMCPCommandSet$"
+        Remove-RevAgentPath -Path $legacyRoamingCmdSet -Label "legacy revAgent command payload folder" -Recurse -AllowedNamePattern "(?i)^RevitMCPCommandSet$"
     }
 
     New-Item -ItemType Directory -Path $roamingCmdSet2022 -Force | Out-Null
@@ -1166,21 +1166,21 @@ else {
         New-Item -ItemType Directory -Path $codexMachineSkillsRoot -Force | Out-Null
 
         if (Test-Path -LiteralPath $codexMachineSkillTarget) {
-            Remove-RevitMcpPath -Path $codexMachineSkillTarget -Label "machine Codex revAgent skill directory" -Recurse
+            Remove-RevAgentPath -Path $codexMachineSkillTarget -Label "machine Codex revAgent skill directory" -Recurse
         }
-        Remove-RevitMcpPath -Path $legacyCodexMachineSkillTarget -Label "legacy machine Codex revAgent skill directory" -Recurse
-        Remove-RevitMcpPath -Path $legacyInstallRootMachineSkillTarget -Label "legacy install-root Codex skill directory" -Recurse
+        Remove-RevAgentPath -Path $legacyCodexMachineSkillTarget -Label "legacy machine Codex revAgent skill directory" -Recurse
+        Remove-RevAgentPath -Path $legacyInstallRootMachineSkillTarget -Label "legacy install-root Codex skill directory" -Recurse
 
         New-Item -ItemType Directory -Path $codexMachineSkillTarget -Force | Out-Null
-        Copy-RevitMcpFilePayload -Source (Join-Path $codexUserSourceRoot "SKILL.md") -Destination (Join-Path $codexMachineSkillTarget "SKILL.md")
+        Copy-RevAgentFilePayload -Source (Join-Path $codexUserSourceRoot "SKILL.md") -Destination (Join-Path $codexMachineSkillTarget "SKILL.md")
 
         if (-not $SkipCodexUserIntegration) {
             New-Item -ItemType Directory -Path $codexSkillsRoot -Force | Out-Null
 
             if (Test-Path -LiteralPath $codexSkillTarget) {
-                Remove-RevitMcpPath -Path $codexSkillTarget -Label "Codex revAgent skill directory" -Recurse
+                Remove-RevAgentPath -Path $codexSkillTarget -Label "Codex revAgent skill directory" -Recurse
             }
-            Remove-RevitMcpPath -Path $legacyCodexSkillTarget -Label "legacy Codex revAgent skill directory" -Recurse
+            Remove-RevAgentPath -Path $legacyCodexSkillTarget -Label "legacy Codex revAgent skill directory" -Recurse
 
             New-ReparsePointOrCopyDirectory -Source $codexMachineSkillTarget -Destination $codexSkillTarget
         }
@@ -1222,7 +1222,7 @@ else {
     }
 }
 
-Remove-RevitMcpManagedSourceLeakArtifacts
+Remove-RevAgentManagedSourceLeakArtifacts
 
 function ConvertTo-VbsStringLiteral {
     param([string]$Value)
@@ -1285,11 +1285,11 @@ function New-HiddenUpdaterScheduledTaskAction {
 }
 
 $nasToolsSource = Join-Path $PSScriptRoot "nas"
-Repair-RevitMcpManagedInstallPermissions
+Repair-RevAgentManagedInstallPermissions
 Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $updaterRoot -ConfigPath $updaterConfigPath
 Invoke-RevAgentLogRetention -LogsRoot (Join-Path $updaterRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
-Repair-RevitMcpManagedInstallPermissions
-Repair-RevitMcpScheduledTaskAction -ConfigPath $updaterConfigPath -UpdaterPath (Join-Path $updaterRoot "update-from-nas.ps1")
+Repair-RevAgentManagedInstallPermissions
+Repair-RevAgentScheduledTaskAction -ConfigPath $updaterConfigPath -UpdaterPath (Join-Path $updaterRoot "update-from-nas.ps1")
 Remove-LegacyRevitMcpInstallRoot
 
 Write-Host "Self-contained revAgent bundle installed for Revit $RevitVersion" -ForegroundColor Green

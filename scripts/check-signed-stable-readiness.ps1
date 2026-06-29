@@ -34,7 +34,7 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 Import-Module (Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1") -Force
 
-function Read-RevitMcpJsonFile {
+function Read-RevAgentJsonFile {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     return Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
@@ -55,7 +55,7 @@ function Resolve-RevAgentReleasePath {
     return [System.IO.Path]::GetFullPath((Join-Path $BaseDirectory $Path))
 }
 
-function Add-RevitMcpReadinessCheck {
+function Add-RevAgentReadinessCheck {
     param(
         [System.Collections.Generic.List[object]]$Checks,
         [string]$Name,
@@ -74,7 +74,7 @@ function Add-RevitMcpReadinessCheck {
         }) | Out-Null
 }
 
-function Read-RevitMcpTrustedKeys {
+function Read-RevAgentTrustedKeys {
     param([string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path)) {
@@ -84,7 +84,7 @@ function Read-RevitMcpTrustedKeys {
         throw "Trusted release key file was not found: $Path"
     }
 
-    $document = Read-RevitMcpJsonFile -Path $Path
+    $document = Read-RevAgentJsonFile -Path $Path
     $property = $document.PSObject.Properties["trustedKeys"]
     if ($property) {
         return $property.Value
@@ -92,7 +92,7 @@ function Read-RevitMcpTrustedKeys {
     return $document
 }
 
-function Find-RevitMcpPrivateSigningMaterial {
+function Find-RevAgentPrivateSigningMaterial {
     param([string]$Root)
 
     if ([string]::IsNullOrWhiteSpace($Root) -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
@@ -137,7 +137,7 @@ function Find-RevitMcpPrivateSigningMaterial {
     return @($findings.ToArray())
 }
 
-function New-RevitMcpReleaseArtifactFinding {
+function New-RevAgentReleaseArtifactFinding {
     param(
         [string]$Path,
         [string]$Reason,
@@ -151,7 +151,7 @@ function New-RevitMcpReleaseArtifactFinding {
     }
 }
 
-function Get-RevitMcpForbiddenReleaseArtifactReason {
+function Get-RevAgentForbiddenReleaseArtifactReason {
     param(
         [string]$RelativePath,
         [switch]$InsideUserPackage
@@ -215,7 +215,7 @@ function Get-RevitMcpForbiddenReleaseArtifactReason {
     return ""
 }
 
-function Test-RevitMcpPathUnderRoot {
+function Test-RevAgentPathUnderRoot {
     param(
         [string]$Path,
         [string]$Root
@@ -227,7 +227,7 @@ function Test-RevitMcpPathUnderRoot {
         $fullPath.StartsWith($rootFullPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
-function Find-RevitMcpReleaseArtifactFindings {
+function Find-RevAgentReleaseArtifactFindings {
     param(
         [string]$Root,
         [string[]]$ScanPaths = @()
@@ -246,7 +246,7 @@ function Find-RevitMcpReleaseArtifactFindings {
 
     if ($ScanPaths -and $ScanPaths.Count -gt 0) {
         foreach ($scanPath in $ScanPaths) {
-            if ([string]::IsNullOrWhiteSpace($scanPath) -or -not (Test-RevitMcpPathUnderRoot -Path $scanPath -Root $rootFullName)) {
+            if ([string]::IsNullOrWhiteSpace($scanPath) -or -not (Test-RevAgentPathUnderRoot -Path $scanPath -Root $rootFullName)) {
                 continue
             }
             if (Test-Path -LiteralPath $scanPath -PathType Container) {
@@ -267,9 +267,9 @@ function Find-RevitMcpReleaseArtifactFindings {
 
     $filesToScan.ToArray() | ForEach-Object {
         $relative = $_.FullName.Substring($rootPrefix.Length).Replace("/", "\")
-        $reason = Get-RevitMcpForbiddenReleaseArtifactReason -RelativePath $relative
+        $reason = Get-RevAgentForbiddenReleaseArtifactReason -RelativePath $relative
         if (-not [string]::IsNullOrWhiteSpace($reason)) {
-            $findings.Add([object](New-RevitMcpReleaseArtifactFinding -Path $relative -Reason $reason)) | Out-Null
+            $findings.Add([object](New-RevAgentReleaseArtifactFinding -Path $relative -Reason $reason)) | Out-Null
         }
 
         if (-not [string]::Equals($_.Extension, ".zip", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -285,9 +285,9 @@ function Find-RevitMcpReleaseArtifactFindings {
                     }
 
                     $entryPath = $entry.FullName.Replace("/", "\")
-                    $entryReason = Get-RevitMcpForbiddenReleaseArtifactReason -RelativePath $entryPath -InsideUserPackage
+                    $entryReason = Get-RevAgentForbiddenReleaseArtifactReason -RelativePath $entryPath -InsideUserPackage
                     if (-not [string]::IsNullOrWhiteSpace($entryReason)) {
-                        $findings.Add([object](New-RevitMcpReleaseArtifactFinding -Path ("{0}!{1}" -f $relative, $entryPath) -Reason $entryReason -Container $relative)) | Out-Null
+                        $findings.Add([object](New-RevAgentReleaseArtifactFinding -Path ("{0}!{1}" -f $relative, $entryPath) -Reason $entryReason -Container $relative)) | Out-Null
                     }
                 }
             }
@@ -296,7 +296,7 @@ function Find-RevitMcpReleaseArtifactFindings {
             }
         }
         catch {
-            $findings.Add([object](New-RevitMcpReleaseArtifactFinding -Path $relative -Reason "zip_read_failed")) | Out-Null
+            $findings.Add([object](New-RevAgentReleaseArtifactFinding -Path $relative -Reason "zip_read_failed")) | Out-Null
         }
     }
 
@@ -319,7 +319,7 @@ $ReleaseRoot = [System.IO.Path]::GetFullPath($ReleaseRoot)
 
 $checks = [System.Collections.Generic.List[object]]::new()
 
-Add-RevitMcpReadinessCheck -Checks $checks -Name "channel_manifest_present" -Success (Test-Path -LiteralPath $ChannelManifestPath -PathType Leaf) -Message "Stable channel manifest must exist." -Path $ChannelManifestPath
+Add-RevAgentReadinessCheck -Checks $checks -Name "channel_manifest_present" -Success (Test-Path -LiteralPath $ChannelManifestPath -PathType Leaf) -Message "Stable channel manifest must exist." -Path $ChannelManifestPath
 if (-not (Test-Path -LiteralPath $ChannelManifestPath -PathType Leaf)) {
     $report = [pscustomobject][ordered]@{
         success = $false
@@ -334,24 +334,24 @@ if (-not (Test-Path -LiteralPath $ChannelManifestPath -PathType Leaf)) {
     return
 }
 
-$channel = Read-RevitMcpJsonFile -Path $ChannelManifestPath
+$channel = Read-RevAgentJsonFile -Path $ChannelManifestPath
 $releaseManifestPath = Resolve-RevAgentReleasePath -Path ([string]$channel.manifestPath) -BaseDirectory $channelDir
 $packagePath = Resolve-RevAgentReleasePath -Path ([string]$channel.packagePath) -BaseDirectory $channelDir
 $channelSignaturePath = Get-RevAgentDetachedSignaturePath -ContentPath $ChannelManifestPath
 $releaseManifestSignaturePath = if ([string]::IsNullOrWhiteSpace($releaseManifestPath)) { "" } else { Get-RevAgentDetachedSignaturePath -ContentPath $releaseManifestPath }
 
-Add-RevitMcpReadinessCheck -Checks $checks -Name "release_manifest_present" -Success (Test-Path -LiteralPath $releaseManifestPath -PathType Leaf) -Message "Release manifest must exist." -Path $releaseManifestPath
-Add-RevitMcpReadinessCheck -Checks $checks -Name "channel_signature_present" -Success (Test-Path -LiteralPath $channelSignaturePath -PathType Leaf) -Message "Stable channel detached signature must exist." -Path $channelSignaturePath
-Add-RevitMcpReadinessCheck -Checks $checks -Name "release_manifest_signature_present" -Success (Test-Path -LiteralPath $releaseManifestSignaturePath -PathType Leaf) -Message "Release manifest detached signature must exist." -Path $releaseManifestSignaturePath
-Add-RevitMcpReadinessCheck -Checks $checks -Name "package_present" -Success (Test-Path -LiteralPath $packagePath -PathType Leaf) -Message "Release ZIP must exist." -Path $packagePath
+Add-RevAgentReadinessCheck -Checks $checks -Name "release_manifest_present" -Success (Test-Path -LiteralPath $releaseManifestPath -PathType Leaf) -Message "Release manifest must exist." -Path $releaseManifestPath
+Add-RevAgentReadinessCheck -Checks $checks -Name "channel_signature_present" -Success (Test-Path -LiteralPath $channelSignaturePath -PathType Leaf) -Message "Stable channel detached signature must exist." -Path $channelSignaturePath
+Add-RevAgentReadinessCheck -Checks $checks -Name "release_manifest_signature_present" -Success (Test-Path -LiteralPath $releaseManifestSignaturePath -PathType Leaf) -Message "Release manifest detached signature must exist." -Path $releaseManifestSignaturePath
+Add-RevAgentReadinessCheck -Checks $checks -Name "package_present" -Success (Test-Path -LiteralPath $packagePath -PathType Leaf) -Message "Release ZIP must exist." -Path $packagePath
 
-$trustedKeys = Read-RevitMcpTrustedKeys -Path $TrustedKeysPath
+$trustedKeys = Read-RevAgentTrustedKeys -Path $TrustedKeysPath
 $trustedKeyMap = ConvertTo-RevAgentTrustedKeyMap -TrustedKeys $trustedKeys
-Add-RevitMcpReadinessCheck -Checks $checks -Name "trusted_release_keys_present" -Success ($trustedKeyMap.Count -gt 0) -Message "At least one trusted public release key must be supplied." -Path $TrustedKeysPath
+Add-RevAgentReadinessCheck -Checks $checks -Name "trusted_release_keys_present" -Success ($trustedKeyMap.Count -gt 0) -Message "At least one trusted public release key must be supplied." -Path $TrustedKeysPath
 
 $releaseManifest = $null
 if (Test-Path -LiteralPath $releaseManifestPath -PathType Leaf) {
-    $releaseManifest = Read-RevitMcpJsonFile -Path $releaseManifestPath
+    $releaseManifest = Read-RevAgentJsonFile -Path $releaseManifestPath
 }
 
 $integrity = Test-RevAgentReleaseDistributionIntegrity `
@@ -363,7 +363,7 @@ $integrity = Test-RevAgentReleaseDistributionIntegrity `
     -Policy "enforce" `
     -HighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence `
     -AllowRollback:$AllowRollback
-Add-RevitMcpReadinessCheck -Checks $checks -Name "enforce_mode_signature_verification" -Success ([bool]$integrity.success) -Reason ([string]$integrity.reason) -Message ([string]$integrity.message)
+Add-RevAgentReadinessCheck -Checks $checks -Name "enforce_mode_signature_verification" -Success ([bool]$integrity.success) -Reason ([string]$integrity.reason) -Message ([string]$integrity.message)
 
 $releaseSequenceOk = $false
 try {
@@ -372,7 +372,7 @@ try {
 catch {
     $releaseSequenceOk = $false
 }
-Add-RevitMcpReadinessCheck -Checks $checks -Name "positive_release_sequence" -Success $releaseSequenceOk -Message "Signed stable rollout requires matching positive releaseSequence in channel and release manifest."
+Add-RevAgentReadinessCheck -Checks $checks -Name "positive_release_sequence" -Success $releaseSequenceOk -Message "Signed stable rollout requires matching positive releaseSequence in channel and release manifest."
 
 $packageHashOk = $false
 if (Test-Path -LiteralPath $packagePath -PathType Leaf) {
@@ -385,10 +385,10 @@ if (Test-Path -LiteralPath $packagePath -PathType Leaf) {
     $packageHashOk = [string]::Equals($actualHash, $channelHash, [System.StringComparison]::OrdinalIgnoreCase) -and
         [string]::Equals($actualHash, $manifestHash, [System.StringComparison]::OrdinalIgnoreCase)
 }
-Add-RevitMcpReadinessCheck -Checks $checks -Name "package_sha256_matches_signed_metadata" -Success $packageHashOk -Message "Release ZIP SHA256 must match channel.sha256 and manifest.package.sha256." -Path $packagePath
+Add-RevAgentReadinessCheck -Checks $checks -Name "package_sha256_matches_signed_metadata" -Success $packageHashOk -Message "Release ZIP SHA256 must match channel.sha256 and manifest.package.sha256." -Path $packagePath
 
-$privateMaterial = @(Find-RevitMcpPrivateSigningMaterial -Root $ReleaseRoot)
-Add-RevitMcpReadinessCheck -Checks $checks -Name "no_private_signing_material_in_release_root" -Success ($privateMaterial.Count -eq 0) -Reason $(if ($privateMaterial.Count -eq 0) { "" } else { "private_signing_material_detected" }) -Message "Release root must not contain private signing material." -Path $ReleaseRoot
+$privateMaterial = @(Find-RevAgentPrivateSigningMaterial -Root $ReleaseRoot)
+Add-RevAgentReadinessCheck -Checks $checks -Name "no_private_signing_material_in_release_root" -Success ($privateMaterial.Count -eq 0) -Reason $(if ($privateMaterial.Count -eq 0) { "" } else { "private_signing_material_detected" }) -Message "Release root must not contain private signing material." -Path $ReleaseRoot
 
 $artifactScanPaths = @()
 if ([string]::Equals($ArtifactScanScope, "activeRelease", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -400,9 +400,9 @@ if ([string]::Equals($ArtifactScanScope, "activeRelease", [System.StringComparis
         $artifactScanPaths += $toolsPath
     }
 }
-$artifactFindings = @(Find-RevitMcpReleaseArtifactFindings -Root $ReleaseRoot -ScanPaths $artifactScanPaths)
+$artifactFindings = @(Find-RevAgentReleaseArtifactFindings -Root $ReleaseRoot -ScanPaths $artifactScanPaths)
 $artifactCheckPath = if ($artifactScanPaths.Count -gt 0) { ($artifactScanPaths -join ";") } else { $ReleaseRoot }
-Add-RevitMcpReadinessCheck -Checks $checks -Name "no_source_or_developer_artifacts_in_release_root" -Success ($artifactFindings.Count -eq 0) -Reason $(if ($artifactFindings.Count -eq 0) { "" } else { "source_or_developer_artifacts_detected" }) -Message "Release root and release ZIP must not contain source, source maps, debug symbols, developer manifests, private key names, or license secret names." -Path $artifactCheckPath
+Add-RevAgentReadinessCheck -Checks $checks -Name "no_source_or_developer_artifacts_in_release_root" -Success ($artifactFindings.Count -eq 0) -Reason $(if ($artifactFindings.Count -eq 0) { "" } else { "source_or_developer_artifacts_detected" }) -Message "Release root and release ZIP must not contain source, source maps, debug symbols, developer manifests, private key names, or license secret names." -Path $artifactCheckPath
 
 $failedChecks = @($checks.ToArray() | Where-Object { -not [bool]$_.success })
 $ready = $failedChecks.Count -eq 0

@@ -4,6 +4,10 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Renamed private installer, updater, migration, readiness, and signed-CD helper
+  symbols from `RevitMcp*` to `RevAgent*` while preserving legacy paths,
+  environment fallbacks, cleanup targets, and exported compatibility helper
+  APIs.
 - Fixed admin dashboard report-root ownership so dashboard installs, restarts,
   and legacy config migrations default to the canonical
   `\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports` source instead

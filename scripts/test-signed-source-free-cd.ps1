@@ -244,8 +244,8 @@ try {
     $publisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1")
     $legacyPublisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
     $claudeWorkflowText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot ".github\workflows\claude-review.yml")
-    $stableSequenceCheckIndex = $publisherText.IndexOf('$currentStableSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus')
-    $toolsCopyIndex = $publisherText.IndexOf('Copy-RevitMcpDirectoryExact -Source $sourceToolsDir')
+    $stableSequenceCheckIndex = $publisherText.IndexOf('$currentStableSequenceStatus = Get-RevAgentChannelReleaseSequenceStatus')
+    $toolsCopyIndex = $publisherText.IndexOf('Copy-RevAgentDirectoryExact -Source $sourceToolsDir')
     $candidateReadinessIndex = $publisherText.IndexOf('$candidateReadiness = &')
     $tryBeforeCandidateReadinessIndex = $publisherText.LastIndexOf('try {', $candidateReadinessIndex)
     $finallyAfterCandidateReadinessIndex = $publisherText.IndexOf('finally {', $candidateReadinessIndex)
@@ -258,8 +258,8 @@ try {
     Assert-True ($publisherText -match 'current stable releaseSequence could not be determined') "NAS publisher must fail closed when the existing stable releaseSequence is unreadable."
     Assert-True ($publisherText -match 'missing_release_sequence' -and $publisherText -match 'legacy sequence 0 because -AllowRollback was supplied') "NAS publisher must make legacy current-stable bootstrap an explicit -AllowRollback path."
     Assert-True ($publisherText -match '\$cleanupPaths = @\(\$stableChannelTempPath, \$stableSignatureTempPath, \$candidateChannelPath, \$candidateSignaturePath\)') "NAS publisher must clean candidate channel artifacts even when stable promotion rolls back."
-    Assert-True ($publisherText -match 'previous\.json' -and $publisherText -match 'previous\.sig\.json' -and $publisherText -match 'promotionStarted' -and $publisherText -match 'NAS stable signed release root failed readiness' -and $publisherText -match 'rollbackFailed' -and $publisherText -match 'Backup files kept' -and $publisherText -match 'Restore-RevitMcpDirectoryFromRollback') "NAS publisher must keep rollback files while promoting stable channel metadata and restore payload directories when rollback is needed."
-    Assert-True ($legacyPublisherText -match '\[switch\]\$AllowRollback' -and $legacyPublisherText -match 'Get-RevitMcpChannelReleaseSequenceStatus' -and $legacyPublisherText -match 'Refusing to publish releaseSequence') "Legacy NAS publisher must enforce releaseSequence rollback guards."
+    Assert-True ($publisherText -match 'previous\.json' -and $publisherText -match 'previous\.sig\.json' -and $publisherText -match 'promotionStarted' -and $publisherText -match 'NAS stable signed release root failed readiness' -and $publisherText -match 'rollbackFailed' -and $publisherText -match 'Backup files kept' -and $publisherText -match 'Restore-RevAgentDirectoryFromRollback') "NAS publisher must keep rollback files while promoting stable channel metadata and restore payload directories when rollback is needed."
+    Assert-True ($legacyPublisherText -match '\[switch\]\$AllowRollback' -and $legacyPublisherText -match 'Get-RevAgentChannelReleaseSequenceStatus' -and $legacyPublisherText -match 'Refusing to publish releaseSequence') "NAS publisher entrypoint must enforce releaseSequence rollback guards."
     Assert-True ($claudeWorkflowText -match 'github\.event\.pull_request\.draft == false' -and $claudeWorkflowText -match 'github\.event\.pull_request\.head\.repo\.full_name == github\.repository') "Claude review workflow must visibly skip draft and fork PRs instead of silently consuming review quota or no-oping."
 }
 finally {

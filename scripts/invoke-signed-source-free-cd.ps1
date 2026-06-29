@@ -38,7 +38,7 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 }
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
-function Get-RevitMcpCdGitValue {
+function Get-RevAgentCdGitValue {
     param(
         [string]$Repository,
         [string[]]$Arguments,
@@ -78,13 +78,13 @@ if (-not (Test-Path -LiteralPath $trustedKeysFullPath -PathType Leaf)) {
 }
 
 $refName = [string]$env:GITHUB_REF_NAME
-$branch = Get-RevitMcpCdGitValue -Repository $RepoRoot -Arguments @("branch", "--show-current") -Fallback ""
+$branch = Get-RevAgentCdGitValue -Repository $RepoRoot -Arguments @("branch", "--show-current") -Fallback ""
 $effectiveBranch = if (-not [string]::IsNullOrWhiteSpace($refName)) { $refName } else { $branch }
 if (-not $AllowNonMain -and -not [string]::Equals($effectiveBranch, "main", [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Signed source-free CD must run from main. Current ref/branch: '$effectiveBranch'. Pass -AllowNonMain only for local dry-run validation."
 }
 
-$dirtyStatus = Get-RevitMcpCdGitValue -Repository $RepoRoot -Arguments @("status", "--porcelain") -Fallback ""
+$dirtyStatus = Get-RevAgentCdGitValue -Repository $RepoRoot -Arguments @("status", "--porcelain") -Fallback ""
 $isDirty = -not [string]::IsNullOrWhiteSpace($dirtyStatus)
 if ($isDirty -and -not $AllowDirty) {
     throw "Signed source-free CD requires a clean tree. Commit first or pass -AllowDirty for an explicit non-production test artifact."
