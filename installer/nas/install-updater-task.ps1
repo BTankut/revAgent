@@ -57,14 +57,14 @@ $nasLibRoot = @(
 if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
     throw "revAgent updater lib folder was not found beside or above: $PSScriptRoot"
 }
-Import-Module (Join-Path $nasLibRoot "RevitMcp.HiddenLauncher.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.ScheduledTask.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.RevitVersions.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.Permissions.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.Proxy.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.LogRetention.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.CodexRegistration.psm1") -Force
-Import-Module (Join-Path $nasLibRoot "RevitMcp.Reporting.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.HiddenLauncher.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.ScheduledTask.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.RevitVersions.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.Permissions.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.Proxy.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.LogRetention.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.CodexRegistration.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.Reporting.psm1") -Force
 Set-RevitMcpCurrentProcessUtf8Console | Out-Null
 
 if ($RunSourceFreeMigration) {
@@ -405,13 +405,13 @@ function Test-CurrentProcessElevated {
 function ConvertTo-RevitMcpProxyUrl {
     param([string]$Value)
 
-    return RevitMcp.Proxy\ConvertTo-RevitMcpProxyUrl -Value $Value
+    return RevAgent.Proxy\ConvertTo-RevitMcpProxyUrl -Value $Value
 }
 
 function ConvertTo-RevitMcpWinHttpProxyServer {
     param([string]$Value)
 
-    return RevitMcp.Proxy\ConvertTo-RevitMcpWinHttpProxyServer -Value $Value
+    return RevAgent.Proxy\ConvertTo-RevitMcpWinHttpProxyServer -Value $Value
 }
 
 function Send-RevitMcpEnvironmentChanged {

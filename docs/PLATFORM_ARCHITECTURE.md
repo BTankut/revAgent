@@ -413,18 +413,18 @@ Shared helpers live under `installer/lib/` and are copied beside local updater
 tools under `C:\ProgramData\DPE\revAgent\updater\lib` and NAS `tools\lib`.
 The Revit version matrix is copied beside those tools as `config\`.
 
-- `RevitMcp.HiddenLauncher.psm1`: single-line VBS hidden launcher generation
+- `RevAgent.HiddenLauncher.psm1`: single-line VBS hidden launcher generation
   with child exit-code propagation.
-- `RevitMcp.ScheduledTask.psm1`: scheduled task action repair to WScript.
-- `RevitMcp.Permissions.psm1`: targeted permission repair plan and execution.
-- `RevitMcp.Package.psm1`: release path, package layout, and ZIP extraction.
-- `RevitMcp.RevitVersions.psm1`: Revit version matrix loading and install-root
+- `RevAgent.ScheduledTask.psm1`: scheduled task action repair to WScript.
+- `RevAgent.Permissions.psm1`: targeted permission repair plan and execution.
+- `RevAgent.Package.psm1`: release path, package layout, and ZIP extraction.
+- `RevAgent.RevitVersions.psm1`: Revit version matrix loading and install-root
   discovery.
-- `RevitMcp.UpdatePolicy.psm1`: Revit-open defer vs non-Revit update decision.
-- `RevitMcp.Proxy.psm1`: proxy URL normalization helpers.
-- `RevitMcp.CodexRegistration.psm1`: Codex `config.toml` MCP registration
+- `RevAgent.UpdatePolicy.psm1`: Revit-open defer vs non-Revit update decision.
+- `RevAgent.Proxy.psm1`: proxy URL normalization helpers.
+- `RevAgent.CodexRegistration.psm1`: Codex `config.toml` MCP registration
   helpers.
-- `RevitMcp.Reporting.psm1`: JSON report helpers.
+- `RevAgent.Reporting.psm1`: JSON report helpers.
 
 ## Revit Version Matrix
 

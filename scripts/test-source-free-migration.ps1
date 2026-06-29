@@ -16,7 +16,7 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 $libRoot = Join-Path $RepoRoot "installer\lib"
 
-Import-Module (Join-Path $libRoot "RevitMcp.SourceFreeMigration.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.SourceFreeMigration.psm1") -Force
 
 function Assert-True {
     param(
@@ -168,8 +168,8 @@ try {
     $harnessLib = Join-Path $harnessTools "lib"
     New-Item -ItemType Directory -Path $harnessLib -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\nas\migrate-source-free-install.ps1") -Destination (Join-Path $harnessTools "migrate-source-free-install.ps1") -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.CodexRegistration.psm1") -Destination (Join-Path $harnessLib "RevitMcp.CodexRegistration.psm1") -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevitMcp.SourceFreeMigration.psm1") -Destination (Join-Path $harnessLib "RevitMcp.SourceFreeMigration.psm1") -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.CodexRegistration.psm1") -Destination (Join-Path $harnessLib "RevAgent.CodexRegistration.psm1") -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.SourceFreeMigration.psm1") -Destination (Join-Path $harnessLib "RevAgent.SourceFreeMigration.psm1") -Force
 
     $harnessReportPath = Join-Path $harnessRoot "migration-report.json"
     $harnessInstallRoot = Join-Path $harnessRoot "install"
@@ -310,11 +310,11 @@ Assert-True ($updaterText -match '-not \$SourceFreeMigration[\s\S]{0,160}\$isPac
 Assert-True ($updaterText -match 'source-free-migration-required' -and $updaterText -match 'Get-RevitMcpSourceFreeArtifactInventory') "Normal updater runs must block before update when source-free migration inventory is not clean."
 Assert-True ($updaterText -match 'migrate-source-free-install\.ps1 -Mode dryRun' -and $updaterText -match 'migrate-source-free-install\.ps1 -Mode commit') "Updater migration guard must tell operators to dry-run before commit."
 Assert-True ($updaterText -match 'function Get-UpdaterDetachedSignaturePath' -and $updaterText -match 'Get-UpdaterDetachedSignaturePath -ContentPath \$configuredLicensePath') "Updater must compute default detached signature paths without relying on imported helper scope."
-Assert-True ($updaterText -match 'RevitMcpDistributionIntegrityModule = Import-Module .*RevitMcp\.DistributionIntegrity\.psm1.*-PassThru' -and $updaterText -match 'function Get-UpdaterDistributionIntegrityCommand' -and $updaterText -match 'Get-UpdaterDistributionIntegrityCommand -Name "Test-RevitMcpReleaseDistributionIntegrity" -Required') "Updater must call distribution integrity helpers through the imported module object during nested migration runs."
+Assert-True ($updaterText -match 'RevitMcpDistributionIntegrityModule = Import-Module .*RevAgent\.DistributionIntegrity\.psm1.*-PassThru' -and $updaterText -match 'function Get-UpdaterDistributionIntegrityCommand' -and $updaterText -match 'Get-UpdaterDistributionIntegrityCommand -Name "Test-RevitMcpReleaseDistributionIntegrity" -Required') "Updater must call distribution integrity helpers through the imported module object during nested migration runs."
 
 $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
 Assert-True ($publishText -match 'migrate-source-free-install\.ps1') "Publisher must include the source-free migration tool in user packs and NAS tools."
-Assert-True ($publishText -match 'RevitMcp\.SourceFreeMigration\.psm1') "Publisher manifest must fingerprint the migration helper module."
+Assert-True ($publishText -match 'RevAgent\.SourceFreeMigration\.psm1') "Publisher manifest must fingerprint the migration helper module."
 
 $installText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\install-self-contained.ps1")
 Assert-True ($installText -match 'migrate-source-free-install\.ps1') "Self-contained installer must refresh the migration tool in the local updater folder."

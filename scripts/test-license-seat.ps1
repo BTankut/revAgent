@@ -19,8 +19,8 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 }
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
-Import-Module (Join-Path $RepoRoot "installer\lib\RevitMcp.License.psm1") -Force
-Import-Module (Join-Path $RepoRoot "installer\lib\RevitMcp.DistributionIntegrity.psm1") -Force
+Import-Module (Join-Path $RepoRoot "installer\lib\RevAgent.License.psm1") -Force
+Import-Module (Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1") -Force
 
 function Assert-True {
     param(

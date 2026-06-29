@@ -39,6 +39,9 @@ Keep legacy names only when they are one of these exact identities:
 - Runtime connection, framing, add-in port/autostart, message-size, and
   installed-state overrides now prefer `REVAGENT_*` environment variables and
   preserve `REVIT_MCP_*` as legacy fallback aliases.
+- Installer helper module files now use canonical `installer/lib/RevAgent.*.psm1`
+  names. Matching `installer/lib/RevitMcp.*.psm1` files remain only as
+  compatibility wrappers that import the new modules.
 
 ## Intentional Compatibility Names
 
@@ -50,17 +53,19 @@ These are expected to remain until a larger migration explicitly replaces them.
 | Environment variables | preferred `REVAGENT_PORT`, `REVAGENT_TARGET`, `REVAGENT_MAX_MESSAGE_BYTES`; legacy fallback `REVIT_MCP_*` | New runtime/add-in reads prefer the revAgent names. Legacy aliases stay so older launchers and scripts do not break during rolling updates. |
 | External SDK/package identity | `RevitMCPSDK`, `mcp-servers-for-revit` | These are upstream package and license identities, not product UI strings. |
 | Revit source project and namespaces | `src/revit-plugin/revit-mcp-plugin`, `revit_mcp_plugin`, `RevitMCPCommandSet` | Installed artifact names are already revAgent-facing, but source project/namespace rename affects C# build, XAML class names, manifests, and payload freshness. |
-| Installer helper modules | `installer/lib/RevitMcp.*.psm1`, `Read-RevitMcpJsonFile`, etc. | These are internal PowerShell module/function names used across installer tests and publish scripts. Rename as a focused script API migration. |
+| Installer helper API names | `Read-RevitMcpJsonFile`, `Get-RevitMcpUpdateDecision`, legacy `installer/lib/RevitMcp.*.psm1` wrappers | Module filenames have `RevAgent.*` canonical names now. Function prefixes and wrapper files remain for script/API compatibility and need a separate aliasing or API rename PR. |
 | Compatibility deployment root | `revit-mcp-deploy` | Dual-publish remains active until all office machines and desktop launchers are confirmed on `revAgent-deploy`. |
 | Legacy cleanup paths | `C:\ProgramData\DPE\RevitMCP`, `mcp-servers-for-revit.addin`, `revit_mcp_plugin` | The updater must keep recognizing old installed surfaces so migration can remove them safely. |
 | Historical records | older `CHANGELOG.md` entries and dated process docs | Preserve historical accuracy unless the text is active guidance. |
 
 ## Next Migration PRs
 
-1. **Installer module rename PR**
-   - Rename `installer/lib/RevitMcp.*.psm1` modules to `RevAgent.*.psm1`.
-   - Add compatibility wrapper imports or update every caller in one PR.
-   - Run full installer, signing, source-free, and publish tests.
+1. **Installer function API alias/rename PR**
+   - Add `RevAgent-*` function aliases or rename exported helper functions with
+     backward-compatible `RevitMcp-*` aliases.
+   - Update active callers only after the alias layer exists.
+   - Keep this separate from module filename migration so updater rollback and
+     NAS tooling remain easy to diagnose.
 
 2. **Revit source project rename PR**
    - Rename `src/revit-plugin/revit-mcp-plugin` and `RevitMCPCommandSet`

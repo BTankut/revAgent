@@ -49,8 +49,8 @@ if ([string]::IsNullOrWhiteSpace($libRoot)) {
     throw "revAgent installer library folder was not found."
 }
 
-Import-Module (Join-Path $libRoot "RevitMcp.HiddenLauncher.psm1") -Force
-Import-Module (Join-Path $libRoot "RevitMcp.ScheduledTask.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.HiddenLauncher.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.ScheduledTask.psm1") -Force
 
 function Invoke-SchtasksCreateDailyTask {
     param(
