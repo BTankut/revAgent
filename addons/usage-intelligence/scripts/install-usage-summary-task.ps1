@@ -10,7 +10,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports",
+    [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports",
     [string]$TaskName = "revAgent Usage Summary Publish",
     [string]$DailyAt = "20:30",
     [string]$WorkRoot = "",

@@ -366,6 +366,8 @@ The deterministic daily reader is
 `reports\machines\<machine>\latest.json` with one UTC day of
 `reports\events` into `revagent.usage.summary.v1` JSON for dashboards and
 future master-LLM review.
+Usage-intelligence uses the same canonical reports root as the dashboard:
+`\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports`.
 The same summary includes deterministic promotion candidate buckets for
 repeated raw/safe code patterns, timeout or partial-result friction, annotation
 counting requests, schedule-spreadsheet reconciliation requests, and manual

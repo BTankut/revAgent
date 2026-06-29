@@ -8,6 +8,10 @@ All notable revAgent workstation deployment changes are tracked here.
   and legacy config migrations default to the canonical
   `\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports` source instead
   of continuing to read the compatibility `revit-mcp-deploy` reports tree.
+- Fixed admin add-on installers so provider-qualified FileSystem paths from
+  NAS/tool launch contexts are normalized before payload copying, and aligned
+  usage-intelligence defaults with the canonical `revAgent-deploy` reports
+  root.
 - Added no-admin startup fallback reporting for admin add-ons: dashboard and
   tunnel installers now fall back to per-user HKCU startup entries when Windows
   blocks logon scheduled task creation, and the usage publisher installer has

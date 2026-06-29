@@ -7,7 +7,7 @@
 param(
     [string]$SourceRoot = "",
     [string]$InstallRoot = "",
-    [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports",
+    [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports",
     [string]$TaskName = "revAgent Usage Summary Publish",
     [string]$DailyAt = "20:30",
     [string]$WorkRoot = "",
@@ -29,6 +29,18 @@ function Resolve-DefaultInstallRoot {
     }
 
     return Join-Path $programDataRoot "DPE\revAgent\addons\usage-intelligence"
+}
+
+function Resolve-FileSystemPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $resolved = Resolve-Path -LiteralPath $Path -ErrorAction Stop
+    $first = @($resolved)[0]
+    if ($first.Provider -and $first.Provider.Name -eq "FileSystem" -and -not [string]::IsNullOrWhiteSpace($first.ProviderPath)) {
+        return $first.ProviderPath
+    }
+
+    return $first.Path
 }
 
 function Assert-PathUnderRoot {
@@ -151,7 +163,10 @@ function Install-UsageSummaryTask {
 }
 
 if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
-    $SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+    $SourceRoot = Resolve-FileSystemPath -Path (Join-Path $PSScriptRoot "..")
+}
+else {
+    $SourceRoot = Resolve-FileSystemPath -Path $SourceRoot
 }
 $SourceRoot = [System.IO.Path]::GetFullPath($SourceRoot)
 
