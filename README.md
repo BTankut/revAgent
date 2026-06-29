@@ -997,6 +997,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-dashboard-addon.ps1
 The installed add-on owns the `revAgent Dashboard Server` scheduled task and
 writes `config\dashboard.json` under the add-on root. The standard user package
 does not install this dashboard add-on or the Cloudflare tunnel payload.
+By default the dashboard reads the canonical NAS reports root:
+`\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports`. If an installed
+dashboard config still points at the legacy `revit-mcp-deploy` reports root,
+the add-on installer and start script migrate it back to the canonical
+revAgent root.
 If Windows blocks new logon scheduled tasks from a non-elevated coordinator
 session, the installer falls back to a per-user HKCU startup entry and reports
 the selected `startupRegistrationMethod` in its JSON result.

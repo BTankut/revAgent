@@ -314,6 +314,11 @@ The admin install path is
 `addons\dashboard\installer\install-dashboard-addon.ps1`. The installed server
 uses only add-on-local dashboard files plus NAS report inputs, so it does not
 depend on the source repository path.
+The dashboard's canonical report input is
+`\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports`. The legacy
+`revit-mcp-deploy` reports root is compatibility-only; dashboard add-on install
+and start paths migrate legacy dashboard config values back to the canonical
+revAgent root.
 If the coordinator session is not elevated and Windows blocks new logon
 scheduled tasks, the installer falls back to a per-user HKCU startup entry and
 reports that method in the install result.
