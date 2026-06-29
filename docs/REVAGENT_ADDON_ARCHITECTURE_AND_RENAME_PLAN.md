@@ -288,6 +288,9 @@ is already being moved for the add-on architecture.
      `tools\addons`.
    - Keep core signed release ZIP source-free and admin-free.
    - Add admin install runbook.
+   - Implementation note: release publishing now copies dashboard and
+     usage-intelligence admin payloads into `tools\addons` and keeps tests out
+     of that tools payload.
 
 7. **Pilot admin migration**
    - Run on the current admin/developer machine.

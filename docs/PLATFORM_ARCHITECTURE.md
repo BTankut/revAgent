@@ -371,6 +371,9 @@ publish lock, and NAS summary logs. The admin install path is
 The installed task uses the add-on-local publisher script and stores task
 state/config under the add-on root. The root scripts with the same names remain
 compatibility wrappers for local developer workflows.
+Release publishing copies admin add-on payloads under `tools\addons` while the
+versioned signed standard user ZIP remains free of dashboard, tunnel, and
+usage-intelligence admin payloads.
 
 ## Deployment Components
 

@@ -126,6 +126,11 @@ try {
     Assert-Equal ([long]$manifest.minimumAcceptedReleaseSequence) ([long]$minimumAcceptedReleaseSequence) "Published manifest must include the minimum accepted release sequence."
     Assert-Equal ([long]$channel.minimumAcceptedReleaseSequence) ([long]$minimumAcceptedReleaseSequence) "Published channel must include the minimum accepted release sequence."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\config\release-trusted-keys.json") -PathType Leaf) "Public trusted release keys should be copied to NAS tools config when supplied."
+    Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\installer\install-dashboard-addon.ps1") -PathType Leaf) "Dashboard admin add-on installer should be published under tools\\addons."
+    Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\installer\install-dashboard-tunnel.ps1") -PathType Leaf) "Dashboard tunnel installer should be published under tools\\addons."
+    Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "Usage-intelligence admin add-on installer should be published under tools\\addons."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\tests") -PathType Container)) "Dashboard add-on tests must not be published to tools\\addons."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\tests") -PathType Container)) "Usage-intelligence add-on tests must not be published to tools\\addons."
 
     $aggregateVerification = Test-RevitMcpReleaseDistributionIntegrity `
         -ChannelPath $channelPath `
