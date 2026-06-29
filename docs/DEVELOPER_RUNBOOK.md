@@ -13,7 +13,7 @@ that can clone this repository and reach the NAS share.
   `C:\Projects\revit-mcp-skill`
 - Main branch: `main`
 - Office deployment source:
-  `\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy`
+  `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy`
 - Standard workstation install root:
   `C:\ProgramData\DPE\revAgent`
 
@@ -146,8 +146,10 @@ Required local tools for full development:
 - Codex Desktop app or another MCP/skill-capable host
 - PowerShell 5.1 or newer
 - Visual Studio/MSBuild tooling if rebuilding the Revit add-in source
-- Access to `\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy` for office
-  publishing and workstation updater tests
+- Access to `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy` for office
+  publishing and workstation updater tests. During the NAS root transition,
+  access to the legacy `revit-mcp-deploy` root is also needed for compatibility
+  publish verification.
 
 Office workstations reach the internet through `http://192.168.90.10:6588`.
 The NAS installer/updater configures this proxy automatically for terminal
@@ -380,8 +382,8 @@ C:\ProgramData\DPE\revAgent\updater\config
 NAS tools expect:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\lib
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\config
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\lib
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\config
 ```
 
 Run the local PowerShell smoke suite after touching installer/updater behavior:
@@ -638,7 +640,7 @@ powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-conta
 For office-style testing, prefer the NAS GUI updater:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater-GUI.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\Install-revAgent-Updater-GUI.cmd
 ```
 
 Live smoke test after install:
@@ -733,7 +735,13 @@ unless it is an explicit temporary test package with `-AllowDirty`.
 
 ## NAS Deployment Model
 
-NAS root:
+Canonical NAS root:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy
+```
+
+Temporary compatibility root:
 
 ```text
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy
@@ -765,18 +773,27 @@ signed source-free CD workflow with `publish_to_nas=true`. Keep
 `allow_rollback=false` for normal forward publishes. Set `allow_rollback=true`
 only for deliberate signed rollback, same-sequence repair, or the one-time
 legacy stable bootstrap when the current NAS `stable.json` predates
-`releaseSequence`. Use the manual publish script only for controlled
-recovery/backstop work from a clean repo:
+`releaseSequence`.
+
+During the NAS rename transition, set the protected production publish variable
+`REVAGENT_NAS_RELEASE_ROOT` to the canonical `revAgent-deploy` root and set
+`REVAGENT_NAS_COMPAT_RELEASE_ROOTS` to the old `revit-mcp-deploy` root. The CD
+job publishes the exact same signed release to each configured root; channel
+metadata remains portable because it uses relative package and manifest paths.
+
+Use the manual publish script only for controlled recovery/backstop work from a
+clean repo:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\installer\nas\publish-nas-release.ps1 `
-  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy" `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy" `
   -Channel stable
 ```
 
 Verify channels:
 
 ```powershell
+Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\channels\stable.json"
 Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\channels\stable.json"
 ```
 
@@ -999,7 +1016,7 @@ file:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-signed-stable-readiness.ps1 `
-  -ReleaseRoot "\\dpe-nas\...\revit-mcp-deploy" `
+  -ReleaseRoot "\\dpe-nas\...\revAgent-deploy" `
   -TrustedKeysPath "C:\secure\release-trusted-keys.json" `
   -OutputJson
 ```
@@ -1016,8 +1033,8 @@ failing on historical archives:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-signed-stable-readiness.ps1 `
-  -ReleaseRoot "\\dpe-nas\...\revit-mcp-deploy" `
-  -TrustedKeysPath "\\dpe-nas\...\revit-mcp-deploy\tools\config\release-trusted-keys.json" `
+  -ReleaseRoot "\\dpe-nas\...\revAgent-deploy" `
+  -TrustedKeysPath "\\dpe-nas\...\revAgent-deploy\tools\config\release-trusted-keys.json" `
   -ArtifactScanScope activeRelease `
   -OutputJson
 ```
@@ -1041,7 +1058,7 @@ Large offline dependency payloads are local/NAS-side assets, not Git assets:
 
 ```text
 installer\nas\dependencies\
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\dependencies\
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\dependencies\
 ```
 
 The local dependency folder is ignored by Git. Keep it populated on the
@@ -1067,19 +1084,20 @@ Dependency restore note:
 Stable workstation GUI:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Install-revAgent-Updater-GUI.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\Install-revAgent-Updater-GUI.cmd
 ```
 
 Single-file desktop launchers:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\revAgent Updater STABLE.cmd
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\revAgent Updater STABLE.cmd
 ```
 
 Use the single-file launchers when copying a `.cmd` to a workstation desktop.
-The generic `Install-revAgent-Updater-GUI.cmd` is meant to run from the NAS
-`tools\` folder because it expects `Install-revAgent-Updater-GUI.ps1` beside
-it.
+The single-file launchers try `revAgent-deploy` first and fall back to the
+legacy `revit-mcp-deploy` root during the transition. The generic
+`Install-revAgent-Updater-GUI.cmd` is meant to run from the NAS `tools\` folder
+because it expects `Install-revAgent-Updater-GUI.ps1` beside it.
 
 The GUI installs or refreshes the local updater and then runs an initial update.
 The updater writes:
@@ -1095,7 +1113,7 @@ Install and update runs prune older logs automatically.
 Each install/update also publishes a per-machine support record to NAS:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports\machines\<computer>\
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports\machines\<computer>\
   latest.json
   install-latest.json
   update-latest.json
@@ -1290,7 +1308,7 @@ only one deployment channel.
 Do not assume the latest commit is the deployed version. Read the channel JSON:
 
 ```powershell
-Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\channels\stable.json"
+Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\channels\stable.json"
 ```
 
 ## Documentation Rules

@@ -5,7 +5,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports",
+    [string]$ReportsRoot = "",
     [string]$LocalLiveRoot = "C:\ProgramData\DPE\revAgent\state\telemetry\live",
     [string]$MachineName = $env:COMPUTERNAME,
     [ValidateRange(1, 30)]
@@ -14,6 +14,17 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
+    $canonicalReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports"
+    $legacyReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports"
+    if (Test-Path -LiteralPath $canonicalReportsRoot -PathType Container) {
+        $ReportsRoot = $canonicalReportsRoot
+    }
+    else {
+        $ReportsRoot = $legacyReportsRoot
+    }
+}
 
 function Read-JsonFile {
     param([string]$Path)

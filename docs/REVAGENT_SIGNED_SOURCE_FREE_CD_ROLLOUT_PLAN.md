@@ -327,8 +327,9 @@ the follow-up.
 
 Required outcomes:
 
-- Use a runner that can reach
-  `\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy`.
+- Use a runner that can reach the canonical
+  `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy` root and, during the
+  transition window, the legacy `revit-mcp-deploy` compatibility root.
 - Publish to the existing NAS shape:
 
 ```text

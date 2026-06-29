@@ -340,6 +340,7 @@ try {
 
     Write-Host "Test updater skips unchanged payload surfaces"
     $updateText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
+    Assert-True ($updateText -match 'Resolve-RevAgentCanonicalNasTransitionPath' -and $updateText -match 'revAgent-deploy' -and $updateText -match 'revit-mcp-deploy' -and $updateText -match 'Canonical NAS release root detected') "Updater must migrate legacy NAS channel config to the canonical revAgent deploy root when it is available."
     Assert-True ($updateText -match '\$skipRevitPayloadInstall = \[bool\]\$updateDecision\.SkipRevitPayloadInstall') "Updater must skip unchanged Revit payload even when Revit is closed."
     Assert-True ($updateText -match '\$fastPackageOnlyUpdate = \$skipRevitPayloadInstall -and\s+\$skipRuntimePayloadInstall -and\s+\$skipDocsPayloadWork -and\s+\$skipCodexSkillInstallForThisUpdate -and\s+\$skipCodexMcpRegistrationForThisUpdate') "Fast path must require every payload surface to be unchanged."
     Assert-True ($updateText -match '\$runSelfContainedInstaller = \(-not \$fastPackageOnlyUpdate\)') "Any changed payload surface must route through the self-contained installer."
@@ -997,9 +998,12 @@ try {
     Assert-True ($publishText -notmatch 'Copy-UserPackDirectory -SourceRelativePath "installer\\nas"') "Versioned user pack must not copy deployment tooling wholesale."
     Assert-True ($publishText -match 'Copy-RevitMcpAdminAddonTools' -and $publishText -match 'toolsRoot "addons"') "Publish must copy admin add-ons only into NAS tools\\addons."
     Assert-True ($publishText -notmatch 'src\\revit-plugin\\revit-mcp-plugin\\revit-mcp-plugin\.csproj') "Release manifest components must not include developer source project files."
+    $stableLauncherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\revAgent Updater STABLE.cmd")
+    Assert-True ($stableLauncherText -match 'revAgent-deploy' -and $stableLauncherText -match 'revit-mcp-deploy' -and $stableLauncherText -match 'if not exist "%RELEASE_ROOT%\\tools\\Install-revAgent-Updater-GUI\.ps1" set "RELEASE_ROOT=%LEGACY_ROOT%"') "Standalone stable launcher must prefer the canonical revAgent NAS root and fall back to the legacy root during migration."
 
     Write-Host "Test initial updater invocation binding"
     $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
+    Assert-True ($installTaskText -match 'Resolve-RevAgentCanonicalNasTransitionPath' -and $installTaskText -match 'revAgent-deploy' -and $installTaskText -match 'revit-mcp-deploy' -and $installTaskText -match 'Canonical NAS release root detected') "Updater installer must persist canonical NAS channel config when the new deploy root is available."
     Assert-True ($installTaskText -match '& \$UpdaterPath -ConfigPath \$UpdaterConfigPath -NoNotifyUser -AllowManualCodexSetup') "Initial update check must pass ConfigPath as a named parameter."
     Assert-True ($installTaskText -notmatch '& \$UpdaterPath @arguments') "Initial update check must not array-splat named parameter strings into a script call."
     Assert-True ($installTaskText -match '\[string\]\$DailyAt = "12:00"') "Updater scheduled-task installer must default to daily noon checks."

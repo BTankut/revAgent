@@ -1063,6 +1063,44 @@ function Resolve-RevitInstallRoot {
     return Resolve-RevitMcpInstallRoot -RequestedRoot $RequestedRoot -Version $Version
 }
 
+$revAgentCanonicalNasRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+$revAgentLegacyNasRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+
+function Test-RevAgentNasPathUnder {
+    param([string]$ChildPath, [string]$ParentPath)
+
+    if ([string]::IsNullOrWhiteSpace($ChildPath) -or [string]::IsNullOrWhiteSpace($ParentPath)) {
+        return $false
+    }
+
+    try {
+        $child = [System.IO.Path]::GetFullPath($ChildPath).TrimEnd("\")
+        $parent = [System.IO.Path]::GetFullPath($ParentPath).TrimEnd("\")
+        return [string]::Equals($child, $parent, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $child.StartsWith($parent + "\", [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Resolve-RevAgentCanonicalNasTransitionPath {
+    param([string]$Path)
+
+    if (-not (Test-RevAgentNasPathUnder -ChildPath $Path -ParentPath $revAgentLegacyNasRoot)) {
+        return $Path
+    }
+
+    $legacyPrefix = [System.IO.Path]::GetFullPath($revAgentLegacyNasRoot).TrimEnd("\") + "\"
+    $relativePath = [System.IO.Path]::GetFullPath($Path).Substring($legacyPrefix.Length)
+    $candidatePath = Join-Path $revAgentCanonicalNasRoot $relativePath
+    if (Test-Path -LiteralPath $candidatePath) {
+        return $candidatePath
+    }
+
+    return $Path
+}
+
 $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
 $legacyInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
@@ -1082,7 +1120,18 @@ $script:RevitMcpOperationMethod = Get-EffectiveInstallOperationMethod
 $script:RevitMcpOperation = Get-EffectiveInstallOperation
 Initialize-RevitMcpTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $LogPath -Prefix "install"
 Write-Host "Operation method : $script:RevitMcpOperationMethod"
+$originalChannelManifestPath = $ChannelManifestPath
+$ChannelManifestPath = Resolve-RevAgentCanonicalNasTransitionPath -Path $ChannelManifestPath
+$channelMovedToCanonicalNasRoot = -not [string]::Equals($originalChannelManifestPath, $ChannelManifestPath, [System.StringComparison]::OrdinalIgnoreCase)
+if ($channelMovedToCanonicalNasRoot) {
+    Write-Host "Canonical NAS release root detected; updater config will use: $ChannelManifestPath" -ForegroundColor Green
+}
 if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
+    $channelDir = Split-Path -Parent $ChannelManifestPath
+    $releaseRootGuess = Split-Path -Parent $channelDir
+    $ReportsRoot = Join-Path $releaseRootGuess "reports"
+}
+elseif ($channelMovedToCanonicalNasRoot -and (Test-RevAgentNasPathUnder -ChildPath $ReportsRoot -ParentPath $revAgentLegacyNasRoot)) {
     $channelDir = Split-Path -Parent $ChannelManifestPath
     $releaseRootGuess = Split-Path -Parent $channelDir
     $ReportsRoot = Join-Path $releaseRootGuess "reports"

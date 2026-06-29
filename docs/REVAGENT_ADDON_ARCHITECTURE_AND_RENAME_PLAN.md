@@ -242,12 +242,12 @@ is already being moved for the add-on architecture.
 
 ## Proposed PR Sequence
 
-1. **Plan and cleanup**
+1. **Plan and cleanup** - completed
    - Close PR #130 as superseded.
    - Add this plan.
    - No deploy.
 
-2. **Add-on scaffold**
+2. **Add-on scaffold** - completed
     - Create `addons/dashboard` and `addons/usage-intelligence`.
     - Move existing dashboard and usage-intelligence files into add-on folders.
     - Add `addon.json` manifests.
@@ -255,7 +255,7 @@ is already being moved for the add-on architecture.
     - Keep root usage scripts as compatibility wrappers that delegate into the
       add-on scripts.
 
-3. **Dashboard add-on installer**
+3. **Dashboard add-on installer** - completed
    - Install dashboard server and static UI under
      `C:\ProgramData\DPE\revAgent\addons\dashboard`.
    - Own `revAgent Dashboard Server` scheduled task.
@@ -263,27 +263,26 @@ is already being moved for the add-on architecture.
    - Keep Cloudflare tunnel migration out of this PR unless the new tunnel is
      independently verified healthy.
 
-4. **Dashboard tunnel migration**
+4. **Dashboard tunnel migration** - completed
    - Migrate Cloudflare tunnel from legacy `RevitMCP\cloudflared` to the
      dashboard add-on path.
    - Verify new tunnel before stopping old tunnel.
    - Clean legacy tunnel only after successful migration.
-   - Implementation note: the add-on now exposes
+   - Implementation note: the add-on exposes
      `installer\install-dashboard-tunnel.ps1` and root wrapper
-     `scripts\install-dashboard-tunnel.ps1`. Live admin execution still needs a
-     coordinator-machine run with health checks before old tunnel cleanup.
+     `scripts\install-dashboard-tunnel.ps1`. The pilot admin machine now runs
+     the dashboard server and tunnel from the revAgent add-on path.
 
-5. **Usage-intelligence add-on installer**
+5. **Usage-intelligence add-on installer** - completed
    - Install summary publisher under
      `C:\ProgramData\DPE\revAgent\addons\usage-intelligence`.
    - Own `revAgent Usage Summary Publish` scheduled task.
    - Remove repo-path assumptions from usage summary task setup.
-   - Implementation note: the add-on now exposes
+   - Implementation note: the add-on exposes
      `installer\install-usage-intelligence-addon.ps1` and root wrapper
-     `scripts\install-usage-intelligence-addon.ps1`. Live admin execution is
-     still separate from the standard user rollout.
+     `scripts\install-usage-intelligence-addon.ps1`.
 
-6. **Admin tools publish**
+6. **Admin tools publish** - completed
    - Publish admin add-on installers and payload under NAS
      `tools\addons`.
    - Keep core signed release ZIP source-free and admin-free.
@@ -292,7 +291,7 @@ is already being moved for the add-on architecture.
      usage-intelligence admin payloads into `tools\addons` and keeps tests out
      of that tools payload.
 
-7. **Pilot admin migration**
+7. **Pilot admin migration** - completed
    - Run on the current admin/developer machine.
    - Confirm:
      - dashboard still opens locally.
@@ -301,22 +300,39 @@ is already being moved for the add-on architecture.
      - usage summary task runs from revAgent add-on path.
      - old `C:\ProgramData\DPE\RevitMCP` can be cleaned safely.
 
-8. **NAS root rename**
+8. **NAS root rename** - in progress
    - Introduce `revAgent-deploy` as canonical.
    - Dual-publish old and new roots during transition.
    - Update local updater configs to the new root.
    - Retire old NAS root after machine migration.
 
-9. **Repo rename**
+9. **Repo rename** - pending
    - Rename local and GitHub repo to `revAgent`.
    - Update docs, CI/CD, and tool references.
    - Keep old remote redirect only during transition.
 
-10. **Deep internal rename**
+10. **Deep internal rename** - pending
     - Remove remaining internal `RevitMCP` and `revit-mcp` names in small,
       testable PRs.
     - Preserve compatibility aliases only where old installed clients still
       need them.
+
+## Current Status
+
+Add-on architecture is complete. Dashboard and usage-intelligence are installed
+as admin add-ons under `C:\ProgramData\DPE\revAgent\addons`, and signed release
+publishing includes their admin tools under `tools\addons` without adding them
+to the core standard user package.
+
+The active rename workstream is NAS root migration. `revAgent-deploy` is the
+canonical target, while `revit-mcp-deploy` remains a compatibility root until
+all installed updaters and desktop launchers have moved to the new channel.
+Current NAS-root migration support includes dual-root CD publish, STABLE
+launcher fallback, and successful-update config migration from the legacy
+channel path to the canonical channel path when the canonical root is
+available.
+GitHub/local repository rename and deep internal implementation renames remain
+separate follow-up workstreams.
 
 ## Acceptance Criteria
 

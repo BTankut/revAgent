@@ -230,6 +230,7 @@ jobs:
         shell: pwsh
         env:
           REVAGENT_NAS_RELEASE_ROOT: ${{ vars.REVAGENT_NAS_RELEASE_ROOT }}
+          REVAGENT_NAS_COMPAT_RELEASE_ROOTS: ${{ vars.REVAGENT_NAS_COMPAT_RELEASE_ROOTS }}
           REVAGENT_TRUSTED_RELEASE_KEYS_PATH: ${{ vars.REVAGENT_TRUSTED_RELEASE_KEYS_PATH }}
           REVAGENT_CD_ALLOW_ROLLBACK: ${{ inputs.allow_rollback }}
         run: |
@@ -242,17 +243,47 @@ jobs:
 
           $sourceReleaseRoot = $env:REVAGENT_SIGNED_RELEASE_ROOT
 
-          $publishArgs = @{
-            SourceReleaseRoot = $sourceReleaseRoot
-            NasReleaseRoot = $env:REVAGENT_NAS_RELEASE_ROOT
-            TrustedKeysPath = $env:REVAGENT_TRUSTED_RELEASE_KEYS_PATH
-            Force = $true
-          }
-          if ([string]::Equals($env:REVAGENT_CD_ALLOW_ROLLBACK, "true", [System.StringComparison]::OrdinalIgnoreCase)) {
-            $publishArgs["AllowRollback"] = $true
+          $releaseRoots = [System.Collections.Generic.List[string]]::new()
+          function Add-RevAgentNasReleaseRoot {
+            param([string]$Path)
+
+            if ([string]::IsNullOrWhiteSpace($Path)) {
+              return
+            }
+
+            $trimmed = $Path.Trim()
+            foreach ($existing in $releaseRoots) {
+              if ([string]::Equals($existing, $trimmed, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return
+              }
+            }
+
+            $releaseRoots.Add($trimmed) | Out-Null
           }
 
-          .\scripts\publish-signed-source-free-release-to-nas.ps1 @publishArgs
+          Add-RevAgentNasReleaseRoot -Path $env:REVAGENT_NAS_RELEASE_ROOT
+          foreach ($compatRoot in ($env:REVAGENT_NAS_COMPAT_RELEASE_ROOTS -split '[;\r\n]+')) {
+            Add-RevAgentNasReleaseRoot -Path $compatRoot
+          }
+
+          if ($releaseRoots.Count -eq 0) {
+            throw "No NAS release roots were configured for production publish."
+          }
+
+          foreach ($nasReleaseRoot in $releaseRoots) {
+            Write-Host "Publishing signed release to NAS root: $nasReleaseRoot"
+            $publishArgs = @{
+              SourceReleaseRoot = $sourceReleaseRoot
+              NasReleaseRoot = $nasReleaseRoot
+              TrustedKeysPath = $env:REVAGENT_TRUSTED_RELEASE_KEYS_PATH
+              Force = $true
+            }
+            if ([string]::Equals($env:REVAGENT_CD_ALLOW_ROLLBACK, "true", [System.StringComparison]::OrdinalIgnoreCase)) {
+              $publishArgs["AllowRollback"] = $true
+            }
+
+            .\scripts\publish-signed-source-free-release-to-nas.ps1 @publishArgs
+          }
 
       - name: Remove staged release root after NAS publish
         if: ${{ success() }}
