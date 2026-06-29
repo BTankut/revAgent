@@ -1,4 +1,5 @@
 import * as net from "net";
+import { readEnv } from "./env.js";
 
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
@@ -39,7 +40,7 @@ export class RevitClientConnection {
     isConnected = false;
     responseCallbacks = new Map<string, ResponseCallback>();
     buffer = Buffer.alloc(0);
-    framingMode: SocketFramingMode = process.env.REVIT_MCP_FRAMING === "legacy" ? "legacy" : "length-prefixed";
+    framingMode: SocketFramingMode = readEnv("REVAGENT_FRAMING", "REVIT_MCP_FRAMING") === "legacy" ? "legacy" : "length-prefixed";
 
     constructor(host: string, port: number, options: RevitClientConnectionOptions = {}) {
         this.host = host;

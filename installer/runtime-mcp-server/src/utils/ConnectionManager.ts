@@ -1,4 +1,5 @@
 import { RevitClientConnection } from "./SocketClient.js";
+import { readEnv } from "./env.js";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -31,9 +32,9 @@ type RevitConnectionOperation = (
     target: RevitConnectionTarget,
 ) => Promise<any> | any;
 
-const DEFAULT_HOST = process.env.REVIT_MCP_HOST || process.env.REVIT_HOST || "localhost";
-const DEFAULT_PORT = parsePort(process.env.REVIT_MCP_PORT || process.env.REVIT_PORT, 8080);
-const DEFAULT_REGISTRY_PATH = process.env.REVIT_MCP_INSTANCE_REGISTRY ||
+const DEFAULT_HOST = readEnv("REVAGENT_HOST", "REVIT_MCP_HOST", "REVIT_HOST") || "localhost";
+const DEFAULT_PORT = parsePort(readEnv("REVAGENT_PORT", "REVIT_MCP_PORT", "REVIT_PORT"), 8080);
+const DEFAULT_REGISTRY_PATH = readEnv("REVAGENT_INSTANCE_REGISTRY", "REVIT_MCP_INSTANCE_REGISTRY") ||
     path.join(os.tmpdir(), "revit-mcp-instances.json");
 const LOCK_ROOT = path.join(os.tmpdir(), "revit-mcp-command-locks");
 const LOCK_WAIT_MS = 8000;
@@ -195,7 +196,7 @@ export function resolveRevitConnectionTarget(options: RevitConnectionOptions = {
             source: "explicit",
         };
     }
-    const requestedTarget = options.target || process.env.REVIT_MCP_TARGET;
+    const requestedTarget = options.target || readEnv("REVAGENT_TARGET", "REVIT_MCP_TARGET");
     if (requestedTarget) {
         const parsedTarget = targetFromString(requestedTarget, fallbackHost);
         if (parsedTarget) {
@@ -231,7 +232,7 @@ export function getCandidateRevitTargets(options: RevitConnectionOptions = {}): 
         }
     }
     const explicitPorts = parsePortList(options.ports);
-    const envPorts = parsePortList(process.env.REVIT_MCP_PORTS);
+    const envPorts = parsePortList(readEnv("REVAGENT_PORTS", "REVIT_MCP_PORTS"));
     const fallbackPorts = envPorts.length > 0
         ? envPorts
         : [DEFAULT_PORT, 8081, 8082, 8083, 8084, 8085];

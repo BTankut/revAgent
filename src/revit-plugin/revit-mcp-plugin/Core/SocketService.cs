@@ -66,7 +66,7 @@ namespace revit_mcp_plugin.Core
 
         private static int ResolveMaxMessageBytes()
         {
-            string configured = Environment.GetEnvironmentVariable("REVIT_MCP_MAX_MESSAGE_BYTES");
+            string configured = RevAgentEnvironment.Get("REVAGENT_MAX_MESSAGE_BYTES", "REVIT_MCP_MAX_MESSAGE_BYTES");
             if (int.TryParse(configured, out int parsed) && parsed > 0)
             {
                 return Math.Min(parsed, AbsoluteMaxMessageBytes);
@@ -85,9 +85,11 @@ namespace revit_mcp_plugin.Core
 
         private int ResolveConfiguredPort(ConfigurationManager configManager)
         {
-            string envPort =
-                Environment.GetEnvironmentVariable("REVIT_MCP_PLUGIN_PORT") ??
-                Environment.GetEnvironmentVariable("REVIT_MCP_PORT");
+            string envPort = RevAgentEnvironment.Get(
+                "REVAGENT_PLUGIN_PORT",
+                "REVAGENT_PORT",
+                "REVIT_MCP_PLUGIN_PORT",
+                "REVIT_MCP_PORT");
 
             if (!string.IsNullOrWhiteSpace(envPort) &&
                 int.TryParse(envPort, out int parsedEnvPort) &&

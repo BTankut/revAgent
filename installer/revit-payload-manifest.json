@@ -45,7 +45,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revit-mcp-plugin/Core/Application.cs",
-                                                "gitBlobSha":  "6b423fc63435fb372b5c10b6419f4c9b69da3639"
+                                                "gitBlobSha":  "fc1888dd53dc454e11d8a6a6a5944019448c807b"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revit-mcp-plugin/Core/BridgeResultContract.cs",
@@ -77,7 +77,11 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revit-mcp-plugin/Core/McpVersionInfo.cs",
-                                                "gitBlobSha":  "faacf9d3e692d6a0eb98e4137781c0b6891e48b5"
+                                                "gitBlobSha":  "41c251bd03f64b20b15cc69041185a0aed305aa3"
+                                            },
+                                            {
+                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/RevAgentEnvironment.cs",
+                                                "gitBlobSha":  "f73790b8a7332de4b6d08ac8cd9bfc13155d0bb2"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revit-mcp-plugin/Core/RevAgentMetadataCommand.cs",
@@ -93,7 +97,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revit-mcp-plugin/Core/SocketService.cs",
-                                                "gitBlobSha":  "677787c9116a0f80438f780417ada2b6acf7cc99"
+                                                "gitBlobSha":  "8627dc142e897d8bfc2bc55860cd6c1949d9e937"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revit-mcp-plugin/Properties/AssemblyInfo.cs",
@@ -139,8 +143,8 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/revit-plugin/revAgentPlugin/revAgentPlugin.dll",
-                                                  "sha256":  "879dccb69626d0917db1271e0cfbeba2c7215c70d03e422b7a157f0026701fe3",
-                                                  "sizeBytes":  96256
+                                                  "sha256":  "86ae365598ed58456742a151f81fc20ea6bbbc8ab9b6c6c9fcc20690d68ac775",
+                                                  "sizeBytes":  96768
                                               }
                                           ]
                          },
@@ -350,12 +354,12 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/command-payload/revAgentCommandSet.dll",
-                                                  "sha256":  "0519ac1e8a66eb6346c184502dabe6706b439e7b3897d4314aea7ab871f4690b",
+                                                  "sha256":  "34e5cfa9fb237378385edf441e87cc84d0174c1633beeaf9d17f75519875b3f4",
                                                   "sizeBytes":  272896
                                               },
                                               {
                                                   "path":  "installer/revit-plugin/revAgentPlugin/Commands/revAgentCommandSet/2022/revAgentCommandSet.dll",
-                                                  "sha256":  "0519ac1e8a66eb6346c184502dabe6706b439e7b3897d4314aea7ab871f4690b",
+                                                  "sha256":  "34e5cfa9fb237378385edf441e87cc84d0174c1633beeaf9d17f75519875b3f4",
                                                   "sizeBytes":  272896
                                               }
                                           ]

@@ -86,11 +86,8 @@ namespace revit_mcp_plugin.Core
 
         private static bool IsAutoStartDisabled()
         {
-            string value = Environment.GetEnvironmentVariable("REVIT_MCP_AUTOSTART");
-            return string.Equals(value, "0", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(value, "false", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(value, "off", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(value, "no", StringComparison.OrdinalIgnoreCase);
+            string value = RevAgentEnvironment.Get("REVAGENT_AUTOSTART", "REVIT_MCP_AUTOSTART");
+            return RevAgentEnvironment.IsFalseLike(value);
         }
     }
 }

@@ -47,9 +47,9 @@ interface SendRevitCommandOptions extends ConnectionArgs {
 
 export function connectionTargetSchema(z: any) {
     return {
-        target: z.string().optional().describe("Optional Revit target: registered instance name, port number such as 8081, or host:port. Defaults to REVIT_MCP_TARGET/REVIT_MCP_PORT/8080."),
-        host: z.string().optional().describe("Optional Revit socket host. Defaults to REVIT_MCP_HOST or localhost."),
-        port: z.number().int().positive().max(65535).optional().describe("Optional Revit socket port. Defaults to REVIT_MCP_PORT or 8080."),
+        target: z.string().optional().describe("Optional Revit target: registered instance name, port number such as 8081, or host:port. Defaults to REVAGENT_TARGET, then legacy REVIT_MCP_TARGET, then REVAGENT_PORT/8080."),
+        host: z.string().optional().describe("Optional Revit socket host. Defaults to REVAGENT_HOST, then legacy REVIT_MCP_HOST, then localhost."),
+        port: z.number().int().positive().max(65535).optional().describe("Optional Revit socket port. Defaults to REVAGENT_PORT, then legacy REVIT_MCP_PORT, then 8080."),
     };
 }
 
