@@ -736,6 +736,32 @@ try {
     Assert-True ($taskScriptText -match 'New-RevitMcpDailyUpdateTrigger -DailyAt \$DailyAt') "Usage summary task must use the shared daily trigger helper."
     Assert-True ($taskScriptText -match 'Write-RevitMcpHiddenPowerShellLauncher') "Usage summary task must run hidden through the shared launcher."
     Assert-True ($taskScriptText -match '\$publishParameters = @\{' -and $taskScriptText -match '& \$PublishScriptPath @publishParameters') "Usage summary task RunNow must use named splatting."
+    Assert-True ($taskScriptText -match 'DPE\\revAgent\\addons\\usage-intelligence\\state') "Usage summary task must default work state under the installed add-on root."
+    Assert-True ($taskScriptText -match 'app = "revAgent"') "Usage summary task config must use revAgent product identity."
+
+    $usageAddonInstallRoot = Join-Path $tempRoot "installed\addons\usage-intelligence"
+    $usageAddonInstallResult = & (Join-Path $RepoRoot "addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") `
+        -SourceRoot (Join-Path $RepoRoot "addons\usage-intelligence") `
+        -InstallRoot $usageAddonInstallRoot `
+        -ReportsRoot $reportsRoot `
+        -SkipScheduledTasks | ConvertFrom-Json
+    Assert-Equal $usageAddonInstallResult.schemaVersion "revagent.usage-intelligence.addon.install.v1" "Usage-intelligence add-on installer result schema mismatch."
+    Assert-Equal ([bool]$usageAddonInstallResult.installed) $true "Usage-intelligence add-on installer should report installed=true."
+    Assert-Equal ([bool]$usageAddonInstallResult.scheduledTaskInstalled) $false "Usage-intelligence add-on installer should honor SkipScheduledTasks."
+    Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\publish-usage-summary.ps1") -PathType Leaf) "Installed usage publisher missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\summarize-usage-intelligence.ps1") -PathType Leaf) "Installed usage summarizer missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\install-usage-summary-task.ps1") -PathType Leaf) "Installed usage task installer missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "Installed usage add-on installer missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "addon.json") -PathType Leaf) "Installed usage manifest missing."
+    $usageAddonConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $usageAddonInstallRoot "config\usage-intelligence.json") | ConvertFrom-Json
+    Assert-Equal $usageAddonConfig.schemaVersion "revagent.usage-intelligence.addon.config.v1" "Usage-intelligence add-on config schema mismatch."
+    Assert-Equal $usageAddonConfig.reportsRoot $reportsRoot "Usage-intelligence add-on config must preserve reports root."
+    Assert-Equal $usageAddonConfig.workRoot (Join-Path $usageAddonInstallRoot "state") "Usage-intelligence add-on config must default workRoot under the add-on state root."
+
+    $usageAddonManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\usage-intelligence\addon.json") | ConvertFrom-Json
+    Assert-Equal $usageAddonManifest.entrypoints.installScript "installer\install-usage-intelligence-addon.ps1" "Usage-intelligence manifest must expose installer entrypoint."
+    $usageAddonWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-usage-intelligence-addon.ps1")
+    Assert-True ($usageAddonWrapper -match 'addons\\usage-intelligence\\installer\\install-usage-intelligence-addon\.ps1') "Usage-intelligence root installer wrapper must delegate to the add-on installer."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

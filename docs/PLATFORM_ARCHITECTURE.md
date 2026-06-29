@@ -364,7 +364,12 @@ automatically escalating priority.
 JSON/Markdown files and refreshes `reports\summaries\latest.json`.
 `addons/usage-intelligence/scripts/install-usage-summary-task.ps1` installs the
 single-machine scheduled publisher, using a hidden launcher, a daily trigger, a
-publish lock, and NAS summary logs. The root scripts with the same names remain
+publish lock, and NAS summary logs. The admin install path is
+`C:\ProgramData\DPE\revAgent\addons\usage-intelligence`; install it through
+`scripts\install-usage-intelligence-addon.ps1` or the add-on-owned
+`addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1`.
+The installed task uses the add-on-local publisher script and stores task
+state/config under the add-on root. The root scripts with the same names remain
 compatibility wrappers for local developer workflows.
 
 ## Deployment Components

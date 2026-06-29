@@ -54,7 +54,7 @@ Import-Module (Join-Path $libRoot "RevitMcp.ScheduledTask.psm1") -Force
 
 if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
     $programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
-    $WorkRoot = Join-Path $programDataRoot "DPE\revAgent\usage-summary"
+    $WorkRoot = Join-Path $programDataRoot "DPE\revAgent\addons\usage-intelligence\state"
 }
 
 if ([string]::IsNullOrWhiteSpace($PublishScriptPath)) {
@@ -77,7 +77,7 @@ $configPath = Join-Path $WorkRoot "usage-summary-task-config.json"
 $launcherPath = Join-Path $WorkRoot "Run-revAgent-Usage-Summary-Hidden.vbs"
 $config = [ordered]@{
     schemaVersion = 1
-    app = "revit-mcp-skill"
+    app = "revAgent"
     taskName = $TaskName
     dailyAt = $DailyAt
     reportsRoot = $ReportsRoot

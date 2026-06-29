@@ -5,6 +5,7 @@
   "installRole": "admin",
   "targetRoot": "C:\\ProgramData\\DPE\\revAgent\\addons\\usage-intelligence",
   "entrypoints": {
+    "installScript": "installer\\install-usage-intelligence-addon.ps1",
     "summary": "scripts\\summarize-usage-intelligence.ps1",
     "publish": "scripts\\publish-usage-summary.ps1",
     "installTask": "scripts\\install-usage-summary-task.ps1"

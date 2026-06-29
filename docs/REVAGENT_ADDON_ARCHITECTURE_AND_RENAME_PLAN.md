@@ -278,6 +278,10 @@ is already being moved for the add-on architecture.
      `C:\ProgramData\DPE\revAgent\addons\usage-intelligence`.
    - Own `revAgent Usage Summary Publish` scheduled task.
    - Remove repo-path assumptions from usage summary task setup.
+   - Implementation note: the add-on now exposes
+     `installer\install-usage-intelligence-addon.ps1` and root wrapper
+     `scripts\install-usage-intelligence-addon.ps1`. Live admin execution is
+     still separate from the standard user rollout.
 
 6. **Admin tools publish**
    - Publish admin add-on installers and payload under NAS

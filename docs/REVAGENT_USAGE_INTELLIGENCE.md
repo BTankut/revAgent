@@ -151,6 +151,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-usage-summary-task.ps
 The add-on-owned task installer is
 `addons/usage-intelligence/scripts/install-usage-summary-task.ps1`; the root
 script delegates to it.
+For an installed admin add-on payload that does not depend on the source repo
+path, use `scripts/install-usage-intelligence-addon.ps1` or the add-on-owned
+`addons/usage-intelligence/installer/install-usage-intelligence-addon.ps1`.
+The installed payload runs from
+`C:\ProgramData\DPE\revAgent\addons\usage-intelligence` and stores task state
+under that add-on root.
 
 The task name is `revAgent Usage Summary Publish`. It should be installed on
 one machine only. The publisher uses `reports\summaries\publish.lock` to avoid
