@@ -1127,6 +1127,13 @@ contains machine/user/time, operation type, release version/commit/package SHA,
 previous and installed versions, status, update diagnostics, the NAS log path,
 and a local install-state summary.
 
+Admin dashboard installs must read this canonical reports root. If
+`C:\ProgramData\DPE\revAgent\addons\dashboard\config\dashboard.json` still
+points at `\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports`, rerun
+the dashboard add-on installer from the canonical `revAgent-deploy` tools
+payload or restart the add-on with its current start script; both paths migrate
+legacy dashboard config values back to `revAgent-deploy`.
+
 The workstation install root is:
 
 ```text

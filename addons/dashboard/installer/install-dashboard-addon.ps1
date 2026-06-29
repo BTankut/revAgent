@@ -7,7 +7,7 @@
 param(
     [string]$SourceRoot = "",
     [string]$InstallRoot = "",
-    [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports",
+    [string]$ReportsRoot = "",
     [string]$ReleaseRoot = "",
     [string]$HostName = "127.0.0.1",
     [int]$Port = 8765,
@@ -32,6 +32,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+$CanonicalReleaseRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+$CanonicalReportsRoot = Join-Path $CanonicalReleaseRoot "reports"
+$LegacyReleaseRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+$LegacyReportsRoot = Join-Path $LegacyReleaseRoot "reports"
+$ReportsRootWasExplicit = $PSBoundParameters.ContainsKey("ReportsRoot") -and -not [string]::IsNullOrWhiteSpace($ReportsRoot)
+$ReleaseRootWasExplicit = $PSBoundParameters.ContainsKey("ReleaseRoot") -and -not [string]::IsNullOrWhiteSpace($ReleaseRoot)
 
 function ConvertTo-VbsStringLiteral {
     param([AllowNull()][string]$Value)
@@ -97,6 +104,78 @@ function Test-SamePath {
         [System.IO.Path]::GetFullPath($Left).TrimEnd("\", "/"),
         [System.IO.Path]::GetFullPath($Right).TrimEnd("\", "/"),
         [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-LegacyDashboardRoot {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    return (Test-SamePath -Left $Path -Right $LegacyReportsRoot) -or
+        (Test-SamePath -Left $Path -Right $LegacyReleaseRoot)
+}
+
+function Read-DashboardConfig {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        return Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+function Resolve-DashboardConfigRoots {
+    param([AllowNull()]$ExistingConfig)
+
+    $existingReportsRoot = if ($ExistingConfig -and $ExistingConfig.reportsRoot) {
+        [string]$ExistingConfig.reportsRoot
+    }
+    else {
+        ""
+    }
+    $existingReleaseRoot = if ($ExistingConfig -and $ExistingConfig.releaseRoot) {
+        [string]$ExistingConfig.releaseRoot
+    }
+    else {
+        ""
+    }
+
+    $resolvedReportsRoot = if ($ReportsRootWasExplicit) {
+        $ReportsRoot
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($existingReportsRoot) -and -not (Test-LegacyDashboardRoot -Path $existingReportsRoot)) {
+        $existingReportsRoot
+    }
+    else {
+        $CanonicalReportsRoot
+    }
+
+    $resolvedReleaseRoot = if ($ReleaseRootWasExplicit) {
+        $ReleaseRoot
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($existingReleaseRoot) -and
+        -not (Test-LegacyDashboardRoot -Path $existingReleaseRoot) -and
+        -not (Test-LegacyDashboardRoot -Path $existingReportsRoot)) {
+        $existingReleaseRoot
+    }
+    else {
+        Split-Path -Parent $resolvedReportsRoot
+    }
+
+    return [ordered]@{
+        reportsRoot = $resolvedReportsRoot
+        releaseRoot = $resolvedReleaseRoot
+        migratedFromLegacy = ((-not $ReportsRootWasExplicit) -and (Test-LegacyDashboardRoot -Path $existingReportsRoot)) -or
+            ((-not $ReleaseRootWasExplicit) -and (Test-LegacyDashboardRoot -Path $existingReleaseRoot))
+    }
 }
 
 function Copy-DirectoryPayload {
@@ -409,6 +488,10 @@ Copy-DirectoryPayload -Source (Join-Path $SourceRoot "installer") -Destination (
 Copy-FilePayload -Source (Join-Path $SourceRoot "addon.json") -Destination (Join-Path $InstallRoot "addon.json") -InstallRoot $InstallRoot
 
 $configPath = Join-Path $InstallRoot "config\dashboard.json"
+$existingConfig = Read-DashboardConfig -Path $configPath
+$resolvedRoots = Resolve-DashboardConfigRoots -ExistingConfig $existingConfig
+$ReportsRoot = [string]$resolvedRoots.reportsRoot
+$ReleaseRoot = [string]$resolvedRoots.releaseRoot
 Write-DashboardConfig -Path $configPath
 
 $scheduledTaskRegistrationMethod = ""
@@ -441,6 +524,9 @@ $result = [ordered]@{
     startupRegistered = -not [bool]$SkipScheduledTasks
     startupRegistrationMethod = $scheduledTaskRegistrationMethod
     scheduledTaskRegistrationMethod = $scheduledTaskRegistrationMethod
+    reportsRoot = $ReportsRoot
+    releaseRoot = $ReleaseRoot
+    migratedLegacyReportRoot = [bool]$resolvedRoots.migratedFromLegacy
     runNow = [bool]$RunNow
     healthChecked = $healthChecked
     healthy = $healthy

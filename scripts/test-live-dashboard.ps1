@@ -121,6 +121,44 @@ try {
     Assert-Equal $installedConfig.schemaVersion "revagent.dashboard.addon.config.v1" "Dashboard add-on config schema mismatch."
     Assert-Equal $installedConfig.reportsRoot $reportsRoot "Dashboard add-on config must preserve reports root."
 
+    $canonicalReleaseRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+    $canonicalReportsRoot = Join-Path $canonicalReleaseRoot "reports"
+    $defaultDashboardRoot = Join-Path $tempRoot "installed-default\addons\dashboard"
+    $defaultInstallResult = & (Join-Path $RepoRoot "addons\dashboard\installer\install-dashboard-addon.ps1") `
+        -SourceRoot (Join-Path $RepoRoot "addons\dashboard") `
+        -InstallRoot $defaultDashboardRoot `
+        -SkipScheduledTasks `
+        -NoHealthCheck | ConvertFrom-Json
+    Assert-Equal $defaultInstallResult.reportsRoot $canonicalReportsRoot "Dashboard add-on default install must use the canonical revAgent reports root."
+    Assert-Equal $defaultInstallResult.releaseRoot $canonicalReleaseRoot "Dashboard add-on default install must use the canonical revAgent release root."
+    $defaultConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $defaultDashboardRoot "config\dashboard.json") | ConvertFrom-Json
+    Assert-Equal $defaultConfig.reportsRoot $canonicalReportsRoot "Dashboard default config must persist the canonical revAgent reports root."
+
+    $legacyDashboardRoot = Join-Path $tempRoot "installed-legacy\addons\dashboard"
+    $legacyConfigPath = Join-Path $legacyDashboardRoot "config\dashboard.json"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $legacyConfigPath) -Force | Out-Null
+    [ordered]@{
+        schemaVersion = "revagent.dashboard.addon.config.v1"
+        reportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\reports"
+        releaseRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+        hostName = "127.0.0.1"
+        port = 8765
+        staleSeconds = 60
+        offlineSeconds = 300
+        updatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $legacyConfigPath -Encoding UTF8
+    $legacyMigrationResult = & (Join-Path $RepoRoot "addons\dashboard\installer\install-dashboard-addon.ps1") `
+        -SourceRoot (Join-Path $RepoRoot "addons\dashboard") `
+        -InstallRoot $legacyDashboardRoot `
+        -SkipScheduledTasks `
+        -NoHealthCheck | ConvertFrom-Json
+    Assert-Equal ([bool]$legacyMigrationResult.migratedLegacyReportRoot) $true "Dashboard add-on installer must report legacy report-root migration."
+    Assert-Equal $legacyMigrationResult.reportsRoot $canonicalReportsRoot "Dashboard add-on installer must migrate legacy reports root to canonical revAgent reports."
+    Assert-Equal $legacyMigrationResult.releaseRoot $canonicalReleaseRoot "Dashboard add-on installer must migrate legacy release root to canonical revAgent release root."
+    $legacyMigratedConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath $legacyConfigPath | ConvertFrom-Json
+    Assert-Equal $legacyMigratedConfig.reportsRoot $canonicalReportsRoot "Dashboard legacy config must be rewritten to canonical revAgent reports root."
+    Assert-Equal $legacyMigratedConfig.releaseRoot $canonicalReleaseRoot "Dashboard legacy config must be rewritten to canonical revAgent release root."
+
     $legacyTunnelRoot = Join-Path $tempRoot "DPE\RevitMCP\cloudflared"
     New-Item -ItemType Directory -Path $legacyTunnelRoot -Force | Out-Null
     $legacyCloudflared = Join-Path $legacyTunnelRoot "cloudflared.exe"
@@ -252,6 +290,8 @@ try {
     Assert-True ($dashboardCss -notmatch 'min-height:\s*136px') "Machine status cards must not keep the old tall-card spacing."
     Assert-True ($dashboardCss -match '(?s)\.status-line\s*\{.*?min-height:\s*28px') "All Status Activity rows must stay compact."
     Assert-True ($dashboardServer -match 'DEFAULT_ACTIVITY_READ_BYTES') "Dashboard must bound activity NDJSON tail reads."
+    Assert-True ($dashboardServer -match 'revAgent-deploy\\\\reports') "Dashboard server default reports root must use the canonical revAgent NAS root."
+    Assert-True ($dashboardServer -notmatch 'DEFAULT_REPORTS_ROOT = "\\\\\\\\DPE-NAS\\\\Dpe-Ortak\\\\Baris Tankut\\\\revit-mcp-deploy\\\\reports"') "Dashboard server default reports root must not fall back to the legacy NAS root."
     Assert-True ($dashboardServer -match 'compactActivity') "Dashboard overview must strip raw live activity payloads."
     Assert-True ($dashboardServer -match 'buildStatusActivities') "Dashboard must collapse raw live activity into status-window style task rows."
     Assert-True ($dashboardServer -match 'connectionStateFor') "Dashboard server must calculate connection state independently."
@@ -270,6 +310,9 @@ try {
     Assert-True ($dashboardServer -match '\./revitTaskMerge\.js') "Dashboard server must depend on add-on-local helper code for installed execution."
     Assert-Equal $dashboardManifest.entrypoints.installScript "installer\install-dashboard-addon.ps1" "Dashboard add-on manifest must expose installer entrypoint."
     Assert-True ($dashboardInstaller -match '\[string\]\$TaskName = "revAgent Dashboard Server"') "Dashboard add-on installer must own the dashboard scheduled task name."
+    Assert-True ($dashboardInstaller -match 'CanonicalReportsRoot') "Dashboard add-on installer must define a canonical revAgent reports root."
+    Assert-True ($dashboardInstaller -match 'migratedLegacyReportRoot') "Dashboard add-on installer must report legacy reports-root migration."
+    Assert-True ($dashboardInstaller -notmatch '\[string\]\$ReportsRoot = "\\\\DPE-NAS\\Dpe-Ortak\\Baris Tankut\\revit-mcp-deploy\\reports"') "Dashboard add-on installer must not default to the legacy NAS reports root."
     Assert-True ($dashboardInstaller -match 'New-ScheduledTaskTrigger -AtLogOn') "Dashboard add-on installer must register a logon dashboard task."
     Assert-True ($dashboardInstaller -match 'Invoke-SchtasksCreateLogonTask') "Dashboard add-on installer must fall back to schtasks.exe for non-elevated coordinator installs."
     Assert-True ($dashboardInstaller -match 'Register-HkcuRunStartup') "Dashboard add-on installer must have a no-admin HKCU startup fallback."

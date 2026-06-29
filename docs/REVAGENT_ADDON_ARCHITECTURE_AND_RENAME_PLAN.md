@@ -331,6 +331,9 @@ Current NAS-root migration support includes dual-root CD publish, STABLE
 launcher fallback, and successful-update config migration from the legacy
 channel path to the canonical channel path when the canonical root is
 available.
+Dashboard admin add-on config also uses the canonical
+`revAgent-deploy\reports` root by default and migrates legacy
+`revit-mcp-deploy\reports` config values during install/startup.
 GitHub/local repository rename and deep internal implementation renames remain
 separate follow-up workstreams.
 

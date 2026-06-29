@@ -7,7 +7,7 @@ import { mergeRevitStatusSnapshots, unexpiredCachedRevitStatus } from "./revitTa
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DEFAULT_REPORTS_ROOT = "\\\\DPE-NAS\\Dpe-Ortak\\Baris Tankut\\revit-mcp-deploy\\reports";
+const DEFAULT_REPORTS_ROOT = "\\\\DPE-NAS\\Dpe-Ortak\\Baris Tankut\\revAgent-deploy\\reports";
 const DEFAULT_PORT = 8765;
 const DEFAULT_ACTIVITY_READ_BYTES = 4 * 1024 * 1024;
 const DEFAULT_STALE_SECONDS = 60;
