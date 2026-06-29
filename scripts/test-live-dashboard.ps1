@@ -121,6 +121,44 @@ try {
     Assert-Equal $installedConfig.schemaVersion "revagent.dashboard.addon.config.v1" "Dashboard add-on config schema mismatch."
     Assert-Equal $installedConfig.reportsRoot $reportsRoot "Dashboard add-on config must preserve reports root."
 
+    $legacyTunnelRoot = Join-Path $tempRoot "DPE\RevitMCP\cloudflared"
+    New-Item -ItemType Directory -Path $legacyTunnelRoot -Force | Out-Null
+    $legacyCloudflared = Join-Path $legacyTunnelRoot "cloudflared.exe"
+    Set-Content -LiteralPath $legacyCloudflared -Value "fake-cloudflared" -Encoding ASCII
+    $legacyCredentials = Join-Path $legacyTunnelRoot "dashboard-credentials.json"
+    Set-Content -LiteralPath $legacyCredentials -Value '{"AccountTag":"redacted","TunnelSecret":"redacted"}' -Encoding ASCII
+    $legacyConfig = Join-Path $legacyTunnelRoot "config.yml"
+    @(
+        "tunnel: dashboard",
+        "credentials-file: ""$legacyCredentials""",
+        "ingress:",
+        "  - hostname: dashboard.revagent.app",
+        "    service: http://127.0.0.1:8765",
+        "  - service: http_status:404",
+        "logfile: ""$(Join-Path $legacyTunnelRoot "old-cloudflared.log")"""
+    ) | Set-Content -LiteralPath $legacyConfig -Encoding UTF8
+
+    $installWithTunnelResult = & (Join-Path $RepoRoot "addons\dashboard\installer\install-dashboard-addon.ps1") `
+        -SourceRoot (Join-Path $RepoRoot "addons\dashboard") `
+        -InstallRoot $installedDashboardRoot `
+        -ReportsRoot $reportsRoot `
+        -SkipScheduledTasks `
+        -NoHealthCheck `
+        -MigrateTunnel `
+        -LegacyTunnelRoot $legacyTunnelRoot `
+        -SkipTunnelScheduledTasks `
+        -NoTunnelHealthCheck | ConvertFrom-Json
+    Assert-Equal $installWithTunnelResult.tunnel.schemaVersion "revagent.dashboard.tunnel.install.v1" "Dashboard tunnel installer result schema mismatch."
+    Assert-Equal ([bool]$installWithTunnelResult.tunnel.installed) $true "Dashboard tunnel installer should report installed=true."
+    Assert-True (Test-Path -LiteralPath (Join-Path $installedDashboardRoot "tunnel\bin\cloudflared.exe") -PathType Leaf) "Installed dashboard tunnel cloudflared.exe missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $installedDashboardRoot "tunnel\config\config.yml") -PathType Leaf) "Installed dashboard tunnel config missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $installedDashboardRoot "tunnel\config\dashboard-credentials.json") -PathType Leaf) "Installed dashboard tunnel credentials should be copied without printing contents."
+    $installedTunnelConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $installedDashboardRoot "tunnel\config\config.yml")
+    Assert-True ($installedTunnelConfig -match 'dashboard\.revagent\.app') "Installed dashboard tunnel config must preserve dashboard hostname."
+    Assert-True ($installedTunnelConfig -match [regex]::Escape((Join-Path $installedDashboardRoot "tunnel\logs\cloudflared.log"))) "Installed dashboard tunnel config must rewrite logfile to the add-on log root."
+    Assert-True ($installedTunnelConfig -match [regex]::Escape((Join-Path $installedDashboardRoot "tunnel\config\dashboard-credentials.json"))) "Installed dashboard tunnel config must rewrite credentials-file to the add-on config root."
+    Assert-True ($installedTunnelConfig -notmatch [regex]::Escape((Join-Path $legacyTunnelRoot "old-cloudflared.log"))) "Installed dashboard tunnel config must not keep the legacy logfile path."
+
     Push-Location $installedDashboardRoot
     try {
         $installedBrief = node --input-type=module -e "import('./server/server.mjs').then(({buildDashboardBrief}) => { const brief = buildDashboardBrief({generatedAtUtc:'installed', stable:{version:'v'}, summary:{dateUtc:'d'}, overview:{machineCount:0}, machines:[], activity:[]}); console.log(JSON.stringify(brief)); })" | ConvertFrom-Json
@@ -135,7 +173,10 @@ try {
     $dashboardCss = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\public\styles.css")
     $dashboardServer = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\server\server.mjs")
     $dashboardInstaller = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\installer\install-dashboard-addon.ps1")
+    $dashboardTunnelInstaller = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\installer\install-dashboard-tunnel.ps1")
+    $dashboardTunnelStart = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\installer\start-dashboard-tunnel.ps1")
     $dashboardInstallerWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-dashboard-addon.ps1")
+    $dashboardTunnelInstallerWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-dashboard-tunnel.ps1")
     $dashboardManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\dashboard\addon.json") | ConvertFrom-Json
     Assert-True ($dashboardApp -match 'ACTIVITY_DEFAULT_LIMIT = 50') "Dashboard must default all activity to 50 records."
     Assert-True ($dashboardApp -match 'ACTIVITY_EXPANDED_LIMIT = 200') "Dashboard expanded activity must cap at 200 records."
@@ -197,7 +238,17 @@ try {
     Assert-True ($dashboardInstaller -match '\[string\]\$TaskName = "revAgent Dashboard Server"') "Dashboard add-on installer must own the dashboard scheduled task name."
     Assert-True ($dashboardInstaller -match 'New-ScheduledTaskTrigger -AtLogOn') "Dashboard add-on installer must register a logon dashboard task."
     Assert-True ($dashboardInstaller -match 'Run-revAgent-Dashboard-Server-Hidden\.vbs') "Dashboard add-on installer must use a hidden revAgent dashboard launcher."
+    Assert-True ($dashboardInstaller -match '\[switch\]\$MigrateTunnel') "Dashboard add-on installer must expose explicit tunnel migration."
+    Assert-Equal $dashboardManifest.entrypoints.installTunnelScript "installer\install-dashboard-tunnel.ps1" "Dashboard add-on manifest must expose tunnel installer entrypoint."
+    Assert-Equal $dashboardManifest.entrypoints.startTunnelScript "installer\start-dashboard-tunnel.ps1" "Dashboard add-on manifest must expose tunnel start entrypoint."
+    Assert-True ($dashboardTunnelInstaller -match '\[string\]\$TaskName = "revAgent Dashboard Tunnel"') "Dashboard tunnel installer must own the tunnel scheduled task name."
+    Assert-True ($dashboardTunnelInstaller -match 'StopLegacyOnSuccess requires RunNow with successful health checks') "Dashboard tunnel installer must not stop legacy tunnel before the new tunnel is healthy."
+    Assert-True ($dashboardTunnelInstaller -match 'RemoveLegacyOnSuccess requires RunNow with successful health checks') "Dashboard tunnel installer must not remove legacy tunnel before the new tunnel is healthy."
+    Assert-True ($dashboardTunnelInstaller -match 'Assert-LegacyTunnelRootIsNarrow') "Dashboard tunnel installer must keep legacy cleanup scoped to the legacy cloudflared root."
+    Assert-True ($dashboardTunnelInstaller -match 'Disable-LegacyTunnelScheduledTasks') "Dashboard tunnel installer must disable legacy tunnel tasks only after successful migration."
+    Assert-True ($dashboardTunnelStart -match 'cloudflared\.exe' -and $dashboardTunnelStart -match 'tunnel --config') "Dashboard tunnel start script must run cloudflared with the installed config."
     Assert-True ($dashboardInstallerWrapper -match 'addons\\dashboard\\installer\\install-dashboard-addon\.ps1') "Dashboard root installer wrapper must delegate to the add-on installer."
+    Assert-True ($dashboardTunnelInstallerWrapper -match 'addons\\dashboard\\installer\\install-dashboard-tunnel\.ps1') "Dashboard tunnel root installer wrapper must delegate to the add-on tunnel installer."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

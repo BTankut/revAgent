@@ -4,6 +4,11 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added explicit admin dashboard tunnel migration: the dashboard add-on can now
+  install `cloudflared.exe`, config, credentials, and the
+  `revAgent Dashboard Tunnel` scheduled task under the revAgent add-on root,
+  while legacy `RevitMCP\cloudflared` cleanup remains gated behind successful
+  health checks and explicit cleanup switches.
 - Renamed user-facing front-layer branding to revAgent across Codex MCP
   registration (`revAgent`, `revAgent-api-docs`), user-pack instructions,
   runtime tool descriptions, Revit UI/add-in labels, installer launchers, and

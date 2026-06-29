@@ -7,7 +7,9 @@
   "entrypoints": {
     "server": "server\\server.mjs",
     "installScript": "installer\\install-dashboard-addon.ps1",
-    "startScript": "installer\\start-dashboard.ps1"
+    "startScript": "installer\\start-dashboard.ps1",
+    "installTunnelScript": "installer\\install-dashboard-tunnel.ps1",
+    "startTunnelScript": "installer\\start-dashboard-tunnel.ps1"
   },
   "ownedScheduledTasks": [
     "revAgent Dashboard Server",

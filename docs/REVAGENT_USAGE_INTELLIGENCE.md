@@ -259,7 +259,10 @@ The current usage-intelligence stack includes:
    monitoring filters without changing the live feed.
    The admin/coordinator install script is
    `addons/dashboard/installer/install-dashboard-addon.ps1`; the root
-   `scripts/install-dashboard-addon.ps1` wrapper delegates to it.
+   `scripts/install-dashboard-addon.ps1` wrapper delegates to it. The optional
+   Cloudflare tunnel migration is owned by
+   `addons/dashboard/installer/install-dashboard-tunnel.ps1` with root wrapper
+   `scripts/install-dashboard-tunnel.ps1`.
 3. A compact `/api/brief` dashboard export for separate analyst/LLM sessions.
 4. `scripts\publish-live-backfill.ps1`, a repair task that backfills local live
    spool files when NAS was offline.
@@ -315,7 +318,10 @@ heartbeat older than the offline threshold. Version state is independent
 The coordinator dashboard can be exposed as
 `https://dashboard.revagent.app` through a Cloudflare Tunnel to the local
 read-only server. This changes only access to the dashboard; it does not add a
-new writer or direct Revit polling path.
+new writer or direct Revit polling path. On the admin machine, tunnel ownership
+belongs to the dashboard add-on under
+`C:\ProgramData\DPE\revAgent\addons\dashboard\tunnel`; the standard user
+package does not install or migrate Cloudflare tunnel files.
 
 Dashboard and usage-intelligence are admin/coordinator add-ons. They are not
 part of the standard workstation package, and source-free user pack guards treat
