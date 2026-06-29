@@ -98,7 +98,7 @@ function Get-DefaultReleaseSequence {
     return [long]((Get-Date).ToUniversalTime().ToString("yyyyMMddHHmmss", [System.Globalization.CultureInfo]::InvariantCulture))
 }
 
-function Get-RevitMcpChannelReleaseSequenceStatus {
+function Get-RevAgentChannelReleaseSequenceStatus {
     param([string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -313,13 +313,13 @@ function Copy-UserPackReleaseMcpPackage {
     Copy-Item -LiteralPath $runtimePackageLock -Destination (Join-Path $destinationPath "package-lock.json") -Force
 }
 
-function Assert-RevitMcpUserPackNoSourceLeak {
+function Assert-RevAgentUserPackNoSourceLeak {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Root
     )
 
-    function Get-RevitMcpUserPackPathParts {
+    function Get-RevAgentUserPackPathParts {
         param([string]$RelativePath)
 
         if ([string]::IsNullOrWhiteSpace($RelativePath)) {
@@ -329,10 +329,10 @@ function Assert-RevitMcpUserPackNoSourceLeak {
         return @($RelativePath -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     }
 
-    function Test-RevitMcpUserPackIgnoredDependencyPath {
+    function Test-RevAgentUserPackIgnoredDependencyPath {
         param([string]$RelativePath)
 
-        foreach ($part in Get-RevitMcpUserPackPathParts -RelativePath $RelativePath) {
+        foreach ($part in Get-RevAgentUserPackPathParts -RelativePath $RelativePath) {
             if ($part -ieq "node_modules" -or $part -ieq "dependencies") {
                 return $true
             }
@@ -350,8 +350,8 @@ function Assert-RevitMcpUserPackNoSourceLeak {
     Get-ChildItem -LiteralPath $Root -Recurse -Directory -Force |
         ForEach-Object {
             $relative = $_.FullName.Substring($Root.Length).TrimStart("\", "/").Replace("/", "\")
-            $parts = Get-RevitMcpUserPackPathParts -RelativePath $relative
-            if (Test-RevitMcpUserPackIgnoredDependencyPath -RelativePath $relative) {
+            $parts = Get-RevAgentUserPackPathParts -RelativePath $relative
+            if (Test-RevAgentUserPackIgnoredDependencyPath -RelativePath $relative) {
                 return
             }
             if ($blockedDirectoryNames.Contains($_.Name) -or ($parts.Count -eq 1 -and $_.Name -eq "scripts")) {
@@ -362,7 +362,7 @@ function Assert-RevitMcpUserPackNoSourceLeak {
     Get-ChildItem -LiteralPath $Root -Recurse -File -Force |
         ForEach-Object {
             $relative = $_.FullName.Substring($Root.Length).TrimStart("\", "/").Replace("/", "\")
-            if (Test-RevitMcpUserPackIgnoredDependencyPath -RelativePath $relative) {
+            if (Test-RevAgentUserPackIgnoredDependencyPath -RelativePath $relative) {
                 return
             }
             if ($_.Extension -in @(".cs", ".csproj", ".sln", ".ts", ".tsx", ".pdb", ".map")) {
@@ -384,7 +384,7 @@ function Assert-RevitMcpUserPackNoSourceLeak {
     }
 }
 
-function Assert-RevitMcpUserPackDotNetPayloadHardened {
+function Assert-RevAgentUserPackDotNetPayloadHardened {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Root
@@ -424,7 +424,7 @@ function Test-JsonProperty {
     return ($null -ne $Object) -and ($null -ne $Object.PSObject.Properties[$Name])
 }
 
-function Assert-RevitMcpUserPackHardenedJsPayload {
+function Assert-RevAgentUserPackHardenedJsPayload {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Root
@@ -501,7 +501,7 @@ function Assert-RevitMcpUserPackHardenedJsPayload {
     }
 }
 
-function Copy-RevitMcpUserPack {
+function Copy-RevAgentUserPack {
     Copy-UserPackFile -SourceRelativePath "installer\codex-user\SKILL.md" -DestinationRelativePath "SKILL.md"
     Copy-UserPackFile -SourceRelativePath "installer\codex-user\AGENTS.md" -DestinationRelativePath "AGENTS.md"
     Copy-UserPackDirectory -SourceRelativePath "installer\codex-user" -DestinationRelativePath "installer\codex-user"
@@ -524,7 +524,7 @@ function Copy-RevitMcpUserPack {
     Copy-UserPackFile -SourceRelativePath "installer\revit-api-docs-mcp\scripts\build-index.ps1"
 }
 
-function Copy-RevitMcpAdminAddonPayload {
+function Copy-RevAgentAdminAddonPayload {
     param(
         [Parameter(Mandatory = $true)][string]$AddonId,
         [Parameter(Mandatory = $true)][string[]]$DirectoryNames
@@ -553,15 +553,15 @@ function Copy-RevitMcpAdminAddonPayload {
     }
 }
 
-function Copy-RevitMcpAdminAddonTools {
+function Copy-RevAgentAdminAddonTools {
     $addonsTargetRoot = Join-Path $toolsRoot "addons"
     if (Test-Path -LiteralPath $addonsTargetRoot) {
         Remove-Item -LiteralPath $addonsTargetRoot -Recurse -Force
     }
     New-Item -ItemType Directory -Path $addonsTargetRoot -Force | Out-Null
 
-    Copy-RevitMcpAdminAddonPayload -AddonId "dashboard" -DirectoryNames @("installer", "server", "public")
-    Copy-RevitMcpAdminAddonPayload -AddonId "usage-intelligence" -DirectoryNames @("installer", "scripts")
+    Copy-RevAgentAdminAddonPayload -AddonId "dashboard" -DirectoryNames @("installer", "server", "public")
+    Copy-RevAgentAdminAddonPayload -AddonId "usage-intelligence" -DirectoryNames @("installer", "scripts")
     Write-Host "Admin add-ons path: $addonsTargetRoot" -ForegroundColor Green
 }
 
@@ -674,25 +674,25 @@ function Write-JsonFile {
     $Value | ConvertTo-Json -Depth $Depth | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
-function Get-RevitMcpPathPrefix {
+function Get-RevAgentPathPrefix {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd("\", "/")
     return $fullPath + [System.IO.Path]::DirectorySeparatorChar
 }
 
-function Test-RevitMcpPathUnderRoot {
+function Test-RevAgentPathUnderRoot {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Root
     )
 
     $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $rootPrefix = Get-RevitMcpPathPrefix -Path $Root
+    $rootPrefix = Get-RevAgentPathPrefix -Path $Root
     return $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
-function New-RevitMcpPublishSigningContext {
+function New-RevAgentPublishSigningContext {
     param(
         [string]$PrivateKeyPath,
         [string]$KeyId,
@@ -715,10 +715,10 @@ function New-RevitMcpPublishSigningContext {
     }
 
     $privateKeyFullPath = [System.IO.Path]::GetFullPath($PrivateKeyPath)
-    if (Test-RevitMcpPathUnderRoot -Path $privateKeyFullPath -Root $RepositoryRoot) {
+    if (Test-RevAgentPathUnderRoot -Path $privateKeyFullPath -Root $RepositoryRoot) {
         throw "Signing private key must be stored outside the repository."
     }
-    if (Test-RevitMcpPathUnderRoot -Path $privateKeyFullPath -Root $NasToolsRoot) {
+    if (Test-RevAgentPathUnderRoot -Path $privateKeyFullPath -Root $NasToolsRoot) {
         throw "Signing private key must be stored outside NAS tools."
     }
     if (-not (Test-Path -LiteralPath $privateKeyFullPath -PathType Leaf)) {
@@ -745,7 +745,7 @@ function New-RevitMcpPublishSigningContext {
     }
 }
 
-function Write-RevitMcpDetachedSignatureFile {
+function Write-RevAgentDetachedSignatureFile {
     param(
         [Parameter(Mandatory = $true)][object]$Content,
         [Parameter(Mandatory = $true)][string]$ContentPath,
@@ -826,7 +826,7 @@ $releasesRoot = Join-Path $ReleaseRoot "releases"
 $channelsRoot = Join-Path $ReleaseRoot "channels"
 $toolsRoot = Join-Path $ReleaseRoot "tools"
 $releaseDir = Join-Path $releasesRoot $Version
-$signingContext = New-RevitMcpPublishSigningContext `
+$signingContext = New-RevAgentPublishSigningContext `
     -PrivateKeyPath $SigningPrivateKeyPath `
     -KeyId $SigningKeyId `
     -RepositoryRoot $RepoRoot `
@@ -856,7 +856,7 @@ if ($MinimumAcceptedReleaseSequence -gt $ReleaseSequence) {
 
 $channelPath = Join-Path $channelsRoot ("{0}.json" -f $Channel)
 if (-not $NoChannelUpdate) {
-    $currentStableSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus -Path $channelPath
+    $currentStableSequenceStatus = Get-RevAgentChannelReleaseSequenceStatus -Path $channelPath
     if ([bool]$currentStableSequenceStatus.exists -and -not [bool]$currentStableSequenceStatus.success) {
         if ($AllowRollback -and [string]::Equals([string]$currentStableSequenceStatus.reason, "missing_release_sequence", [System.StringComparison]::OrdinalIgnoreCase)) {
             Write-Warning "Current stable channel has no releaseSequence; treating it as legacy sequence 0 because -AllowRollback was supplied."
@@ -888,10 +888,10 @@ New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 
 try {
     Write-Section "Stage package"
-    Copy-RevitMcpUserPack
-    Assert-RevitMcpUserPackNoSourceLeak -Root $packageRoot
-    Assert-RevitMcpUserPackDotNetPayloadHardened -Root $packageRoot
-    Assert-RevitMcpUserPackHardenedJsPayload -Root $packageRoot
+    Copy-RevAgentUserPack
+    Assert-RevAgentUserPackNoSourceLeak -Root $packageRoot
+    Assert-RevAgentUserPackDotNetPayloadHardened -Root $packageRoot
+    Assert-RevAgentUserPackHardenedJsPayload -Root $packageRoot
 
     $releaseInfo = [ordered]@{
         schemaVersion = 1
@@ -1030,7 +1030,7 @@ try {
     $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
     if ($signingContext) {
         $manifestSignaturePath = Join-Path $releaseDir "manifest.sig.json"
-        Write-RevitMcpDetachedSignatureFile `
+        Write-RevAgentDetachedSignatureFile `
             -Content $manifest `
             -ContentPath $manifestPath `
             -SignaturePath $manifestSignaturePath `
@@ -1064,7 +1064,7 @@ try {
         Write-JsonFile -Value $channelManifest -Path $channelPath -Depth 8
         if ($signingContext) {
             $channelSignaturePath = Join-Path $channelsRoot ("{0}.sig.json" -f $Channel)
-            Write-RevitMcpDetachedSignatureFile `
+            Write-RevAgentDetachedSignatureFile `
                 -Content $channelManifest `
                 -ContentPath $channelPath `
                 -SignaturePath $channelSignaturePath `
@@ -1120,7 +1120,7 @@ try {
         Copy-DirectoryFiltered -Source $dependenciesSource -Destination $dependenciesTarget
         Write-Host "Dependencies path: $dependenciesTarget" -ForegroundColor Green
     }
-    Copy-RevitMcpAdminAddonTools
+    Copy-RevAgentAdminAddonTools
     Write-Host "Tools path: $toolsRoot" -ForegroundColor Green
 
     Write-Host "Release package: $zipPath" -ForegroundColor Green

@@ -45,6 +45,10 @@ Keep legacy names only when they are one of these exact identities:
 - Exported installer helper functions now expose `RevAgent*` aliases while
   retaining the original `RevitMcp*` function definitions for rolling-update
   compatibility.
+- Installer entrypoint private helper names now use `RevAgent*` names in the
+  workstation installer, updater, migration, publisher, readiness, and signed-CD
+  scripts. Legacy cleanup/path literals and public compatibility APIs remain
+  unchanged.
 
 ## Intentional Compatibility Names
 
@@ -63,15 +67,7 @@ These are expected to remain until a larger migration explicitly replaces them.
 
 ## Next Migration PRs
 
-1. **Installer entrypoint private helper rename PR**
-   - Rename local/private helper functions inside installer entrypoints where
-     they are not a compatibility API boundary.
-   - Keep explicit legacy cleanup identifiers such as old paths, manifest names,
-     environment variables, and rollback support names.
-   - Leave exported `RevitMcp*` helper definitions until at least one full office
-     rollout has proven the `RevAgent*` alias path.
-
-2. **Revit source project rename PR**
+1. **Revit source project rename PR**
    - Rename `src/revit-plugin/revit-mcp-plugin` and `RevitMCPCommandSet`
      source identities only after a clean Revit 2022 live smoke baseline.
    - Update C# namespaces, XAML `x:Class`, csproj assembly/root namespace,
@@ -80,13 +76,13 @@ These are expected to remain until a larger migration explicitly replaces them.
    - Require local non-Revit tests plus live Revit add-in load and command
      smoke.
 
-3. **Repository rename PR**
+2. **Repository rename PR**
    - Rename the local and GitHub repository only after the deployed NAS root is
      stable and compatibility root retirement criteria are met.
    - Update GitHub Actions, docs, clone instructions, and any hardcoded
      `BTankut/revit-mcp-skill` references.
 
-4. **Compatibility root retirement**
+3. **Compatibility root retirement**
    - Remove `revit-mcp-deploy` dual publish only after all active machines have
      reported canonical channel paths and no copied desktop launcher still
      depends on the legacy root.

@@ -71,16 +71,16 @@ if ($RunSourceFreeMigration) {
     $RunNow = $true
 }
 
-$script:RevitMcpTranscriptStarted = $false
-$script:RevitMcpLogPath = ""
+$script:RevAgentTranscriptStarted = $false
+$script:RevAgentLogPath = ""
 $script:PreviousTranscriptActive = $env:REVIT_MCP_TRANSCRIPT_ACTIVE
 $script:PreviousLogPath = $env:REVIT_MCP_LOG_PATH
-$script:RevitMcpRemoteReportsRoot = ""
-$script:RevitMcpLatestReport = $null
-$script:RevitMcpOperation = "install"
-$script:RevitMcpOperationMethod = ""
+$script:RevAgentRemoteReportsRoot = ""
+$script:RevAgentLatestReport = $null
+$script:RevAgentOperation = "install"
+$script:RevAgentOperationMethod = ""
 
-function Initialize-RevitMcpTranscript {
+function Initialize-RevAgentTranscript {
     param(
         [string]$PreferredWorkRoot,
         [string]$RequestedLogPath,
@@ -88,7 +88,7 @@ function Initialize-RevitMcpTranscript {
     )
 
     if ($env:REVIT_MCP_TRANSCRIPT_ACTIVE -eq "1") {
-        $script:RevitMcpLogPath = $env:REVIT_MCP_LOG_PATH
+        $script:RevAgentLogPath = $env:REVIT_MCP_LOG_PATH
         return
     }
 
@@ -111,21 +111,21 @@ function Initialize-RevitMcpTranscript {
 
     try {
         Start-Transcript -Path $path -Append | Out-Null
-        $script:RevitMcpTranscriptStarted = $true
-        $script:RevitMcpLogPath = $path
+        $script:RevAgentTranscriptStarted = $true
+        $script:RevAgentLogPath = $path
         $env:REVIT_MCP_TRANSCRIPT_ACTIVE = "1"
         $env:REVIT_MCP_LOG_PATH = $path
         Write-Host "Install log     : $path" -ForegroundColor Green
     }
     catch {
-        $script:RevitMcpLogPath = $path
+        $script:RevAgentLogPath = $path
         Write-Warning "Could not start install transcript: $($_.Exception.Message). Intended log path: $path"
     }
 }
 
-function Complete-RevitMcpTranscript {
-    $logPath = $script:RevitMcpLogPath
-    if ($script:RevitMcpTranscriptStarted) {
+function Complete-RevAgentTranscript {
+    $logPath = $script:RevAgentLogPath
+    if ($script:RevAgentTranscriptStarted) {
         try {
             Stop-Transcript | Out-Null
         }
@@ -154,13 +154,13 @@ function Complete-RevitMcpTranscript {
         }
     }
 
-    if ($script:RevitMcpTranscriptStarted -and $null -ne $script:RevitMcpLatestReport -and -not [string]::IsNullOrWhiteSpace($script:RevitMcpRemoteReportsRoot)) {
+    if ($script:RevAgentTranscriptStarted -and $null -ne $script:RevAgentLatestReport -and -not [string]::IsNullOrWhiteSpace($script:RevAgentRemoteReportsRoot)) {
         try {
             Publish-RevAgentMachineRunReport `
-                -ReportsRoot $script:RevitMcpRemoteReportsRoot `
-                -Report $script:RevitMcpLatestReport `
-                -Operation $script:RevitMcpOperation `
-                -OperationMethod $script:RevitMcpOperationMethod `
+                -ReportsRoot $script:RevAgentRemoteReportsRoot `
+                -Report $script:RevAgentLatestReport `
+                -Operation $script:RevAgentOperation `
+                -OperationMethod $script:RevAgentOperationMethod `
                 -LogPath $logPath `
                 -KeepLastLogs 2 `
                 -WriteCompatibilityReport | Out-Null
@@ -280,7 +280,7 @@ function Get-EffectiveInstallOperation {
     return "install"
 }
 
-function Set-RevitMcpInstallRunReport {
+function Set-RevAgentInstallRunReport {
     param(
         [string]$Status,
         [string]$Message
@@ -297,11 +297,11 @@ function Set-RevitMcpInstallRunReport {
         $installedComponentCount = @($installedComponents.PSObject.Properties).Count
     }
 
-    $script:RevitMcpLatestReport = [ordered]@{
+    $script:RevAgentLatestReport = [ordered]@{
         schemaVersion = 1
         app = "revit-mcp-skill"
-        operation = $script:RevitMcpOperation
-        operationMethod = $script:RevitMcpOperationMethod
+        operation = $script:RevAgentOperation
+        operationMethod = $script:RevAgentOperationMethod
         status = $Status
         message = $Message
         codexInstructionPolicy = $CodexInstructionPolicy
@@ -354,7 +354,7 @@ function Set-RevitMcpInstallRunReport {
             workRoot = $WorkRoot
             revitInstallRoot = $RevitInstallRoot
             channelManifestPath = $ChannelManifestPath
-            logPath = $script:RevitMcpLogPath
+            logPath = $script:RevAgentLogPath
         }
     }
 }
@@ -414,10 +414,10 @@ function ConvertTo-RevAgentWinHttpProxyServer {
     return RevAgent.Proxy\ConvertTo-RevAgentWinHttpProxyServer -Value $Value
 }
 
-function Send-RevitMcpEnvironmentChanged {
+function Send-RevAgentEnvironmentChanged {
     try {
-        if (-not ("RevitMcp.EnvironmentChange" -as [type])) {
-            Add-Type -Namespace "RevitMcp" -Name "EnvironmentChange" -MemberDefinition @"
+        if (-not ("RevAgent.EnvironmentChange" -as [type])) {
+            Add-Type -Namespace "RevAgent" -Name "EnvironmentChange" -MemberDefinition @"
 [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
 public static extern System.IntPtr SendMessageTimeout(
     System.IntPtr hWnd,
@@ -431,7 +431,7 @@ public static extern System.IntPtr SendMessageTimeout(
         }
 
         $result = [System.UIntPtr]::Zero
-        [void][RevitMcp.EnvironmentChange]::SendMessageTimeout(
+        [void][RevAgent.EnvironmentChange]::SendMessageTimeout(
             [System.IntPtr]0xffff,
             0x001A,
             [System.UIntPtr]::Zero,
@@ -445,7 +445,7 @@ public static extern System.IntPtr SendMessageTimeout(
     }
 }
 
-function Invoke-RevitMcpSetupProcess {
+function Invoke-RevAgentSetupProcess {
     param(
         [string]$FilePath,
         [string[]]$Arguments = @(),
@@ -518,7 +518,7 @@ function Refresh-DependencyPath {
     }
 }
 
-function Set-RevitMcpProxyEnvironment {
+function Set-RevAgentProxyEnvironment {
     param(
         [string]$ProxyUrl,
         [string]$NoProxy = "localhost,127.0.0.1,::1"
@@ -584,7 +584,7 @@ function Set-RevitMcpProxyEnvironment {
     }
 
     if ($changedPersistentEnvironment) {
-        Send-RevitMcpEnvironmentChanged
+        Send-RevAgentEnvironmentChanged
         Write-Host "Proxy env       : updated"
     }
     else {
@@ -592,7 +592,7 @@ function Set-RevitMcpProxyEnvironment {
     }
 }
 
-function Set-RevitMcpWinInetProxy {
+function Set-RevAgentWinInetProxy {
     param(
         [string]$ProxyUrl,
         [string]$ProxyBypass
@@ -627,7 +627,7 @@ function Set-RevitMcpWinInetProxy {
     }
 }
 
-function Test-RevitMcpWinHttpProxyMatches {
+function Test-RevAgentWinHttpProxyMatches {
     param([string]$ProxyUrl)
 
     $server = ConvertTo-RevAgentWinHttpProxyServer -Value $ProxyUrl
@@ -644,7 +644,7 @@ function Test-RevitMcpWinHttpProxyMatches {
     }
 }
 
-function Set-RevitMcpWinHttpProxy {
+function Set-RevAgentWinHttpProxy {
     param(
         [string]$ProxyUrl,
         [string]$ProxyBypass
@@ -655,7 +655,7 @@ function Set-RevitMcpWinHttpProxy {
         return
     }
 
-    if (Test-RevitMcpWinHttpProxyMatches -ProxyUrl $ProxyUrl) {
+    if (Test-RevAgentWinHttpProxyMatches -ProxyUrl $ProxyUrl) {
         Write-Host "WinHTTP proxy   : ok"
         return
     }
@@ -667,7 +667,7 @@ function Set-RevitMcpWinHttpProxy {
 
     $netshPath = Join-Path $env:WINDIR "System32\netsh.exe"
     try {
-        $exitCode = Invoke-RevitMcpSetupProcess -FilePath $netshPath -Arguments @("winhttp", "set", "proxy", "proxy-server=$server", "bypass-list=$ProxyBypass") -TimeoutSeconds 60
+        $exitCode = Invoke-RevAgentSetupProcess -FilePath $netshPath -Arguments @("winhttp", "set", "proxy", "proxy-server=$server", "bypass-list=$ProxyBypass") -TimeoutSeconds 60
         if ($exitCode -ne 0) {
             Write-Warning "WinHTTP proxy setup failed with exit code $exitCode."
             return
@@ -680,7 +680,7 @@ function Set-RevitMcpWinHttpProxy {
     }
 }
 
-function Invoke-RevitMcpProxyToolCommand {
+function Invoke-RevAgentProxyToolCommand {
     param(
         [string]$FilePath,
         [string[]]$Arguments,
@@ -692,7 +692,7 @@ function Invoke-RevitMcpProxyToolCommand {
     }
 
     try {
-        $exitCode = Invoke-RevitMcpSetupProcess -FilePath $FilePath -Arguments $Arguments -TimeoutSeconds 60
+        $exitCode = Invoke-RevAgentSetupProcess -FilePath $FilePath -Arguments $Arguments -TimeoutSeconds 60
         if ($exitCode -ne 0) {
             Write-Warning "$Label failed with exit code $exitCode."
         }
@@ -702,7 +702,7 @@ function Invoke-RevitMcpProxyToolCommand {
     }
 }
 
-function Get-RevitMcpKeyValueFileValue {
+function Get-RevAgentKeyValueFileValue {
     param(
         [string]$Path,
         [string]$Key
@@ -726,25 +726,25 @@ function Get-RevitMcpKeyValueFileValue {
     return ""
 }
 
-function Test-RevitMcpNpmProxyConfigured {
+function Test-RevAgentNpmProxyConfigured {
     param([string]$ProxyUrl)
 
     $npmrcPath = Join-Path $env:USERPROFILE ".npmrc"
     return (
-        [string]::Equals((Get-RevitMcpKeyValueFileValue -Path $npmrcPath -Key "proxy"), $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase) -and
-        [string]::Equals((Get-RevitMcpKeyValueFileValue -Path $npmrcPath -Key "https-proxy"), $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase) -and
-        [string]::Equals((Get-RevitMcpKeyValueFileValue -Path $npmrcPath -Key "registry"), "https://registry.npmjs.org/", [System.StringComparison]::OrdinalIgnoreCase)
+        [string]::Equals((Get-RevAgentKeyValueFileValue -Path $npmrcPath -Key "proxy"), $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals((Get-RevAgentKeyValueFileValue -Path $npmrcPath -Key "https-proxy"), $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals((Get-RevAgentKeyValueFileValue -Path $npmrcPath -Key "registry"), "https://registry.npmjs.org/", [System.StringComparison]::OrdinalIgnoreCase)
     )
 }
 
-function Set-RevitMcpNpmProxy {
+function Set-RevAgentNpmProxy {
     param([string]$ProxyUrl)
 
     if ([string]::IsNullOrWhiteSpace($ProxyUrl)) {
         return
     }
 
-    if (Test-RevitMcpNpmProxyConfigured -ProxyUrl $ProxyUrl) {
+    if (Test-RevAgentNpmProxyConfigured -ProxyUrl $ProxyUrl) {
         Write-Host "npm proxy       : ok"
         return
     }
@@ -764,7 +764,7 @@ function Set-RevitMcpNpmProxy {
             @("config", "set", "https-proxy", $ProxyUrl),
             @("config", "set", "registry", "https://registry.npmjs.org/")
         )) {
-        Invoke-RevitMcpProxyToolCommand -FilePath $npmPath -Arguments $arguments -Label "npm proxy config"
+        Invoke-RevAgentProxyToolCommand -FilePath $npmPath -Arguments $arguments -Label "npm proxy config"
     }
     Write-Host "npm proxy       : updated"
 
@@ -774,12 +774,12 @@ function Set-RevitMcpNpmProxy {
                 @("config", "set", "https-proxy", $ProxyUrl, "--global"),
                 @("config", "set", "registry", "https://registry.npmjs.org/", "--global")
             )) {
-            Invoke-RevitMcpProxyToolCommand -FilePath $npmPath -Arguments $arguments -Label "global npm proxy config"
+            Invoke-RevAgentProxyToolCommand -FilePath $npmPath -Arguments $arguments -Label "global npm proxy config"
         }
     }
 }
 
-function Test-RevitMcpGitProxyConfigured {
+function Test-RevAgentGitProxyConfigured {
     param(
         [string]$GitPath,
         [string]$ProxyUrl
@@ -802,7 +802,7 @@ function Test-RevitMcpGitProxyConfigured {
     }
 }
 
-function Set-RevitMcpGitProxy {
+function Set-RevAgentGitProxy {
     param([string]$ProxyUrl)
 
     if ([string]::IsNullOrWhiteSpace($ProxyUrl)) {
@@ -818,7 +818,7 @@ function Set-RevitMcpGitProxy {
         return
     }
 
-    if (Test-RevitMcpGitProxyConfigured -GitPath $gitPath -ProxyUrl $ProxyUrl) {
+    if (Test-RevAgentGitProxyConfigured -GitPath $gitPath -ProxyUrl $ProxyUrl) {
         Write-Host "Git proxy       : ok"
         return
     }
@@ -827,12 +827,12 @@ function Set-RevitMcpGitProxy {
             @("config", "--global", "http.proxy", $ProxyUrl),
             @("config", "--global", "https.proxy", $ProxyUrl)
         )) {
-        Invoke-RevitMcpProxyToolCommand -FilePath $gitPath -Arguments $arguments -Label "git proxy config"
+        Invoke-RevAgentProxyToolCommand -FilePath $gitPath -Arguments $arguments -Label "git proxy config"
     }
     Write-Host "Git proxy       : updated"
 }
 
-function Initialize-RevitMcpWorkstationProxy {
+function Initialize-RevAgentWorkstationProxy {
     param(
         [string]$ProxyUrl,
         [string]$ProxyBypass,
@@ -854,11 +854,11 @@ function Initialize-RevitMcpWorkstationProxy {
     }
 
     Write-Host "Office proxy    : $normalizedProxyUrl"
-    Set-RevitMcpProxyEnvironment -ProxyUrl $normalizedProxyUrl
-    Set-RevitMcpWinInetProxy -ProxyUrl $normalizedProxyUrl -ProxyBypass $ProxyBypass
-    Set-RevitMcpWinHttpProxy -ProxyUrl $normalizedProxyUrl -ProxyBypass $ProxyBypass
-    Set-RevitMcpNpmProxy -ProxyUrl $normalizedProxyUrl
-    Set-RevitMcpGitProxy -ProxyUrl $normalizedProxyUrl
+    Set-RevAgentProxyEnvironment -ProxyUrl $normalizedProxyUrl
+    Set-RevAgentWinInetProxy -ProxyUrl $normalizedProxyUrl -ProxyBypass $ProxyBypass
+    Set-RevAgentWinHttpProxy -ProxyUrl $normalizedProxyUrl -ProxyBypass $ProxyBypass
+    Set-RevAgentNpmProxy -ProxyUrl $normalizedProxyUrl
+    Set-RevAgentGitProxy -ProxyUrl $normalizedProxyUrl
 }
 
 function Ensure-CodexWorkspaceRoot {
@@ -909,7 +909,7 @@ function Resolve-WScriptPath {
     return Resolve-RevAgentWScriptPath
 }
 
-function Repair-RevitMcpUpdaterPermissions {
+function Repair-RevAgentUpdaterPermissions {
     $targets = Get-RevAgentManagedPermissionTargets `
         -InstallRoot $InstallRoot `
         -WorkRoot $WorkRoot `
@@ -1116,10 +1116,10 @@ if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
     $ServerTarget = Join-Path $InstallRoot "runtime"
 }
 
-$script:RevitMcpOperationMethod = Get-EffectiveInstallOperationMethod
-$script:RevitMcpOperation = Get-EffectiveInstallOperation
-Initialize-RevitMcpTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $LogPath -Prefix "install"
-Write-Host "Operation method : $script:RevitMcpOperationMethod"
+$script:RevAgentOperationMethod = Get-EffectiveInstallOperationMethod
+$script:RevAgentOperation = Get-EffectiveInstallOperation
+Initialize-RevAgentTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $LogPath -Prefix "install"
+Write-Host "Operation method : $script:RevAgentOperationMethod"
 $originalChannelManifestPath = $ChannelManifestPath
 $ChannelManifestPath = Resolve-RevAgentCanonicalNasTransitionPath -Path $ChannelManifestPath
 $channelMovedToCanonicalNasRoot = -not [string]::Equals($originalChannelManifestPath, $ChannelManifestPath, [System.StringComparison]::OrdinalIgnoreCase)
@@ -1136,17 +1136,17 @@ elseif ($channelMovedToCanonicalNasRoot -and (Test-RevAgentNasPathUnder -ChildPa
     $releaseRootGuess = Split-Path -Parent $channelDir
     $ReportsRoot = Join-Path $releaseRootGuess "reports"
 }
-$script:RevitMcpRemoteReportsRoot = $ReportsRoot
+$script:RevAgentRemoteReportsRoot = $ReportsRoot
 
 try {
 $ProxyUrl = ConvertTo-RevAgentProxyUrl -Value $ProxyUrl
-Initialize-RevitMcpWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
+Initialize-RevAgentWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
 Ensure-CodexWorkspaceRoot -Path $CodexWorkspaceRoot
 
 $RevitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
 
 New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
-Repair-RevitMcpUpdaterPermissions
+Repair-RevAgentUpdaterPermissions
 
 $localUpdater = Join-Path $WorkRoot "update-from-nas.ps1"
 $localVersionTool = Join-Path $WorkRoot "show-installed-version.ps1"
@@ -1215,7 +1215,7 @@ finally {
     }
 }
 
-$script:RevitMcpRemoteReportsRoot = $ReportsRoot
+$script:RevAgentRemoteReportsRoot = $ReportsRoot
 
 $config = [ordered]@{
     schemaVersion = 1
@@ -1244,8 +1244,8 @@ $config = [ordered]@{
     notifyUser = $true
     notificationThrottleMinutes = $NotificationThrottleMinutes
     logsRoot = (Join-Path $WorkRoot "logs")
-    installLogPath = $script:RevitMcpLogPath
-    installOperationMethod = $script:RevitMcpOperationMethod
+    installLogPath = $script:RevAgentLogPath
+    installOperationMethod = $script:RevAgentOperationMethod
     installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
 }
 if (-not [string]::IsNullOrWhiteSpace($MachineRole)) {
@@ -1264,7 +1264,7 @@ if ((Test-Path -LiteralPath $localTrustedReleaseKeysPath -PathType Leaf) -or $pr
 Write-JsonFile -Path $configPath -Value $config
 $manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -DailyAt $DailyAt -CheckIntervalMinutes $CheckIntervalMinutes
 $versionCommandPath = Join-Path $WorkRoot "Show-revAgent-Version.cmd"
-Repair-RevitMcpUpdaterPermissions
+Repair-RevAgentUpdaterPermissions
 
 if ($NoScheduledTask) {
     Write-Host "Updater installed without scheduled task."
@@ -1273,9 +1273,9 @@ if ($NoScheduledTask) {
     if ($RunNow) {
         Write-Host ""
         Write-Host "Running initial update check..."
-        Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -SourceFreeMigration:$RunSourceFreeMigration -OperationMethod ("{0}-initial-update" -f $script:RevitMcpOperationMethod)
+        Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -SourceFreeMigration:$RunSourceFreeMigration -OperationMethod ("{0}-initial-update" -f $script:RevAgentOperationMethod)
     }
-    Set-RevitMcpInstallRunReport -Status "completed" -Message ("Updater install completed by {0}." -f $script:RevitMcpOperationMethod)
+    Set-RevAgentInstallRunReport -Status "completed" -Message ("Updater install completed by {0}." -f $script:RevAgentOperationMethod)
     return
 }
 
@@ -1321,19 +1321,19 @@ Write-Host "Show version    : $versionCommandPath" -ForegroundColor Green
 if ($RunNow) {
     Write-Host ""
     Write-Host "Running initial update check..."
-    Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -SourceFreeMigration:$RunSourceFreeMigration -OperationMethod ("{0}-initial-update" -f $script:RevitMcpOperationMethod)
+    Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -SourceFreeMigration:$RunSourceFreeMigration -OperationMethod ("{0}-initial-update" -f $script:RevAgentOperationMethod)
 }
-Set-RevitMcpInstallRunReport -Status "completed" -Message ("Updater install completed by {0}." -f $script:RevitMcpOperationMethod)
+Set-RevAgentInstallRunReport -Status "completed" -Message ("Updater install completed by {0}." -f $script:RevAgentOperationMethod)
 }
 catch {
     Write-Host ""
     Write-Host "revAgent updater install failed: $($_.Exception.Message)" -ForegroundColor Red
-    if (-not [string]::IsNullOrWhiteSpace($script:RevitMcpLogPath)) {
-        Write-Host "Install log: $script:RevitMcpLogPath" -ForegroundColor Yellow
+    if (-not [string]::IsNullOrWhiteSpace($script:RevAgentLogPath)) {
+        Write-Host "Install log: $script:RevAgentLogPath" -ForegroundColor Yellow
     }
-    Set-RevitMcpInstallRunReport -Status "failed" -Message $_.Exception.Message
+    Set-RevAgentInstallRunReport -Status "failed" -Message $_.Exception.Message
     throw
 }
 finally {
-    Complete-RevitMcpTranscript
+    Complete-RevAgentTranscript
 }

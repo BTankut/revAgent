@@ -48,26 +48,26 @@ $SourceReleaseRoot = [System.IO.Path]::GetFullPath($SourceReleaseRoot)
 $NasReleaseRoot = [System.IO.Path]::GetFullPath($NasReleaseRoot)
 $TrustedKeysPath = [System.IO.Path]::GetFullPath($TrustedKeysPath)
 
-function Get-RevitMcpPathPrefix {
+function Get-RevAgentPathPrefix {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     return [System.IO.Path]::GetFullPath($Path).TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
 }
 
-function Assert-RevitMcpChildPath {
+function Assert-RevAgentChildPath {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Root
     )
 
     $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $rootPrefix = Get-RevitMcpPathPrefix -Path $Root
+    $rootPrefix = Get-RevAgentPathPrefix -Path $Root
     if (-not $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to operate outside the release root. Path '$fullPath' is not under '$Root'."
     }
 }
 
-function Copy-RevitMcpDirectoryExact {
+function Copy-RevAgentDirectoryExact {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
         [Parameter(Mandatory = $true)][string]$Destination,
@@ -78,7 +78,7 @@ function Copy-RevitMcpDirectoryExact {
     if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
         throw "Required source directory was not found: $Source"
     }
-    Assert-RevitMcpChildPath -Path $Destination -Root $Root
+    Assert-RevAgentChildPath -Path $Destination -Root $Root
 
     if (Test-Path -LiteralPath $Destination) {
         if (-not $AllowReplace) {
@@ -91,15 +91,15 @@ function Copy-RevitMcpDirectoryExact {
     Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
 }
 
-function Backup-RevitMcpDirectoryForRollback {
+function Backup-RevAgentDirectoryForRollback {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
         [Parameter(Mandatory = $true)][string]$Backup,
         [Parameter(Mandatory = $true)][string]$Root
     )
 
-    Assert-RevitMcpChildPath -Path $Source -Root $Root
-    Assert-RevitMcpChildPath -Path $Backup -Root $Root
+    Assert-RevAgentChildPath -Path $Source -Root $Root
+    Assert-RevAgentChildPath -Path $Backup -Root $Root
     if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
         return $false
     }
@@ -109,7 +109,7 @@ function Backup-RevitMcpDirectoryForRollback {
     return $true
 }
 
-function Restore-RevitMcpDirectoryFromRollback {
+function Restore-RevAgentDirectoryFromRollback {
     param(
         [Parameter(Mandatory = $true)][string]$Destination,
         [Parameter(Mandatory = $true)][string]$Backup,
@@ -117,8 +117,8 @@ function Restore-RevitMcpDirectoryFromRollback {
         [bool]$HadOriginal
     )
 
-    Assert-RevitMcpChildPath -Path $Destination -Root $Root
-    Assert-RevitMcpChildPath -Path $Backup -Root $Root
+    Assert-RevAgentChildPath -Path $Destination -Root $Root
+    Assert-RevAgentChildPath -Path $Backup -Root $Root
     if (Test-Path -LiteralPath $Destination) {
         Remove-Item -LiteralPath $Destination -Recurse -Force
     }
@@ -130,7 +130,7 @@ function Restore-RevitMcpDirectoryFromRollback {
     }
 }
 
-function ConvertTo-RevitMcpInt64OrZero {
+function ConvertTo-RevAgentInt64OrZero {
     param([AllowNull()][object]$Value)
 
     if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
@@ -145,7 +145,7 @@ function ConvertTo-RevitMcpInt64OrZero {
     return [long]0
 }
 
-function Get-RevitMcpChannelReleaseSequenceStatus {
+function Get-RevAgentChannelReleaseSequenceStatus {
     param([string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -248,12 +248,12 @@ $candidateSignaturePath = Join-Path $nasChannelsDir ("{0}.candidate.sig.json" -f
 $stableChannelPath = Join-Path $nasChannelsDir ("{0}.json" -f $Channel)
 $stableSignaturePath = Join-Path $nasChannelsDir ("{0}.sig.json" -f $Channel)
 foreach ($path in @($candidateChannelPath, $candidateSignaturePath, $stableChannelPath, $stableSignaturePath, $payloadBackupRoot, $toolsBackupDir, $releaseBackupDir)) {
-    Assert-RevitMcpChildPath -Path $path -Root $NasReleaseRoot
+    Assert-RevAgentChildPath -Path $path -Root $NasReleaseRoot
 }
 
-$candidateReleaseSequence = ConvertTo-RevitMcpInt64OrZero -Value $sourceReadiness.releaseSequence
+$candidateReleaseSequence = ConvertTo-RevAgentInt64OrZero -Value $sourceReadiness.releaseSequence
 if ($candidateReleaseSequence -le 0) {
-    $candidateSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus -Path $sourceChannelPath
+    $candidateSequenceStatus = Get-RevAgentChannelReleaseSequenceStatus -Path $sourceChannelPath
     if ([bool]$candidateSequenceStatus.success) {
         $candidateReleaseSequence = [long]$candidateSequenceStatus.value
     }
@@ -261,7 +261,7 @@ if ($candidateReleaseSequence -le 0) {
 if ($candidateReleaseSequence -le 0) {
     throw "Refusing to publish because candidate releaseSequence could not be determined as a positive integer. Check '$sourceChannelPath' and readiness output before retrying."
 }
-$currentStableSequenceStatus = Get-RevitMcpChannelReleaseSequenceStatus -Path $stableChannelPath
+$currentStableSequenceStatus = Get-RevAgentChannelReleaseSequenceStatus -Path $stableChannelPath
 if ([bool]$currentStableSequenceStatus.exists -and -not [bool]$currentStableSequenceStatus.success) {
     if ($AllowRollback -and [string]::Equals([string]$currentStableSequenceStatus.reason, "missing_release_sequence", [System.StringComparison]::OrdinalIgnoreCase)) {
         Write-Warning "Current stable channel has no releaseSequence; treating it as legacy sequence 0 because -AllowRollback was supplied."
@@ -281,7 +281,7 @@ $stableSignatureBackupPath = Join-Path $nasChannelsDir ("{0}.previous.sig.json" 
 $stableChannelTempPath = Join-Path $nasChannelsDir ("{0}.next.json" -f $Channel)
 $stableSignatureTempPath = Join-Path $nasChannelsDir ("{0}.next.sig.json" -f $Channel)
 foreach ($path in @($stableChannelBackupPath, $stableSignatureBackupPath, $stableChannelTempPath, $stableSignatureTempPath)) {
-    Assert-RevitMcpChildPath -Path $path -Root $NasReleaseRoot
+    Assert-RevAgentChildPath -Path $path -Root $NasReleaseRoot
 }
 
 $hadStableChannel = Test-Path -LiteralPath $stableChannelPath -PathType Leaf
@@ -294,11 +294,11 @@ $hadToolsDir = $false
 $hadReleaseDir = $false
 try {
     New-Item -ItemType Directory -Path $NasReleaseRoot -Force | Out-Null
-    $hadToolsDir = Backup-RevitMcpDirectoryForRollback -Source $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot
-    $hadReleaseDir = Backup-RevitMcpDirectoryForRollback -Source $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot
+    $hadToolsDir = Backup-RevAgentDirectoryForRollback -Source $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot
+    $hadReleaseDir = Backup-RevAgentDirectoryForRollback -Source $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot
     $payloadCopyStarted = $true
-    Copy-RevitMcpDirectoryExact -Source $sourceReleaseDir -Destination $nasReleaseDir -Root $NasReleaseRoot -AllowReplace:$Force
-    Copy-RevitMcpDirectoryExact -Source $sourceToolsDir -Destination $nasToolsDir -Root $NasReleaseRoot -AllowReplace:$true
+    Copy-RevAgentDirectoryExact -Source $sourceReleaseDir -Destination $nasReleaseDir -Root $NasReleaseRoot -AllowReplace:$Force
+    Copy-RevAgentDirectoryExact -Source $sourceToolsDir -Destination $nasToolsDir -Root $NasReleaseRoot -AllowReplace:$true
 
     New-Item -ItemType Directory -Path $nasChannelsDir -Force | Out-Null
     Copy-Item -LiteralPath $sourceChannelPath -Destination $candidateChannelPath -Force
@@ -356,8 +356,8 @@ catch {
             }
         }
         if ($payloadCopyStarted) {
-            Restore-RevitMcpDirectoryFromRollback -Destination $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot -HadOriginal $hadToolsDir
-            Restore-RevitMcpDirectoryFromRollback -Destination $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot -HadOriginal $hadReleaseDir
+            Restore-RevAgentDirectoryFromRollback -Destination $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot -HadOriginal $hadToolsDir
+            Restore-RevAgentDirectoryFromRollback -Destination $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot -HadOriginal $hadReleaseDir
         }
     }
     catch {

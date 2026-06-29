@@ -60,7 +60,7 @@ function Get-VersionNumericParts {
     return $parts
 }
 
-function Compare-RevitMcpVersion {
+function Compare-RevAgentVersion {
     param(
         [string]$Left,
         [string]$Right
@@ -127,7 +127,7 @@ elseif (-not [string]::IsNullOrWhiteSpace($channelVersion) -and $installedVersio
     $status = "current"
 }
 elseif (-not [string]::IsNullOrWhiteSpace($channelVersion)) {
-    $comparison = Compare-RevitMcpVersion -Left $installedVersion -Right $channelVersion
+    $comparison = Compare-RevAgentVersion -Left $installedVersion -Right $channelVersion
     if ($comparison -lt 0) {
         $status = "update available: {0} -> {1}" -f $installedVersion, $channelVersion
     }

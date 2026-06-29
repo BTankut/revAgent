@@ -52,7 +52,7 @@ Import-Module (Join-Path $nasLibRoot "RevAgent.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.SourceFreeMigration.psm1") -Force
 Set-RevAgentCurrentProcessUtf8Console | Out-Null
 
-function Read-RevitMcpJsonFileOrNull {
+function Read-RevAgentJsonFileOrNull {
     param([string]$Path)
 
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -67,7 +67,7 @@ function Read-RevitMcpJsonFileOrNull {
     }
 }
 
-function Get-RevitMcpConfigValue {
+function Get-RevAgentConfigValue {
     param(
         [object]$Config,
         [string]$Name
@@ -84,7 +84,7 @@ function Get-RevitMcpConfigValue {
     return [string]$property.Value
 }
 
-function Resolve-RevitMcpCodexInstructionPolicy {
+function Resolve-RevAgentCodexInstructionPolicy {
     param(
         [string]$RequestedPolicy,
         [object]$Config
@@ -92,7 +92,7 @@ function Resolve-RevitMcpCodexInstructionPolicy {
 
     $policy = $RequestedPolicy
     if ([string]::IsNullOrWhiteSpace($policy)) {
-        $policy = Get-RevitMcpConfigValue -Config $Config -Name "codexInstructionPolicy"
+        $policy = Get-RevAgentConfigValue -Config $Config -Name "codexInstructionPolicy"
     }
     if ([string]::IsNullOrWhiteSpace($policy) -and -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_CODEX_INSTRUCTION_POLICY)) {
         $policy = [string]$env:REVIT_MCP_CODEX_INSTRUCTION_POLICY
@@ -109,7 +109,7 @@ function Resolve-RevitMcpCodexInstructionPolicy {
     return $normalized
 }
 
-function Resolve-RevitMcpMachineRole {
+function Resolve-RevAgentMachineRole {
     param(
         [string]$RequestedRole,
         [object]$Config
@@ -117,7 +117,7 @@ function Resolve-RevitMcpMachineRole {
 
     $role = $RequestedRole
     if ([string]::IsNullOrWhiteSpace($role)) {
-        $role = Get-RevitMcpConfigValue -Config $Config -Name "machineRole"
+        $role = Get-RevAgentConfigValue -Config $Config -Name "machineRole"
     }
     if ([string]::IsNullOrWhiteSpace($role) -and -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_MACHINE_ROLE)) {
         $role = [string]$env:REVIT_MCP_MACHINE_ROLE
@@ -126,7 +126,7 @@ function Resolve-RevitMcpMachineRole {
     return $role
 }
 
-function Set-RevitMcpDefaultedPath {
+function Set-RevAgentDefaultedPath {
     param(
         [string]$Current,
         [string]$ConfigValue,
@@ -142,7 +142,7 @@ function Set-RevitMcpDefaultedPath {
     return $Fallback
 }
 
-function Write-RevitMcpMigrationReport {
+function Write-RevAgentMigrationReport {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path,
@@ -159,7 +159,7 @@ function Write-RevitMcpMigrationReport {
     $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
-function Add-RevitMcpChildProcessParameter {
+function Add-RevAgentChildProcessParameter {
     param(
         [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$Arguments,
         [Parameter(Mandatory = $true)][string]$Name,
@@ -170,7 +170,7 @@ function Add-RevitMcpChildProcessParameter {
     [void]$Arguments.Add([string]$Value)
 }
 
-function Add-RevitMcpChildProcessSwitch {
+function Add-RevAgentChildProcessSwitch {
     param(
         [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$Arguments,
         [Parameter(Mandatory = $true)][string]$Name,
@@ -182,7 +182,7 @@ function Add-RevitMcpChildProcessSwitch {
     }
 }
 
-function Get-RevitMcpScheduledTaskState {
+function Get-RevAgentScheduledTaskState {
     param([string]$Name)
 
     $getTaskCommand = Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue
@@ -223,7 +223,7 @@ function Get-RevitMcpScheduledTaskState {
     }
 }
 
-function Restore-RevitMcpScheduledTaskDisabledState {
+function Restore-RevAgentScheduledTaskDisabledState {
     param(
         [string]$Name,
         [object]$BeforeState
@@ -262,7 +262,7 @@ function Restore-RevitMcpScheduledTaskDisabledState {
 
     try {
         Disable-ScheduledTask -TaskName $Name -ErrorAction Stop | Out-Null
-        $afterState = Get-RevitMcpScheduledTaskState -Name $Name
+        $afterState = Get-RevAgentScheduledTaskState -Name $Name
         return [ordered]@{
             attempted = $true
             success = [string]::Equals([string]$afterState.state, "Disabled", [System.StringComparison]::OrdinalIgnoreCase)
@@ -297,16 +297,16 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $configWorkRoot "updater-config.json"
 }
 
-$config = Read-RevitMcpJsonFileOrNull -Path $ConfigPath
-$InstallRoot = Set-RevitMcpDefaultedPath -Current $requestedInstallRoot -ConfigValue (Get-RevitMcpConfigValue -Config $config -Name "installRoot") -Fallback $defaultInstallRoot
-$WorkRoot = Set-RevitMcpDefaultedPath -Current $requestedWorkRoot -ConfigValue (Get-RevitMcpConfigValue -Config $config -Name "workRoot") -Fallback (Join-Path $InstallRoot "updater")
-$PackageTarget = Set-RevitMcpDefaultedPath -Current $requestedPackageTarget -ConfigValue (Get-RevitMcpConfigValue -Config $config -Name "packageTarget") -Fallback (Join-Path $InstallRoot "package")
-$ServerTarget = Set-RevitMcpDefaultedPath -Current $requestedServerTarget -ConfigValue (Get-RevitMcpConfigValue -Config $config -Name "serverTarget") -Fallback (Join-Path $InstallRoot "runtime")
-$ChannelManifestPath = Set-RevitMcpDefaultedPath -Current $requestedChannelManifestPath -ConfigValue (Get-RevitMcpConfigValue -Config $config -Name "channelManifestPath") -Fallback ""
-$RevitInstallRoot = Set-RevitMcpDefaultedPath -Current $requestedRevitInstallRoot -ConfigValue (Get-RevitMcpConfigValue -Config $config -Name "revitInstallRoot") -Fallback ""
-$ReportsRoot = Set-RevitMcpDefaultedPath -Current $requestedReportsRoot -ConfigValue (Get-RevitMcpConfigValue -Config $config -Name "reportsRoot") -Fallback ""
-$CodexInstructionPolicy = Resolve-RevitMcpCodexInstructionPolicy -RequestedPolicy $CodexInstructionPolicy -Config $config
-$MachineRole = Resolve-RevitMcpMachineRole -RequestedRole $MachineRole -Config $config
+$config = Read-RevAgentJsonFileOrNull -Path $ConfigPath
+$InstallRoot = Set-RevAgentDefaultedPath -Current $requestedInstallRoot -ConfigValue (Get-RevAgentConfigValue -Config $config -Name "installRoot") -Fallback $defaultInstallRoot
+$WorkRoot = Set-RevAgentDefaultedPath -Current $requestedWorkRoot -ConfigValue (Get-RevAgentConfigValue -Config $config -Name "workRoot") -Fallback (Join-Path $InstallRoot "updater")
+$PackageTarget = Set-RevAgentDefaultedPath -Current $requestedPackageTarget -ConfigValue (Get-RevAgentConfigValue -Config $config -Name "packageTarget") -Fallback (Join-Path $InstallRoot "package")
+$ServerTarget = Set-RevAgentDefaultedPath -Current $requestedServerTarget -ConfigValue (Get-RevAgentConfigValue -Config $config -Name "serverTarget") -Fallback (Join-Path $InstallRoot "runtime")
+$ChannelManifestPath = Set-RevAgentDefaultedPath -Current $requestedChannelManifestPath -ConfigValue (Get-RevAgentConfigValue -Config $config -Name "channelManifestPath") -Fallback ""
+$RevitInstallRoot = Set-RevAgentDefaultedPath -Current $requestedRevitInstallRoot -ConfigValue (Get-RevAgentConfigValue -Config $config -Name "revitInstallRoot") -Fallback ""
+$ReportsRoot = Set-RevAgentDefaultedPath -Current $requestedReportsRoot -ConfigValue (Get-RevAgentConfigValue -Config $config -Name "reportsRoot") -Fallback ""
+$CodexInstructionPolicy = Resolve-RevAgentCodexInstructionPolicy -RequestedPolicy $CodexInstructionPolicy -Config $config
+$MachineRole = Resolve-RevAgentMachineRole -RequestedRole $MachineRole -Config $config
 $preserveLocalCodexInstructions = [string]::Equals($CodexInstructionPolicy, "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)
 
 if ([string]::IsNullOrWhiteSpace($UserProfileRoot)) {
@@ -360,31 +360,31 @@ if ($Mode -eq "commit") {
     [void]$updateArgs.Add("Bypass")
     [void]$updateArgs.Add("-File")
     [void]$updateArgs.Add($updaterPath)
-    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ConfigPath" -Value $ConfigPath
-    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ChannelManifestPath" -Value $ChannelManifestPath
-    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "InstallRoot" -Value $InstallRoot
-    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "WorkRoot" -Value $WorkRoot
-    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "PackageTarget" -Value $PackageTarget
-    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ServerTarget" -Value $ServerTarget
-    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "OperationMethod" -Value "source-free-migration"
-    Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "CodexInstructionPolicy" -Value $CodexInstructionPolicy
+    Add-RevAgentChildProcessParameter -Arguments $updateArgs -Name "ConfigPath" -Value $ConfigPath
+    Add-RevAgentChildProcessParameter -Arguments $updateArgs -Name "ChannelManifestPath" -Value $ChannelManifestPath
+    Add-RevAgentChildProcessParameter -Arguments $updateArgs -Name "InstallRoot" -Value $InstallRoot
+    Add-RevAgentChildProcessParameter -Arguments $updateArgs -Name "WorkRoot" -Value $WorkRoot
+    Add-RevAgentChildProcessParameter -Arguments $updateArgs -Name "PackageTarget" -Value $PackageTarget
+    Add-RevAgentChildProcessParameter -Arguments $updateArgs -Name "ServerTarget" -Value $ServerTarget
+    Add-RevAgentChildProcessParameter -Arguments $updateArgs -Name "OperationMethod" -Value "source-free-migration"
+    Add-RevAgentChildProcessParameter -Arguments $updateArgs -Name "CodexInstructionPolicy" -Value $CodexInstructionPolicy
     if (-not [string]::IsNullOrWhiteSpace($MachineRole)) {
-        Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "MachineRole" -Value $MachineRole
+        Add-RevAgentChildProcessParameter -Arguments $updateArgs -Name "MachineRole" -Value $MachineRole
     }
-    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SourceFreeMigration" -Enabled $true
+    Add-RevAgentChildProcessSwitch -Arguments $updateArgs -Name "SourceFreeMigration" -Enabled $true
     if (-not [string]::IsNullOrWhiteSpace($RevitInstallRoot)) {
-        Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "RevitInstallRoot" -Value $RevitInstallRoot
+        Add-RevAgentChildProcessParameter -Arguments $updateArgs -Name "RevitInstallRoot" -Value $RevitInstallRoot
     }
     if (-not [string]::IsNullOrWhiteSpace($ReportsRoot)) {
-        Add-RevitMcpChildProcessParameter -Arguments $updateArgs -Name "ReportsRoot" -Value $ReportsRoot
+        Add-RevAgentChildProcessParameter -Arguments $updateArgs -Name "ReportsRoot" -Value $ReportsRoot
     }
-    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipNpmInstall" -Enabled $SkipNpmInstall
-    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipCodexMcpRegistration" -Enabled $SkipCodexMcpRegistration
-    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipCodexUserIntegration" -Enabled $SkipCodexUserIntegration
-    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "SkipProxySetup" -Enabled $SkipProxySetup
-    Add-RevitMcpChildProcessSwitch -Arguments $updateArgs -Name "NoNotifyUser" -Enabled $NoNotifyUser
+    Add-RevAgentChildProcessSwitch -Arguments $updateArgs -Name "SkipNpmInstall" -Enabled $SkipNpmInstall
+    Add-RevAgentChildProcessSwitch -Arguments $updateArgs -Name "SkipCodexMcpRegistration" -Enabled $SkipCodexMcpRegistration
+    Add-RevAgentChildProcessSwitch -Arguments $updateArgs -Name "SkipCodexUserIntegration" -Enabled $SkipCodexUserIntegration
+    Add-RevAgentChildProcessSwitch -Arguments $updateArgs -Name "SkipProxySetup" -Enabled $SkipProxySetup
+    Add-RevAgentChildProcessSwitch -Arguments $updateArgs -Name "NoNotifyUser" -Enabled $NoNotifyUser
 
-    $scheduledTaskBefore = Get-RevitMcpScheduledTaskState -Name $updaterTaskName
+    $scheduledTaskBefore = Get-RevAgentScheduledTaskState -Name $updaterTaskName
 
     try {
         & $powerShellPath @updateArgs
@@ -397,7 +397,7 @@ if ($Mode -eq "commit") {
         $updateError = $_.Exception.Message
     }
     finally {
-        $scheduledTaskRestore = Restore-RevitMcpScheduledTaskDisabledState -Name $updaterTaskName -BeforeState $scheduledTaskBefore
+        $scheduledTaskRestore = Restore-RevAgentScheduledTaskDisabledState -Name $updaterTaskName -BeforeState $scheduledTaskBefore
         if (-not $scheduledTaskRestore.success -and [string]::IsNullOrWhiteSpace($updateError)) {
             $updateError = "Failed to restore disabled scheduled task state: $($scheduledTaskRestore.error)"
         }
@@ -451,7 +451,7 @@ $report = [ordered]@{
     }
 }
 
-Write-RevitMcpMigrationReport -Path $ReportPath -Value $report
+Write-RevAgentMigrationReport -Path $ReportPath -Value $report
 Write-Host "Source-free migration report: $ReportPath"
 
 if ($Mode -eq "dryRun") {
