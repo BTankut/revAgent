@@ -995,6 +995,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-dashboard-addon.ps1
 The installed add-on owns the `revAgent Dashboard Server` scheduled task and
 writes `config\dashboard.json` under the add-on root. The standard user package
 does not install this dashboard add-on or the Cloudflare tunnel payload.
+If Windows blocks new logon scheduled tasks from a non-elevated coordinator
+session, the installer falls back to a per-user HKCU startup entry and reports
+the selected `startupRegistrationMethod` in its JSON result.
 
 On the coordinator/admin machine, the Cloudflare tunnel is migrated explicitly
 after the dashboard add-on is installed:
@@ -1009,6 +1012,8 @@ settings such as `logfile`, and owns the `revAgent Dashboard Tunnel` scheduled
 task. It does not stop or remove the legacy `RevitMCP\cloudflared` tunnel unless
 the new add-on tunnel is started and health checks pass with explicit
 `-StopLegacyOnSuccess` or `-RemoveLegacyOnSuccess`.
+Like the dashboard server installer, it can fall back to a per-user HKCU startup
+entry when logon scheduled task creation is blocked.
 
 The browser UI is designed for desktop and iPhone Safari/Chrome. It shows a
 left-side Machine Status Windows list, a right-side All Status Activity stream
@@ -1084,6 +1089,9 @@ The installed add-on lives under
 `C:\ProgramData\DPE\revAgent\addons\usage-intelligence`, writes
 `config\usage-intelligence.json`, and defaults task state/launcher files under
 the add-on `state` folder.
+The publisher prefers a daily scheduled task; if Windows blocks new task
+creation, the task installer records a per-user startup fallback method so the
+admin install does not silently depend on source-repo startup scripts.
 Published releases copy admin add-on payloads under the release tools surface
 at `tools\addons\dashboard` and `tools\addons\usage-intelligence`; the signed
 standard user ZIP remains add-on-free.

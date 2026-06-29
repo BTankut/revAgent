@@ -314,6 +314,9 @@ The admin install path is
 `addons\dashboard\installer\install-dashboard-addon.ps1`. The installed server
 uses only add-on-local dashboard files plus NAS report inputs, so it does not
 depend on the source repository path.
+If the coordinator session is not elevated and Windows blocks new logon
+scheduled tasks, the installer falls back to a per-user HKCU startup entry and
+reports that method in the install result.
 The admin tunnel path is
 `C:\ProgramData\DPE\revAgent\addons\dashboard\tunnel`; install or migrate it
 through `scripts\install-dashboard-tunnel.ps1` or by passing `-MigrateTunnel`
@@ -324,6 +327,8 @@ path-owned settings such as the log file, and owns the
 processes and files are left untouched unless the new add-on tunnel is started,
 passes health checks, and the operator explicitly opts into legacy stop or
 cleanup switches.
+The tunnel installer uses the same HKCU startup fallback when logon scheduled
+task creation is blocked.
 The browser polls `/api/overview` every 3 seconds with bounded responses and
 single-flight refreshes. The main UI is intentionally limited to compact
 Machine Status Windows and All Status Activity; deeper usage, friction, and
@@ -371,6 +376,8 @@ publish lock, and NAS summary logs. The admin install path is
 The installed task uses the add-on-local publisher script and stores task
 state/config under the add-on root. The root scripts with the same names remain
 compatibility wrappers for local developer workflows.
+The publisher prefers the daily scheduled task; a per-user startup fallback is
+reported when Windows blocks task creation from the current coordinator session.
 Release publishing copies admin add-on payloads under `tools\addons` while the
 versioned signed standard user ZIP remains free of dashboard, tunnel, and
 usage-intelligence admin payloads.

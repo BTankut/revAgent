@@ -4,6 +4,10 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added no-admin startup fallback reporting for admin add-ons: dashboard and
+  tunnel installers now fall back to per-user HKCU startup entries when Windows
+  blocks logon scheduled task creation, and the usage publisher installer has
+  the same fallback path for task-creation failures.
 - Added explicit admin dashboard tunnel migration: the dashboard add-on can now
   install `cloudflared.exe`, config, credentials, and the
   `revAgent Dashboard Tunnel` scheduled task under the revAgent add-on root,

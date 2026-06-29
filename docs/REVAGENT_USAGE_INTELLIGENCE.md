@@ -268,7 +268,10 @@ The current usage-intelligence stack includes:
    `scripts/install-dashboard-addon.ps1` wrapper delegates to it. The optional
    Cloudflare tunnel migration is owned by
    `addons/dashboard/installer/install-dashboard-tunnel.ps1` with root wrapper
-   `scripts/install-dashboard-tunnel.ps1`.
+   `scripts/install-dashboard-tunnel.ps1`. If Windows blocks logon scheduled
+   task creation from a non-elevated coordinator session, dashboard and tunnel
+   installers fall back to per-user HKCU startup entries and report that
+   registration method.
 3. A compact `/api/brief` dashboard export for separate analyst/LLM sessions.
 4. `scripts\publish-live-backfill.ps1`, a repair task that backfills local live
    spool files when NAS was offline.
