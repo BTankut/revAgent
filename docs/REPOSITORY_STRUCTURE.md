@@ -26,6 +26,7 @@ for servers, assemblies, manifests, and installed paths.
 |   |   `-- public/
 |   `-- usage-intelligence/
 |       |-- addon.json
+|       |-- installer/
 |       |-- scripts/
 |       `-- tests/
 |-- docs/
@@ -44,6 +45,7 @@ for servers, assemblies, manifests, and installed paths.
 |   |-- check-rollout-readiness.ps1
 |   |-- install-dashboard-addon.ps1
 |   |-- install-dashboard-tunnel.ps1
+|   |-- install-usage-intelligence-addon.ps1
 |   |-- invoke-rollout-closure-audit.ps1
 |   |-- publish-live-backfill.ps1
 |   |-- start-live-dashboard.ps1

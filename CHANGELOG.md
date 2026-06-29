@@ -9,6 +9,10 @@ All notable revAgent workstation deployment changes are tracked here.
   `revAgent Dashboard Tunnel` scheduled task under the revAgent add-on root,
   while legacy `RevitMCP\cloudflared` cleanup remains gated behind successful
   health checks and explicit cleanup switches.
+- Added an explicit admin usage-intelligence add-on installer that copies the
+  summary publisher under `C:\ProgramData\DPE\revAgent\addons`, writes
+  add-on-local config/state, and installs the scheduled publisher from the
+  installed add-on path.
 - Renamed user-facing front-layer branding to revAgent across Codex MCP
   registration (`revAgent`, `revAgent-api-docs`), user-pack instructions,
   runtime tool descriptions, Revit UI/add-in labels, installer launchers, and

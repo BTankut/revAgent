@@ -1156,9 +1156,12 @@ try {
     $usageSummaryWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\summarize-usage-intelligence.ps1")
     $usagePublishWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-usage-summary.ps1")
     $usageTaskWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-usage-summary-task.ps1")
+    $usageAddonInstallerWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-usage-intelligence-addon.ps1")
     Assert-True ($usageSummaryWrapper -match 'addons\\usage-intelligence\\scripts\\summarize-usage-intelligence\.ps1') "Usage summary compatibility wrapper must delegate to the add-on script."
     Assert-True ($usagePublishWrapper -match 'addons\\usage-intelligence\\scripts\\publish-usage-summary\.ps1') "Usage publish compatibility wrapper must delegate to the add-on script."
     Assert-True ($usageTaskWrapper -match 'addons\\usage-intelligence\\scripts\\install-usage-summary-task\.ps1') "Usage task compatibility wrapper must delegate to the add-on script."
+    Assert-Equal $usageAddonManifest.entrypoints.installScript "installer\install-usage-intelligence-addon.ps1" "Usage-intelligence add-on manifest must expose installer entrypoint."
+    Assert-True ($usageAddonInstallerWrapper -match 'addons\\usage-intelligence\\installer\\install-usage-intelligence-addon\.ps1') "Usage-intelligence add-on installer wrapper must delegate to the add-on installer."
     $report = New-RevitMcpUpdateReport -Status "current" -Message "ok" -PreviousVersion "1" -InstalledVersion "1"
     $reportPath = Join-Path $tempRoot "report.json"
     Write-RevitMcpJsonFile -Path $reportPath -Value $report

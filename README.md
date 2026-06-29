@@ -703,6 +703,7 @@ revit-mcp-skill/
 |   |   `-- public/
 |   `-- usage-intelligence/
 |       |-- addon.json
+|       |-- installer/
 |       |-- scripts/
 |       `-- tests/
 |-- references/
@@ -1073,9 +1074,20 @@ short Markdown support view.
 Install `addons/usage-intelligence/scripts/install-usage-summary-task.ps1` on
 exactly one coordinator workstation to run the publisher daily. The scheduled publisher uses
 `reports\summaries\publish.lock` and writes logs under `reports\summaries\logs`.
+For a source-repo-independent admin install, use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-usage-intelligence-addon.ps1
+```
+
+The installed add-on lives under
+`C:\ProgramData\DPE\revAgent\addons\usage-intelligence`, writes
+`config\usage-intelligence.json`, and defaults task state/launcher files under
+the add-on `state` folder.
 The root `scripts\summarize-usage-intelligence.ps1`,
 `scripts\publish-usage-summary.ps1`, `scripts\install-usage-summary-task.ps1`,
-and `scripts\test-usage-intelligence.ps1` files are compatibility wrappers that
+`scripts\install-usage-intelligence-addon.ps1`, and
+`scripts\test-usage-intelligence.ps1` files are compatibility wrappers that
 delegate into the add-on folder.
 
 ## Why `send_code_to_revit` remains available
