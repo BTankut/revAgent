@@ -238,7 +238,9 @@ Notes:
   tier" step (Actions tab) - check it there if you are unsure whether a diff was
   treated as a risk path. It logs e.g. `Review effort tier: high (changed files: 3)`.
 - The gate is fail closed: if the review errors or returns no structured verdict
-  the check is RED and the PR will not auto-merge.
+  the check is RED, the PR will not auto-merge, and the workflow posts a
+  technical failure comment so the operator does not have to discover the cause
+  only from the Actions tab.
 - A PR that edits `.github/workflows/claude-review.yml` cannot self-review
   (`claude-code-action` skips when the workflow differs from the default branch),
   so its `Claude review gate` will be RED; merge such a PR by hand after human
