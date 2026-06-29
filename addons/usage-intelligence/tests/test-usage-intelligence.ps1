@@ -733,8 +733,8 @@ try {
     $taskScriptText = Get-Content -Raw -LiteralPath (Join-Path $usageScriptsRoot "install-usage-summary-task.ps1")
     Assert-True ($taskScriptText -match 'revAgent Usage Summary Publish') "Usage summary task must use the revAgent task name."
     Assert-True ($taskScriptText -match '\[string\]\$DailyAt = "20:30"') "Usage summary task must default to an after-hours schedule."
-    Assert-True ($taskScriptText -match 'New-RevitMcpDailyUpdateTrigger -DailyAt \$DailyAt') "Usage summary task must use the shared daily trigger helper."
-    Assert-True ($taskScriptText -match 'Write-RevitMcpHiddenPowerShellLauncher') "Usage summary task must run hidden through the shared launcher."
+    Assert-True ($taskScriptText -match 'New-RevAgentDailyUpdateTrigger -DailyAt \$DailyAt') "Usage summary task must use the shared daily trigger helper."
+    Assert-True ($taskScriptText -match 'Write-RevAgentHiddenPowerShellLauncher') "Usage summary task must run hidden through the shared launcher."
     Assert-True ($taskScriptText -match 'Invoke-SchtasksCreateDailyTask') "Usage summary task installer must fall back to schtasks.exe for non-elevated coordinator installs."
     Assert-True ($taskScriptText -match 'Register-HkcuRunStartup') "Usage summary task installer must have a no-admin HKCU startup fallback."
     Assert-True ($taskScriptText -match 'Test-Path -LiteralPath \$runKey') "Usage summary task installer must preserve existing HKCU Run values when adding startup fallback."

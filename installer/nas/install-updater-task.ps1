@@ -65,7 +65,7 @@ Import-Module (Join-Path $nasLibRoot "RevAgent.Proxy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.LogRetention.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.Reporting.psm1") -Force
-Set-RevitMcpCurrentProcessUtf8Console | Out-Null
+Set-RevAgentCurrentProcessUtf8Console | Out-Null
 
 if ($RunSourceFreeMigration) {
     $RunNow = $true
@@ -148,7 +148,7 @@ function Complete-RevitMcpTranscript {
 
     if (-not [string]::IsNullOrWhiteSpace($logPath)) {
         try {
-            Invoke-RevitMcpLogRetention -LogsRoot (Split-Path -Parent $logPath) -KeepLast 10 -ActiveLogPath $logPath
+            Invoke-RevAgentLogRetention -LogsRoot (Split-Path -Parent $logPath) -KeepLast 10 -ActiveLogPath $logPath
         }
         catch {
         }
@@ -156,7 +156,7 @@ function Complete-RevitMcpTranscript {
 
     if ($script:RevitMcpTranscriptStarted -and $null -ne $script:RevitMcpLatestReport -and -not [string]::IsNullOrWhiteSpace($script:RevitMcpRemoteReportsRoot)) {
         try {
-            Publish-RevitMcpMachineRunReport `
+            Publish-RevAgentMachineRunReport `
                 -ReportsRoot $script:RevitMcpRemoteReportsRoot `
                 -Report $script:RevitMcpLatestReport `
                 -Operation $script:RevitMcpOperation `
@@ -402,16 +402,16 @@ function Test-CurrentProcessElevated {
     }
 }
 
-function ConvertTo-RevitMcpProxyUrl {
+function ConvertTo-RevAgentProxyUrl {
     param([string]$Value)
 
-    return RevAgent.Proxy\ConvertTo-RevitMcpProxyUrl -Value $Value
+    return RevAgent.Proxy\ConvertTo-RevAgentProxyUrl -Value $Value
 }
 
-function ConvertTo-RevitMcpWinHttpProxyServer {
+function ConvertTo-RevAgentWinHttpProxyServer {
     param([string]$Value)
 
-    return RevAgent.Proxy\ConvertTo-RevitMcpWinHttpProxyServer -Value $Value
+    return RevAgent.Proxy\ConvertTo-RevAgentWinHttpProxyServer -Value $Value
 }
 
 function Send-RevitMcpEnvironmentChanged {
@@ -630,7 +630,7 @@ function Set-RevitMcpWinInetProxy {
 function Test-RevitMcpWinHttpProxyMatches {
     param([string]$ProxyUrl)
 
-    $server = ConvertTo-RevitMcpWinHttpProxyServer -Value $ProxyUrl
+    $server = ConvertTo-RevAgentWinHttpProxyServer -Value $ProxyUrl
     if ([string]::IsNullOrWhiteSpace($server)) {
         return $true
     }
@@ -650,7 +650,7 @@ function Set-RevitMcpWinHttpProxy {
         [string]$ProxyBypass
     )
 
-    $server = ConvertTo-RevitMcpWinHttpProxyServer -Value $ProxyUrl
+    $server = ConvertTo-RevAgentWinHttpProxyServer -Value $ProxyUrl
     if ([string]::IsNullOrWhiteSpace($server)) {
         return
     }
@@ -844,7 +844,7 @@ function Initialize-RevitMcpWorkstationProxy {
         return
     }
 
-    $normalizedProxyUrl = ConvertTo-RevitMcpProxyUrl -Value $ProxyUrl
+    $normalizedProxyUrl = ConvertTo-RevAgentProxyUrl -Value $ProxyUrl
     if ([string]::IsNullOrWhiteSpace($normalizedProxyUrl)) {
         return
     }
@@ -902,21 +902,21 @@ function Join-WindowsCommandArguments {
 }
 
 function Resolve-WindowsPowerShellPath {
-    return Resolve-RevitMcpWindowsPowerShellPath
+    return Resolve-RevAgentWindowsPowerShellPath
 }
 
 function Resolve-WScriptPath {
-    return Resolve-RevitMcpWScriptPath
+    return Resolve-RevAgentWScriptPath
 }
 
 function Repair-RevitMcpUpdaterPermissions {
-    $targets = Get-RevitMcpManagedPermissionTargets `
+    $targets = Get-RevAgentManagedPermissionTargets `
         -InstallRoot $InstallRoot `
         -WorkRoot $WorkRoot `
         -PackageTarget $PackageTarget `
         -ServerTarget $ServerTarget `
         -RevitVersion $RevitVersion
-    Invoke-RevitMcpManagedPermissionRepair -Targets $targets
+    Invoke-RevAgentManagedPermissionRepair -Targets $targets
 }
 
 function Write-HiddenPowerShellLauncher {
@@ -929,7 +929,7 @@ function Write-HiddenPowerShellLauncher {
         [switch]$WaitForExit
     )
 
-    Write-RevitMcpHiddenPowerShellLauncher `
+    Write-RevAgentHiddenPowerShellLauncher `
         -LauncherPath $LauncherPath `
         -ScriptPath $ScriptPath `
         -ScriptArguments $ScriptArguments `
@@ -939,13 +939,13 @@ function Write-HiddenPowerShellLauncher {
 function Get-HiddenUpdaterLauncherPath {
     param([string]$UpdaterConfigPath)
 
-    return Get-RevitMcpHiddenUpdaterLauncherPath -ConfigPath $UpdaterConfigPath
+    return Get-RevAgentHiddenUpdaterLauncherPath -ConfigPath $UpdaterConfigPath
 }
 
 function New-HiddenUpdaterScheduledTaskAction {
     param([string]$LauncherPath)
 
-    return New-RevitMcpHiddenUpdaterScheduledTaskAction -LauncherPath $LauncherPath
+    return New-RevAgentHiddenUpdaterScheduledTaskAction -LauncherPath $LauncherPath
 }
 
 function Write-UpdaterCommandFiles {
@@ -984,7 +984,7 @@ function Write-UpdaterCommandFiles {
             Write-Host "Removed legacy updater helper: $legacyCommandPath"
         }
     }
-    foreach ($legacyLauncherPath in @(Get-RevitMcpLegacyHiddenUpdaterLauncherPaths -ConfigPath $UpdaterConfigPath)) {
+    foreach ($legacyLauncherPath in @(Get-RevAgentLegacyHiddenUpdaterLauncherPaths -ConfigPath $UpdaterConfigPath)) {
         if (Test-Path -LiteralPath $legacyLauncherPath -PathType Leaf) {
             Remove-Item -LiteralPath $legacyLauncherPath -Force
             Write-Host "Removed legacy hidden updater launcher: $legacyLauncherPath"
@@ -1060,7 +1060,7 @@ function Resolve-RevitInstallRoot {
         [string]$Version
     )
 
-    return Resolve-RevitMcpInstallRoot -RequestedRoot $RequestedRoot -Version $Version
+    return Resolve-RevAgentInstallRoot -RequestedRoot $RequestedRoot -Version $Version
 }
 
 $revAgentCanonicalNasRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
@@ -1139,7 +1139,7 @@ elseif ($channelMovedToCanonicalNasRoot -and (Test-RevAgentNasPathUnder -ChildPa
 $script:RevitMcpRemoteReportsRoot = $ReportsRoot
 
 try {
-$ProxyUrl = ConvertTo-RevitMcpProxyUrl -Value $ProxyUrl
+$ProxyUrl = ConvertTo-RevAgentProxyUrl -Value $ProxyUrl
 Initialize-RevitMcpWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
 Ensure-CodexWorkspaceRoot -Path $CodexWorkspaceRoot
 
@@ -1282,7 +1282,7 @@ if ($NoScheduledTask) {
 $hiddenLauncherPath = Get-HiddenUpdaterLauncherPath -UpdaterConfigPath $configPath
 Write-HiddenPowerShellLauncher -LauncherPath $hiddenLauncherPath -ScriptPath $localUpdater -ScriptArguments @("-ConfigPath", $configPath, "-NotifyUser", "-OperationMethod", "scheduled-update") -WaitForExit
 $action = New-HiddenUpdaterScheduledTaskAction -LauncherPath $hiddenLauncherPath
-$dailyTrigger = New-RevitMcpDailyUpdateTrigger -DailyAt $DailyAt
+$dailyTrigger = New-RevAgentDailyUpdateTrigger -DailyAt $DailyAt
 $triggers = @($dailyTrigger)
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name

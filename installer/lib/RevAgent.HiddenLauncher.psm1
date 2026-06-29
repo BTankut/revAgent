@@ -88,6 +88,20 @@ function New-RevitMcpHiddenUpdaterScheduledTaskAction {
     return New-ScheduledTaskAction -Execute (Resolve-RevitMcpWScriptPath) -Argument ("//B //Nologo `"$LauncherPath`"")
 }
 
+$revAgentFunctionAliases = @{
+    "ConvertTo-RevAgentVbsStringLiteral" = "ConvertTo-RevitMcpVbsStringLiteral"
+    "Get-RevAgentHiddenUpdaterLauncherPath" = "Get-RevitMcpHiddenUpdaterLauncherPath"
+    "Get-RevAgentLegacyHiddenUpdaterLauncherPaths" = "Get-RevitMcpLegacyHiddenUpdaterLauncherPaths"
+    "Join-RevAgentWindowsCommandArguments" = "Join-RevitMcpWindowsCommandArguments"
+    "New-RevAgentHiddenUpdaterScheduledTaskAction" = "New-RevitMcpHiddenUpdaterScheduledTaskAction"
+    "Resolve-RevAgentWindowsPowerShellPath" = "Resolve-RevitMcpWindowsPowerShellPath"
+    "Resolve-RevAgentWScriptPath" = "Resolve-RevitMcpWScriptPath"
+    "Write-RevAgentHiddenPowerShellLauncher" = "Write-RevitMcpHiddenPowerShellLauncher"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function `
     ConvertTo-RevitMcpVbsStringLiteral, `
     Join-RevitMcpWindowsCommandArguments, `
@@ -97,3 +111,4 @@ Export-ModuleMember -Function `
     Get-RevitMcpHiddenUpdaterLauncherPath, `
     Get-RevitMcpLegacyHiddenUpdaterLauncherPaths, `
     New-RevitMcpHiddenUpdaterScheduledTaskAction
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

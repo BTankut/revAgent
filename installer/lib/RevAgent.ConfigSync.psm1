@@ -37,4 +37,12 @@ function Sync-RevitMcpUpdaterConfigDirectory {
     }
 }
 
+$revAgentFunctionAliases = @{
+    "Sync-RevAgentUpdaterConfigDirectory" = "Sync-RevitMcpUpdaterConfigDirectory"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function Sync-RevitMcpUpdaterConfigDirectory
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

@@ -70,7 +70,7 @@ try {
     $trustedKeys = @{}
     $trustedKeys[$keyId] = [pscustomobject][ordered]@{
         publicKeyXml = $publicKeyXml
-        publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+        publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
         algorithm = "RS256"
     }
     $trustedKeysPath = Join-Path $secretRoot "release-trusted-keys.json"
@@ -100,7 +100,7 @@ try {
         Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Expected publish artifact was not written: $path"
     }
 
-    $manifestVerification = Test-RevitMcpDetachedJsonSignatureFile `
+    $manifestVerification = Test-RevAgentDetachedJsonSignatureFile `
         -ContentPath $manifestPath `
         -SignaturePath $manifestSignaturePath `
         -TrustedKeys $trustedKeys `
@@ -108,7 +108,7 @@ try {
     Assert-True $manifestVerification.success "Published release manifest signature should verify."
     Assert-Equal $manifestVerification.signedObject "release-manifest" "Manifest signature should use the release-manifest signedObject."
 
-    $channelVerification = Test-RevitMcpDetachedJsonSignatureFile `
+    $channelVerification = Test-RevAgentDetachedJsonSignatureFile `
         -ContentPath $channelPath `
         -SignaturePath $channelSignaturePath `
         -TrustedKeys $trustedKeys `
@@ -132,7 +132,7 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\tests") -PathType Container)) "Dashboard add-on tests must not be published to tools\\addons."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\tests") -PathType Container)) "Usage-intelligence add-on tests must not be published to tools\\addons."
 
-    $aggregateVerification = Test-RevitMcpReleaseDistributionIntegrity `
+    $aggregateVerification = Test-RevAgentReleaseDistributionIntegrity `
         -ChannelPath $channelPath `
         -Channel $channel `
         -ReleaseManifestPath $manifestPath `

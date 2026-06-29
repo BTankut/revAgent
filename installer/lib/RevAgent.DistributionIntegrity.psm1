@@ -1416,6 +1416,27 @@ function Test-RevitMcpReleaseDistributionIntegrity {
         -ReleaseSequence $releaseSequence
 }
 
+$revAgentFunctionAliases = @{
+    "ConvertTo-RevAgentCanonicalJson" = "ConvertTo-RevitMcpCanonicalJson"
+    "ConvertTo-RevAgentTrustedKeyMap" = "ConvertTo-RevitMcpTrustedKeyMap"
+    "Get-RevAgentCanonicalJsonBytes" = "Get-RevitMcpCanonicalJsonBytes"
+    "Get-RevAgentCanonicalJsonSha256" = "Get-RevitMcpCanonicalJsonSha256"
+    "Get-RevAgentDetachedSignaturePath" = "Get-RevitMcpDetachedSignaturePath"
+    "Get-RevAgentPublicKeyFingerprint" = "Get-RevitMcpPublicKeyFingerprint"
+    "Get-RevAgentPublicKeyXmlFromPrivateKeyXml" = "Get-RevitMcpPublicKeyXmlFromPrivateKeyXml"
+    "Get-RevAgentSignaturePayloadCanonicalJson" = "Get-RevitMcpSignaturePayloadCanonicalJson"
+    "New-RevAgentDetachedJsonSignature" = "New-RevitMcpDetachedJsonSignature"
+    "Test-RevAgentDetachedJsonSignature" = "Test-RevitMcpDetachedJsonSignature"
+    "Test-RevAgentDetachedJsonSignatureCompatibilityFile" = "Test-RevitMcpDetachedJsonSignatureCompatibilityFile"
+    "Test-RevAgentDetachedJsonSignatureFile" = "Test-RevitMcpDetachedJsonSignatureFile"
+    "Test-RevAgentReleaseDistributionIntegrity" = "Test-RevitMcpReleaseDistributionIntegrity"
+    "Test-RevAgentReleaseManifestChannelConsistency" = "Test-RevitMcpReleaseManifestChannelConsistency"
+    "Test-RevAgentSignedReleaseSequence" = "Test-RevitMcpSignedReleaseSequence"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function `
     ConvertTo-RevitMcpCanonicalJson, `
     Get-RevitMcpCanonicalJsonBytes, `
@@ -1432,3 +1453,4 @@ Export-ModuleMember -Function `
     Test-RevitMcpReleaseManifestChannelConsistency, `
     Test-RevitMcpSignedReleaseSequence, `
     Test-RevitMcpReleaseDistributionIntegrity
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

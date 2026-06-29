@@ -311,4 +311,18 @@ function Register-RevitMcpCodexMcpServersInConfig {
     return $ConfigPath
 }
 
+$revAgentFunctionAliases = @{
+    "ConvertTo-RevAgentTomlString" = "ConvertTo-RevitMcpTomlString"
+    "Register-RevAgentCodexMcpServersInConfig" = "Register-RevitMcpCodexMcpServersInConfig"
+    "Remove-RevAgentCodexMcpServerConfig" = "Remove-RevitMcpCodexMcpServerConfig"
+    "Set-RevAgentCodexMcpServerConfig" = "Set-RevitMcpCodexMcpServerConfig"
+    "Set-RevAgentCodexMemoryConfig" = "Set-RevitMcpCodexMemoryConfig"
+    "Set-RevAgentCurrentProcessUtf8Console" = "Set-RevitMcpCurrentProcessUtf8Console"
+    "Set-RevAgentPowerShellUtf8ConsoleConfig" = "Set-RevitMcpPowerShellUtf8ConsoleConfig"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function ConvertTo-RevitMcpTomlString, Set-RevitMcpCodexMcpServerConfig, Remove-RevitMcpCodexMcpServerConfig, Set-RevitMcpCodexMemoryConfig, Set-RevitMcpCurrentProcessUtf8Console, Set-RevitMcpPowerShellUtf8ConsoleConfig, Register-RevitMcpCodexMcpServersInConfig
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

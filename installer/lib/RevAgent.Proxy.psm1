@@ -51,4 +51,13 @@ function ConvertTo-RevitMcpWinHttpProxyServer {
     return ($normalized -replace '^[a-zA-Z][a-zA-Z0-9+.-]*://', '').TrimEnd("/")
 }
 
+$revAgentFunctionAliases = @{
+    "ConvertTo-RevAgentProxyUrl" = "ConvertTo-RevitMcpProxyUrl"
+    "ConvertTo-RevAgentWinHttpProxyServer" = "ConvertTo-RevitMcpWinHttpProxyServer"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function ConvertTo-RevitMcpProxyUrl, ConvertTo-RevitMcpWinHttpProxyServer
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

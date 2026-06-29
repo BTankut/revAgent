@@ -65,7 +65,7 @@ try {
     $trustedKeys = @{ trustedKeys = @{} }
     $trustedKeys.trustedKeys[$keyId] = [pscustomobject][ordered]@{
         publicKeyXml = $publicKeyXml
-        publicKeyFingerprint = Get-RevitMcpPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+        publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
         algorithm = "RS256"
     }
     $trustedKeysPath = Join-Path $secretRoot "release-trusted-keys.json"
@@ -157,7 +157,7 @@ try {
     Remove-Item -LiteralPath $legacyReleaseDir -Recurse -Force
 
     $scriptText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1")
-    Assert-True ($scriptText -match 'Test-RevitMcpReleaseDistributionIntegrity' -and $scriptText -match '-Policy "enforce"') "Readiness preflight must use the shared enforce-mode verifier."
+    Assert-True ($scriptText -match 'Test-RevAgentReleaseDistributionIntegrity' -and $scriptText -match '-Policy "enforce"') "Readiness preflight must use the shared enforce-mode verifier."
     Assert-True ($scriptText -match 'no_private_signing_material_in_release_root') "Readiness preflight must include private signing material checks."
     Assert-True ($scriptText -match 'no_source_or_developer_artifacts_in_release_root') "Readiness preflight must include source/developer artifact checks."
 }

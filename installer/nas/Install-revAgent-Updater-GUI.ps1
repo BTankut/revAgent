@@ -184,7 +184,7 @@ function Get-PackageDescriptionForGui {
 
 function Get-SourceFreeMigrationArtifactsForGui {
     $preserveLocalCodexInstructions = [string]::Equals((Get-CodexInstructionPolicyForGui), "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)
-    return @(Get-RevitMcpSourceFreeArtifactInventory `
+    return @(Get-RevAgentSourceFreeArtifactInventory `
             -InstallRoot $InstallRoot `
             -PackageTarget $packageTarget `
             -ServerTarget $serverTarget `

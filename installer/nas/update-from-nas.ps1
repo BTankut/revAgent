@@ -76,7 +76,7 @@ Import-Module (Join-Path $nasLibRoot "RevAgent.Reporting.psm1") -Force
 $script:RevitMcpDistributionIntegrityModule = Import-Module (Join-Path $nasLibRoot "RevAgent.DistributionIntegrity.psm1") -Force -PassThru
 Import-Module (Join-Path $nasLibRoot "RevAgent.License.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.SourceFreeMigration.psm1") -Force
-Set-RevitMcpCurrentProcessUtf8Console | Out-Null
+Set-RevAgentCurrentProcessUtf8Console | Out-Null
 
 $updaterVersion = "0.1.0"
 $script:RevitMcpTranscriptStarted = $false
@@ -194,7 +194,7 @@ function Complete-RevitMcpTranscript {
 
     if (-not [string]::IsNullOrWhiteSpace($logPath)) {
         try {
-            Invoke-RevitMcpLogRetention -LogsRoot (Split-Path -Parent $logPath) -KeepLast 10 -ActiveLogPath $logPath
+            Invoke-RevAgentLogRetention -LogsRoot (Split-Path -Parent $logPath) -KeepLast 10 -ActiveLogPath $logPath
         }
         catch {
         }
@@ -202,7 +202,7 @@ function Complete-RevitMcpTranscript {
 
     if ($script:RevitMcpTranscriptStarted -and $null -ne $script:RevitMcpLatestReport -and -not [string]::IsNullOrWhiteSpace($script:RevitMcpRemoteReportsRoot)) {
         try {
-            Publish-RevitMcpMachineRunReport `
+            Publish-RevAgentMachineRunReport `
                 -ReportsRoot $script:RevitMcpRemoteReportsRoot `
                 -Report $script:RevitMcpLatestReport `
                 -Operation $script:RevitMcpOperation `
@@ -237,7 +237,7 @@ function Resolve-ReleasePath {
         [string]$BaseDirectory
     )
 
-    return Resolve-RevitMcpReleasePath -Path $Path -BaseDirectory $BaseDirectory
+    return Resolve-RevAgentReleasePath -Path $Path -BaseDirectory $BaseDirectory
 }
 
 function Resolve-PackageLayout {
@@ -246,7 +246,7 @@ function Resolve-PackageLayout {
         [object]$ReleaseManifest = $null
     )
 
-    return Resolve-RevitMcpPackageLayout -Root $Root -ReleaseManifest $ReleaseManifest
+    return Resolve-RevAgentPackageLayout -Root $Root -ReleaseManifest $ReleaseManifest
 }
 
 function Expand-ReleaseArchive {
@@ -255,7 +255,7 @@ function Expand-ReleaseArchive {
         [string]$DestinationPath
     )
 
-    Expand-RevitMcpReleaseArchive -ZipPath $ZipPath -DestinationPath $DestinationPath
+    Expand-RevAgentReleaseArchive -ZipPath $ZipPath -DestinationPath $DestinationPath
 }
 
 function Assert-ManagedDirectoryTarget {
@@ -448,16 +448,16 @@ function Test-CurrentProcessElevated {
     }
 }
 
-function ConvertTo-RevitMcpProxyUrl {
+function ConvertTo-RevAgentProxyUrl {
     param([string]$Value)
 
-    return RevAgent.Proxy\ConvertTo-RevitMcpProxyUrl -Value $Value
+    return RevAgent.Proxy\ConvertTo-RevAgentProxyUrl -Value $Value
 }
 
-function ConvertTo-RevitMcpWinHttpProxyServer {
+function ConvertTo-RevAgentWinHttpProxyServer {
     param([string]$Value)
 
-    return RevAgent.Proxy\ConvertTo-RevitMcpWinHttpProxyServer -Value $Value
+    return RevAgent.Proxy\ConvertTo-RevAgentWinHttpProxyServer -Value $Value
 }
 
 function Send-RevitMcpEnvironmentChanged {
@@ -603,7 +603,7 @@ function Set-RevitMcpWinInetProxy {
 function Test-RevitMcpWinHttpProxyMatches {
     param([string]$ProxyUrl)
 
-    $server = ConvertTo-RevitMcpWinHttpProxyServer -Value $ProxyUrl
+    $server = ConvertTo-RevAgentWinHttpProxyServer -Value $ProxyUrl
     if ([string]::IsNullOrWhiteSpace($server)) {
         return $true
     }
@@ -623,7 +623,7 @@ function Set-RevitMcpWinHttpProxy {
         [string]$ProxyBypass
     )
 
-    $server = ConvertTo-RevitMcpWinHttpProxyServer -Value $ProxyUrl
+    $server = ConvertTo-RevAgentWinHttpProxyServer -Value $ProxyUrl
     if ([string]::IsNullOrWhiteSpace($server)) {
         return
     }
@@ -817,7 +817,7 @@ function Initialize-RevitMcpWorkstationProxy {
         return
     }
 
-    $normalizedProxyUrl = ConvertTo-RevitMcpProxyUrl -Value $ProxyUrl
+    $normalizedProxyUrl = ConvertTo-RevAgentProxyUrl -Value $ProxyUrl
     if ([string]::IsNullOrWhiteSpace($normalizedProxyUrl)) {
         return
     }
@@ -1456,14 +1456,14 @@ function Register-CodexMcpServersInConfig {
 
     $configPath = Set-CodexMcpServerConfig -Name "revAgent" -Command $NodePath -McpArgs @($RuntimeServerPath)
     [void](Set-CodexMcpServerConfig -Name "revAgent-api-docs" -Command $NodePath -McpArgs @($DocsServerPath))
-    [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $configPath)
+    [void](Set-RevAgentCodexMemoryConfig -ConfigPath $configPath)
     Write-Host "Codex MCP config : $configPath"
 }
 
 function Set-CodexMemoryConfig {
     $configRoot = Join-Path $env:USERPROFILE ".codex"
     $configPath = Join-Path $configRoot "config.toml"
-    [void](Set-RevitMcpCodexMemoryConfig -ConfigPath $configPath)
+    [void](Set-RevAgentCodexMemoryConfig -ConfigPath $configPath)
     Write-Host "Codex memory config: enabled"
     return $configPath
 }
@@ -1513,7 +1513,7 @@ function Resolve-RevitInstallRoot {
         [string]$Version
     )
 
-    return Resolve-RevitMcpInstallRoot -RequestedRoot $RequestedRoot -Version $Version
+    return Resolve-RevAgentInstallRoot -RequestedRoot $RequestedRoot -Version $Version
 }
 
 function Invoke-External {
@@ -1708,7 +1708,7 @@ function Add-TrustedReleaseKeys {
         [AllowNull()][object]$Source
     )
 
-    $convertCommand = Get-UpdaterDistributionIntegrityCommand -Name "ConvertTo-RevitMcpTrustedKeyMap" -Required
+    $convertCommand = Get-UpdaterDistributionIntegrityCommand -Name "ConvertTo-RevAgentTrustedKeyMap" -Required
     $sourceMap = & $convertCommand -TrustedKeys $Source
     foreach ($key in $sourceMap.Keys) {
         $Target[[string]$key] = $sourceMap[$key]
@@ -1745,7 +1745,7 @@ function Resolve-UpdaterConfigRelativePath {
 function Get-UpdaterDetachedSignaturePath {
     param([Parameter(Mandatory = $true)][string]$ContentPath)
 
-    $command = Get-UpdaterDistributionIntegrityCommand -Name "Get-RevitMcpDetachedSignaturePath"
+    $command = Get-UpdaterDistributionIntegrityCommand -Name "Get-RevAgentDetachedSignaturePath"
     if ($command) {
         return & $command -ContentPath $ContentPath
     }
@@ -2079,7 +2079,7 @@ function Initialize-LicenseConfig {
     $script:RevitMcpLicensePolicy = $policy
     $script:RevitMcpTrustedLicenseKeys = $trustedKeys
     $script:RevitMcpTrustedLicenseKeySources = @($sources.ToArray())
-    $script:RevitMcpLicense = Test-RevitMcpLicenseSeatFile `
+    $script:RevitMcpLicense = Test-RevAgentLicenseSeatFile `
         -LicensePath $configuredLicensePath `
         -SignaturePath $configuredSignaturePath `
         -TrustedKeys $trustedKeys `
@@ -2809,11 +2809,11 @@ function Join-WindowsCommandArguments {
 }
 
 function Resolve-WindowsPowerShellPath {
-    return Resolve-RevitMcpWindowsPowerShellPath
+    return Resolve-RevAgentWindowsPowerShellPath
 }
 
 function Resolve-WScriptPath {
-    return Resolve-RevitMcpWScriptPath
+    return Resolve-RevAgentWScriptPath
 }
 
 function Write-HiddenPowerShellLauncher {
@@ -2826,7 +2826,7 @@ function Write-HiddenPowerShellLauncher {
         [switch]$WaitForExit
     )
 
-    Write-RevitMcpHiddenPowerShellLauncher `
+    Write-RevAgentHiddenPowerShellLauncher `
         -LauncherPath $LauncherPath `
         -ScriptPath $ScriptPath `
         -ScriptArguments $ScriptArguments `
@@ -2836,13 +2836,13 @@ function Write-HiddenPowerShellLauncher {
 function Get-HiddenUpdaterLauncherPath {
     param([string]$UpdaterConfigPath)
 
-    return Get-RevitMcpHiddenUpdaterLauncherPath -ConfigPath $UpdaterConfigPath
+    return Get-RevAgentHiddenUpdaterLauncherPath -ConfigPath $UpdaterConfigPath
 }
 
 function New-HiddenUpdaterScheduledTaskAction {
     param([string]$LauncherPath)
 
-    return New-RevitMcpHiddenUpdaterScheduledTaskAction -LauncherPath $LauncherPath
+    return New-RevAgentHiddenUpdaterScheduledTaskAction -LauncherPath $LauncherPath
 }
 
 function Repair-RevitMcpScheduledTaskAction {
@@ -2861,7 +2861,7 @@ function Repair-RevitMcpScheduledTaskAction {
         return
     }
 
-    Repair-RevitMcpHiddenScheduledTaskAction -Name $Name -LegacyNames $LegacyNames -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath -DailyAt $DailyAt
+    Repair-RevAgentHiddenScheduledTaskAction -Name $Name -LegacyNames $LegacyNames -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath -DailyAt $DailyAt
 }
 
 function Install-UpdaterToolsFromPackage {
@@ -2895,7 +2895,7 @@ function Install-UpdaterToolsFromPackage {
     if (-not (Test-Path -LiteralPath $configSource -PathType Container)) {
         $configSource = Join-Path (Split-Path -Parent (Split-Path -Parent $SourceRoot)) "config"
     }
-    Sync-RevitMcpUpdaterConfigDirectory -SourceRoot $configSource -DestinationRoot (Join-Path $DestinationRoot "config")
+    Sync-RevAgentUpdaterConfigDirectory -SourceRoot $configSource -DestinationRoot (Join-Path $DestinationRoot "config")
 
     $updaterPath = Join-Path $DestinationRoot "update-from-nas.ps1"
     $versionToolPath = Join-Path $DestinationRoot "show-installed-version.ps1"
@@ -2920,7 +2920,7 @@ function Install-UpdaterToolsFromPackage {
             Write-Host "Removed legacy updater helper: $legacyCommandPath"
         }
     }
-    foreach ($legacyLauncherPath in @(Get-RevitMcpLegacyHiddenUpdaterLauncherPaths -ConfigPath $ConfigPath)) {
+    foreach ($legacyLauncherPath in @(Get-RevAgentLegacyHiddenUpdaterLauncherPaths -ConfigPath $ConfigPath)) {
         if (Test-Path -LiteralPath $legacyLauncherPath -PathType Leaf) {
             Remove-Item -LiteralPath $legacyLauncherPath -Force
             Write-Host "Removed legacy hidden updater launcher: $legacyLauncherPath"
@@ -3104,7 +3104,7 @@ $revAgentCleanInstallTransitionState = [ordered]@{
     failedCacheItemCount = 0
 }
 New-Item -ItemType Directory -Path $cacheRoot, $stagingRoot, $backupRoot -Force | Out-Null
-Invoke-RevitMcpDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
+Invoke-RevAgentDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
 
 $taskUpdaterPath = Join-Path $WorkRoot "update-from-nas.ps1"
 if (-not (Test-Path -LiteralPath $taskUpdaterPath -PathType Leaf)) {
@@ -3157,7 +3157,7 @@ try {
         $releaseManifest = Get-Content -Raw -LiteralPath $releaseManifestPath | ConvertFrom-Json
     }
 
-    $distributionIntegrityCommand = Get-UpdaterDistributionIntegrityCommand -Name "Test-RevitMcpReleaseDistributionIntegrity" -Required
+    $distributionIntegrityCommand = Get-UpdaterDistributionIntegrityCommand -Name "Test-RevAgentReleaseDistributionIntegrity" -Required
 
     $distributionIntegrityArgs = @{
         ChannelPath = $ChannelManifestPath
@@ -3230,7 +3230,7 @@ try {
     Write-Host "Package          : $packagePath"
     if ($revAgentCleanInstallTransitionRequired) {
         Write-Host "revAgent transition: clean install mode; existing package backups will be cleared and this package replacement will not create a backup." -ForegroundColor Yellow
-        $revAgentCleanInstallTransitionCleanup = Invoke-RevitMcpBackupRootReset -BackupRoot $backupRoot -CacheRoot $cacheRoot
+        $revAgentCleanInstallTransitionCleanup = Invoke-RevAgentBackupRootReset -BackupRoot $backupRoot -CacheRoot $cacheRoot
         $revAgentCleanInstallTransitionState.removedBackupItemCount = [int]$revAgentCleanInstallTransitionCleanup.removedBackupItemCount
         $revAgentCleanInstallTransitionState.failedBackupItemCount = [int]$revAgentCleanInstallTransitionCleanup.failedBackupItemCount
         $revAgentCleanInstallTransitionState.removedCacheItemCount = [int]$revAgentCleanInstallTransitionCleanup.removedCacheItemCount
@@ -3250,7 +3250,7 @@ try {
         $revitPayloadChanges.Count
     }
     $releaseComponents = Get-JsonPropertyValue -Object $releaseManifest -Name "components"
-    $updateDecision = Get-RevitMcpUpdateDecision `
+    $updateDecision = Get-RevAgentUpdateDecision `
         -IsFirstInstall:$isFirstInstall `
         -HasReleaseManifest:($null -ne $releaseManifest) `
         -HasReleaseComponents:($null -ne $releaseComponents) `
@@ -3279,7 +3279,7 @@ try {
     $isPackageCurrent = ($installedVersion -eq $targetVersion -and $installedSha -eq $targetSha)
 
     if (-not $SourceFreeMigration) {
-        $sourceFreeGuardArtifacts = @(Get-RevitMcpSourceFreeArtifactInventory `
+        $sourceFreeGuardArtifacts = @(Get-RevAgentSourceFreeArtifactInventory `
                 -InstallRoot $InstallRoot `
                 -PackageTarget $PackageTarget `
                 -ServerTarget $ServerTarget `
@@ -3391,7 +3391,7 @@ try {
     }
 
     $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
-    $runningDecision = Get-RevitMcpUpdateDecision `
+    $runningDecision = Get-RevAgentUpdateDecision `
         -IsFirstInstall:$isFirstInstall `
         -HasReleaseManifest:($null -ne $releaseManifest) `
         -HasReleaseComponents:($null -ne $releaseComponents) `
@@ -3478,7 +3478,7 @@ try {
     $sourceFreeMigrationPreCleanup = $null
     $sourceFreeMigrationPostCleanup = $null
     if ($SourceFreeMigration) {
-        $sourceFreeMigrationPreCleanup = Invoke-RevitMcpSourceFreeArtifactCleanup `
+        $sourceFreeMigrationPreCleanup = Invoke-RevAgentSourceFreeArtifactCleanup `
             -InstallRoot $InstallRoot `
             -PackageTarget $PackageTarget `
             -ServerTarget $ServerTarget `
@@ -3501,7 +3501,7 @@ try {
         }
         else {
             Move-Item -LiteralPath $PackageTarget -Destination $backupPath
-            Invoke-RevitMcpDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
+            Invoke-RevAgentDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
         }
     }
 
@@ -3525,7 +3525,7 @@ try {
             Write-Host "Fast update path : package/updater metadata only; self-contained installer skipped." -ForegroundColor Green
             $nasToolsSource = Join-Path (Split-Path -Parent $installer) "nas"
             Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $WorkRoot -ConfigPath $ConfigPath
-            Invoke-RevitMcpLogRetention -LogsRoot (Join-Path $WorkRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
+            Invoke-RevAgentLogRetention -LogsRoot (Join-Path $WorkRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
             Write-Host "Runtime dependencies: skipped; runtime payload unchanged."
             if ($SkipNpmInstall) {
                 Write-Host "Documentation server dependencies: skipped by -SkipNpmInstall."
@@ -3641,7 +3641,7 @@ try {
     }
 
     if ($SourceFreeMigration) {
-        $sourceFreeMigrationPostCleanup = Invoke-RevitMcpSourceFreeArtifactCleanup `
+        $sourceFreeMigrationPostCleanup = Invoke-RevAgentSourceFreeArtifactCleanup `
             -InstallRoot $InstallRoot `
             -PackageTarget $PackageTarget `
             -ServerTarget $ServerTarget `

@@ -40,7 +40,7 @@ function Read-RevitMcpJsonFile {
     return Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
 }
 
-function Resolve-RevitMcpReleasePath {
+function Resolve-RevAgentReleasePath {
     param(
         [string]$Path,
         [string]$BaseDirectory
@@ -335,10 +335,10 @@ if (-not (Test-Path -LiteralPath $ChannelManifestPath -PathType Leaf)) {
 }
 
 $channel = Read-RevitMcpJsonFile -Path $ChannelManifestPath
-$releaseManifestPath = Resolve-RevitMcpReleasePath -Path ([string]$channel.manifestPath) -BaseDirectory $channelDir
-$packagePath = Resolve-RevitMcpReleasePath -Path ([string]$channel.packagePath) -BaseDirectory $channelDir
-$channelSignaturePath = Get-RevitMcpDetachedSignaturePath -ContentPath $ChannelManifestPath
-$releaseManifestSignaturePath = if ([string]::IsNullOrWhiteSpace($releaseManifestPath)) { "" } else { Get-RevitMcpDetachedSignaturePath -ContentPath $releaseManifestPath }
+$releaseManifestPath = Resolve-RevAgentReleasePath -Path ([string]$channel.manifestPath) -BaseDirectory $channelDir
+$packagePath = Resolve-RevAgentReleasePath -Path ([string]$channel.packagePath) -BaseDirectory $channelDir
+$channelSignaturePath = Get-RevAgentDetachedSignaturePath -ContentPath $ChannelManifestPath
+$releaseManifestSignaturePath = if ([string]::IsNullOrWhiteSpace($releaseManifestPath)) { "" } else { Get-RevAgentDetachedSignaturePath -ContentPath $releaseManifestPath }
 
 Add-RevitMcpReadinessCheck -Checks $checks -Name "release_manifest_present" -Success (Test-Path -LiteralPath $releaseManifestPath -PathType Leaf) -Message "Release manifest must exist." -Path $releaseManifestPath
 Add-RevitMcpReadinessCheck -Checks $checks -Name "channel_signature_present" -Success (Test-Path -LiteralPath $channelSignaturePath -PathType Leaf) -Message "Stable channel detached signature must exist." -Path $channelSignaturePath
@@ -346,7 +346,7 @@ Add-RevitMcpReadinessCheck -Checks $checks -Name "release_manifest_signature_pre
 Add-RevitMcpReadinessCheck -Checks $checks -Name "package_present" -Success (Test-Path -LiteralPath $packagePath -PathType Leaf) -Message "Release ZIP must exist." -Path $packagePath
 
 $trustedKeys = Read-RevitMcpTrustedKeys -Path $TrustedKeysPath
-$trustedKeyMap = ConvertTo-RevitMcpTrustedKeyMap -TrustedKeys $trustedKeys
+$trustedKeyMap = ConvertTo-RevAgentTrustedKeyMap -TrustedKeys $trustedKeys
 Add-RevitMcpReadinessCheck -Checks $checks -Name "trusted_release_keys_present" -Success ($trustedKeyMap.Count -gt 0) -Message "At least one trusted public release key must be supplied." -Path $TrustedKeysPath
 
 $releaseManifest = $null
@@ -354,7 +354,7 @@ if (Test-Path -LiteralPath $releaseManifestPath -PathType Leaf) {
     $releaseManifest = Read-RevitMcpJsonFile -Path $releaseManifestPath
 }
 
-$integrity = Test-RevitMcpReleaseDistributionIntegrity `
+$integrity = Test-RevAgentReleaseDistributionIntegrity `
     -ChannelPath $ChannelManifestPath `
     -Channel $channel `
     -ReleaseManifestPath $releaseManifestPath `

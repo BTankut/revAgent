@@ -157,4 +157,14 @@ function Invoke-RevitMcpBackupRootReset {
     return [pscustomobject]$result
 }
 
+$revAgentFunctionAliases = @{
+    "Invoke-RevAgentBackupRootReset" = "Invoke-RevitMcpBackupRootReset"
+    "Invoke-RevAgentDirectoryRetention" = "Invoke-RevitMcpDirectoryRetention"
+    "Invoke-RevAgentLogRetention" = "Invoke-RevitMcpLogRetention"
+}
+foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+    Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
+}
+
 Export-ModuleMember -Function Invoke-RevitMcpLogRetention, Invoke-RevitMcpDirectoryRetention, Invoke-RevitMcpBackupRootReset
+Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)
