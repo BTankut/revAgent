@@ -29,8 +29,9 @@
     "revit-task-merge-test": "node scripts/revit-task-merge.test.mjs",
     "live-feed-test": "node scripts/live-feed.test.mjs",
     "socket-test": "node scripts/socket-client.test.mjs",
+    "env-alias-test": "node scripts/env-alias.test.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "npm run build && npm run guard-test && npm run runtime-result-test && npm run broad-scan-result-test && npm run excel-ingestion-test && npm run schedule-adapter-test && npm run matching-scoring-test && npm run reconcile-tool-test && npm run find-elements-compact-test && npm run write-tool-contract-test && npm run bridge-result-contract-test && npm run casing-member-access-test && npm run tool-inference-test && npm run revit-task-merge-test && npm run live-feed-test && npm run socket-test && npm run smoke"
+    "test": "npm run build && npm run guard-test && npm run runtime-result-test && npm run broad-scan-result-test && npm run excel-ingestion-test && npm run schedule-adapter-test && npm run matching-scoring-test && npm run reconcile-tool-test && npm run find-elements-compact-test && npm run write-tool-contract-test && npm run bridge-result-contract-test && npm run casing-member-access-test && npm run tool-inference-test && npm run revit-task-merge-test && npm run live-feed-test && npm run socket-test && npm run env-alias-test && npm run smoke"
   },
   "files": [
     "build",

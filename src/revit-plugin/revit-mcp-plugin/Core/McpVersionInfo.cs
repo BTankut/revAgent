@@ -119,7 +119,7 @@ namespace revit_mcp_plugin.Core
         {
             HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             List<string> candidates = new List<string>();
-            string explicitState = Environment.GetEnvironmentVariable("REVIT_MCP_INSTALLED_STATE");
+            string explicitState = RevAgentEnvironment.Get("REVAGENT_INSTALLED_STATE", "REVIT_MCP_INSTALLED_STATE");
             AddCandidate(candidates, seen, explicitState);
 
             string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);

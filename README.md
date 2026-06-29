@@ -225,15 +225,16 @@ Every runtime tool accepts these optional target fields:
 Environment defaults are also supported:
 
 ```powershell
-$env:REVIT_MCP_PORT = "8080"
-$env:REVIT_MCP_PORTS = "8080,8081,8082"
-$env:REVIT_MCP_TARGET = "localhost:8080"
+$env:REVAGENT_PORT = "8080"
+$env:REVAGENT_PORTS = "8080,8081,8082"
+$env:REVAGENT_TARGET = "localhost:8080"
 ```
 
 The runtime also exposes `list_revit_instances`, which scans configured ports
 and reports the reachable Revit document, process id, active view, and version.
 If present, it also reads `%TEMP%\revit-mcp-instances.json` or the path in
-`REVIT_MCP_INSTANCE_REGISTRY`.
+`REVAGENT_INSTANCE_REGISTRY`. Legacy `REVIT_MCP_*` names remain supported as
+fallback aliases during the rename transition.
 
 The runtime also exposes `get_revit_mcp_status`. It reports the active task,
 elapsed time, recent completed/guarded/failed tasks, and service port. Routine
@@ -264,8 +265,9 @@ The Revit socket protocol uses length-prefixed JSON-RPC frames by default, so
 large snippets and parameter payloads are not limited by the old single-read
 socket buffer behavior. The add-in still accepts legacy raw JSON requests for
 compatibility. The default request frame limit is 16 MB and can be raised, up
-to 128 MB, with `REVIT_MCP_MAX_MESSAGE_BYTES` when a workstation explicitly
-needs larger payloads.
+to 128 MB, with `REVAGENT_MAX_MESSAGE_BYTES` when a workstation explicitly
+needs larger payloads. `REVIT_MCP_MAX_MESSAGE_BYTES` is still accepted as a
+legacy fallback.
 
 Recent task records include transport diagnostics: framing mode, request size,
 receive time, parse time, execution time, response size, and elapsed time. The
@@ -286,7 +288,8 @@ The bundled Revit add-in starts the socket service automatically when Revit
 becomes idle after startup. It uses the configured port, then auto-increments
 to the next free port up to `+20`, so multiple open Revit processes can listen
 on separate ports. The service is stopped during Revit shutdown, which releases
-the port. Set `REVIT_MCP_AUTOSTART=0` to disable automatic startup.
+the port. Set `REVAGENT_AUTOSTART=0` to disable automatic startup; legacy
+`REVIT_MCP_AUTOSTART=0` remains supported during the transition.
 
 While an automation task is running, the add-in shows a `revAgent Status`
 window in Revit with the task name, elapsed time, and a warning not to use

@@ -23,7 +23,10 @@ param(
 $ErrorActionPreference = "Stop"
 
 if ([string]::IsNullOrWhiteSpace($HostName)) {
-    if ([string]::IsNullOrWhiteSpace($env:REVIT_MCP_HOST)) {
+    if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_HOST)) {
+        $HostName = $env:REVAGENT_HOST
+    }
+    elseif ([string]::IsNullOrWhiteSpace($env:REVIT_MCP_HOST)) {
         $HostName = "localhost"
     }
     else {
@@ -32,7 +35,10 @@ if ([string]::IsNullOrWhiteSpace($HostName)) {
 }
 
 if ($Port -le 0) {
-    if ([int]::TryParse($env:REVIT_MCP_PORT, [ref]$Port) -and $Port -gt 0) {
+    if ([int]::TryParse($env:REVAGENT_PORT, [ref]$Port) -and $Port -gt 0) {
+        # Use parsed revAgent environment port.
+    }
+    elseif ([int]::TryParse($env:REVIT_MCP_PORT, [ref]$Port) -and $Port -gt 0) {
         # Use parsed environment port.
     }
     else {

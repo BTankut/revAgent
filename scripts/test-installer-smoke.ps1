@@ -184,6 +184,25 @@ try {
         Assert-True ($projectText -notmatch $legacyRevitConfigPattern) "$relativePath still contains legacy Revit 2020/2021 build configuration."
     }
 
+    Write-Host "Test revAgent environment alias contract"
+    $connectionManagerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\ConnectionManager.ts")
+    $socketClientText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\SocketClient.ts")
+    $runtimePackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\package.json")
+    $revAgentEnvironmentText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\RevAgentEnvironment.cs")
+    $applicationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\Application.cs")
+    $socketServiceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\SocketService.cs")
+    $versionInfoText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpVersionInfo.cs")
+    Assert-True ($connectionManagerText -match 'REVAGENT_HOST' -and $connectionManagerText -match 'REVIT_MCP_HOST') "Runtime connection manager must keep revAgent env names with legacy fallbacks."
+    Assert-True ($connectionManagerText -match 'REVAGENT_TARGET' -and $connectionManagerText -match 'REVIT_MCP_TARGET') "Runtime target resolution must support revAgent and legacy target env names."
+    Assert-True ($connectionManagerText -match 'REVAGENT_PORTS' -and $connectionManagerText -match 'REVIT_MCP_PORTS') "Runtime port scanning must support revAgent and legacy port-list env names."
+    Assert-True ($socketClientText -match 'REVAGENT_FRAMING' -and $socketClientText -match 'REVIT_MCP_FRAMING') "Socket framing override must support revAgent and legacy env names."
+    Assert-True ($runtimePackageText -match 'env-alias-test') "Runtime npm test must include the environment alias contract test."
+    Assert-True ($revAgentEnvironmentText -match 'class RevAgentEnvironment' -and $revAgentEnvironmentText -match 'Environment\.GetEnvironmentVariable') "Revit add-in must centralize env alias reads."
+    Assert-True ($applicationText -match 'REVAGENT_AUTOSTART' -and $applicationText -match 'REVIT_MCP_AUTOSTART') "Revit add-in autostart must support revAgent and legacy env names."
+    Assert-True ($socketServiceText -match 'REVAGENT_MAX_MESSAGE_BYTES' -and $socketServiceText -match 'REVIT_MCP_MAX_MESSAGE_BYTES') "Revit add-in message size override must support revAgent and legacy env names."
+    Assert-True ($socketServiceText -match 'REVAGENT_PLUGIN_PORT' -and $socketServiceText -match 'REVAGENT_PORT' -and $socketServiceText -match 'REVIT_MCP_PLUGIN_PORT' -and $socketServiceText -match 'REVIT_MCP_PORT') "Revit add-in port override must support revAgent and legacy env names."
+    Assert-True ($versionInfoText -match 'REVAGENT_INSTALLED_STATE' -and $versionInfoText -match 'REVIT_MCP_INSTALLED_STATE') "Revit add-in installed-state override must support revAgent and legacy env names."
+
     Write-Host "Test dynamic commandset transaction and reference guards"
     $executeCodeHandler = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs")
     Assert-True ($executeCodeHandler -match 'ContainsManualTransaction') "Dynamic commandset must detect manual transaction snippets."

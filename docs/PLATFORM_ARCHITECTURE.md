@@ -222,9 +222,11 @@ length followed by the UTF-8 JSON payload. The add-in keeps legacy raw JSON
 support so older clients can still reach the socket during rolling updates.
 
 The default request frame limit is 16 MB. It can be raised per workstation with
-`REVIT_MCP_MAX_MESSAGE_BYTES`, capped at 128 MB. Oversized or invalid frames
-return a clear JSON-RPC error and close the client connection instead of
-leaving the caller waiting for the generic command timeout.
+`REVAGENT_MAX_MESSAGE_BYTES`, capped at 128 MB. The legacy
+`REVIT_MCP_MAX_MESSAGE_BYTES` name remains accepted as a fallback during the
+rename transition. Oversized or invalid frames return a clear JSON-RPC error
+and close the client connection instead of leaving the caller waiting for the
+generic command timeout.
 
 Every completed task records transport metrics in the status model:
 
