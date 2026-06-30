@@ -233,9 +233,11 @@ $env:REVAGENT_TARGET = "localhost:8080"
 
 The runtime also exposes `list_revit_instances`, which scans configured ports
 and reports the reachable Revit document, process id, active view, and version.
-If present, it also reads `%TEMP%\revit-mcp-instances.json` or the path in
-`REVAGENT_INSTANCE_REGISTRY`. Legacy `REVIT_MCP_*` names remain supported as
-fallback aliases during the rename transition.
+If present, it reads `%TEMP%\revAgent-instances.json` or the path in
+`REVAGENT_INSTANCE_REGISTRY`, while still reading legacy
+`%TEMP%\revit-mcp-instances.json` and `REVIT_MCP_INSTANCE_REGISTRY` as fallback
+registry sources during rolling updates. Legacy `REVIT_MCP_*` names remain
+supported as fallback aliases during the rename transition.
 
 The runtime also exposes `get_revit_mcp_status`. It reports the active task,
 elapsed time, recent completed/guarded/failed tasks, and service port. Routine
