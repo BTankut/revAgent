@@ -328,8 +328,9 @@ the follow-up.
 Required outcomes:
 
 - Use a runner that can reach the canonical
-  `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy` root and, during the
-  transition window, the legacy `revit-mcp-deploy` compatibility root.
+  `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy` root. The legacy
+  `revit-mcp-deploy` compatibility root is no longer a default CD publish
+  target after compatibility-root retirement.
 - Publish to the existing NAS shape:
 
 ```text

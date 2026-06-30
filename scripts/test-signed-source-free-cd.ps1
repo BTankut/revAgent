@@ -239,7 +239,7 @@ try {
     Assert-True ($workflowText -match 'push:\s*\r?\n\s*branches:\s*\r?\n\s*-\s*main') "CD workflow should run automatically after main is updated."
     Assert-True ($workflowText -match 'publish_to_nas') "CD workflow should keep NAS publish as an explicit manual dispatch input."
     Assert-True ($workflowText -match 'allow_rollback' -and $workflowText -match 'REVAGENT_CD_ALLOW_ROLLBACK' -and $workflowText -match '\$publishArgs\["AllowRollback"\] = \$true') "CD workflow must expose explicit manual rollback/legacy bootstrap publish input."
-    Assert-True ($workflowText -match 'REVAGENT_NAS_COMPAT_RELEASE_ROOTS' -and $workflowText -match 'Add-RevAgentNasReleaseRoot' -and $workflowText -match 'foreach \(\$nasReleaseRoot in \$releaseRoots\)') "CD workflow must support publishing the same signed release to a canonical NAS root plus optional compatibility roots."
+    Assert-True ($workflowText -notmatch 'REVAGENT_NAS_COMPAT_RELEASE_ROOTS' -and $workflowText -match 'Publishing signed release to NAS root: \$nasReleaseRoot' -and $workflowText -notmatch 'foreach \(\$nasReleaseRoot in \$releaseRoots\)') "CD workflow must publish production stable only to the canonical NAS root after compatibility-root retirement."
     $rawPublishJobCondition = Get-WorkflowJobIfCondition -Path $workflowPath -JobName "publish-to-nas"
     Assert-True (-not [string]::IsNullOrWhiteSpace($rawPublishJobCondition)) "CD workflow parser must find the publish-to-nas job if condition."
     $publishJobCondition = ConvertTo-GithubWorkflowIfExpression -Expression $rawPublishJobCondition

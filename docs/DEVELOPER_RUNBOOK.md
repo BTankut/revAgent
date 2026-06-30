@@ -149,9 +149,9 @@ Required local tools for full development:
 - PowerShell 5.1 or newer
 - Visual Studio/MSBuild tooling if rebuilding the Revit add-in source
 - Access to `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy` for office
-  publishing and workstation updater tests. During the NAS root transition,
-  access to the legacy `revit-mcp-deploy` root is also needed for compatibility
-  publish verification.
+  publishing and workstation updater tests. Legacy `revit-mcp-deploy` access is
+  only needed for explicit diagnostics or cleanup of the retired compatibility
+  root.
 
 Office workstations reach the internet through `http://192.168.90.10:6588`.
 The NAS installer/updater configures this proxy automatically for terminal
@@ -763,7 +763,7 @@ Canonical NAS root:
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy
 ```
 
-Temporary compatibility root:
+Retired compatibility root:
 
 ```text
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy
@@ -797,11 +797,10 @@ only for deliberate signed rollback, same-sequence repair, or the one-time
 legacy stable bootstrap when the current NAS `stable.json` predates
 `releaseSequence`.
 
-During the NAS rename transition, set the protected production publish variable
-`REVAGENT_NAS_RELEASE_ROOT` to the canonical `revAgent-deploy` root and set
-`REVAGENT_NAS_COMPAT_RELEASE_ROOTS` to the old `revit-mcp-deploy` root. The CD
-job publishes the exact same signed release to each configured root; channel
-metadata remains portable because it uses relative package and manifest paths.
+Set the protected production publish variable `REVAGENT_NAS_RELEASE_ROOT` to
+the canonical `revAgent-deploy` root. The CD job publishes only to that
+canonical root after compatibility-root retirement; channel metadata remains
+portable because it uses relative package and manifest paths.
 
 Use the manual publish script only for controlled recovery/backstop work from a
 clean repo:
@@ -816,7 +815,6 @@ Verify channels:
 
 ```powershell
 Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\channels\stable.json"
-Get-Content -Raw "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\channels\stable.json"
 ```
 
 Run the read-only rollout readiness audit before closing an office rollout or
@@ -1179,10 +1177,9 @@ Single-file desktop launchers:
 ```
 
 Use the single-file launchers when copying a `.cmd` to a workstation desktop.
-The single-file launchers try `revAgent-deploy` first and fall back to the
-legacy `revit-mcp-deploy` root during the transition. The generic
-`Install-revAgent-Updater-GUI.cmd` is meant to run from the NAS `tools\` folder
-because it expects `Install-revAgent-Updater-GUI.ps1` beside it.
+The single-file launchers target the canonical `revAgent-deploy` root. The
+generic `Install-revAgent-Updater-GUI.cmd` is meant to run from the NAS
+`tools\` folder because it expects `Install-revAgent-Updater-GUI.ps1` beside it.
 
 The GUI installs or refreshes the local updater and then runs an initial update.
 The updater writes:

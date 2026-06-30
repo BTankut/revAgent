@@ -69,10 +69,10 @@ to a non-stable test channel until the release is accepted.
     test-commandset-live.ps1
 ```
 
-During the NAS root rename transition, the old
-`\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy` root remains only as a
-compatibility publish target for already-installed updaters and old desktop
-launchers.
+After NAS root migration, the old
+`\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy` root is not a default
+publish target or launcher fallback. Keep it only for explicit diagnostics,
+rollback reference, or data-gated physical cleanup/freeze.
 
 ## Manual Publish Fallback
 
@@ -119,10 +119,10 @@ rebuild or re-sign the artifact. The local runner staging handoff avoids GitHub
 Actions artifact storage quota, so the selected runner labels must resolve to
 the office runner that owns both signing-key and NAS access.
 
-For NAS root migration, set `REVAGENT_NAS_RELEASE_ROOT` to the canonical
-`revAgent-deploy` path and set optional `REVAGENT_NAS_COMPAT_RELEASE_ROOTS` to
-the legacy `revit-mcp-deploy` path. The publish job writes the same signed
-release to each configured root.
+For production NAS publish, set `REVAGENT_NAS_RELEASE_ROOT` to the canonical
+`revAgent-deploy` path. The publish job writes the signed release only to that
+canonical root. Legacy `revit-mcp-deploy` roots are no longer default publish
+targets after compatibility-root retirement.
 
 Candidate and final stable readiness checks use active-release artifact
 hygiene. They verify the candidate release package and current `tools\`
@@ -137,14 +137,11 @@ REVAGENT_RELEASE_SIGNING_PRIVATE_KEY_PATH
 REVAGENT_RELEASE_SIGNING_KEY_ID
 REVAGENT_TRUSTED_RELEASE_KEYS_PATH
 REVAGENT_NAS_RELEASE_ROOT
-REVAGENT_NAS_COMPAT_RELEASE_ROOTS
 ```
 
 Keep the private signing key path on the approved self-hosted Windows runner,
 outside the Git checkout and outside NAS `tools`. Only public trusted release
-keys belong in `release-trusted-keys.json`. `REVAGENT_NAS_COMPAT_RELEASE_ROOTS`
-is optional and should be removed after all machines have migrated away from the
-legacy NAS root.
+keys belong in `release-trusted-keys.json`.
 
 Current production signing setup on this workstation uses key id
 `revagent-prod-rsa-2026q3`, private key path
@@ -228,8 +225,7 @@ standalone launcher instead:
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\revAgent Updater STABLE.cmd
 ```
 
-The standalone STABLE launcher tries `revAgent-deploy` first and falls back to
-`revit-mcp-deploy` during the transition.
+The standalone STABLE launcher targets the canonical `revAgent-deploy` root.
 
 Do not copy `Install-revAgent-Updater-GUI.cmd` by itself. That file is meant
 to run from the NAS `tools\` folder and expects
@@ -300,9 +296,9 @@ config file; keep that real config outside Git, use
 workstations, and record the representative current-stable smoke result in
 `liveSmokeEvidence` or `reports\rollout\live-smoke-latest.json`. The same
 audit also classifies each machine's latest `paths.channelManifestPath` as
-canonical, legacy, or unknown. Keep the `revit-mcp-deploy` compatibility root
-until the audit reports every in-scope machine on the canonical
-`revAgent-deploy` channel path and copied desktop launchers have been replaced.
+canonical, legacy, or unknown. The default production publish and STABLE
+launcher no longer target `revit-mcp-deploy`; use the audit evidence before any
+physical old-root cleanup or freeze.
 After a NAS publish, the live smoke helper is available as
 `tools\test-commandset-live.ps1`; run it with `-ReleaseRoot` on the Revit smoke
 machine to write `reports\rollout\live-smoke-latest.json`.

@@ -1096,7 +1096,7 @@ try {
     Assert-True ($publishText -match 'Copy-RevAgentAdminAddonTools' -and $publishText -match 'toolsRoot "addons"') "Publish must copy admin add-ons only into NAS tools\\addons."
     Assert-True ($publishText -notmatch 'src\\revit-plugin\\revAgentPlugin\\revAgentPlugin\.csproj') "Release manifest components must not include developer source project files."
     $stableLauncherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\revAgent Updater STABLE.cmd")
-    Assert-True ($stableLauncherText -match 'revAgent-deploy' -and $stableLauncherText -match 'revit-mcp-deploy' -and $stableLauncherText -match 'if not exist "%RELEASE_ROOT%\\tools\\Install-revAgent-Updater-GUI\.ps1" set "RELEASE_ROOT=%LEGACY_ROOT%"') "Standalone stable launcher must prefer the canonical revAgent NAS root and fall back to the legacy root during migration."
+    Assert-True ($stableLauncherText -match 'revAgent-deploy' -and $stableLauncherText -notmatch 'revit-mcp-deploy' -and $stableLauncherText -notmatch 'LEGACY_ROOT') "Standalone stable launcher must use only the canonical revAgent NAS root after compatibility-root retirement."
 
     Write-Host "Test initial updater invocation binding"
     $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
