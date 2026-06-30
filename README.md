@@ -570,6 +570,14 @@ optional live commandset gate separately:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-live.ps1
 ```
 
+For rollout closure evidence, pass the NAS release root so the script writes
+`reports\rollout\live-smoke-latest.json` for the readiness audit:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-live.ps1 `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+```
+
 This live gate connects to the revAgent Revit bridge, performs a status preflight
 before each non-status command, and validates `transactionMode` behavior,
 guarded manual-transaction handling, manual rollback in `none`, and
