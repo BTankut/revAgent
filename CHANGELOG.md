@@ -4,6 +4,10 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Fixed updater distribution-integrity helper resolution so `RevAgent*` helper
+  aliases are resolved to their exported module functions before invocation;
+  this prevents trusted release-key loading from failing with
+  `ConvertTo-RevitMcpTrustedKeyMap is not recognized`.
 - Hardened NAS stable publishing so release and tools directory replacement
   uses retryable staged promotion on SMB shares; rollback restore now uses the
   same retry-safe path instead of immediately reusing a freshly removed
