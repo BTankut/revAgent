@@ -826,8 +826,12 @@ Git, and record intentionally retired or unreachable machines in
 post-update live Revit smoke result in `liveSmokeEvidence`, or write the same
 shape to `reports\rollout\live-smoke-latest.json`. The smoke evidence must pass
 and identify the current stable version or commit before the audit reports the
-rollout as ready. For a one-off run, `-ReleaseRoot`, `-ExpectedMachines`, and
-`-OutOfScopeMachines` can still be passed directly.
+rollout as ready. The audit also classifies each machine's latest
+`paths.channelManifestPath` as `canonical`, `legacy`, or `unknown`; legacy or
+unknown channel evidence blocks compatibility-root retirement and produces an
+action item unless another higher-priority machine action already applies. For
+a one-off run, `-ReleaseRoot`, `-ExpectedMachines`, and `-OutOfScopeMachines`
+can still be passed directly.
 
 Publishing refreshes `tools\` on the NAS. Workstations should launch the tools
 from the NAS share, not from copied old script bodies when possible.
