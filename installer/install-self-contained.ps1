@@ -321,7 +321,7 @@ function Write-AddinManifest {
   <AddIn Type="Application">
     <Name>revAgent</Name>
     <Assembly>$escapedAssembly</Assembly>
-    <FullClassName>revit_mcp_plugin.Core.Application</FullClassName>
+    <FullClassName>RevAgentPlugin.Core.Application</FullClassName>
     <ClientId>090A4C8C-61DC-426D-87DF-E4BAE0F80EC1</ClientId>
     <VendorId>DPE</VendorId>
     <VendorDescription>DPE internal revAgent add-in</VendorDescription>

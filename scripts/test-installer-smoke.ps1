@@ -244,9 +244,9 @@ try {
     Write-Host "Test C# Revit project configurations"
     $legacyRevitConfigPattern = '(?<!\d)(2020|2021)(?!\d)|\bR20\b|\bR21\b'
     foreach ($relativePath in @(
-            "src\revit-plugin\revit-mcp-plugin.sln",
-            "src\revit-plugin\revit-mcp-plugin\revit-mcp-plugin.csproj",
-            "src\revit-plugin\RevitMCPCommandSet\RevitMCPCommandSet.csproj"
+            "src\revit-plugin\revAgentPlugin.sln",
+            "src\revit-plugin\revAgentPlugin\revAgentPlugin.csproj",
+            "src\revit-plugin\revAgentCommandSet\revAgentCommandSet.csproj"
         )) {
         $projectText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot $relativePath)
         Assert-True ($projectText -notmatch $legacyRevitConfigPattern) "$relativePath still contains legacy Revit 2020/2021 build configuration."
@@ -256,10 +256,10 @@ try {
     $connectionManagerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\ConnectionManager.ts")
     $socketClientText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\SocketClient.ts")
     $runtimePackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\package.json")
-    $revAgentEnvironmentText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\RevAgentEnvironment.cs")
-    $applicationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\Application.cs")
-    $socketServiceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\SocketService.cs")
-    $versionInfoText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpVersionInfo.cs")
+    $revAgentEnvironmentText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\RevAgentEnvironment.cs")
+    $applicationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\Application.cs")
+    $socketServiceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\SocketService.cs")
+    $versionInfoText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\McpVersionInfo.cs")
     Assert-True ($connectionManagerText -match 'REVAGENT_HOST' -and $connectionManagerText -match 'REVIT_MCP_HOST') "Runtime connection manager must keep revAgent env names with legacy fallbacks."
     Assert-True ($connectionManagerText -match 'REVAGENT_TARGET' -and $connectionManagerText -match 'REVIT_MCP_TARGET') "Runtime target resolution must support revAgent and legacy target env names."
     Assert-True ($connectionManagerText -match 'REVAGENT_PORTS' -and $connectionManagerText -match 'REVIT_MCP_PORTS') "Runtime port scanning must support revAgent and legacy port-list env names."
@@ -272,7 +272,7 @@ try {
     Assert-True ($versionInfoText -match 'REVAGENT_INSTALLED_STATE' -and $versionInfoText -match 'REVIT_MCP_INSTALLED_STATE') "Revit add-in installed-state override must support revAgent and legacy env names."
 
     Write-Host "Test dynamic commandset transaction and reference guards"
-    $executeCodeHandler = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs")
+    $executeCodeHandler = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs")
     Assert-True ($executeCodeHandler -match 'ContainsManualTransaction') "Dynamic commandset must detect manual transaction snippets."
     Assert-True ($executeCodeHandler -match 'manual_transaction_requires_transactionMode_none') "Manual transaction snippets in auto mode must be classified as guarded safety blocks."
     Assert-True ($executeCodeHandler -match 'JsonProperty\("guarded"\)') "Dynamic execution results must expose guarded for the status UI."
@@ -300,57 +300,57 @@ try {
     Assert-True ($liveCommandsetTest -match '\[string\]\$SmokeEvidencePath' -and $liveCommandsetTest -match 'live-smoke-latest\.json') "Live commandset integration gate must support writing rollout live-smoke evidence."
     Assert-True ($liveCommandsetTest -match 'stableVersion = \$StableVersion' -and $liveCommandsetTest -match 'stableCommit = \$StableCommit' -and $liveCommandsetTest -match 'passed = \$true') "Live smoke evidence must identify stable version/commit and a passed result."
     Assert-NoLocalizedRevitPluginSourceText -Root $RepoRoot
-    $commandSetSourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet") -Recurse -File -Filter *.cs |
+    $commandSetSourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet") -Recurse -File -Filter *.cs |
         Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } |
         ForEach-Object { $_.FullName.Substring($RepoRoot.Length + 1).Replace('/', '\') } |
         Sort-Object)
     $expectedCommandSetSourceFiles = @(
-        "src\revit-plugin\RevitMCPCommandSet\Commands\Access\GetCurrentViewElementsCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\Access\GetCurrentViewInfoCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\Access\GetSelectedElementsCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\AnnotationEvidenceHelpers.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ClearSelectionCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ClearSelectionEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\CountAnnotationsCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\CountAnnotationsEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\DeleteReviewViewCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\DeleteReviewViewEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementDiscoveryHelpers.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementFocusHelpers.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\FocusElementsCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\FocusElementsEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\GetUiStateCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\GetUiStateEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSchedulesCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSchedulesEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSheetTextCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSheetTextEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ListOpenViewsCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ListOpenViewsEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\OpenExistingPlanForElementLevelCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\OpenExistingPlanForElementLevelEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\SectionBoxElementsCommand.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\SectionBoxElementsEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Commands\View\ViewCommandHelpers.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Extensions\RevitApiCompatibilityExtensions.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Models\Common\ElementInfo.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Models\Common\ViewElementsResult.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Models\Common\ViewInfo.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Services\GetCurrentViewElementsEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Services\GetCurrentViewInfoEventHandler.cs",
-        "src\revit-plugin\RevitMCPCommandSet\Services\GetSelectedElementsEventHandler.cs"
+        "src\revit-plugin\revAgentCommandSet\Commands\Access\GetCurrentViewElementsCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Access\GetCurrentViewInfoCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Access\GetSelectedElementsCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\ActivateViewCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\ActivateViewEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\AnnotationEvidenceHelpers.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\ClearSelectionCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\ClearSelectionEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\CloseViewCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\CloseViewEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\CountAnnotationsCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\CountAnnotationsEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\Create3DViewForElementsCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\Create3DViewForElementsEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\DeleteReviewViewCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\DeleteReviewViewEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\ElementDiscoveryHelpers.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\ElementFocusHelpers.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\FindElementsCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\FindElementsEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\FocusElementsCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\FocusElementsEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\GetUiStateCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\GetUiStateEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\InspectSchedulesCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\InspectSchedulesEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\InspectSheetTextCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\InspectSheetTextEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\ListOpenViewsCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\ListOpenViewsEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\OpenExistingPlanForElementLevelCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\OpenExistingPlanForElementLevelEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\SectionBoxElementsCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\SectionBoxElementsEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\View\ViewCommandHelpers.cs",
+        "src\revit-plugin\revAgentCommandSet\Extensions\RevitApiCompatibilityExtensions.cs",
+        "src\revit-plugin\revAgentCommandSet\Models\Common\ElementInfo.cs",
+        "src\revit-plugin\revAgentCommandSet\Models\Common\ViewElementsResult.cs",
+        "src\revit-plugin\revAgentCommandSet\Models\Common\ViewInfo.cs",
+        "src\revit-plugin\revAgentCommandSet\Services\GetCurrentViewElementsEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Services\GetCurrentViewInfoEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Services\GetSelectedElementsEventHandler.cs"
     )
-    Assert-Equal ($commandSetSourceFiles -join "|") ($expectedCommandSetSourceFiles -join "|") "RevitMCPCommandSet must contain the complete production bridge command source surface."
+    Assert-Equal ($commandSetSourceFiles -join "|") ($expectedCommandSetSourceFiles -join "|") "revAgentCommandSet must contain the complete production bridge command source surface."
 
     Write-Host "Test Revit command registry includes the unified bridge command tools"
     Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revAgent.addin") -PathType Leaf) "revAgent add-in manifest must be packaged with the product name."
@@ -581,15 +581,15 @@ try {
     Assert-True ($userAgentsText -notmatch 'Revit MCP runtime|Revit MCP work|Revit MCP Coordination|revAgent/Revit MCP') "User-pack AGENTS.md must not expose legacy product wording."
 
     Write-Host "Test Revit task status window product surface"
-    $taskStatusXaml = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\UI\McpTaskStatusWindow.xaml")
-    $taskStatusCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\UI\McpTaskStatusWindow.xaml.cs")
-    $taskStatusController = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpTaskStatusWindowController.cs")
-    $taskStatusService = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpTaskStatusService.cs")
-    $socketServiceCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\SocketService.cs")
-    $commandExecutorCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\CommandExecutor.cs")
-    $bridgeResultContractCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\BridgeResultContract.cs")
-    $applicationCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\Application.cs")
-    $metadataCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\RevAgentMetadataCommand.cs")
+    $taskStatusXaml = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\UI\McpTaskStatusWindow.xaml")
+    $taskStatusCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\UI\McpTaskStatusWindow.xaml.cs")
+    $taskStatusController = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\McpTaskStatusWindowController.cs")
+    $taskStatusService = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\McpTaskStatusService.cs")
+    $socketServiceCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\SocketService.cs")
+    $commandExecutorCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\CommandExecutor.cs")
+    $bridgeResultContractCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\BridgeResultContract.cs")
+    $applicationCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\Application.cs")
+    $metadataCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\RevAgentMetadataCommand.cs")
     Assert-True ($taskStatusXaml -match 'Title="revAgent Status"') "Task status window title must use revAgent."
     Assert-True ($taskStatusXaml -match 'Your AI agent inside Revit\.') "Task status window must show the revAgent product tagline."
     Assert-True ($taskStatusXaml -match '2026 Baris Tankut') "Task status window must show the revAgent copyright footer."
@@ -604,7 +604,7 @@ try {
     Assert-True ($taskStatusCode -match 'FormatUpdateStatusLine') "Task status code must present a concise update-state label."
     Assert-True ($applicationCode -match 'ID_EXCMD_REVAGENT_INFO' -and $applicationCode -notmatch 'ID_EXCMD_TOGGLE_REVIT_MCP|ID_EXCMD_MCP_SETTINGS') "Revit ribbon must expose only the revAgent metadata button."
     Assert-True ($metadataCommandCode -match 'FormatMetadataDetails' -and $metadataCommandCode -match 'ProductWebsiteUrl') "Revit metadata button must show the shared revAgent version metadata and web address."
-    $versionInfoCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\Core\McpVersionInfo.cs")
+    $versionInfoCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\McpVersionInfo.cs")
     Assert-True ($versionInfoCode -match 'channelManifestPath') "Version info must read the configured channel manifest path."
     Assert-True ($versionInfoCode -match 'publishedAtUtc') "Version info must use release/channel publish timestamps when available."
     Assert-True ($versionInfoCode -match 'Version ') "Version info must label the installed product version clearly."
@@ -637,27 +637,27 @@ try {
     Assert-True ($taskStatusCode -match 'return "\\u2715"') "Failed task history must keep a distinct failure symbol."
 
     Write-Host "Test Revit view focus visibility guard"
-    $focusHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementFocusHelpers.cs")
-    $focusHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\FocusElementsEventHandler.cs")
-    $openPlanCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\OpenExistingPlanForElementLevelEventHandler.cs")
-    $openPlanCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\OpenExistingPlanForElementLevelCommand.cs")
+    $focusHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\ElementFocusHelpers.cs")
+    $focusHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\FocusElementsEventHandler.cs")
+    $openPlanCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\OpenExistingPlanForElementLevelEventHandler.cs")
+    $openPlanCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\OpenExistingPlanForElementLevelCommand.cs")
     $openPlanToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\open_existing_plan_for_element_level.ts")
     $smartFocusToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\smart_focus_elements.ts")
     $sendCodeToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit.ts")
-    $closeViewCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\CloseViewEventHandler.cs")
+    $closeViewCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\CloseViewEventHandler.cs")
     $clearSelectionToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\clear_selection.ts")
-    $clearSelectionHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ClearSelectionEventHandler.cs")
+    $clearSelectionHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\ClearSelectionEventHandler.cs")
     $deleteReviewViewToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\delete_review_view.ts")
-    $deleteReviewViewHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\DeleteReviewViewEventHandler.cs")
-    $create3dHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\Create3DViewForElementsEventHandler.cs")
-    $sectionBoxHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\SectionBoxElementsEventHandler.cs")
-    $viewHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ViewCommandHelpers.cs")
-    $discoveryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ElementDiscoveryHelpers.cs")
-    $findCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsCommand.cs")
-    $findHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\FindElementsEventHandler.cs")
-    $inspectSheetTextCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSheetTextCommand.cs")
-    $inspectSheetTextHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSheetTextEventHandler.cs")
-    $annotationEvidenceHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\AnnotationEvidenceHelpers.cs")
+    $deleteReviewViewHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\DeleteReviewViewEventHandler.cs")
+    $create3dHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\Create3DViewForElementsEventHandler.cs")
+    $sectionBoxHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\SectionBoxElementsEventHandler.cs")
+    $viewHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\ViewCommandHelpers.cs")
+    $discoveryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\ElementDiscoveryHelpers.cs")
+    $findCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\FindElementsCommand.cs")
+    $findHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\FindElementsEventHandler.cs")
+    $inspectSheetTextCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\InspectSheetTextCommand.cs")
+    $inspectSheetTextHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\InspectSheetTextEventHandler.cs")
+    $annotationEvidenceHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\AnnotationEvidenceHelpers.cs")
     $findToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\find_elements.ts")
     $searchPolicyCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\searchPolicy.ts")
     $broadScanResultCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\broadScanResult.ts")
@@ -677,9 +677,9 @@ try {
     $inspectSchedulesToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_schedules.ts")
     $reconcileScheduleAdapterCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\reconcile_schedule_adapter.ts")
     $countAnnotationsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\count_annotations.ts")
-    $countAnnotationsHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\CountAnnotationsEventHandler.cs")
-    $inspectSchedulesHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\InspectSchedulesEventHandler.cs")
-    $commandSetRegistryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\command.json")
+    $countAnnotationsHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\CountAnnotationsEventHandler.cs")
+    $inspectSchedulesHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\InspectSchedulesEventHandler.cs")
+    $commandSetRegistryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\command.json")
     $setParameterToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_element_parameter.ts")
     $setScheduleCellsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_schedule_cells.ts")
     $setScheduleCellsByTextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_schedule_cells_by_text.ts")
@@ -928,8 +928,8 @@ try {
     Assert-True ($setScheduleCellsByTextToolCode -match 'bool standardScheduleBodyCellWriteForbidden = IsStandardScheduleBodyCellWriteForbidden\(schedule, sectionType\);') "set_schedule_cells_by_text must compute the standard body-cell guard once per schedule."
     Assert-True ($setScheduleCellsByTextToolCode -match 'generic send_code_to_revit') "set_schedule_cells_by_text tool description must steer agents away from raw schedule write snippets."
     Assert-True ($safeCodeGuardsCode -match 'Schedule\.SetCellText') "send_code_to_revit_safe write guards must detect schedule cell text writes."
-    $activateViewHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ActivateViewEventHandler.cs")
-    $viewCommandHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\Commands\View\ViewCommandHelpers.cs")
+    $activateViewHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\ActivateViewEventHandler.cs")
+    $viewCommandHelpersCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\View\ViewCommandHelpers.cs")
     Assert-True ($activateViewHandlerCode -match 'Changed = true,\s+ActiveViewChanged = true') "activate_view must mark ActiveViewChanged when it successfully changes the active view."
     Assert-True ($viewCommandHelpersCode -match 'public bool\? DryRun' -and $viewCommandHelpersCode -match 'public bool\? Deleted' -and $viewCommandHelpersCode -match 'NullValueHandling = NullValueHandling.Ignore') "Navigation view results must not leak cleanup-only delete_review_view fields."
     Assert-True ($closeViewCode -match 'Changed = closed \|\| activeViewChanged') "close_view must mark Changed when a view is closed or active view changes."
@@ -1094,7 +1094,7 @@ try {
     Assert-True ($publishText -notmatch 'Copy-DirectoryFiltered -Source \$RepoRoot -Destination \$packageRoot') "Publish must not stage releases by copying the repo root."
     Assert-True ($publishText -notmatch 'Copy-UserPackDirectory -SourceRelativePath "installer\\nas"') "Versioned user pack must not copy deployment tooling wholesale."
     Assert-True ($publishText -match 'Copy-RevAgentAdminAddonTools' -and $publishText -match 'toolsRoot "addons"') "Publish must copy admin add-ons only into NAS tools\\addons."
-    Assert-True ($publishText -notmatch 'src\\revit-plugin\\revit-mcp-plugin\\revit-mcp-plugin\.csproj') "Release manifest components must not include developer source project files."
+    Assert-True ($publishText -notmatch 'src\\revit-plugin\\revAgentPlugin\\revAgentPlugin\.csproj') "Release manifest components must not include developer source project files."
     $stableLauncherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\revAgent Updater STABLE.cmd")
     Assert-True ($stableLauncherText -match 'revAgent-deploy' -and $stableLauncherText -match 'revit-mcp-deploy' -and $stableLauncherText -match 'if not exist "%RELEASE_ROOT%\\tools\\Install-revAgent-Updater-GUI\.ps1" set "RELEASE_ROOT=%LEGACY_ROOT%"') "Standalone stable launcher must prefer the canonical revAgent NAS root and fall back to the legacy root during migration."
 

@@ -62,9 +62,9 @@ for servers, assemblies, manifests, and installed paths.
 |-- src/
 |   `-- revit-plugin/
 |       |-- README.md
-|       |-- revit-mcp-plugin.sln
-|       |-- revit-mcp-plugin/
-|       |-- RevitMCPCommandSet/
+|       |-- revAgentPlugin.sln
+|       |-- revAgentPlugin/
+|       |-- revAgentCommandSet/
 `-- installer/
     |-- INSTALLATION.md
     |-- install-self-contained.ps1
@@ -79,10 +79,10 @@ for servers, assemblies, manifests, and installed paths.
 ## Source vs Install Payload
 
 `src/revit-plugin` is source code. It is where Revit add-in development happens.
-The main add-in host is `src/revit-plugin/revit-mcp-plugin`.
+The main add-in host is `src/revit-plugin/revAgentPlugin`.
 
 The shared bridge command source lives in
-`src/revit-plugin/RevitMCPCommandSet`. Keep this project limited to the
+`src/revit-plugin/revAgentCommandSet`. Keep this project limited to the
 registered production bridge commands: `send_code_to_revit`,
 `get_current_view_elements`, `get_current_view_info`,
 `get_selected_elements`, `list_open_views`, `activate_view`, `close_view`,
@@ -94,7 +94,7 @@ metadata reference selection, view activation/close, element focus, and 3D
 section box behavior.
 
 The Revit host bridge result boundary is centralized in
-`src/revit-plugin/revit-mcp-plugin/Core/BridgeResultContract.cs`. It owns the
+`src/revit-plugin/revAgentPlugin/Core/BridgeResultContract.cs`. It owns the
 camelCase response serializer and `resultContractVersion` injection used by
 JSON-RPC `result` payloads. Dynamic execution result objects still live in the
 shared command set, but they should return JSON tokens instead of
@@ -120,10 +120,10 @@ The refresh script removes managed debug symbol files from
 `installer/revit-plugin` and `installer/command-payload`; committed installer
 payloads and release ZIPs must not contain `.pdb` or `.mdb` files.
 
-When `src/revit-plugin/RevitMCPCommandSet` changes, validate it explicitly:
+When `src/revit-plugin/revAgentCommandSet` changes, validate it explicitly:
 
 ```powershell
-dotnet build .\src\revit-plugin\RevitMCPCommandSet\RevitMCPCommandSet.csproj -c "Release R22" /p:RevitMcpDeployCommandSet=false
+dotnet build .\src\revit-plugin\revAgentCommandSet\revAgentCommandSet.csproj -c "Release R22" /p:RevAgentDeployCommandSet=false
 ```
 
 The stable shared bridge payload under `installer/command-payload` is refreshed

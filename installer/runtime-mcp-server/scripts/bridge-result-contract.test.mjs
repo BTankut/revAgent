@@ -26,7 +26,7 @@ function assertNotContains(source, text, message) {
   assert.ok(!source.includes(text), message);
 }
 
-const executeCodeEventHandler = readRepo("src/revit-plugin/RevitMCPCommandSet/Commands/ExecuteDynamicCode/ExecuteCodeEventHandler.cs");
+const executeCodeEventHandler = readRepo("src/revit-plugin/revAgentCommandSet/Commands/ExecuteDynamicCode/ExecuteCodeEventHandler.cs");
 assertNotContains(
   executeCodeEventHandler,
   "ResultInfo.Result = JsonConvert.SerializeObject(result)",
@@ -43,7 +43,7 @@ assertContains(
   "Dynamic execution must use a safe token conversion fallback for null, primitive, and unserializable results.",
 );
 
-const bridgeResultContract = readRepo("src/revit-plugin/revit-mcp-plugin/Core/BridgeResultContract.cs");
+const bridgeResultContract = readRepo("src/revit-plugin/revAgentPlugin/Core/BridgeResultContract.cs");
 assertContains(
   bridgeResultContract,
   "public const int ResultContractVersion = 2",
@@ -66,8 +66,8 @@ assertContains(
 );
 
 for (const relativePath of [
-  "src/revit-plugin/revit-mcp-plugin/Core/CommandExecutor.cs",
-  "src/revit-plugin/revit-mcp-plugin/Core/SocketService.cs",
+  "src/revit-plugin/revAgentPlugin/Core/CommandExecutor.cs",
+  "src/revit-plugin/revAgentPlugin/Core/SocketService.cs",
 ]) {
   const source = readRepo(relativePath);
   assertContains(
@@ -82,7 +82,7 @@ for (const relativePath of [
   );
 }
 
-const socketService = readRepo("src/revit-plugin/revit-mcp-plugin/Core/SocketService.cs");
+const socketService = readRepo("src/revit-plugin/revAgentPlugin/Core/SocketService.cs");
 assertContains(
   socketService,
   "BridgeResultContract.ToCamelCaseToken(result)",
@@ -109,7 +109,7 @@ assertContains(
   "Native status history must read logicalToolName/toolName from request params.",
 );
 
-const mcpTaskStatusService = readRepo("src/revit-plugin/revit-mcp-plugin/Core/McpTaskStatusService.cs");
+const mcpTaskStatusService = readRepo("src/revit-plugin/revAgentPlugin/Core/McpTaskStatusService.cs");
 for (const field of ['JsonProperty("wrapperAction"', 'JsonProperty("logicalToolName"', 'JsonProperty("parentTaskName"', 'JsonProperty("parentTaskId"']) {
   assertContains(
     mcpTaskStatusService,
@@ -118,7 +118,7 @@ for (const field of ['JsonProperty("wrapperAction"', 'JsonProperty("logicalToolN
   );
 }
 
-const viewCommandHelpers = readRepo("src/revit-plugin/RevitMCPCommandSet/Commands/View/ViewCommandHelpers.cs");
+const viewCommandHelpers = readRepo("src/revit-plugin/revAgentCommandSet/Commands/View/ViewCommandHelpers.cs");
 for (const field of ["public bool? DryRun", "public bool? Deleted", "public bool? ConfirmDelete", "public bool? TargetIsReviewView", "public int? DeletedElementCount"]) {
   assertContains(
     viewCommandHelpers,

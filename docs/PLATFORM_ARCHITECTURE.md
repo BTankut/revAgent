@@ -39,8 +39,8 @@ snippet through `send_code_to_revit`, read socket status, or orchestrate several
 bridge commands into a workflow.
 
 The current shared Revit bridge is a single installed command set, packaged
-under `revAgentCommandSet` while the deep source project remains
-`RevitMCPCommandSet`, with 13 bridge commands: `send_code_to_revit`,
+and sourced under `revAgentCommandSet`, with registered bridge commands such as
+`send_code_to_revit`,
 `get_current_view_elements`, `get_current_view_info`,
 `get_selected_elements`, `list_open_views`, `activate_view`, `close_view`,
 `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`,

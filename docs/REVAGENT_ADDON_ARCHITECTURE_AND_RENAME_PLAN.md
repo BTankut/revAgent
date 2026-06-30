@@ -239,10 +239,10 @@ read its `channels\stable.json`.
 
 ### Internal Code Rename Strategy
 
-Internal implementation names such as `RevitMCPCommandSet`, source folder
-names, class names, and compatibility module names should be cleaned in later
-small PRs. Do not bundle these deep renames into the add-on split unless a file
-is already being moved for the add-on architecture.
+Most Revit add-in source project and namespace names now use revAgent
+identities. Remaining legacy names should be cleaned only in small PRs when
+they are not public tool ids, external SDK/package ids, rollback aliases, or
+legacy cleanup paths.
 
 ## Proposed PR Sequence
 
