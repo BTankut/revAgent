@@ -8,8 +8,7 @@ $script:RevAgentLegacyLauncherPatterns = @(
     "Show-Revit-MCP",
     "Run-Revit-MCP",
     "RevitMCP",
-    "C:\ProgramData\DPE\RevitMCP",
-    "revit-mcp-deploy"
+    "C:\ProgramData\DPE\RevitMCP"
 )
 
 function Test-RevAgentTextContainsAny {

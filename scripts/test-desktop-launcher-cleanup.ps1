@@ -57,7 +57,14 @@ try {
     Set-Content -LiteralPath $legacyCmd -Value "@echo off`r`ncall `"\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy\tools\Revit MCP Updater STABLE.cmd`"" -Encoding ASCII
 
     $productCmd = Join-Path $desktopRoot "revAgent Updater STABLE.cmd"
-    Set-Content -LiteralPath $productCmd -Value "@echo off`r`ncall `"\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\revAgent Updater STABLE.cmd`"" -Encoding ASCII
+    Set-Content -LiteralPath $productCmd -Value @"
+@echo off
+set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+set "LEGACY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
+set "RELEASE_ROOT=%PRIMARY_ROOT%"
+if not exist "%RELEASE_ROOT%\tools\Install-revAgent-Updater-GUI.ps1" set "RELEASE_ROOT=%LEGACY_ROOT%"
+call "%RELEASE_ROOT%\tools\revAgent Updater STABLE.cmd"
+"@ -Encoding ASCII
 
     $unrelatedScript = Join-Path $desktopRoot "project-helper.ps1"
     Set-Content -LiteralPath $unrelatedScript -Value "Write-Host 'not a revAgent launcher'" -Encoding ASCII
