@@ -405,6 +405,80 @@ try {
     $insufficientLauncherAction = @($insufficientLauncherResult.actions | Where-Object { $_.action -eq "collect_desktop_launcher_evidence" }) | Select-Object -First 1
     Assert-True ($null -ne $insufficientLauncherAction) "Insufficient desktop launcher evidence action was not reported."
 
+    foreach ($machine in @("NET01", "EMIN", "YASAR", "LEGACY", "WS3")) {
+        $machineLauncherPath = Join-Path (Join-Path (Join-Path $reportsRoot "machines") $machine) "desktop-launcher-latest.json"
+        Write-TestJson -Path $machineLauncherPath -Value ([ordered]@{
+                schemaVersion = "revagent.desktopLauncherEvidence.v1"
+                mode = "ScanLocal"
+                machine = $machine
+                passed = $true
+                expectedMachineCount = 1
+                checkedMachineCount = 1
+                missingMachineCount = 0
+                failedMachineCount = 0
+                checkedLauncherCount = 1
+                productLauncherCount = 1
+                legacyLauncherCount = 0
+                legacyRootReferenceCount = 0
+                completedAtUtc = $nowUtc.AddSeconds(-30).ToString("o")
+                note = "Fixture per-machine desktop launcher evidence."
+            })
+    }
+
+    $combinedLauncherConfigPath = Join-Path $tempRoot "rollout-readiness-combined-launcher-evidence.json"
+    Write-TestJson -Path $combinedLauncherConfigPath -Value ([ordered]@{
+            releaseRoot = $releaseRoot
+            reportsRoot = $reportsRoot
+            compatibilityReleaseRoots = @($legacyReleaseRoot)
+            expectedMachines = @("NET01", "EMIN", "YASAR", "LEGACY", "WS3", "OLD")
+            outOfScopeMachines = @(
+                [ordered]@{
+                    name = "OLD"
+                    reason = "Retired pilot workstation."
+                }
+            )
+            liveSmokeEvidence = @(
+                [ordered]@{
+                    machine = "NET01"
+                    passed = $true
+                    stableVersion = $stableVersion
+                    stableCommit = $stableCommit
+                    revitVersion = "2022"
+                    model = "RME_basic_sample_project.rvt"
+                    completedAtUtc = $nowUtc.AddMinutes(-2).ToString("o")
+                    note = "Fixture live Revit smoke evidence."
+                }
+            )
+            desktopLauncherEvidence = @(
+                [ordered]@{
+                    passed = $true
+                    expectedMachineCount = 4
+                    checkedMachineCount = 4
+                    missingMachineCount = 0
+                    failedMachineCount = 0
+                    legacyLauncherCount = 0
+                    legacyRootReferenceCount = 0
+                    completedAtUtc = $nowUtc.AddMinutes(-1).ToString("o")
+                    note = "Fixture aggregate intentionally misses one machine; per-machine evidence completes coverage."
+                    machines = @(
+                        [ordered]@{ machine = "NET01"; passed = $true; state = "passed"; legacyLauncherCount = 0; legacyRootReferenceCount = 0 },
+                        [ordered]@{ machine = "EMIN"; passed = $true; state = "passed"; legacyLauncherCount = 0; legacyRootReferenceCount = 0 },
+                        [ordered]@{ machine = "YASAR"; passed = $true; state = "passed"; legacyLauncherCount = 0; legacyRootReferenceCount = 0 },
+                        [ordered]@{ machine = "LEGACY"; passed = $true; state = "passed"; legacyLauncherCount = 0; legacyRootReferenceCount = 0 }
+                    )
+                }
+            )
+        })
+
+    $combinedLauncherResult = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
+        -ConfigPath $combinedLauncherConfigPath `
+        -NowUtc $nowUtc `
+        -OutputJson | ConvertFrom-Json
+    Assert-Equal $combinedLauncherResult.summary.desktopLauncher.state "verified" "Per-machine desktop launcher evidence should complete aggregate coverage."
+    Assert-Equal $combinedLauncherResult.summary.desktopLauncher.latest.source "combined:desktopLauncherMachineEvidence" "Combined desktop launcher evidence source mismatch."
+    Assert-Equal ([int]$combinedLauncherResult.summary.desktopLauncher.latest.checkedMachineCount) 5 "Combined desktop launcher checked count mismatch."
+    Assert-Equal ([int]$combinedLauncherResult.summary.desktopLauncher.latest.missingMachineCount) 0 "Combined desktop launcher missing count mismatch."
+
     $closureOutputPath = Join-Path $tempRoot "closure\rollout-readiness-final.json"
     $closureResult = & (Join-Path $RepoRoot "scripts\invoke-rollout-closure-audit.ps1") `
         -ConfigPath $configPath `
