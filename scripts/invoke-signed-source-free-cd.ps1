@@ -21,6 +21,8 @@ param(
     [string]$Version = "",
     [long]$ReleaseSequence = 0,
     [long]$MinimumAcceptedReleaseSequence = 0,
+    [ValidateSet("revit-mcp-skill", "revAgent")]
+    [string]$ReleaseAppId = "revit-mcp-skill",
     [ValidateSet("stable")]
     [string]$Channel = "stable",
     [switch]$SkipEngineeringGates,
@@ -102,6 +104,7 @@ $publishArgs = @{
     SigningKeyId = $SigningKeyId
     ReleaseSequence = $ReleaseSequence
     MinimumAcceptedReleaseSequence = $MinimumAcceptedReleaseSequence
+    ReleaseAppId = $ReleaseAppId
     TrustedReleaseKeysPath = $trustedKeysFullPath
     RequireSigning = $true
 }
@@ -130,6 +133,7 @@ $result = [pscustomobject][ordered]@{
     action = "signed-source-free-cd-build"
     releaseRoot = $ReleaseRoot
     channel = $Channel
+    app = [string]$channelDocument.app
     version = [string]$channelDocument.version
     releaseSequence = if ($channelDocument.PSObject.Properties["releaseSequence"]) { [long]$channelDocument.releaseSequence } else { [long]0 }
     trustedKeysPath = $trustedKeysFullPath
