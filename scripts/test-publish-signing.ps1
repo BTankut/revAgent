@@ -120,13 +120,13 @@ try {
     $channel = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
     $manifestSignature = Get-Content -Raw -LiteralPath $manifestSignaturePath | ConvertFrom-Json
     $channelSignature = Get-Content -Raw -LiteralPath $channelSignaturePath | ConvertFrom-Json
-    Assert-Equal ([string]$manifest.app) "revit-mcp-skill" "Default publish must keep the legacy release app id for rolling updater compatibility."
-    Assert-Equal ([string]$channel.app) "revit-mcp-skill" "Default channel publish must keep the legacy release app id for rolling updater compatibility."
-    Assert-Equal ([string]$manifestSignature.app) "revit-mcp-skill" "Default manifest signature envelope must keep the legacy release app id."
-    Assert-Equal ([string]$channelSignature.app) "revit-mcp-skill" "Default channel signature envelope must keep the legacy release app id."
-    Assert-Equal ([string]$manifest.package.fileName) ("revit-mcp-skill-{0}.zip" -f $version) "Default publish must keep the legacy ZIP filename for rolling updater compatibility."
-    Assert-True ([string]$manifest.package.path -match "revit-mcp-skill-") "Default release manifest package path must keep the legacy ZIP base name."
-    Assert-True ([string]$channel.packagePath -match "revit-mcp-skill-") "Default channel package path must keep the legacy ZIP base name."
+    Assert-Equal ([string]$manifest.app) "revAgent" "Default publish must use the revAgent release app id after the compatibility switch."
+    Assert-Equal ([string]$channel.app) "revAgent" "Default channel publish must use the revAgent release app id after the compatibility switch."
+    Assert-Equal ([string]$manifestSignature.app) "revAgent" "Default manifest signature envelope must use the revAgent release app id."
+    Assert-Equal ([string]$channelSignature.app) "revAgent" "Default channel signature envelope must use the revAgent release app id."
+    Assert-Equal ([string]$manifest.package.fileName) ("revAgent-{0}.zip" -f $version) "Default publish must use the revAgent ZIP filename after the compatibility switch."
+    Assert-True ([string]$manifest.package.path -match "revAgent-") "Default release manifest package path must use the revAgent ZIP base name."
+    Assert-True ([string]$channel.packagePath -match "revAgent-") "Default channel package path must use the revAgent ZIP base name."
     Assert-True (-not [System.IO.Path]::IsPathRooted([string]$channel.manifestPath)) "Published channel manifestPath should be relative so signed artifacts can move from CD staging to NAS."
     Assert-True (-not [System.IO.Path]::IsPathRooted([string]$channel.packagePath)) "Published channel packagePath should be relative so signed artifacts can move from CD staging to NAS."
     Assert-Equal ([string]$channel.packagePath) ([string]$manifest.package.path) "Channel and manifest package paths should stay byte-identical for signature consistency."
@@ -151,48 +151,48 @@ try {
     Assert-True $aggregateVerification.success "Published signed release aggregate should pass enforce-mode verification."
     Assert-Equal $aggregateVerification.releaseSequence ([long]$releaseSequence) "Aggregate verification must preserve releaseSequence."
 
-    Write-Host "Test explicit revAgent release app and package identity publish"
-    $revAgentReleaseRoot = Join-Path $tempRoot "release-root-revagent"
-    $revAgentVersion = "2026.06.22.2-revagent-app-test"
-    $revAgentReleaseSequence = 1002
+    Write-Host "Test explicit legacy release app and package identity publish"
+    $legacyReleaseRoot = Join-Path $tempRoot "release-root-legacy"
+    $legacyVersion = "2026.06.22.2-legacy-app-test"
+    $legacyReleaseSequence = 1002
     [void](& (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1") `
-            -ReleaseRoot $revAgentReleaseRoot `
-            -Version $revAgentVersion `
+            -ReleaseRoot $legacyReleaseRoot `
+            -Version $legacyVersion `
             -AllowDirty `
             -Force `
             -SigningPrivateKeyPath $privateKeyPath `
             -SigningKeyId $keyId `
-            -ReleaseSequence $revAgentReleaseSequence `
+            -ReleaseSequence $legacyReleaseSequence `
             -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
             -TrustedReleaseKeysPath $trustedKeysPath `
-            -ReleaseAppId "revAgent" `
-            -ReleasePackageBaseName "revAgent" 6>&1 | Out-String)
+            -ReleaseAppId "revit-mcp-skill" `
+            -ReleasePackageBaseName "revit-mcp-skill" 6>&1 | Out-String)
 
-    $revAgentManifestPath = Join-Path $revAgentReleaseRoot (Join-Path "releases" (Join-Path $revAgentVersion "manifest.json"))
-    $revAgentManifestSignaturePath = Join-Path $revAgentReleaseRoot (Join-Path "releases" (Join-Path $revAgentVersion "manifest.sig.json"))
-    $revAgentChannelPath = Join-Path $revAgentReleaseRoot "channels\stable.json"
-    $revAgentChannelSignaturePath = Join-Path $revAgentReleaseRoot "channels\stable.sig.json"
-    $revAgentManifest = Get-Content -Raw -LiteralPath $revAgentManifestPath | ConvertFrom-Json
-    $revAgentChannel = Get-Content -Raw -LiteralPath $revAgentChannelPath | ConvertFrom-Json
-    $revAgentManifestSignature = Get-Content -Raw -LiteralPath $revAgentManifestSignaturePath | ConvertFrom-Json
-    $revAgentChannelSignature = Get-Content -Raw -LiteralPath $revAgentChannelSignaturePath | ConvertFrom-Json
-    Assert-Equal ([string]$revAgentManifest.app) "revAgent" "Explicit revAgent release app id must be written to the release manifest."
-    Assert-Equal ([string]$revAgentChannel.app) "revAgent" "Explicit revAgent release app id must be written to the channel manifest."
-    Assert-Equal ([string]$revAgentManifestSignature.app) "revAgent" "Explicit revAgent release app id must be written to the manifest signature envelope."
-    Assert-Equal ([string]$revAgentChannelSignature.app) "revAgent" "Explicit revAgent release app id must be written to the channel signature envelope."
-    Assert-Equal ([string]$revAgentManifest.package.fileName) ("revAgent-{0}.zip" -f $revAgentVersion) "Explicit revAgent package base name must be written to the release manifest."
-    Assert-True ([string]$revAgentManifest.package.path -match "revAgent-") "Explicit revAgent package base name must be written to the manifest package path."
-    Assert-True ([string]$revAgentChannel.packagePath -match "revAgent-") "Explicit revAgent package base name must be written to the channel package path."
-    Assert-True (Test-Path -LiteralPath (Join-Path $revAgentReleaseRoot (Join-Path "releases" (Join-Path $revAgentVersion ("revAgent-{0}.zip" -f $revAgentVersion)))) -PathType Leaf) "Explicit revAgent package ZIP should be created with the revAgent base name."
-    $revAgentAggregateVerification = Test-RevAgentReleaseDistributionIntegrity `
-        -ChannelPath $revAgentChannelPath `
-        -Channel $revAgentChannel `
-        -ReleaseManifestPath $revAgentManifestPath `
-        -ReleaseManifest $revAgentManifest `
+    $legacyManifestPath = Join-Path $legacyReleaseRoot (Join-Path "releases" (Join-Path $legacyVersion "manifest.json"))
+    $legacyManifestSignaturePath = Join-Path $legacyReleaseRoot (Join-Path "releases" (Join-Path $legacyVersion "manifest.sig.json"))
+    $legacyChannelPath = Join-Path $legacyReleaseRoot "channels\stable.json"
+    $legacyChannelSignaturePath = Join-Path $legacyReleaseRoot "channels\stable.sig.json"
+    $legacyManifest = Get-Content -Raw -LiteralPath $legacyManifestPath | ConvertFrom-Json
+    $legacyChannel = Get-Content -Raw -LiteralPath $legacyChannelPath | ConvertFrom-Json
+    $legacyManifestSignature = Get-Content -Raw -LiteralPath $legacyManifestSignaturePath | ConvertFrom-Json
+    $legacyChannelSignature = Get-Content -Raw -LiteralPath $legacyChannelSignaturePath | ConvertFrom-Json
+    Assert-Equal ([string]$legacyManifest.app) "revit-mcp-skill" "Explicit legacy release app id must be written to the release manifest."
+    Assert-Equal ([string]$legacyChannel.app) "revit-mcp-skill" "Explicit legacy release app id must be written to the channel manifest."
+    Assert-Equal ([string]$legacyManifestSignature.app) "revit-mcp-skill" "Explicit legacy release app id must be written to the manifest signature envelope."
+    Assert-Equal ([string]$legacyChannelSignature.app) "revit-mcp-skill" "Explicit legacy release app id must be written to the channel signature envelope."
+    Assert-Equal ([string]$legacyManifest.package.fileName) ("revit-mcp-skill-{0}.zip" -f $legacyVersion) "Explicit legacy package base name must be written to the release manifest."
+    Assert-True ([string]$legacyManifest.package.path -match "revit-mcp-skill-") "Explicit legacy package base name must be written to the manifest package path."
+    Assert-True ([string]$legacyChannel.packagePath -match "revit-mcp-skill-") "Explicit legacy package base name must be written to the channel package path."
+    Assert-True (Test-Path -LiteralPath (Join-Path $legacyReleaseRoot (Join-Path "releases" (Join-Path $legacyVersion ("revit-mcp-skill-{0}.zip" -f $legacyVersion)))) -PathType Leaf) "Explicit legacy package ZIP should be created with the legacy base name."
+    $legacyAggregateVerification = Test-RevAgentReleaseDistributionIntegrity `
+        -ChannelPath $legacyChannelPath `
+        -Channel $legacyChannel `
+        -ReleaseManifestPath $legacyManifestPath `
+        -ReleaseManifest $legacyManifest `
         -TrustedKeys $trustedKeys `
         -Policy "enforce"
-    Assert-True $revAgentAggregateVerification.success "Explicit revAgent release app id should pass enforce-mode verification."
-    Assert-Equal $revAgentAggregateVerification.releaseSequence ([long]$revAgentReleaseSequence) "revAgent app id aggregate verification must preserve releaseSequence."
+    Assert-True $legacyAggregateVerification.success "Explicit legacy release app id should pass enforce-mode verification."
+    Assert-Equal $legacyAggregateVerification.releaseSequence ([long]$legacyReleaseSequence) "Legacy app id aggregate verification must preserve releaseSequence."
 
     $releaseFiles = Get-ChildItem -LiteralPath $releaseRoot -Recurse -File
     Assert-True (-not @($releaseFiles | Where-Object { $_.Name -eq "release-signing-private.xml" }).Count) "Private signing key must not be copied into release artifacts."

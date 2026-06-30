@@ -341,7 +341,7 @@ releases\
   <version>\
     manifest.json
     manifest.sig.json
-    revit-mcp-skill-<version>.zip
+    revAgent-<version>.zip
 tools\
 ```
 

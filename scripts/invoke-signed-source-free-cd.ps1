@@ -22,9 +22,9 @@ param(
     [long]$ReleaseSequence = 0,
     [long]$MinimumAcceptedReleaseSequence = 0,
     [ValidateSet("revit-mcp-skill", "revAgent")]
-    [string]$ReleaseAppId = "revit-mcp-skill",
+    [string]$ReleaseAppId = "revAgent",
     [ValidateSet("revit-mcp-skill", "revAgent")]
-    [string]$ReleasePackageBaseName = "revit-mcp-skill",
+    [string]$ReleasePackageBaseName = "revAgent",
     [ValidateSet("stable")]
     [string]$Channel = "stable",
     [switch]$SkipEngineeringGates,

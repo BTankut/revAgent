@@ -42,7 +42,7 @@ to a non-stable test channel until the release is accepted.
     stable.sig.json
   releases\
     2026.05.08.1500-a1b2c3d4\
-      revit-mcp-skill-2026.05.08.1500-a1b2c3d4.zip
+      revAgent-2026.05.08.1500-a1b2c3d4.zip
       manifest.json
       manifest.sig.json
   reports\
@@ -119,20 +119,24 @@ rebuild or re-sign the artifact. The local runner staging handoff avoids GitHub
 Actions artifact storage quota, so the selected runner labels must resolve to
 the office runner that owns both signing-key and NAS access.
 
-The manual dispatch also exposes `release_identity`. Keep the default
-`revit-mcp-skill` identity until every in-scope machine has installed the
-compatibility updater that accepts both legacy and `revAgent` release
-identities. After that rollout is verified, the operator can select `revAgent`
-to produce matching `revAgent` channel app ids and release ZIP names.
-Before changing the default identity, add this gate to the rollout readiness
-config and require the readiness summary state to be `verified`:
+The manual dispatch also exposes `release_identity`. The default identity is
+now `revAgent`, which produces matching `revAgent` channel app ids and release
+ZIP names. Select `revit-mcp-skill` only for a deliberate legacy compatibility
+recovery publish.
+
+Before changing a producer identity in either direction, keep this gate in the
+rollout readiness config and require the readiness summary state to be
+`verified`. The gate normally checks every in-scope machine. For a deliberate
+pilot-gated switch, set `requiredMachines` to the machines that have live
+compatibility evidence:
 
 ```json
 "releaseIdentityProducerSwitch": {
   "enabled": true,
   "targetIdentity": "revAgent",
   "compatibleStableVersion": "2026.06.30.xxx-xxxxxxxx",
-  "compatibleStableCommit": "commit-that-contains-dual-app-identity-consumers"
+  "compatibleStableCommit": "commit-that-contains-dual-app-identity-consumers",
+  "requiredMachines": ["NET01", "OGUZHAN", "HAFIZE"]
 }
 ```
 

@@ -304,6 +304,27 @@ try {
     Assert-Equal ([int]$identityGateResult.summary.releaseIdentityProducerSwitch.pendingMachineCount) 2 "Release identity switch pending machine count mismatch."
     Assert-Equal ([int]$identityGateResult.summary.actionRequiredCount) 5 "Release identity switch gate should add one rollout action while enabled and pending."
 
+    $identityGatePilotConfig = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
+    $identityGatePilotConfig | Add-Member -MemberType NoteProperty -Name "releaseIdentityProducerSwitch" -Value ([ordered]@{
+            enabled = $true
+            targetIdentity = "revAgent"
+            compatibleStableVersion = $stableVersion
+            compatibleStableCommit = $stableCommit
+            requiredMachines = @("NET01", "EMIN")
+        })
+    $identityGatePilotConfigPath = Join-Path $tempRoot "rollout-readiness-identity-gate-pilot.json"
+    Write-TestJson -Path $identityGatePilotConfigPath -Value $identityGatePilotConfig
+    $identityGatePilotResult = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
+        -ConfigPath $identityGatePilotConfigPath `
+        -NowUtc $nowUtc `
+        -OutputJson | ConvertFrom-Json
+    Assert-Equal $identityGatePilotResult.summary.releaseIdentityProducerSwitch.state "verified" "Release identity switch should verify when the configured pilot machines report the compatible stable."
+    Assert-Equal $identityGatePilotResult.summary.releaseIdentityProducerSwitch.verificationScope "configured_required_machines" "Release identity switch pilot scope mismatch."
+    Assert-Equal ([int]$identityGatePilotResult.summary.releaseIdentityProducerSwitch.requiredMachineCount) 2 "Release identity switch pilot required count mismatch."
+    Assert-Equal ([int]$identityGatePilotResult.summary.releaseIdentityProducerSwitch.verifiedMachineCount) 2 "Release identity switch pilot verified count mismatch."
+    Assert-Equal ([int]$identityGatePilotResult.summary.releaseIdentityProducerSwitch.pendingMachineCount) 0 "Release identity switch pilot pending count mismatch."
+    Assert-Equal ([int]$identityGatePilotResult.summary.actionRequiredCount) 4 "Verified pilot release identity switch should not add a rollout action."
+
     $identityGateReadyConfig = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
     $identityGateReadyConfig.outOfScopeMachines = @(
         [ordered]@{ name = "OLD"; reason = "Retired pilot workstation." },

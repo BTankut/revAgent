@@ -777,7 +777,7 @@ channels\
   stable.sig.json
 releases\
   <version>\
-    revit-mcp-skill-<version>.zip
+    revAgent-<version>.zip
     manifest.json
     manifest.sig.json
 reports\
