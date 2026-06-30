@@ -62,6 +62,10 @@ Keep legacy names only when they are one of these exact identities:
 - Production CD and STABLE launchers now publish/use only the canonical
   `revAgent-deploy` NAS root by default. The old `revit-mcp-deploy` root is no
   longer a default publish target or launcher fallback.
+- Release consumers now accept both legacy `revit-mcp-skill` and new
+  `revAgent` app identities in signed channel, signature-envelope, and release
+  manifest validation. Producers still emit `revit-mcp-skill` until that
+  compatibility build is deployed to the in-scope machines.
 
 ## Intentional Compatibility Names
 
@@ -72,6 +76,7 @@ These are expected to remain until a larger migration explicitly replaces them.
 | Public runtime tool names | `get_revit_mcp_status` | Agents, docs, tests, and installed tool schemas already depend on the exact name. A rename needs aliasing and backward-compatibility tests. |
 | Environment variables | preferred `REVAGENT_PORT`, `REVAGENT_TARGET`, `REVAGENT_MAX_MESSAGE_BYTES`; legacy fallback `REVIT_MCP_*` | New runtime/add-in reads prefer the revAgent names. Legacy aliases stay so older launchers and scripts do not break during rolling updates. |
 | External SDK/package identity | `RevitMCPSDK`, `mcp-servers-for-revit` | These are upstream package and license identities, not product UI strings. |
+| Release app and ZIP identity | current producer emits `revit-mcp-skill`; consumers accept `revAgent` | This must roll forward in two steps. First deploy consumers that accept both identities, then switch producers and ZIP naming in a later PR after workstation uptake is verified. |
 | Installer helper API compatibility names | `Read-RevitMcpJsonFile`, `Get-RevitMcpUpdateDecision`, legacy `installer/lib/RevitMcp.*.psm1` wrappers | Canonical modules now export `RevAgent*` aliases for public helper functions. The original function definitions and wrapper files remain so older scripts and rollback paths keep working during rolling updates. |
 | Retired compatibility deployment root | `revit-mcp-deploy` | Default dual-publish and launcher fallback have been removed after readiness evidence showed canonical `revAgent-deploy` channel paths and no copied legacy-root launchers for the in-scope machines. Keep the literal only for explicit diagnostics, migration recognition, historical docs, and any data-gated physical old-root cleanup/freeze. |
 | Rolling-update runtime coordination | `revit-mcp-command-locks`, fallback `revit-mcp-instances.json` | The new runtime writes revAgent temp artifacts, but the command lock root and legacy registry fallback remain compatible while old and new workstation runtimes can coexist during rollout. |
@@ -102,6 +107,13 @@ These are expected to remain until a larger migration explicitly replaces them.
      stale or partial.
    - Keep a rollback note and archival backup before deleting or freezing the
      old root.
+
+3. **Release app identity producer switch**
+   - After the compatibility updater is deployed to every in-scope machine,
+     switch channel/signature/release-manifest producers from `revit-mcp-skill`
+     to `revAgent`.
+   - Rename package ZIP/cache/backup names only after updater acceptance and
+     rollback behavior are covered by tests.
 
 ## Do Not Bulk Rename
 

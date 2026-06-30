@@ -61,12 +61,13 @@ function New-TestSignatureEnvelope {
         [Parameter(Mandatory = $true)][System.Security.Cryptography.RSACryptoServiceProvider]$PrivateKey,
         [Parameter(Mandatory = $true)][string]$PublicKeyFingerprint,
         [string]$SignedObject = "channel",
+        [string]$App = "revit-mcp-skill",
         [string]$KeyId = "test-rsa-2026"
     )
 
     $envelope = [ordered]@{
         schemaVersion = 1
-        app = "revit-mcp-skill"
+        app = $App
         signedObject = $SignedObject
         algorithm = "RS256"
         keyId = $KeyId
@@ -180,6 +181,11 @@ try {
     Assert-True $generatedValid.success "Generated detached channel signature should verify."
     Assert-Equal $generatedEnvelope.contentSha256 (Get-RevAgentCanonicalJsonSha256 -Value $channel) "Generated signature envelope must bind the canonical content hash."
 
+    Write-Host "Test release app identity compatibility"
+    Assert-True (Test-RevAgentReleaseAppIdentity -App "revit-mcp-skill") "Legacy release app identity should remain accepted during rolling updates."
+    Assert-True (Test-RevAgentReleaseAppIdentity -App "revAgent") "revAgent release app identity should be accepted before producers emit it."
+    Assert-True (-not (Test-RevAgentReleaseAppIdentity -App "other-app")) "Unknown release app identity must remain rejected."
+
     Write-Host "Test signedObject allowlist is case-sensitive"
     $wrongCaseSignedObjectEnvelope = Copy-OrderedMap -Value $envelope
     $wrongCaseSignedObjectEnvelope["signedObject"] = "Channel"
@@ -235,6 +241,31 @@ try {
         Assert-Equal $validAggregate.state "verified" "Valid signed release aggregate should be verified."
         Assert-Equal $validAggregate.releaseSequence ([long]1001) "Valid signed release aggregate should report releaseSequence."
         Assert-Equal $validAggregate.highestAcceptedReleaseSequence ([long]1001) "Valid signed release aggregate should advance highest accepted sequence."
+
+        Write-Host "Test updater aggregate accepts revAgent app identity"
+        $revAgentChannel = Copy-OrderedMap -Value $channel
+        $revAgentChannel["app"] = "revAgent"
+        $revAgentManifest = Copy-OrderedMap -Value $manifest
+        $revAgentManifest["app"] = "revAgent"
+        $revAgentChannelPath = Join-Path $tempRoot "stable-revagent.json"
+        $revAgentSignaturePath = Join-Path $tempRoot "stable-revagent.sig.json"
+        $revAgentManifestPath = Join-Path $tempRoot "manifest-revagent.json"
+        $revAgentManifestSignaturePath = Join-Path $tempRoot "manifest-revagent.sig.json"
+        $revAgentEnvelope = New-TestSignatureEnvelope -Content $revAgentChannel -PrivateKey $rsa -PublicKeyFingerprint $publicKeyFingerprint -App "revAgent"
+        $revAgentManifestEnvelope = New-TestSignatureEnvelope -Content $revAgentManifest -PrivateKey $rsa -PublicKeyFingerprint $publicKeyFingerprint -SignedObject "release-manifest" -App "revAgent"
+        $revAgentChannel | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $revAgentChannelPath -Encoding UTF8
+        $revAgentEnvelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $revAgentSignaturePath -Encoding UTF8
+        $revAgentManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $revAgentManifestPath -Encoding UTF8
+        $revAgentManifestEnvelope | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $revAgentManifestSignaturePath -Encoding UTF8
+        $revAgentAggregate = Test-RevAgentReleaseDistributionIntegrity `
+            -ChannelPath $revAgentChannelPath `
+            -Channel $revAgentChannel `
+            -ReleaseManifestPath $revAgentManifestPath `
+            -ReleaseManifest $revAgentManifest `
+            -TrustedKeys $jsonTrustedKeys `
+            -Policy "compatibility"
+        Assert-True $revAgentAggregate.success "revAgent app identity should pass signed release distribution integrity."
+        Assert-Equal $revAgentAggregate.state "verified" "revAgent app identity aggregate should be verified."
 
         Write-Host "Test updater aggregate blocks older signed release replay"
         $replayAggregate = Test-RevAgentReleaseDistributionIntegrity `

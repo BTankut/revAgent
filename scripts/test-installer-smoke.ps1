@@ -469,6 +469,7 @@ try {
     Assert-True ($configSyncText -match '\$sourceNames\.Contains\(\$item\.Name\)' -and $configSyncText -match 'Copy-Item -LiteralPath \$item\.FullName -Destination \$DestinationRoot -Recurse -Force') "Config sync helper must mirror shipped config items without nesting existing directories."
     Assert-True ($updateText -match 'distributionIntegrity = \$script:RevAgentDistributionIntegrity') "Updater reports must include distribution integrity status."
     Assert-True ($updateText -match 'Test-RevAgentReleaseDistributionIntegrity') "Updater must evaluate release signatures through the shared integrity helper."
+    Assert-True ($updateText -match 'Test-RevAgentReleaseAppIdentity' -and $updateText -match 'Channel manifest app is not revAgent or revit-mcp-skill') "Updater must accept revAgent and legacy release app identities during rolling app-id migration."
     Assert-True ($updateText -match '\[string\]\$DistributionIntegrityPolicy = ""') "Updater must expose an explicit distribution integrity policy override."
     Assert-True ($updateText -match '\[switch\]\$AllowSignedReleaseRollback') "Updater must require an explicit operator flag for signed rollback bypass."
     Assert-True ($updateText -match 'Get-InstalledHighestAcceptedReleaseSequence') "Updater must persist and reuse the highest accepted signed release sequence."

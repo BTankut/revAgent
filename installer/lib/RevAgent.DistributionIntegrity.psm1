@@ -2,6 +2,19 @@ Set-StrictMode -Version Latest
 
 $script:RevitMcpCanonicalizationId = "RFC8785-JCS-SHA256-v1"
 $script:RevitMcpSignatureAlgorithm = "RS256"
+$script:RevitMcpLegacyReleaseAppId = "revit-mcp-skill"
+$script:RevAgentReleaseAppId = "revAgent"
+
+function Test-RevitMcpReleaseAppIdentity {
+    param([AllowNull()][string]$App)
+
+    return [string]::Equals($App, $script:RevitMcpLegacyReleaseAppId, [System.StringComparison]::Ordinal) -or
+        [string]::Equals($App, $script:RevAgentReleaseAppId, [System.StringComparison]::Ordinal)
+}
+
+function Get-RevitMcpAcceptedReleaseAppIdentityText {
+    return "'$script:RevitMcpLegacyReleaseAppId' or '$script:RevAgentReleaseAppId'"
+}
 
 function ConvertTo-RevitMcpJsonString {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
@@ -628,8 +641,8 @@ function Test-RevitMcpSignatureEnvelopeShape {
     if ($schemaVersion -ne 1) {
         return Invoke-RevitMcpDistributionIntegrityFailure -Reason "unsupported_signature_schema" -Message "Unsupported signature envelope schemaVersion '$schemaVersion'." -ThrowOnFailure:$ThrowOnFailure
     }
-    if ($app -ne "revit-mcp-skill") {
-        return Invoke-RevitMcpDistributionIntegrityFailure -Reason "invalid_signature_app" -Message "Signature envelope app is '$app', expected 'revit-mcp-skill'." -SignedObject $signedObject -ThrowOnFailure:$ThrowOnFailure
+    if (-not (Test-RevitMcpReleaseAppIdentity -App $app)) {
+        return Invoke-RevitMcpDistributionIntegrityFailure -Reason "invalid_signature_app" -Message "Signature envelope app is '$app', expected $(Get-RevitMcpAcceptedReleaseAppIdentityText)." -SignedObject $signedObject -ThrowOnFailure:$ThrowOnFailure
     }
     if ($algorithm -ne $script:RevitMcpSignatureAlgorithm) {
         return Invoke-RevitMcpDistributionIntegrityFailure -Reason "unsupported_signature_algorithm" -Message "Unsupported signature algorithm '$algorithm'." -SignedObject $signedObject -ThrowOnFailure:$ThrowOnFailure
@@ -928,7 +941,7 @@ function Test-RevitMcpReleaseManifestChannelConsistency {
 
     $issues = [System.Collections.Generic.List[string]]::new()
     $manifestApp = [string](Get-RevitMcpObjectPropertyValue -Value $ReleaseManifest -Name "app")
-    if (-not [string]::IsNullOrWhiteSpace($manifestApp) -and $manifestApp -ne "revit-mcp-skill") {
+    if (-not [string]::IsNullOrWhiteSpace($manifestApp) -and -not (Test-RevitMcpReleaseAppIdentity -App $manifestApp)) {
         [void]$issues.Add("release manifest app is '$manifestApp'")
     }
 
@@ -1429,6 +1442,7 @@ $revAgentFunctionAliases = @{
     "Test-RevAgentDetachedJsonSignature" = "Test-RevitMcpDetachedJsonSignature"
     "Test-RevAgentDetachedJsonSignatureCompatibilityFile" = "Test-RevitMcpDetachedJsonSignatureCompatibilityFile"
     "Test-RevAgentDetachedJsonSignatureFile" = "Test-RevitMcpDetachedJsonSignatureFile"
+    "Test-RevAgentReleaseAppIdentity" = "Test-RevitMcpReleaseAppIdentity"
     "Test-RevAgentReleaseDistributionIntegrity" = "Test-RevitMcpReleaseDistributionIntegrity"
     "Test-RevAgentReleaseManifestChannelConsistency" = "Test-RevitMcpReleaseManifestChannelConsistency"
     "Test-RevAgentSignedReleaseSequence" = "Test-RevitMcpSignedReleaseSequence"
@@ -1450,6 +1464,7 @@ Export-ModuleMember -Function `
     ConvertTo-RevitMcpTrustedKeyMap, `
     Get-RevitMcpDetachedSignaturePath, `
     Test-RevitMcpDetachedJsonSignatureCompatibilityFile, `
+    Test-RevitMcpReleaseAppIdentity, `
     Test-RevitMcpReleaseManifestChannelConsistency, `
     Test-RevitMcpSignedReleaseSequence, `
     Test-RevitMcpReleaseDistributionIntegrity

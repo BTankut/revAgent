@@ -34,9 +34,16 @@ if (-not (Test-Path -LiteralPath $manifestPath)) {
     throw "Release manifest was not found: $manifestPath"
 }
 
+function Test-RevAgentReleaseAppIdentity {
+    param([AllowNull()][string]$App)
+
+    return [string]::Equals($App, "revit-mcp-skill", [System.StringComparison]::Ordinal) -or
+        [string]::Equals($App, "revAgent", [System.StringComparison]::Ordinal)
+}
+
 $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-if ($manifest.app -ne "revit-mcp-skill") {
-    throw "Manifest app is not revit-mcp-skill: $manifestPath"
+if (-not (Test-RevAgentReleaseAppIdentity -App ([string]$manifest.app))) {
+    throw "Manifest app is not revAgent or revit-mcp-skill: $manifestPath"
 }
 if ($manifest.version -ne $Version) {
     throw "Manifest version does not match requested version. Manifest=$($manifest.version), requested=$Version"
@@ -58,7 +65,7 @@ function Write-JsonFile {
 
 $channelManifest = [ordered]@{
     schemaVersion = 1
-    app = "revit-mcp-skill"
+    app = [string]$manifest.app
     channel = $Channel
     version = $Version
     publishedAtUtc = (Get-Date).ToUniversalTime().ToString("o")

@@ -3267,8 +3267,9 @@ try {
     }
 
     $channel = Get-Content -Raw -LiteralPath $ChannelManifestPath | ConvertFrom-Json
-    if ($channel.app -ne "revit-mcp-skill") {
-        throw "Channel manifest app is not revit-mcp-skill: $ChannelManifestPath"
+    $appIdentityCommand = Get-UpdaterDistributionIntegrityCommand -Name "Test-RevAgentReleaseAppIdentity" -Required
+    if (-not (& $appIdentityCommand -App ([string]$channel.app))) {
+        throw "Channel manifest app is not revAgent or revit-mcp-skill: $ChannelManifestPath"
     }
     if ([string]::IsNullOrWhiteSpace($channel.version)) {
         throw "Channel manifest does not contain a version: $ChannelManifestPath"
