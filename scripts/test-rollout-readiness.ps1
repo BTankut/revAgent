@@ -209,7 +209,10 @@ try {
             desktopLauncherEvidence = @(
                 [ordered]@{
                     passed = $true
+                    expectedMachineCount = 5
                     checkedMachineCount = 5
+                    missingMachineCount = 0
+                    failedMachineCount = 0
                     legacyLauncherCount = 0
                     legacyRootReferenceCount = 0
                     completedAtUtc = $nowUtc.AddMinutes(-1).ToString("o")
@@ -297,7 +300,10 @@ try {
             desktopLauncherEvidence = @(
                 [ordered]@{
                     passed = $true
+                    expectedMachineCount = 5
                     checkedMachineCount = 5
+                    missingMachineCount = 0
+                    failedMachineCount = 0
                     legacyLauncherCount = 0
                     legacyRootReferenceCount = 0
                     completedAtUtc = $nowUtc.AddMinutes(-1).ToString("o")
@@ -349,6 +355,55 @@ try {
     Assert-Equal ([int]$missingLauncherResult.summary.actionRequiredCount) 5 "Missing desktop launcher evidence should add one rollout action."
     $launcherAction = @($missingLauncherResult.actions | Where-Object { $_.action -eq "collect_desktop_launcher_evidence" }) | Select-Object -First 1
     Assert-True ($null -ne $launcherAction) "Missing desktop launcher evidence action was not reported."
+
+    $insufficientLauncherConfigPath = Join-Path $tempRoot "rollout-readiness-insufficient-launcher-evidence.json"
+    Write-TestJson -Path $insufficientLauncherConfigPath -Value ([ordered]@{
+            releaseRoot = $releaseRoot
+            reportsRoot = $reportsRoot
+            compatibilityReleaseRoots = @($legacyReleaseRoot)
+            expectedMachines = @("NET01", "EMIN", "YASAR", "LEGACY", "WS3", "OLD")
+            outOfScopeMachines = @(
+                [ordered]@{
+                    name = "OLD"
+                    reason = "Retired pilot workstation."
+                }
+            )
+            liveSmokeEvidence = @(
+                [ordered]@{
+                    machine = "NET01"
+                    passed = $true
+                    stableVersion = $stableVersion
+                    stableCommit = $stableCommit
+                    revitVersion = "2022"
+                    model = "RME_basic_sample_project.rvt"
+                    completedAtUtc = $nowUtc.AddMinutes(-2).ToString("o")
+                    note = "Fixture live Revit smoke evidence."
+                }
+            )
+            desktopLauncherEvidence = @(
+                [ordered]@{
+                    passed = $true
+                    expectedMachineCount = 1
+                    checkedMachineCount = 1
+                    missingMachineCount = 0
+                    failedMachineCount = 0
+                    legacyLauncherCount = 0
+                    legacyRootReferenceCount = 0
+                    completedAtUtc = $nowUtc.AddMinutes(-1).ToString("o")
+                    note = "Fixture intentionally covers too few machines."
+                }
+            )
+        })
+
+    $insufficientLauncherResult = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
+        -ConfigPath $insufficientLauncherConfigPath `
+        -NowUtc $nowUtc `
+        -OutputJson | ConvertFrom-Json
+    Assert-Equal $insufficientLauncherResult.summary.desktopLauncher.state "failed" "Insufficient desktop launcher evidence must fail readiness."
+    Assert-Equal $insufficientLauncherResult.summary.desktopLauncher.latest.requiredMachineCount 5 "Required desktop launcher machine count mismatch."
+    Assert-Equal $insufficientLauncherResult.summary.desktopLauncher.latest.checkedMachineCount 1 "Checked desktop launcher machine count mismatch."
+    $insufficientLauncherAction = @($insufficientLauncherResult.actions | Where-Object { $_.action -eq "collect_desktop_launcher_evidence" }) | Select-Object -First 1
+    Assert-True ($null -ne $insufficientLauncherAction) "Insufficient desktop launcher evidence action was not reported."
 
     $closureOutputPath = Join-Path $tempRoot "closure\rollout-readiness-final.json"
     $closureResult = & (Join-Path $RepoRoot "scripts\invoke-rollout-closure-audit.ps1") `

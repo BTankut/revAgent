@@ -89,6 +89,10 @@ These are expected to remain until a larger migration explicitly replaces them.
      reported canonical channel paths through
      `scripts\check-rollout-readiness.ps1` and desktop launcher evidence shows
      no copied launcher still depends on the legacy root.
+   - Produce launcher evidence with
+     `scripts\publish-desktop-launcher-evidence.ps1`: `ScanLocal` writes
+     per-machine evidence, and `Aggregate` writes the rollout evidence consumed
+     by the readiness audit. The aggregate must cover every in-scope machine.
    - Keep a rollback note and archival backup before deleting or freezing the
      old root.
 
