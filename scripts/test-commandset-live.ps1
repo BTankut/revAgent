@@ -17,10 +17,17 @@
 param(
     [string]$HostName = "",
     [int]$Port = 0,
-    [int]$TimeoutMs = 120000
+    [int]$TimeoutMs = 120000,
+    [string]$ReleaseRoot = "",
+    [string]$ReportsRoot = "",
+    [string]$SmokeEvidencePath = "",
+    [string]$StableVersion = "",
+    [string]$StableCommit = "",
+    [string]$SmokeNote = ""
 )
 
 $ErrorActionPreference = "Stop"
+$script:RevAgentLiveTestStartedUtc = (Get-Date).ToUniversalTime()
 
 if ([string]::IsNullOrWhiteSpace($HostName)) {
     if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_HOST)) {
@@ -46,6 +53,19 @@ if ($Port -le 0) {
     }
 }
 
+if ([string]::IsNullOrWhiteSpace($ReleaseRoot) -and -not [string]::IsNullOrWhiteSpace($env:REVAGENT_RELEASE_ROOT)) {
+    $ReleaseRoot = $env:REVAGENT_RELEASE_ROOT
+}
+if ([string]::IsNullOrWhiteSpace($ReportsRoot) -and -not [string]::IsNullOrWhiteSpace($env:REVAGENT_REPORTS_ROOT)) {
+    $ReportsRoot = $env:REVAGENT_REPORTS_ROOT
+}
+if ([string]::IsNullOrWhiteSpace($ReportsRoot) -and -not [string]::IsNullOrWhiteSpace($ReleaseRoot)) {
+    $ReportsRoot = Join-Path $ReleaseRoot "reports"
+}
+if ([string]::IsNullOrWhiteSpace($SmokeEvidencePath) -and -not [string]::IsNullOrWhiteSpace($ReportsRoot)) {
+    $SmokeEvidencePath = Join-Path (Join-Path $ReportsRoot "rollout") "live-smoke-latest.json"
+}
+
 function Assert-True {
     param(
         [bool]$Condition,
@@ -66,6 +86,97 @@ function Assert-Equal {
 
     if ($Actual -ne $Expected) {
         throw "$Message Expected '$Expected', got '$Actual'."
+    }
+}
+
+function Get-RevAgentValue {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    if ($null -eq $Object -or [string]::IsNullOrWhiteSpace($Name)) {
+        return $null
+    }
+    if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($Name)) {
+        return $Object[$Name]
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
+
+function Get-RevAgentNestedValue {
+    param(
+        [object]$Object,
+        [string[]]$Path
+    )
+
+    $current = $Object
+    foreach ($part in $Path) {
+        $current = Get-RevAgentValue -Object $current -Name $part
+        if ($null -eq $current) {
+            return $null
+        }
+    }
+    return $current
+}
+
+function Select-RevAgentFirstText {
+    param([object[]]$Values)
+
+    foreach ($value in $Values) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+            return [string]$value
+        }
+    }
+    return ""
+}
+
+function Write-RevAgentJsonFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [object]$Value
+    )
+
+    $directory = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    $Value | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding UTF8
+}
+
+function Read-RevAgentOptionalJsonFile {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+    try {
+        return Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+function Resolve-RevAgentStableEvidence {
+    param([string]$ReleaseRoot)
+
+    if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
+        return [pscustomobject][ordered]@{ version = ""; commit = "" }
+    }
+
+    $channel = Read-RevAgentOptionalJsonFile -Path (Join-Path (Join-Path $ReleaseRoot "channels") "stable.json")
+    return [pscustomobject][ordered]@{
+        version = [string](Get-RevAgentValue -Object $channel -Name "version")
+        commit = Select-RevAgentFirstText -Values @(
+            (Get-RevAgentValue -Object $channel -Name "commit"),
+            (Get-RevAgentNestedValue -Object $channel -Path @("git", "commit")))
     }
 }
 
@@ -1256,5 +1367,42 @@ Assert-Equal ([bool]$manualNonePayload.isModifiableAfterRollback) $false "Docume
 
 $finalStatus = Get-RevitMcpStatus
 Assert-True ($null -eq $finalStatus.activeTask) "revAgent active task should be clear after live commandset tests."
+
+$stableEvidence = Resolve-RevAgentStableEvidence -ReleaseRoot $ReleaseRoot
+if ([string]::IsNullOrWhiteSpace($StableVersion)) {
+    $StableVersion = [string]$stableEvidence.version
+}
+if ([string]::IsNullOrWhiteSpace($StableCommit)) {
+    $StableCommit = [string]$stableEvidence.commit
+}
+
+if (-not [string]::IsNullOrWhiteSpace($SmokeEvidencePath)) {
+    $completedAtUtc = (Get-Date).ToUniversalTime()
+    $evidence = [ordered]@{
+        schemaVersion = "revagent.live-smoke.evidence.v1"
+        machine = $env:COMPUTERNAME
+        userName = $env:USERNAME
+        passed = $true
+        status = "passed"
+        stableVersion = $StableVersion
+        stableCommit = $StableCommit
+        startedAtUtc = $script:RevAgentLiveTestStartedUtc.ToString("o")
+        completedAtUtc = $completedAtUtc.ToString("o")
+        hostName = $HostName
+        port = $Port
+        revitVersion = Select-RevAgentFirstText -Values @(
+            (Get-RevAgentNestedValue -Object $finalStatus -Path @("revit", "version")),
+            (Get-RevAgentValue -Object $finalStatus -Name "revitVersion"),
+            (Get-RevAgentNestedValue -Object $finalStatus -Path @("service", "revitVersion")))
+        model = Select-RevAgentFirstText -Values @(
+            (Get-RevAgentNestedValue -Object $finalStatus -Path @("document", "title")),
+            (Get-RevAgentNestedValue -Object $finalStatus -Path @("activeDocument", "title")),
+            (Get-RevAgentValue -Object $finalStatus -Name "model"),
+            (Get-RevAgentValue -Object $finalStatus -Name "modelName"))
+        note = if (-not [string]::IsNullOrWhiteSpace($SmokeNote)) { $SmokeNote } else { "scripts/test-commandset-live.ps1 passed." }
+    }
+    Write-RevAgentJsonFile -Path $SmokeEvidencePath -Value $evidence
+    Write-Host "Live smoke evidence: $SmokeEvidencePath"
+}
 
 Write-Host "Live commandset integration tests passed." -ForegroundColor Green

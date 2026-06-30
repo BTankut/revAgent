@@ -468,6 +468,14 @@ open and an active document:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-live.ps1
 ```
 
+When the same run is the representative rollout smoke, write the closure-audit
+evidence directly to the NAS reports tree:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-live.ps1 `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+```
+
 This gate is intentionally separate from `test-all`: it connects to the Revit
 MCP socket, status-checks before each command, and validates real commandset
 behavior for `transactionMode: "auto"`, `transactionMode: "none"`, guarded
@@ -666,6 +674,10 @@ Live smoke test after install:
    command response payload and `mcp_status`. For runtime-only dynamic result
    parsing changes, confirm deterministic tests cover `parseJsonResult=true`
    nested JSON parsing and raw-string preservation on failed parsing.
+10. For rollout closure evidence, run `scripts\test-commandset-live.ps1` with
+    `-ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"` so the
+    current stable live-smoke result is written to
+    `reports\rollout\live-smoke-latest.json`.
 10. Confirm `revit-api-docs` responds to a small search such as
    `FilteredElementCollector`.
 11. For transport-sensitive changes, run a large read-only marker/checksum probe

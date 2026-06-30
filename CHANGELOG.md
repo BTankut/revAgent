@@ -4,6 +4,10 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added optional live-smoke evidence output to
+  `scripts\test-commandset-live.ps1`; passing `-ReleaseRoot`, `-ReportsRoot`,
+  or `-SmokeEvidencePath` writes the current-stable smoke result for the
+  rollout readiness audit.
 - Added canonical NAS channel-root evidence to the rollout readiness audit:
   machine reports now classify latest `paths.channelManifestPath` as canonical,
   legacy, or unknown and expose compatibility-root retirement readiness before

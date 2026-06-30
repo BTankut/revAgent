@@ -285,6 +285,8 @@ try {
     Assert-True ($liveCommandsetTest -match 'MTL fan coil' -and $liveCommandsetTest -match 'live broad MTL guard proof') "Live commandset integration gate must cover runtime MEP inference and broad-query guard behavior."
     Assert-True ($liveCommandsetTest -match 'clear_selection' -and $liveCommandsetTest -match 'selectionCountAfter') "Live commandset integration gate must cover clear_selection cleanup behavior."
     Assert-True ($liveCommandsetTest -match 'delete_review_view' -and $liveCommandsetTest -match 'delete_confirmation_required' -and $liveCommandsetTest -match 'deleted') "Live commandset integration gate must cover guarded review-view delete dry-run and commit behavior."
+    Assert-True ($liveCommandsetTest -match '\[string\]\$SmokeEvidencePath' -and $liveCommandsetTest -match 'live-smoke-latest\.json') "Live commandset integration gate must support writing rollout live-smoke evidence."
+    Assert-True ($liveCommandsetTest -match 'stableVersion = \$StableVersion' -and $liveCommandsetTest -match 'stableCommit = \$StableCommit' -and $liveCommandsetTest -match 'passed = \$true') "Live smoke evidence must identify stable version/commit and a passed result."
     Assert-NoLocalizedRevitPluginSourceText -Root $RepoRoot
     $commandSetSourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet") -Recurse -File -Filter *.cs |
         Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } |
