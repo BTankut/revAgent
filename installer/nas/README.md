@@ -119,6 +119,12 @@ rebuild or re-sign the artifact. The local runner staging handoff avoids GitHub
 Actions artifact storage quota, so the selected runner labels must resolve to
 the office runner that owns both signing-key and NAS access.
 
+The manual dispatch also exposes `release_identity`. Keep the default
+`revit-mcp-skill` identity until every in-scope machine has installed the
+compatibility updater that accepts both legacy and `revAgent` release
+identities. After that rollout is verified, the operator can select `revAgent`
+to produce matching `revAgent` channel app ids and release ZIP names.
+
 For production NAS publish, set `REVAGENT_NAS_RELEASE_ROOT` to the canonical
 `revAgent-deploy` path. The publish job writes the signed release only to that
 canonical root. Legacy `revit-mcp-deploy` roots are no longer default publish
