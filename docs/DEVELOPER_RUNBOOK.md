@@ -859,6 +859,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-desktop-la
   -ConfigPath C:\ProgramData\DPE\revAgentOps\rollout-readiness.json
 ```
 
+After a NAS publish, the same helper is available as
+`\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\publish-desktop-launcher-evidence.ps1`
+for source-free workstations that do not have the repository checkout.
 The aggregate record is written to
 `reports\rollout\desktop-launcher-latest.json` and must cover every in-scope
 machine with `missingMachineCount=0`, `failedMachineCount=0`,
