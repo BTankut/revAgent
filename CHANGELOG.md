@@ -20,10 +20,11 @@ All notable revAgent workstation deployment changes are tracked here.
   names are passed as one CSV argument to avoid PowerShell parameter binding
   drift.
 - Added legacy desktop launcher cleanup to self-contained install, updater
-  install/repair, and update runs. revAgent now removes managed `Revit MCP`
-  updater shortcuts from local and OneDrive desktop folders, preserves revAgent
-  launchers, and reports the updater cleanup result in machine diagnostics so
-  compatibility-root retirement is not blocked by stale desktop shortcuts.
+  install/repair, and update runs. revAgent now removes managed legacy updater
+  shortcuts that use old `Revit MCP` names from local and OneDrive desktop
+  folders, preserves revAgent launchers, and reports the updater cleanup result
+  in machine diagnostics so compatibility-root retirement is not blocked by
+  stale desktop shortcuts.
 - Published the live smoke evidence helper in NAS release `tools\` so
   source-free workstations can write `reports\rollout\live-smoke-latest.json`
   without a repository checkout.
