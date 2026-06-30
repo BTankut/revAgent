@@ -14,6 +14,11 @@ All notable revAgent workstation deployment changes are tracked here.
   `desktop-launcher-latest.json` into NAS reports centrally, avoiding SSH
   double-hop NAS write assumptions. NAS publish also copies the collector to
   release `tools\`.
+- Hardened the SSH rollout evidence collector remote invocations: staged
+  helper scripts are now launched with explicit argument arrays instead of
+  fragile backtick line continuations, and launcher aggregate expected-machine
+  names are passed as one CSV argument to avoid PowerShell parameter binding
+  drift.
 - Published the live smoke evidence helper in NAS release `tools\` so
   source-free workstations can write `reports\rollout\live-smoke-latest.json`
   without a repository checkout.
