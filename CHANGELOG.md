@@ -4,6 +4,10 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added canonical NAS channel-root evidence to the rollout readiness audit:
+  machine reports now classify latest `paths.channelManifestPath` as canonical,
+  legacy, or unknown and expose compatibility-root retirement readiness before
+  the old `revit-mcp-deploy` root is removed.
 - Changed standard user package replacement to keep local package backups
   disabled permanently: updater runs now clear package backups and stale cached
   release ZIPs, report `localPackageBackupPolicy`, and rely on signed NAS

@@ -295,7 +295,11 @@ anything. Use
 config file; keep that real config outside Git, use
 `outOfScopeMachines[].reason` to record retired or intentionally excluded
 workstations, and record the representative current-stable smoke result in
-`liveSmokeEvidence` or `reports\rollout\live-smoke-latest.json`.
+`liveSmokeEvidence` or `reports\rollout\live-smoke-latest.json`. The same
+audit also classifies each machine's latest `paths.channelManifestPath` as
+canonical, legacy, or unknown. Keep the `revit-mcp-deploy` compatibility root
+until the audit reports every in-scope machine on the canonical
+`revAgent-deploy` channel path and copied desktop launchers have been replaced.
 
 ## Update Behavior
 

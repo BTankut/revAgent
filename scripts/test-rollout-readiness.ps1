@@ -67,13 +67,16 @@ $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
 
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-rollout-readiness-test-" + [Guid]::NewGuid().ToString("N"))
 $releaseRoot = Join-Path $tempRoot "release"
+$legacyReleaseRoot = Join-Path $tempRoot "revit-mcp-deploy"
 $reportsRoot = Join-Path $releaseRoot "reports"
+$canonicalChannelManifestPath = Join-Path $releaseRoot "channels\stable.json"
+$legacyChannelManifestPath = Join-Path $legacyReleaseRoot "channels\stable.json"
 $stableVersion = "2026.06.25.404-ef535ad3"
 $stableCommit = "ef535ad3eddb682d1da6b42de2aad5bc75ba8187"
 $nowUtc = ([datetime]"2026-06-26T13:00:00Z").ToUniversalTime()
 
 try {
-    Write-TestJson -Path (Join-Path $releaseRoot "channels\stable.json") -Value ([ordered]@{
+    Write-TestJson -Path $canonicalChannelManifestPath -Value ([ordered]@{
             version = $stableVersion
             git = [ordered]@{
                 commit = $stableCommit
@@ -97,6 +100,9 @@ try {
                     postCleanupFailedCount = 0
                 }
             }
+            paths = [ordered]@{
+                channelManifestPath = $canonicalChannelManifestPath
+            }
         })
     Write-TestJson -Path (Join-Path $reportsRoot "live\machines\NET01\status.json") -Value ([ordered]@{
             schemaVersion = "revagent.live.status.v1"
@@ -119,6 +125,9 @@ try {
             machineReport = [ordered]@{
                 logPath = $eminLog
             }
+            paths = [ordered]@{
+                channelManifestPath = $canonicalChannelManifestPath
+            }
         })
     Write-TestJson -Path (Join-Path $eminRoot "install-latest.json") -Value ([ordered]@{
             computerName = "EMIN"
@@ -134,6 +143,9 @@ try {
             machineReport = [ordered]@{
                 logPath = $eminLog
             }
+            paths = [ordered]@{
+                channelManifestPath = $canonicalChannelManifestPath
+            }
         })
 
     $yasarRoot = Join-Path $reportsRoot "machines\YASAR"
@@ -144,6 +156,9 @@ try {
             installedVersion = "2026.06.25.403-old"
             targetVersion = $stableVersion
             publishedAtUtc = $nowUtc.ToString("o")
+            paths = [ordered]@{
+                channelManifestPath = $canonicalChannelManifestPath
+            }
         })
 
     $legacyRoot = Join-Path $reportsRoot "machines\LEGACY"
@@ -154,6 +169,9 @@ try {
             installedVersion = $stableVersion
             targetVersion = $stableVersion
             publishedAtUtc = $nowUtc.ToString("o")
+            paths = [ordered]@{
+                channelManifestPath = $legacyChannelManifestPath
+            }
         })
     Write-TestJson -Path (Join-Path $legacyRoot "source-free-migration-latest.json") -Value ([ordered]@{
             tool = "source-free-migration"
@@ -168,6 +186,7 @@ try {
     Write-TestJson -Path $configPath -Value ([ordered]@{
             releaseRoot = $releaseRoot
             reportsRoot = $reportsRoot
+            compatibilityReleaseRoots = @($legacyReleaseRoot)
             expectedMachines = @("NET01", "EMIN", "YASAR", "LEGACY", "WS3", "OLD")
             outOfScopeMachines = @(
                 [ordered]@{
@@ -208,12 +227,18 @@ try {
     Assert-Equal ([int]$result.summary.updateFailedCount) 1 "Update failed count mismatch."
     Assert-Equal $result.summary.liveSmoke.state "verified" "Live smoke state mismatch."
     Assert-Equal $result.summary.liveSmoke.latest.machine "NET01" "Live smoke machine mismatch."
-    Assert-Equal ([int]$result.summary.actionRequiredCount) 3 "Action count mismatch."
+    Assert-Equal ([int]$result.summary.canonicalChannelRootCount) 3 "Canonical channel root count mismatch."
+    Assert-Equal ([int]$result.summary.legacyChannelRootCount) 1 "Legacy channel root count mismatch."
+    Assert-Equal ([int]$result.summary.unknownChannelRootCount) 1 "Unknown channel root count mismatch."
+    Assert-True (-not [bool]$result.summary.compatibilityRootRetirementReady) "Compatibility root should not be retirement-ready with legacy or unknown machine evidence."
+    Assert-Equal ([int]$result.summary.actionRequiredCount) 4 "Action count mismatch."
     Assert-True (-not [bool]$result.summary.ready) "Fixture should not be fully ready."
 
     $net01 = Get-TestMachine -Result $result -Name "NET01"
     Assert-Equal $net01.versionState "upToDate" "NET01 version state mismatch."
     Assert-Equal $net01.sourceFreeState "verified" "NET01 source-free state mismatch."
+    Assert-Equal $net01.channelRootState "canonical" "NET01 channel root state mismatch."
+    Assert-Equal $net01.channelManifestPath $canonicalChannelManifestPath "NET01 channel path mismatch."
     Assert-Equal $net01.connectionState "online" "NET01 live state mismatch."
     Assert-Equal $net01.action "none" "NET01 action mismatch."
 
@@ -221,14 +246,23 @@ try {
     Assert-Equal $emin.installedVersion $stableVersion "EMIN should use successful install fallback for version."
     Assert-Equal $emin.updateState "failed" "EMIN update state mismatch."
     Assert-Equal $emin.sourceFreeState "verified" "EMIN source-free log evidence mismatch."
+    Assert-Equal $emin.channelRootState "canonical" "EMIN channel root state mismatch."
     Assert-Equal $emin.action "inspect_failed_update_log" "EMIN action mismatch."
 
     $yasar = Get-TestMachine -Result $result -Name "YASAR"
     Assert-Equal $yasar.versionState "outdated" "YASAR version state mismatch."
+    Assert-Equal $yasar.channelRootState "canonical" "YASAR channel root state mismatch."
     Assert-Equal $yasar.action "run_stable_update" "YASAR action mismatch."
+
+    $legacy = Get-TestMachine -Result $result -Name "LEGACY"
+    Assert-Equal $legacy.versionState "upToDate" "LEGACY version state mismatch."
+    Assert-Equal $legacy.sourceFreeState "verified" "LEGACY source-free state mismatch."
+    Assert-Equal $legacy.channelRootState "legacy" "LEGACY channel root state mismatch."
+    Assert-Equal $legacy.action "rerun_update_from_canonical_release_root" "LEGACY action mismatch."
 
     $ws3 = Get-TestMachine -Result $result -Name "WS3"
     Assert-Equal $ws3.versionState "unknown" "WS3 version state mismatch."
+    Assert-Equal $ws3.channelRootState "unknown" "WS3 channel root state mismatch."
     Assert-Equal $ws3.action "collect_install_report_or_update" "WS3 action mismatch."
 
     $old = Get-TestMachine -Result $result -Name "OLD"
@@ -240,6 +274,7 @@ try {
     Write-TestJson -Path $missingSmokeConfigPath -Value ([ordered]@{
             releaseRoot = $releaseRoot
             reportsRoot = $reportsRoot
+            compatibilityReleaseRoots = @($legacyReleaseRoot)
             expectedMachines = @("NET01", "EMIN", "YASAR", "LEGACY", "WS3", "OLD")
             outOfScopeMachines = @(
                 [ordered]@{
@@ -254,7 +289,7 @@ try {
         -NowUtc $nowUtc `
         -OutputJson | ConvertFrom-Json
     Assert-Equal $missingSmokeResult.summary.liveSmoke.state "missing" "Missing live smoke state mismatch."
-    Assert-Equal ([int]$missingSmokeResult.summary.actionRequiredCount) 4 "Missing smoke should add one rollout action."
+    Assert-Equal ([int]$missingSmokeResult.summary.actionRequiredCount) 5 "Missing smoke should add one rollout action."
     $smokeAction = @($missingSmokeResult.actions | Where-Object { $_.scope -eq "rollout" }) | Select-Object -First 1
     Assert-Equal $smokeAction.action "collect_live_revit_smoke" "Missing smoke action mismatch."
 
@@ -266,7 +301,7 @@ try {
         -OutputJson | ConvertFrom-Json
     Assert-True (Test-Path -LiteralPath $closureOutputPath -PathType Leaf) "Closure audit output file was not written."
     Assert-Equal $closureResult.summary.liveSmoke.state "verified" "Closure audit live smoke state mismatch."
-    Assert-Equal ([int]$closureResult.summary.actionRequiredCount) 3 "Closure audit action count mismatch."
+    Assert-Equal ([int]$closureResult.summary.actionRequiredCount) 4 "Closure audit action count mismatch."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

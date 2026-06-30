@@ -220,7 +220,10 @@ read its `channels\stable.json`.
    machines point to the new `revAgent-deploy` channel path.
 4. Confirm dashboard reports and machine status use the new root.
 5. Freeze the old `revit-mcp-deploy` root as compatibility-only.
-6. Remove old-root dependency only after all active machines have migrated.
+6. Remove old-root dependency only after `scripts\check-rollout-readiness.ps1`
+   reports every in-scope machine with canonical `revAgent-deploy`
+   `paths.channelManifestPath` evidence and copied desktop launchers no longer
+   depend on the legacy root.
 
 ### Repo Rename Strategy
 
@@ -330,7 +333,9 @@ all installed updaters and desktop launchers have moved to the new channel.
 Current NAS-root migration support includes dual-root CD publish, STABLE
 launcher fallback, and successful-update config migration from the legacy
 channel path to the canonical channel path when the canonical root is
-available.
+available. The rollout readiness audit now reports canonical, legacy, and
+unknown channel-root counts from machine report evidence so the compatibility
+root can be retired from data instead of assumption.
 Dashboard admin add-on config also uses the canonical
 `revAgent-deploy\reports` root by default and migrates legacy
 `revit-mcp-deploy\reports` config values during install/startup.

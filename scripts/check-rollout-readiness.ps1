@@ -253,6 +253,66 @@ function ConvertTo-RevAgentBool {
     return $Fallback
 }
 
+function Normalize-RevAgentPathText {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ""
+    }
+
+    $text = ([string]$Value).Trim().Trim('"', "'")
+    $text = $text -replace '/', '\'
+    while ($text.Length -gt 3 -and $text.EndsWith("\")) {
+        $text = $text.Substring(0, $text.Length - 1)
+    }
+    return $text
+}
+
+function Expand-RevAgentPathValues {
+    param([object[]]$Values)
+
+    $expanded = [System.Collections.Generic.List[string]]::new()
+    foreach ($value in $Values) {
+        if ($null -eq $value) {
+            continue
+        }
+
+        if ($value -is [string]) {
+            foreach ($part in ([string]$value -split ';')) {
+                $normalized = Normalize-RevAgentPathText -Value $part
+                if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+                    [void]$expanded.Add($normalized)
+                }
+            }
+            continue
+        }
+
+        $rawValue = ""
+        foreach ($nameKey in @("path", "root", "releaseRoot", "releaseRootPath")) {
+            $propertyValue = $null
+            if ($value -is [System.Collections.IDictionary] -and $value.Contains($nameKey)) {
+                $propertyValue = $value[$nameKey]
+            }
+            else {
+                $property = $value.PSObject.Properties[$nameKey]
+                if ($null -ne $property) {
+                    $propertyValue = $property.Value
+                }
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$propertyValue)) {
+                $rawValue = [string]$propertyValue
+                break
+            }
+        }
+
+        $normalizedObjectPath = Normalize-RevAgentPathText -Value $rawValue
+        if (-not [string]::IsNullOrWhiteSpace($normalizedObjectPath)) {
+            [void]$expanded.Add($normalizedObjectPath)
+        }
+    }
+    return @($expanded.ToArray())
+}
+
 function ConvertTo-RevAgentUtcMs {
     param([object]$Value)
 
@@ -530,11 +590,97 @@ function Get-RevAgentHeartbeatAgeSeconds {
     return [int][math]::Max(0, [math]::Round(($nowMs - $heartbeatMs) / 1000))
 }
 
+function Test-RevAgentPathUnderRoot {
+    param(
+        [string]$Path,
+        [string]$Root
+    )
+
+    $normalizedPath = Normalize-RevAgentPathText -Value $Path
+    $normalizedRoot = Normalize-RevAgentPathText -Value $Root
+    if ([string]::IsNullOrWhiteSpace($normalizedPath) -or [string]::IsNullOrWhiteSpace($normalizedRoot)) {
+        return $false
+    }
+
+    return ([string]::Equals($normalizedPath, $normalizedRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $normalizedPath.StartsWith($normalizedRoot + "\", [System.StringComparison]::OrdinalIgnoreCase))
+}
+
+function Get-RevAgentReportChannelManifestPath {
+    param([object]$Report)
+
+    foreach ($path in @(
+            @("paths", "channelManifestPath"),
+            @("channelManifestPath"),
+            @("diagnostics", "channelManifestPath"),
+            @("config", "channelManifestPath"))) {
+        $value = Get-RevAgentNestedValue -Object $Report -Path $path
+        if (-not [string]::IsNullOrWhiteSpace([string]$value)) {
+            return [string]$value
+        }
+    }
+    return ""
+}
+
+function Resolve-RevAgentChannelRootEvidence {
+    param(
+        [object[]]$Reports,
+        [string]$CanonicalReleaseRoot,
+        [string[]]$LegacyReleaseRoots
+    )
+
+    $candidates = foreach ($entry in $Reports) {
+        $path = Get-RevAgentReportChannelManifestPath -Report $entry.Report
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            continue
+        }
+
+        $normalizedPath = Normalize-RevAgentPathText -Value $path
+        $state = "unknown"
+        $matchedRoot = ""
+        if (Test-RevAgentPathUnderRoot -Path $normalizedPath -Root $CanonicalReleaseRoot) {
+            $state = "canonical"
+            $matchedRoot = Normalize-RevAgentPathText -Value $CanonicalReleaseRoot
+        }
+        else {
+            foreach ($legacyRoot in @($LegacyReleaseRoots)) {
+                if (Test-RevAgentPathUnderRoot -Path $normalizedPath -Root $legacyRoot) {
+                    $state = "legacy"
+                    $matchedRoot = Normalize-RevAgentPathText -Value $legacyRoot
+                    break
+                }
+            }
+        }
+
+        [pscustomobject][ordered]@{
+            source = $entry.Name
+            state = $state
+            path = $normalizedPath
+            matchedRoot = $matchedRoot
+            timestampMs = Get-RevAgentReportTimestampMs -Report $entry.Report
+        }
+    }
+
+    $latest = @($candidates | Sort-Object @{ Expression = { $_.timestampMs }; Descending = $true } | Select-Object -First 1)
+    if ($latest.Count -gt 0) {
+        return $latest[0]
+    }
+
+    return [pscustomobject][ordered]@{
+        source = ""
+        state = "unknown"
+        path = ""
+        matchedRoot = ""
+        timestampMs = [int64]0
+    }
+}
+
 function Get-RevAgentAction {
     param(
         [string]$VersionState,
         [string]$SourceFreeState,
         [string]$UpdateState,
+        [string]$ChannelRootState,
         [bool]$Excluded
     )
 
@@ -559,7 +705,26 @@ function Get-RevAgentAction {
     if ($SourceFreeState -eq "needsEvidence") {
         return "run_source_free_dry_run_inventory"
     }
+    if ($ChannelRootState -eq "legacy") {
+        return "rerun_update_from_canonical_release_root"
+    }
+    if ($ChannelRootState -eq "unknown") {
+        return "collect_canonical_channel_evidence"
+    }
     return "none"
+}
+
+function Get-RevAgentMachineActionReason {
+    param([object]$Machine)
+
+    $action = [string](Get-RevAgentValue -Object $Machine -Name "action")
+    if ($action -eq "rerun_update_from_canonical_release_root") {
+        return "Latest channel manifest evidence still points at a legacy compatibility release root."
+    }
+    if ($action -eq "collect_canonical_channel_evidence") {
+        return "No latest report identifies the machine's channel manifest path."
+    }
+    return ""
 }
 
 function Select-RevAgentFirstText {
@@ -830,6 +995,31 @@ if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
     }
 }
 
+$legacyReleaseRootInputs = @()
+if ($null -ne $config) {
+    $legacyReleaseRootInputs += @(Get-RevAgentValue -Object $config -Name "legacyReleaseRoot")
+    $legacyReleaseRootInputs += @(Get-RevAgentValue -Object $config -Name "legacyReleaseRoots")
+    $legacyReleaseRootInputs += @(Get-RevAgentValue -Object $config -Name "compatibilityReleaseRoot")
+    $legacyReleaseRootInputs += @(Get-RevAgentValue -Object $config -Name "compatibilityReleaseRoots")
+    $legacyReleaseRootInputs += @(Get-RevAgentValue -Object $config -Name "compatReleaseRoot")
+    $legacyReleaseRootInputs += @(Get-RevAgentValue -Object $config -Name "compatReleaseRoots")
+}
+if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_NAS_COMPAT_RELEASE_ROOTS)) {
+    $legacyReleaseRootInputs += $env:REVAGENT_NAS_COMPAT_RELEASE_ROOTS
+}
+$legacyReleaseRootInputs += $defaultLegacyReleaseRoot
+$legacyReleaseRoots = @(
+    Expand-RevAgentPathValues -Values $legacyReleaseRootInputs |
+        Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_) -and
+            -not [string]::Equals(
+                (Normalize-RevAgentPathText -Value $_),
+                (Normalize-RevAgentPathText -Value $ReleaseRoot),
+                [System.StringComparison]::OrdinalIgnoreCase)
+        } |
+        Select-Object -Unique
+)
+
 $stable = Read-RevAgentJsonFile -Path (Join-Path (Join-Path $ReleaseRoot "channels") "stable.json")
 $stableVersion = [string](Get-RevAgentValue -Object $stable -Name "version")
 $stableCommit = Select-RevAgentFirstText -Values @(
@@ -926,6 +1116,13 @@ $machines = foreach ($machineName in @($machineNames | Sort-Object)) {
         [pscustomobject]@{ Name = "source-free-migration-latest"; Report = $migrationLatest }
     ) | Where-Object { $null -ne $_.Report }
     $sourceEvidence = Resolve-RevAgentSourceFreeEvidence -Reports $reportEntries -MachineRoot $machineRoot
+    $channelRootEvidence = Resolve-RevAgentChannelRootEvidence -Reports $reportEntries -CanonicalReleaseRoot $ReleaseRoot -LegacyReleaseRoots $legacyReleaseRoots
+    $channelRootState = if ($excluded) {
+        "excluded"
+    }
+    else {
+        [string](Get-RevAgentValue -Object $channelRootEvidence -Name "state")
+    }
     $sourceFreeState = if ($excluded) {
         "excluded"
     }
@@ -940,7 +1137,7 @@ $machines = foreach ($machineName in @($machineNames | Sort-Object)) {
     }
 
     $connectionState = if ($excluded) { "excluded" } else { Get-RevAgentConnectionState -LiveStatus $liveStatus -NowUtc $nowUtc }
-    $action = Get-RevAgentAction -VersionState $versionState -SourceFreeState $sourceFreeState -UpdateState $updateState -Excluded:$excluded
+    $action = Get-RevAgentAction -VersionState $versionState -SourceFreeState $sourceFreeState -UpdateState $updateState -ChannelRootState $channelRootState -Excluded:$excluded
 
     [pscustomobject][ordered]@{
         machine = $machineName
@@ -956,6 +1153,9 @@ $machines = foreach ($machineName in @($machineNames | Sort-Object)) {
         updateState = if ($excluded) { "excluded" } else { $updateState }
         sourceFreeState = $sourceFreeState
         sourceFreeEvidence = $sourceEvidence
+        channelRootState = $channelRootState
+        channelRootEvidence = $channelRootEvidence
+        channelManifestPath = [string](Get-RevAgentValue -Object $channelRootEvidence -Name "path")
         connectionState = $connectionState
         heartbeatAgeSeconds = if ($excluded) { $null } else { Get-RevAgentHeartbeatAgeSeconds -LiveStatus $liveStatus -NowUtc $nowUtc }
         reportStatus = [string](Get-RevAgentValue -Object $latest -Name "status")
@@ -1001,9 +1201,10 @@ $machineActions = @($actionRequiredMachines | Select-Object `
         versionState,
         updateState,
         sourceFreeState,
+        channelRootState,
         connectionState,
         action,
-        @{ Name = "reason"; Expression = { "" } },
+        @{ Name = "reason"; Expression = { Get-RevAgentMachineActionReason -Machine $_ } },
         logPath)
 $allActions = @($machineActions + $rolloutActions)
 $summary = [pscustomobject][ordered]@{
@@ -1012,6 +1213,8 @@ $summary = [pscustomobject][ordered]@{
     configPath = $ConfigPath
     releaseRoot = $ReleaseRoot
     reportsRoot = $ReportsRoot
+    canonicalReleaseRoot = Normalize-RevAgentPathText -Value $ReleaseRoot
+    legacyReleaseRoots = @($legacyReleaseRoots)
     stable = [ordered]@{
         version = $stableVersion
         commit = $stableCommit
@@ -1029,6 +1232,13 @@ $summary = [pscustomobject][ordered]@{
     sourceFreeVerifiedCount = @($inScopeMachines | Where-Object { $_.sourceFreeState -eq "verified" }).Count
     sourceFreeNeedsEvidenceCount = @($inScopeMachines | Where-Object { $_.sourceFreeState -eq "needsEvidence" }).Count
     sourceFreeFailedCount = @($inScopeMachines | Where-Object { $_.sourceFreeState -eq "failed" }).Count
+    canonicalChannelRootCount = @($inScopeMachines | Where-Object { $_.channelRootState -eq "canonical" }).Count
+    legacyChannelRootCount = @($inScopeMachines | Where-Object { $_.channelRootState -eq "legacy" }).Count
+    unknownChannelRootCount = @($inScopeMachines | Where-Object { $_.channelRootState -eq "unknown" }).Count
+    compatibilityRootRetirementReady = (
+        @($inScopeMachines).Count -gt 0 -and
+        @($inScopeMachines | Where-Object { $_.channelRootState -ne "canonical" }).Count -eq 0
+    )
     updateFailedCount = @($inScopeMachines | Where-Object { $_.updateState -eq "failed" }).Count
     pendingRestartCount = @($inScopeMachines | Where-Object { $_.updateState -eq "pendingRestart" }).Count
     onlineCount = @($inScopeMachines | Where-Object { $_.connectionState -eq "online" }).Count
@@ -1064,9 +1274,10 @@ if ($OutputJson) {
 Write-Host ("Stable: {0} ({1})" -f ($(if ($stableVersion) { $stableVersion } else { "unknown" })), ($(if ($stableCommit) { $stableCommit } else { "commit unknown" })))
 Write-Host ("Machines: {0} in scope, {1} excluded, {2} machine action(s), {3} rollout action(s)" -f $summary.inScopeMachineCount, $summary.excludedMachineCount, $summary.machineActionRequiredCount, $summary.rolloutActionRequiredCount)
 Write-Host ("Source-free: {0} verified, {1} needs evidence, {2} failed" -f $summary.sourceFreeVerifiedCount, $summary.sourceFreeNeedsEvidenceCount, $summary.sourceFreeFailedCount)
+Write-Host ("Channel root: {0} canonical, {1} legacy, {2} unknown" -f $summary.canonicalChannelRootCount, $summary.legacyChannelRootCount, $summary.unknownChannelRootCount)
 Write-Host ("Live smoke: {0}" -f $summary.liveSmoke.state)
 $machines |
-    Select-Object machine, userName, installedVersion, versionState, updateState, sourceFreeState, connectionState, action, exclusionReason |
+    Select-Object machine, userName, installedVersion, versionState, updateState, sourceFreeState, channelRootState, connectionState, action, exclusionReason |
     Format-Table -AutoSize
 
 if ($summary.actionRequiredCount -gt 0) {

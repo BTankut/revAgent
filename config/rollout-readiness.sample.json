@@ -1,6 +1,9 @@
 {
   "releaseRoot": "\\\\dpe-nas\\Dpe-Ortak\\Baris Tankut\\revAgent-deploy",
   "reportsRoot": "\\\\dpe-nas\\Dpe-Ortak\\Baris Tankut\\revAgent-deploy\\reports",
+  "compatibilityReleaseRoots": [
+    "\\\\dpe-nas\\Dpe-Ortak\\Baris Tankut\\revit-mcp-deploy"
+  ],
   "expectedMachines": [
     "NET01",
     "WORKSTATION-01",

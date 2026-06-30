@@ -173,8 +173,9 @@ pulling and reinstalling on every machine.
   NAS stable and machine reports:
   `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-rollout-closure-audit.ps1`.
   It reports version state, update failures, source-free evidence, live
-  heartbeat freshness, current-stable live Revit smoke evidence, and the next
-  action per machine without updating any workstation. Use
+  heartbeat freshness, canonical NAS channel-root evidence, current-stable
+  live Revit smoke evidence, and the next action per machine without updating
+  any workstation. Use
   `config\rollout-readiness.sample.json` as the template for a local or
   NAS-side config file when the rollout needs a fixed in-scope machine list,
   named out-of-scope machines, or an embedded live-smoke evidence record.
@@ -1046,6 +1047,12 @@ and live Revit smoke evidence. Use a Git-ignored local/NAS copy of
 `config\rollout-readiness.sample.json` when the closure audit needs a fixed
 machine list, explicit out-of-scope reasons, or the representative smoke result.
 The audit also reads `reports\rollout\live-smoke-latest.json` when present.
+Compatibility-root retirement is separate from version freshness: the audit
+reports canonical, legacy, and unknown channel-root counts from each machine's
+latest `paths.channelManifestPath` evidence. Do not retire the
+`revit-mcp-deploy` compatibility root until every in-scope machine reports a
+canonical `revAgent-deploy` channel path and no copied desktop launcher still
+depends on the legacy root.
 
 Connection freshness is calculated from the live heartbeat: `Online` is within
 `staleSeconds` (default 60 seconds), `Stale` is older but still within
