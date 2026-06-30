@@ -1079,6 +1079,19 @@ When source-free evidence is missing, run
 `migrate-source-free-install.ps1 -Mode dryRun -ReportsRoot <reports-root>` on
 the workstation; it publishes `source-free-migration-latest.json` without
 overwriting the dashboard `latest.json` version state.
+For SSH-managed workstations, prefer the evidence-only collector instead of the
+install/repair deploy script:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect-rollout-evidence.ps1 `
+  -TargetsPath C:\ProgramData\DPE\revAgentOps\fleet.json `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+```
+
+The collector stages only read-only evidence tools on each target, runs
+source-free migration inventory in `dryRun`, scans desktop launchers, and then
+aggregates desktop launcher evidence. It does not install, repair, update, or
+run source-free migration in commit mode.
 
 Connection freshness is calculated from the live heartbeat: `Online` is within
 `staleSeconds` (default 60 seconds), `Stale` is older but still within

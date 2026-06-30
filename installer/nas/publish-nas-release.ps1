@@ -1080,6 +1080,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $scriptRoot $toolName) -Destination (Join-Path $toolsRoot $toolName) -Force
     }
     Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\publish-desktop-launcher-evidence.ps1") -Destination (Join-Path $toolsRoot "publish-desktop-launcher-evidence.ps1") -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\collect-rollout-evidence.ps1") -Destination (Join-Path $toolsRoot "collect-rollout-evidence.ps1") -Force
     Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\test-commandset-live.ps1") -Destination (Join-Path $toolsRoot "test-commandset-live.ps1") -Force
     $libSource = Join-Path (Split-Path -Parent $scriptRoot) "lib"
     if (Test-Path -LiteralPath $libSource -PathType Container) {

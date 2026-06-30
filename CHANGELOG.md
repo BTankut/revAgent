@@ -4,6 +4,12 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added an SSH rollout evidence collector:
+  `scripts\collect-rollout-evidence.ps1` stages read-only evidence tools on
+  target workstations, runs source-free inventory in `dryRun`, runs desktop
+  launcher scans, and aggregates launcher evidence without installing,
+  repairing, or updating machines. NAS publish also copies the collector to
+  release `tools\`.
 - Published the live smoke evidence helper in NAS release `tools\` so
   source-free workstations can write `reports\rollout\live-smoke-latest.json`
   without a repository checkout.
