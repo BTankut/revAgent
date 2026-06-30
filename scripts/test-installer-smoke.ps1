@@ -397,7 +397,7 @@ try {
     Assert-True ($guiText -match 'Test-LocalUpdaterSupportsSourceFreeMigration' -and $guiText -match '\$needsSourceFreeMigrationBootstrap') "GUI must detect older local updater tools before source-free migration."
     Assert-True ($guiText -match '\$arguments \+= "-RunSourceFreeMigration"') "GUI must bootstrap old local updater tools and run source-free migration in one confirmed action."
     Assert-True ($guiText.IndexOf('No update is available.') -lt $guiText.IndexOf('This workstation has an installed revAgent package')) "GUI should report no-op update status before warning about a missing local updater."
-    Assert-True ($guiText -match 'Get-PackageDescriptionForGui' -and $guiText -match 'Developer workstation' -and $guiText -match 'Codex instructions: preserve local') "GUI must label preserve-local developer machines distinctly from normal workstation packages."
+    Assert-True ($guiText -match 'Get-PackageDescriptionForGui' -and $guiText -match 'Standard user package' -and $guiText -match 'Developer machine' -and $guiText -match 'Codex instructions: preserve local') "GUI must label standard user packages and preserve-local developer machines distinctly."
     Assert-True ($guiText -match 'DPE\\revAgent' -and $guiText -match 'legacyConfigPath') "GUI must default to the revAgent install root while preserving legacy updater config policy."
     Assert-True ($guiText -match '"-File", \$installerPath') "First install and repair must still use install-updater-task.ps1."
     Assert-True ($guiText -match 'RevAgent\.SourceFreeMigration\.psm1' -and $guiText -match 'Get-RevAgentSourceFreeArtifactInventory') "GUI must check source-free migration inventory before install/update actions."
@@ -1236,8 +1236,8 @@ try {
     $usageAddonManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\usage-intelligence\addon.json") | ConvertFrom-Json
     Assert-Equal $dashboardAddonManifest.installRole "admin" "Dashboard add-on must be admin-scoped."
     Assert-Equal $usageAddonManifest.installRole "admin" "Usage-intelligence add-on must be admin-scoped."
-    Assert-Equal ([bool]$dashboardAddonManifest.corePackage) $false "Dashboard add-on must not be part of the core workstation package."
-    Assert-Equal ([bool]$usageAddonManifest.corePackage) $false "Usage-intelligence add-on must not be part of the core workstation package."
+    Assert-Equal ([bool]$dashboardAddonManifest.corePackage) $false "Dashboard add-on must not be part of the core standard user package."
+    Assert-Equal ([bool]$usageAddonManifest.corePackage) $false "Usage-intelligence add-on must not be part of the core standard user package."
     $usageSummaryWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\summarize-usage-intelligence.ps1")
     $usagePublishWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-usage-summary.ps1")
     $usageTaskWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-usage-summary-task.ps1")

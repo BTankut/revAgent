@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Simple GUI for installing or updating the revAgent workstation package.
+    Simple GUI for installing or updating the revAgent standard user package.
 #>
 
 [CmdletBinding()]
@@ -176,10 +176,10 @@ function Get-PackageDescriptionForGui {
     $role = Get-MachineRoleForGui
     if ([string]::Equals($policy, "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)) {
         $roleLabel = if ([string]::IsNullOrWhiteSpace($role)) { "developer" } else { $role.Trim() }
-        return "Release track: managed`r`nDeveloper workstation ($roleLabel)`r`nCodex instructions: preserve local"
+        return "Release track: managed`r`nDeveloper machine ($roleLabel)`r`nCodex instructions: preserve local"
     }
 
-    return "Release track: managed`r`nWorkstation package"
+    return "Release track: managed`r`nStandard user package"
 }
 
 function Get-SourceFreeMigrationArtifactsForGui {

@@ -4,7 +4,7 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
-- Changed workstation package replacement to keep local package backups
+- Changed standard user package replacement to keep local package backups
   disabled permanently: updater runs now clear package backups and stale cached
   release ZIPs, report `localPackageBackupPolicy`, and rely on signed NAS
   release archives for rollback instead of creating
@@ -88,9 +88,9 @@ All notable revAgent workstation deployment changes are tracked here.
   support `-SourceFreeMigration`, the GUI bootstraps the current updater tools
   with `-RunSourceFreeMigration` and runs the migration after the same operator
   confirmation.
-- Updated the updater GUI package label so developer workstations explicitly
+- Updated the updater GUI package label so developer machines explicitly
   show that local Codex instructions are preserved instead of only showing the
-  generic workstation package text.
+  generic standard user package text.
 - Cleaned documentation ownership: retired audit/plan files stay under ignored
   `docs/_retired/`, and durable rollout decisions are carried by the active
   README, runbook, architecture, and rollout documents.
