@@ -399,6 +399,7 @@ function Invoke-RevAgentRemoteEvidence {
 
     $remoteScript = @"
 `$ErrorActionPreference = 'Stop'
+`$ProgressPreference = 'SilentlyContinue'
 Set-ExecutionPolicy -Scope Process Bypass -Force -ErrorAction SilentlyContinue
 `$stage = $remoteStageLiteral
 `$zip = $remoteZipLiteral
@@ -419,24 +420,47 @@ Get-ChildItem -LiteralPath `$tools -Recurse -File | Unblock-File -ErrorAction Si
 `$migrationState = 'skipped'
 `$launcherState = 'skipped'
 if (`$runSourceFree) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path `$tools 'migrate-source-free-install.ps1') `
-        -Mode dryRun `
-        -InstallRoot `$installRoot `
-        -WorkRoot (Join-Path `$installRoot 'updater') `
-        -PackageTarget (Join-Path `$installRoot 'package') `
-        -ServerTarget (Join-Path `$installRoot 'runtime') `
-        -ReportPath `$sourceFreeReportPath `
-        -NoNotifyUser
+    `$migrationArgs = @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path `$tools 'migrate-source-free-install.ps1'),
+        '-Mode',
+        'dryRun',
+        '-InstallRoot',
+        `$installRoot,
+        '-WorkRoot',
+        (Join-Path `$installRoot 'updater'),
+        '-PackageTarget',
+        (Join-Path `$installRoot 'package'),
+        '-ServerTarget',
+        (Join-Path `$installRoot 'runtime'),
+        '-ReportPath',
+        `$sourceFreeReportPath,
+        '-NoNotifyUser'
+    )
+    & powershell @migrationArgs
     if (`$LASTEXITCODE -ne 0) {
         throw "source-free dry-run exited with code `$LASTEXITCODE"
     }
     `$migrationState = 'ok'
 }
 if (`$runLauncherScan) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path `$tools 'publish-desktop-launcher-evidence.ps1') `
-        -Mode ScanLocal `
-        -OutputPath `$desktopLauncherReportPath `
-        -MachineName `$machine | Out-Null
+    `$launcherArgs = @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        (Join-Path `$tools 'publish-desktop-launcher-evidence.ps1'),
+        '-Mode',
+        'ScanLocal',
+        '-OutputPath',
+        `$desktopLauncherReportPath,
+        '-MachineName',
+        `$machine
+    )
+    & powershell @launcherArgs | Out-Null
     if (`$LASTEXITCODE -ne 0) {
         throw "desktop launcher scan exited with code `$LASTEXITCODE"
     }
@@ -592,13 +616,15 @@ finally {
 
 $aggregate = $null
 if (-not $SkipDesktopLauncher -and -not $SkipAggregate) {
+    $expectedMachinesCsv = (@($targets | ForEach-Object { [string]$_.Computer }) -join ",")
     $aggregateArgs = @(
         "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-File", $bundle.LauncherSource,
         "-Mode", "Aggregate",
         "-ReportsRoot", $ReportsRoot,
-        "-ExpectedMachines"
-    ) + @($targets | ForEach-Object { [string]$_.Computer }) + @("-OutputJson")
+        "-ExpectedMachines", $expectedMachinesCsv,
+        "-OutputJson"
+    )
     $aggregateJson = & powershell @aggregateArgs
     $aggregate = $aggregateJson | ConvertFrom-Json
 }
