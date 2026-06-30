@@ -168,6 +168,8 @@ try {
     Assert-True (-not $dailyTrigger.Repetition) "Scheduled task trigger must not repeat during the day."
 
     Write-Host "Test permission repair target plan"
+    $permissionsText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.Permissions.psm1")
+    Assert-True ($permissionsText -match '\$Recurse -or \$CreateDirectory') "Managed directory permission repair must grant inheritable access for future child files."
     $targets = Get-RevAgentManagedPermissionTargets `
         -InstallRoot "C:\ProgramData\DPE\revAgent" `
         -WorkRoot "C:\ProgramData\DPE\revAgent\updater" `
@@ -177,6 +179,11 @@ try {
         -RevitVersion 2022 `
         -IncludeExistingPayloadTrees
     Assert-True (($targets | Where-Object { $_.Path -match 'node_modules|backups' }).Count -eq 0) "Permission repair plan must not target node_modules or backups."
+    $updaterLibPermissionTargets = @($targets | Where-Object {
+            $leaf = Split-Path -Leaf $_.Path
+            ($leaf -eq "lib") -and ([bool]$_.Recurse)
+        })
+    Assert-True ($updaterLibPermissionTargets.Count -eq 1) "Permission repair plan must recursively cover the local updater lib root."
     $migrationPermissionTargets = @($targets | Where-Object {
             $leaf = Split-Path -Leaf $_.Path
             ($leaf -eq "migrate-source-free-install.ps1") -and ([string]$_.Kind -eq "File")
@@ -184,7 +191,7 @@ try {
     Assert-True ($migrationPermissionTargets.Count -eq 1) "Permission repair plan must cover the local migration tool so non-admin updater repair can overwrite it."
     $recursiveLeaves = @($targets | Where-Object { $_.Recurse } | ForEach-Object { Split-Path -Leaf $_.Path })
     foreach ($leaf in $recursiveLeaves) {
-        Assert-True ($leaf -in @("revAgentPlugin", "revit_mcp_plugin", "CommandSet", "runtime", "revAgent")) "Unexpected recursive permission target: $leaf"
+        Assert-True ($leaf -in @("lib", "revAgentPlugin", "revit_mcp_plugin", "CommandSet", "runtime", "revAgent")) "Unexpected recursive permission target: $leaf"
     }
 
     Write-Host "Test Revit payload update policy"

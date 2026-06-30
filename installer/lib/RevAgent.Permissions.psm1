@@ -63,6 +63,7 @@ function Get-RevitMcpManagedPermissionTargets {
         )) {
         $targets.Add((New-RevitMcpPermissionTarget -Path $entry.Path -Label $entry.Label -CreateDirectory))
     }
+    $targets.Add((New-RevitMcpPermissionTarget -Path (Join-Path $WorkRoot "lib") -Label "updater lib root" -CreateDirectory -Recurse))
 
     if (-not [string]::IsNullOrWhiteSpace($AllUsersAddinRoot)) {
         $targets.Add((New-RevitMcpPermissionTarget -Path $AllUsersAddinRoot -Label "Revit $RevitVersion addin root" -CreateDirectory))
@@ -131,7 +132,7 @@ function Grant-RevitMcpManagedPathAccess {
             return
         }
 
-        $grant = if ($Recurse) { "${identity}:(OI)(CI)M" } else { "${identity}:M" }
+        $grant = if ($Recurse -or $CreateDirectory) { "${identity}:(OI)(CI)M" } else { "${identity}:M" }
         $arguments = @($Path, "/grant", $grant, "/C")
         if ($Recurse) {
             $arguments += "/T"
