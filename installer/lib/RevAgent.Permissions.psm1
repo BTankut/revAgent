@@ -78,6 +78,7 @@ function Get-RevitMcpManagedPermissionTargets {
             "update-from-nas.ps1",
             "show-installed-version.ps1",
             "install-updater-task.ps1",
+            "migrate-source-free-install.ps1",
             "Update-revAgent-Now.cmd",
             "Show-revAgent-Version.cmd",
             "auto-update-loop.ps1",
