@@ -972,14 +972,15 @@ When `codexInstructionPolicy=preserve-local`, migration omits Codex instruction
 roots from inventory/cleanup and records `codexInstructionCleanupSkipped=true`
 while still cleaning package/runtime/updater backup artifacts.
 
-During the revAgent brand transition, the first updater run that has not yet
-written `revagent-clean-install-transition.json` treats the workstation like a
-clean install for the managed package layer. It clears the updater package
-backup folder and stale cached release ZIPs before source-free inventory checks,
-forces a full managed payload repair, removes the current managed package
-without creating a new local backup, and writes the marker only after a
-successful install. Operator rollback for this transition should use the signed
-NAS release archive, not local workstation package backups.
+Workstation rollback uses the signed NAS release archive, not local workstation
+package backups. Every normal updater run clears the updater package backup
+folder and stale cached release ZIPs before package replacement, then removes
+the current managed package directly once the replacement package has already
+been downloaded, signature/hash checked, and extracted. During the revAgent
+brand transition, the first updater run that has not yet written
+`revagent-clean-install-transition.json` also forces a full managed payload
+repair and writes the marker only after a successful install. Later updates keep
+the same local-backup-disabled policy.
 
 Normal stable updater entrypoints, including the standalone GUI launcher, check
 the managed source/developer artifact inventory before update/repair work

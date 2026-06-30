@@ -2728,6 +2728,7 @@ function New-CurrentUpdateDiagnostics {
         fastUpdateFallbackUsed = [bool]$fastUpdateFallbackUsed
         fastUpdateFallbackMessage = $fastUpdateFallbackMessage
         revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
+        localPackageBackupPolicy = $localPackageBackupPolicyState
         revAgentCleanInstallTransition = $revAgentCleanInstallTransitionState
     }
 }
@@ -3130,7 +3131,20 @@ $stagingRoot = Join-Path $WorkRoot "staging"
 $backupRoot = Join-Path $WorkRoot "backups"
 $revAgentCleanInstallTransitionMarkerPath = Join-Path $WorkRoot "revagent-clean-install-transition.json"
 $revAgentCleanInstallTransitionRequired = $false
-$revAgentCleanInstallTransitionCleanup = $null
+$localPackageBackupPolicyState = [ordered]@{
+    enabled = $true
+    policy = "disabled"
+    reason = "Workstation rollback uses signed NAS release archives; local package backups are not retained."
+    backupRoot = $backupRoot
+    cacheRoot = $cacheRoot
+    packageBackupSkipped = $true
+    packageRemovedWithoutBackup = $false
+    cleanupAtUtc = ""
+    removedBackupItemCount = 0
+    failedBackupItemCount = 0
+    removedCacheItemCount = 0
+    failedCacheItemCount = 0
+}
 $revAgentCleanInstallTransitionState = [ordered]@{
     enabled = $false
     required = $false
@@ -3145,7 +3159,6 @@ $revAgentCleanInstallTransitionState = [ordered]@{
     failedCacheItemCount = 0
 }
 New-Item -ItemType Directory -Path $cacheRoot, $stagingRoot, $backupRoot -Force | Out-Null
-Invoke-RevAgentDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
 
 $taskUpdaterPath = Join-Path $WorkRoot "update-from-nas.ps1"
 if (-not (Test-Path -LiteralPath $taskUpdaterPath -PathType Leaf)) {
@@ -3242,6 +3255,26 @@ try {
         $revAgentCleanInstallTransitionState.required = $true
         $revAgentCleanInstallTransitionState.packageBackupSkipped = $true
     }
+    $localPackageBackupPolicyCleanup = Invoke-RevAgentBackupRootReset -BackupRoot $backupRoot -CacheRoot $cacheRoot
+    $localPackageBackupPolicyState.cleanupAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    $localPackageBackupPolicyState.removedBackupItemCount = [int]$localPackageBackupPolicyCleanup.removedBackupItemCount
+    $localPackageBackupPolicyState.failedBackupItemCount = [int]$localPackageBackupPolicyCleanup.failedBackupItemCount
+    $localPackageBackupPolicyState.removedCacheItemCount = [int]$localPackageBackupPolicyCleanup.removedCacheItemCount
+    $localPackageBackupPolicyState.failedCacheItemCount = [int]$localPackageBackupPolicyCleanup.failedCacheItemCount
+    if ($revAgentCleanInstallTransitionRequired) {
+        $revAgentCleanInstallTransitionState.removedBackupItemCount = [int]$localPackageBackupPolicyCleanup.removedBackupItemCount
+        $revAgentCleanInstallTransitionState.failedBackupItemCount = [int]$localPackageBackupPolicyCleanup.failedBackupItemCount
+        $revAgentCleanInstallTransitionState.removedCacheItemCount = [int]$localPackageBackupPolicyCleanup.removedCacheItemCount
+        $revAgentCleanInstallTransitionState.failedCacheItemCount = [int]$localPackageBackupPolicyCleanup.failedCacheItemCount
+    }
+    if ([int]$localPackageBackupPolicyCleanup.failedBackupItemCount -gt 0 -or
+        [int]$localPackageBackupPolicyCleanup.failedCacheItemCount -gt 0) {
+        throw "Local package backup/cache cleanup failed. Workstation rollback must use signed NAS release archives, not local package backups."
+    }
+    if ([int]$localPackageBackupPolicyCleanup.removedBackupItemCount -gt 0 -or
+        [int]$localPackageBackupPolicyCleanup.removedCacheItemCount -gt 0) {
+        Write-Host ("Local package backups: disabled; removed {0} backup item(s) and {1} cached release ZIP(s)." -f $localPackageBackupPolicyCleanup.removedBackupItemCount, $localPackageBackupPolicyCleanup.removedCacheItemCount) -ForegroundColor Green
+    }
     $script:RevAgentOperation = if ($AuditOnly) { "audit" } elseif ($SourceFreeMigration) { "source-free-migration" } elseif ($isFirstInstall) { "install" } elseif ($Force) { "reinstall" } else { "update" }
     if ([string]::IsNullOrWhiteSpace($OperationMethod)) {
         $script:RevAgentOperationMethod = if ($AuditOnly) {
@@ -3270,16 +3303,7 @@ try {
     Write-Host "Operation method : $script:RevAgentOperationMethod"
     Write-Host "Package          : $packagePath"
     if ($revAgentCleanInstallTransitionRequired) {
-        Write-Host "revAgent transition: clean install mode; existing package backups will be cleared and this package replacement will not create a backup." -ForegroundColor Yellow
-        $revAgentCleanInstallTransitionCleanup = Invoke-RevAgentBackupRootReset -BackupRoot $backupRoot -CacheRoot $cacheRoot
-        $revAgentCleanInstallTransitionState.removedBackupItemCount = [int]$revAgentCleanInstallTransitionCleanup.removedBackupItemCount
-        $revAgentCleanInstallTransitionState.failedBackupItemCount = [int]$revAgentCleanInstallTransitionCleanup.failedBackupItemCount
-        $revAgentCleanInstallTransitionState.removedCacheItemCount = [int]$revAgentCleanInstallTransitionCleanup.removedCacheItemCount
-        $revAgentCleanInstallTransitionState.failedCacheItemCount = [int]$revAgentCleanInstallTransitionCleanup.failedCacheItemCount
-        if ([int]$revAgentCleanInstallTransitionCleanup.failedBackupItemCount -gt 0 -or
-            [int]$revAgentCleanInstallTransitionCleanup.failedCacheItemCount -gt 0) {
-            throw "revAgent clean-install transition backup cleanup failed."
-        }
+        Write-Host "revAgent transition: clean install mode; local package backups are disabled and rollback uses signed NAS release archives." -ForegroundColor Yellow
     }
 
     $installedManifest = Get-InstalledReleaseManifest -InstalledState $installedState -PackageTarget $PackageTarget
@@ -3534,16 +3558,12 @@ try {
     }
 
     if (Test-Path -LiteralPath $PackageTarget) {
-        $backupPath = Join-Path $backupRoot ("revit-mcp-skill.backup-" + $stamp)
+        Remove-Item -LiteralPath $PackageTarget -Recurse -Force -ErrorAction Stop
+        $localPackageBackupPolicyState.packageRemovedWithoutBackup = $true
         if ($revAgentCleanInstallTransitionRequired) {
-            Remove-Item -LiteralPath $PackageTarget -Recurse -Force -ErrorAction Stop
             $revAgentCleanInstallTransitionState.packageRemovedWithoutBackup = $true
-            Write-Host "revAgent transition: removed existing managed package without creating a local backup." -ForegroundColor Yellow
         }
-        else {
-            Move-Item -LiteralPath $PackageTarget -Destination $backupPath
-            Invoke-RevAgentDirectoryRetention -Root $backupRoot -Filter "revit-mcp-skill.backup-*" -KeepLast 3
-        }
+        Write-Host "Local package backups: removed existing managed package without creating a local backup." -ForegroundColor Yellow
     }
 
     New-Item -ItemType Directory -Path (Split-Path -Parent $PackageTarget) -Force | Out-Null
@@ -3759,6 +3779,7 @@ try {
         signedReleaseRollbackAllowed = [bool]$script:RevAgentDistributionIntegrity.rollbackAllowed
         license = $script:RevAgentLicense
         sourceFreeMigration = $sourceFreeMigrationState
+        localPackageBackupPolicy = $localPackageBackupPolicyState
         revAgentCleanInstallTransition = $revAgentCleanInstallTransitionState
         updaterVersion = $updaterVersion
         codexInstructionPolicy = $CodexInstructionPolicy

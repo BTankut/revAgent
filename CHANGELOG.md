@@ -4,6 +4,11 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Changed workstation package replacement to keep local package backups
+  disabled permanently: updater runs now clear package backups and stale cached
+  release ZIPs, report `localPackageBackupPolicy`, and rely on signed NAS
+  release archives for rollback instead of creating
+  `revit-mcp-skill.backup-*` folders after the brand transition.
 - Fixed updater distribution-integrity helper resolution so `RevAgent*` helper
   aliases are resolved to their exported module functions before invocation;
   this prevents trusted release-key loading from failing with
@@ -58,10 +63,9 @@ All notable revAgent workstation deployment changes are tracked here.
   `mcp-servers-for-revit.addin`, `revit_mcp_plugin`, `RevitMCPPlugin.dll`, and
   `RevitMCPCommandSet.dll` active payload surfaces.
 - Added a one-time revAgent clean-install transition for workstations: the
-  updater clears local package backups and stale cached release ZIPs, skips
-  creating a new package backup for that transition run, forces a full managed
-  payload repair, and records completion with
-  `revagent-clean-install-transition.json`.
+  updater records the full managed payload repair with
+  `revagent-clean-install-transition.json`; local package backups remain
+  disabled by the permanent workstation rollback policy.
 - Added a rollout closure audit wrapper that persists a timestamped readiness
   snapshot and can fail handoff automation when machine or rollout actions
   remain open.

@@ -428,6 +428,11 @@ try {
     Assert-True ($updateText -match 'Codex MCP registration: skipped; runtime/docs entry points unchanged') "Updater must skip MCP registration when runtime/docs entry points are unchanged."
     Assert-True ($updateText -match 'Revit API index: skipped; docs payload unchanged') "Updater must skip docs index rebuild when docs payload is unchanged and the cache exists."
     Assert-True ($updateText -match 'Fast update path : package/updater metadata only; self-contained installer skipped') "Updater must bypass the self-contained installer when all payload surfaces are unchanged."
+    Assert-True ($updateText -match '\$localPackageBackupPolicyState = \[ordered\]@' -and $updateText -match 'policy = "disabled"' -and $updateText -match 'Workstation rollback uses signed NAS release archives') "Updater must expose a disabled local package backup policy."
+    Assert-True ($updateText -match 'Invoke-RevAgentBackupRootReset -BackupRoot \$backupRoot -CacheRoot \$cacheRoot') "Updater must clear local package backups and stale cached release ZIPs before normal package replacement."
+    Assert-True ($updateText -match 'localPackageBackupPolicy = \$localPackageBackupPolicyState') "Updater reports and installed state must expose local package backup policy diagnostics."
+    Assert-True ($updateText -notmatch 'Move-Item -LiteralPath \$PackageTarget -Destination \$backupPath') "Updater must not retain local package backup directories on workstations."
+    Assert-True ($updateText -notmatch 'Invoke-RevAgentDirectoryRetention -Root \$backupRoot') "Updater must not keep a rolling set of local package backups."
     Assert-True ($updateText -match 'Install-UpdaterToolsFromPackage -SourceRoot \$nasToolsSource -DestinationRoot \$WorkRoot') "Fast update path must still refresh local updater tools."
     Assert-True ($updateText -match 'Invoke-NpmInstallIfNeeded -NpmPath \$npmPath -WorkingDirectory \$docsServerPath -Label "Documentation server" -CacheRoot \$npmDependencyCacheRoot') "Fast and normal updates must restore docs server node_modules after replacing the package folder."
     Assert-True ($updateText -match 'Documentation server dependencies: skipped by -SkipNpmInstall') "Updater must only skip docs server dependencies when explicitly requested."
@@ -1316,9 +1321,9 @@ try {
     $updaterTextForCleanInstall = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
     Assert-True ($updaterTextForCleanInstall -match 'revagent-clean-install-transition\.json') "Updater must persist a one-time revAgent clean-install transition marker."
     Assert-True ($updaterTextForCleanInstall -match 'Test-RevAgentCleanInstallTransitionRequired') "Updater must decide when the revAgent clean-install transition is required."
-    Assert-True ($updaterTextForCleanInstall -match 'Invoke-RevAgentBackupRootReset') "Updater must clear package backups during the revAgent clean-install transition."
+    Assert-True ($updaterTextForCleanInstall -match 'Invoke-RevAgentBackupRootReset') "Updater must clear package backups through the workstation local-backup policy."
     Assert-True ($updaterTextForCleanInstall -match 'packageBackupSkipped') "Updater state/report diagnostics must expose skipped local package backup behavior."
-    Assert-True ($updaterTextForCleanInstall -match 'Remove-Item -LiteralPath \$PackageTarget -Recurse -Force') "Updater must remove the previous managed package directly during the clean-install transition."
+    Assert-True ($updaterTextForCleanInstall -match 'Remove-Item -LiteralPath \$PackageTarget -Recurse -Force') "Updater must remove the previous managed package directly without retaining a local package backup."
 
     Write-Host "Installer/updater smoke tests passed." -ForegroundColor Green
 }
