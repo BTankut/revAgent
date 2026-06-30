@@ -1,7 +1,7 @@
 {
   "name": "revit-mcp",
   "version": "1.0.0",
-  "description": "Bundled local MCP server for the self-contained revAgent workstation package.",
+  "description": "Bundled local MCP server for the self-contained revAgent standard user package.",
   "private": true,
   "main": "build/index.js",
   "type": "module",

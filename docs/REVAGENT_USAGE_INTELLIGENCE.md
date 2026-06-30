@@ -333,7 +333,7 @@ belongs to the dashboard add-on under
 package does not install or migrate Cloudflare tunnel files.
 
 Dashboard and usage-intelligence are admin/coordinator add-ons. They are not
-part of the standard workstation package, and source-free user pack guards treat
+part of the standard user package, and source-free user pack guards treat
 the repository `addons` folder as a non-workstation artifact.
 
 The live feed is intentionally not the durable audit record. It is a UI feed.

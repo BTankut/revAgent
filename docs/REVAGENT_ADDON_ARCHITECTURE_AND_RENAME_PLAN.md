@@ -4,7 +4,7 @@
 
 Dashboard and usage-intelligence are revAgent product functions, but they are
 not part of the standard user install. They must be split from the core
-workstation package and installed only on an admin/coordinator machine through
+standard user package and installed only on an admin/coordinator machine through
 explicit add-ons.
 
 This replaces the attempted PR #130 direction. A locked legacy dashboard tunnel
@@ -35,9 +35,9 @@ Does not contain:
 - usage-intelligence summary publisher.
 - admin/coordinator scheduled tasks.
 
-Naming note: the public product role should move from "workstation package" to
-"standard user package" or "user package". "Workstation" can remain only where
-it is technically useful for machine-level implementation details.
+Naming note: the public product role is "standard user package" or "user
+package". "Workstation" remains only where it is technically useful for
+machine-level implementation details.
 
 ### Dashboard Add-on
 
