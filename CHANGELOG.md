@@ -11,7 +11,8 @@ All notable revAgent workstation deployment changes are tracked here.
   every in-scope machine. NAS publish also copies the helper to release
   `tools\` so source-free workstations can run it without a repository
   checkout. Local scans now include every readable local user Desktop folder by
-  default so SSH/admin runs do not miss operator launchers.
+  default, including OneDrive-redirected Desktop folders, so SSH/admin runs do
+  not miss operator launchers.
 - Added desktop launcher evidence to the rollout readiness audit so
   compatibility-root retirement remains blocked until launcher audit evidence
   reports zero legacy launcher/root references.

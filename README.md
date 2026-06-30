@@ -1070,8 +1070,8 @@ from NAS `tools\` after publish. The aggregate evidence must cover every
 in-scope machine; any missing machine, failed machine, or non-zero legacy
 launcher/root count keeps compatibility-root retirement blocked. By default,
 `ScanLocal` checks the current user Desktop, public Desktop, and readable
-`C:\Users\*\Desktop` folders; pass `-LauncherPath` only when a narrower audit
-scope is intentional.
+`C:\Users\*\Desktop` or `C:\Users\*\OneDrive*\Desktop` folders; pass
+`-LauncherPath` only when a narrower audit scope is intentional.
 When source-free evidence is missing, run
 `migrate-source-free-install.ps1 -Mode dryRun -ReportsRoot <reports-root>` on
 the workstation; it publishes `source-free-migration-latest.json` without
