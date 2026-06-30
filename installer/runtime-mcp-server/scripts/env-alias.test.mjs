@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -66,6 +68,51 @@ assert.equal(legacy.target.host, "127.0.1.3");
 assert.equal(legacy.target.port, 6631);
 assert.deepEqual(legacy.candidates.map((item) => item.port), [6632, 6633]);
 assert.equal(legacy.framingMode, "legacy");
+
+const registryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "revagent-registry-test-"));
+const revAgentRegistryPath = path.join(registryRoot, "revAgent-instances.json");
+const legacyRegistryPath = path.join(registryRoot, "revit-mcp-instances.json");
+fs.writeFileSync(revAgentRegistryPath, JSON.stringify({
+  instances: [
+    { name: "revAgentRegistry", host: "127.0.2.10", port: 7750 },
+  ],
+}), "utf8");
+fs.writeFileSync(legacyRegistryPath, JSON.stringify({
+  instances: [
+    { name: "legacyRegistry", host: "127.0.2.11", port: 6650 },
+  ],
+}), "utf8");
+try {
+  const registryOutput = execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import { resolveRevitConnectionTarget, getCandidateRevitTargets } from "./build/utils/ConnectionManager.js";
+    const candidates = getCandidateRevitTargets({ includeRegistry: true, ports: "7799" });
+    const target = resolveRevitConnectionTarget({ target: "legacyRegistry" });
+    console.log(JSON.stringify({
+      registryCandidates: candidates
+        .filter((item) => item.source === "registry")
+        .map((item) => ({ name: item.name, host: item.host, port: item.port })),
+      target,
+    }));
+  `], {
+    cwd: runtimeRoot,
+    env: {
+      PATH: process.env.PATH,
+      SystemRoot: process.env.SystemRoot,
+      TEMP: process.env.TEMP,
+      TMP: process.env.TMP,
+      REVAGENT_INSTANCE_REGISTRY: revAgentRegistryPath,
+      REVIT_MCP_INSTANCE_REGISTRY: legacyRegistryPath,
+    },
+    encoding: "utf8",
+  });
+  const registry = JSON.parse(registryOutput);
+  assert.deepEqual(registry.registryCandidates.map((item) => item.name), ["revAgentRegistry", "legacyRegistry"]);
+  assert.equal(registry.target.name, "legacyRegistry");
+  assert.equal(registry.target.port, 6650);
+}
+finally {
+  fs.rmSync(registryRoot, { recursive: true, force: true });
+}
 
 const defaultPort = runProbe({
   REVAGENT_PORT: "7740",

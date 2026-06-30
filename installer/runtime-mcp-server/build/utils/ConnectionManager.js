@@ -5,8 +5,12 @@ import * as os from "os";
 import * as path from "path";
 const DEFAULT_HOST = readEnv("REVAGENT_HOST", "REVIT_MCP_HOST", "REVIT_HOST") || "localhost";
 const DEFAULT_PORT = parsePort(readEnv("REVAGENT_PORT", "REVIT_MCP_PORT", "REVIT_PORT"), 8080);
-const DEFAULT_REGISTRY_PATH = readEnv("REVAGENT_INSTANCE_REGISTRY", "REVIT_MCP_INSTANCE_REGISTRY") ||
-    path.join(os.tmpdir(), "revit-mcp-instances.json");
+const REGISTRY_PATHS = uniqueRegistryPaths([
+    readEnv("REVAGENT_INSTANCE_REGISTRY"),
+    path.join(os.tmpdir(), "revAgent-instances.json"),
+    readEnv("REVIT_MCP_INSTANCE_REGISTRY"),
+    path.join(os.tmpdir(), "revit-mcp-instances.json"),
+]);
 const LOCK_ROOT = path.join(os.tmpdir(), "revit-mcp-command-locks");
 const LOCK_WAIT_MS = 8000;
 const LOCK_STALE_MS = 10 * 60 * 1000;
@@ -43,6 +47,22 @@ function normalizeHost(value) {
 function sanitizeLockPart(value) {
     return String(value).replace(/[^a-zA-Z0-9_.-]/g, "_");
 }
+function uniqueRegistryPaths(values) {
+    const seen = new Set();
+    const output = [];
+    for (const value of values) {
+        if (!value || !String(value).trim()) {
+            continue;
+        }
+        const fullPath = path.resolve(String(value));
+        const key = fullPath.toLowerCase();
+        if (!seen.has(key)) {
+            seen.add(key);
+            output.push(fullPath);
+        }
+    }
+    return output;
+}
 function lockDirForTarget(target) {
     return path.join(LOCK_ROOT, `${sanitizeLockPart(target.host)}-${target.port}.lock`);
 }
@@ -71,27 +91,33 @@ function uniqueTargets(targets) {
     return output;
 }
 function readRegistry() {
-    try {
-        if (!fs.existsSync(DEFAULT_REGISTRY_PATH)) {
-            return [];
+    const entries = [];
+    for (const registryPath of REGISTRY_PATHS) {
+        try {
+            if (!fs.existsSync(registryPath)) {
+                continue;
+            }
+            const parsed = JSON.parse(fs.readFileSync(registryPath, "utf8"));
+            if (Array.isArray(parsed)) {
+                entries.push(...parsed);
+                continue;
+            }
+            if (parsed && Array.isArray(parsed.instances)) {
+                entries.push(...parsed.instances);
+                continue;
+            }
+            if (parsed && parsed.targets && typeof parsed.targets === "object") {
+                entries.push(...Object.entries(parsed.targets).map(([name, value]) => ({
+                    ...(typeof value === "object" && value ? value : {}),
+                    name,
+                })));
+            }
         }
-        const parsed = JSON.parse(fs.readFileSync(DEFAULT_REGISTRY_PATH, "utf8"));
-        if (Array.isArray(parsed)) {
-            return parsed;
-        }
-        if (parsed && Array.isArray(parsed.instances)) {
-            return parsed.instances;
-        }
-        if (parsed && parsed.targets && typeof parsed.targets === "object") {
-            return Object.entries(parsed.targets).map(([name, value]) => ({
-                ...(typeof value === "object" && value ? value : {}),
-                name,
-            }));
+        catch {
+            continue;
         }
     }
-    catch {
-    }
-    return [];
+    return entries;
 }
 function registryTargetMatches(entry, name) {
     const wanted = String(name).toLowerCase();
