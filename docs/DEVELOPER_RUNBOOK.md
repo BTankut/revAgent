@@ -882,6 +882,20 @@ NAS reports root. It publishes `source-free-migration-latest.json` as durable
 readiness evidence without overwriting the dashboard `latest.json` version
 state.
 
+For SSH-managed workstations, use the evidence-only collector instead of the
+install/repair deploy script:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect-rollout-evidence.ps1 `
+  -TargetsPath C:\ProgramData\DPE\revAgentOps\fleet.json `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+```
+
+The collector stages only read-only evidence tools on each target, runs
+source-free inventory in `dryRun`, runs desktop launcher scans, and then
+aggregates launcher evidence. It does not install, repair, update, stop
+processes, or run source-free migration in commit mode.
+
 Publishing refreshes `tools\` on the NAS. Workstations should launch the tools
 from the NAS share, not from copied old script bodies when possible.
 

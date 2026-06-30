@@ -65,6 +65,7 @@ to a non-stable test channel until the release is accepted.
     update-from-nas.ps1
     show-installed-version.ps1
     publish-desktop-launcher-evidence.ps1
+    collect-rollout-evidence.ps1
     test-commandset-live.ps1
 ```
 
@@ -320,6 +321,11 @@ If source-free evidence is missing, run `migrate-source-free-install.ps1` in
 `dryRun` mode with `-ReportsRoot` set to the canonical reports root. The dry-run
 publishes `source-free-migration-latest.json` for readiness without replacing
 the dashboard `latest.json` version report.
+For SSH-managed workstations, prefer `tools\collect-rollout-evidence.ps1` over
+the install/repair deploy script. It stages only read-only evidence tools,
+runs source-free inventory in `dryRun`, scans desktop launchers, and aggregates
+launcher evidence without installing, repairing, updating, or committing
+migration cleanup.
 
 ## Update Behavior
 
