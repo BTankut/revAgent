@@ -476,6 +476,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-li
   -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
 ```
 
+After a NAS publish, source-free workstations can run the same helper from
+`\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\test-commandset-live.ps1`
+without a repository checkout.
+
 This gate is intentionally separate from `test-all`: it connects to the Revit
 MCP socket, status-checks before each command, and validates real commandset
 behavior for `transactionMode: "auto"`, `transactionMode: "none"`, guarded
@@ -677,7 +681,9 @@ Live smoke test after install:
 10. For rollout closure evidence, run `scripts\test-commandset-live.ps1` with
     `-ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"` so the
     current stable live-smoke result is written to
-    `reports\rollout\live-smoke-latest.json`.
+    `reports\rollout\live-smoke-latest.json`. After NAS publish, source-free
+    workstations can run the published
+    `tools\test-commandset-live.ps1` copy from the canonical NAS root.
 10. Confirm `revit-api-docs` responds to a small search such as
    `FilteredElementCollector`.
 11. For transport-sensitive changes, run a large read-only marker/checksum probe

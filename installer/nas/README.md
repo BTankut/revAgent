@@ -65,6 +65,7 @@ to a non-stable test channel until the release is accepted.
     update-from-nas.ps1
     show-installed-version.ps1
     publish-desktop-launcher-evidence.ps1
+    test-commandset-live.ps1
 ```
 
 During the NAS root rename transition, the old
@@ -301,6 +302,9 @@ audit also classifies each machine's latest `paths.channelManifestPath` as
 canonical, legacy, or unknown. Keep the `revit-mcp-deploy` compatibility root
 until the audit reports every in-scope machine on the canonical
 `revAgent-deploy` channel path and copied desktop launchers have been replaced.
+After a NAS publish, the live smoke helper is available as
+`tools\test-commandset-live.ps1`; run it with `-ReleaseRoot` on the Revit smoke
+machine to write `reports\rollout\live-smoke-latest.json`.
 Record the launcher audit in `desktopLauncherEvidence` or
 `reports\rollout\desktop-launcher-latest.json`. The supported path is to run
 `tools\publish-desktop-launcher-evidence.ps1 -Mode ScanLocal` on each
