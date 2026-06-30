@@ -869,10 +869,15 @@ After a NAS publish, the same helper is available as
 `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\publish-desktop-launcher-evidence.ps1`
 for source-free workstations that do not have the repository checkout.
 The aggregate record is written to
-`reports\rollout\desktop-launcher-latest.json` and must cover every in-scope
-machine with `missingMachineCount=0`, `failedMachineCount=0`,
-`legacyLauncherCount=0`, and `legacyRootReferenceCount=0`. `ScanLocal`
-defaults to the current user's Desktop, the public Desktop, and every local
+`reports\rollout\desktop-launcher-latest.json`. The closure audit also reads
+per-machine records under
+`reports\machines\<machine>\desktop-launcher-latest.json`, so a current
+per-machine scan can complete coverage when the aggregate record is stale or
+partial. Compatibility-root retirement still requires every in-scope machine to
+resolve to passing evidence with `missingMachineCount=0`,
+`failedMachineCount=0`, `legacyLauncherCount=0`, and
+`legacyRootReferenceCount=0`. `ScanLocal` defaults to the current user's
+Desktop, the public Desktop, and every local
 `C:\Users\*\Desktop` or `C:\Users\*\OneDrive*\Desktop` folder it can read, so
 SSH/admin runs still inspect the operator desktop launchers unless
 `-LauncherPath` is used to narrow the scan.
