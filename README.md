@@ -1069,10 +1069,13 @@ config or as `reports\rollout\desktop-launcher-latest.json`. Prefer producing
 that file with `publish-desktop-launcher-evidence.ps1`: run `-Mode ScanLocal`
 on each in-scope machine, then run `-Mode Aggregate` from the coordinator using
 the rollout config. The helper is available from the repo `scripts\` folder and
-from NAS `tools\` after publish. The aggregate evidence must cover every
-in-scope machine; any missing machine, failed machine, or non-zero legacy
-launcher/root count keeps compatibility-root retirement blocked. By default,
-`ScanLocal` checks the current user Desktop, public Desktop, and readable
+from NAS `tools\` after publish. The readiness audit also reads each machine's
+latest `reports\machines\<machine>\desktop-launcher-latest.json`; this
+per-machine evidence can complete coverage when the rollout aggregate is stale
+or was collected before a late workstation scan. Compatibility-root retirement
+still requires every in-scope machine to have passing desktop-launcher evidence,
+with no missing machine, failed machine, or non-zero legacy launcher/root count.
+By default, `ScanLocal` checks the current user Desktop, public Desktop, and readable
 `C:\Users\*\Desktop` or `C:\Users\*\OneDrive*\Desktop` folders; pass
 `-LauncherPath` only when a narrower audit scope is intentional.
 When source-free evidence is missing, run

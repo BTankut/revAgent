@@ -311,8 +311,10 @@ Record the launcher audit in `desktopLauncherEvidence` or
 `tools\publish-desktop-launcher-evidence.ps1 -Mode ScanLocal` on each
 in-scope machine, then `-Mode Aggregate` from the coordinator with the rollout
 config. The same script is also available from the repo `scripts\` folder for
-developer-side audits. The aggregate evidence must cover every in-scope
-machine; non-zero legacy launcher/root counts, missing machine evidence, or
+developer-side audits. The readiness audit also reads per-machine
+`reports\machines\<machine>\desktop-launcher-latest.json` records, so current
+machine scans can complete coverage even if the rollout aggregate is stale or
+partial. Non-zero legacy launcher/root counts, missing machine evidence, or
 failed machine evidence block compatibility-root retirement. `ScanLocal`
 checks the current user Desktop, public Desktop, and readable
 `C:\Users\*\Desktop` or `C:\Users\*\OneDrive*\Desktop` folders by default so

@@ -222,8 +222,9 @@ read its `channels\stable.json`.
 5. Freeze the old `revit-mcp-deploy` root as compatibility-only.
 6. Remove old-root dependency only after `scripts\check-rollout-readiness.ps1`
    reports every in-scope machine with canonical `revAgent-deploy`
-   `paths.channelManifestPath` evidence and desktop launcher evidence reports
-   zero copied launcher references to the legacy root.
+   `paths.channelManifestPath` evidence and aggregate or per-machine desktop
+   launcher evidence reports zero copied launcher references to the legacy
+   root for every in-scope machine.
 
 ### Repo Rename Strategy
 
