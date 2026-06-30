@@ -1061,6 +1061,10 @@ latest `paths.channelManifestPath` evidence. Do not retire the
 `revit-mcp-deploy` compatibility root until every in-scope machine reports a
 canonical `revAgent-deploy` channel path and no copied desktop launcher still
 depends on the legacy root.
+When source-free evidence is missing, run
+`migrate-source-free-install.ps1 -Mode dryRun -ReportsRoot <reports-root>` on
+the workstation; it publishes `source-free-migration-latest.json` without
+overwriting the dashboard `latest.json` version state.
 
 Connection freshness is calculated from the live heartbeat: `Online` is within
 `staleSeconds` (default 60 seconds), `Stale` is older but still within

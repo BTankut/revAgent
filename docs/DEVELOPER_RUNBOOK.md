@@ -844,6 +844,11 @@ unknown channel evidence blocks compatibility-root retirement and produces an
 action item unless another higher-priority machine action already applies. For
 a one-off run, `-ReleaseRoot`, `-ExpectedMachines`, and `-OutOfScopeMachines`
 can still be passed directly.
+When the audit asks for `run_source_free_dry_run_inventory`, run the local
+migration tool in `dryRun` mode with `-ReportsRoot` pointing at the canonical
+NAS reports root. It publishes `source-free-migration-latest.json` as durable
+readiness evidence without overwriting the dashboard `latest.json` version
+state.
 
 Publishing refreshes `tools\` on the NAS. Workstations should launch the tools
 from the NAS share, not from copied old script bodies when possible.

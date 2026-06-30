@@ -159,6 +159,97 @@ function Write-RevAgentMigrationReport {
     $Value | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
+function ConvertTo-RevAgentSafePathSegment {
+    param(
+        [string]$Value,
+        [string]$Fallback = "unknown"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $Fallback
+    }
+
+    $invalidCharacters = [System.IO.Path]::GetInvalidFileNameChars()
+    $builder = [System.Text.StringBuilder]::new()
+    foreach ($character in $Value.Trim().ToCharArray()) {
+        if ([char]::IsControl($character) -or [char]::IsWhiteSpace($character) -or [Array]::IndexOf($invalidCharacters, $character) -ge 0) {
+            [void]$builder.Append("_")
+            continue
+        }
+
+        [void]$builder.Append($character)
+    }
+
+    $safe = [System.Text.RegularExpressions.Regex]::Replace($builder.ToString(), "_{2,}", "_").Trim("._-")
+    if ([string]::IsNullOrWhiteSpace($safe)) {
+        return $Fallback
+    }
+
+    return $safe
+}
+
+function Copy-RevAgentOrderedMap {
+    param([object]$Value)
+
+    $copy = [ordered]@{}
+    if ($null -eq $Value) {
+        return $copy
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($key in $Value.Keys) {
+            $copy[[string]$key] = $Value[$key]
+        }
+        return $copy
+    }
+    foreach ($property in $Value.PSObject.Properties) {
+        $copy[$property.Name] = $property.Value
+    }
+    return $copy
+}
+
+function Publish-RevAgentSourceFreeMigrationEvidence {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ReportsRoot,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Report
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
+        return $null
+    }
+
+    $safeComputer = ConvertTo-RevAgentSafePathSegment -Value $env:COMPUTERNAME -Fallback "unknown-computer"
+    $machineRoot = Join-Path (Join-Path $ReportsRoot "machines") $safeComputer
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $latestPath = Join-Path $machineRoot "source-free-migration-latest.json"
+    $historyPath = Join-Path $machineRoot ("source-free-migration-{0}.json" -f $stamp)
+    $publishedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+
+    $published = Copy-RevAgentOrderedMap -Value $Report
+    $published["computerName"] = $env:COMPUTERNAME
+    $published["userName"] = $env:USERNAME
+    $published["operation"] = "source-free-migration"
+    $published["operationMethod"] = if ([string]::Equals([string]$published["mode"], "dryRun", [System.StringComparison]::OrdinalIgnoreCase)) { "source-free-migration-dry-run" } else { "source-free-migration" }
+    $published["publishedAtUtc"] = $publishedAtUtc
+    $published["machineReport"] = [ordered]@{
+        machineRoot = $machineRoot
+        latestPath = $latestPath
+        historyPath = $historyPath
+        logPath = $null
+    }
+
+    Write-RevAgentMigrationReport -Path $historyPath -Value $published
+    Write-RevAgentMigrationReport -Path $latestPath -Value $published
+
+    return [pscustomobject][ordered]@{
+        MachineRoot = $machineRoot
+        LatestPath = $latestPath
+        HistoryPath = $historyPath
+    }
+}
+
 function Add-RevAgentChildProcessParameter {
     param(
         [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$Arguments,
@@ -453,6 +544,17 @@ $report = [ordered]@{
 
 Write-RevAgentMigrationReport -Path $ReportPath -Value $report
 Write-Host "Source-free migration report: $ReportPath"
+if (-not [string]::IsNullOrWhiteSpace($ReportsRoot)) {
+    try {
+        $publishedMigrationEvidence = Publish-RevAgentSourceFreeMigrationEvidence -ReportsRoot $ReportsRoot -Report $report
+        if ($null -ne $publishedMigrationEvidence) {
+            Write-Host "Source-free migration NAS evidence: $($publishedMigrationEvidence.LatestPath)"
+        }
+    }
+    catch {
+        Write-Warning "Could not publish source-free migration evidence to NAS reports: $($_.Exception.Message)"
+    }
+}
 
 if ($Mode -eq "dryRun") {
     Write-Host ("Source-free migration dry-run found {0} managed source/developer artifact item(s)." -f $beforeInventory.Count)
