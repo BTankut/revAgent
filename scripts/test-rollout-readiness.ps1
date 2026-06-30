@@ -246,6 +246,7 @@ try {
     Assert-Equal ([int]$result.summary.legacyChannelRootCount) 1 "Legacy channel root count mismatch."
     Assert-Equal ([int]$result.summary.unknownChannelRootCount) 1 "Unknown channel root count mismatch."
     Assert-True (-not [bool]$result.summary.compatibilityRootRetirementReady) "Compatibility root should not be retirement-ready with legacy or unknown machine evidence."
+    Assert-Equal $result.summary.releaseIdentityProducerSwitch.state "disabled" "Release identity producer switch gate should be disabled by default."
     Assert-Equal ([int]$result.summary.actionRequiredCount) 4 "Action count mismatch."
     Assert-True (-not [bool]$result.summary.ready) "Fixture should not be fully ready."
 
@@ -284,6 +285,47 @@ try {
     Assert-True ([bool]$old.excluded) "OLD should be excluded."
     Assert-Equal $old.exclusionReason "Retired pilot workstation." "OLD exclusion reason mismatch."
     Assert-Equal $old.action "excluded" "OLD action mismatch."
+
+    $identityGateConfig = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
+    $identityGateConfig | Add-Member -MemberType NoteProperty -Name "releaseIdentityProducerSwitch" -Value ([ordered]@{
+            enabled = $true
+            targetIdentity = "revAgent"
+            compatibleStableVersion = $stableVersion
+            compatibleStableCommit = $stableCommit
+        })
+    $identityGateConfigPath = Join-Path $tempRoot "rollout-readiness-identity-gate.json"
+    Write-TestJson -Path $identityGateConfigPath -Value $identityGateConfig
+    $identityGateResult = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
+        -ConfigPath $identityGateConfigPath `
+        -NowUtc $nowUtc `
+        -OutputJson | ConvertFrom-Json
+    Assert-Equal $identityGateResult.summary.releaseIdentityProducerSwitch.state "waiting_for_machine_uptake" "Release identity switch should wait for every in-scope machine to install the compatibility stable."
+    Assert-Equal $identityGateResult.summary.releaseIdentityProducerSwitch.action "finish_compatibility_updater_rollout" "Release identity switch action mismatch."
+    Assert-Equal ([int]$identityGateResult.summary.releaseIdentityProducerSwitch.pendingMachineCount) 2 "Release identity switch pending machine count mismatch."
+    Assert-Equal ([int]$identityGateResult.summary.actionRequiredCount) 5 "Release identity switch gate should add one rollout action while enabled and pending."
+
+    $identityGateReadyConfig = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
+    $identityGateReadyConfig.outOfScopeMachines = @(
+        [ordered]@{ name = "OLD"; reason = "Retired pilot workstation." },
+        [ordered]@{ name = "YASAR"; reason = "Not in this identity-switch verification slice." },
+        [ordered]@{ name = "LEGACY"; reason = "Not in this identity-switch verification slice." },
+        [ordered]@{ name = "WS3"; reason = "Offline legacy workstation excluded from this verification slice." }
+    )
+    $identityGateReadyConfig | Add-Member -MemberType NoteProperty -Name "releaseIdentityProducerSwitch" -Value ([ordered]@{
+            enabled = $true
+            targetIdentity = "revAgent"
+            compatibleStableVersion = $stableVersion
+            compatibleStableCommit = $stableCommit
+        })
+    $identityGateReadyConfigPath = Join-Path $tempRoot "rollout-readiness-identity-gate-ready.json"
+    Write-TestJson -Path $identityGateReadyConfigPath -Value $identityGateReadyConfig
+    $identityGateReadyResult = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
+        -ConfigPath $identityGateReadyConfigPath `
+        -NowUtc $nowUtc `
+        -OutputJson | ConvertFrom-Json
+    Assert-Equal $identityGateReadyResult.summary.releaseIdentityProducerSwitch.state "verified" "Release identity switch should verify when all in-scope machines report the compatible stable."
+    Assert-Equal $identityGateReadyResult.summary.releaseIdentityProducerSwitch.action "none" "Verified release identity switch should not add an action."
+    Assert-Equal ([int]$identityGateReadyResult.summary.releaseIdentityProducerSwitch.pendingMachineCount) 0 "Verified release identity switch pending count mismatch."
 
     $missingSmokeConfigPath = Join-Path $tempRoot "rollout-readiness-no-smoke.json"
     Write-TestJson -Path $missingSmokeConfigPath -Value ([ordered]@{
