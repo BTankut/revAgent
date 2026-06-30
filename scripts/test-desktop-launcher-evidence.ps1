@@ -100,12 +100,17 @@ call "%RELEASE_ROOT%\tools\Install-Revit-MCP-Updater-GUI.cmd"' `
     $profilesRoot = Join-Path $tempRoot "Users"
     $aliceDesktop = Join-Path $profilesRoot "Alice\Desktop"
     $bobDesktop = Join-Path $profilesRoot "Bob\Desktop"
-    New-Item -ItemType Directory -Path $aliceDesktop, $bobDesktop -Force | Out-Null
+    $bobOneDriveDesktop = Join-Path $profilesRoot "Bob\OneDrive - DPE\Desktop"
+    New-Item -ItemType Directory -Path $aliceDesktop, $bobDesktop, $bobOneDriveDesktop -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $aliceDesktop "Revit MCP Updater STABLE.cmd") `
         -Value '@echo off
 set "RELEASE_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"' `
         -Encoding ASCII
     Set-Content -LiteralPath (Join-Path $bobDesktop "revAgent Updater STABLE.cmd") `
+        -Value '@echo off
+set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
+        -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $bobOneDriveDesktop "revAgent Updater STABLE.cmd") `
         -Value '@echo off
 set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
         -Encoding ASCII
@@ -120,6 +125,7 @@ set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
 
     Assert-True (@($allProfileScan.scannedPaths) -contains $aliceDesktop) "Default scan did not include Alice desktop."
     Assert-True (@($allProfileScan.scannedPaths) -contains $bobDesktop) "Default scan did not include Bob desktop."
+    Assert-True (@($allProfileScan.scannedPaths) -contains $bobOneDriveDesktop) "Default scan did not include Bob OneDrive desktop."
     Assert-True ([int]$allProfileScan.legacyLauncherCount -ge 1) "Default all-profile scan did not find the legacy launcher."
     Assert-True (@($allProfileScan.launchers | Where-Object { [string]$_.path -eq (Join-Path $aliceDesktop "Revit MCP Updater STABLE.cmd") }).Count -eq 1) "Default all-profile scan did not report Alice legacy launcher."
 

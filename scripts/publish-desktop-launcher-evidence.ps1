@@ -210,6 +210,7 @@ function Get-RevAgentDefaultLauncherPaths {
     param([string]$ProfilesRoot = "")
 
     $paths = [System.Collections.Generic.List[string]]::new()
+    $profileRoots = [System.Collections.Generic.List[string]]::new()
     foreach ($folder in @("DesktopDirectory", "CommonDesktopDirectory")) {
         try {
             $specialFolder = [Enum]::Parse([Environment+SpecialFolder], $folder)
@@ -224,6 +225,12 @@ function Get-RevAgentDefaultLauncherPaths {
     }
     if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
         [void]$paths.Add((Join-Path $env:USERPROFILE "Desktop"))
+        [void]$profileRoots.Add($env:USERPROFILE)
+    }
+    foreach ($oneDriveRoot in @($env:OneDrive, $env:OneDriveCommercial, $env:OneDriveConsumer)) {
+        if (-not [string]::IsNullOrWhiteSpace($oneDriveRoot)) {
+            [void]$paths.Add((Join-Path $oneDriveRoot "Desktop"))
+        }
     }
 
     if ([string]::IsNullOrWhiteSpace($ProfilesRoot)) {
@@ -236,9 +243,19 @@ function Get-RevAgentDefaultLauncherPaths {
     }
     if (Test-Path -LiteralPath $ProfilesRoot -PathType Container) {
         foreach ($profile in @(Get-ChildItem -LiteralPath $ProfilesRoot -Directory -ErrorAction SilentlyContinue)) {
+            [void]$profileRoots.Add($profile.FullName)
             $desktop = Join-Path $profile.FullName "Desktop"
             if (Test-Path -LiteralPath $desktop -PathType Container) {
                 [void]$paths.Add($desktop)
+            }
+        }
+    }
+
+    foreach ($profileRoot in @($profileRoots.ToArray() | Select-Object -Unique)) {
+        foreach ($oneDriveFolder in @(Get-ChildItem -LiteralPath $profileRoot -Directory -Filter "OneDrive*" -ErrorAction SilentlyContinue)) {
+            $oneDriveDesktop = Join-Path $oneDriveFolder.FullName "Desktop"
+            if (Test-Path -LiteralPath $oneDriveDesktop -PathType Container) {
+                [void]$paths.Add($oneDriveDesktop)
             }
         }
     }

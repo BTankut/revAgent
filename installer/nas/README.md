@@ -310,8 +310,8 @@ developer-side audits. The aggregate evidence must cover every in-scope
 machine; non-zero legacy launcher/root counts, missing machine evidence, or
 failed machine evidence block compatibility-root retirement. `ScanLocal`
 checks the current user Desktop, public Desktop, and readable
-`C:\Users\*\Desktop` folders by default so SSH/admin runs still inspect normal
-operator launchers.
+`C:\Users\*\Desktop` or `C:\Users\*\OneDrive*\Desktop` folders by default so
+SSH/admin runs still inspect normal operator launchers.
 If source-free evidence is missing, run `migrate-source-free-install.ps1` in
 `dryRun` mode with `-ReportsRoot` set to the canonical reports root. The dry-run
 publishes `source-free-migration-latest.json` for readiness without replacing
