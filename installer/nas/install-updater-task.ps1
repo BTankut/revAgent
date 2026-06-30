@@ -185,7 +185,8 @@ function Complete-RevAgentTranscript {
 function Copy-RevAgentManagedUpdaterToolFile {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
-        [Parameter(Mandatory = $true)][string]$Destination
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [bool]$Required = $true
     )
 
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
@@ -199,7 +200,11 @@ function Copy-RevAgentManagedUpdaterToolFile {
     catch {
         $copyError = $_.Exception.Message
         if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
-            throw
+            if ($Required) {
+                throw
+            }
+            Write-Warning "Could not refresh optional updater tool '$Destination'. Copy error: $copyError"
+            return
         }
         try {
             Remove-Item -LiteralPath $Destination -Force -ErrorAction Stop
@@ -207,7 +212,11 @@ function Copy-RevAgentManagedUpdaterToolFile {
             Write-Warning "Replaced updater tool after removing stale destination ACL: $Destination"
         }
         catch {
-            throw "Could not refresh updater tool '$Destination'. Initial copy error: $copyError; replace error: $($_.Exception.Message)"
+            $message = "Could not refresh updater tool '$Destination'. Initial copy error: $copyError; replace error: $($_.Exception.Message)"
+            if ($Required) {
+                throw $message
+            }
+            Write-Warning $message
         }
     }
 }
@@ -1218,7 +1227,7 @@ try {
     }
     Copy-RevAgentManagedUpdaterToolFile -Source (Join-Path $PSScriptRoot "update-from-nas.ps1") -Destination $localUpdater
     Copy-RevAgentManagedUpdaterToolFile -Source (Join-Path $PSScriptRoot "show-installed-version.ps1") -Destination $localVersionTool
-    Copy-RevAgentManagedUpdaterToolFile -Source (Join-Path $PSScriptRoot "migrate-source-free-install.ps1") -Destination $localMigrationTool
+    Copy-RevAgentManagedUpdaterToolFile -Source (Join-Path $PSScriptRoot "migrate-source-free-install.ps1") -Destination $localMigrationTool -Required:([bool]$RunSourceFreeMigration)
     if (Test-Path -LiteralPath $localLibRoot) {
         Remove-Item -LiteralPath $localLibRoot -Recurse -Force
     }

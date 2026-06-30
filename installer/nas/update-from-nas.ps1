@@ -2911,7 +2911,8 @@ function Repair-RevAgentScheduledTaskAction {
 function Copy-RevAgentManagedUpdaterToolFile {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
-        [Parameter(Mandatory = $true)][string]$Destination
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [bool]$Required = $true
     )
 
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
@@ -2925,7 +2926,11 @@ function Copy-RevAgentManagedUpdaterToolFile {
     catch {
         $copyError = $_.Exception.Message
         if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
-            throw
+            if ($Required) {
+                throw
+            }
+            Write-Warning "Could not refresh optional updater tool '$Destination'. Copy error: $copyError"
+            return
         }
         try {
             Remove-Item -LiteralPath $Destination -Force -ErrorAction Stop
@@ -2933,7 +2938,11 @@ function Copy-RevAgentManagedUpdaterToolFile {
             Write-Warning "Replaced updater tool after removing stale destination ACL: $Destination"
         }
         catch {
-            throw "Could not refresh updater tool '$Destination'. Initial copy error: $copyError; replace error: $($_.Exception.Message)"
+            $message = "Could not refresh updater tool '$Destination'. Initial copy error: $copyError; replace error: $($_.Exception.Message)"
+            if ($Required) {
+                throw $message
+            }
+            Write-Warning $message
         }
     }
 }
@@ -2953,7 +2962,7 @@ function Install-UpdaterToolsFromPackage {
     New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
     foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1")) {
         $source = Join-Path $SourceRoot $toolName
-        Copy-RevAgentManagedUpdaterToolFile -Source $source -Destination (Join-Path $DestinationRoot $toolName)
+        Copy-RevAgentManagedUpdaterToolFile -Source $source -Destination (Join-Path $DestinationRoot $toolName) -Required:($toolName -ne "migrate-source-free-install.ps1")
     }
     $libSource = Join-Path (Split-Path -Parent $SourceRoot) "lib"
     if (Test-Path -LiteralPath $libSource -PathType Container) {
