@@ -92,7 +92,9 @@ These are expected to remain until a larger migration explicitly replaces them.
    - Produce launcher evidence with
      `scripts\publish-desktop-launcher-evidence.ps1`: `ScanLocal` writes
      per-machine evidence, and `Aggregate` writes the rollout evidence consumed
-     by the readiness audit. The aggregate must cover every in-scope machine.
+     by the readiness audit. After NAS publish, the helper is also available
+     under `tools\publish-desktop-launcher-evidence.ps1`. The aggregate must
+     cover every in-scope machine.
    - Keep a rollback note and archival backup before deleting or freezing the
      old root.
 
