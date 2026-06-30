@@ -865,7 +865,10 @@ for source-free workstations that do not have the repository checkout.
 The aggregate record is written to
 `reports\rollout\desktop-launcher-latest.json` and must cover every in-scope
 machine with `missingMachineCount=0`, `failedMachineCount=0`,
-`legacyLauncherCount=0`, and `legacyRootReferenceCount=0`.
+`legacyLauncherCount=0`, and `legacyRootReferenceCount=0`. `ScanLocal`
+defaults to the current user's Desktop, the public Desktop, and every local
+`C:\Users\*\Desktop` folder it can read, so SSH/admin runs still inspect the
+operator desktop launchers unless `-LauncherPath` is used to narrow the scan.
 When the audit asks for `run_source_free_dry_run_inventory`, run the local
 migration tool in `dryRun` mode with `-ReportsRoot` pointing at the canonical
 NAS reports root. It publishes `source-free-migration-latest.json` as durable

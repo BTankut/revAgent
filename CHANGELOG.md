@@ -10,7 +10,8 @@ All notable revAgent workstation deployment changes are tracked here.
   compatibility-root retirement now requires that aggregate evidence to cover
   every in-scope machine. NAS publish also copies the helper to release
   `tools\` so source-free workstations can run it without a repository
-  checkout.
+  checkout. Local scans now include every readable local user Desktop folder by
+  default so SSH/admin runs do not miss operator launchers.
 - Added desktop launcher evidence to the rollout readiness audit so
   compatibility-root retirement remains blocked until launcher audit evidence
   reports zero legacy launcher/root references.
