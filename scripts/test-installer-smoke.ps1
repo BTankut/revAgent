@@ -1206,13 +1206,16 @@ try {
     Assert-True ($codexRegistrationText -match 'function Set-RevitMcpCurrentProcessUtf8Console' -and $codexRegistrationText -match '"Set-RevAgentCurrentProcessUtf8Console" = "Set-RevitMcpCurrentProcessUtf8Console"' -and $codexRegistrationText -match 'Export-ModuleMember -Alias @\(\$revAgentFunctionAliases\.Keys\)') "Codex registration module must keep the legacy UTF-8 helper and export the revAgent alias."
     $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
     Assert-True ($installTaskText -match 'Set-RevAgentCurrentProcessUtf8Console') "Updater task installer entrypoint must force UTF-8 output even when launched with -NoProfile."
+    Assert-True ($installTaskText -match 'RevAgent\.DesktopLauncherCleanup\.psm1' -and $installTaskText -match 'Invoke-RevAgentLegacyDesktopLauncherCleanup' -and $installTaskText -match 'desktopLauncherCleanup') "Updater task installer must remove and report legacy Revit MCP desktop launchers."
     Assert-True ($updaterText -match 'Set-RevAgentCodexMemoryConfig') "Updater must enforce Codex memory config, including fast/no-op update paths."
     Assert-True ($updaterText -match 'Set-RevAgentCurrentProcessUtf8Console') "Updater entrypoint must force UTF-8 output even when launched with -NoProfile."
+    Assert-True ($updaterText -match 'RevAgent\.DesktopLauncherCleanup\.psm1' -and $updaterText -match 'Invoke-RevAgentLegacyDesktopLauncherCleanup' -and $updaterText -match 'desktopLauncherCleanup') "Updater must remove and report legacy Revit MCP desktop launchers."
     Assert-True ($updaterText -match 'Remove-CodexProfileBackupArtifacts') "Updater must clean old Codex profile backup artifacts."
     $installerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\install-self-contained.ps1")
     Assert-True ($installerText -match 'Set-RevAgentCodexMemoryConfig') "Installer must enforce Codex memory config."
     Assert-True ($installerText -match 'Set-RevAgentPowerShellUtf8ConsoleConfig .* -ConfigureConsoleRegistry' -and $installerText -match 'PowerShell UTF-8 console profiles') "Installer must enforce UTF-8 console defaults for Codex PowerShell sessions."
     Assert-True ($installerText -match 'Set-RevAgentCurrentProcessUtf8Console') "Self-contained installer entrypoint must force UTF-8 output even when launched with -NoProfile."
+    Assert-True ($installerText -match 'RevAgent\.DesktopLauncherCleanup\.psm1' -and $installerText -match 'Invoke-RevAgentLegacyDesktopLauncherCleanup') "Self-contained installer must remove legacy Revit MCP desktop launchers."
     Assert-True ($installerText -match 'Remove-CodexProfileBackupArtifacts') "Installer must clean old Codex profile backup artifacts."
     Assert-True ($installerText -match 'RevAgent\.ConfigSync\.psm1' -and $installerText -match 'Sync-RevAgentUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Self-contained installer must use the shared config sync helper."
     Assert-True ($installerText -notmatch 'Remove-Item -LiteralPath \$configDestination -Recurse -Force') "Self-contained installer must not delete local config because that removes pinned release keys."
