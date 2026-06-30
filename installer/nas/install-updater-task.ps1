@@ -182,6 +182,36 @@ function Complete-RevAgentTranscript {
     }
 }
 
+function Copy-RevAgentManagedUpdaterToolFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        return
+    }
+
+    try {
+        Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+        return
+    }
+    catch {
+        $copyError = $_.Exception.Message
+        if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+            throw
+        }
+        try {
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction Stop
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            Write-Warning "Replaced updater tool after removing stale destination ACL: $Destination"
+        }
+        catch {
+            throw "Could not refresh updater tool '$Destination'. Initial copy error: $copyError; replace error: $($_.Exception.Message)"
+        }
+    }
+}
+
 function Write-JsonFile {
     param(
         [string]$Path,
@@ -1186,9 +1216,9 @@ try {
         $preservedTrustedReleaseKeysPath = Join-Path $WorkRoot "release-trusted-keys.previous.json"
         Copy-Item -LiteralPath $previousTrustedReleaseKeysPath -Destination $preservedTrustedReleaseKeysPath -Force
     }
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "update-from-nas.ps1") -Destination $localUpdater -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "show-installed-version.ps1") -Destination $localVersionTool -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "migrate-source-free-install.ps1") -Destination $localMigrationTool -Force
+    Copy-RevAgentManagedUpdaterToolFile -Source (Join-Path $PSScriptRoot "update-from-nas.ps1") -Destination $localUpdater
+    Copy-RevAgentManagedUpdaterToolFile -Source (Join-Path $PSScriptRoot "show-installed-version.ps1") -Destination $localVersionTool
+    Copy-RevAgentManagedUpdaterToolFile -Source (Join-Path $PSScriptRoot "migrate-source-free-install.ps1") -Destination $localMigrationTool
     if (Test-Path -LiteralPath $localLibRoot) {
         Remove-Item -LiteralPath $localLibRoot -Recurse -Force
     }

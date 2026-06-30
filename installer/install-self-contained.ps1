@@ -432,6 +432,36 @@ function Copy-RevAgentRuntimeUserPayload {
     }
 }
 
+function Copy-RevAgentManagedUpdaterToolFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        return
+    }
+
+    try {
+        Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+        return
+    }
+    catch {
+        $copyError = $_.Exception.Message
+        if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+            throw
+        }
+        try {
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction Stop
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            Write-Warning "Replaced updater tool after removing stale destination ACL: $Destination"
+        }
+        catch {
+            throw "Could not refresh updater tool '$Destination'. Initial copy error: $copyError; replace error: $($_.Exception.Message)"
+        }
+    }
+}
+
 function Install-UpdaterToolsFromPackage {
     param(
         [string]$SourceRoot,
@@ -447,9 +477,7 @@ function Install-UpdaterToolsFromPackage {
     New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
     foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1")) {
         $source = Join-Path $SourceRoot $toolName
-        if (Test-Path -LiteralPath $source -PathType Leaf) {
-            Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationRoot $toolName) -Force
-        }
+        Copy-RevAgentManagedUpdaterToolFile -Source $source -Destination (Join-Path $DestinationRoot $toolName)
     }
     $libSource = Join-Path (Split-Path -Parent $SourceRoot) "lib"
     if (Test-Path -LiteralPath $libSource -PathType Container) {
