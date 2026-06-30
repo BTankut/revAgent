@@ -125,11 +125,11 @@ function Update-BridgeCommandRegistry {
     $registry | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $RegistryPath -Encoding UTF8
 }
 
-$projectPath = Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\revit-mcp-plugin.csproj"
+$projectPath = Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\revAgentPlugin.csproj"
 if (-not (Test-Path -LiteralPath $projectPath)) {
     throw "Revit plugin project was not found: $projectPath"
 }
-$commandSetProjectPath = Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\RevitMCPCommandSet.csproj"
+$commandSetProjectPath = Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\revAgentCommandSet.csproj"
 if (-not (Test-Path -LiteralPath $commandSetProjectPath)) {
     throw "Revit bridge command set project was not found: $commandSetProjectPath"
 }
@@ -152,16 +152,16 @@ Write-Host "Building Revit bridge command set"
 Write-Host "Project      : $commandSetProjectPath"
 Write-Host "Configuration: $commandSetConfiguration"
 
-& $dotnet build $commandSetProjectPath -c $commandSetConfiguration -p:Platform=x64 -p:RevitMcpDeployCommandSet=false
+& $dotnet build $commandSetProjectPath -c $commandSetConfiguration -p:Platform=x64 -p:RevAgentDeployCommandSet=false
 if ($LASTEXITCODE -ne 0) {
     throw "Revit bridge command set build failed with exit code $LASTEXITCODE"
 }
 
-$builtDll = Join-Path $RepoRoot "src\revit-plugin\revit-mcp-plugin\bin\Release\$RevitVersion\revit-mcp-plugin.dll"
+$builtDll = Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\bin\Release\$RevitVersion\revAgentPlugin.dll"
 if (-not (Test-Path -LiteralPath $builtDll -PathType Leaf)) {
     throw "Build completed but output DLL was not found: $builtDll"
 }
-$builtCommandSetDll = Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\bin\Release\$RevitVersion\RevitMCPCommandSet.dll"
+$builtCommandSetDll = Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\bin\Release\$RevitVersion\revAgentCommandSet.dll"
 if (-not (Test-Path -LiteralPath $builtCommandSetDll -PathType Leaf)) {
     throw "Build completed but output DLL was not found: $builtCommandSetDll"
 }
@@ -178,7 +178,7 @@ if (-not $SkipPayloadCopy) {
     $commandSetDllFileName = "revAgentCommandSet.dll"
 
     $payloadCopies = [ordered]@{
-        "revit-mcp-plugin.dll" = $pluginDllFileName
+        "revAgentPlugin.dll" = $pluginDllFileName
         "Newtonsoft.Json.dll" = "Newtonsoft.Json.dll"
         "RevitMCPSDK.dll" = "RevitMCPSDK.dll"
     }
@@ -192,7 +192,7 @@ if (-not $SkipPayloadCopy) {
         Copy-Item -LiteralPath $sourceFile -Destination (Join-Path $payloadDir $entry.Value) -Force
     }
 
-    $commandJsonSource = Join-Path $RepoRoot "src\revit-plugin\RevitMCPCommandSet\command.json"
+    $commandJsonSource = Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\command.json"
     $commandPayloadDir = Join-Path $RepoRoot "installer\command-payload"
     $commandPayloadRuntimeDir = Join-Path $commandPayloadDir "runtime\$RevitVersion"
     New-Item -ItemType Directory -Path $commandPayloadRuntimeDir -Force | Out-Null

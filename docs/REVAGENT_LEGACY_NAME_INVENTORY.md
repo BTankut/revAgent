@@ -51,6 +51,10 @@ Keep legacy names only when they are one of these exact identities:
   workstation installer, updater, migration, publisher, readiness, and signed-CD
   scripts. Legacy cleanup/path literals and public compatibility APIs remain
   unchanged.
+- Revit add-in source projects now use `src/revit-plugin/revAgentPlugin`,
+  `src/revit-plugin/revAgentCommandSet`, `RevAgentPlugin`, and
+  `RevAgentCommandSet` identities. Installed add-in manifests point at
+  `RevAgentPlugin.Core.Application`.
 
 ## Intentional Compatibility Names
 
@@ -61,7 +65,6 @@ These are expected to remain until a larger migration explicitly replaces them.
 | Public runtime tool names | `get_revit_mcp_status` | Agents, docs, tests, and installed tool schemas already depend on the exact name. A rename needs aliasing and backward-compatibility tests. |
 | Environment variables | preferred `REVAGENT_PORT`, `REVAGENT_TARGET`, `REVAGENT_MAX_MESSAGE_BYTES`; legacy fallback `REVIT_MCP_*` | New runtime/add-in reads prefer the revAgent names. Legacy aliases stay so older launchers and scripts do not break during rolling updates. |
 | External SDK/package identity | `RevitMCPSDK`, `mcp-servers-for-revit` | These are upstream package and license identities, not product UI strings. |
-| Revit source project and namespaces | `src/revit-plugin/revit-mcp-plugin`, `revit_mcp_plugin`, `RevitMCPCommandSet` | Installed artifact names are already revAgent-facing, but source project/namespace rename affects C# build, XAML class names, manifests, and payload freshness. |
 | Installer helper API compatibility names | `Read-RevitMcpJsonFile`, `Get-RevitMcpUpdateDecision`, legacy `installer/lib/RevitMcp.*.psm1` wrappers | Canonical modules now export `RevAgent*` aliases for public helper functions. The original function definitions and wrapper files remain so older scripts and rollback paths keep working during rolling updates. |
 | Compatibility deployment root | `revit-mcp-deploy` | Dual-publish remains active until the rollout readiness audit reports canonical `revAgent-deploy` channel evidence for every in-scope machine and desktop launcher evidence confirms copied launchers are off the legacy root. |
 | Legacy cleanup paths | `C:\ProgramData\DPE\RevitMCP`, `mcp-servers-for-revit.addin`, `revit_mcp_plugin` | The updater must keep recognizing old installed surfaces so migration can remove them safely. |
@@ -69,34 +72,25 @@ These are expected to remain until a larger migration explicitly replaces them.
 
 ## Next Migration PRs
 
-1. **Revit source project rename PR**
-   - Rename `src/revit-plugin/revit-mcp-plugin` and `RevitMCPCommandSet`
-     source identities only after a clean Revit 2022 live smoke baseline.
-   - Update C# namespaces, XAML `x:Class`, csproj assembly/root namespace,
-     manifests, build scripts, payload freshness checks, and installed payload
-     mapping together.
-   - Require local non-Revit tests plus live Revit add-in load and command
-     smoke.
-
-2. **Repository rename PR**
+1. **Repository rename PR**
    - Rename the local and GitHub repository only after the deployed NAS root is
      stable and compatibility root retirement criteria are met.
    - Update GitHub Actions, docs, clone instructions, and any hardcoded
      `BTankut/revit-mcp-skill` references.
 
-3. **Compatibility root retirement**
+2. **Compatibility root retirement**
    - Remove `revit-mcp-deploy` dual publish only after all active machines have
      reported canonical channel paths through
      `scripts\check-rollout-readiness.ps1` and desktop launcher evidence shows
      no copied launcher still depends on the legacy root.
-  - Produce launcher evidence with
-    `scripts\publish-desktop-launcher-evidence.ps1`: `ScanLocal` writes
-    per-machine evidence, and `Aggregate` writes the rollout evidence consumed
-    by the readiness audit. After NAS publish, the helper is also available
-    under `tools\publish-desktop-launcher-evidence.ps1`. The aggregate should
-    cover every in-scope machine, and the audit can also combine latest
-    per-machine evidence from `reports\machines\<machine>` when an aggregate is
-    stale or partial.
+   - Produce launcher evidence with
+     `scripts\publish-desktop-launcher-evidence.ps1`: `ScanLocal` writes
+     per-machine evidence, and `Aggregate` writes the rollout evidence consumed
+     by the readiness audit. After NAS publish, the helper is also available
+     under `tools\publish-desktop-launcher-evidence.ps1`. The aggregate should
+     cover every in-scope machine, and the audit can also combine latest
+     per-machine evidence from `reports\machines\<machine>` when an aggregate is
+     stale or partial.
    - Keep a rollback note and archival backup before deleting or freezing the
      old root.
 

@@ -8,8 +8,8 @@
                       },
     "sourceGroups":  [
                          {
-                             "name":  "revit-mcp-plugin",
-                             "sourceRoot":  "src/revit-plugin/revit-mcp-plugin",
+                             "name":  "revAgentPlugin",
+                             "sourceRoot":  "src/revit-plugin/revAgentPlugin",
                              "inputExtensions":  [
                                                      ".cs",
                                                      ".csproj",
@@ -24,133 +24,133 @@
                                             ],
                              "inputs":  [
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Configuration/CommandConfig.cs",
-                                                "gitBlobSha":  "769407a04af4f2ee1cd598a875d316f4d4518285"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Configuration/CommandConfig.cs",
+                                                "gitBlobSha":  "001836bba1cace65018afd139461f02611ed9271"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Configuration/ConfigurationManager.cs",
-                                                "gitBlobSha":  "d6cf6c7561a4edf67c66678cdec495cb9c55be48"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Configuration/ConfigurationManager.cs",
+                                                "gitBlobSha":  "cbb766fd962f97055c56ddd2c85a153d86f92955"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Configuration/DeveloperInfo.cs",
-                                                "gitBlobSha":  "c9674d7a90566e9cb9234503b68b8de89f311c41"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Configuration/DeveloperInfo.cs",
+                                                "gitBlobSha":  "c37196307282bb3456dcda98436e4689bbf78589"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Configuration/FrameworkConfig.cs",
-                                                "gitBlobSha":  "eb63c74014f3d12611fa3517c60f606445c5a153"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Configuration/FrameworkConfig.cs",
+                                                "gitBlobSha":  "a4a809b213447b4a248ecd577878f8f132e867db"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Configuration/ServiceSettings.cs",
-                                                "gitBlobSha":  "7bbc703dcafa112e876cf1c9e60dcfd8ae07f66b"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Configuration/ServiceSettings.cs",
+                                                "gitBlobSha":  "987190da71c519486e9c77cb4b2cd224d5824397"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/Application.cs",
-                                                "gitBlobSha":  "fc1888dd53dc454e11d8a6a6a5944019448c807b"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/Application.cs",
+                                                "gitBlobSha":  "3fdb28b1ae26c540b83c1cb021c2dfd72a26c33c"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/BridgeResultContract.cs",
-                                                "gitBlobSha":  "f2c97baf5b35482b3e245d568be852511112f3c9"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/BridgeResultContract.cs",
+                                                "gitBlobSha":  "49f845a0e61c421aa4c39a8030ddc35c471180ce"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/CommandExecutor.cs",
-                                                "gitBlobSha":  "633931af2885864c18cf01a2ace9c8224b1b01ef"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/CommandExecutor.cs",
+                                                "gitBlobSha":  "6d4181723918ca30c5725987415f4cadc78aecd8"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/CommandManager.cs",
-                                                "gitBlobSha":  "ea44e8477932c89ec3e902a3b7a89b1c6a64471d"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/CommandManager.cs",
+                                                "gitBlobSha":  "899f8f2e35d48012c02886e1fc0fefc6be8971f5"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/ExternalEventManager.cs",
-                                                "gitBlobSha":  "4d30d992430c0e039c507d49388f286e572ee953"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/ExternalEventManager.cs",
+                                                "gitBlobSha":  "19bc55cdd43b9193d67d726fbd66e842b6ed993b"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/MCPServiceConnection.cs",
-                                                "gitBlobSha":  "248e3116e0bbcba7eed553d565e2437faa7091b0"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/MCPServiceConnection.cs",
+                                                "gitBlobSha":  "ed37e2665bfd16aacc3833ff6bfe38630fb1e330"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/McpTaskStatusService.cs",
-                                                "gitBlobSha":  "bfea973e32fb4927668e605e48ecbe62b90cbbd2"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/McpTaskStatusService.cs",
+                                                "gitBlobSha":  "0ae6f897dda99b60c5e750dd311c6f3474625d0b"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/McpTaskStatusWindowController.cs",
-                                                "gitBlobSha":  "29667d57b4c3de91f8f4871ee8590b164f2f8225"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/McpTaskStatusWindowController.cs",
+                                                "gitBlobSha":  "c87f888a1e33d8e056a1c8ad7a8e5385fe9f66ea"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/McpVersionInfo.cs",
-                                                "gitBlobSha":  "41c251bd03f64b20b15cc69041185a0aed305aa3"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/McpVersionInfo.cs",
+                                                "gitBlobSha":  "b02b42126b5e9188e36d12bc3dc6677c1c3a92e4"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/RevAgentEnvironment.cs",
-                                                "gitBlobSha":  "f73790b8a7332de4b6d08ac8cd9bfc13155d0bb2"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/RevAgentEnvironment.cs",
+                                                "gitBlobSha":  "3084f0b424843a299af2f364bc352e67e1631ea0"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/RevAgentMetadataCommand.cs",
-                                                "gitBlobSha":  "a3992cbed6738b7db0a3c1cccd38400f9bee8428"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/RevAgentMetadataCommand.cs",
+                                                "gitBlobSha":  "cad179a0d70daa3c4f1f3f8666c77539f3cd1653"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/RevitCommandRegistry.cs",
-                                                "gitBlobSha":  "cd37681a275a374e36eccdd636fafbdb8bc430a9"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/RevitCommandRegistry.cs",
+                                                "gitBlobSha":  "b86c0596741ba642f3cfe3d17860a32b37febe4e"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/Settings.cs",
-                                                "gitBlobSha":  "ce63e1cf5c268c15225206b1dbdd0fb616226ef9"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/Settings.cs",
+                                                "gitBlobSha":  "a21a0c3dc24189d0fbae3e856a78ff686b99b59b"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Core/SocketService.cs",
-                                                "gitBlobSha":  "8627dc142e897d8bfc2bc55860cd6c1949d9e937"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Core/SocketService.cs",
+                                                "gitBlobSha":  "c60d0a58dd0937389b2ccfa3e1847659fc886a9f"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Properties/AssemblyInfo.cs",
-                                                "gitBlobSha":  "066a5bf8cd903f6f7b5a5722f1b1904eae78846b"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Properties/AssemblyInfo.cs",
+                                                "gitBlobSha":  "8424b9b51f5db448873ca5d6376dbc3c82b230fa"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/revit-mcp-plugin.csproj",
-                                                "gitBlobSha":  "82d2c097adf2461e19c343d75b4f3e185a66686a"
+                                                "path":  "src/revit-plugin/revAgentPlugin/revAgentPlugin.csproj",
+                                                "gitBlobSha":  "0a808a88062bb0800668d4ba22c683f37b942be4"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/UI/CommandSetSettingsPage.xaml",
-                                                "gitBlobSha":  "f937fe1b9f77a16f95e7008c8eb2c379cfa9adea"
+                                                "path":  "src/revit-plugin/revAgentPlugin/UI/CommandSetSettingsPage.xaml",
+                                                "gitBlobSha":  "1ecc7f264a89a3a82a066726b91249d7d671dea7"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/UI/CommandSetSettingsPage.xaml.cs",
-                                                "gitBlobSha":  "9e2995f039284c57937dbf493467873a13ea3b4a"
+                                                "path":  "src/revit-plugin/revAgentPlugin/UI/CommandSetSettingsPage.xaml.cs",
+                                                "gitBlobSha":  "0e9f4b6bd48425904a8586b888ce8d6609ed410b"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/UI/McpTaskStatusWindow.xaml",
-                                                "gitBlobSha":  "6e2fc7c630c949e018a06326b60534bd64ee5d02"
+                                                "path":  "src/revit-plugin/revAgentPlugin/UI/McpTaskStatusWindow.xaml",
+                                                "gitBlobSha":  "ded115190cec730845b4f1802ea1eff0bfc7f53d"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/UI/McpTaskStatusWindow.xaml.cs",
-                                                "gitBlobSha":  "876609164351f09b1834f3549836e4be3464681d"
+                                                "path":  "src/revit-plugin/revAgentPlugin/UI/McpTaskStatusWindow.xaml.cs",
+                                                "gitBlobSha":  "b45eb6ab8ba6c66ecf3862d195b5107ff0eda876"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/UI/SettingsWindow.xaml",
-                                                "gitBlobSha":  "fada30ab0c7ed2a59aa4790e76e36f27946d57d0"
+                                                "path":  "src/revit-plugin/revAgentPlugin/UI/SettingsWindow.xaml",
+                                                "gitBlobSha":  "6a412affe6db27c75f17d66f0b440b23ac66cc5c"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/UI/SettingsWindow.xaml.cs",
-                                                "gitBlobSha":  "1753808d816d3bd33642d80c0e542eaffa0490c1"
+                                                "path":  "src/revit-plugin/revAgentPlugin/UI/SettingsWindow.xaml.cs",
+                                                "gitBlobSha":  "d9cca94ab0f8b2e0a28e28cc988201221b8edb97"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Utils/Logger.cs",
-                                                "gitBlobSha":  "71fd9d1eb095487f627ac0750540332eb77cb763"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Utils/Logger.cs",
+                                                "gitBlobSha":  "4b7c1f162d63af87201788a2bfc804e521cf0677"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/revit-mcp-plugin/Utils/PathManager.cs",
-                                                "gitBlobSha":  "52206aa07a296e3fa8cb9a5916147388f6680080"
+                                                "path":  "src/revit-plugin/revAgentPlugin/Utils/PathManager.cs",
+                                                "gitBlobSha":  "b0b3d1e9c806d1984266b19501b83ed5e15611a7"
                                             }
                                         ],
                              "payloads":  [
                                               {
                                                   "path":  "installer/revit-plugin/revAgentPlugin/revAgentPlugin.dll",
-                                                  "sha256":  "86ae365598ed58456742a151f81fc20ea6bbbc8ab9b6c6c9fcc20690d68ac775",
+                                                  "sha256":  "34d3f0d99ceb946581784e3b2f38cf9498d912834104768f088b1c1ca5f85af2",
                                                   "sizeBytes":  96768
                                               }
                                           ]
                          },
                          {
-                             "name":  "RevitMCPCommandSet",
-                             "sourceRoot":  "src/revit-plugin/RevitMCPCommandSet",
+                             "name":  "revAgentCommandSet",
+                             "sourceRoot":  "src/revit-plugin/revAgentCommandSet",
                              "inputExtensions":  [
                                                      ".cs",
                                                      ".csproj",
@@ -167,199 +167,199 @@
                                             ],
                              "inputs":  [
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/command.json",
+                                                "path":  "src/revit-plugin/revAgentCommandSet/command.json",
                                                 "gitBlobSha":  "7a90a7ab66ac069b841b65e73e667ff647da82d7"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/Access/GetCurrentViewElementsCommand.cs",
-                                                "gitBlobSha":  "45b2aeb011aab7e585b36d7171a72a2a492feef8"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/Access/GetCurrentViewElementsCommand.cs",
+                                                "gitBlobSha":  "876195e11e5d9308bc2cf5736dd4754c62b1dd8f"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/Access/GetCurrentViewInfoCommand.cs",
-                                                "gitBlobSha":  "bceba4e19b78b4ed307a1a88adfc5acec2d1981c"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/Access/GetCurrentViewInfoCommand.cs",
+                                                "gitBlobSha":  "5e9df5cea4a202b88cee0fd8ea348e1bb63eeabb"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/Access/GetSelectedElementsCommand.cs",
-                                                "gitBlobSha":  "fa5715dd7f38d056207ce183a9a2a0e1b1027ce0"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/Access/GetSelectedElementsCommand.cs",
+                                                "gitBlobSha":  "8aa11eb66cf9755078c4fac3c871a1795bdb0be9"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/ExecuteDynamicCode/ExecuteCodeCommand.cs",
-                                                "gitBlobSha":  "77d384466ebdd0828e58c867cf53221dd3424594"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/ExecuteDynamicCode/ExecuteCodeCommand.cs",
+                                                "gitBlobSha":  "429002ba460f76996b8a20de50cef04b0d31002c"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/ExecuteDynamicCode/ExecuteCodeEventHandler.cs",
-                                                "gitBlobSha":  "a5d0287459ecf98b16e6261d2fc9e1723cc94386"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/ExecuteDynamicCode/ExecuteCodeEventHandler.cs",
+                                                "gitBlobSha":  "1f1f8a87eb6cc5ca2d8d00e047c3ff92a8f342e7"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ActivateViewCommand.cs",
-                                                "gitBlobSha":  "2aa42745fd1359329ecc97ae1bced53f7452fffe"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/ActivateViewCommand.cs",
+                                                "gitBlobSha":  "836fabea907e4ae33191d3681ae4f8be845cf67f"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ActivateViewEventHandler.cs",
-                                                "gitBlobSha":  "d160ae2570b99e964e75ec58aefa9bae65e19019"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/ActivateViewEventHandler.cs",
+                                                "gitBlobSha":  "00b63129fc48ff68245133e4861032f9475dfdb2"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/AnnotationEvidenceHelpers.cs",
-                                                "gitBlobSha":  "1db490bf0e37e1ec708e8e2d67c86a0a8dfa5bf9"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/AnnotationEvidenceHelpers.cs",
+                                                "gitBlobSha":  "8fb2250c58f88ca8486bb093d3a63620049e16f7"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ClearSelectionCommand.cs",
-                                                "gitBlobSha":  "2a72fa410811d4d280b6438a7cd270fe2e85a6d8"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/ClearSelectionCommand.cs",
+                                                "gitBlobSha":  "d2c4ee8c2fa27b6008ce3ce6950d8ad6839d4654"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ClearSelectionEventHandler.cs",
-                                                "gitBlobSha":  "5e534ee6678a907d111d8f8a71fb2a70ca404593"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/ClearSelectionEventHandler.cs",
+                                                "gitBlobSha":  "07d0c17d49774e7458df281960ad6251c54ec460"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/CloseViewCommand.cs",
-                                                "gitBlobSha":  "82c920e6290a3e11d41edc2eca25bec8f689d073"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/CloseViewCommand.cs",
+                                                "gitBlobSha":  "f478ad8694c541f9aee4e4ab614a4de88a9d4d33"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/CloseViewEventHandler.cs",
-                                                "gitBlobSha":  "c66619cb335c4cc8b8ff6795024a7199dee4528c"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/CloseViewEventHandler.cs",
+                                                "gitBlobSha":  "f228b2f7f8295356c1471c89c93d6bf41e91288d"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/CountAnnotationsCommand.cs",
-                                                "gitBlobSha":  "e5e0803c3788f67d2dbe6ab7e195fc593d098c3c"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/CountAnnotationsCommand.cs",
+                                                "gitBlobSha":  "9a9dd9aefac41d8801223a4742c0751e53e2c64b"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/CountAnnotationsEventHandler.cs",
-                                                "gitBlobSha":  "863f4aba80c73ae75537edf6cf45de776a26a63c"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/CountAnnotationsEventHandler.cs",
+                                                "gitBlobSha":  "d9e2ecba23354eba22fe33dde7d7362b27b6725e"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/Create3DViewForElementsCommand.cs",
-                                                "gitBlobSha":  "e392e7a73226214caf85fa9f78b36eb6cc4a26d6"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/Create3DViewForElementsCommand.cs",
+                                                "gitBlobSha":  "34adfa74bf498f06d71413dc2a488bf433ac0241"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/Create3DViewForElementsEventHandler.cs",
-                                                "gitBlobSha":  "c61317de3db475196b2a2106a5ce304dd7a5cb2f"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/Create3DViewForElementsEventHandler.cs",
+                                                "gitBlobSha":  "f7f5960cef3bdccf6db8a32b297aac861a705bc2"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/DeleteReviewViewCommand.cs",
-                                                "gitBlobSha":  "f129c83b9b5dd27019292fb433972e5adef55da2"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/DeleteReviewViewCommand.cs",
+                                                "gitBlobSha":  "f0d56c3ee83b986b58fe8eb51fb01b3e078096e6"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/DeleteReviewViewEventHandler.cs",
-                                                "gitBlobSha":  "5a573c61c768a38cceece8628edc7530769badac"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/DeleteReviewViewEventHandler.cs",
+                                                "gitBlobSha":  "feda853892962617ead0d31aa68cc5267701e09d"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ElementDiscoveryHelpers.cs",
-                                                "gitBlobSha":  "bb4ceb04d9199b88cb5c42b891d4e15b59040aaa"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/ElementDiscoveryHelpers.cs",
+                                                "gitBlobSha":  "eb8bcda73a9789433e100f059e2088c5cbc71c4b"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ElementFocusHelpers.cs",
-                                                "gitBlobSha":  "26cb7853a5c0e304c3f07898a79a105094478207"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/ElementFocusHelpers.cs",
+                                                "gitBlobSha":  "4c61c11879eb2455555c43574f8769c95ea75477"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/FindElementsCommand.cs",
-                                                "gitBlobSha":  "b0af13dd5288431119750a783314d1a9d4b125b4"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/FindElementsCommand.cs",
+                                                "gitBlobSha":  "bae1701c0d0a0bc5e12c80e12f0c01dec5381a2d"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/FindElementsEventHandler.cs",
-                                                "gitBlobSha":  "5f4c01a25b74ee02db09a11988f9776c2ff1e926"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/FindElementsEventHandler.cs",
+                                                "gitBlobSha":  "d0d13f4f848909167b6edaa135c1d5c0d55f665b"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/FocusElementsCommand.cs",
-                                                "gitBlobSha":  "8fe1f62d52c2df3d8050c5eb6a8aeeb4cf7cdcaa"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/FocusElementsCommand.cs",
+                                                "gitBlobSha":  "d42d03b0f99c6dc9308096a1640a9733dec7a29f"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/FocusElementsEventHandler.cs",
-                                                "gitBlobSha":  "17ec9187485de2ece000e5173dadbf61d384ba47"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/FocusElementsEventHandler.cs",
+                                                "gitBlobSha":  "72f0cf4067358a7571e687d5661b8e16cad2f18e"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/GetUiStateCommand.cs",
-                                                "gitBlobSha":  "288a2b30d7c094d9ac829c3eb84d345300edbdf5"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/GetUiStateCommand.cs",
+                                                "gitBlobSha":  "45c622fd44c00645567c3f09dcb4d5cf32324072"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/GetUiStateEventHandler.cs",
-                                                "gitBlobSha":  "d3457e397fb470e23f7b5f5871912643d12dc865"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/GetUiStateEventHandler.cs",
+                                                "gitBlobSha":  "f7c4c36448dbb0df6138d0b80759772101878d4f"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/InspectSchedulesCommand.cs",
-                                                "gitBlobSha":  "ebc0da49d6083c1e512978bbe207913a3916fa71"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/InspectSchedulesCommand.cs",
+                                                "gitBlobSha":  "39229dd785e2efde7bf7cebf1e8a63077ac6e76f"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/InspectSchedulesEventHandler.cs",
-                                                "gitBlobSha":  "f68955f868a312783ee2cccec217929b63ca392c"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/InspectSchedulesEventHandler.cs",
+                                                "gitBlobSha":  "ef7199157fd4b8f1d5dc227d142099453ec9d604"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/InspectSheetTextCommand.cs",
-                                                "gitBlobSha":  "4046261567241dbb2c2681e54524b2422675fd54"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/InspectSheetTextCommand.cs",
+                                                "gitBlobSha":  "c9be88e2e43b034a43cc88bc232f377d342d1cc2"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/InspectSheetTextEventHandler.cs",
-                                                "gitBlobSha":  "ec63e4e7930f74526ebfd37615af399d782283a6"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/InspectSheetTextEventHandler.cs",
+                                                "gitBlobSha":  "f07653c6c63bb441a28bbd71668525be411f3a69"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ListOpenViewsCommand.cs",
-                                                "gitBlobSha":  "b33f1678af0c1f4ed4f8102622338859959d1abf"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/ListOpenViewsCommand.cs",
+                                                "gitBlobSha":  "4554bb78faf5a6eb76c744940e60c8bf9903804f"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ListOpenViewsEventHandler.cs",
-                                                "gitBlobSha":  "20d285778f58e1da08e23d3583967e0924ac67f5"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/ListOpenViewsEventHandler.cs",
+                                                "gitBlobSha":  "0f79c65bb6a407c211f4b0422837d04e4c98ee2a"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/OpenExistingPlanForElementLevelCommand.cs",
-                                                "gitBlobSha":  "d3dc88d6b21e3748391086a3b4ad2e8e42d2fe2b"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/OpenExistingPlanForElementLevelCommand.cs",
+                                                "gitBlobSha":  "52054b62bef69689c5175546b0d0d91bece2d655"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/OpenExistingPlanForElementLevelEventHandler.cs",
-                                                "gitBlobSha":  "51c216d1e64393e7b71875b7880d5fbf5815b697"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/OpenExistingPlanForElementLevelEventHandler.cs",
+                                                "gitBlobSha":  "8daa6ac367be7aeba9450b4ac409339da28a3cba"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/SectionBoxElementsCommand.cs",
-                                                "gitBlobSha":  "d78616d0aa862d6732da2cadee17ac01ffc19f14"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/SectionBoxElementsCommand.cs",
+                                                "gitBlobSha":  "48ff89f96dfefefbb28ca1eb664a8a89344bb685"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/SectionBoxElementsEventHandler.cs",
-                                                "gitBlobSha":  "84c413b613689a393c52fbec5d47a6e339dd4a27"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/SectionBoxElementsEventHandler.cs",
+                                                "gitBlobSha":  "2f869dff3852d230187bdd92c44652850c74c818"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Commands/View/ViewCommandHelpers.cs",
-                                                "gitBlobSha":  "5bee3eb7d823d9c38eb5f846d4c8813e0b220f2e"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Commands/View/ViewCommandHelpers.cs",
+                                                "gitBlobSha":  "829f31bf9984479c92b8eac0e3abf1b0bbf1891e"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Extensions/RevitApiCompatibilityExtensions.cs",
-                                                "gitBlobSha":  "f26c6629cbbd24844c6f8cc4b7dde423cf89455b"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Extensions/RevitApiCompatibilityExtensions.cs",
+                                                "gitBlobSha":  "6cad6940308ce41dc747f12ae68d63e699582b4e"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Models/Common/ElementInfo.cs",
-                                                "gitBlobSha":  "fa054f19797d04a2d432ecaa64bdcb8123e4a435"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Models/Common/ElementInfo.cs",
+                                                "gitBlobSha":  "f36ad2016599585f59ad44cabb2b14041c2994ea"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Models/Common/ViewElementsResult.cs",
-                                                "gitBlobSha":  "38693ade8489d9371ea581b14a6b035f4b8347a9"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Models/Common/ViewElementsResult.cs",
+                                                "gitBlobSha":  "83a77026410bb69327a689de45b274c4d78dd1aa"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Models/Common/ViewInfo.cs",
-                                                "gitBlobSha":  "07cf754b81665e49c7334b3d7105a0bf99067127"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Models/Common/ViewInfo.cs",
+                                                "gitBlobSha":  "74e3f577d96e00f0b537393e3be6fb5cf823e9c8"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/RevitMCPCommandSet.csproj",
-                                                "gitBlobSha":  "ecea96c3764e4d945734436bde27740dcc5b0479"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/revAgentCommandSet.csproj",
+                                                "gitBlobSha":  "ce56a48c3e6bcd9d07c74b8391692c98ca3e5f08"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Services/GetCurrentViewElementsEventHandler.cs",
-                                                "gitBlobSha":  "4ddce12a141af7f7c0986228aa03c3d1015175cf"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Services/GetCurrentViewElementsEventHandler.cs",
+                                                "gitBlobSha":  "dac57aab17fe3ee0a289f2e596f76566d407dbf8"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Services/GetCurrentViewInfoEventHandler.cs",
-                                                "gitBlobSha":  "afa46be53ea0b273a09ff3fc075c4dbace3f8831"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Services/GetCurrentViewInfoEventHandler.cs",
+                                                "gitBlobSha":  "9dee9f8ca447db21a6930e24c0760a2563524e1f"
                                             },
                                             {
-                                                "path":  "src/revit-plugin/RevitMCPCommandSet/Services/GetSelectedElementsEventHandler.cs",
-                                                "gitBlobSha":  "94cb6a345d098ac1017fd1212b44e0df36ee6999"
+                                                "path":  "src/revit-plugin/revAgentCommandSet/Services/GetSelectedElementsEventHandler.cs",
+                                                "gitBlobSha":  "f1f5813f2303ba1b3a119055d7777987e1339c2d"
                                             }
                                         ],
                              "payloads":  [
                                               {
                                                   "path":  "installer/command-payload/revAgentCommandSet.dll",
-                                                  "sha256":  "34e5cfa9fb237378385edf441e87cc84d0174c1633beeaf9d17f75519875b3f4",
+                                                  "sha256":  "12e0d1021f7b3f4c4409101d3e22f1dd3b6ac21ade0d2ec1c99970fe54e5e64c",
                                                   "sizeBytes":  272896
                                               },
                                               {
                                                   "path":  "installer/revit-plugin/revAgentPlugin/Commands/revAgentCommandSet/2022/revAgentCommandSet.dll",
-                                                  "sha256":  "34e5cfa9fb237378385edf441e87cc84d0174c1633beeaf9d17f75519875b3f4",
+                                                  "sha256":  "12e0d1021f7b3f4c4409101d3e22f1dd3b6ac21ade0d2ec1c99970fe54e5e64c",
                                                   "sizeBytes":  272896
                                               }
                                           ]

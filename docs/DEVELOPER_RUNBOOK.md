@@ -460,7 +460,7 @@ normalization. Dynamic-code tests also verify that `parseJsonResult=true`
 parses JSON-looking nested `result` strings and failed parsing preserves raw
 text. It does not run the live Revit commandset gate.
 
-When `src/revit-plugin/RevitMCPCommandSet` or `installer/command-payload`
+When `src/revit-plugin/revAgentCommandSet` or `installer/command-payload`
 changes, run the optional live commandset gate on a workstation with Revit 2022
 open and an active document:
 
@@ -509,7 +509,7 @@ fixture starts at true no-value. It is
 deliberately outside `test-all` and CI because it requires Revit plus a
 disposable model.
 
-Keep `src/revit-plugin/RevitMCPCommandSet` limited to the registered production
+Keep `src/revit-plugin/revAgentCommandSet` limited to the registered production
 bridge commands: `send_code_to_revit`, `get_current_view_elements`,
 `get_current_view_info`, `get_selected_elements`, `list_open_views`,
 `activate_view`, `close_view`, `get_ui_state`, `find_elements`,

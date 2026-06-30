@@ -4,10 +4,10 @@ This folder contains the installable workstation payload for revAgent. End
 users should normally install through the NAS updater rather than running these
 scripts manually.
 
-The implementation still uses exact internal names such as `RevitMCP*` and
-`C:\ProgramData\DPE\revAgent`; do not rename those when documenting commands
-or paths. Codex-facing MCP entries should appear as `revAgent` and
-`revAgent-api-docs`.
+The implementation still contains legacy cleanup names and external SDK names
+such as `RevitMCPSDK`; do not rename those when documenting exact compatibility
+or package identities. Installed paths and Codex-facing MCP entries should
+appear as `C:\ProgramData\DPE\revAgent`, `revAgent`, and `revAgent-api-docs`.
 
 ## Contents
 

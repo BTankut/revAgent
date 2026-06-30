@@ -1,18 +1,18 @@
 # Revit Plugin Source
 
-This folder contains the Revit add-in source that used to live in the separate
-`BTankut/revit-mcp-plugin` repository.
+This folder contains the Revit add-in source that used to live in a separate
+upstream repository before the revAgent monorepo migration.
 
-Product-facing UI and docs should use `revAgent`. The installed package uses
-revAgent-named add-in and command DLL artifacts. The deep source folder,
-project, and namespace identities here still keep their `revit-mcp` /
-`RevitMCP*` implementation names until the larger repository/source rename.
+Product-facing UI and docs should use `revAgent`. The installed package and
+source projects use revAgent-named add-in and command DLL identities; remaining
+legacy names in this area should be limited to external SDK/package identities
+or explicit compatibility cleanup.
 
 Production source projects:
 
-- `revit-mcp-plugin/`: main Revit add-in host, socket service, command registry,
+- `revAgentPlugin/`: main Revit add-in host, socket service, command registry,
   and revAgent status window.
-- `RevitMCPCommandSet/`: the shared Revit bridge command set used by
+- `revAgentCommandSet/`: the shared Revit bridge command set used by
   `send_code_to_revit`, low-level context commands, UI state, selection, focus,
   and view navigation workflows. This project owns `transactionMode`, guarded
   manual-transaction behavior, dynamic compile reference selection, and the
@@ -53,7 +53,7 @@ matching install payload. Validate the command source separately when it
 changes:
 
 ```powershell
-dotnet build .\RevitMCPCommandSet\RevitMCPCommandSet.csproj -c "Release R22" /p:RevitMcpDeployCommandSet=false
+dotnet build .\revAgentCommandSet\revAgentCommandSet.csproj -c "Release R22" /p:RevAgentDeployCommandSet=false
 ```
 
 The shared bridge payload under `installer\command-payload` is refreshed by the
