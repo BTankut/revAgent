@@ -30,6 +30,7 @@ Import-Module (Join-Path $installerLibRoot "RevAgent.Permissions.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevAgent.LogRetention.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevAgent.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $installerLibRoot "RevAgent.ConfigSync.psm1") -Force
+Import-Module (Join-Path $installerLibRoot "RevAgent.DesktopLauncherCleanup.psm1") -Force
 Set-RevAgentCurrentProcessUtf8Console | Out-Null
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -1291,6 +1292,18 @@ Invoke-RevAgentLogRetention -LogsRoot (Join-Path $updaterRoot "logs") -KeepLast 
 Repair-RevAgentManagedInstallPermissions
 Repair-RevAgentScheduledTaskAction -ConfigPath $updaterConfigPath -UpdaterPath (Join-Path $updaterRoot "update-from-nas.ps1")
 Remove-LegacyRevitMcpInstallRoot
+try {
+    $desktopLauncherCleanup = Invoke-RevAgentLegacyDesktopLauncherCleanup
+    if ([int]$desktopLauncherCleanup.removedCount -gt 0) {
+        Write-Host ("Desktop launchers: removed {0} legacy Revit MCP launcher shortcut(s)." -f $desktopLauncherCleanup.removedCount) -ForegroundColor Green
+    }
+    if ([int]$desktopLauncherCleanup.failedCount -gt 0) {
+        Write-Warning ("Desktop launchers: failed to remove {0} legacy Revit MCP launcher shortcut(s)." -f $desktopLauncherCleanup.failedCount)
+    }
+}
+catch {
+    Write-Warning "Desktop launcher cleanup failed: $($_.Exception.Message)"
+}
 
 Write-Host "Self-contained revAgent bundle installed for Revit $RevitVersion" -ForegroundColor Green
 Write-Host "Install root: $InstallRoot"

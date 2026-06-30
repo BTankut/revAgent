@@ -1079,6 +1079,10 @@ When source-free evidence is missing, run
 `migrate-source-free-install.ps1 -Mode dryRun -ReportsRoot <reports-root>` on
 the workstation; it publishes `source-free-migration-latest.json` without
 overwriting the dashboard `latest.json` version state.
+Updater install/repair and update runs remove managed legacy `Revit MCP`
+desktop launcher shortcuts from local and OneDrive desktop folders; rerun
+stable update before collecting launcher evidence if stale desktop shortcuts
+are reported.
 For SSH-managed workstations, prefer the evidence-only collector instead of the
 install/repair deploy script:
 

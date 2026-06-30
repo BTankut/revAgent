@@ -63,6 +63,7 @@ try {
     & (Join-Path $RepoRoot "scripts\test-license-seat.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-source-free-migration.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-desktop-launcher-evidence.ps1") -RepoRoot $RepoRoot
+    & (Join-Path $RepoRoot "scripts\test-desktop-launcher-cleanup.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-rollout-evidence-collector.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-typescript-nocheck-policy.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-mcp-build-payload-freshness.ps1") -RepoRoot $RepoRoot

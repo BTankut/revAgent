@@ -65,6 +65,7 @@ Import-Module (Join-Path $nasLibRoot "RevAgent.Proxy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.LogRetention.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.Reporting.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.DesktopLauncherCleanup.psm1") -Force
 Set-RevAgentCurrentProcessUtf8Console | Out-Null
 
 if ($RunSourceFreeMigration) {
@@ -79,6 +80,16 @@ $script:RevAgentRemoteReportsRoot = ""
 $script:RevAgentLatestReport = $null
 $script:RevAgentOperation = "install"
 $script:RevAgentOperationMethod = ""
+$script:RevAgentDesktopLauncherCleanup = [ordered]@{
+    enabled = $true
+    mode = "not-run"
+    matchedCount = 0
+    removedCount = 0
+    failedCount = 0
+    matched = @()
+    removed = @()
+    failed = @()
+}
 
 function Initialize-RevAgentTranscript {
     param(
@@ -346,6 +357,7 @@ function Set-RevAgentInstallRunReport {
             runSelfContainedInstaller = $true
             codexInstructionPolicy = $CodexInstructionPolicy
             machineRole = $MachineRole
+            desktopLauncherCleanup = $script:RevAgentDesktopLauncherCleanup
         }
         paths = [ordered]@{
             installRoot = $InstallRoot
@@ -1265,6 +1277,28 @@ Write-JsonFile -Path $configPath -Value $config
 $manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -DailyAt $DailyAt -CheckIntervalMinutes $CheckIntervalMinutes
 $versionCommandPath = Join-Path $WorkRoot "Show-revAgent-Version.cmd"
 Repair-RevAgentUpdaterPermissions
+try {
+    $script:RevAgentDesktopLauncherCleanup = Invoke-RevAgentLegacyDesktopLauncherCleanup
+    if ([int]$script:RevAgentDesktopLauncherCleanup.removedCount -gt 0) {
+        Write-Host ("Desktop launchers: removed {0} legacy Revit MCP launcher shortcut(s)." -f $script:RevAgentDesktopLauncherCleanup.removedCount) -ForegroundColor Green
+    }
+    if ([int]$script:RevAgentDesktopLauncherCleanup.failedCount -gt 0) {
+        Write-Warning ("Desktop launchers: failed to remove {0} legacy Revit MCP launcher shortcut(s)." -f $script:RevAgentDesktopLauncherCleanup.failedCount)
+    }
+}
+catch {
+    $script:RevAgentDesktopLauncherCleanup = [ordered]@{
+        enabled = $true
+        mode = "failed"
+        matchedCount = 0
+        removedCount = 0
+        failedCount = 1
+        matched = @()
+        removed = @()
+        failed = @([ordered]@{ path = ""; name = ""; extension = ""; error = $_.Exception.Message })
+    }
+    Write-Warning "Desktop launcher cleanup failed: $($_.Exception.Message)"
+}
 
 if ($NoScheduledTask) {
     Write-Host "Updater installed without scheduled task."

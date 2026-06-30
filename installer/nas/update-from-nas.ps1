@@ -73,6 +73,7 @@ Import-Module (Join-Path $nasLibRoot "RevAgent.LogRetention.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.ConfigSync.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.Reporting.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.DesktopLauncherCleanup.psm1") -Force
 $script:RevAgentDistributionIntegrityModule = Import-Module (Join-Path $nasLibRoot "RevAgent.DistributionIntegrity.psm1") -Force -PassThru
 Import-Module (Join-Path $nasLibRoot "RevAgent.License.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.SourceFreeMigration.psm1") -Force
@@ -2729,6 +2730,7 @@ function New-CurrentUpdateDiagnostics {
         fastUpdateFallbackMessage = $fastUpdateFallbackMessage
         revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
         localPackageBackupPolicy = $localPackageBackupPolicyState
+        desktopLauncherCleanup = $desktopLauncherCleanupState
         revAgentCleanInstallTransition = $revAgentCleanInstallTransitionState
     }
 }
@@ -3145,6 +3147,16 @@ $localPackageBackupPolicyState = [ordered]@{
     removedCacheItemCount = 0
     failedCacheItemCount = 0
 }
+$desktopLauncherCleanupState = [ordered]@{
+    enabled = $true
+    mode = "not-run"
+    matchedCount = 0
+    removedCount = 0
+    failedCount = 0
+    matched = @()
+    removed = @()
+    failed = @()
+}
 $revAgentCleanInstallTransitionState = [ordered]@{
     enabled = $false
     required = $false
@@ -3157,6 +3169,29 @@ $revAgentCleanInstallTransitionState = [ordered]@{
     failedBackupItemCount = 0
     removedCacheItemCount = 0
     failedCacheItemCount = 0
+}
+
+try {
+    $desktopLauncherCleanupState = Invoke-RevAgentLegacyDesktopLauncherCleanup
+    if ([int]$desktopLauncherCleanupState.removedCount -gt 0) {
+        Write-Host ("Desktop launchers: removed {0} legacy Revit MCP launcher shortcut(s)." -f $desktopLauncherCleanupState.removedCount) -ForegroundColor Green
+    }
+    if ([int]$desktopLauncherCleanupState.failedCount -gt 0) {
+        Write-Warning ("Desktop launchers: failed to remove {0} legacy Revit MCP launcher shortcut(s)." -f $desktopLauncherCleanupState.failedCount)
+    }
+}
+catch {
+    $desktopLauncherCleanupState = [ordered]@{
+        enabled = $true
+        mode = "failed"
+        matchedCount = 0
+        removedCount = 0
+        failedCount = 1
+        matched = @()
+        removed = @()
+        failed = @([ordered]@{ path = ""; name = ""; extension = ""; error = $_.Exception.Message })
+    }
+    Write-Warning "Desktop launcher cleanup failed: $($_.Exception.Message)"
 }
 New-Item -ItemType Directory -Path $cacheRoot, $stagingRoot, $backupRoot -Force | Out-Null
 
