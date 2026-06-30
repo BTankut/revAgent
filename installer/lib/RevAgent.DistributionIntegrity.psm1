@@ -269,6 +269,7 @@ function New-RevitMcpDetachedJsonSignature {
         [Parameter(Mandatory = $true)][string]$SignedObject,
         [Parameter(Mandatory = $true)][string]$KeyId,
         [Parameter(Mandatory = $true)][string]$PrivateKeyXml,
+        [string]$App = "revit-mcp-skill",
         [string]$CreatedAtUtc = ""
     )
 
@@ -281,6 +282,9 @@ function New-RevitMcpDetachedJsonSignature {
     if ([string]::IsNullOrWhiteSpace($CreatedAtUtc)) {
         $CreatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
     }
+    if (-not (Test-RevitMcpReleaseAppIdentity -App $App)) {
+        throw "Unsupported release app identity '$App'. Expected $(Get-RevitMcpAcceptedReleaseAppIdentityText)."
+    }
     $allowedSignedObjects = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($allowedSignedObject in @("channel", "release-manifest", "license-seat")) {
         [void]$allowedSignedObjects.Add($allowedSignedObject)
@@ -292,7 +296,7 @@ function New-RevitMcpDetachedJsonSignature {
     $publicKeyXml = Get-RevitMcpPublicKeyXmlFromPrivateKeyXml -PrivateKeyXml $PrivateKeyXml
     $envelope = [ordered]@{
         schemaVersion = 1
-        app = "revit-mcp-skill"
+        app = $App
         signedObject = $SignedObject
         algorithm = $script:RevitMcpSignatureAlgorithm
         keyId = $KeyId

@@ -39,6 +39,9 @@ param(
 
     [long]$MinimumAcceptedReleaseSequence = 0,
 
+    [ValidateSet("revit-mcp-skill", "revAgent")]
+    [string]$ReleaseAppId = "revit-mcp-skill",
+
     [switch]$RequireSigning,
 
     [string]$TrustedReleaseKeysPath = "",
@@ -751,12 +754,14 @@ function Write-RevAgentDetachedSignatureFile {
         [Parameter(Mandatory = $true)][string]$ContentPath,
         [Parameter(Mandatory = $true)][string]$SignaturePath,
         [Parameter(Mandatory = $true)][string]$SignedObject,
-        [Parameter(Mandatory = $true)][object]$SigningContext
+        [Parameter(Mandatory = $true)][object]$SigningContext,
+        [Parameter(Mandatory = $true)][string]$ReleaseAppId
     )
 
     $signatureEnvelope = New-RevAgentDetachedJsonSignature `
         -Content $Content `
         -SignedObject $SignedObject `
+        -App $ReleaseAppId `
         -KeyId ([string]$SigningContext.keyId) `
         -PrivateKeyXml ([string]$SigningContext.privateKeyXml)
     Write-JsonFile -Value $signatureEnvelope -Path $SignaturePath -Depth 8
@@ -895,7 +900,7 @@ try {
 
     $releaseInfo = [ordered]@{
         schemaVersion = 1
-        app = "revit-mcp-skill"
+        app = $ReleaseAppId
         version = $Version
         channel = $Channel
         git = [ordered]@{
@@ -990,7 +995,7 @@ try {
     $manifestPath = Join-Path $releaseDir "manifest.json"
     $manifest = [ordered]@{
         schemaVersion = 1
-        app = "revit-mcp-skill"
+        app = $ReleaseAppId
         version = $Version
         channel = $Channel
         publishedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -1035,14 +1040,15 @@ try {
             -ContentPath $manifestPath `
             -SignaturePath $manifestSignaturePath `
             -SignedObject "release-manifest" `
-            -SigningContext $signingContext
+            -SigningContext $signingContext `
+            -ReleaseAppId $ReleaseAppId
         Write-Host "Release manifest signature: $manifestSignaturePath" -ForegroundColor Green
     }
 
     if (-not $NoChannelUpdate) {
         $channelManifest = [ordered]@{
             schemaVersion = 1
-            app = "revit-mcp-skill"
+            app = $ReleaseAppId
             channel = $Channel
             version = $Version
             publishedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -1069,7 +1075,8 @@ try {
                 -ContentPath $channelPath `
                 -SignaturePath $channelSignaturePath `
                 -SignedObject "channel" `
-                -SigningContext $signingContext
+                -SigningContext $signingContext `
+                -ReleaseAppId $ReleaseAppId
             Write-Host "Channel signature: $channelSignaturePath" -ForegroundColor Green
         }
         Write-Host "Updated release manifest: $channelPath" -ForegroundColor Green
