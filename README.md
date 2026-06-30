@@ -1090,8 +1090,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect-rollout-ev
 
 The collector stages only read-only evidence tools on each target, runs
 source-free migration inventory in `dryRun`, scans desktop launchers, and then
-aggregates desktop launcher evidence. It does not install, repair, update, or
-run source-free migration in commit mode.
+retrieves the staged evidence files back to the coordinator machine. NAS
+`source-free-migration-latest.json` and `desktop-launcher-latest.json` files
+are written centrally by the coordinator, so SSH targets do not need direct NAS
+write access during evidence collection. It does not install, repair, update,
+or run source-free migration in commit mode.
 
 Connection freshness is calculated from the live heartbeat: `Online` is within
 `staleSeconds` (default 60 seconds), `Stale` is older but still within

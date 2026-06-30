@@ -892,9 +892,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\collect-rollout-ev
 ```
 
 The collector stages only read-only evidence tools on each target, runs
-source-free inventory in `dryRun`, runs desktop launcher scans, and then
-aggregates launcher evidence. It does not install, repair, update, stop
-processes, or run source-free migration in commit mode.
+source-free inventory in `dryRun`, runs desktop launcher scans, retrieves the
+staged JSON evidence files back to the coordinator machine, and then
+publishes the per-machine NAS evidence centrally before aggregating launcher
+evidence. SSH targets do not need direct NAS write access for this evidence
+path. It does not install, repair, update, stop processes, or run source-free
+migration in commit mode.
 
 Publishing refreshes `tools\` on the NAS. Workstations should launch the tools
 from the NAS share, not from copied old script bodies when possible.
