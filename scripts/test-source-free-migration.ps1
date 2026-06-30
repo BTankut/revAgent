@@ -272,6 +272,32 @@ exit 0
     Assert-Equal ([string]$harnessReport.scheduledTask.before.state) "Disabled" "Migration report should capture the disabled scheduled task state before updater."
     Assert-True ([bool]$harnessReport.scheduledTask.restore.attempted) "Migration report should show that disabled scheduled task state was restored."
     Assert-Equal ([string]$harnessReport.scheduledTask.restore.state) "Disabled" "Migration report should capture the restored disabled scheduled task state."
+
+    Write-Host "Test source-free migration dry-run NAS evidence publishing"
+    $dryRunReportsRoot = Join-Path $harnessRoot "dry-run-reports"
+    $dryRunReportPath = Join-Path $harnessRoot "dry-run-migration-report.json"
+    & (Join-Path $harnessTools "migrate-source-free-install.ps1") `
+        -Mode dryRun `
+        -ConfigPath $harnessConfigPath `
+        -ChannelManifestPath $harnessChannelPath `
+        -InstallRoot $harnessInstallRoot `
+        -WorkRoot $harnessWorkRoot `
+        -PackageTarget $harnessPackageTarget `
+        -ServerTarget $harnessServerTarget `
+        -UserProfileRoot $harnessUserProfileRoot `
+        -ReportPath $dryRunReportPath `
+        -ReportsRoot $dryRunReportsRoot `
+        -NoNotifyUser
+    Assert-Equal $LASTEXITCODE 0 "Dry-run migration evidence publish should succeed."
+    $safeComputer = $env:COMPUTERNAME -replace '[\\/:*?"<>|]', "_"
+    $dryRunMachineRoot = Join-Path $dryRunReportsRoot ("machines\{0}" -f $safeComputer)
+    $dryRunLatestPath = Join-Path $dryRunMachineRoot "source-free-migration-latest.json"
+    Assert-True (Test-Path -LiteralPath $dryRunLatestPath -PathType Leaf) "Dry-run migration must publish source-free-migration-latest.json for rollout readiness."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $dryRunMachineRoot "latest.json") -PathType Leaf)) "Dry-run migration evidence must not overwrite dashboard latest.json version state."
+    $dryRunEvidence = Get-Content -Raw -LiteralPath $dryRunLatestPath | ConvertFrom-Json
+    Assert-Equal ([string]$dryRunEvidence.operation) "source-free-migration" "Dry-run evidence operation mismatch."
+    Assert-Equal ([string]$dryRunEvidence.operationMethod) "source-free-migration-dry-run" "Dry-run evidence operation method mismatch."
+    Assert-Equal ([int]$dryRunEvidence.after.artifactCount) 0 "Dry-run evidence should capture clean post-inventory count."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {
@@ -294,6 +320,8 @@ Assert-True ($migrationText -match 'Set-RevAgentCurrentProcessUtf8Console') "Mig
 Assert-True ($migrationText -match 'Resolve-RevAgentCodexInstructionPolicy' -and $migrationText -match 'Add-RevAgentChildProcessParameter -Arguments \$updateArgs -Name "CodexInstructionPolicy"') "Migration must resolve Codex instruction policy and pass it to child updater."
 Assert-True ($migrationText -match '-SkipCodexUserIntegration:\$SkipCodexUserIntegration') "Migration inventory must honor SkipCodexUserIntegration when scanning source-free artifacts."
 Assert-True ($migrationText -match 'codexInstructionCleanupSkipped = \[bool\]\$preserveLocalCodexInstructions') "Migration report must expose Codex instruction cleanup skip state."
+Assert-True ($migrationText -match 'Publish-RevAgentSourceFreeMigrationEvidence' -and $migrationText -match 'source-free-migration-latest\.json') "Migration dry-run must be able to publish durable source-free evidence for rollout readiness."
+Assert-True ($migrationText -notmatch 'Join-Path \$machineRoot "latest\.json"') "Migration dry-run evidence must not overwrite dashboard latest.json version state."
 
 $updaterParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
 Assert-True ($updaterParams -contains "SourceFreeMigration") "update-from-nas.ps1 must expose -SourceFreeMigration."

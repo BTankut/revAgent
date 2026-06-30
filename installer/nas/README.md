@@ -300,6 +300,10 @@ audit also classifies each machine's latest `paths.channelManifestPath` as
 canonical, legacy, or unknown. Keep the `revit-mcp-deploy` compatibility root
 until the audit reports every in-scope machine on the canonical
 `revAgent-deploy` channel path and copied desktop launchers have been replaced.
+If source-free evidence is missing, run `migrate-source-free-install.ps1` in
+`dryRun` mode with `-ReportsRoot` set to the canonical reports root. The dry-run
+publishes `source-free-migration-latest.json` for readiness without replacing
+the dashboard `latest.json` version report.
 
 ## Update Behavior
 

@@ -4,6 +4,10 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added durable source-free dry-run evidence publishing:
+  `migrate-source-free-install.ps1 -Mode dryRun -ReportsRoot ...` now writes
+  `source-free-migration-latest.json` for rollout readiness without overwriting
+  dashboard `latest.json`.
 - Added optional live-smoke evidence output to
   `scripts\test-commandset-live.ps1`; passing `-ReleaseRoot`, `-ReportsRoot`,
   or `-SmokeEvidencePath` writes the current-stable smoke result for the
