@@ -206,6 +206,16 @@ try {
                     note = "Fixture live Revit smoke evidence."
                 }
             )
+            desktopLauncherEvidence = @(
+                [ordered]@{
+                    passed = $true
+                    checkedMachineCount = 5
+                    legacyLauncherCount = 0
+                    legacyRootReferenceCount = 0
+                    completedAtUtc = $nowUtc.AddMinutes(-1).ToString("o")
+                    note = "Fixture desktop launcher evidence."
+                }
+            )
         })
 
     $result = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
@@ -227,6 +237,8 @@ try {
     Assert-Equal ([int]$result.summary.updateFailedCount) 1 "Update failed count mismatch."
     Assert-Equal $result.summary.liveSmoke.state "verified" "Live smoke state mismatch."
     Assert-Equal $result.summary.liveSmoke.latest.machine "NET01" "Live smoke machine mismatch."
+    Assert-Equal $result.summary.desktopLauncher.state "verified" "Desktop launcher evidence state mismatch."
+    Assert-Equal ([int]$result.summary.desktopLauncher.latest.legacyLauncherCount) 0 "Desktop launcher legacy count mismatch."
     Assert-Equal ([int]$result.summary.canonicalChannelRootCount) 3 "Canonical channel root count mismatch."
     Assert-Equal ([int]$result.summary.legacyChannelRootCount) 1 "Legacy channel root count mismatch."
     Assert-Equal ([int]$result.summary.unknownChannelRootCount) 1 "Unknown channel root count mismatch."
@@ -282,6 +294,16 @@ try {
                     reason = "Retired pilot workstation."
                 }
             )
+            desktopLauncherEvidence = @(
+                [ordered]@{
+                    passed = $true
+                    checkedMachineCount = 5
+                    legacyLauncherCount = 0
+                    legacyRootReferenceCount = 0
+                    completedAtUtc = $nowUtc.AddMinutes(-1).ToString("o")
+                    note = "Fixture desktop launcher evidence."
+                }
+            )
         })
 
     $missingSmokeResult = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
@@ -292,6 +314,41 @@ try {
     Assert-Equal ([int]$missingSmokeResult.summary.actionRequiredCount) 5 "Missing smoke should add one rollout action."
     $smokeAction = @($missingSmokeResult.actions | Where-Object { $_.scope -eq "rollout" }) | Select-Object -First 1
     Assert-Equal $smokeAction.action "collect_live_revit_smoke" "Missing smoke action mismatch."
+
+    $missingLauncherConfigPath = Join-Path $tempRoot "rollout-readiness-no-launcher-evidence.json"
+    Write-TestJson -Path $missingLauncherConfigPath -Value ([ordered]@{
+            releaseRoot = $releaseRoot
+            reportsRoot = $reportsRoot
+            compatibilityReleaseRoots = @($legacyReleaseRoot)
+            expectedMachines = @("NET01", "EMIN", "YASAR", "LEGACY", "WS3", "OLD")
+            outOfScopeMachines = @(
+                [ordered]@{
+                    name = "OLD"
+                    reason = "Retired pilot workstation."
+                }
+            )
+            liveSmokeEvidence = @(
+                [ordered]@{
+                    machine = "NET01"
+                    passed = $true
+                    stableVersion = $stableVersion
+                    stableCommit = $stableCommit
+                    revitVersion = "2022"
+                    model = "RME_basic_sample_project.rvt"
+                    completedAtUtc = $nowUtc.AddMinutes(-2).ToString("o")
+                    note = "Fixture live Revit smoke evidence."
+                }
+            )
+        })
+
+    $missingLauncherResult = & (Join-Path $RepoRoot "scripts\check-rollout-readiness.ps1") `
+        -ConfigPath $missingLauncherConfigPath `
+        -NowUtc $nowUtc `
+        -OutputJson | ConvertFrom-Json
+    Assert-Equal $missingLauncherResult.summary.desktopLauncher.state "missing" "Missing desktop launcher state mismatch."
+    Assert-Equal ([int]$missingLauncherResult.summary.actionRequiredCount) 5 "Missing desktop launcher evidence should add one rollout action."
+    $launcherAction = @($missingLauncherResult.actions | Where-Object { $_.action -eq "collect_desktop_launcher_evidence" }) | Select-Object -First 1
+    Assert-True ($null -ne $launcherAction) "Missing desktop launcher evidence action was not reported."
 
     $closureOutputPath = Join-Path $tempRoot "closure\rollout-readiness-final.json"
     $closureResult = & (Join-Path $RepoRoot "scripts\invoke-rollout-closure-audit.ps1") `

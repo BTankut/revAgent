@@ -844,6 +844,10 @@ unknown channel evidence blocks compatibility-root retirement and produces an
 action item unless another higher-priority machine action already applies. For
 a one-off run, `-ReleaseRoot`, `-ExpectedMachines`, and `-OutOfScopeMachines`
 can still be passed directly.
+Desktop launcher evidence is also part of compatibility-root retirement:
+record `desktopLauncherEvidence` in the config or write
+`reports\rollout\desktop-launcher-latest.json` with `passed=true`,
+`legacyLauncherCount=0`, and `legacyRootReferenceCount=0`.
 When the audit asks for `run_source_free_dry_run_inventory`, run the local
 migration tool in `dryRun` mode with `-ReportsRoot` pointing at the canonical
 NAS reports root. It publishes `source-free-migration-latest.json` as durable

@@ -222,8 +222,8 @@ read its `channels\stable.json`.
 5. Freeze the old `revit-mcp-deploy` root as compatibility-only.
 6. Remove old-root dependency only after `scripts\check-rollout-readiness.ps1`
    reports every in-scope machine with canonical `revAgent-deploy`
-   `paths.channelManifestPath` evidence and copied desktop launchers no longer
-   depend on the legacy root.
+   `paths.channelManifestPath` evidence and desktop launcher evidence reports
+   zero copied launcher references to the legacy root.
 
 ### Repo Rename Strategy
 
@@ -335,7 +335,9 @@ launcher fallback, and successful-update config migration from the legacy
 channel path to the canonical channel path when the canonical root is
 available. The rollout readiness audit now reports canonical, legacy, and
 unknown channel-root counts from machine report evidence so the compatibility
-root can be retired from data instead of assumption.
+root can be retired from data instead of assumption. It also accepts desktop
+launcher evidence so old-root retirement is blocked until copied launchers are
+confirmed off the legacy root.
 Dashboard admin add-on config also uses the canonical
 `revAgent-deploy\reports` root by default and migrates legacy
 `revit-mcp-deploy\reports` config values during install/startup.
