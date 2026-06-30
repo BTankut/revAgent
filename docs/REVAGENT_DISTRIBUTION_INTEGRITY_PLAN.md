@@ -103,7 +103,7 @@ releases\
   <version>\
     manifest.json
     manifest.sig.json
-    revit-mcp-skill-<version>.zip
+    revAgent-<version>.zip
 ```
 
 `manifest.sig.json` carries a detached signature envelope for `manifest.json`.

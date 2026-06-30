@@ -1296,7 +1296,40 @@ function Resolve-RevAgentReleaseIdentityProducerSwitchReadiness {
     $gate = if ($null -ne $Config) { Get-RevAgentValue -Object $Config -Name "releaseIdentityProducerSwitch" } else { $null }
     $inScopeCount = @($InScopeMachines).Count
     $upToDateMachines = @($InScopeMachines | Where-Object { $_.versionState -eq "upToDate" })
-    $pendingMachines = @($InScopeMachines | Where-Object { $_.versionState -ne "upToDate" })
+    $machineByName = @{}
+    foreach ($machine in @($InScopeMachines)) {
+        $machineName = Normalize-RevAgentMachineName -Value ([string](Get-RevAgentValue -Object $machine -Name "machine"))
+        if (-not [string]::IsNullOrWhiteSpace($machineName) -and -not $machineByName.ContainsKey($machineName)) {
+            $machineByName[$machineName] = $machine
+        }
+    }
+    $requiredMachineNames = @()
+    $verificationScope = "all_in_scope"
+    $requiredMachines = @($InScopeMachines)
+    if ($null -ne $gate) {
+        $requiredMachineInputs = @()
+        foreach ($name in @("requiredMachines", "verificationMachines", "pilotMachines")) {
+            $requiredMachineInputs += @(Get-RevAgentValue -Object $gate -Name $name)
+        }
+        $requiredMachineNames = @(Expand-RevAgentMachineNames -Values $requiredMachineInputs | Select-Object -Unique)
+        if ($requiredMachineNames.Count -gt 0) {
+            $verificationScope = "configured_required_machines"
+            $requiredMachines = foreach ($requiredMachineName in $requiredMachineNames) {
+                if ($machineByName.ContainsKey($requiredMachineName)) {
+                    $machineByName[$requiredMachineName]
+                }
+                else {
+                    [pscustomobject][ordered]@{
+                        machine = $requiredMachineName
+                        versionState = "missing"
+                    }
+                }
+            }
+        }
+    }
+    $requiredMachineCount = @($requiredMachines).Count
+    $verifiedMachines = @($requiredMachines | Where-Object { $_.versionState -eq "upToDate" })
+    $pendingMachines = @($requiredMachines | Where-Object { $_.versionState -ne "upToDate" })
 
     if ($null -eq $gate) {
         return [pscustomobject][ordered]@{
@@ -1309,6 +1342,10 @@ function Resolve-RevAgentReleaseIdentityProducerSwitchReadiness {
             stableVersion = $StableVersion
             stableCommit = $StableCommit
             inScopeMachineCount = $inScopeCount
+            verificationScope = $verificationScope
+            requiredMachineCount = $requiredMachineCount
+            verifiedMachineCount = $verifiedMachines.Count
+            requiredMachines = @($requiredMachines | Select-Object -ExpandProperty machine)
             upToDateMachineCount = $upToDateMachines.Count
             pendingMachineCount = 0
             pendingMachines = @()
@@ -1338,6 +1375,10 @@ function Resolve-RevAgentReleaseIdentityProducerSwitchReadiness {
             stableVersion = $StableVersion
             stableCommit = $StableCommit
             inScopeMachineCount = $inScopeCount
+            verificationScope = $verificationScope
+            requiredMachineCount = $requiredMachineCount
+            verifiedMachineCount = $verifiedMachines.Count
+            requiredMachines = @($requiredMachines | Select-Object -ExpandProperty machine)
             upToDateMachineCount = $upToDateMachines.Count
             pendingMachineCount = 0
             pendingMachines = @()
@@ -1355,6 +1396,10 @@ function Resolve-RevAgentReleaseIdentityProducerSwitchReadiness {
             stableVersion = $StableVersion
             stableCommit = $StableCommit
             inScopeMachineCount = $inScopeCount
+            verificationScope = $verificationScope
+            requiredMachineCount = $requiredMachineCount
+            verifiedMachineCount = $verifiedMachines.Count
+            requiredMachines = @($requiredMachines | Select-Object -ExpandProperty machine)
             upToDateMachineCount = $upToDateMachines.Count
             pendingMachineCount = $pendingMachines.Count
             pendingMachines = @($pendingMachines | Select-Object -ExpandProperty machine)
@@ -1376,39 +1421,63 @@ function Resolve-RevAgentReleaseIdentityProducerSwitchReadiness {
             stableVersion = $StableVersion
             stableCommit = $StableCommit
             inScopeMachineCount = $inScopeCount
+            verificationScope = $verificationScope
+            requiredMachineCount = $requiredMachineCount
+            verifiedMachineCount = $verifiedMachines.Count
+            requiredMachines = @($requiredMachines | Select-Object -ExpandProperty machine)
             upToDateMachineCount = $upToDateMachines.Count
             pendingMachineCount = $pendingMachines.Count
             pendingMachines = @($pendingMachines | Select-Object -ExpandProperty machine)
         }
     }
 
-    if ($inScopeCount -eq 0 -or $pendingMachines.Count -gt 0) {
+    if ($requiredMachineCount -eq 0 -or $pendingMachines.Count -gt 0) {
+        $reason = if ($verificationScope -eq "configured_required_machines") {
+            "Configured releaseIdentityProducerSwitch.requiredMachines must report the compatibility stable version before default producers switch to the revAgent identity."
+        }
+        else {
+            "Every in-scope machine must report the compatibility stable version before default producers switch to the revAgent identity."
+        }
         return [pscustomobject][ordered]@{
             state = "waiting_for_machine_uptake"
             action = "finish_compatibility_updater_rollout"
-            reason = "Every in-scope machine must report the compatibility stable version before default producers switch to the revAgent identity."
+            reason = $reason
             targetIdentity = $targetIdentity
             compatibleStableVersion = $compatibleStableVersion
             compatibleStableCommit = $compatibleStableCommit
             stableVersion = $StableVersion
             stableCommit = $StableCommit
             inScopeMachineCount = $inScopeCount
+            verificationScope = $verificationScope
+            requiredMachineCount = $requiredMachineCount
+            verifiedMachineCount = $verifiedMachines.Count
+            requiredMachines = @($requiredMachines | Select-Object -ExpandProperty machine)
             upToDateMachineCount = $upToDateMachines.Count
             pendingMachineCount = $pendingMachines.Count
             pendingMachines = @($pendingMachines | Select-Object -ExpandProperty machine)
         }
     }
 
+    $verifiedReason = if ($verificationScope -eq "configured_required_machines") {
+        "Configured required machines report the configured compatibility stable version."
+    }
+    else {
+        "Every in-scope machine reports the configured compatibility stable version."
+    }
     return [pscustomobject][ordered]@{
         state = "verified"
         action = "none"
-        reason = "Every in-scope machine reports the configured compatibility stable version."
+        reason = $verifiedReason
         targetIdentity = $targetIdentity
         compatibleStableVersion = $compatibleStableVersion
         compatibleStableCommit = $compatibleStableCommit
         stableVersion = $StableVersion
         stableCommit = $StableCommit
         inScopeMachineCount = $inScopeCount
+        verificationScope = $verificationScope
+        requiredMachineCount = $requiredMachineCount
+        verifiedMachineCount = $verifiedMachines.Count
+        requiredMachines = @($requiredMachines | Select-Object -ExpandProperty machine)
         upToDateMachineCount = $upToDateMachines.Count
         pendingMachineCount = 0
         pendingMachines = @()
