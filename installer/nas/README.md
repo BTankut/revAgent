@@ -124,6 +124,17 @@ The manual dispatch also exposes `release_identity`. Keep the default
 compatibility updater that accepts both legacy and `revAgent` release
 identities. After that rollout is verified, the operator can select `revAgent`
 to produce matching `revAgent` channel app ids and release ZIP names.
+Before changing the default identity, add this gate to the rollout readiness
+config and require the readiness summary state to be `verified`:
+
+```json
+"releaseIdentityProducerSwitch": {
+  "enabled": true,
+  "targetIdentity": "revAgent",
+  "compatibleStableVersion": "2026.06.30.xxx-xxxxxxxx",
+  "compatibleStableCommit": "commit-that-contains-dual-app-identity-consumers"
+}
+```
 
 For production NAS publish, set `REVAGENT_NAS_RELEASE_ROOT` to the canonical
 `revAgent-deploy` path. The publish job writes the signed release only to that

@@ -116,6 +116,10 @@ These are expected to remain until a larger migration explicitly replaces them.
      to `revAgent`.
    - Rename package ZIP/cache/backup names only after updater acceptance and
      rollback behavior are covered by tests.
+   - Before changing defaults, enable the rollout readiness
+     `releaseIdentityProducerSwitch` gate with the exact compatible stable
+     version or commit and require
+     `summary.releaseIdentityProducerSwitch.state == "verified"`.
 
 ## Do Not Bulk Rename
 

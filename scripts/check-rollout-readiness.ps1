@@ -1285,6 +1285,136 @@ function Resolve-RevAgentDesktopLauncherEvidence {
     }
 }
 
+function Resolve-RevAgentReleaseIdentityProducerSwitchReadiness {
+    param(
+        [object]$Config,
+        [string]$StableVersion,
+        [string]$StableCommit,
+        [object[]]$InScopeMachines
+    )
+
+    $gate = if ($null -ne $Config) { Get-RevAgentValue -Object $Config -Name "releaseIdentityProducerSwitch" } else { $null }
+    $inScopeCount = @($InScopeMachines).Count
+    $upToDateMachines = @($InScopeMachines | Where-Object { $_.versionState -eq "upToDate" })
+    $pendingMachines = @($InScopeMachines | Where-Object { $_.versionState -ne "upToDate" })
+
+    if ($null -eq $gate) {
+        return [pscustomobject][ordered]@{
+            state = "disabled"
+            action = "none"
+            reason = "Release identity producer switch gate is not enabled in rollout readiness config."
+            targetIdentity = "revAgent"
+            compatibleStableVersion = ""
+            compatibleStableCommit = ""
+            stableVersion = $StableVersion
+            stableCommit = $StableCommit
+            inScopeMachineCount = $inScopeCount
+            upToDateMachineCount = $upToDateMachines.Count
+            pendingMachineCount = 0
+            pendingMachines = @()
+        }
+    }
+
+    $enabledValue = Get-RevAgentValue -Object $gate -Name "enabled"
+    $enabled = if ($null -eq $enabledValue) { $true } else { ConvertTo-RevAgentBool -Value $enabledValue }
+    $targetIdentity = Select-RevAgentFirstText -Values @(
+        (Get-RevAgentValue -Object $gate -Name "targetIdentity"),
+        "revAgent")
+    $compatibleStableVersion = Select-RevAgentFirstText -Values @(
+        (Get-RevAgentValue -Object $gate -Name "compatibleStableVersion"),
+        (Get-RevAgentValue -Object $gate -Name "requiredStableVersion"))
+    $compatibleStableCommit = Select-RevAgentFirstText -Values @(
+        (Get-RevAgentValue -Object $gate -Name "compatibleStableCommit"),
+        (Get-RevAgentValue -Object $gate -Name "requiredStableCommit"))
+
+    if (-not $enabled) {
+        return [pscustomobject][ordered]@{
+            state = "disabled"
+            action = "none"
+            reason = "Release identity producer switch gate is disabled in rollout readiness config."
+            targetIdentity = $targetIdentity
+            compatibleStableVersion = $compatibleStableVersion
+            compatibleStableCommit = $compatibleStableCommit
+            stableVersion = $StableVersion
+            stableCommit = $StableCommit
+            inScopeMachineCount = $inScopeCount
+            upToDateMachineCount = $upToDateMachines.Count
+            pendingMachineCount = 0
+            pendingMachines = @()
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($compatibleStableVersion) -and [string]::IsNullOrWhiteSpace($compatibleStableCommit)) {
+        return [pscustomobject][ordered]@{
+            state = "missing_compatibility_baseline"
+            action = "configure_release_identity_switch_gate"
+            reason = "Set releaseIdentityProducerSwitch.compatibleStableVersion or compatibleStableCommit before using a new release app/package identity."
+            targetIdentity = $targetIdentity
+            compatibleStableVersion = $compatibleStableVersion
+            compatibleStableCommit = $compatibleStableCommit
+            stableVersion = $StableVersion
+            stableCommit = $StableCommit
+            inScopeMachineCount = $inScopeCount
+            upToDateMachineCount = $upToDateMachines.Count
+            pendingMachineCount = $pendingMachines.Count
+            pendingMachines = @($pendingMachines | Select-Object -ExpandProperty machine)
+        }
+    }
+
+    $versionMatches = ([string]::IsNullOrWhiteSpace($compatibleStableVersion) -or
+        [string]::Equals($StableVersion, $compatibleStableVersion, [System.StringComparison]::OrdinalIgnoreCase))
+    $commitMatches = ([string]::IsNullOrWhiteSpace($compatibleStableCommit) -or
+        (Test-RevAgentCommitMatch -EvidenceCommit $compatibleStableCommit -StableCommit $StableCommit))
+    if (-not $versionMatches -or -not $commitMatches) {
+        return [pscustomobject][ordered]@{
+            state = "waiting_for_compatible_stable"
+            action = "publish_release_identity_compatibility_build"
+            reason = "Current stable channel does not match the configured release identity compatibility baseline."
+            targetIdentity = $targetIdentity
+            compatibleStableVersion = $compatibleStableVersion
+            compatibleStableCommit = $compatibleStableCommit
+            stableVersion = $StableVersion
+            stableCommit = $StableCommit
+            inScopeMachineCount = $inScopeCount
+            upToDateMachineCount = $upToDateMachines.Count
+            pendingMachineCount = $pendingMachines.Count
+            pendingMachines = @($pendingMachines | Select-Object -ExpandProperty machine)
+        }
+    }
+
+    if ($inScopeCount -eq 0 -or $pendingMachines.Count -gt 0) {
+        return [pscustomobject][ordered]@{
+            state = "waiting_for_machine_uptake"
+            action = "finish_compatibility_updater_rollout"
+            reason = "Every in-scope machine must report the compatibility stable version before default producers switch to the revAgent identity."
+            targetIdentity = $targetIdentity
+            compatibleStableVersion = $compatibleStableVersion
+            compatibleStableCommit = $compatibleStableCommit
+            stableVersion = $StableVersion
+            stableCommit = $StableCommit
+            inScopeMachineCount = $inScopeCount
+            upToDateMachineCount = $upToDateMachines.Count
+            pendingMachineCount = $pendingMachines.Count
+            pendingMachines = @($pendingMachines | Select-Object -ExpandProperty machine)
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        state = "verified"
+        action = "none"
+        reason = "Every in-scope machine reports the configured compatibility stable version."
+        targetIdentity = $targetIdentity
+        compatibleStableVersion = $compatibleStableVersion
+        compatibleStableCommit = $compatibleStableCommit
+        stableVersion = $StableVersion
+        stableCommit = $StableCommit
+        inScopeMachineCount = $inScopeCount
+        upToDateMachineCount = $upToDateMachines.Count
+        pendingMachineCount = 0
+        pendingMachines = @()
+    }
+}
+
 if ($null -ne $config) {
     if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
         $ReleaseRoot = [string](Get-RevAgentValue -Object $config -Name "releaseRoot")
@@ -1490,6 +1620,7 @@ $inScopeMachines = @($machines | Where-Object { -not $_.excluded })
 $actionRequiredMachines = @($inScopeMachines | Where-Object { $_.action -ne "none" })
 $liveSmoke = Resolve-RevAgentLiveSmokeEvidence -Config $config -ReportsRoot $ReportsRoot -StableVersion $stableVersion -StableCommit $stableCommit
 $desktopLauncher = Resolve-RevAgentDesktopLauncherEvidence -Config $config -ReportsRoot $ReportsRoot -RequiredMachineNames @($inScopeMachines | ForEach-Object { [string]$_.machine })
+$releaseIdentityProducerSwitch = Resolve-RevAgentReleaseIdentityProducerSwitchReadiness -Config $config -StableVersion $stableVersion -StableCommit $stableCommit -InScopeMachines $inScopeMachines
 $rolloutActions = @()
 if ([string](Get-RevAgentValue -Object $liveSmoke -Name "action") -ne "none") {
     $rolloutActions += [pscustomobject][ordered]@{
@@ -1521,6 +1652,23 @@ if ([string](Get-RevAgentValue -Object $desktopLauncher -Name "action") -ne "non
         connectionState = ""
         action = [string](Get-RevAgentValue -Object $desktopLauncher -Name "action")
         reason = [string](Get-RevAgentValue -Object $desktopLauncher -Name "reason")
+        logPath = ""
+    }
+}
+if ([string](Get-RevAgentValue -Object $releaseIdentityProducerSwitch -Name "action") -ne "none") {
+    $rolloutActions += [pscustomobject][ordered]@{
+        scope = "rollout"
+        machine = ""
+        userName = ""
+        installedVersion = ""
+        targetVersion = $stableVersion
+        versionState = ""
+        updateState = ""
+        sourceFreeState = ""
+        channelRootState = ""
+        connectionState = ""
+        action = [string](Get-RevAgentValue -Object $releaseIdentityProducerSwitch -Name "action")
+        reason = [string](Get-RevAgentValue -Object $releaseIdentityProducerSwitch -Name "reason")
         logPath = ""
     }
 }
@@ -1556,6 +1704,7 @@ $summary = [pscustomobject][ordered]@{
     }
     liveSmoke = $liveSmoke
     desktopLauncher = $desktopLauncher
+    releaseIdentityProducerSwitch = $releaseIdentityProducerSwitch
     machineCount = @($machines).Count
     inScopeMachineCount = @($inScopeMachines).Count
     excludedMachineCount = @($machines | Where-Object { $_.excluded }).Count
@@ -1611,6 +1760,7 @@ Write-Host ("Source-free: {0} verified, {1} needs evidence, {2} failed" -f $summ
 Write-Host ("Channel root: {0} canonical, {1} legacy, {2} unknown" -f $summary.canonicalChannelRootCount, $summary.legacyChannelRootCount, $summary.unknownChannelRootCount)
 Write-Host ("Live smoke: {0}" -f $summary.liveSmoke.state)
 Write-Host ("Desktop launchers: {0}" -f $summary.desktopLauncher.state)
+Write-Host ("Release identity switch: {0}" -f $summary.releaseIdentityProducerSwitch.state)
 $machines |
     Select-Object machine, userName, installedVersion, versionState, updateState, sourceFreeState, channelRootState, connectionState, action, exclusionReason |
     Format-Table -AutoSize

@@ -100,6 +100,7 @@ else {
     Write-Host ("Ready: {0}; action required: {1}" -f $result.summary.ready, $result.summary.actionRequiredCount)
     Write-Host ("Channel root: {0} canonical, {1} legacy, {2} unknown; compatibility retirement ready: {3}" -f $result.summary.canonicalChannelRootCount, $result.summary.legacyChannelRootCount, $result.summary.unknownChannelRootCount, $result.summary.compatibilityRootRetirementReady)
     Write-Host ("Live smoke: {0}" -f $result.summary.liveSmoke.state)
+    Write-Host ("Release identity switch: {0}" -f $result.summary.releaseIdentityProducerSwitch.state)
     if ([int]$result.summary.actionRequiredCount -gt 0) {
         $result.actions | Format-Table -AutoSize
     }
