@@ -886,11 +886,11 @@ migration tool in `dryRun` mode with `-ReportsRoot` pointing at the canonical
 NAS reports root. It publishes `source-free-migration-latest.json` as durable
 readiness evidence without overwriting the dashboard `latest.json` version
 state.
-Updater install/repair and update runs remove managed legacy `Revit MCP`
-desktop launcher shortcuts from local and OneDrive desktop folders and report
-the result as `diagnostics.desktopLauncherCleanup`. If launcher evidence still
-shows legacy references, rerun the stable update first, then recollect launcher
-evidence.
+Updater install/repair and update runs remove managed legacy desktop launcher
+shortcuts that use old `Revit MCP` names from local and OneDrive desktop
+folders and report the result as `diagnostics.desktopLauncherCleanup`. If
+launcher evidence still shows legacy references, rerun the stable update first,
+then recollect launcher evidence.
 
 For SSH-managed workstations, use the evidence-only collector instead of the
 install/repair deploy script:
