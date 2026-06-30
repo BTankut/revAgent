@@ -55,6 +55,9 @@ Keep legacy names only when they are one of these exact identities:
   `src/revit-plugin/revAgentCommandSet`, `RevAgentPlugin`, and
   `RevAgentCommandSet` identities. Installed add-in manifests point at
   `RevAgentPlugin.Core.Application`.
+- Runtime default temp artifacts now use `revAgent-instances.json` and
+  `revAgent-image-export`. The runtime still reads legacy
+  `revit-mcp-instances.json` registry data during rolling updates.
 
 ## Intentional Compatibility Names
 
@@ -67,6 +70,7 @@ These are expected to remain until a larger migration explicitly replaces them.
 | External SDK/package identity | `RevitMCPSDK`, `mcp-servers-for-revit` | These are upstream package and license identities, not product UI strings. |
 | Installer helper API compatibility names | `Read-RevitMcpJsonFile`, `Get-RevitMcpUpdateDecision`, legacy `installer/lib/RevitMcp.*.psm1` wrappers | Canonical modules now export `RevAgent*` aliases for public helper functions. The original function definitions and wrapper files remain so older scripts and rollback paths keep working during rolling updates. |
 | Compatibility deployment root | `revit-mcp-deploy` | Dual-publish remains active until the rollout readiness audit reports canonical `revAgent-deploy` channel evidence for every in-scope machine and desktop launcher evidence confirms copied launchers are off the legacy root. |
+| Rolling-update runtime coordination | `revit-mcp-command-locks`, fallback `revit-mcp-instances.json` | The new runtime writes revAgent temp artifacts, but the command lock root and legacy registry fallback remain compatible while old and new workstation runtimes can coexist during rollout. |
 | Legacy cleanup paths | `C:\ProgramData\DPE\RevitMCP`, `mcp-servers-for-revit.addin`, `revit_mcp_plugin` | The updater must keep recognizing old installed surfaces so migration can remove them safely. |
 | Historical records | older `CHANGELOG.md` entries and dated process docs | Preserve historical accuracy unless the text is active guidance. |
 

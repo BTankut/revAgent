@@ -26,7 +26,7 @@ const fitDirectionByInput = {
     vertical: "Vertical",
 };
 function defaultOutputDir() {
-    return path.join(os.tmpdir(), "revit-mcp-image-export");
+    return path.join(os.tmpdir(), "revAgent-image-export");
 }
 function safePrefix(value) {
     const raw = value && value.trim() ? value.trim() : `revit-view-${new Date().toISOString().replace(/[:.]/g, "-")}`;
