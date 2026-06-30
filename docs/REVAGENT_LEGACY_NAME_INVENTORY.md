@@ -30,8 +30,10 @@ Keep legacy names only when they are one of these exact identities:
 
 - `config/rollout-readiness.sample.json` now points at the canonical
   `revAgent-deploy` release and reports roots.
-- `config/rollout-readiness.sample.json` uses the current `452` stable package
+- `config/rollout-readiness.sample.json` uses the current `460` stable package
   as sample live-smoke evidence.
+- `config/rollout-readiness.sample.json` includes desktop launcher evidence so
+  compatibility-root retirement can be gated by data instead of a manual note.
 - `SKILL.md` now uses
   `C:/ProgramData/DPE/revAgent/codex/working-context.md` as the primary working
   context path and mentions the old `RevitMCP` path only as pre-rename
@@ -61,7 +63,7 @@ These are expected to remain until a larger migration explicitly replaces them.
 | External SDK/package identity | `RevitMCPSDK`, `mcp-servers-for-revit` | These are upstream package and license identities, not product UI strings. |
 | Revit source project and namespaces | `src/revit-plugin/revit-mcp-plugin`, `revit_mcp_plugin`, `RevitMCPCommandSet` | Installed artifact names are already revAgent-facing, but source project/namespace rename affects C# build, XAML class names, manifests, and payload freshness. |
 | Installer helper API compatibility names | `Read-RevitMcpJsonFile`, `Get-RevitMcpUpdateDecision`, legacy `installer/lib/RevitMcp.*.psm1` wrappers | Canonical modules now export `RevAgent*` aliases for public helper functions. The original function definitions and wrapper files remain so older scripts and rollback paths keep working during rolling updates. |
-| Compatibility deployment root | `revit-mcp-deploy` | Dual-publish remains active until the rollout readiness audit reports canonical `revAgent-deploy` channel evidence for every in-scope machine and copied desktop launchers are confirmed off the legacy root. |
+| Compatibility deployment root | `revit-mcp-deploy` | Dual-publish remains active until the rollout readiness audit reports canonical `revAgent-deploy` channel evidence for every in-scope machine and desktop launcher evidence confirms copied launchers are off the legacy root. |
 | Legacy cleanup paths | `C:\ProgramData\DPE\RevitMCP`, `mcp-servers-for-revit.addin`, `revit_mcp_plugin` | The updater must keep recognizing old installed surfaces so migration can remove them safely. |
 | Historical records | older `CHANGELOG.md` entries and dated process docs | Preserve historical accuracy unless the text is active guidance. |
 
@@ -85,8 +87,8 @@ These are expected to remain until a larger migration explicitly replaces them.
 3. **Compatibility root retirement**
    - Remove `revit-mcp-deploy` dual publish only after all active machines have
      reported canonical channel paths through
-     `scripts\check-rollout-readiness.ps1` and no copied desktop launcher still
-     depends on the legacy root.
+     `scripts\check-rollout-readiness.ps1` and desktop launcher evidence shows
+     no copied launcher still depends on the legacy root.
    - Keep a rollback note and archival backup before deleting or freezing the
      old root.
 

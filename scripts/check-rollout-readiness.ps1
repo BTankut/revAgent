@@ -967,6 +967,152 @@ function Resolve-RevAgentLiveSmokeEvidence {
     }
 }
 
+function Test-RevAgentDesktopLauncherEvidencePassed {
+    param([object]$Evidence)
+
+    if (-not (Test-RevAgentSmokePassed -Evidence $Evidence)) {
+        return $false
+    }
+
+    $legacyLauncherCount = ConvertTo-RevAgentInt -Value (Select-RevAgentFirstText -Values @(
+            (Get-RevAgentValue -Object $Evidence -Name "legacyLauncherCount"),
+            (Get-RevAgentValue -Object $Evidence -Name "legacyDesktopLauncherCount"),
+            (Get-RevAgentValue -Object $Evidence -Name "legacyCount"))) -Fallback 0
+    $legacyRootReferenceCount = ConvertTo-RevAgentInt -Value (Select-RevAgentFirstText -Values @(
+            (Get-RevAgentValue -Object $Evidence -Name "legacyRootReferenceCount"),
+            (Get-RevAgentValue -Object $Evidence -Name "legacyRootCount"),
+            (Get-RevAgentValue -Object $Evidence -Name "legacyReferenceCount"))) -Fallback 0
+
+    return ($legacyLauncherCount -eq 0 -and $legacyRootReferenceCount -eq 0)
+}
+
+function Resolve-RevAgentDesktopLauncherEvidence {
+    param(
+        [object]$Config,
+        [string]$ReportsRoot
+    )
+
+    $entries = [System.Collections.Generic.List[object]]::new()
+
+    if ($null -ne $Config) {
+        foreach ($item in @(Get-RevAgentValue -Object $Config -Name "desktopLauncherEvidence")) {
+            if ($null -ne $item) {
+                [void]$entries.Add([pscustomobject][ordered]@{ source = "config:desktopLauncherEvidence"; evidence = $item })
+            }
+        }
+        foreach ($item in @(Get-RevAgentValue -Object $Config -Name "launcherEvidence")) {
+            if ($null -ne $item) {
+                [void]$entries.Add([pscustomobject][ordered]@{ source = "config:launcherEvidence"; evidence = $item })
+            }
+        }
+    }
+
+    $paths = [System.Collections.Generic.List[string]]::new()
+    if ($null -ne $Config) {
+        foreach ($path in @(Get-RevAgentValue -Object $Config -Name "desktopLauncherEvidencePath")) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
+                [void]$paths.Add([string]$path)
+            }
+        }
+        foreach ($path in @(Get-RevAgentValue -Object $Config -Name "desktopLauncherEvidencePaths")) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
+                [void]$paths.Add([string]$path)
+            }
+        }
+        foreach ($path in @(Get-RevAgentValue -Object $Config -Name "launcherEvidencePath")) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
+                [void]$paths.Add([string]$path)
+            }
+        }
+        foreach ($path in @(Get-RevAgentValue -Object $Config -Name "launcherEvidencePaths")) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$path)) {
+                [void]$paths.Add([string]$path)
+            }
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ReportsRoot)) {
+        [void]$paths.Add((Join-Path (Join-Path $ReportsRoot "rollout") "desktop-launcher-latest.json"))
+    }
+
+    foreach ($path in @($paths.ToArray() | Select-Object -Unique)) {
+        foreach ($entry in @(Read-RevAgentSmokeEvidenceFile -Path $path)) {
+            [void]$entries.Add([pscustomobject][ordered]@{ source = $entry.source; evidence = $entry.evidence })
+        }
+    }
+
+    $normalized = foreach ($entry in @($entries.ToArray())) {
+        $evidence = $entry.evidence
+        $legacyLauncherCount = ConvertTo-RevAgentInt -Value (Select-RevAgentFirstText -Values @(
+                (Get-RevAgentValue -Object $evidence -Name "legacyLauncherCount"),
+                (Get-RevAgentValue -Object $evidence -Name "legacyDesktopLauncherCount"),
+                (Get-RevAgentValue -Object $evidence -Name "legacyCount"))) -Fallback 0
+        $legacyRootReferenceCount = ConvertTo-RevAgentInt -Value (Select-RevAgentFirstText -Values @(
+                (Get-RevAgentValue -Object $evidence -Name "legacyRootReferenceCount"),
+                (Get-RevAgentValue -Object $evidence -Name "legacyRootCount"),
+                (Get-RevAgentValue -Object $evidence -Name "legacyReferenceCount"))) -Fallback 0
+        $passed = Test-RevAgentDesktopLauncherEvidencePassed -Evidence $evidence
+
+        [pscustomobject][ordered]@{
+            source = [string]$entry.source
+            passed = $passed
+            machine = Select-RevAgentFirstText -Values @(
+                (Get-RevAgentValue -Object $evidence -Name "machine"),
+                (Get-RevAgentValue -Object $evidence -Name "machineName"),
+                (Get-RevAgentValue -Object $evidence -Name "computerName"))
+            checkedMachineCount = ConvertTo-RevAgentInt -Value (Get-RevAgentValue -Object $evidence -Name "checkedMachineCount") -Fallback 0
+            legacyLauncherCount = $legacyLauncherCount
+            legacyRootReferenceCount = $legacyRootReferenceCount
+            atUtc = Select-RevAgentFirstText -Values @(
+                (Get-RevAgentValue -Object $evidence -Name "atUtc"),
+                (Get-RevAgentValue -Object $evidence -Name "completedAtUtc"),
+                (Get-RevAgentValue -Object $evidence -Name "finishedAtUtc"),
+                (Get-RevAgentValue -Object $evidence -Name "reportedAtUtc"),
+                (Get-RevAgentValue -Object $evidence -Name "generatedAtUtc"))
+            timestampMs = Get-RevAgentSmokeTimestampMs -Evidence $evidence
+            note = Select-RevAgentFirstText -Values @(
+                (Get-RevAgentValue -Object $evidence -Name "note"),
+                (Get-RevAgentValue -Object $evidence -Name "notes"))
+        }
+    }
+
+    $all = @($normalized | Sort-Object @{ Expression = { $_.timestampMs }; Descending = $true })
+    if ($all.Count -eq 0) {
+        return [pscustomobject][ordered]@{
+            state = "missing"
+            action = "collect_desktop_launcher_evidence"
+            reason = "No desktop launcher evidence was found for compatibility-root retirement."
+            evidenceCount = 0
+            latest = $null
+        }
+    }
+
+    $verified = @($all | Where-Object { $_.passed } | Select-Object -First 1)
+    if ($verified.Count -gt 0) {
+        return [pscustomobject][ordered]@{
+            state = "verified"
+            action = "none"
+            reason = ""
+            evidenceCount = $all.Count
+            latest = $verified[0]
+        }
+    }
+
+    $latest = $all[0]
+    $action = if ([int]$latest.legacyLauncherCount -gt 0 -or [int]$latest.legacyRootReferenceCount -gt 0) {
+        "replace_legacy_desktop_launchers"
+    }
+    else {
+        "inspect_desktop_launcher_evidence"
+    }
+    return [pscustomobject][ordered]@{
+        state = "failed"
+        action = $action
+        reason = "Desktop launcher evidence exists, but legacy launcher/root references are still present or the evidence did not pass."
+        evidenceCount = $all.Count
+        latest = $latest
+    }
+}
+
 if ($null -ne $config) {
     if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
         $ReleaseRoot = [string](Get-RevAgentValue -Object $config -Name "releaseRoot")
@@ -1175,6 +1321,7 @@ $machines = foreach ($machineName in @($machineNames | Sort-Object)) {
 $inScopeMachines = @($machines | Where-Object { -not $_.excluded })
 $actionRequiredMachines = @($inScopeMachines | Where-Object { $_.action -ne "none" })
 $liveSmoke = Resolve-RevAgentLiveSmokeEvidence -Config $config -ReportsRoot $ReportsRoot -StableVersion $stableVersion -StableCommit $stableCommit
+$desktopLauncher = Resolve-RevAgentDesktopLauncherEvidence -Config $config -ReportsRoot $ReportsRoot
 $rolloutActions = @()
 if ([string](Get-RevAgentValue -Object $liveSmoke -Name "action") -ne "none") {
     $rolloutActions += [pscustomobject][ordered]@{
@@ -1189,6 +1336,23 @@ if ([string](Get-RevAgentValue -Object $liveSmoke -Name "action") -ne "none") {
         connectionState = ""
         action = [string](Get-RevAgentValue -Object $liveSmoke -Name "action")
         reason = [string](Get-RevAgentValue -Object $liveSmoke -Name "reason")
+        logPath = ""
+    }
+}
+if ([string](Get-RevAgentValue -Object $desktopLauncher -Name "action") -ne "none") {
+    $rolloutActions += [pscustomobject][ordered]@{
+        scope = "rollout"
+        machine = ""
+        userName = ""
+        installedVersion = ""
+        targetVersion = $stableVersion
+        versionState = ""
+        updateState = ""
+        sourceFreeState = ""
+        channelRootState = ""
+        connectionState = ""
+        action = [string](Get-RevAgentValue -Object $desktopLauncher -Name "action")
+        reason = [string](Get-RevAgentValue -Object $desktopLauncher -Name "reason")
         logPath = ""
     }
 }
@@ -1223,6 +1387,7 @@ $summary = [pscustomobject][ordered]@{
         readError = [string](Get-RevAgentValue -Object $stable -Name "readError")
     }
     liveSmoke = $liveSmoke
+    desktopLauncher = $desktopLauncher
     machineCount = @($machines).Count
     inScopeMachineCount = @($inScopeMachines).Count
     excludedMachineCount = @($machines | Where-Object { $_.excluded }).Count
@@ -1237,7 +1402,8 @@ $summary = [pscustomobject][ordered]@{
     unknownChannelRootCount = @($inScopeMachines | Where-Object { $_.channelRootState -eq "unknown" }).Count
     compatibilityRootRetirementReady = (
         @($inScopeMachines).Count -gt 0 -and
-        @($inScopeMachines | Where-Object { $_.channelRootState -ne "canonical" }).Count -eq 0
+        @($inScopeMachines | Where-Object { $_.channelRootState -ne "canonical" }).Count -eq 0 -and
+        [string](Get-RevAgentValue -Object $desktopLauncher -Name "state") -eq "verified"
     )
     updateFailedCount = @($inScopeMachines | Where-Object { $_.updateState -eq "failed" }).Count
     pendingRestartCount = @($inScopeMachines | Where-Object { $_.updateState -eq "pendingRestart" }).Count
@@ -1276,6 +1442,7 @@ Write-Host ("Machines: {0} in scope, {1} excluded, {2} machine action(s), {3} ro
 Write-Host ("Source-free: {0} verified, {1} needs evidence, {2} failed" -f $summary.sourceFreeVerifiedCount, $summary.sourceFreeNeedsEvidenceCount, $summary.sourceFreeFailedCount)
 Write-Host ("Channel root: {0} canonical, {1} legacy, {2} unknown" -f $summary.canonicalChannelRootCount, $summary.legacyChannelRootCount, $summary.unknownChannelRootCount)
 Write-Host ("Live smoke: {0}" -f $summary.liveSmoke.state)
+Write-Host ("Desktop launchers: {0}" -f $summary.desktopLauncher.state)
 $machines |
     Select-Object machine, userName, installedVersion, versionState, updateState, sourceFreeState, channelRootState, connectionState, action, exclusionReason |
     Format-Table -AutoSize

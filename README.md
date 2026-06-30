@@ -1061,6 +1061,9 @@ latest `paths.channelManifestPath` evidence. Do not retire the
 `revit-mcp-deploy` compatibility root until every in-scope machine reports a
 canonical `revAgent-deploy` channel path and no copied desktop launcher still
 depends on the legacy root.
+Record the desktop launcher audit as `desktopLauncherEvidence` in the closure
+config or as `reports\rollout\desktop-launcher-latest.json`; any non-zero
+legacy launcher/root count keeps compatibility-root retirement blocked.
 When source-free evidence is missing, run
 `migrate-source-free-install.ps1 -Mode dryRun -ReportsRoot <reports-root>` on
 the workstation; it publishes `source-free-migration-latest.json` without

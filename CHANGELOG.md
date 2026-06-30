@@ -4,6 +4,9 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added desktop launcher evidence to the rollout readiness audit so
+  compatibility-root retirement remains blocked until launcher audit evidence
+  reports zero legacy launcher/root references.
 - Added durable source-free dry-run evidence publishing:
   `migrate-source-free-install.ps1 -Mode dryRun -ReportsRoot ...` now writes
   `source-free-migration-latest.json` for rollout readiness without overwriting
