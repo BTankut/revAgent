@@ -124,6 +124,9 @@ try {
     Assert-Equal ([string]$channel.app) "revit-mcp-skill" "Default channel publish must keep the legacy release app id for rolling updater compatibility."
     Assert-Equal ([string]$manifestSignature.app) "revit-mcp-skill" "Default manifest signature envelope must keep the legacy release app id."
     Assert-Equal ([string]$channelSignature.app) "revit-mcp-skill" "Default channel signature envelope must keep the legacy release app id."
+    Assert-Equal ([string]$manifest.package.fileName) ("revit-mcp-skill-{0}.zip" -f $version) "Default publish must keep the legacy ZIP filename for rolling updater compatibility."
+    Assert-True ([string]$manifest.package.path -match "revit-mcp-skill-") "Default release manifest package path must keep the legacy ZIP base name."
+    Assert-True ([string]$channel.packagePath -match "revit-mcp-skill-") "Default channel package path must keep the legacy ZIP base name."
     Assert-True (-not [System.IO.Path]::IsPathRooted([string]$channel.manifestPath)) "Published channel manifestPath should be relative so signed artifacts can move from CD staging to NAS."
     Assert-True (-not [System.IO.Path]::IsPathRooted([string]$channel.packagePath)) "Published channel packagePath should be relative so signed artifacts can move from CD staging to NAS."
     Assert-Equal ([string]$channel.packagePath) ([string]$manifest.package.path) "Channel and manifest package paths should stay byte-identical for signature consistency."
@@ -148,7 +151,7 @@ try {
     Assert-True $aggregateVerification.success "Published signed release aggregate should pass enforce-mode verification."
     Assert-Equal $aggregateVerification.releaseSequence ([long]$releaseSequence) "Aggregate verification must preserve releaseSequence."
 
-    Write-Host "Test explicit revAgent release app id publish"
+    Write-Host "Test explicit revAgent release app and package identity publish"
     $revAgentReleaseRoot = Join-Path $tempRoot "release-root-revagent"
     $revAgentVersion = "2026.06.22.2-revagent-app-test"
     $revAgentReleaseSequence = 1002
@@ -162,7 +165,8 @@ try {
             -ReleaseSequence $revAgentReleaseSequence `
             -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
             -TrustedReleaseKeysPath $trustedKeysPath `
-            -ReleaseAppId "revAgent" 6>&1 | Out-String)
+            -ReleaseAppId "revAgent" `
+            -ReleasePackageBaseName "revAgent" 6>&1 | Out-String)
 
     $revAgentManifestPath = Join-Path $revAgentReleaseRoot (Join-Path "releases" (Join-Path $revAgentVersion "manifest.json"))
     $revAgentManifestSignaturePath = Join-Path $revAgentReleaseRoot (Join-Path "releases" (Join-Path $revAgentVersion "manifest.sig.json"))
@@ -176,6 +180,10 @@ try {
     Assert-Equal ([string]$revAgentChannel.app) "revAgent" "Explicit revAgent release app id must be written to the channel manifest."
     Assert-Equal ([string]$revAgentManifestSignature.app) "revAgent" "Explicit revAgent release app id must be written to the manifest signature envelope."
     Assert-Equal ([string]$revAgentChannelSignature.app) "revAgent" "Explicit revAgent release app id must be written to the channel signature envelope."
+    Assert-Equal ([string]$revAgentManifest.package.fileName) ("revAgent-{0}.zip" -f $revAgentVersion) "Explicit revAgent package base name must be written to the release manifest."
+    Assert-True ([string]$revAgentManifest.package.path -match "revAgent-") "Explicit revAgent package base name must be written to the manifest package path."
+    Assert-True ([string]$revAgentChannel.packagePath -match "revAgent-") "Explicit revAgent package base name must be written to the channel package path."
+    Assert-True (Test-Path -LiteralPath (Join-Path $revAgentReleaseRoot (Join-Path "releases" (Join-Path $revAgentVersion ("revAgent-{0}.zip" -f $revAgentVersion)))) -PathType Leaf) "Explicit revAgent package ZIP should be created with the revAgent base name."
     $revAgentAggregateVerification = Test-RevAgentReleaseDistributionIntegrity `
         -ChannelPath $revAgentChannelPath `
         -Channel $revAgentChannel `
