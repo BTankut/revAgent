@@ -558,10 +558,10 @@ required checks pass and actionable review comments are addressed.
 Any update that reaches protected `main` builds and validates a signed
 source-free release root. Publishing that release to the office NAS stable
 channel is a separate manual workflow-dispatch action with
-`publish_to_nas=true`. The canonical NAS root is `revAgent-deploy`; keep
-`revit-mcp-deploy` only as an explicit compatibility publish target during the
-transition. Verify the workflow result and `channels\stable.json` after publish
-before manual rollout instructions, and pause scheduled updater rollout
+`publish_to_nas=true`. The canonical NAS root is `revAgent-deploy`; production
+publish no longer dual-publishes to the old `revit-mcp-deploy` compatibility
+root by default. Verify the workflow result and `channels\stable.json` after
+publish before manual rollout instructions, and pause scheduled updater rollout
 separately when verification must happen before any workstation installs the new
 stable release.
 
@@ -1062,10 +1062,11 @@ machine list, explicit out-of-scope reasons, or the representative smoke result.
 The audit also reads `reports\rollout\live-smoke-latest.json` when present.
 Compatibility-root retirement is separate from version freshness: the audit
 reports canonical, legacy, and unknown channel-root counts from each machine's
-latest `paths.channelManifestPath` evidence. Do not retire the
-`revit-mcp-deploy` compatibility root until every in-scope machine reports a
-canonical `revAgent-deploy` channel path and no copied desktop launcher still
-depends on the legacy root.
+latest `paths.channelManifestPath` evidence. The `revit-mcp-deploy`
+compatibility root is no longer a default publish or launcher fallback; keep any
+physical old-root cleanup/freeze decision gated by every in-scope machine
+reporting a canonical `revAgent-deploy` channel path and no copied desktop
+launcher depending on the legacy root.
 Record the desktop launcher audit as `desktopLauncherEvidence` in the closure
 config or as `reports\rollout\desktop-launcher-latest.json`. Prefer producing
 that file with `publish-desktop-launcher-evidence.ps1`: run `-Mode ScanLocal`
@@ -1074,9 +1075,10 @@ the rollout config. The helper is available from the repo `scripts\` folder and
 from NAS `tools\` after publish. The readiness audit also reads each machine's
 latest `reports\machines\<machine>\desktop-launcher-latest.json`; this
 per-machine evidence can complete coverage when the rollout aggregate is stale
-or was collected before a late workstation scan. Compatibility-root retirement
-still requires every in-scope machine to have passing desktop-launcher evidence,
-with no missing machine, failed machine, or non-zero legacy launcher/root count.
+or was collected before a late workstation scan. Physical compatibility-root
+cleanup/freeze still requires every in-scope machine to have passing
+desktop-launcher evidence, with no missing machine, failed machine, or non-zero
+legacy launcher/root count.
 By default, `ScanLocal` checks the current user Desktop, public Desktop, and readable
 `C:\Users\*\Desktop` or `C:\Users\*\OneDrive*\Desktop` folders; pass
 `-LauncherPath` only when a narrower audit scope is intentional.

@@ -33,7 +33,8 @@ Keep legacy names only when they are one of these exact identities:
 - `config/rollout-readiness.sample.json` uses the current `460` stable package
   as sample live-smoke evidence.
 - `config/rollout-readiness.sample.json` includes desktop launcher evidence so
-  compatibility-root retirement can be gated by data instead of a manual note.
+  compatibility-root cleanup or freeze can be gated by data instead of a manual
+  note.
 - `SKILL.md` now uses
   `C:/ProgramData/DPE/revAgent/codex/working-context.md` as the primary working
   context path and mentions the old `RevitMCP` path only as pre-rename
@@ -58,6 +59,9 @@ Keep legacy names only when they are one of these exact identities:
 - Runtime default temp artifacts now use `revAgent-instances.json` and
   `revAgent-image-export`. The runtime still reads legacy
   `revit-mcp-instances.json` registry data during rolling updates.
+- Production CD and STABLE launchers now publish/use only the canonical
+  `revAgent-deploy` NAS root by default. The old `revit-mcp-deploy` root is no
+  longer a default publish target or launcher fallback.
 
 ## Intentional Compatibility Names
 
@@ -69,7 +73,7 @@ These are expected to remain until a larger migration explicitly replaces them.
 | Environment variables | preferred `REVAGENT_PORT`, `REVAGENT_TARGET`, `REVAGENT_MAX_MESSAGE_BYTES`; legacy fallback `REVIT_MCP_*` | New runtime/add-in reads prefer the revAgent names. Legacy aliases stay so older launchers and scripts do not break during rolling updates. |
 | External SDK/package identity | `RevitMCPSDK`, `mcp-servers-for-revit` | These are upstream package and license identities, not product UI strings. |
 | Installer helper API compatibility names | `Read-RevitMcpJsonFile`, `Get-RevitMcpUpdateDecision`, legacy `installer/lib/RevitMcp.*.psm1` wrappers | Canonical modules now export `RevAgent*` aliases for public helper functions. The original function definitions and wrapper files remain so older scripts and rollback paths keep working during rolling updates. |
-| Compatibility deployment root | `revit-mcp-deploy` | Dual-publish remains active until the rollout readiness audit reports canonical `revAgent-deploy` channel evidence for every in-scope machine and desktop launcher evidence confirms copied launchers are off the legacy root. |
+| Retired compatibility deployment root | `revit-mcp-deploy` | Default dual-publish and launcher fallback have been removed after readiness evidence showed canonical `revAgent-deploy` channel paths and no copied legacy-root launchers for the in-scope machines. Keep the literal only for explicit diagnostics, migration recognition, historical docs, and any data-gated physical old-root cleanup/freeze. |
 | Rolling-update runtime coordination | `revit-mcp-command-locks`, fallback `revit-mcp-instances.json` | The new runtime writes revAgent temp artifacts, but the command lock root and legacy registry fallback remain compatible while old and new workstation runtimes can coexist during rollout. |
 | Legacy cleanup paths | `C:\ProgramData\DPE\RevitMCP`, `mcp-servers-for-revit.addin`, `revit_mcp_plugin` | The updater must keep recognizing old installed surfaces so migration can remove them safely. |
 | Historical records | older `CHANGELOG.md` entries and dated process docs | Preserve historical accuracy unless the text is active guidance. |
@@ -82,11 +86,12 @@ These are expected to remain until a larger migration explicitly replaces them.
    - Update GitHub Actions, docs, clone instructions, and any hardcoded
      `BTankut/revit-mcp-skill` references.
 
-2. **Compatibility root retirement**
-   - Remove `revit-mcp-deploy` dual publish only after all active machines have
-     reported canonical channel paths through
-     `scripts\check-rollout-readiness.ps1` and desktop launcher evidence shows
-     no copied launcher still depends on the legacy root.
+2. **Compatibility root cleanup/freeze**
+   - Default `revit-mcp-deploy` dual publish and launcher fallback are removed.
+     Any physical old-root cleanup or freeze should still be preceded by
+     `scripts\check-rollout-readiness.ps1` and desktop launcher evidence showing
+     that all active machines use canonical channel paths and no copied launcher
+     depends on the legacy root.
    - Produce launcher evidence with
      `scripts\publish-desktop-launcher-evidence.ps1`: `ScanLocal` writes
      per-machine evidence, and `Aggregate` writes the rollout evidence consumed

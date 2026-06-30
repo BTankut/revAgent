@@ -112,5 +112,6 @@ Non-goals for this phase:
 - Rename local and remote repository from `revit-mcp-skill` to a revAgent name.
 - Rename package ids, npm package names, source folders, and .NET namespaces.
 - Decide compatibility aliases for existing tool ids and MCP server names.
-- Retire the temporary `revit-mcp-deploy` compatibility NAS root after rollout
-  readiness proves every in-scope machine uses `revAgent-deploy`.
+- Physically freeze or clean the old `revit-mcp-deploy` NAS root only after the
+  canonical-only publish/launcher change is deployed and the readiness audit
+  still shows all in-scope machines on `revAgent-deploy`.

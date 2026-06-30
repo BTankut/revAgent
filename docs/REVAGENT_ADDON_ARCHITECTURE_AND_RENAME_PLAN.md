@@ -328,17 +328,14 @@ as admin add-ons under `C:\ProgramData\DPE\revAgent\addons`, and signed release
 publishing includes their admin tools under `tools\addons` without adding them
 to the core standard user package.
 
-The active rename workstream is NAS root migration. `revAgent-deploy` is the
-canonical target, while `revit-mcp-deploy` remains a compatibility root until
-all installed updaters and desktop launchers have moved to the new channel.
-Current NAS-root migration support includes dual-root CD publish, STABLE
-launcher fallback, and successful-update config migration from the legacy
-channel path to the canonical channel path when the canonical root is
-available. The rollout readiness audit now reports canonical, legacy, and
-unknown channel-root counts from machine report evidence so the compatibility
-root can be retired from data instead of assumption. It also accepts desktop
-launcher evidence so old-root retirement is blocked until copied launchers are
-confirmed off the legacy root.
+The active rename workstream has passed the NAS compatibility-root retirement
+gate for the standard user rollout. `revAgent-deploy` is the canonical target,
+and production CD plus STABLE launchers no longer default to
+`revit-mcp-deploy`. Current migration support still recognizes legacy updater
+configs and migrates them to the canonical channel path when that path is
+available. The rollout readiness audit reports canonical, legacy, and unknown
+channel-root counts from machine report evidence and accepts desktop launcher
+evidence so any physical old-root cleanup or freeze remains data-gated.
 Dashboard admin add-on config also uses the canonical
 `revAgent-deploy\reports` root by default and migrates legacy
 `revit-mcp-deploy\reports` config values during install/startup.

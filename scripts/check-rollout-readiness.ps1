@@ -39,7 +39,6 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $defaultCanonicalReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
-$defaultLegacyReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"
 $config = $null
 
 if ([string]::IsNullOrWhiteSpace($ConfigPath) -and -not [string]::IsNullOrWhiteSpace($env:REVAGENT_ROLLOUT_READINESS_CONFIG)) {
@@ -1298,11 +1297,8 @@ if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
     if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_RELEASE_ROOT)) {
         $ReleaseRoot = $env:REVAGENT_RELEASE_ROOT
     }
-    elseif (Test-Path -LiteralPath (Join-Path $defaultCanonicalReleaseRoot "channels\stable.json") -PathType Leaf) {
-        $ReleaseRoot = $defaultCanonicalReleaseRoot
-    }
     else {
-        $ReleaseRoot = $defaultLegacyReleaseRoot
+        $ReleaseRoot = $defaultCanonicalReleaseRoot
     }
 }
 if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
@@ -1326,7 +1322,6 @@ if ($null -ne $config) {
 if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_NAS_COMPAT_RELEASE_ROOTS)) {
     $legacyReleaseRootInputs += $env:REVAGENT_NAS_COMPAT_RELEASE_ROOTS
 }
-$legacyReleaseRootInputs += $defaultLegacyReleaseRoot
 $legacyReleaseRoots = @(
     Expand-RevAgentPathValues -Values $legacyReleaseRootInputs |
         Where-Object {
