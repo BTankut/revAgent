@@ -1062,8 +1062,12 @@ latest `paths.channelManifestPath` evidence. Do not retire the
 canonical `revAgent-deploy` channel path and no copied desktop launcher still
 depends on the legacy root.
 Record the desktop launcher audit as `desktopLauncherEvidence` in the closure
-config or as `reports\rollout\desktop-launcher-latest.json`; any non-zero
-legacy launcher/root count keeps compatibility-root retirement blocked.
+config or as `reports\rollout\desktop-launcher-latest.json`. Prefer producing
+that file with `scripts\publish-desktop-launcher-evidence.ps1`: run
+`-Mode ScanLocal` on each in-scope machine, then run `-Mode Aggregate` from the
+coordinator using the rollout config. The aggregate evidence must cover every
+in-scope machine; any missing machine, failed machine, or non-zero legacy
+launcher/root count keeps compatibility-root retirement blocked.
 When source-free evidence is missing, run
 `migrate-source-free-install.ps1 -Mode dryRun -ReportsRoot <reports-root>` on
 the workstation; it publishes `source-free-migration-latest.json` without

@@ -968,7 +968,10 @@ function Resolve-RevAgentLiveSmokeEvidence {
 }
 
 function Test-RevAgentDesktopLauncherEvidencePassed {
-    param([object]$Evidence)
+    param(
+        [object]$Evidence,
+        [int]$RequiredMachineCount = 0
+    )
 
     if (-not (Test-RevAgentSmokePassed -Evidence $Evidence)) {
         return $false
@@ -982,17 +985,30 @@ function Test-RevAgentDesktopLauncherEvidencePassed {
             (Get-RevAgentValue -Object $Evidence -Name "legacyRootReferenceCount"),
             (Get-RevAgentValue -Object $Evidence -Name "legacyRootCount"),
             (Get-RevAgentValue -Object $Evidence -Name "legacyReferenceCount"))) -Fallback 0
+    $checkedMachineCount = ConvertTo-RevAgentInt -Value (Get-RevAgentValue -Object $Evidence -Name "checkedMachineCount") -Fallback 0
+    $missingMachineCount = ConvertTo-RevAgentInt -Value (Get-RevAgentValue -Object $Evidence -Name "missingMachineCount") -Fallback 0
+    $failedMachineCount = ConvertTo-RevAgentInt -Value (Get-RevAgentValue -Object $Evidence -Name "failedMachineCount") -Fallback 0
 
+    if ($RequiredMachineCount -gt 0) {
+        if ($checkedMachineCount -lt $RequiredMachineCount) {
+            return $false
+        }
+        if ($missingMachineCount -gt 0 -or $failedMachineCount -gt 0) {
+            return $false
+        }
+    }
     return ($legacyLauncherCount -eq 0 -and $legacyRootReferenceCount -eq 0)
 }
 
 function Resolve-RevAgentDesktopLauncherEvidence {
     param(
         [object]$Config,
-        [string]$ReportsRoot
+        [string]$ReportsRoot,
+        [string[]]$RequiredMachineNames = @()
     )
 
     $entries = [System.Collections.Generic.List[object]]::new()
+    $requiredMachineCount = @($RequiredMachineNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique).Count
 
     if ($null -ne $Config) {
         foreach ($item in @(Get-RevAgentValue -Object $Config -Name "desktopLauncherEvidence")) {
@@ -1050,7 +1066,11 @@ function Resolve-RevAgentDesktopLauncherEvidence {
                 (Get-RevAgentValue -Object $evidence -Name "legacyRootReferenceCount"),
                 (Get-RevAgentValue -Object $evidence -Name "legacyRootCount"),
                 (Get-RevAgentValue -Object $evidence -Name "legacyReferenceCount"))) -Fallback 0
-        $passed = Test-RevAgentDesktopLauncherEvidencePassed -Evidence $evidence
+        $checkedMachineCount = ConvertTo-RevAgentInt -Value (Get-RevAgentValue -Object $evidence -Name "checkedMachineCount") -Fallback 0
+        $expectedMachineCount = ConvertTo-RevAgentInt -Value (Get-RevAgentValue -Object $evidence -Name "expectedMachineCount") -Fallback 0
+        $missingMachineCount = ConvertTo-RevAgentInt -Value (Get-RevAgentValue -Object $evidence -Name "missingMachineCount") -Fallback 0
+        $failedMachineCount = ConvertTo-RevAgentInt -Value (Get-RevAgentValue -Object $evidence -Name "failedMachineCount") -Fallback 0
+        $passed = Test-RevAgentDesktopLauncherEvidencePassed -Evidence $evidence -RequiredMachineCount $requiredMachineCount
 
         [pscustomobject][ordered]@{
             source = [string]$entry.source
@@ -1059,7 +1079,11 @@ function Resolve-RevAgentDesktopLauncherEvidence {
                 (Get-RevAgentValue -Object $evidence -Name "machine"),
                 (Get-RevAgentValue -Object $evidence -Name "machineName"),
                 (Get-RevAgentValue -Object $evidence -Name "computerName"))
-            checkedMachineCount = ConvertTo-RevAgentInt -Value (Get-RevAgentValue -Object $evidence -Name "checkedMachineCount") -Fallback 0
+            expectedMachineCount = $expectedMachineCount
+            checkedMachineCount = $checkedMachineCount
+            requiredMachineCount = $requiredMachineCount
+            missingMachineCount = $missingMachineCount
+            failedMachineCount = $failedMachineCount
             legacyLauncherCount = $legacyLauncherCount
             legacyRootReferenceCount = $legacyRootReferenceCount
             atUtc = Select-RevAgentFirstText -Values @(
@@ -1098,16 +1122,29 @@ function Resolve-RevAgentDesktopLauncherEvidence {
     }
 
     $latest = $all[0]
-    $action = if ([int]$latest.legacyLauncherCount -gt 0 -or [int]$latest.legacyRootReferenceCount -gt 0) {
+    $action = if (
+        [int]$latest.checkedMachineCount -lt $requiredMachineCount -or
+        [int]$latest.missingMachineCount -gt 0 -or
+        [int]$latest.failedMachineCount -gt 0
+    ) {
+        "collect_desktop_launcher_evidence"
+    }
+    elseif ([int]$latest.legacyLauncherCount -gt 0 -or [int]$latest.legacyRootReferenceCount -gt 0) {
         "replace_legacy_desktop_launchers"
     }
     else {
         "inspect_desktop_launcher_evidence"
     }
+    $reason = if ($action -eq "collect_desktop_launcher_evidence") {
+        "Desktop launcher evidence does not cover every in-scope rollout machine or reports missing/failed machine evidence."
+    }
+    else {
+        "Desktop launcher evidence exists, but legacy launcher/root references are still present or the evidence did not pass."
+    }
     return [pscustomobject][ordered]@{
         state = "failed"
         action = $action
-        reason = "Desktop launcher evidence exists, but legacy launcher/root references are still present or the evidence did not pass."
+        reason = $reason
         evidenceCount = $all.Count
         latest = $latest
     }
@@ -1321,7 +1358,7 @@ $machines = foreach ($machineName in @($machineNames | Sort-Object)) {
 $inScopeMachines = @($machines | Where-Object { -not $_.excluded })
 $actionRequiredMachines = @($inScopeMachines | Where-Object { $_.action -ne "none" })
 $liveSmoke = Resolve-RevAgentLiveSmokeEvidence -Config $config -ReportsRoot $ReportsRoot -StableVersion $stableVersion -StableCommit $stableCommit
-$desktopLauncher = Resolve-RevAgentDesktopLauncherEvidence -Config $config -ReportsRoot $ReportsRoot
+$desktopLauncher = Resolve-RevAgentDesktopLauncherEvidence -Config $config -ReportsRoot $ReportsRoot -RequiredMachineNames @($inScopeMachines | ForEach-Object { [string]$_.machine })
 $rolloutActions = @()
 if ([string](Get-RevAgentValue -Object $liveSmoke -Name "action") -ne "none") {
     $rolloutActions += [pscustomobject][ordered]@{

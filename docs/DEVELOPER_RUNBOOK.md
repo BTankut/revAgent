@@ -845,8 +845,23 @@ action item unless another higher-priority machine action already applies. For
 a one-off run, `-ReleaseRoot`, `-ExpectedMachines`, and `-OutOfScopeMachines`
 can still be passed directly.
 Desktop launcher evidence is also part of compatibility-root retirement:
-record `desktopLauncherEvidence` in the config or write
-`reports\rollout\desktop-launcher-latest.json` with `passed=true`,
+scan each in-scope machine, then aggregate the machine evidence before running
+the closure audit. A single clean machine is not sufficient evidence for the
+office rollout.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-desktop-launcher-evidence.ps1 `
+  -Mode ScanLocal `
+  -ReportsRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-desktop-launcher-evidence.ps1 `
+  -Mode Aggregate `
+  -ConfigPath C:\ProgramData\DPE\revAgentOps\rollout-readiness.json
+```
+
+The aggregate record is written to
+`reports\rollout\desktop-launcher-latest.json` and must cover every in-scope
+machine with `missingMachineCount=0`, `failedMachineCount=0`,
 `legacyLauncherCount=0`, and `legacyRootReferenceCount=0`.
 When the audit asks for `run_source_free_dry_run_inventory`, run the local
 migration tool in `dryRun` mode with `-ReportsRoot` pointing at the canonical

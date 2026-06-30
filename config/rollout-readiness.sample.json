@@ -34,7 +34,10 @@
   "desktopLauncherEvidence": [
     {
       "passed": true,
-      "checkedMachineCount": 0,
+      "expectedMachineCount": 3,
+      "checkedMachineCount": 3,
+      "missingMachineCount": 0,
+      "failedMachineCount": 0,
       "legacyLauncherCount": 0,
       "legacyRootReferenceCount": 0,
       "completedAtUtc": "2026-06-25T12:00:00Z",

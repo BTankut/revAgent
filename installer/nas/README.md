@@ -301,8 +301,12 @@ canonical, legacy, or unknown. Keep the `revit-mcp-deploy` compatibility root
 until the audit reports every in-scope machine on the canonical
 `revAgent-deploy` channel path and copied desktop launchers have been replaced.
 Record the launcher audit in `desktopLauncherEvidence` or
-`reports\rollout\desktop-launcher-latest.json`; non-zero legacy launcher/root
-counts block compatibility-root retirement.
+`reports\rollout\desktop-launcher-latest.json`. The supported path is to run
+`scripts\publish-desktop-launcher-evidence.ps1 -Mode ScanLocal` on each
+in-scope machine, then `-Mode Aggregate` from the coordinator with the rollout
+config. The aggregate evidence must cover every in-scope machine; non-zero
+legacy launcher/root counts, missing machine evidence, or failed machine
+evidence block compatibility-root retirement.
 If source-free evidence is missing, run `migrate-source-free-install.ps1` in
 `dryRun` mode with `-ReportsRoot` set to the canonical reports root. The dry-run
 publishes `source-free-migration-latest.json` for readiness without replacing
