@@ -59,6 +59,19 @@ function Normalize-RevAgentMachineName {
     return ([string]$Value).Trim().ToUpperInvariant()
 }
 
+function ConvertTo-RevAgentSafePathSegment {
+    param([string]$Value)
+
+    $normalized = Normalize-RevAgentMachineName -Value $Value
+    foreach ($invalid in [System.IO.Path]::GetInvalidFileNameChars()) {
+        $normalized = $normalized.Replace([string]$invalid, "_")
+    }
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return "UNKNOWN"
+    }
+    return $normalized
+}
+
 function Expand-RevAgentMachineNames {
     param([object[]]$Values)
 
@@ -1008,7 +1021,13 @@ function Resolve-RevAgentDesktopLauncherEvidence {
     )
 
     $entries = [System.Collections.Generic.List[object]]::new()
-    $requiredMachineCount = @($RequiredMachineNames | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique).Count
+    $requiredMachineNamesNormalized = @(
+        $RequiredMachineNames |
+            ForEach-Object { Normalize-RevAgentMachineName -Value $_ } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique
+    )
+    $requiredMachineCount = $requiredMachineNamesNormalized.Count
 
     if ($null -ne $Config) {
         foreach ($item in @(Get-RevAgentValue -Object $Config -Name "desktopLauncherEvidence")) {
@@ -1048,6 +1067,10 @@ function Resolve-RevAgentDesktopLauncherEvidence {
     }
     if (-not [string]::IsNullOrWhiteSpace($ReportsRoot)) {
         [void]$paths.Add((Join-Path (Join-Path $ReportsRoot "rollout") "desktop-launcher-latest.json"))
+        foreach ($machine in $requiredMachineNamesNormalized) {
+            $safeMachine = ConvertTo-RevAgentSafePathSegment -Value $machine
+            [void]$paths.Add((Join-Path (Join-Path (Join-Path $ReportsRoot "machines") $safeMachine) "desktop-launcher-latest.json"))
+        }
     }
 
     foreach ($path in @($paths.ToArray() | Select-Object -Unique)) {
@@ -1056,6 +1079,7 @@ function Resolve-RevAgentDesktopLauncherEvidence {
         }
     }
 
+    $machineEvidence = [System.Collections.Generic.List[object]]::new()
     $normalized = foreach ($entry in @($entries.ToArray())) {
         $evidence = $entry.evidence
         $legacyLauncherCount = ConvertTo-RevAgentInt -Value (Select-RevAgentFirstText -Values @(
@@ -1071,14 +1095,70 @@ function Resolve-RevAgentDesktopLauncherEvidence {
         $missingMachineCount = ConvertTo-RevAgentInt -Value (Get-RevAgentValue -Object $evidence -Name "missingMachineCount") -Fallback 0
         $failedMachineCount = ConvertTo-RevAgentInt -Value (Get-RevAgentValue -Object $evidence -Name "failedMachineCount") -Fallback 0
         $passed = Test-RevAgentDesktopLauncherEvidencePassed -Evidence $evidence -RequiredMachineCount $requiredMachineCount
+        $machineName = Select-RevAgentFirstText -Values @(
+            (Get-RevAgentValue -Object $evidence -Name "machine"),
+            (Get-RevAgentValue -Object $evidence -Name "machineName"),
+            (Get-RevAgentValue -Object $evidence -Name "computerName"))
+        $timestampMs = Get-RevAgentSmokeTimestampMs -Evidence $evidence
+
+        if (-not [string]::IsNullOrWhiteSpace($machineName)) {
+            [void]$machineEvidence.Add([pscustomobject][ordered]@{
+                    machine = Normalize-RevAgentMachineName -Value $machineName
+                    source = [string]$entry.source
+                    passed = (Test-RevAgentDesktopLauncherEvidencePassed -Evidence $evidence -RequiredMachineCount 0)
+                    legacyLauncherCount = $legacyLauncherCount
+                    legacyRootReferenceCount = $legacyRootReferenceCount
+                    timestampMs = $timestampMs
+                    atUtc = Select-RevAgentFirstText -Values @(
+                        (Get-RevAgentValue -Object $evidence -Name "atUtc"),
+                        (Get-RevAgentValue -Object $evidence -Name "completedAtUtc"),
+                        (Get-RevAgentValue -Object $evidence -Name "finishedAtUtc"),
+                        (Get-RevAgentValue -Object $evidence -Name "reportedAtUtc"),
+                        (Get-RevAgentValue -Object $evidence -Name "generatedAtUtc"))
+                })
+        }
+
+        foreach ($machineRow in @(Get-RevAgentValue -Object $evidence -Name "machines")) {
+            $rowMachine = Select-RevAgentFirstText -Values @(
+                (Get-RevAgentValue -Object $machineRow -Name "machine"),
+                (Get-RevAgentValue -Object $machineRow -Name "machineName"),
+                (Get-RevAgentValue -Object $machineRow -Name "computerName"))
+            if ([string]::IsNullOrWhiteSpace($rowMachine)) {
+                continue
+            }
+
+            $rowLegacyLauncherCount = ConvertTo-RevAgentInt -Value (Select-RevAgentFirstText -Values @(
+                    (Get-RevAgentValue -Object $machineRow -Name "legacyLauncherCount"),
+                    (Get-RevAgentValue -Object $machineRow -Name "legacyDesktopLauncherCount"),
+                    (Get-RevAgentValue -Object $machineRow -Name "legacyCount"))) -Fallback 0
+            $rowLegacyRootReferenceCount = ConvertTo-RevAgentInt -Value (Select-RevAgentFirstText -Values @(
+                    (Get-RevAgentValue -Object $machineRow -Name "legacyRootReferenceCount"),
+                    (Get-RevAgentValue -Object $machineRow -Name "legacyRootCount"),
+                    (Get-RevAgentValue -Object $machineRow -Name "legacyReferenceCount"))) -Fallback 0
+            $rowState = ([string](Get-RevAgentValue -Object $machineRow -Name "state")).Trim().ToLowerInvariant()
+            $rowPassed = (ConvertTo-RevAgentBool -Value (Get-RevAgentValue -Object $machineRow -Name "passed")) -and
+                $rowLegacyLauncherCount -eq 0 -and
+                $rowLegacyRootReferenceCount -eq 0 -and
+                $rowState -notin @("missing", "failed")
+
+            [void]$machineEvidence.Add([pscustomobject][ordered]@{
+                    machine = Normalize-RevAgentMachineName -Value $rowMachine
+                    source = ([string]$entry.source + ":machines")
+                    passed = $rowPassed
+                    legacyLauncherCount = $rowLegacyLauncherCount
+                    legacyRootReferenceCount = $rowLegacyRootReferenceCount
+                    timestampMs = $timestampMs
+                    atUtc = Select-RevAgentFirstText -Values @(
+                        (Get-RevAgentValue -Object $machineRow -Name "completedAtUtc"),
+                        (Get-RevAgentValue -Object $evidence -Name "completedAtUtc"),
+                        (Get-RevAgentValue -Object $evidence -Name "generatedAtUtc"))
+                })
+        }
 
         [pscustomobject][ordered]@{
             source = [string]$entry.source
             passed = $passed
-            machine = Select-RevAgentFirstText -Values @(
-                (Get-RevAgentValue -Object $evidence -Name "machine"),
-                (Get-RevAgentValue -Object $evidence -Name "machineName"),
-                (Get-RevAgentValue -Object $evidence -Name "computerName"))
+            machine = $machineName
             expectedMachineCount = $expectedMachineCount
             checkedMachineCount = $checkedMachineCount
             requiredMachineCount = $requiredMachineCount
@@ -1092,7 +1172,7 @@ function Resolve-RevAgentDesktopLauncherEvidence {
                 (Get-RevAgentValue -Object $evidence -Name "finishedAtUtc"),
                 (Get-RevAgentValue -Object $evidence -Name "reportedAtUtc"),
                 (Get-RevAgentValue -Object $evidence -Name "generatedAtUtc"))
-            timestampMs = Get-RevAgentSmokeTimestampMs -Evidence $evidence
+            timestampMs = $timestampMs
             note = Select-RevAgentFirstText -Values @(
                 (Get-RevAgentValue -Object $evidence -Name "note"),
                 (Get-RevAgentValue -Object $evidence -Name "notes"))
@@ -1118,6 +1198,62 @@ function Resolve-RevAgentDesktopLauncherEvidence {
             reason = ""
             evidenceCount = $all.Count
             latest = $verified[0]
+        }
+    }
+
+    if ($requiredMachineCount -gt 0) {
+        $latestByMachine = @{}
+        foreach ($item in @($machineEvidence.ToArray() | Sort-Object @{ Expression = { $_.timestampMs }; Descending = $true })) {
+            $machine = [string]$item.machine
+            if ([string]::IsNullOrWhiteSpace($machine) -or $latestByMachine.ContainsKey($machine)) {
+                continue
+            }
+            $latestByMachine[$machine] = $item
+        }
+
+        $missingMachines = [System.Collections.Generic.List[string]]::new()
+        $failedMachines = [System.Collections.Generic.List[string]]::new()
+        $legacyLauncherCountTotal = 0
+        $legacyRootReferenceCountTotal = 0
+        foreach ($machine in $requiredMachineNamesNormalized) {
+            if (-not $latestByMachine.ContainsKey($machine)) {
+                [void]$missingMachines.Add($machine)
+                continue
+            }
+
+            $item = $latestByMachine[$machine]
+            $legacyLauncherCountTotal += [int]$item.legacyLauncherCount
+            $legacyRootReferenceCountTotal += [int]$item.legacyRootReferenceCount
+            if (-not [bool]$item.passed) {
+                [void]$failedMachines.Add($machine)
+            }
+        }
+
+        if ($missingMachines.Count -eq 0 -and $failedMachines.Count -eq 0 -and $legacyLauncherCountTotal -eq 0 -and $legacyRootReferenceCountTotal -eq 0) {
+            $latestMachineTimestamp = @($latestByMachine.Values | Sort-Object @{ Expression = { $_.timestampMs }; Descending = $true } | Select-Object -First 1)
+            $combinedLatest = [pscustomobject][ordered]@{
+                source = "combined:desktopLauncherMachineEvidence"
+                passed = $true
+                machine = ""
+                expectedMachineCount = $requiredMachineCount
+                checkedMachineCount = $requiredMachineCount
+                requiredMachineCount = $requiredMachineCount
+                missingMachineCount = 0
+                failedMachineCount = 0
+                legacyLauncherCount = 0
+                legacyRootReferenceCount = 0
+                atUtc = if ($latestMachineTimestamp.Count -gt 0) { [string]$latestMachineTimestamp[0].atUtc } else { "" }
+                timestampMs = if ($latestMachineTimestamp.Count -gt 0) { [long]$latestMachineTimestamp[0].timestampMs } else { 0 }
+                note = "Combined per-machine desktop launcher evidence covers every in-scope rollout machine."
+                machines = @($latestByMachine.Values | Sort-Object machine)
+            }
+            return [pscustomobject][ordered]@{
+                state = "verified"
+                action = "none"
+                reason = ""
+                evidenceCount = $all.Count
+                latest = $combinedLatest
+            }
         }
     }
 
