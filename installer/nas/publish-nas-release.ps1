@@ -42,6 +42,9 @@ param(
     [ValidateSet("revit-mcp-skill", "revAgent")]
     [string]$ReleaseAppId = "revit-mcp-skill",
 
+    [ValidateSet("revit-mcp-skill", "revAgent")]
+    [string]$ReleasePackageBaseName = "revit-mcp-skill",
+
     [switch]$RequireSigning,
 
     [string]$TrustedReleaseKeysPath = "",
@@ -913,10 +916,10 @@ try {
     $releaseInfo | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $packageRoot "release-info.json") -Encoding UTF8
 
     Write-Section "Create ZIP"
-    $zipPath = Join-Path $releaseDir ("revit-mcp-skill-{0}.zip" -f $Version)
+    $zipPath = Join-Path $releaseDir ("{0}-{1}.zip" -f $ReleasePackageBaseName, $Version)
     $releaseRelativeDir = Join-Path "releases" $Version
     $manifestMetadataPath = (Join-Path ".." (Join-Path $releaseRelativeDir "manifest.json")).Replace("/", "\")
-    $zipMetadataPath = (Join-Path ".." (Join-Path $releaseRelativeDir ("revit-mcp-skill-{0}.zip" -f $Version))).Replace("/", "\")
+    $zipMetadataPath = (Join-Path ".." (Join-Path $releaseRelativeDir ("{0}-{1}.zip" -f $ReleasePackageBaseName, $Version))).Replace("/", "\")
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [System.IO.Compression.ZipFile]::CreateFromDirectory($packageRoot, $zipPath)
 

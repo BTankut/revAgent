@@ -23,6 +23,8 @@ param(
     [long]$MinimumAcceptedReleaseSequence = 0,
     [ValidateSet("revit-mcp-skill", "revAgent")]
     [string]$ReleaseAppId = "revit-mcp-skill",
+    [ValidateSet("revit-mcp-skill", "revAgent")]
+    [string]$ReleasePackageBaseName = "revit-mcp-skill",
     [ValidateSet("stable")]
     [string]$Channel = "stable",
     [switch]$SkipEngineeringGates,
@@ -105,6 +107,7 @@ $publishArgs = @{
     ReleaseSequence = $ReleaseSequence
     MinimumAcceptedReleaseSequence = $MinimumAcceptedReleaseSequence
     ReleaseAppId = $ReleaseAppId
+    ReleasePackageBaseName = $ReleasePackageBaseName
     TrustedReleaseKeysPath = $trustedKeysFullPath
     RequireSigning = $true
 }
