@@ -282,6 +282,63 @@ function New-RevAgentEvidenceBundle {
     }
 }
 
+function Publish-RevAgentCentralEvidenceFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReportsRootPath,
+        [Parameter(Mandatory = $true)][string]$MachineName,
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$LatestFileName,
+        [Parameter(Mandatory = $true)][string]$HistoryPrefix
+    )
+
+    if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
+        throw "Evidence file was not retrieved: $SourcePath"
+    }
+
+    $json = Get-Content -Raw -LiteralPath $SourcePath -Encoding UTF8
+    try {
+        $null = $json | ConvertFrom-Json
+    }
+    catch {
+        throw "Evidence file is not valid JSON: $SourcePath. $($_.Exception.Message)"
+    }
+
+    $safeMachine = ConvertTo-RevAgentSafePathSegment -Value $MachineName -Fallback "unknown"
+    $machineRoot = Join-Path (Join-Path $ReportsRootPath "machines") $safeMachine
+    New-Item -ItemType Directory -Path $machineRoot -Force | Out-Null
+
+    $latestPath = Join-Path $machineRoot $LatestFileName
+    $historyPath = Join-Path $machineRoot ("{0}-{1}.json" -f $HistoryPrefix, (Get-Date -Format "yyyyMMdd-HHmmss"))
+    Set-Content -LiteralPath $latestPath -Value $json -Encoding UTF8
+    Set-Content -LiteralPath $historyPath -Value $json -Encoding UTF8
+
+    return [pscustomobject]@{
+        LatestPath = $latestPath
+        HistoryPath = $historyPath
+    }
+}
+
+function Copy-RevAgentRemoteEvidenceFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$SshTarget,
+        [Parameter(Mandatory = $true)][string[]]$SshOptions,
+        [Parameter(Mandatory = $true)][string]$RemotePath,
+        [Parameter(Mandatory = $true)][string]$LocalPath,
+        [int]$TimeoutSec = 120
+    )
+
+    $directory = Split-Path -Parent $LocalPath
+    if (-not [string]::IsNullOrWhiteSpace($directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    $remoteScpPath = $RemotePath -replace '\\', '/'
+    $scp = Invoke-RevAgentNativeCommand -FilePath "scp.exe" -Arguments ($SshOptions + @(("{0}:{1}" -f $SshTarget, $remoteScpPath), $LocalPath)) -TimeoutSec $TimeoutSec
+    if ($scp.Code -ne 0) {
+        throw "remote evidence copy failed: $($scp.Out -join ' ')"
+    }
+}
+
 function Invoke-RevAgentRemoteEvidence {
     param(
         [object]$Target,
@@ -299,10 +356,13 @@ function Invoke-RevAgentRemoteEvidence {
     $sshTarget = "{0}@{1}" -f $Target.User, $Target.Host
     $safeComputer = ConvertTo-RevAgentSafePathSegment -Value $Target.Computer -Fallback "machine"
     $remoteZipPath = Join-Path $RemoteStagePath ("evidence-tools-{0}.zip" -f $safeComputer)
+    $remoteSourceFreeReportPath = Join-Path $RemoteStagePath "source-free-migration-dryrun.json"
+    $remoteDesktopLauncherReportPath = Join-Path $RemoteStagePath "desktop-launcher-scan.json"
     $remoteZipScpPath = $remoteZipPath -replace '\\', '/'
     $remoteStageLiteral = ConvertTo-RevAgentSingleQuotedLiteral -Value $RemoteStagePath
     $remoteZipLiteral = ConvertTo-RevAgentSingleQuotedLiteral -Value $remoteZipPath
-    $reportsRootLiteral = ConvertTo-RevAgentSingleQuotedLiteral -Value $ReportsRootPath
+    $remoteSourceFreeReportLiteral = ConvertTo-RevAgentSingleQuotedLiteral -Value $remoteSourceFreeReportPath
+    $remoteDesktopLauncherReportLiteral = ConvertTo-RevAgentSingleQuotedLiteral -Value $remoteDesktopLauncherReportPath
     $installRootLiteral = ConvertTo-RevAgentSingleQuotedLiteral -Value $InstallRootPath
     $machineLiteral = ConvertTo-RevAgentSingleQuotedLiteral -Value $Target.Computer
     $runSourceFreeText = if ($RunSourceFree) { '$true' } else { '$false' }
@@ -342,7 +402,8 @@ function Invoke-RevAgentRemoteEvidence {
 Set-ExecutionPolicy -Scope Process Bypass -Force -ErrorAction SilentlyContinue
 `$stage = $remoteStageLiteral
 `$zip = $remoteZipLiteral
-`$reportsRoot = $reportsRootLiteral
+`$sourceFreeReportPath = $remoteSourceFreeReportLiteral
+`$desktopLauncherReportPath = $remoteDesktopLauncherReportLiteral
 `$installRoot = $installRootLiteral
 `$machine = $machineLiteral
 `$runSourceFree = $runSourceFreeText
@@ -358,15 +419,13 @@ Get-ChildItem -LiteralPath `$tools -Recurse -File | Unblock-File -ErrorAction Si
 `$migrationState = 'skipped'
 `$launcherState = 'skipped'
 if (`$runSourceFree) {
-    `$reportPath = Join-Path `$stage 'source-free-migration-dryrun.json'
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path `$tools 'migrate-source-free-install.ps1') `
         -Mode dryRun `
         -InstallRoot `$installRoot `
         -WorkRoot (Join-Path `$installRoot 'updater') `
         -PackageTarget (Join-Path `$installRoot 'package') `
         -ServerTarget (Join-Path `$installRoot 'runtime') `
-        -ReportsRoot `$reportsRoot `
-        -ReportPath `$reportPath `
+        -ReportPath `$sourceFreeReportPath `
         -NoNotifyUser
     if (`$LASTEXITCODE -ne 0) {
         throw "source-free dry-run exited with code `$LASTEXITCODE"
@@ -376,7 +435,7 @@ if (`$runSourceFree) {
 if (`$runLauncherScan) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path `$tools 'publish-desktop-launcher-evidence.ps1') `
         -Mode ScanLocal `
-        -ReportsRoot `$reportsRoot `
+        -OutputPath `$desktopLauncherReportPath `
         -MachineName `$machine | Out-Null
     if (`$LASTEXITCODE -ne 0) {
         throw "desktop launcher scan exited with code `$LASTEXITCODE"
@@ -405,14 +464,77 @@ Write-Output ('DESKTOP_LAUNCHER=' + `$launcherState)
         }
     }
 
+    $localEvidenceRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-rollout-evidence-result-" + [guid]::NewGuid().ToString("N"))
+    $sourceFreeEvidence = $null
+    $desktopLauncherEvidence = $null
+    $copyErrors = [System.Collections.Generic.List[string]]::new()
+    $stateErrors = [System.Collections.Generic.List[string]]::new()
+    if ($remote.Code -eq 0 -and $RunSourceFree -and $sourceFreeState -ne "ok") {
+        [void]$stateErrors.Add("source-free evidence state was '$sourceFreeState'")
+    }
+    if ($remote.Code -eq 0 -and $RunLauncherScan -and $launcherState -ne "ok") {
+        [void]$stateErrors.Add("desktop launcher evidence state was '$launcherState'")
+    }
+    try {
+        if ($remote.Code -eq 0 -and $RunSourceFree -and $sourceFreeState -eq "ok") {
+            $localSourceFreeReportPath = Join-Path $localEvidenceRoot ("{0}-source-free-migration.json" -f $safeComputer)
+            try {
+                Copy-RevAgentRemoteEvidenceFile -SshTarget $sshTarget -SshOptions $SshOptions -RemotePath $remoteSourceFreeReportPath -LocalPath $localSourceFreeReportPath -TimeoutSec 120
+                $sourceFreeEvidence = Publish-RevAgentCentralEvidenceFile `
+                    -ReportsRootPath $ReportsRootPath `
+                    -MachineName $Target.Computer `
+                    -SourcePath $localSourceFreeReportPath `
+                    -LatestFileName "source-free-migration-latest.json" `
+                    -HistoryPrefix "source-free-migration"
+            }
+            catch {
+                [void]$copyErrors.Add("source-free evidence publish failed: $($_.Exception.Message)")
+            }
+        }
+        if ($remote.Code -eq 0 -and $RunLauncherScan -and $launcherState -eq "ok") {
+            $localDesktopLauncherReportPath = Join-Path $localEvidenceRoot ("{0}-desktop-launcher.json" -f $safeComputer)
+            try {
+                Copy-RevAgentRemoteEvidenceFile -SshTarget $sshTarget -SshOptions $SshOptions -RemotePath $remoteDesktopLauncherReportPath -LocalPath $localDesktopLauncherReportPath -TimeoutSec 120
+                $desktopLauncherEvidence = Publish-RevAgentCentralEvidenceFile `
+                    -ReportsRootPath $ReportsRootPath `
+                    -MachineName $Target.Computer `
+                    -SourcePath $localDesktopLauncherReportPath `
+                    -LatestFileName "desktop-launcher-latest.json" `
+                    -HistoryPrefix "desktop-launcher"
+            }
+            catch {
+                [void]$copyErrors.Add("desktop launcher evidence publish failed: $($_.Exception.Message)")
+            }
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $localEvidenceRoot -PathType Container) {
+            Remove-Item -LiteralPath $localEvidenceRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $success = ($remote.Code -eq 0 -and $copyErrors.Count -eq 0 -and $stateErrors.Count -eq 0)
+    $detailParts = [System.Collections.Generic.List[string]]::new()
+    if ($remote.Code -ne 0) {
+        [void]$detailParts.Add(($remote.Out -join " | "))
+    }
+    foreach ($errorText in $stateErrors) {
+        [void]$detailParts.Add($errorText)
+    }
+    foreach ($errorText in $copyErrors) {
+        [void]$detailParts.Add($errorText)
+    }
+
     return [pscustomobject]@{
         Computer = $Target.Computer
         User = $Target.User
         Host = $Target.Host
-        Success = ($remote.Code -eq 0)
+        Success = $success
         SourceFree = $sourceFreeState
         DesktopLauncher = $launcherState
-        Detail = if ($remote.Code -eq 0) { "" } else { ($remote.Out -join " | ") }
+        SourceFreeEvidencePath = if ($null -ne $sourceFreeEvidence) { $sourceFreeEvidence.LatestPath } else { "" }
+        DesktopLauncherEvidencePath = if ($null -ne $desktopLauncherEvidence) { $desktopLauncherEvidence.LatestPath } else { "" }
+        Detail = ($detailParts.ToArray() -join " | ")
     }
 }
 

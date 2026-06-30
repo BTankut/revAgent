@@ -323,9 +323,11 @@ publishes `source-free-migration-latest.json` for readiness without replacing
 the dashboard `latest.json` version report.
 For SSH-managed workstations, prefer `tools\collect-rollout-evidence.ps1` over
 the install/repair deploy script. It stages only read-only evidence tools,
-runs source-free inventory in `dryRun`, scans desktop launchers, and aggregates
-launcher evidence without installing, repairing, updating, or committing
-migration cleanup.
+runs source-free inventory in `dryRun`, scans desktop launchers, retrieves the
+staged JSON evidence files back to the coordinator, publishes the per-machine
+NAS evidence centrally, and aggregates launcher evidence without installing,
+repairing, updating, or committing migration cleanup. SSH targets do not need
+direct NAS write access for this evidence path.
 
 ## Update Behavior
 
