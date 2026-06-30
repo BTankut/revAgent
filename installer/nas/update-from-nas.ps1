@@ -3211,10 +3211,10 @@ $revAgentCleanInstallTransitionState = [ordered]@{
 try {
     $desktopLauncherCleanupState = Invoke-RevAgentLegacyDesktopLauncherCleanup
     if ([int]$desktopLauncherCleanupState.removedCount -gt 0) {
-        Write-Host ("Desktop launchers: removed {0} legacy Revit MCP launcher shortcut(s)." -f $desktopLauncherCleanupState.removedCount) -ForegroundColor Green
+        Write-Host ("Desktop launchers: removed {0} legacy revAgent launcher shortcut(s)." -f $desktopLauncherCleanupState.removedCount) -ForegroundColor Green
     }
     if ([int]$desktopLauncherCleanupState.failedCount -gt 0) {
-        Write-Warning ("Desktop launchers: failed to remove {0} legacy Revit MCP launcher shortcut(s)." -f $desktopLauncherCleanupState.failedCount)
+        Write-Warning ("Desktop launchers: failed to remove {0} legacy revAgent launcher shortcut(s)." -f $desktopLauncherCleanupState.failedCount)
     }
 }
 catch {

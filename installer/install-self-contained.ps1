@@ -1332,10 +1332,10 @@ Remove-LegacyRevitMcpInstallRoot
 try {
     $desktopLauncherCleanup = Invoke-RevAgentLegacyDesktopLauncherCleanup
     if ([int]$desktopLauncherCleanup.removedCount -gt 0) {
-        Write-Host ("Desktop launchers: removed {0} legacy Revit MCP launcher shortcut(s)." -f $desktopLauncherCleanup.removedCount) -ForegroundColor Green
+        Write-Host ("Desktop launchers: removed {0} legacy revAgent launcher shortcut(s)." -f $desktopLauncherCleanup.removedCount) -ForegroundColor Green
     }
     if ([int]$desktopLauncherCleanup.failedCount -gt 0) {
-        Write-Warning ("Desktop launchers: failed to remove {0} legacy Revit MCP launcher shortcut(s)." -f $desktopLauncherCleanup.failedCount)
+        Write-Warning ("Desktop launchers: failed to remove {0} legacy revAgent launcher shortcut(s)." -f $desktopLauncherCleanup.failedCount)
     }
 }
 catch {

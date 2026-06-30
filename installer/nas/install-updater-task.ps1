@@ -1319,10 +1319,10 @@ Repair-RevAgentUpdaterPermissions
 try {
     $script:RevAgentDesktopLauncherCleanup = Invoke-RevAgentLegacyDesktopLauncherCleanup
     if ([int]$script:RevAgentDesktopLauncherCleanup.removedCount -gt 0) {
-        Write-Host ("Desktop launchers: removed {0} legacy Revit MCP launcher shortcut(s)." -f $script:RevAgentDesktopLauncherCleanup.removedCount) -ForegroundColor Green
+        Write-Host ("Desktop launchers: removed {0} legacy revAgent launcher shortcut(s)." -f $script:RevAgentDesktopLauncherCleanup.removedCount) -ForegroundColor Green
     }
     if ([int]$script:RevAgentDesktopLauncherCleanup.failedCount -gt 0) {
-        Write-Warning ("Desktop launchers: failed to remove {0} legacy Revit MCP launcher shortcut(s)." -f $script:RevAgentDesktopLauncherCleanup.failedCount)
+        Write-Warning ("Desktop launchers: failed to remove {0} legacy revAgent launcher shortcut(s)." -f $script:RevAgentDesktopLauncherCleanup.failedCount)
     }
 }
 catch {
