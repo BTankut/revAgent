@@ -694,7 +694,7 @@ function Remove-LegacyRevitMcpInstallRoot {
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     foreach ($activePath in $activePaths) {
         if (Test-RevAgentPathInside -ChildPath $activePath -ParentPath $legacyInstallRoot) {
-            Write-Warning "Legacy RevitMCP install root cleanup skipped because the current process is still using it: $legacyInstallRoot"
+            Write-Warning "Legacy revAgent install root cleanup skipped because the current process is still using it: $legacyInstallRoot"
             return
         }
     }
@@ -702,13 +702,13 @@ function Remove-LegacyRevitMcpInstallRoot {
         $currentProcess = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId={0}" -f $PID) -ErrorAction Stop
         $commandLine = [string]$currentProcess.CommandLine
         if ($commandLine.IndexOf($legacyInstallRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            Write-Warning "Legacy RevitMCP install root cleanup skipped because the current PowerShell command line still references it: $legacyInstallRoot"
+            Write-Warning "Legacy revAgent install root cleanup skipped because the current PowerShell command line still references it: $legacyInstallRoot"
             return
         }
     }
     catch {}
 
-    Remove-RevAgentPath -Path $legacyInstallRoot -Label "legacy RevitMCP install root" -Recurse -AllowedNamePattern "(?i)^RevitMCP$" -AllowBroadTarget
+    Remove-RevAgentPath -Path $legacyInstallRoot -Label "legacy revAgent install root" -Recurse -AllowedNamePattern "(?i)^RevitMCP$" -AllowBroadTarget
 }
 
 function Disable-LegacyAddinManifest {
