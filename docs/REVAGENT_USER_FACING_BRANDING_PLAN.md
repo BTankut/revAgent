@@ -5,6 +5,24 @@
 Make the workstation product consistently appear as `revAgent` wherever an
 operator, technician, or LLM host user sees the application.
 
+## Current Status
+
+Phase 1 and Phase 1B are complete for the standard user package:
+
+- installed user-facing product surfaces use `revAgent` branding;
+- Codex MCP registration exposes `revAgent` and `revAgent-api-docs`;
+- user-pack `SKILL.md` and `AGENTS.md` use revAgent product wording;
+- the workstation install root is `C:\ProgramData\DPE\revAgent`;
+- updater helper files, desktop launchers, and active installer/updater log
+  messages use revAgent wording;
+- legacy `RevitMCP`, `Revit MCP`, and `revit-mcp` names remain only as
+  compatibility inputs, cleanup targets, public tool/API ids, package/repo
+  identities, SDK names, or historical records.
+
+Remaining rename work is no longer part of this front-layer plan. Track it in
+`docs/REVAGENT_LEGACY_NAME_INVENTORY.md` and
+`docs/REVAGENT_ADDON_ARCHITECTURE_AND_RENAME_PLAN.md`.
+
 This phase is intentionally limited to the front layer. Deep implementation
 identifiers such as repository name, source folder names, package ids,
 PowerShell module names, DLL names, environment variables, and legacy cleanup
@@ -39,7 +57,7 @@ workstation install root is part of Phase 1B and now migrates to the
 - Do not remove support for legacy Codex MCP entries; this phase should remove
   legacy entries during registration but remain tolerant of existing installs.
 
-## Implementation Steps
+## Implementation Steps - Complete
 
 1. Update user-pack instructions and developer-facing guidance where those
    instructions are installed into Codex.
@@ -52,7 +70,7 @@ workstation install root is part of Phase 1B and now migrates to the
    compiled into shipped artifacts.
 6. Extend smoke tests for `/mcp list` naming and front-layer branding.
 
-## Phase 1B Root Migration
+## Phase 1B Root Migration - Complete
 
 Goal: stop treating the old `RevitMCP` workstation root as the active product
 layer. New installs and repairs should use `C:\ProgramData\DPE\revAgent`.
@@ -94,4 +112,5 @@ Non-goals for this phase:
 - Rename local and remote repository from `revit-mcp-skill` to a revAgent name.
 - Rename package ids, npm package names, source folders, and .NET namespaces.
 - Decide compatibility aliases for existing tool ids and MCP server names.
-- Update NAS release root if the deployment share should also be renamed.
+- Retire the temporary `revit-mcp-deploy` compatibility NAS root after rollout
+  readiness proves every in-scope machine uses `revAgent-deploy`.
