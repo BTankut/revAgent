@@ -1678,6 +1678,46 @@ function Get-UpdaterDistributionIntegrityCommand {
         [switch]$Required
     )
 
+    function Resolve-UpdaterDistributionIntegrityAliasCommand {
+        param(
+            [AllowNull()][object]$Command,
+            [AllowNull()][object]$Module
+        )
+
+        $current = $Command
+        for ($i = 0; $i -lt 4; $i++) {
+            if ($null -eq $current -or $current.CommandType -ne [System.Management.Automation.CommandTypes]::Alias) {
+                return $current
+            }
+
+            $definition = [string]$current.Definition
+            if ([string]::IsNullOrWhiteSpace($definition)) {
+                return $current
+            }
+
+            $resolved = $null
+            if ($Module -and $Module.ExportedFunctions -and $Module.ExportedFunctions.ContainsKey($definition)) {
+                $resolved = $Module.ExportedFunctions[$definition]
+            }
+            if (-not $resolved -and -not [string]::IsNullOrWhiteSpace($current.ModuleName)) {
+                $resolved = Get-Command ("{0}\{1}" -f $current.ModuleName, $definition) -ErrorAction SilentlyContinue
+            }
+            if (-not $resolved -and $Module -and -not [string]::IsNullOrWhiteSpace($Module.Name)) {
+                $resolved = Get-Command ("{0}\{1}" -f $Module.Name, $definition) -ErrorAction SilentlyContinue
+            }
+            if (-not $resolved) {
+                $resolved = Get-Command $definition -ErrorAction SilentlyContinue
+            }
+            if (-not $resolved) {
+                return $current
+            }
+
+            $current = $resolved
+        }
+
+        return $current
+    }
+
     $command = $null
     $module = @($script:RevAgentDistributionIntegrityModule | Select-Object -First 1)
     if ($module) {
@@ -1695,6 +1735,7 @@ function Get-UpdaterDistributionIntegrityCommand {
     if (-not $command) {
         $command = Get-Command $Name -ErrorAction SilentlyContinue
     }
+    $command = Resolve-UpdaterDistributionIntegrityAliasCommand -Command $command -Module $module
     if (-not $command -and $Required) {
         throw "Distribution integrity helper '$Name' was not loaded from RevAgent.DistributionIntegrity.psm1."
     }
