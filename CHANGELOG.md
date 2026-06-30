@@ -4,6 +4,9 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Published the live smoke evidence helper in NAS release `tools\` so
+  source-free workstations can write `reports\rollout\live-smoke-latest.json`
+  without a repository checkout.
 - Added a desktop launcher evidence publisher:
   `scripts\publish-desktop-launcher-evidence.ps1 -Mode ScanLocal` records
   per-machine launcher scans, `-Mode Aggregate` writes rollout evidence, and

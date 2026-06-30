@@ -578,6 +578,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-li
   -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
 ```
 
+After a NAS publish, source-free workstations can run the same live smoke helper
+from `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\test-commandset-live.ps1`.
+
 This live gate connects to the revAgent Revit bridge, performs a status preflight
 before each non-status command, and validates `transactionMode` behavior,
 guarded manual-transaction handling, manual rollback in `none`, and
