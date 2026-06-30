@@ -97,6 +97,32 @@ call "%RELEASE_ROOT%\tools\Install-Revit-MCP-Updater-GUI.cmd"' `
     Assert-Equal ([int]$cleanScan.legacyLauncherCount) 0 "Clean legacy launcher count mismatch."
     Assert-Equal ([int]$cleanScan.legacyRootReferenceCount) 0 "Clean legacy root reference count mismatch."
 
+    $profilesRoot = Join-Path $tempRoot "Users"
+    $aliceDesktop = Join-Path $profilesRoot "Alice\Desktop"
+    $bobDesktop = Join-Path $profilesRoot "Bob\Desktop"
+    New-Item -ItemType Directory -Path $aliceDesktop, $bobDesktop -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $aliceDesktop "Revit MCP Updater STABLE.cmd") `
+        -Value '@echo off
+set "RELEASE_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy"' `
+        -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $bobDesktop "revAgent Updater STABLE.cmd") `
+        -Value '@echo off
+set "PRIMARY_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"' `
+        -Encoding ASCII
+
+    $allProfileScan = & $scriptPath `
+        -Mode ScanLocal `
+        -ReportsRoot $reportsRoot `
+        -MachineName "PROFILESCAN" `
+        -UserProfilesRoot $profilesRoot `
+        -NowUtc $nowUtc.AddMinutes(1) `
+        -OutputJson | ConvertFrom-Json
+
+    Assert-True (@($allProfileScan.scannedPaths) -contains $aliceDesktop) "Default scan did not include Alice desktop."
+    Assert-True (@($allProfileScan.scannedPaths) -contains $bobDesktop) "Default scan did not include Bob desktop."
+    Assert-True ([int]$allProfileScan.legacyLauncherCount -ge 1) "Default all-profile scan did not find the legacy launcher."
+    Assert-True (@($allProfileScan.launchers | Where-Object { [string]$_.path -eq (Join-Path $aliceDesktop "Revit MCP Updater STABLE.cmd") }).Count -eq 1) "Default all-profile scan did not report Alice legacy launcher."
+
     $configPath = Join-Path $tempRoot "rollout-readiness.json"
     Write-TestJson -Path $configPath -Value ([ordered]@{
             reportsRoot = $reportsRoot

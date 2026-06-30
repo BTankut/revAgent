@@ -29,6 +29,8 @@ param(
 
     [string[]]$LauncherPath = @(),
 
+    [string]$UserProfilesRoot = "",
+
     [switch]$Recurse,
 
     [string]$OutputPath = "",
@@ -205,6 +207,8 @@ function Select-RevAgentMatchedPatterns {
 }
 
 function Get-RevAgentDefaultLauncherPaths {
+    param([string]$ProfilesRoot = "")
+
     $paths = [System.Collections.Generic.List[string]]::new()
     foreach ($folder in @("DesktopDirectory", "CommonDesktopDirectory")) {
         try {
@@ -220,6 +224,23 @@ function Get-RevAgentDefaultLauncherPaths {
     }
     if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
         [void]$paths.Add((Join-Path $env:USERPROFILE "Desktop"))
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ProfilesRoot)) {
+        if (-not [string]::IsNullOrWhiteSpace($env:SystemDrive)) {
+            $ProfilesRoot = Join-Path $env:SystemDrive "Users"
+        }
+        else {
+            $ProfilesRoot = "C:\Users"
+        }
+    }
+    if (Test-Path -LiteralPath $ProfilesRoot -PathType Container) {
+        foreach ($profile in @(Get-ChildItem -LiteralPath $ProfilesRoot -Directory -ErrorAction SilentlyContinue)) {
+            $desktop = Join-Path $profile.FullName "Desktop"
+            if (Test-Path -LiteralPath $desktop -PathType Container) {
+                [void]$paths.Add($desktop)
+            }
+        }
     }
     return @($paths.ToArray() | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
 }
@@ -334,7 +355,7 @@ function New-RevAgentLocalLauncherEvidence {
     }
 
     if ($Paths.Count -eq 0) {
-        $Paths = @(Get-RevAgentDefaultLauncherPaths)
+        $Paths = @(Get-RevAgentDefaultLauncherPaths -ProfilesRoot $UserProfilesRoot)
     }
 
     $files = @(Get-RevAgentLauncherFiles -Paths $Paths -Recursive:$Recursive)
