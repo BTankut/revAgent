@@ -77,6 +77,8 @@ Keep legacy names only when they are one of these exact identities:
   package identity. The installer still accepts the legacy `revit-mcp` package
   name and the package keeps a legacy `revit-mcp` bin alias for rolling-update
   compatibility.
+- Evals metadata now uses `skill_name: revAgent`, with a CI branding check to
+  keep this lightweight developer surface aligned with the product identity.
 
 ## Intentional Compatibility Names
 
