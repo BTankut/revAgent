@@ -8,9 +8,9 @@ that can clone this repository and reach the NAS share.
 ## Canonical Sources
 
 - Product name: `revAgent`
-- GitHub repository: `BTankut/revit-mcp-skill`
+- Target GitHub repository: `BTankut/revAgent`
 - Local development path on the current workstation:
-  `C:\Projects\revit-mcp-skill`
+  `C:\Users\BT\Projects\revAgent`
 - Main branch: `main`
 - Office deployment source:
   `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy`
@@ -55,7 +55,7 @@ non-status runtime command.
 High-value paths:
 
 ```text
-revit-mcp-skill/
+revAgent/
 |-- README.md
 |-- SKILL.md
 |-- AGENTS.md
@@ -132,8 +132,8 @@ then install or publish through the normal flow.
 Clone the repo:
 
 ```powershell
-git clone https://github.com/BTankut/revit-mcp-skill.git C:\Projects\revit-mcp-skill
-cd C:\Projects\revit-mcp-skill
+git clone https://github.com/BTankut/revAgent.git C:\Users\BT\Projects\revAgent
+cd C:\Users\BT\Projects\revAgent
 git status
 git branch --show-current
 ```
@@ -199,7 +199,7 @@ used. Production NAS releases should be published from a clean tree.
 Useful baseline commands:
 
 ```powershell
-cd C:\Projects\revit-mcp-skill
+cd C:\Users\BT\Projects\revAgent
 git status --short
 git pull --ff-only
 ```

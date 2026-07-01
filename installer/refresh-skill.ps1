@@ -16,7 +16,7 @@
     that has an old install gets refreshed without manual file juggling.
 
 .PARAMETER RepoRoot
-    Path to the local revit-mcp-skill repository (the directory that
+    Path to the local revAgent repository (the directory that
     contains SKILL.md). Defaults to the parent of this script's folder.
 
 .PARAMETER ExtraPaths
@@ -31,7 +31,7 @@
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\installer\refresh-skill.ps1 `
-        -RepoRoot C:\src\revit-mcp-skill `
+        -RepoRoot C:\src\revAgent `
         -ExtraPaths C:\Projects\my-revit\.claude\skills\revAgent `
         -NoConfirm
 #>
@@ -151,7 +151,7 @@ function Update-Target {
 Write-Section "Validating source repo at $RepoRoot"
 if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "SKILL.md"))) {
     Write-Err "SKILL.md not found at $RepoRoot."
-    Write-Info "Pass -RepoRoot pointing to the cloned revit-mcp-skill directory."
+    Write-Info "Pass -RepoRoot pointing to the cloned revAgent repository directory."
     exit 1
 }
 Write-Ok "Source repo looks valid."

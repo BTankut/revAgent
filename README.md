@@ -697,7 +697,7 @@ Bundled docs tools:
 ## Repo layout
 
 ```text
-revit-mcp-skill/
+revAgent/
 |-- README.md
 |-- SKILL.md
 |-- AGENTS.md

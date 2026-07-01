@@ -1,6 +1,6 @@
 # revAgent Legacy Name Inventory
 
-Last updated: 2026-06-30
+Last updated: 2026-07-01
 
 This document tracks remaining `RevitMCP`, `revit-mcp`, `revit_mcp`, and
 `mcp-servers-for-revit` names after the front-layer revAgent rename and the
@@ -68,6 +68,11 @@ Keep legacy names only when they are one of these exact identities:
   `ReleaseAppId` / `ReleasePackageBaseName` / `release_identity` options.
   Producers now default to `revAgent`; explicit `revit-mcp-skill` remains only
   for deliberate legacy compatibility recovery publishes.
+- Active repository docs, developer clone instructions, GitHub API examples,
+  and private runtime package metadata now target `BTankut/revAgent` and
+  `C:\Users\BT\Projects\revAgent`. `scripts\test-repo-rename-readiness.ps1`
+  blocks the old GitHub slug and old local clone paths from reappearing in
+  active repo surfaces.
 
 ## Intentional Compatibility Names
 
@@ -88,10 +93,11 @@ These are expected to remain until a larger migration explicitly replaces them.
 ## Next Migration PRs
 
 1. **Repository rename PR**
-   - Rename the local and GitHub repository only after the deployed NAS root is
-     stable and compatibility root retirement criteria are met.
-   - Update GitHub Actions, docs, clone instructions, and any hardcoded
-     `BTankut/revit-mcp-skill` references.
+   - Readiness work is in progress: active docs and GitHub API examples no
+     longer depend on the old GitHub slug, and the runbook is captured in
+     `docs\REVAGENT_REPOSITORY_RENAME_RUNBOOK.md`.
+   - The actual GitHub repository rename and local folder rename remain a
+     coordinated external cutover because they are not ordinary PR changes.
 
 2. **Compatibility root cleanup/freeze**
    - Default `revit-mcp-deploy` dual publish and launcher fallback are removed.

@@ -41,7 +41,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BTankut/revit-mcp-skill.git"
+    "url": "git+https://github.com/BTankut/revAgent.git"
   },
   "keywords": [
     "revit",
@@ -51,9 +51,9 @@
   "author": "",
   "license": "UNLICENSED",
   "bugs": {
-    "url": "https://github.com/BTankut/revit-mcp-skill/issues"
+    "url": "https://github.com/BTankut/revAgent/issues"
   },
-  "homepage": "https://github.com/BTankut/revit-mcp-skill#readme",
+  "homepage": "https://github.com/BTankut/revAgent#readme",
   "dependencies": {
     "@e965/xlsx": "^0.20.3",
     "@modelcontextprotocol/sdk": "^1.29.0",

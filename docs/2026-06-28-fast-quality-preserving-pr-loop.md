@@ -270,13 +270,15 @@ gh pr ready <num>          # -> ready_for_review fires -> exactly one fresh revi
 - [ ] **Step 1: Turn on auto-merge**
 
 ```bash
-gh api -X PATCH repos/BTankut/revit-mcp-skill -F allow_auto_merge=true
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+gh api -X PATCH "repos/$repo" -F allow_auto_merge=true
 ```
 
 - [ ] **Step 2: Verify**
 
 ```bash
-gh api repos/BTankut/revit-mcp-skill --jq '.allow_auto_merge'
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+gh api "repos/$repo" --jq '.allow_auto_merge'
 # Expected: true
 ```
 
@@ -288,14 +290,16 @@ gh api repos/BTankut/revit-mcp-skill --jq '.allow_auto_merge'
 
 ```bash
 # After one review run on a test PR:
-gh api "repos/BTankut/revit-mcp-skill/commits/<test-pr-head-sha>/check-runs" --jq '.check_runs[].name'
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+gh api "repos/$repo/commits/<test-pr-head-sha>/check-runs" --jq '.check_runs[].name'
 # Expect to see: "Claude review gate"  (and "Engineering gates")
 ```
 
 - [ ] **Step 2: Set required checks to both, keep strict**
 
 ```bash
-gh api -X PATCH repos/BTankut/revit-mcp-skill/branches/main/protection/required_status_checks \
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+gh api -X PATCH "repos/$repo/branches/main/protection/required_status_checks" \
   -F strict=true \
   -f 'contexts[]=Engineering gates' \
   -f 'contexts[]=Claude review gate'
@@ -304,7 +308,8 @@ gh api -X PATCH repos/BTankut/revit-mcp-skill/branches/main/protection/required_
 - [ ] **Step 3: Verify**
 
 ```bash
-gh api repos/BTankut/revit-mcp-skill/branches/main/protection/required_status_checks --jq '.contexts'
+repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+gh api "repos/$repo/branches/main/protection/required_status_checks" --jq '.contexts'
 # Expected: ["Engineering gates","Claude review gate"]
 ```
 
