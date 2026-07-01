@@ -1,6 +1,6 @@
 Set-StrictMode -Version Latest
 
-function ConvertTo-RevitMcpProxyUrl {
+function ConvertTo-RevAgentProxyUrl {
     param([string]$Value)
 
     if ([string]::IsNullOrWhiteSpace($Value)) {
@@ -32,10 +32,10 @@ function ConvertTo-RevitMcpProxyUrl {
     }
 }
 
-function ConvertTo-RevitMcpWinHttpProxyServer {
+function ConvertTo-RevAgentWinHttpProxyServer {
     param([string]$Value)
 
-    $normalized = ConvertTo-RevitMcpProxyUrl -Value $Value
+    $normalized = ConvertTo-RevAgentProxyUrl -Value $Value
     if ([string]::IsNullOrWhiteSpace($normalized)) {
         return ""
     }
@@ -51,13 +51,13 @@ function ConvertTo-RevitMcpWinHttpProxyServer {
     return ($normalized -replace '^[a-zA-Z][a-zA-Z0-9+.-]*://', '').TrimEnd("/")
 }
 
-$revAgentFunctionAliases = @{
-    "ConvertTo-RevAgentProxyUrl" = "ConvertTo-RevitMcpProxyUrl"
-    "ConvertTo-RevAgentWinHttpProxyServer" = "ConvertTo-RevitMcpWinHttpProxyServer"
+$legacyFunctionAliases = @{
+    "ConvertTo-RevitMcpProxyUrl" = "ConvertTo-RevAgentProxyUrl"
+    "ConvertTo-RevitMcpWinHttpProxyServer" = "ConvertTo-RevAgentWinHttpProxyServer"
 }
-foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
+foreach ($aliasPair in $legacyFunctionAliases.GetEnumerator()) {
     Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
 }
 
-Export-ModuleMember -Function ConvertTo-RevitMcpProxyUrl, ConvertTo-RevitMcpWinHttpProxyServer
-Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)
+Export-ModuleMember -Function ConvertTo-RevAgentProxyUrl, ConvertTo-RevAgentWinHttpProxyServer
+Export-ModuleMember -Alias @($legacyFunctionAliases.Keys)

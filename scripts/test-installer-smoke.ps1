@@ -131,6 +131,13 @@ function Assert-InstallerLibFunctionAliasContract {
                 $aliasName = $legacyFunction -replace "RevitMcp", "RevAgent"
                 Assert-True ($module.ExportedAliases.ContainsKey($aliasName)) ("Missing revAgent function alias '$aliasName' for '$legacyFunction' in $($_.Name).")
             }
+            if ($_.Name -eq "RevAgent.Proxy.psm1") {
+                $canonicalFunctions = @($module.ExportedFunctions.Keys | Where-Object { $_ -match "RevAgent" } | Sort-Object)
+                foreach ($canonicalFunction in $canonicalFunctions) {
+                    $aliasName = $canonicalFunction -replace "RevAgent", "RevitMcp"
+                    Assert-True ($module.ExportedAliases.ContainsKey($aliasName)) ("Missing legacy compatibility alias '$aliasName' for '$canonicalFunction' in $($_.Name).")
+                }
+            }
         }
 }
 
@@ -1163,6 +1170,8 @@ try {
     Write-Host "Test proxy, Codex config, and report helpers"
     Assert-Equal (ConvertTo-RevAgentProxyUrl -Value "192.168.90.10 6588") "http://192.168.90.10:6588" "Proxy URL normalization failed."
     Assert-Equal (ConvertTo-RevAgentWinHttpProxyServer -Value "http://192.168.90.10:6588") "192.168.90.10:6588" "WinHTTP proxy normalization failed."
+    Assert-Equal (ConvertTo-RevitMcpProxyUrl -Value "192.168.90.10 6588") "http://192.168.90.10:6588" "Legacy proxy URL alias must remain compatible."
+    Assert-Equal (ConvertTo-RevitMcpWinHttpProxyServer -Value "http://192.168.90.10:6588") "192.168.90.10:6588" "Legacy WinHTTP proxy alias must remain compatible."
     $codexConfig = Join-Path $tempRoot "config.toml"
     Set-Content -LiteralPath $codexConfig -Value "model = `"gpt-5.5`"`r`nservice_tier = `"priority`"`r`n`r`n[mcp_servers.revit-mcp]`r`ncommand = `"old-node.exe`"`r`nargs = [`"old-runtime.js`"]`r`n`r`n[mcp_servers.revit-api-docs]`r`ncommand = `"old-node.exe`"`r`nargs = [`"old-docs.js`"]`r`n" -Encoding UTF8
     Register-RevAgentCodexMcpServersInConfig -ConfigPath $codexConfig -NodePath "node.exe" -RuntimeServerPath "runtime\build\index.js" -DocsServerPath "docs\build\index.js" | Out-Null
