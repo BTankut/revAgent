@@ -33,8 +33,7 @@ design changes that boundary.
   operators to update workstations.
 - Point-in-time NAS stable verification snapshot recorded on 2026-06-29 after
   PR #142:
-  - CD publish run:
-    `https://github.com/BTankut/revit-mcp-skill/actions/runs/28399758304`
+  - CD publish run id: `28399758304`
   - stable version: `2026.06.29.452-7bde7d6b`
   - stable commit: `7bde7d6ba4fde59830bd100e1e9307d4c3070532`
   - release sequence: `20260629201953`
