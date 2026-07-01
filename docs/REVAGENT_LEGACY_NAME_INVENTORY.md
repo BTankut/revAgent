@@ -79,6 +79,10 @@ Keep legacy names only when they are one of these exact identities:
   compatibility.
 - Evals metadata now uses `skill_name: revAgent`, with a CI branding check to
   keep this lightweight developer surface aligned with the product identity.
+- Machine run reports, installed-state reports, dependency markers, and updater
+  config written by active installer/updater paths now default to
+  `app: revAgent`. Legacy `revit-mcp-skill` remains only as an accepted release
+  identity or cleanup/recovery marker.
 
 ## Intentional Compatibility Names
 

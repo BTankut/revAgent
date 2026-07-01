@@ -69,7 +69,7 @@ function Resolve-RevitMcpPackageLayout {
         }
     }
 
-    throw "Extracted package does not look like revit-mcp-skill: $Root"
+    throw "Extracted package does not look like a revAgent package: $Root"
 }
 
 function Expand-RevitMcpReleaseArchive {

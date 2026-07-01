@@ -349,7 +349,7 @@ function Set-RevAgentInstallRunReport {
 
     $script:RevAgentLatestReport = [ordered]@{
         schemaVersion = 1
-        app = "revit-mcp-skill"
+        app = "revAgent"
         operation = $script:RevAgentOperation
         operationMethod = $script:RevAgentOperationMethod
         status = $Status
@@ -1270,7 +1270,7 @@ $script:RevAgentRemoteReportsRoot = $ReportsRoot
 
 $config = [ordered]@{
     schemaVersion = 1
-    app = "revit-mcp-skill"
+    app = "revAgent"
     channelManifestPath = $ChannelManifestPath
     installRoot = $InstallRoot
     workRoot = $WorkRoot
