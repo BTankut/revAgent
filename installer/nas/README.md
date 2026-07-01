@@ -323,6 +323,12 @@ physical old-root cleanup or freeze.
 After a NAS publish, the live smoke helper is available as
 `tools\test-commandset-live.ps1`; run it with `-ReleaseRoot` on the Revit smoke
 machine to write `reports\rollout\live-smoke-latest.json`.
+For the standard NET01 smoke, run the coordinator-side SSH wrapper in two
+steps: first `tools\invoke-live-smoke-over-ssh.ps1 -Computer NET01 -ReleaseRoot
+<root> -OpenOnly` to open the installed Revit 2022 sample model in the
+logged-on workstation session and verify the expected active document through
+revAgent, then rerun without `-OpenOnly` to run the helper and write the same
+rollout evidence.
 Record the launcher audit in `desktopLauncherEvidence` or
 `reports\rollout\desktop-launcher-latest.json`. The supported path is to run
 `tools\publish-desktop-launcher-evidence.ps1 -Mode ScanLocal` on each

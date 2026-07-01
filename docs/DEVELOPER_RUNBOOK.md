@@ -480,6 +480,31 @@ After a NAS publish, source-free workstations can run the same helper from
 `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\test-commandset-live.ps1`
 without a repository checkout.
 
+For the standard NET01 representative smoke, run the coordinator-side SSH
+wrapper instead of manually opening Revit. First run the open/model gate; it
+opens the installed Revit 2022 sample model in the logged-on workstation
+session, waits for the local bridge, and verifies through revAgent that the
+expected model and an active view are loaded:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-live-smoke-over-ssh.ps1 `
+  -TargetsPath C:\ProgramData\DPE\revAgentOps\fleet.json `
+  -Computer NET01 `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy" `
+  -OpenOnly
+```
+
+After that gate passes, rerun without `-OpenOnly`; the wrapper stages the
+current live helper, runs the smoke helper, and publishes the same closure
+evidence:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-live-smoke-over-ssh.ps1 `
+  -TargetsPath C:\ProgramData\DPE\revAgentOps\fleet.json `
+  -Computer NET01 `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+```
+
 This gate is intentionally separate from `test-all`: it connects to the Revit
 MCP socket, status-checks before each command, and validates real commandset
 behavior for `transactionMode: "auto"`, `transactionMode: "none"`, guarded
@@ -678,12 +703,16 @@ Live smoke test after install:
    command response payload and `mcp_status`. For runtime-only dynamic result
    parsing changes, confirm deterministic tests cover `parseJsonResult=true`
    nested JSON parsing and raw-string preservation on failed parsing.
-10. For rollout closure evidence, run `scripts\test-commandset-live.ps1` with
-    `-ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"` so the
-    current stable live-smoke result is written to
-    `reports\rollout\live-smoke-latest.json`. After NAS publish, source-free
-    workstations can run the published
-    `tools\test-commandset-live.ps1` copy from the canonical NAS root.
+10. For rollout closure evidence, prefer
+    `scripts\invoke-live-smoke-over-ssh.ps1 -Computer NET01 -ReleaseRoot
+    "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy" -OpenOnly` first, so the
+    coordinator opens the Revit 2022 sample model in the logged-on workstation
+    session and verifies the expected document through revAgent before full
+    smoke. Then rerun without
+    `-OpenOnly` to write the current stable live-smoke result to
+    `reports\rollout\live-smoke-latest.json`. If Revit is already open on the
+    smoke machine, `scripts\test-commandset-live.ps1` can still be run directly
+    with the same `-ReleaseRoot`.
 10. Confirm `revit-api-docs` responds to a small search such as
    `FilteredElementCollector`.
 11. For transport-sensitive changes, run a large read-only marker/checksum probe

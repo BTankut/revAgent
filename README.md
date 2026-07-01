@@ -583,6 +583,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-li
 After a NAS publish, source-free workstations can run the same live smoke helper
 from `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\test-commandset-live.ps1`.
 
+For the standard representative workstation flow, run the SSH wrapper from the
+coordinator. First use `-OpenOnly` to open Revit 2022 in the logged-on
+workstation session with the installed sample model and verify through revAgent
+that the expected model and an active view are loaded:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-live-smoke-over-ssh.ps1 `
+  -TargetsPath C:\ProgramData\DPE\revAgentOps\fleet.json `
+  -Computer NET01 `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy" `
+  -OpenOnly
+```
+
+After that passes, rerun the same wrapper without `-OpenOnly`; it stages the
+current live helper on the target, runs the live commandset smoke test, and
+writes per-machine logs plus `reports\rollout\live-smoke-latest.json`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-live-smoke-over-ssh.ps1 `
+  -TargetsPath C:\ProgramData\DPE\revAgentOps\fleet.json `
+  -Computer NET01 `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+```
+
 This live gate connects to the revAgent Revit bridge, performs a status preflight
 before each non-status command, and validates `transactionMode` behavior,
 guarded manual-transaction handling, manual rollback in `none`, and
