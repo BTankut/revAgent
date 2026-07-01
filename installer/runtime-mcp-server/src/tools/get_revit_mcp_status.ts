@@ -24,7 +24,7 @@ const TOOL_SURFACE_VERSION = "revit-mcp-runtime-tools.38";
 function readPackageMetadata() {
     const packageJson = readJsonFile(path.join(getRuntimeRoot(), "package.json"));
     return {
-        packageName: packageJson?.name || "revit-mcp",
+        packageName: packageJson?.name || "revagent-runtime",
         packageVersion: packageJson?.version || "unknown",
     };
 }

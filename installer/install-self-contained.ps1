@@ -776,7 +776,7 @@ function Test-RevAgentRuntimeDirectory {
 
     try {
         $package = Get-Content -Raw -LiteralPath $packagePath | ConvertFrom-Json
-        return $package.name -eq "revit-mcp" -and
+        return $package.name -in @("revagent-runtime", "revit-mcp") -and
             [string]$package.description -like "*self-contained revAgent*"
     }
     catch {

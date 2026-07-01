@@ -73,6 +73,10 @@ Keep legacy names only when they are one of these exact identities:
   `C:\Users\BT\Projects\revAgent`. `scripts\test-repo-rename-readiness.ps1`
   blocks the old GitHub slug and old local clone paths from reappearing in
   active repo surfaces.
+- The private runtime package now uses the canonical `revagent-runtime` npm
+  package identity. The installer still accepts the legacy `revit-mcp` package
+  name and the package keeps a legacy `revit-mcp` bin alias for rolling-update
+  compatibility.
 
 ## Intentional Compatibility Names
 
