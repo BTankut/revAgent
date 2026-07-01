@@ -65,6 +65,7 @@ try {
     & (Join-Path $RepoRoot "scripts\test-desktop-launcher-evidence.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-desktop-launcher-cleanup.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-rollout-evidence-collector.ps1") -RepoRoot $RepoRoot
+    & (Join-Path $RepoRoot "scripts\test-evals-branding.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-typescript-nocheck-policy.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-mcp-build-payload-freshness.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-publish-signing.ps1") -RepoRoot $RepoRoot
