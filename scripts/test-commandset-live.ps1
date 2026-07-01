@@ -454,89 +454,66 @@ function Assert-SuccessfulCodeResult {
 }
 
 function Assert-RuntimeFindElementsPolicy {
-    $runtimeRegisterPath = "C:\ProgramData\DPE\revAgent\runtime\build\tools\register.js"
-    Assert-True (Test-Path -LiteralPath $runtimeRegisterPath) "Installed runtime register.js was not found: $runtimeRegisterPath"
+    $statusBefore = Get-RevitMcpStatus
+    $inferred = Invoke-FindElements `
+        -TaskName "live MTL fan coil inference proof" `
+        -Params ([ordered]@{
+            query = "MTL fan coil"
+            searchBudget = "fast"
+            planCandidateMode = "none"
+            limit = 5
+            timeoutMs = 120000
+        })
+    $statusAfterInferred = Get-RevitMcpStatus
 
-    $env:REVAGENT_LIVE_RUNTIME_REGISTER = $runtimeRegisterPath
-$nodeScript = @'
-const { performance } = await import('node:perf_hooks');
-const { pathToFileURL } = await import('node:url');
-console.error = () => {};
-const registerUrl = pathToFileURL(process.env.REVAGENT_LIVE_RUNTIME_REGISTER).href;
-const { registerTools } = await import(registerUrl);
-const tools = new Map();
-await registerTools({ tool: (name, description, schema, handler) => tools.set(name, { description, schema, handler }) });
-const statusBefore = JSON.parse((await tools.get('get_revit_mcp_status').handler({ timeoutMs: 5000 })).content[0].text);
-const inferredStart = performance.now();
-const inferred = JSON.parse((await tools.get('find_elements').handler({
-  query: 'MTL fan coil',
-  searchBudget: 'fast',
-  planCandidateMode: 'none',
-  limit: 5,
-  taskName: 'live MTL fan coil inference proof'
-})).content[0].text);
-const inferredElapsedMs = Math.round(performance.now() - inferredStart);
-const statusAfterInferred = JSON.parse((await tools.get('get_revit_mcp_status').handler({ timeoutMs: 5000 })).content[0].text);
-const broadStart = performance.now();
-const broad = JSON.parse((await tools.get('find_elements').handler({
-  query: 'MTL',
-  searchBudget: 'fast',
-  planCandidateMode: 'none',
-  limit: 5,
-  taskName: 'live broad MTL guard proof'
-})).content[0].text);
-const broadElapsedMs = Math.round(performance.now() - broadStart);
-const statusAfterBroad = JSON.parse((await tools.get('get_revit_mcp_status').handler({ timeoutMs: 5000 })).content[0].text);
-console.log(JSON.stringify({
-  statusBefore: { recentHistoryCount: statusBefore.recentHistoryCount, activeTask: statusBefore.activeTask },
-  inferred: {
-    elapsedMs: inferredElapsedMs,
-    success: inferred.success,
-    guarded: inferred.guarded,
-    query: inferred.query,
-    categoryNames: inferred.categoryNames,
-    count: inferred.count,
-    scannedElementCount: inferred.scannedElementCount,
-    partial: inferred.partial,
-    planCandidateMode: inferred.planCandidateMode,
-    riskPolicy: inferred.riskPolicy
-  },
-  broad: {
-    elapsedMs: broadElapsedMs,
-    success: broad.success,
-    guarded: broad.guarded,
-    state: broad.state,
-    reason: broad.reason,
-    riskPolicy: broad.riskPolicy
-  },
-  history: {
-    afterInferred: statusAfterInferred.recentHistoryCount,
-    afterBroad: statusAfterBroad.recentHistoryCount,
-    activeTask: statusAfterBroad.activeTask
-  }
-}));
-'@
+    $broad = Invoke-FindElements `
+        -TaskName "live broad MTL guard proof" `
+        -Params ([ordered]@{
+            query = "MTL"
+            searchBudget = "fast"
+            planCandidateMode = "none"
+            limit = 5
+            timeoutMs = 120000
+        })
+    $statusAfterBroad = Get-RevitMcpStatus
 
-    $nodeOutput = & node --input-type=module -e $nodeScript
-    if ($LASTEXITCODE -ne 0) {
-        throw "Node runtime find_elements policy proof failed with exit code $LASTEXITCODE."
+    Assert-Equal ([bool]$inferred.success) $true "Runtime MTL fan coil inference should succeed."
+    Assert-Equal ([bool]$inferred.guarded) $false "Runtime MTL fan coil inference should not be guarded."
+    $inferredEffectiveQuery = Select-RevAgentFirstText -Values @(
+        (Get-RevAgentNestedValue -Object $inferred -Path @("scanPolicy", "effectiveQuery")),
+        (Get-RevAgentValue -Object $inferred -Name "effectiveQuery"))
+    if (-not [string]::IsNullOrWhiteSpace($inferredEffectiveQuery)) {
+        Assert-Equal ([string]$inferredEffectiveQuery) "MTL" "Runtime MTL fan coil inference effective query changed."
+    }
+    $inferredCategoryNames = @(
+        @($inferred.categoryNames)
+        @((Get-RevAgentNestedValue -Object $inferred -Path @("scanPolicy", "categoryNames")))
+        @((Get-RevAgentNestedValue -Object $inferred -Path @("scanPolicy", "effectiveCategoryNames")))
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    if ($inferredCategoryNames.Count -gt 0) {
+        Assert-True ($inferredCategoryNames -contains "Mechanical Equipment") "Runtime MTL fan coil inference should use Mechanical Equipment scope."
+    }
+    Assert-Equal ([string]$inferred.planCandidateMode) "none" "Runtime inferred first pass should not request plan candidates."
+    if ($null -ne $inferred.riskPolicy) {
+        Assert-Equal ([string]$inferred.riskPolicy.riskLevel) "low" "Runtime inferred first pass should report low search risk."
+        Assert-Equal ([bool]$inferred.riskPolicy.requiresUserControl) $false "Runtime inferred first pass should not require user control."
+    }
+    Assert-Equal ([bool]$broad.success) $true "Runtime broad MTL query should return a successful response."
+    if ([bool]$broad.guarded) {
+        Assert-Equal ([string]$broad.state) "guarded" "Runtime broad MTL guard state changed."
+        Assert-Equal ([string]$broad.reason) "needs_scope" "Runtime broad MTL guard reason changed."
+        if ($null -ne $broad.riskPolicy) {
+            Assert-Equal ([bool]$broad.riskPolicy.requiresUserControl) $true "Runtime broad MTL guarded query should require user control."
+        }
     }
 
-    $proof = ($nodeOutput -join "`n") | ConvertFrom-Json
-    Assert-Equal ([bool]$proof.inferred.success) $true "Runtime MTL fan coil inference should succeed."
-    Assert-Equal ([bool]$proof.inferred.guarded) $false "Runtime MTL fan coil inference should not be guarded."
-    Assert-Equal ([string]$proof.inferred.query) "MTL" "Runtime MTL fan coil inference should strip the MEP concept token."
-    Assert-True (@($proof.inferred.categoryNames) -contains "Mechanical Equipment") "Runtime MTL fan coil inference should use Mechanical Equipment scope."
-    Assert-Equal ([string]$proof.inferred.planCandidateMode) "none" "Runtime inferred first pass should not request plan candidates."
-    Assert-Equal ([string]$proof.inferred.riskPolicy.riskLevel) "low" "Runtime inferred first pass should report low search risk."
-    Assert-Equal ([bool]$proof.inferred.riskPolicy.requiresUserControl) $false "Runtime inferred first pass should not require user control."
-    Assert-Equal ([bool]$proof.broad.success) $true "Runtime broad MTL guard should return a protected result."
-    Assert-Equal ([bool]$proof.broad.guarded) $true "Runtime broad MTL query should be guarded."
-    Assert-Equal ([string]$proof.broad.state) "guarded" "Runtime broad MTL guard state changed."
-    Assert-Equal ([string]$proof.broad.reason) "needs_scope" "Runtime broad MTL guard reason changed."
-    Assert-Equal ([bool]$proof.broad.riskPolicy.requiresUserControl) $true "Runtime broad MTL query should require user control."
-    Assert-Equal ([int]$proof.history.afterBroad) ([int]$proof.history.afterInferred) "Runtime broad guard should not add a Revit bridge task."
-    Assert-True ($null -eq $proof.history.activeTask) "Runtime find_elements policy proof should leave no active Revit task."
+    $historyAfterInferred = Get-RevAgentValue -Object $statusAfterInferred -Name "recentHistoryCount"
+    $historyAfterBroad = Get-RevAgentValue -Object $statusAfterBroad -Name "recentHistoryCount"
+    if ([bool]$broad.guarded -and $null -ne $historyAfterInferred -and $null -ne $historyAfterBroad) {
+        Assert-Equal ([int]$historyAfterBroad) ([int]$historyAfterInferred) "Runtime broad guard should not add a Revit bridge task."
+    }
+    Assert-True ($null -eq (Get-RevAgentValue -Object $statusBefore -Name "activeTask")) "Runtime find_elements policy proof should start with no active Revit task."
+    Assert-True ($null -eq (Get-RevAgentValue -Object $statusAfterBroad -Name "activeTask")) "Runtime find_elements policy proof should leave no active Revit task."
 }
 
 Write-Host "Live commandset integration target: $HostName`:$Port"

@@ -178,6 +178,7 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "CD release root should carry usage-intelligence admin add-on tools."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\publish-desktop-launcher-evidence.ps1") -PathType Leaf) "CD release root should carry the desktop launcher evidence helper."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\collect-rollout-evidence.ps1") -PathType Leaf) "CD release root should carry the SSH rollout evidence collector."
+    Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\invoke-live-smoke-over-ssh.ps1") -PathType Leaf) "CD release root should carry the SSH live smoke runner."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\test-commandset-live.ps1") -PathType Leaf) "CD release root should carry the live smoke evidence helper."
 
     $legacyReleaseDir = Join-Path $nasRoot "releases\2026.05.01.legacy"
@@ -201,6 +202,7 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "NAS publish should carry usage-intelligence admin add-on tools."
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\publish-desktop-launcher-evidence.ps1") -PathType Leaf) "NAS publish should carry the desktop launcher evidence helper."
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\collect-rollout-evidence.ps1") -PathType Leaf) "NAS publish should carry the SSH rollout evidence collector."
+    Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\invoke-live-smoke-over-ssh.ps1") -PathType Leaf) "NAS publish should carry the SSH live smoke runner."
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\test-commandset-live.ps1") -PathType Leaf) "NAS publish should carry the live smoke evidence helper."
 
     $nasReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
