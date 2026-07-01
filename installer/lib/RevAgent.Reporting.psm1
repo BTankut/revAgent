@@ -31,7 +31,7 @@ function New-RevitMcpUpdateReport {
 
     return [ordered]@{
         schemaVersion = 1
-        app = "revit-mcp-skill"
+        app = "revAgent"
         computerName = $env:COMPUTERNAME
         userName = $env:USERNAME
         status = $Status

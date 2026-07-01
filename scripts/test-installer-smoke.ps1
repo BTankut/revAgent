@@ -1281,8 +1281,10 @@ try {
     $reportPath = Join-Path $tempRoot "report.json"
     Write-RevAgentJsonFile -Path $reportPath -Value $report
     $reportJson = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
+    Assert-Equal $reportJson.app "revAgent" "Report JSON app identity must use revAgent."
     Assert-Equal $reportJson.status "current" "Report JSON status was not written."
     $reportingText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.Reporting.psm1")
+    Assert-True ($reportingText -match 'app = "revAgent"' -and $reportingText -notmatch 'app = "revit-mcp-skill"') "Machine report helper must default to the revAgent app identity."
     Assert-True ($reportingText -match '\$operationLatestPath = Join-Path \$machineRoot \("\{0\}-latest\.json" -f \$safeOperation\)' -and $reportingText -match 'Write-RevitMcpJsonFile -Path \$operationLatestPath -Value \$published') "Machine report publishing must emit operation-specific latest files used by dashboard version fallback."
     $safePathCases = @(
         @{ input = "HAFIZE"; expected = "HAFIZE" },

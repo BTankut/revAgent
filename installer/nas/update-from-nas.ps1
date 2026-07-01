@@ -1285,7 +1285,7 @@ function Write-NpmDependencyMarker {
 
     $marker = [ordered]@{
         schemaVersion = 1
-        app = "revit-mcp-skill"
+        app = "revAgent"
         fingerprintPath = [string]$Fingerprint.path
         fingerprintSha256 = [string]$Fingerprint.sha256
         omitDev = $true
@@ -2635,7 +2635,7 @@ function Write-UpdateReport {
 
     $report = [ordered]@{
         schemaVersion = 1
-        app = "revit-mcp-skill"
+        app = "revAgent"
         updaterVersion = $updaterVersion
         operation = $script:RevAgentOperation
         operationMethod = $script:RevAgentOperationMethod
@@ -3825,7 +3825,7 @@ try {
 
     $newState = [ordered]@{
         schemaVersion = 1
-        app = "revit-mcp-skill"
+        app = "revAgent"
         version = $targetVersion
         channel = $channel.channel
         installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
