@@ -45,9 +45,11 @@ Keep legacy names only when they are one of these exact identities:
 - Installer helper module files now use canonical `installer/lib/RevAgent.*.psm1`
   names. Matching `installer/lib/RevitMcp.*.psm1` files remain only as
   compatibility wrappers that import the new modules.
-- Exported installer helper functions now expose `RevAgent*` aliases while
-  retaining the original `RevitMcp*` function definitions for rolling-update
-  compatibility.
+- Exported installer helper functions expose `RevAgent*` surfaces while
+  retaining `RevitMcp*` compatibility. Most modules still keep original
+  `RevitMcp*` function definitions with `RevAgent*` aliases; `RevAgent.Proxy`
+  now defines canonical `RevAgent*` functions and exports `RevitMcp*`
+  compatibility aliases.
 - Installer entrypoint private helper names now use `RevAgent*` names in the
   workstation installer, updater, migration, publisher, readiness, and signed-CD
   scripts. Legacy cleanup/path literals and public compatibility APIs remain

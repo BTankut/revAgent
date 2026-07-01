@@ -413,9 +413,10 @@ Shared helpers live under `installer/lib/` and are copied beside local updater
 tools under `C:\ProgramData\DPE\revAgent\updater\lib` and NAS `tools\lib`.
 The Revit version matrix is copied beside those tools as `config\`. Canonical
 module filenames and active callers use `RevAgent.*`; legacy `RevitMcp.*`
-wrapper modules and exported `RevitMcp*` function definitions remain only for
-rolling-update compatibility while `RevAgent*` aliases are the preferred helper
-API for new scripts.
+wrapper modules remain only for rolling-update compatibility. Most helper
+modules still expose `RevitMcp*` function definitions with `RevAgent*` aliases,
+while canonicalized modules such as `RevAgent.Proxy.psm1` define `RevAgent*`
+functions and keep `RevitMcp*` aliases for old callers.
 
 - `RevAgent.HiddenLauncher.psm1`: single-line VBS hidden launcher generation
   with child exit-code propagation.
