@@ -1,5 +1,5 @@
 {
-  "name": "revit-mcp",
+  "name": "revagent-runtime",
   "version": "1.0.0",
   "description": "Bundled local MCP server for the self-contained revAgent standard user package.",
   "private": true,
@@ -7,6 +7,7 @@
   "type": "module",
   "license": "UNLICENSED",
   "bin": {
+    "revagent-runtime": "./build/index.js",
     "revit-mcp": "./build/index.js"
   },
   "dependencies": {
