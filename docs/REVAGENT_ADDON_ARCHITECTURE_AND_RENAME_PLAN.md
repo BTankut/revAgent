@@ -228,13 +228,13 @@ read its `channels\stable.json`.
 
 ### Repo Rename Strategy
 
-1. Finish and merge add-on split first.
+1. Finish and merge add-on split first. (completed)
 2. Ensure CI/CD, publish scripts, runbooks, and local tools use repo-root
-   discovery rather than hardcoded `revit-mcp-skill`.
-3. Rename local folder from `revit-mcp-skill` to `revAgent`.
-4. Rename GitHub repository to `revAgent`.
+   discovery rather than hardcoded `revit-mcp-skill`. (completed)
+3. Rename local folder from `revit-mcp-skill` to `revAgent`. (completed)
+4. Rename GitHub repository to `revAgent`. (completed)
 5. Update local remote URL and any docs/scripts that reference the old repo
-   name.
+   name. (completed)
 6. Keep GitHub redirect compatibility only as a short transition aid.
 
 ### Internal Code Rename Strategy
@@ -310,10 +310,11 @@ legacy cleanup paths.
    - Update local updater configs to the new root.
    - Retire old NAS root after machine migration.
 
-9. **Repo rename** - pending
-   - Rename local and GitHub repo to `revAgent`.
-   - Update docs, CI/CD, and tool references.
-   - Keep old remote redirect only during transition.
+9. **Repo rename** - completed
+   - Local and GitHub repo names now use `revAgent`.
+   - Local remote URL and active docs/scripts are verified against the canonical
+     repository.
+   - Old remote redirects are transition aids only, not canonical state.
 
 10. **Deep internal rename** - pending
     - Remove remaining internal `RevitMCP` and `revit-mcp` names in small,
@@ -342,8 +343,8 @@ Dashboard admin add-on config also uses the canonical
 Remaining legacy names are tracked in
 `docs/REVAGENT_LEGACY_NAME_INVENTORY.md`; do not bulk-rename them outside the
 listed follow-up PRs.
-GitHub/local repository rename and deep internal implementation renames remain
-separate follow-up workstreams.
+GitHub/local repository rename is complete. Deep internal implementation
+renames remain a separate follow-up workstream.
 
 ## Acceptance Criteria
 

@@ -21,9 +21,11 @@ C:\Users\BT\Projects\revAgent
 
 - GitHub repository rename is complete: canonical remote is now
   `BTankut/revAgent`.
-- The local coordinator workspace may still be open at the old folder name
-  during active Codex work. Rename the local folder only after closing tools
-  that hold the workspace.
+- Local coordinator workspace rename is complete: the active workspace is
+  `C:\Users\BT\Projects\revAgent`.
+- Post-rename verification passed on 2026-07-01: canonical remote URL,
+  `gh repo view`, `git status --short --branch`, and
+  `scripts\test-repo-rename-readiness.ps1`.
 
 ## Preflight
 
@@ -32,7 +34,8 @@ C:\Users\BT\Projects\revAgent
 3. Confirm the current NAS stable is already using the canonical revAgent
    deploy root and `app: revAgent`.
 4. Confirm GitHub Actions are not running a production publish.
-5. Keep the old local folder untouched until the remote rename is complete.
+5. For any stale local clone still using the old folder name, close tools that
+   hold that clone before attempting a local rename.
 
 ## GitHub Repository Rename
 
@@ -51,9 +54,10 @@ as the canonical state. Treat redirects only as a temporary transition aid.
 
 ## Local Rename
 
-Status: pending until the active Codex/editor workspace can be closed.
+Status: completed on 2026-07-01 for the coordinator workspace.
 
-Close tools that hold the repository folder, then run from the parent folder:
+For a stale secondary clone that still uses the old folder name, close tools
+that hold the repository folder, then run from the parent folder:
 
 ```powershell
 Set-Location C:\Users\BT\Projects
