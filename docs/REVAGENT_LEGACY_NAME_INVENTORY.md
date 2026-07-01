@@ -83,6 +83,10 @@ Keep legacy names only when they are one of these exact identities:
   config written by active installer/updater paths now default to
   `app: revAgent`. Legacy `revit-mcp-skill` remains only as an accepted release
   identity or cleanup/recovery marker.
+- GitHub repository rename is complete: the canonical remote is
+  `BTankut/revAgent`. The local coordinator folder rename remains a separate
+  workspace cutover because active Codex/editor processes may hold the old
+  folder open.
 
 ## Intentional Compatibility Names
 
@@ -103,11 +107,12 @@ These are expected to remain until a larger migration explicitly replaces them.
 ## Next Migration PRs
 
 1. **Repository rename PR**
-   - Readiness work is in progress: active docs and GitHub API examples no
-     longer depend on the old GitHub slug, and the runbook is captured in
+   - Readiness work is complete: active docs and GitHub API examples no longer
+     depend on the old GitHub slug, and the runbook is captured in
      `docs\REVAGENT_REPOSITORY_RENAME_RUNBOOK.md`.
-   - The actual GitHub repository rename and local folder rename remain a
-     coordinated external cutover because they are not ordinary PR changes.
+   - The GitHub repository rename is complete. The local folder rename remains
+     a coordinated workspace cutover because it cannot be safely forced while
+     Codex/editor processes are using the old path.
 
 2. **Compatibility root cleanup/freeze**
    - Default `revit-mcp-deploy` dual publish and launcher fallback are removed.
