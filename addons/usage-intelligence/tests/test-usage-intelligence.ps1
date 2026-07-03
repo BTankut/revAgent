@@ -646,6 +646,16 @@ try {
     Assert-True ($manualCorrelation.outcome.guardedCount -ge 1) "Correlation should surface guarded revAgent operations."
     Assert-True (@($manualCorrelation.productSignals | Where-Object { $_.signal -eq "guarded_workflow_friction" }).Count -eq 1) "Correlation should create a guarded workflow product signal."
     Assert-True (Test-Path -LiteralPath $manualInsightsPath -PathType Leaf) "Product insights Markdown was not written."
+    $manualSkipInsightsPath = Join-Path $tempRoot "manual-skip-product-insights.md"
+    & (Join-Path $usageScriptsRoot "correlate-usage-sessions.ps1") `
+        -ReportsRoot $reportsRoot `
+        -DateUtc "2026-05-27" `
+        -OutputPath (Join-Path $tempRoot "manual-skip-session-correlations.json") `
+        -MarkdownOutputPath $manualSkipInsightsPath `
+        -TimeWindowMinutes 10 `
+        -Top 10 `
+        -SkipMarkdown | Out-Null
+    Assert-True (-not (Test-Path -LiteralPath $manualSkipInsightsPath -PathType Leaf)) "Session correlator -SkipMarkdown must suppress product insights Markdown."
 
     $outputPath = Join-Path $tempRoot "summary.json"
     & (Join-Path $usageScriptsRoot "summarize-usage-intelligence.ps1") `
@@ -723,6 +733,26 @@ try {
     $markdownText = Get-Content -Raw -Encoding UTF8 -LiteralPath $latestMarkdown
     Assert-True ($markdownText -match 'revAgent Usage Summary') "Markdown summary title missing."
     Assert-True ($markdownText -match 'Guarded write preview Level 02 Room 204') "Markdown guarded operation sample missing."
+
+    $skipMarkdownRoot = Join-Path $reportsRoot "summaries-skip-markdown"
+    $skipMarkdownOutput = & (Join-Path $usageScriptsRoot "publish-usage-summary.ps1") `
+        -ReportsRoot $reportsRoot `
+        -DateUtc "2026-05-27" `
+        -OutputRoot $skipMarkdownRoot `
+        -Top 10 `
+        -SkipMarkdown
+    $skipMarkdownReport = $skipMarkdownOutput | ConvertFrom-Json
+    $skipMarkdownDailyJson = Join-Path $skipMarkdownRoot "daily\2026-05-27.json"
+    $skipMarkdownDailyMarkdown = Join-Path $skipMarkdownRoot "daily\2026-05-27.md"
+    $skipMarkdownCorrelationJson = Join-Path $skipMarkdownRoot "daily\2026-05-27.session-correlations.json"
+    $skipMarkdownProductInsights = Join-Path $skipMarkdownRoot "daily\2026-05-27.product-insights.md"
+    Assert-True (Test-Path -LiteralPath $skipMarkdownDailyJson -PathType Leaf) "SkipMarkdown publish must still write daily JSON."
+    Assert-True (Test-Path -LiteralPath $skipMarkdownCorrelationJson -PathType Leaf) "SkipMarkdown publish must still write session correlation JSON."
+    Assert-True (-not (Test-Path -LiteralPath $skipMarkdownDailyMarkdown -PathType Leaf)) "SkipMarkdown publish must suppress daily Markdown."
+    Assert-True (-not (Test-Path -LiteralPath $skipMarkdownProductInsights -PathType Leaf)) "SkipMarkdown publish must suppress product insights Markdown."
+    Assert-Equal $skipMarkdownReport.latestMarkdownPath $null "SkipMarkdown publish must not report a latest Markdown path."
+    $skipMarkdownPublishedDay = @($skipMarkdownReport.published)[0]
+    Assert-Equal $skipMarkdownPublishedDay.productInsightsPath $null "SkipMarkdown publish must not report a product insights Markdown path."
 
     $multiDateRoot = Join-Path $reportsRoot "summaries-multi"
     $multiDateOutput = & (Join-Path $usageScriptsRoot "publish-usage-summary.ps1") `

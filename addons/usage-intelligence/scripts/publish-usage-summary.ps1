@@ -417,7 +417,8 @@ try {
                 -OutputPath $dailyCorrelationJson `
                 -MarkdownOutputPath $dailyProductInsights `
                 -TimeWindowMinutes $CorrelationWindowMinutes `
-                -Top $Top
+                -Top $Top `
+                -SkipMarkdown:$SkipMarkdown
             $correlation = Get-Content -Raw -Encoding UTF8 -LiteralPath $dailyCorrelationJson | ConvertFrom-Json
         }
 

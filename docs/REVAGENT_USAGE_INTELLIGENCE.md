@@ -208,7 +208,9 @@ results, and which product signal should be reviewed.
 `publish-usage-summary.ps1` runs the correlator by default after each daily
 summary. Pass `-SkipCorrelation` only for diagnostics or emergency isolation.
 The default matching window is 45 minutes and can be adjusted with
-`-CorrelationWindowMinutes`.
+`-CorrelationWindowMinutes`. When `-SkipMarkdown` is used, the publisher still
+writes JSON summaries and JSON session correlations, but suppresses both the
+daily usage Markdown and `product-insights.md`.
 
 On the single coordinator workstation, install the daily scheduled publisher:
 

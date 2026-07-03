@@ -15,7 +15,8 @@ param(
     [string]$OutputPath = "",
     [string]$MarkdownOutputPath = "",
     [int]$TimeWindowMinutes = 45,
-    [int]$Top = 50
+    [int]$Top = 50,
+    [switch]$SkipMarkdown
 )
 
 $ErrorActionPreference = "Stop"
@@ -375,7 +376,7 @@ $day = $date.ToString("dd")
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path (Join-Path $ReportsRoot "summaries\daily") ("{0}.session-correlations.json" -f $date.ToString("yyyy-MM-dd"))
 }
-if ([string]::IsNullOrWhiteSpace($MarkdownOutputPath)) {
+if (-not $SkipMarkdown -and [string]::IsNullOrWhiteSpace($MarkdownOutputPath)) {
     $MarkdownOutputPath = Join-Path (Join-Path $ReportsRoot "summaries\daily") ("{0}.product-insights.md" -f $date.ToString("yyyy-MM-dd"))
 }
 
@@ -601,7 +602,7 @@ if (-not [string]::IsNullOrWhiteSpace($outputDir)) {
 }
 $report | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $OutputPath -Encoding UTF8
 
-if (-not [string]::IsNullOrWhiteSpace($MarkdownOutputPath)) {
+if (-not $SkipMarkdown -and -not [string]::IsNullOrWhiteSpace($MarkdownOutputPath)) {
     $markdownDir = Split-Path -Parent $MarkdownOutputPath
     if (-not [string]::IsNullOrWhiteSpace($markdownDir)) {
         New-Item -ItemType Directory -Path $markdownDir -Force | Out-Null
