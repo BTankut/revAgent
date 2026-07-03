@@ -659,12 +659,12 @@ try {
     Assert-Equal $codexPublishReport.contextCount 1 "Codex session latest report context count mismatch."
 
     $manualCorrelationPath = Join-Path $tempRoot "manual-session-correlations.json"
-    $manualInsightsPath = Join-Path $tempRoot "manual-product-insights.md"
+    $manualEvidencePath = Join-Path $tempRoot "manual-session-correlation-evidence.md"
     $manualCorrelationOutput = & (Join-Path $usageScriptsRoot "correlate-usage-sessions.ps1") `
         -ReportsRoot $reportsRoot `
         -DateUtc "2026-05-27" `
         -OutputPath $manualCorrelationPath `
-        -MarkdownOutputPath $manualInsightsPath `
+        -MarkdownOutputPath $manualEvidencePath `
         -TimeWindowMinutes 10 `
         -Top 10 | ConvertFrom-Json
     Assert-Equal $manualCorrelationOutput.schemaVersion "revagent.usage.sessionCorrelation.v1" "Session correlation schema mismatch."
@@ -675,17 +675,21 @@ try {
     Assert-True ($manualCorrelation.revAgent.operationCount -ge 3) "Correlation should include revAgent operations in the same time window."
     Assert-True ($manualCorrelation.outcome.guardedCount -ge 1) "Correlation should surface guarded revAgent operations."
     Assert-True (@($manualCorrelation.productSignals | Where-Object { $_.signal -eq "guarded_workflow_friction" }).Count -eq 1) "Correlation should create a guarded workflow product signal."
-    Assert-True (Test-Path -LiteralPath $manualInsightsPath -PathType Leaf) "Product insights Markdown was not written."
-    $manualSkipInsightsPath = Join-Path $tempRoot "manual-skip-product-insights.md"
+    Assert-True (@($manualCorrelation.reviewSignals | Where-Object { $_.signal -eq "guarded_workflow_friction" }).Count -eq 1) "Correlation should expose review signal aliases for LLM packs."
+    Assert-True (Test-Path -LiteralPath $manualEvidencePath -PathType Leaf) "Session correlation evidence Markdown was not written."
+    $manualEvidenceText = Get-Content -Raw -Encoding UTF8 -LiteralPath $manualEvidencePath
+    Assert-True ($manualEvidenceText -match 'Session Correlation Evidence') "Session correlation evidence title missing."
+    Assert-True ($manualEvidenceText -match 'not the final product report') "Session correlation evidence must say it is not the final report."
+    $manualSkipEvidencePath = Join-Path $tempRoot "manual-skip-session-correlation-evidence.md"
     & (Join-Path $usageScriptsRoot "correlate-usage-sessions.ps1") `
         -ReportsRoot $reportsRoot `
         -DateUtc "2026-05-27" `
         -OutputPath (Join-Path $tempRoot "manual-skip-session-correlations.json") `
-        -MarkdownOutputPath $manualSkipInsightsPath `
+        -MarkdownOutputPath $manualSkipEvidencePath `
         -TimeWindowMinutes 10 `
         -Top 10 `
         -SkipMarkdown | Out-Null
-    Assert-True (-not (Test-Path -LiteralPath $manualSkipInsightsPath -PathType Leaf)) "Session correlator -SkipMarkdown must suppress product insights Markdown."
+    Assert-True (-not (Test-Path -LiteralPath $manualSkipEvidencePath -PathType Leaf)) "Session correlator -SkipMarkdown must suppress correlation evidence Markdown."
 
     $outputPath = Join-Path $tempRoot "summary.json"
     & (Join-Path $usageScriptsRoot "summarize-usage-intelligence.ps1") `
@@ -737,7 +741,7 @@ try {
     $dailyJson = Join-Path $summaryRoot "daily\2026-05-27.json"
     $dailyMarkdown = Join-Path $summaryRoot "daily\2026-05-27.md"
     $dailyCorrelationJson = Join-Path $summaryRoot "daily\2026-05-27.session-correlations.json"
-    $dailyProductInsights = Join-Path $summaryRoot "daily\2026-05-27.product-insights.md"
+    $dailyCorrelationEvidence = Join-Path $summaryRoot "daily\2026-05-27.session-correlation-evidence.md"
     $latestJson = Join-Path $summaryRoot "latest.json"
     $latestMarkdown = Join-Path $summaryRoot "latest.md"
     $publishLatest = Join-Path $summaryRoot "publish-latest.json"
@@ -745,7 +749,8 @@ try {
     Assert-True (Test-Path -LiteralPath $dailyJson -PathType Leaf) "Daily JSON summary was not written."
     Assert-True (Test-Path -LiteralPath $dailyMarkdown -PathType Leaf) "Daily Markdown summary was not written."
     Assert-True (Test-Path -LiteralPath $dailyCorrelationJson -PathType Leaf) "Daily session correlation JSON was not written."
-    Assert-True (Test-Path -LiteralPath $dailyProductInsights -PathType Leaf) "Daily product insights Markdown was not written."
+    Assert-True (Test-Path -LiteralPath $dailyCorrelationEvidence -PathType Leaf) "Daily session correlation evidence Markdown was not written."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $summaryRoot "daily\2026-05-27.product-insights.md") -PathType Leaf)) "Publisher must not create deterministic product-insights Markdown as the final report."
     Assert-True (Test-Path -LiteralPath $latestJson -PathType Leaf) "Latest JSON summary was not written."
     Assert-True (Test-Path -LiteralPath $latestMarkdown -PathType Leaf) "Latest Markdown summary was not written."
     Assert-True (Test-Path -LiteralPath $publishLatest -PathType Leaf) "Publish report was not written."
@@ -753,9 +758,19 @@ try {
     Assert-Equal $publishReport.latestDateUtc "2026-05-27" "Publish latest date mismatch."
     Assert-True (Test-Path -LiteralPath $publishReport.logPath -PathType Leaf) "Publish log was not written."
     Assert-True (-not (Test-Path -LiteralPath $publishReport.lockPath -PathType Leaf)) "Publish lock was not released."
+    Assert-True (Test-Path -LiteralPath $publishReport.llmReviewPackJsonPath -PathType Leaf) "LLM review pack JSON was not written."
+    Assert-True (Test-Path -LiteralPath $publishReport.llmReviewPackMarkdownPath -PathType Leaf) "LLM review pack prompt Markdown was not written."
+    $llmReviewPack = Get-Content -Raw -Encoding UTF8 -LiteralPath $publishReport.llmReviewPackJsonPath | ConvertFrom-Json
+    Assert-Equal $llmReviewPack.schemaVersion "revagent.usage.llmReviewPack.v1" "LLM review pack schema mismatch."
+    Assert-Equal $llmReviewPack.packKind "llm_input_not_final_report" "LLM review pack must not claim to be a final report."
+    Assert-Equal $llmReviewPack.dateRange.startUtc "2026-05-27" "Single-date LLM review pack start date mismatch."
+    Assert-Equal $llmReviewPack.dateRange.endUtc "2026-05-27" "Single-date LLM review pack end date mismatch."
+    Assert-True (@($llmReviewPack.sessionEvidence).Count -eq 1) "LLM review pack should include correlated session evidence."
+    Assert-True ($llmReviewPack.llmInstructions.purpose -match 'Do not treat deterministic counters as the final report') "LLM review pack must carry analyst interpretation instructions."
     $publishedDay = @($publishReport.published)[0]
     Assert-Equal $publishedDay.sessionCorrelationCount 1 "Publish report must include session correlation count."
-    Assert-True ($publishedDay.productSignalCount -ge 1) "Publish report must include product signal count."
+    Assert-True ($publishedDay.reviewSignalCount -ge 1) "Publish report must include review signal count."
+    Assert-Equal $publishedDay.productInsightsPath $null "Publish report must not treat deterministic evidence as product insights."
 
     $latestSummary = Get-Content -Raw -Encoding UTF8 -LiteralPath $latestJson | ConvertFrom-Json
     Assert-Equal $latestSummary.schemaVersion "revagent.usage.summary.v1" "Latest summary schema mismatch."
@@ -775,14 +790,16 @@ try {
     $skipMarkdownDailyJson = Join-Path $skipMarkdownRoot "daily\2026-05-27.json"
     $skipMarkdownDailyMarkdown = Join-Path $skipMarkdownRoot "daily\2026-05-27.md"
     $skipMarkdownCorrelationJson = Join-Path $skipMarkdownRoot "daily\2026-05-27.session-correlations.json"
-    $skipMarkdownProductInsights = Join-Path $skipMarkdownRoot "daily\2026-05-27.product-insights.md"
+    $skipMarkdownCorrelationEvidence = Join-Path $skipMarkdownRoot "daily\2026-05-27.session-correlation-evidence.md"
     Assert-True (Test-Path -LiteralPath $skipMarkdownDailyJson -PathType Leaf) "SkipMarkdown publish must still write daily JSON."
     Assert-True (Test-Path -LiteralPath $skipMarkdownCorrelationJson -PathType Leaf) "SkipMarkdown publish must still write session correlation JSON."
     Assert-True (-not (Test-Path -LiteralPath $skipMarkdownDailyMarkdown -PathType Leaf)) "SkipMarkdown publish must suppress daily Markdown."
-    Assert-True (-not (Test-Path -LiteralPath $skipMarkdownProductInsights -PathType Leaf)) "SkipMarkdown publish must suppress product insights Markdown."
+    Assert-True (-not (Test-Path -LiteralPath $skipMarkdownCorrelationEvidence -PathType Leaf)) "SkipMarkdown publish must suppress correlation evidence Markdown."
     Assert-Equal $skipMarkdownReport.latestMarkdownPath $null "SkipMarkdown publish must not report a latest Markdown path."
+    Assert-True (Test-Path -LiteralPath $skipMarkdownReport.llmReviewPackJsonPath -PathType Leaf) "SkipMarkdown publish must still write LLM review pack JSON."
+    Assert-Equal $skipMarkdownReport.llmReviewPackMarkdownPath $null "SkipMarkdown publish must suppress LLM review pack prompt Markdown."
     $skipMarkdownPublishedDay = @($skipMarkdownReport.published)[0]
-    Assert-Equal $skipMarkdownPublishedDay.productInsightsPath $null "SkipMarkdown publish must not report a product insights Markdown path."
+    Assert-Equal $skipMarkdownPublishedDay.sessionCorrelationEvidencePath $null "SkipMarkdown publish must not report a correlation evidence Markdown path."
 
     $multiDateRoot = Join-Path $reportsRoot "summaries-multi"
     $multiDateOutput = & (Join-Path $usageScriptsRoot "publish-usage-summary.ps1") `
@@ -928,6 +945,7 @@ try {
     Assert-Equal ([bool]$usageAddonInstallResult.installed) $true "Usage-intelligence add-on installer should report installed=true."
     Assert-Equal ([bool]$usageAddonInstallResult.scheduledTaskInstalled) $false "Usage-intelligence add-on installer should honor SkipScheduledTasks."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\publish-usage-summary.ps1") -PathType Leaf) "Installed usage publisher missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\prepare-llm-review-pack.ps1") -PathType Leaf) "Installed LLM review pack preparer missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\summarize-usage-intelligence.ps1") -PathType Leaf) "Installed usage summarizer missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\install-usage-summary-task.ps1") -PathType Leaf) "Installed usage task installer missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\export-codex-session-context.ps1") -PathType Leaf) "Installed Codex session exporter missing."
@@ -960,9 +978,11 @@ try {
         -SkipScheduledTasks | ConvertFrom-Json
     Assert-Equal ([bool]$providerQualifiedUsageResult.installed) $true "Usage-intelligence add-on installer must accept provider-qualified FileSystem source roots from NAS/tool launch contexts."
     Assert-True (Test-Path -LiteralPath (Join-Path $providerQualifiedUsageRoot "scripts\publish-usage-summary.ps1") -PathType Leaf) "Provider-qualified usage install should copy the publisher payload."
+    Assert-True (Test-Path -LiteralPath (Join-Path $providerQualifiedUsageRoot "scripts\prepare-llm-review-pack.ps1") -PathType Leaf) "Provider-qualified usage install should copy the LLM review pack preparer."
 
     $usageAddonManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\usage-intelligence\addon.json") | ConvertFrom-Json
     Assert-Equal $usageAddonManifest.entrypoints.installScript "installer\install-usage-intelligence-addon.ps1" "Usage-intelligence manifest must expose installer entrypoint."
+    Assert-Equal $usageAddonManifest.entrypoints.prepareLlmReviewPack "scripts\prepare-llm-review-pack.ps1" "Usage-intelligence manifest must expose LLM review pack entrypoint."
     Assert-Equal $usageAddonManifest.entrypoints.publishCodexSessionContext "scripts\publish-codex-session-context.ps1" "Usage-intelligence manifest must expose Codex session publisher entrypoint."
     Assert-Equal $usageAddonManifest.entrypoints.installCodexSessionExportTask "scripts\install-codex-session-export-task.ps1" "Usage-intelligence manifest must expose Codex session export task installer entrypoint."
     Assert-Equal $usageAddonManifest.entrypoints.exportCodexSessionContext "scripts\export-codex-session-context.ps1" "Usage-intelligence manifest must expose Codex session exporter entrypoint."

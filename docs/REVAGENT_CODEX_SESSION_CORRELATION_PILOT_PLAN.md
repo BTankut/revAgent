@@ -30,11 +30,13 @@ New bounded Codex session context is written to:
 reports\codex-sessions\YYYY\MM\DD\<machine>\<codexSessionId>.context.json
 ```
 
-Daily correlation outputs are written to:
+Daily deterministic evidence outputs are written to:
 
 ```text
 reports\summaries\daily\YYYY-MM-DD.session-correlations.json
-reports\summaries\daily\YYYY-MM-DD.product-insights.md
+reports\summaries\daily\YYYY-MM-DD.session-correlation-evidence.md
+reports\llm-review-packs\<range>\review-pack.json
+reports\llm-review-packs\<range>\review-pack-prompt.md
 ```
 
 ## Privacy Boundary
@@ -61,13 +63,18 @@ images, and unbounded file contents are outside the exported context contract.
    written under the add-on state folder.
 4. Confirm the context JSON lands under `reports\codex-sessions`.
 5. Run the correlation script for the same UTC date.
-6. Review whether each correlation can answer:
+6. Run the LLM review pack preparer for the target date range.
+7. Open a new Codex/LLM chat and use the pack to prepare the actual semantic
+   management report.
+8. Review whether the LLM can answer:
    - What did the user ask for?
    - Which tools did Codex use?
    - What did revAgent do in Revit?
    - Did the workflow complete, guard, fail, or stop partially?
    - Did the user repeat or repair the request?
    - Does the evidence point to a product improvement?
+   - Which users need targeted training?
+   - Which findings are strong enough for action, and which need follow-up?
 
 ## Rollout Rule
 
@@ -83,6 +90,8 @@ This package adds:
 - a NET01-ready Codex session context exporter
 - a workstation-side scheduled exporter task for NET01 automation testing
 - a deterministic revAgent telemetry correlator
-- daily publish integration for correlation outputs
+- an LLM review pack preparer that treats deterministic outputs as evidence,
+  not as the final report
+- daily publish integration for correlation and review-pack outputs
 - tests with fixture Codex sessions and telemetry events
 - documentation for the pilot runbook and data contract

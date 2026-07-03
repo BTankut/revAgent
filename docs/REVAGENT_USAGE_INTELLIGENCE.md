@@ -123,9 +123,13 @@ developer compatibility:
 ```text
 <reportsRoot>\summaries\daily\YYYY-MM-DD.json
 <reportsRoot>\summaries\daily\YYYY-MM-DD.md
+<reportsRoot>\summaries\daily\YYYY-MM-DD.session-correlations.json
+<reportsRoot>\summaries\daily\YYYY-MM-DD.session-correlation-evidence.md
 <reportsRoot>\summaries\latest.json
 <reportsRoot>\summaries\latest.md
 <reportsRoot>\summaries\publish-latest.json
+<reportsRoot>\llm-review-packs\<range>\review-pack.json
+<reportsRoot>\llm-review-packs\<range>\review-pack-prompt.md
 ```
 
 Example:
@@ -136,8 +140,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\publish-usage-summary.ps1 `
   -DateUtc "2026-05-27"
 ```
 
-`latest.json` is the stable machine-readable input for the next dashboard or
-master-LLM layer. Markdown files are only a compact human support view.
+`latest.json` is the stable machine-readable input for the dashboard. The LLM
+analysis entrypoint is the bounded review pack under `reports\llm-review-packs`.
+Markdown files are compact support or prompt-handoff views; they are not the
+final usage report.
 
 ## Codex Session Correlation
 
@@ -225,21 +231,65 @@ machine/user/time window, and writes:
 
 ```text
 <reportsRoot>\summaries\daily\YYYY-MM-DD.session-correlations.json
-<reportsRoot>\summaries\daily\YYYY-MM-DD.product-insights.md
+<reportsRoot>\summaries\daily\YYYY-MM-DD.session-correlation-evidence.md
 ```
 
 The correlation output uses schema `revagent.usage.sessionCorrelation.v1`.
 It is deterministic and does not call an LLM. Its job is to prepare a compact
 evidence packet that answers: what the user asked, which tools Codex used, what
 revAgent did, whether the result succeeded/guarded/failed/returned partial
-results, and which product signal should be reviewed.
+results, and which review signal should be inspected by an LLM or human
+reviewer. It is not the final product insight report.
 
-`publish-usage-summary.ps1` runs the correlator by default after each daily
-summary. Pass `-SkipCorrelation` only for diagnostics or emergency isolation.
-The default matching window is 45 minutes and can be adjusted with
+The LLM review pack preparer is:
+
+```text
+addons/usage-intelligence/scripts/prepare-llm-review-pack.ps1
+```
+
+Compatibility wrapper:
+
+```text
+scripts/prepare-llm-review-pack.ps1
+```
+
+It reads daily summaries, bounded Codex contexts, and session-correlation
+evidence for one or more dates and writes:
+
+```text
+<reportsRoot>\llm-review-packs\<range>\review-pack.json
+<reportsRoot>\llm-review-packs\<range>\review-pack-prompt.md
+```
+
+The review pack uses schema `revagent.usage.llmReviewPack.v1` and carries
+`packKind: "llm_input_not_final_report"`. Its purpose is to give a new
+Codex/LLM chat clean evidence, source paths, privacy limits, and analysis
+instructions. The LLM, not the deterministic script, prepares the semantic
+management report and answers follow-up questions.
+
+Example two-day analyst entrypoint:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\prepare-llm-review-pack.ps1 `
+  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports" `
+  -DaysBack 2
+```
+
+Example Codex prompt after the pack exists:
+
+```text
+Merhaba, usage-intelligence add-on'unu kullanarak revAgent ile son iki gunde
+kullanicilar neler yapmis bir gorelim. Once on ozet raporu ver; sonra detayli
+konusuruz.
+```
+
+`publish-usage-summary.ps1` runs the correlator and prepares the LLM review
+pack by default after each daily summary. Pass `-SkipCorrelation` or
+`-SkipLlmReviewPack` only for diagnostics or emergency isolation. The default
+matching window is 45 minutes and can be adjusted with
 `-CorrelationWindowMinutes`. When `-SkipMarkdown` is used, the publisher still
-writes JSON summaries and JSON session correlations, but suppresses both the
-daily usage Markdown and `product-insights.md`.
+writes JSON summaries, JSON session correlations, and JSON LLM review packs, but
+suppresses human-readable Markdown handoffs.
 
 On the single coordinator workstation, install the daily scheduled publisher:
 

@@ -329,7 +329,9 @@ function New-CorrelationMarkdown {
     param([object]$Report)
 
     $lines = [System.Collections.Generic.List[string]]::new()
-    $lines.Add("# revAgent Session Correlation Product Insights")
+    $lines.Add("# revAgent Session Correlation Evidence")
+    $lines.Add("")
+    $lines.Add("This deterministic file is LLM evidence, not the final product report.")
     $lines.Add("")
     $lines.Add("- Date UTC: $($Report.dateUtc)")
     $lines.Add("- Generated UTC: $($Report.generatedAtUtc)")
@@ -337,7 +339,7 @@ function New-CorrelationMarkdown {
     $lines.Add("- revAgent event files: $($Report.source.revAgentEventFileCount)")
     $lines.Add("- Correlations: $($Report.summary.correlationCount)")
     $lines.Add("- Correlations with revAgent events: $($Report.summary.correlationsWithRevAgentEvents)")
-    $lines.Add("- Product signals: $($Report.summary.productSignalCount)")
+    $lines.Add("- Review signals: $($Report.summary.productSignalCount)")
     $lines.Add("")
     $lines.Add("## Correlations")
 
@@ -359,7 +361,7 @@ function New-CorrelationMarkdown {
             $lines.Add("- Outcome: success=$($item.outcome.successCount), guarded=$($item.outcome.guardedCount), failed=$($item.outcome.failedCount), partial=$($item.outcome.partialCount)")
             if (@($item.productSignals).Count -gt 0) {
                 foreach ($signal in @($item.productSignals)) {
-                    $lines.Add("- Product signal: $($signal.signal) | $($signal.suggestedAction)")
+                    $lines.Add("- Review signal: $($signal.signal) | $($signal.suggestedAction)")
                 }
             }
         }
@@ -377,7 +379,7 @@ if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path (Join-Path $ReportsRoot "summaries\daily") ("{0}.session-correlations.json" -f $date.ToString("yyyy-MM-dd"))
 }
 if (-not $SkipMarkdown -and [string]::IsNullOrWhiteSpace($MarkdownOutputPath)) {
-    $MarkdownOutputPath = Join-Path (Join-Path $ReportsRoot "summaries\daily") ("{0}.product-insights.md" -f $date.ToString("yyyy-MM-dd"))
+    $MarkdownOutputPath = Join-Path (Join-Path $ReportsRoot "summaries\daily") ("{0}.session-correlation-evidence.md" -f $date.ToString("yyyy-MM-dd"))
 }
 
 $contextRoot = Join-Path (Join-Path (Join-Path (Join-Path $ReportsRoot "codex-sessions") $year) $month) $day
@@ -555,6 +557,7 @@ foreach ($context in $contexts) {
             dynamicCodeCount = $sendCodeCount
         }
         friction = @($friction.ToArray())
+        reviewSignals = @($productSignals.ToArray())
         productSignals = @($productSignals.ToArray())
     }
 
@@ -589,10 +592,12 @@ $report = [ordered]@{
     summary = [ordered]@{
         correlationCount = $correlations.Count
         correlationsWithRevAgentEvents = $correlationsWithEvents
+        reviewSignalCount = $allProductSignals.Count
         productSignalCount = $allProductSignals.Count
         timeWindowMinutes = $windowMinutes
     }
     correlations = @($correlations.ToArray())
+    reviewSignals = @($allProductSignals.ToArray())
     productSignals = @($allProductSignals.ToArray())
 }
 

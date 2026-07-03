@@ -9,6 +9,7 @@
     "summary": "scripts\\summarize-usage-intelligence.ps1",
     "publish": "scripts\\publish-usage-summary.ps1",
     "installTask": "scripts\\install-usage-summary-task.ps1",
+    "prepareLlmReviewPack": "scripts\\prepare-llm-review-pack.ps1",
     "publishCodexSessionContext": "scripts\\publish-codex-session-context.ps1",
     "installCodexSessionExportTask": "scripts\\install-codex-session-export-task.ps1",
     "exportCodexSessionContext": "scripts\\export-codex-session-context.ps1",
