@@ -1282,11 +1282,17 @@ try {
     $usageSummaryWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\summarize-usage-intelligence.ps1")
     $usagePublishWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-usage-summary.ps1")
     $usageTaskWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-usage-summary-task.ps1")
+    $usageExportWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\export-codex-session-context.ps1")
+    $usageCorrelationWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\correlate-usage-sessions.ps1")
     $usageAddonInstallerWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-usage-intelligence-addon.ps1")
     Assert-True ($usageSummaryWrapper -match 'addons\\usage-intelligence\\scripts\\summarize-usage-intelligence\.ps1') "Usage summary compatibility wrapper must delegate to the add-on script."
     Assert-True ($usagePublishWrapper -match 'addons\\usage-intelligence\\scripts\\publish-usage-summary\.ps1') "Usage publish compatibility wrapper must delegate to the add-on script."
     Assert-True ($usageTaskWrapper -match 'addons\\usage-intelligence\\scripts\\install-usage-summary-task\.ps1') "Usage task compatibility wrapper must delegate to the add-on script."
+    Assert-True ($usageExportWrapper -match 'addons\\usage-intelligence\\scripts\\export-codex-session-context\.ps1') "Usage Codex session export wrapper must delegate to the add-on script."
+    Assert-True ($usageCorrelationWrapper -match 'addons\\usage-intelligence\\scripts\\correlate-usage-sessions\.ps1') "Usage session correlation wrapper must delegate to the add-on script."
     Assert-Equal $usageAddonManifest.entrypoints.installScript "installer\install-usage-intelligence-addon.ps1" "Usage-intelligence add-on manifest must expose installer entrypoint."
+    Assert-Equal $usageAddonManifest.entrypoints.exportCodexSessionContext "scripts\export-codex-session-context.ps1" "Usage-intelligence add-on manifest must expose Codex session exporter."
+    Assert-Equal $usageAddonManifest.entrypoints.correlateSessions "scripts\correlate-usage-sessions.ps1" "Usage-intelligence add-on manifest must expose session correlator."
     Assert-True ($usageAddonInstallerWrapper -match 'addons\\usage-intelligence\\installer\\install-usage-intelligence-addon\.ps1') "Usage-intelligence add-on installer wrapper must delegate to the add-on installer."
     $report = New-RevAgentUpdateReport -Status "current" -Message "ok" -PreviousVersion "1" -InstalledVersion "1"
     $reportPath = Join-Path $tempRoot "report.json"

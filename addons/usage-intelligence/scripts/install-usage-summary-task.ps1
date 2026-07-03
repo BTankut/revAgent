@@ -17,7 +17,9 @@ param(
     [string]$PublishScriptPath = "",
     [int]$Top = 20,
     [int]$TaskSampleLimit = 40,
+    [int]$CorrelationWindowMinutes = 45,
     [bool]$IncludeYesterday = $true,
+    [switch]$SkipCorrelation,
     [switch]$RunNow
 )
 
@@ -165,6 +167,8 @@ $config = [ordered]@{
     includeYesterday = [bool]$IncludeYesterday
     top = $Top
     taskSampleLimit = $TaskSampleLimit
+    correlationWindowMinutes = $CorrelationWindowMinutes
+    skipCorrelation = [bool]$SkipCorrelation
     installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
     installedByComputer = $env:COMPUTERNAME
     installedByUser = $env:USERNAME
@@ -174,10 +178,14 @@ $config | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $configPath -Encod
 $scriptArguments = @(
     "-ReportsRoot", $ReportsRoot,
     "-Top", [string]$Top,
-    "-TaskSampleLimit", [string]$TaskSampleLimit
+    "-TaskSampleLimit", [string]$TaskSampleLimit,
+    "-CorrelationWindowMinutes", [string]$CorrelationWindowMinutes
 )
 if ($IncludeYesterday) {
     $scriptArguments += "-IncludeYesterday"
+}
+if ($SkipCorrelation) {
+    $scriptArguments += "-SkipCorrelation"
 }
 
 Write-RevAgentHiddenPowerShellLauncher `
@@ -216,9 +224,13 @@ if ($RunNow) {
         ReportsRoot = $ReportsRoot
         Top = $Top
         TaskSampleLimit = $TaskSampleLimit
+        CorrelationWindowMinutes = $CorrelationWindowMinutes
     }
     if ($IncludeYesterday) {
         $publishParameters["IncludeYesterday"] = $true
+    }
+    if ($SkipCorrelation) {
+        $publishParameters["SkipCorrelation"] = $true
     }
 
     & $PublishScriptPath @publishParameters | Out-Host

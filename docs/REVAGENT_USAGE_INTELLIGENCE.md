@@ -139,6 +139,79 @@ powershell -ExecutionPolicy Bypass -File .\scripts\publish-usage-summary.ps1 `
 `latest.json` is the stable machine-readable input for the next dashboard or
 master-LLM layer. Markdown files are only a compact human support view.
 
+## Codex Session Correlation
+
+The NET01 pilot adds an optional bounded Codex-session context source so product
+analysis can connect user intent, Codex tool use, and revAgent runtime outcomes.
+The developer workstation is not the production data source for this layer.
+NET01 is the pilot machine because Revit, Codex chat, revAgent tool calls, and
+revAgent telemetry can all happen on the same workstation.
+
+The exporter is:
+
+```text
+addons/usage-intelligence/scripts/export-codex-session-context.ps1
+```
+
+Compatibility wrapper:
+
+```text
+scripts/export-codex-session-context.ps1
+```
+
+It reads local Codex JSONL session files and writes bounded context to:
+
+```text
+<reportsRoot>\codex-sessions\YYYY\MM\DD\<machine>\<sessionId>.context.json
+```
+
+The exported context uses schema `revagent.codex.session.context.v1` and
+intentionally does not include a full raw transcript. It keeps only bounded user
+request snippets, bounded assistant outcome snippets, workspace hints, session
+identity, and tool-call names/counts.
+
+Example NET01 pilot export:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\export-codex-session-context.ps1 `
+  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports" `
+  -DateUtc "2026-07-03" `
+  -MachineName "NET01"
+```
+
+The correlator is:
+
+```text
+addons/usage-intelligence/scripts/correlate-usage-sessions.ps1
+```
+
+Compatibility wrapper:
+
+```text
+scripts/correlate-usage-sessions.ps1
+```
+
+It reads `reports\codex-sessions` and `reports\events`, matches by
+machine/user/time window, and writes:
+
+```text
+<reportsRoot>\summaries\daily\YYYY-MM-DD.session-correlations.json
+<reportsRoot>\summaries\daily\YYYY-MM-DD.product-insights.md
+```
+
+The correlation output uses schema `revagent.usage.sessionCorrelation.v1`.
+It is deterministic and does not call an LLM. Its job is to prepare a compact
+evidence packet that answers: what the user asked, which tools Codex used, what
+revAgent did, whether the result succeeded/guarded/failed/returned partial
+results, and which product signal should be reviewed.
+
+`publish-usage-summary.ps1` runs the correlator by default after each daily
+summary. Pass `-SkipCorrelation` only for diagnostics or emergency isolation.
+The default matching window is 45 minutes and can be adjusted with
+`-CorrelationWindowMinutes`. When `-SkipMarkdown` is used, the publisher still
+writes JSON summaries and JSON session correlations, but suppresses both the
+daily usage Markdown and `product-insights.md`.
+
 On the single coordinator workstation, install the daily scheduled publisher:
 
 ```powershell

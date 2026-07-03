@@ -26,6 +26,8 @@ param(
     [int]$KeepLastLogs = 30,
     [int]$Top = 20,
     [int]$TaskSampleLimit = 40,
+    [int]$CorrelationWindowMinutes = 45,
+    [switch]$SkipCorrelation,
     [switch]$SkipMarkdown
 )
 
@@ -355,6 +357,10 @@ $summaryScript = Join-Path $PSScriptRoot "summarize-usage-intelligence.ps1"
 if (-not (Test-Path -LiteralPath $summaryScript -PathType Leaf)) {
     throw "Summary script not found: $summaryScript"
 }
+$correlationScript = Join-Path $PSScriptRoot "correlate-usage-sessions.ps1"
+if (-not $SkipCorrelation -and -not (Test-Path -LiteralPath $correlationScript -PathType Leaf)) {
+    throw "Session correlation script not found: $correlationScript"
+}
 
 Initialize-UsageSummaryLog -Root $LogsRoot
 Acquire-UsageSummaryLock -Path $LockPath -StaleMinutes $StaleLockMinutes
@@ -396,16 +402,41 @@ try {
             New-UsageSummaryMarkdown -Summary $summary | Set-Content -LiteralPath $dailyMarkdown -Encoding UTF8
         }
 
+        $dailyCorrelationJson = $null
+        $dailyProductInsights = $null
+        $correlation = $null
+        if (-not $SkipCorrelation) {
+            Write-UsageSummaryLog "Correlating Codex sessions for date: $dateValue"
+            $dailyCorrelationJson = Join-Path $dailyRoot ("{0}.session-correlations.json" -f $dateValue)
+            if (-not $SkipMarkdown) {
+                $dailyProductInsights = Join-Path $dailyRoot ("{0}.product-insights.md" -f $dateValue)
+            }
+            $correlationOutput = & $correlationScript `
+                -ReportsRoot $ReportsRoot `
+                -DateUtc $dateValue `
+                -OutputPath $dailyCorrelationJson `
+                -MarkdownOutputPath $dailyProductInsights `
+                -TimeWindowMinutes $CorrelationWindowMinutes `
+                -Top $Top `
+                -SkipMarkdown:$SkipMarkdown
+            $correlation = Get-Content -Raw -Encoding UTF8 -LiteralPath $dailyCorrelationJson | ConvertFrom-Json
+        }
+
         $published += [ordered]@{
             dateUtc = $dateValue
             jsonPath = $dailyJson
             markdownPath = $dailyMarkdown
+            sessionCorrelationJsonPath = $dailyCorrelationJson
+            productInsightsPath = $dailyProductInsights
             eventCount = $summary.source.eventCount
             productionOperationCount = $summary.production.operationCount
             sendCodeCount = $summary.sendCode.count
             guardedCount = $summary.friction.guarded.Count
             failedCount = $summary.friction.failed.Count
             generatedFileCount = $summary.production.generatedFileCount
+            codexSessionContextCount = if ($correlation) { $correlation.source.codexContextFileCount } else { 0 }
+            sessionCorrelationCount = if ($correlation) { $correlation.summary.correlationCount } else { 0 }
+            productSignalCount = if ($correlation) { $correlation.summary.productSignalCount } else { 0 }
         }
     }
 
