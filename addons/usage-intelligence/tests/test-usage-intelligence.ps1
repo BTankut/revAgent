@@ -572,6 +572,20 @@ try {
         }
         [ordered]@{
             type = "response_item"
+            timestampUtc = "2026-05-27T08:00:32.000Z"
+            payload = [ordered]@{
+                item = [ordered]@{
+                    type = "message"
+                    role = "user"
+                    content = @(
+                        [ordered]@{ type = "input_text"; text = "# AGENTS.md instructions`n`n<INSTRUCTIONS>`nBootstrap context, not the operator request.`n</INSTRUCTIONS>" },
+                        [ordered]@{ type = "input_text"; text = "<environment_context>`n  <cwd>C:\Projects</cwd>`n</environment_context>" }
+                    )
+                }
+            }
+        }
+        [ordered]@{
+            type = "response_item"
             timestampUtc = "2026-05-27T08:00:40.000Z"
             payload = [ordered]@{
                 item = [ordered]@{
@@ -626,6 +640,7 @@ try {
     Assert-Equal ([bool]$codexContext.source.rawTranscriptIncluded) $false "Codex context must not claim to include a raw transcript."
     Assert-True (@($codexContext.userRequests).Count -eq 1) "Codex context should include one bounded user request."
     Assert-True ($codexContext.userRequests[0].text -match 'Find ducts') "Codex context user request missing."
+    Assert-True ($codexContext.userRequests[0].text -notmatch 'AGENTS\.md instructions') "Codex context must ignore injected AGENTS bootstrap text."
     Assert-True (@($codexContext.toolUsage | Where-Object { $_.name -eq "find_elements" -and $_.count -eq 1 }).Count -eq 1) "Codex context tool usage missing find_elements."
 
     $manualCorrelationPath = Join-Path $tempRoot "manual-session-correlations.json"
