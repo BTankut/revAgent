@@ -24,7 +24,7 @@ function appendNdjson(filePath, value) {
 try {
   writeJson(path.join(releaseRoot, "channels", "stable.json"), {
     schemaVersion: 1,
-    app: "revit-mcp-skill",
+    app: "revAgent",
     channel: "stable",
     version,
     git: {

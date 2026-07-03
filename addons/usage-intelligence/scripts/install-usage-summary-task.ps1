@@ -35,13 +35,18 @@ function Resolve-RevAgentRepositoryRoot {
 }
 
 $repoRoot = Resolve-RevAgentRepositoryRoot
-$libRootCandidates = @(
+$canonicalLibRootCandidates = @(
     (Join-Path $repoRoot "installer\lib"),
     (Join-Path (Split-Path -Parent $repoRoot) "installer\lib"),
     "C:\ProgramData\DPE\revAgent\package\installer\lib",
-    "C:\ProgramData\DPE\revAgent\updater\lib",
+    "C:\ProgramData\DPE\revAgent\updater\lib"
+)
+$legacyCompatibilityLibRootCandidates = @(
     "C:\ProgramData\DPE\RevitMCP\package\installer\lib",
     "C:\ProgramData\DPE\RevitMCP\updater\lib"
+)
+$libRootCandidates = @(
+    $canonicalLibRootCandidates + $legacyCompatibilityLibRootCandidates
 ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
 
 $libRoot = $libRootCandidates | Select-Object -First 1
@@ -130,12 +135,14 @@ if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($PublishScriptPath)) {
+    $legacyCompatibilityPublishScriptCandidates = @(
+        "C:\ProgramData\DPE\RevitMCP\package\scripts\publish-usage-summary.ps1"
+    )
     $candidates = @(
         (Join-Path $PSScriptRoot "publish-usage-summary.ps1"),
         "C:\ProgramData\DPE\revAgent\addons\usage-intelligence\scripts\publish-usage-summary.ps1",
-        "C:\ProgramData\DPE\revAgent\package\scripts\publish-usage-summary.ps1",
-        "C:\ProgramData\DPE\RevitMCP\package\scripts\publish-usage-summary.ps1"
-    )
+        "C:\ProgramData\DPE\revAgent\package\scripts\publish-usage-summary.ps1"
+    ) + $legacyCompatibilityPublishScriptCandidates
     $PublishScriptPath = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 }
 
