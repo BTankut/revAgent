@@ -15,6 +15,14 @@
     "exportCodexSessionContext": "scripts\\export-codex-session-context.ps1",
     "correlateSessions": "scripts\\correlate-usage-sessions.ps1"
   },
+  "codexSkills": [
+    {
+      "id": "revagent-usage-analyst",
+      "source": "skills\\revagent-usage-analyst",
+      "target": "%USERPROFILE%\\.codex\\skills\\revagent-usage-analyst",
+      "installScope": "admin-user"
+    }
+  ],
   "ownedScheduledTasks": [
     "revAgent Usage Summary Publish",
     "revAgent Codex Session Context Export"

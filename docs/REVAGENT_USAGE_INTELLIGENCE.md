@@ -267,6 +267,24 @@ Codex/LLM chat clean evidence, source paths, privacy limits, and analysis
 instructions. The LLM, not the deterministic script, prepares the semantic
 management report and answers follow-up questions.
 
+The add-on also carries the Codex skill source:
+
+```text
+addons/usage-intelligence/skills/revagent-usage-analyst/SKILL.md
+```
+
+The usage-intelligence installer copies it to:
+
+```text
+%USERPROFILE%\.codex\skills\revagent-usage-analyst\SKILL.md
+```
+
+That skill is the analyst contract a fresh Codex chat reads before producing
+management insight. It tells the LLM to use the review pack as bounded evidence,
+prepare or refresh missing packs, avoid Revit/repo/deploy actions, and report
+user intent, revAgent outcomes, training signals, and product-improvement
+signals in Turkish-first management language.
+
 Example two-day analyst entrypoint:
 
 ```powershell

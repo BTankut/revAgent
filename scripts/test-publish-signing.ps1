@@ -138,6 +138,7 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\installer\install-dashboard-addon.ps1") -PathType Leaf) "Dashboard admin add-on installer should be published under tools\\addons."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\installer\install-dashboard-tunnel.ps1") -PathType Leaf) "Dashboard tunnel installer should be published under tools\\addons."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "Usage-intelligence admin add-on installer should be published under tools\\addons."
+    Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\skills\revagent-usage-analyst\SKILL.md") -PathType Leaf) "Usage-intelligence analyst skill should be published under tools\\addons."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\tests") -PathType Container)) "Dashboard add-on tests must not be published to tools\\addons."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\tests") -PathType Container)) "Usage-intelligence add-on tests must not be published to tools\\addons."
 

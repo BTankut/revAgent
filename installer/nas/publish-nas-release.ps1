@@ -567,7 +567,7 @@ function Copy-RevAgentAdminAddonTools {
     New-Item -ItemType Directory -Path $addonsTargetRoot -Force | Out-Null
 
     Copy-RevAgentAdminAddonPayload -AddonId "dashboard" -DirectoryNames @("installer", "server", "public")
-    Copy-RevAgentAdminAddonPayload -AddonId "usage-intelligence" -DirectoryNames @("installer", "scripts")
+    Copy-RevAgentAdminAddonPayload -AddonId "usage-intelligence" -DirectoryNames @("installer", "scripts", "skills")
     Write-Host "Admin add-ons path: $addonsTargetRoot" -ForegroundColor Green
 }
 

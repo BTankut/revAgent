@@ -940,6 +940,7 @@ try {
         -SourceRoot (Join-Path $RepoRoot "addons\usage-intelligence") `
         -InstallRoot $usageAddonInstallRoot `
         -ReportsRoot $reportsRoot `
+        -CodexSkillsRoot (Join-Path $tempRoot "codex-skills") `
         -SkipScheduledTasks | ConvertFrom-Json
     Assert-Equal $usageAddonInstallResult.schemaVersion "revagent.usage-intelligence.addon.install.v1" "Usage-intelligence add-on installer result schema mismatch."
     Assert-Equal ([bool]$usageAddonInstallResult.installed) $true "Usage-intelligence add-on installer should report installed=true."
@@ -952,8 +953,15 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\publish-codex-session-context.ps1") -PathType Leaf) "Installed Codex session publisher missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\install-codex-session-export-task.ps1") -PathType Leaf) "Installed Codex session export task installer missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\correlate-usage-sessions.ps1") -PathType Leaf) "Installed session correlator missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "skills\revagent-usage-analyst\SKILL.md") -PathType Leaf) "Installed usage analyst skill source missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "Installed usage add-on installer missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "addon.json") -PathType Leaf) "Installed usage manifest missing."
+    Assert-Equal ([bool]$usageAddonInstallResult.codexSkillInstalled) $true "Usage-intelligence add-on should install the analyst Codex skill by default."
+    Assert-Equal ([string]$usageAddonInstallResult.codexSkillName) "revagent-usage-analyst" "Usage-intelligence add-on skill name mismatch."
+    Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $tempRoot "codex-skills") "revagent-usage-analyst\SKILL.md") -PathType Leaf) "Usage analyst Codex skill was not installed under the requested Codex skills root."
+    $installedUsageSkillText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path (Join-Path $tempRoot "codex-skills") "revagent-usage-analyst\SKILL.md")
+    Assert-True ($installedUsageSkillText -match 'llm_input_not_final_report') "Usage analyst skill must instruct the LLM to treat review packs as evidence, not final reports."
+    Assert-True ($installedUsageSkillText -match 'Istekten Sonuca') "Usage analyst skill must define the user-intent-to-outcome report section."
     $usageAddonConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $usageAddonInstallRoot "config\usage-intelligence.json") | ConvertFrom-Json
     Assert-Equal $usageAddonConfig.schemaVersion "revagent.usage-intelligence.addon.config.v1" "Usage-intelligence add-on config schema mismatch."
     Assert-Equal $usageAddonConfig.reportsRoot $reportsRoot "Usage-intelligence add-on config must preserve reports root."
@@ -965,6 +973,7 @@ try {
     $usageAddonDefaultResult = & (Join-Path $RepoRoot "addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") `
         -SourceRoot (Join-Path $RepoRoot "addons\usage-intelligence") `
         -InstallRoot $usageAddonDefaultInstallRoot `
+        -CodexSkillsRoot (Join-Path $tempRoot "codex-skills-default") `
         -SkipScheduledTasks | ConvertFrom-Json
     Assert-Equal $usageAddonDefaultResult.schemaVersion "revagent.usage-intelligence.addon.install.v1" "Usage-intelligence default install result schema mismatch."
     $usageAddonDefaultConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $usageAddonDefaultInstallRoot "config\usage-intelligence.json") | ConvertFrom-Json
@@ -975,10 +984,12 @@ try {
     $providerQualifiedUsageResult = & (Join-Path $RepoRoot "addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") `
         -SourceRoot $providerQualifiedUsageSourceRoot `
         -InstallRoot $providerQualifiedUsageRoot `
+        -CodexSkillsRoot (Join-Path $tempRoot "codex-skills-provider") `
         -SkipScheduledTasks | ConvertFrom-Json
     Assert-Equal ([bool]$providerQualifiedUsageResult.installed) $true "Usage-intelligence add-on installer must accept provider-qualified FileSystem source roots from NAS/tool launch contexts."
     Assert-True (Test-Path -LiteralPath (Join-Path $providerQualifiedUsageRoot "scripts\publish-usage-summary.ps1") -PathType Leaf) "Provider-qualified usage install should copy the publisher payload."
     Assert-True (Test-Path -LiteralPath (Join-Path $providerQualifiedUsageRoot "scripts\prepare-llm-review-pack.ps1") -PathType Leaf) "Provider-qualified usage install should copy the LLM review pack preparer."
+    Assert-True (Test-Path -LiteralPath (Join-Path $providerQualifiedUsageRoot "skills\revagent-usage-analyst\SKILL.md") -PathType Leaf) "Provider-qualified usage install should copy the analyst skill source."
 
     $usageAddonManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\usage-intelligence\addon.json") | ConvertFrom-Json
     Assert-Equal $usageAddonManifest.entrypoints.installScript "installer\install-usage-intelligence-addon.ps1" "Usage-intelligence manifest must expose installer entrypoint."
@@ -987,6 +998,13 @@ try {
     Assert-Equal $usageAddonManifest.entrypoints.installCodexSessionExportTask "scripts\install-codex-session-export-task.ps1" "Usage-intelligence manifest must expose Codex session export task installer entrypoint."
     Assert-Equal $usageAddonManifest.entrypoints.exportCodexSessionContext "scripts\export-codex-session-context.ps1" "Usage-intelligence manifest must expose Codex session exporter entrypoint."
     Assert-Equal $usageAddonManifest.entrypoints.correlateSessions "scripts\correlate-usage-sessions.ps1" "Usage-intelligence manifest must expose session correlator entrypoint."
+    $usageCodexSkills = @($usageAddonManifest.codexSkills)
+    Assert-True (@($usageCodexSkills | Where-Object {
+                $_.id -eq "revagent-usage-analyst" -and
+                $_.source -eq "skills\revagent-usage-analyst" -and
+                $_.target -eq "%USERPROFILE%\.codex\skills\revagent-usage-analyst" -and
+                $_.installScope -eq "admin-user"
+            }).Count -eq 1) "Usage-intelligence manifest must declare the managed usage analyst Codex skill."
     $usageStartupEntries = @($usageAddonManifest.ownedStartupEntries)
     Assert-True (@($usageStartupEntries | Where-Object {
                 $methods = @($_.supportedMethods)

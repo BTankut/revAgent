@@ -1302,6 +1302,13 @@ try {
     Assert-Equal $usageAddonManifest.entrypoints.installCodexSessionExportTask "scripts\install-codex-session-export-task.ps1" "Usage-intelligence add-on manifest must expose Codex session export task installer."
     Assert-Equal $usageAddonManifest.entrypoints.exportCodexSessionContext "scripts\export-codex-session-context.ps1" "Usage-intelligence add-on manifest must expose Codex session exporter."
     Assert-Equal $usageAddonManifest.entrypoints.correlateSessions "scripts\correlate-usage-sessions.ps1" "Usage-intelligence add-on manifest must expose session correlator."
+    $usageCodexSkills = @($usageAddonManifest.codexSkills)
+    Assert-True (@($usageCodexSkills | Where-Object {
+                $_.id -eq "revagent-usage-analyst" -and
+                $_.source -eq "skills\revagent-usage-analyst" -and
+                $_.target -eq "%USERPROFILE%\.codex\skills\revagent-usage-analyst" -and
+                $_.installScope -eq "admin-user"
+            }).Count -eq 1) "Usage-intelligence add-on manifest must declare the managed usage analyst Codex skill."
     Assert-True ($usageAddonInstallerWrapper -match 'addons\\usage-intelligence\\installer\\install-usage-intelligence-addon\.ps1') "Usage-intelligence add-on installer wrapper must delegate to the add-on installer."
     $report = New-RevAgentUpdateReport -Status "current" -Message "ok" -PreviousVersion "1" -InstalledVersion "1"
     $reportPath = Join-Path $tempRoot "report.json"
