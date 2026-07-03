@@ -13,7 +13,9 @@ param(
     [string]$WorkRoot = "",
     [int]$Top = 20,
     [int]$TaskSampleLimit = 40,
+    [int]$CorrelationWindowMinutes = 45,
     [bool]$IncludeYesterday = $true,
+    [switch]$SkipCorrelation,
     [switch]$SkipScheduledTasks,
     [switch]$RunNow
 )
@@ -132,6 +134,8 @@ function Write-UsageIntelligenceConfig {
         includeYesterday = [bool]$IncludeYesterday
         top = $Top
         taskSampleLimit = $TaskSampleLimit
+        correlationWindowMinutes = $CorrelationWindowMinutes
+        skipCorrelation = [bool]$SkipCorrelation
         updatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
     }
 
@@ -153,7 +157,11 @@ function Install-UsageSummaryTask {
         PublishScriptPath = (Join-Path $InstallRoot "scripts\publish-usage-summary.ps1")
         Top = $Top
         TaskSampleLimit = $TaskSampleLimit
+        CorrelationWindowMinutes = $CorrelationWindowMinutes
         IncludeYesterday = [bool]$IncludeYesterday
+    }
+    if ($SkipCorrelation) {
+        $parameters.SkipCorrelation = $true
     }
     if ($RunNow) {
         $parameters.RunNow = $true
@@ -201,6 +209,7 @@ $result = [ordered]@{
     taskName = if ($SkipScheduledTasks) { "" } else { $TaskName }
     scheduledTaskInstalled = -not [bool]$SkipScheduledTasks
     runNow = [bool]$RunNow
+    skipCorrelation = [bool]$SkipCorrelation
 }
 
 $result | ConvertTo-Json -Depth 8

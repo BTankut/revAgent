@@ -550,6 +550,103 @@ try {
     $promotionEventPath = Join-Path $promotionEventRoot "session-promotion.ndjson"
     $promotionEvents | ForEach-Object { ($_ | ConvertTo-Json -Depth 20 -Compress) } | Set-Content -LiteralPath $promotionEventPath -Encoding UTF8
 
+    $codexSessionRoot = Join-Path $tempRoot "codex\sessions"
+    $codexSessionDayRoot = Join-Path (Join-Path (Join-Path $codexSessionRoot "2026") "05") "27"
+    New-Item -ItemType Directory -Path $codexSessionDayRoot -Force | Out-Null
+    $codexSessionFile = Join-Path $codexSessionDayRoot "codex-session-1.jsonl"
+    $codexEvents = @(
+        [ordered]@{
+            type = "session_meta"
+            timestampUtc = "2026-05-27T08:00:30.000Z"
+            payload = [ordered]@{
+                id = "codex-session-1"
+                thread_id = "thread-1"
+            }
+        }
+        [ordered]@{
+            type = "turn_context"
+            timestampUtc = "2026-05-27T08:00:31.000Z"
+            payload = [ordered]@{
+                cwd = "C:\Projects\Office Tower"
+            }
+        }
+        [ordered]@{
+            type = "response_item"
+            timestampUtc = "2026-05-27T08:00:40.000Z"
+            payload = [ordered]@{
+                item = [ordered]@{
+                    type = "message"
+                    role = "user"
+                    content = @([ordered]@{ type = "input_text"; text = "Find ducts on Level 02 Room 204 and export evidence" })
+                }
+            }
+        }
+        [ordered]@{
+            type = "response_item"
+            timestampUtc = "2026-05-27T08:01:00.000Z"
+            payload = [ordered]@{
+                item = [ordered]@{ type = "function_call"; name = "find_elements" }
+            }
+        }
+        [ordered]@{
+            type = "response_item"
+            timestampUtc = "2026-05-27T08:03:05.000Z"
+            payload = [ordered]@{
+                item = [ordered]@{ type = "function_call"; name = "export_revit_view_image" }
+            }
+        }
+        [ordered]@{
+            type = "response_item"
+            timestampUtc = "2026-05-27T08:03:20.000Z"
+            payload = [ordered]@{
+                item = [ordered]@{
+                    type = "message"
+                    role = "assistant"
+                    content = @([ordered]@{ type = "output_text"; text = "Found the duct context and exported a QA image." })
+                }
+            }
+        }
+    )
+    $codexEvents | ForEach-Object { ($_ | ConvertTo-Json -Depth 20 -Compress) } | Set-Content -LiteralPath $codexSessionFile -Encoding UTF8
+
+    $exportOutput = & (Join-Path $usageScriptsRoot "export-codex-session-context.ps1") `
+        -SessionRoot $codexSessionRoot `
+        -ReportsRoot $reportsRoot `
+        -DateUtc "2026-05-27" `
+        -MachineName "TEST-PC" `
+        -UserName "USER1" `
+        -MaxTextChars 80 | ConvertFrom-Json
+    Assert-Equal $exportOutput.schemaVersion "revagent.codex.session.export.v1" "Codex session export schema mismatch."
+    Assert-Equal $exportOutput.contextCount 1 "Codex session exporter should write one context."
+
+    $codexContextPath = Join-Path $reportsRoot "codex-sessions\2026\05\27\TEST-PC\codex-session-1.context.json"
+    Assert-True (Test-Path -LiteralPath $codexContextPath -PathType Leaf) "Codex session context was not written to the NAS-style path."
+    $codexContext = Get-Content -Raw -Encoding UTF8 -LiteralPath $codexContextPath | ConvertFrom-Json
+    Assert-Equal $codexContext.schemaVersion "revagent.codex.session.context.v1" "Codex context schema mismatch."
+    Assert-Equal ([bool]$codexContext.source.rawTranscriptIncluded) $false "Codex context must not claim to include a raw transcript."
+    Assert-True (@($codexContext.userRequests).Count -eq 1) "Codex context should include one bounded user request."
+    Assert-True ($codexContext.userRequests[0].text -match 'Find ducts') "Codex context user request missing."
+    Assert-True (@($codexContext.toolUsage | Where-Object { $_.name -eq "find_elements" -and $_.count -eq 1 }).Count -eq 1) "Codex context tool usage missing find_elements."
+
+    $manualCorrelationPath = Join-Path $tempRoot "manual-session-correlations.json"
+    $manualInsightsPath = Join-Path $tempRoot "manual-product-insights.md"
+    $manualCorrelationOutput = & (Join-Path $usageScriptsRoot "correlate-usage-sessions.ps1") `
+        -ReportsRoot $reportsRoot `
+        -DateUtc "2026-05-27" `
+        -OutputPath $manualCorrelationPath `
+        -MarkdownOutputPath $manualInsightsPath `
+        -TimeWindowMinutes 10 `
+        -Top 10 | ConvertFrom-Json
+    Assert-Equal $manualCorrelationOutput.schemaVersion "revagent.usage.sessionCorrelation.v1" "Session correlation schema mismatch."
+    Assert-Equal $manualCorrelationOutput.summary.correlationCount 1 "Session correlation count mismatch."
+    Assert-Equal $manualCorrelationOutput.summary.correlationsWithRevAgentEvents 1 "Session correlation should match revAgent events."
+    $manualCorrelation = @($manualCorrelationOutput.correlations)[0]
+    Assert-Equal $manualCorrelation.codexSessionId "codex-session-1" "Correlated Codex session id mismatch."
+    Assert-True ($manualCorrelation.revAgent.operationCount -ge 3) "Correlation should include revAgent operations in the same time window."
+    Assert-True ($manualCorrelation.outcome.guardedCount -ge 1) "Correlation should surface guarded revAgent operations."
+    Assert-True (@($manualCorrelation.productSignals | Where-Object { $_.signal -eq "guarded_workflow_friction" }).Count -eq 1) "Correlation should create a guarded workflow product signal."
+    Assert-True (Test-Path -LiteralPath $manualInsightsPath -PathType Leaf) "Product insights Markdown was not written."
+
     $outputPath = Join-Path $tempRoot "summary.json"
     & (Join-Path $usageScriptsRoot "summarize-usage-intelligence.ps1") `
         -ReportsRoot $reportsRoot `
@@ -599,12 +696,16 @@ try {
     $publishReport = $publishOutput | ConvertFrom-Json
     $dailyJson = Join-Path $summaryRoot "daily\2026-05-27.json"
     $dailyMarkdown = Join-Path $summaryRoot "daily\2026-05-27.md"
+    $dailyCorrelationJson = Join-Path $summaryRoot "daily\2026-05-27.session-correlations.json"
+    $dailyProductInsights = Join-Path $summaryRoot "daily\2026-05-27.product-insights.md"
     $latestJson = Join-Path $summaryRoot "latest.json"
     $latestMarkdown = Join-Path $summaryRoot "latest.md"
     $publishLatest = Join-Path $summaryRoot "publish-latest.json"
 
     Assert-True (Test-Path -LiteralPath $dailyJson -PathType Leaf) "Daily JSON summary was not written."
     Assert-True (Test-Path -LiteralPath $dailyMarkdown -PathType Leaf) "Daily Markdown summary was not written."
+    Assert-True (Test-Path -LiteralPath $dailyCorrelationJson -PathType Leaf) "Daily session correlation JSON was not written."
+    Assert-True (Test-Path -LiteralPath $dailyProductInsights -PathType Leaf) "Daily product insights Markdown was not written."
     Assert-True (Test-Path -LiteralPath $latestJson -PathType Leaf) "Latest JSON summary was not written."
     Assert-True (Test-Path -LiteralPath $latestMarkdown -PathType Leaf) "Latest Markdown summary was not written."
     Assert-True (Test-Path -LiteralPath $publishLatest -PathType Leaf) "Publish report was not written."
@@ -612,6 +713,9 @@ try {
     Assert-Equal $publishReport.latestDateUtc "2026-05-27" "Publish latest date mismatch."
     Assert-True (Test-Path -LiteralPath $publishReport.logPath -PathType Leaf) "Publish log was not written."
     Assert-True (-not (Test-Path -LiteralPath $publishReport.lockPath -PathType Leaf)) "Publish lock was not released."
+    $publishedDay = @($publishReport.published)[0]
+    Assert-Equal $publishedDay.sessionCorrelationCount 1 "Publish report must include session correlation count."
+    Assert-True ($publishedDay.productSignalCount -ge 1) "Publish report must include product signal count."
 
     $latestSummary = Get-Content -Raw -Encoding UTF8 -LiteralPath $latestJson | ConvertFrom-Json
     Assert-Equal $latestSummary.schemaVersion "revagent.usage.summary.v1" "Latest summary schema mismatch."
@@ -757,12 +861,15 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\publish-usage-summary.ps1") -PathType Leaf) "Installed usage publisher missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\summarize-usage-intelligence.ps1") -PathType Leaf) "Installed usage summarizer missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\install-usage-summary-task.ps1") -PathType Leaf) "Installed usage task installer missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\export-codex-session-context.ps1") -PathType Leaf) "Installed Codex session exporter missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\correlate-usage-sessions.ps1") -PathType Leaf) "Installed session correlator missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "Installed usage add-on installer missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "addon.json") -PathType Leaf) "Installed usage manifest missing."
     $usageAddonConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $usageAddonInstallRoot "config\usage-intelligence.json") | ConvertFrom-Json
     Assert-Equal $usageAddonConfig.schemaVersion "revagent.usage-intelligence.addon.config.v1" "Usage-intelligence add-on config schema mismatch."
     Assert-Equal $usageAddonConfig.reportsRoot $reportsRoot "Usage-intelligence add-on config must preserve reports root."
     Assert-Equal $usageAddonConfig.workRoot (Join-Path $usageAddonInstallRoot "state") "Usage-intelligence add-on config must default workRoot under the add-on state root."
+    Assert-Equal $usageAddonConfig.correlationWindowMinutes 45 "Usage-intelligence add-on config must persist the default correlation window."
 
     $canonicalReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports"
     $usageAddonDefaultInstallRoot = Join-Path $tempRoot "installed-default\addons\usage-intelligence"
@@ -785,6 +892,8 @@ try {
 
     $usageAddonManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\usage-intelligence\addon.json") | ConvertFrom-Json
     Assert-Equal $usageAddonManifest.entrypoints.installScript "installer\install-usage-intelligence-addon.ps1" "Usage-intelligence manifest must expose installer entrypoint."
+    Assert-Equal $usageAddonManifest.entrypoints.exportCodexSessionContext "scripts\export-codex-session-context.ps1" "Usage-intelligence manifest must expose Codex session exporter entrypoint."
+    Assert-Equal $usageAddonManifest.entrypoints.correlateSessions "scripts\correlate-usage-sessions.ps1" "Usage-intelligence manifest must expose session correlator entrypoint."
     $usageStartupEntries = @($usageAddonManifest.ownedStartupEntries)
     Assert-True (@($usageStartupEntries | Where-Object {
                 $methods = @($_.supportedMethods)
