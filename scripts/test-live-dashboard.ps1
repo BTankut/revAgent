@@ -318,7 +318,23 @@ try {
     Assert-True ($dashboardServer -match 'metricSource: \"liveActivity\"') "Dashboard overview must expose the metric source."
     Assert-True ($dashboardServer -match 'x-content-type-options') "Dashboard responses must include nosniff headers."
     Assert-True ($dashboardServer -match '\./revitTaskMerge\.js') "Dashboard server must depend on add-on-local helper code for installed execution."
+    Assert-True ($dashboardServer -match 'Publish-RevAgentMachineRunReport' -and $dashboardServer -match 'ConvertTo-RevAgentSafePathSegment') "Dashboard source comments must use revAgent reporting aliases."
     Assert-Equal $dashboardManifest.entrypoints.installScript "installer\install-dashboard-addon.ps1" "Dashboard add-on manifest must expose installer entrypoint."
+    $dashboardStartupEntries = @($dashboardManifest.ownedStartupEntries)
+    Assert-True (@($dashboardStartupEntries | Where-Object {
+                $methods = @($_.supportedMethods)
+                $_.name -eq "revAgent Dashboard Server" -and
+                ($methods -contains "Register-ScheduledTask") -and
+                ($methods -contains "schtasks.exe") -and
+                ($methods -contains "HKCU Run")
+            }).Count -eq 1) "Dashboard manifest must declare server startup ownership including HKCU Run fallback."
+    Assert-True (@($dashboardStartupEntries | Where-Object {
+                $methods = @($_.supportedMethods)
+                $_.name -eq "revAgent Dashboard Tunnel" -and
+                ($methods -contains "Register-ScheduledTask") -and
+                ($methods -contains "schtasks.exe") -and
+                ($methods -contains "HKCU Run")
+            }).Count -eq 1) "Dashboard manifest must declare tunnel startup ownership including HKCU Run fallback."
     Assert-True ($dashboardInstaller -match '\[string\]\$TaskName = "revAgent Dashboard Server"') "Dashboard add-on installer must own the dashboard scheduled task name."
     Assert-True ($dashboardInstaller -match 'CanonicalReportsRoot') "Dashboard add-on installer must define a canonical revAgent reports root."
     Assert-True ($dashboardInstaller -match 'migratedLegacyReportRoot') "Dashboard add-on installer must report legacy reports-root migration."

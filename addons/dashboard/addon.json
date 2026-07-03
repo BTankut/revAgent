@@ -15,6 +15,24 @@
     "revAgent Dashboard Server",
     "revAgent Dashboard Tunnel"
   ],
+  "ownedStartupEntries": [
+    {
+      "name": "revAgent Dashboard Server",
+      "supportedMethods": [
+        "Register-ScheduledTask",
+        "schtasks.exe",
+        "HKCU Run"
+      ]
+    },
+    {
+      "name": "revAgent Dashboard Tunnel",
+      "supportedMethods": [
+        "Register-ScheduledTask",
+        "schtasks.exe",
+        "HKCU Run"
+      ]
+    }
+  ],
   "legacyMigrationSources": [
     "C:\\ProgramData\\DPE\\RevitMCP\\cloudflared"
   ],

@@ -13,5 +13,15 @@
   "ownedScheduledTasks": [
     "revAgent Usage Summary Publish"
   ],
+  "ownedStartupEntries": [
+    {
+      "name": "revAgent Usage Summary Publish",
+      "supportedMethods": [
+        "Register-ScheduledTask",
+        "schtasks.exe",
+        "HKCU Run"
+      ]
+    }
+  ],
   "corePackage": false
 }

@@ -927,8 +927,8 @@ export function loadDashboardData(config = {}) {
 
   const machines = machineNames.map((machineName) => {
     const latestMachineReport = readJsonFile(path.join(machinesRoot, machineName, "latest.json"));
-    // Keep this list aligned with Publish-RevitMcpMachineRunReport:
-    // ConvertTo-RevitMcpSafePathSegment($Operation) + "-latest.json".
+    // Keep this list aligned with Publish-RevAgentMachineRunReport:
+    // ConvertTo-RevAgentSafePathSegment($Operation) + "-latest.json".
     const versionCandidateReports = [
       readJsonFile(path.join(machinesRoot, machineName, "update-latest.json")),
       readJsonFile(path.join(machinesRoot, machineName, "reinstall-latest.json")),

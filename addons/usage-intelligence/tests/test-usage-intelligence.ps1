@@ -742,6 +742,8 @@ try {
     Assert-True ($taskScriptText -match '\$publishParameters = @\{' -and $taskScriptText -match '& \$PublishScriptPath @publishParameters') "Usage summary task RunNow must use named splatting."
     Assert-True ($taskScriptText -match 'DPE\\revAgent\\addons\\usage-intelligence\\state') "Usage summary task must default work state under the installed add-on root."
     Assert-True ($taskScriptText -match 'app = "revAgent"') "Usage summary task config must use revAgent product identity."
+    Assert-True ($taskScriptText -match '\$legacyCompatibilityLibRootCandidates') "Usage summary task installer must isolate legacy RevitMCP library fallbacks."
+    Assert-True ($taskScriptText -match '\$legacyCompatibilityPublishScriptCandidates') "Usage summary task installer must isolate legacy RevitMCP publish-script fallbacks."
 
     $usageAddonInstallRoot = Join-Path $tempRoot "installed\addons\usage-intelligence"
     $usageAddonInstallResult = & (Join-Path $RepoRoot "addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") `
@@ -783,6 +785,14 @@ try {
 
     $usageAddonManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\usage-intelligence\addon.json") | ConvertFrom-Json
     Assert-Equal $usageAddonManifest.entrypoints.installScript "installer\install-usage-intelligence-addon.ps1" "Usage-intelligence manifest must expose installer entrypoint."
+    $usageStartupEntries = @($usageAddonManifest.ownedStartupEntries)
+    Assert-True (@($usageStartupEntries | Where-Object {
+                $methods = @($_.supportedMethods)
+                $_.name -eq "revAgent Usage Summary Publish" -and
+                ($methods -contains "Register-ScheduledTask") -and
+                ($methods -contains "schtasks.exe") -and
+                ($methods -contains "HKCU Run")
+            }).Count -eq 1) "Usage-intelligence manifest must declare scheduled publish startup ownership including HKCU Run fallback."
     $usageAddonWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-usage-intelligence-addon.ps1")
     Assert-True ($usageAddonWrapper -match 'addons\\usage-intelligence\\installer\\install-usage-intelligence-addon\.ps1') "Usage-intelligence root installer wrapper must delegate to the add-on installer."
 }
