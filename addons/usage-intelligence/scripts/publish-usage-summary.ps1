@@ -10,8 +10,9 @@
       reports\summaries\latest.json
       reports\summaries\latest.md
 
-    The JSON output is the durable dashboard/master-LLM input. The Markdown
-    output is a small human-readable glance for support/debug use.
+    The JSON output is the durable dashboard input. LLM-facing output is
+    prepared as a bounded review pack; Markdown output is a small human-readable
+    support/debug view, not the final product report.
 #>
 
 [CmdletBinding()]
@@ -28,6 +29,7 @@ param(
     [int]$TaskSampleLimit = 40,
     [int]$CorrelationWindowMinutes = 45,
     [switch]$SkipCorrelation,
+    [switch]$SkipLlmReviewPack,
     [switch]$SkipMarkdown
 )
 
@@ -361,6 +363,10 @@ $correlationScript = Join-Path $PSScriptRoot "correlate-usage-sessions.ps1"
 if (-not $SkipCorrelation -and -not (Test-Path -LiteralPath $correlationScript -PathType Leaf)) {
     throw "Session correlation script not found: $correlationScript"
 }
+$llmReviewPackScript = Join-Path $PSScriptRoot "prepare-llm-review-pack.ps1"
+if (-not $SkipLlmReviewPack -and -not (Test-Path -LiteralPath $llmReviewPackScript -PathType Leaf)) {
+    throw "LLM review pack script not found: $llmReviewPackScript"
+}
 
 Initialize-UsageSummaryLog -Root $LogsRoot
 Acquire-UsageSummaryLock -Path $LockPath -StaleMinutes $StaleLockMinutes
@@ -403,19 +409,19 @@ try {
         }
 
         $dailyCorrelationJson = $null
-        $dailyProductInsights = $null
+        $dailyCorrelationEvidence = $null
         $correlation = $null
         if (-not $SkipCorrelation) {
             Write-UsageSummaryLog "Correlating Codex sessions for date: $dateValue"
             $dailyCorrelationJson = Join-Path $dailyRoot ("{0}.session-correlations.json" -f $dateValue)
             if (-not $SkipMarkdown) {
-                $dailyProductInsights = Join-Path $dailyRoot ("{0}.product-insights.md" -f $dateValue)
+                $dailyCorrelationEvidence = Join-Path $dailyRoot ("{0}.session-correlation-evidence.md" -f $dateValue)
             }
             $correlationOutput = & $correlationScript `
                 -ReportsRoot $ReportsRoot `
                 -DateUtc $dateValue `
                 -OutputPath $dailyCorrelationJson `
-                -MarkdownOutputPath $dailyProductInsights `
+                -MarkdownOutputPath $dailyCorrelationEvidence `
                 -TimeWindowMinutes $CorrelationWindowMinutes `
                 -Top $Top `
                 -SkipMarkdown:$SkipMarkdown
@@ -427,7 +433,8 @@ try {
             jsonPath = $dailyJson
             markdownPath = $dailyMarkdown
             sessionCorrelationJsonPath = $dailyCorrelationJson
-            productInsightsPath = $dailyProductInsights
+            sessionCorrelationEvidencePath = $dailyCorrelationEvidence
+            productInsightsPath = $null
             eventCount = $summary.source.eventCount
             productionOperationCount = $summary.production.operationCount
             sendCodeCount = $summary.sendCode.count
@@ -436,8 +443,24 @@ try {
             generatedFileCount = $summary.production.generatedFileCount
             codexSessionContextCount = if ($correlation) { $correlation.source.codexContextFileCount } else { 0 }
             sessionCorrelationCount = if ($correlation) { $correlation.summary.correlationCount } else { 0 }
+            reviewSignalCount = if ($correlation) { $correlation.summary.productSignalCount } else { 0 }
             productSignalCount = if ($correlation) { $correlation.summary.productSignalCount } else { 0 }
         }
+    }
+
+    $llmReviewPack = $null
+    if (-not $SkipLlmReviewPack -and -not $SkipCorrelation) {
+        Write-UsageSummaryLog "Preparing LLM review pack for dates: $($dateList -join ', ')"
+        $llmReviewPackOutput = & $llmReviewPackScript `
+            -ReportsRoot $ReportsRoot `
+            -DateUtc $dateList `
+            -InputDailyRoot $dailyRoot `
+            -Top $Top `
+            -TaskSampleLimit $TaskSampleLimit `
+            -CorrelationWindowMinutes $CorrelationWindowMinutes `
+            -UseExistingInputs `
+            -SkipMarkdown:$SkipMarkdown
+        $llmReviewPack = $llmReviewPackOutput | ConvertFrom-Json
     }
 
     $latest = @($published |
@@ -460,6 +483,10 @@ try {
         latestDateUtc = $latest["dateUtc"]
         latestJsonPath = $latestJson
         latestMarkdownPath = $latestMarkdown
+        llmReviewPackJsonPath = if ($llmReviewPack) { $llmReviewPack.output.jsonPath } else { $null }
+        llmReviewPackMarkdownPath = if ($llmReviewPack) { $llmReviewPack.output.markdownPromptPath } else { $null }
+        llmReviewPackSessionCount = if ($llmReviewPack) { @($llmReviewPack.sessionEvidence).Count } else { 0 }
+        llmReviewPackReviewSignalCount = if ($llmReviewPack) { $llmReviewPack.overview.reviewSignalCount } else { 0 }
         publishReportPath = (Join-Path $OutputRoot "publish-latest.json")
         logPath = $script:UsageSummaryLogPath
         lockPath = $LockPath

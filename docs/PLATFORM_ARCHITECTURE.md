@@ -378,7 +378,27 @@ snippets plus session/tool context, `evidenceStrength`, and
 `humanReviewRequired=true`; weak evidence is marked for human review instead of
 automatically escalating priority.
 `addons/usage-intelligence/scripts/publish-usage-summary.ps1` writes the daily
-JSON/Markdown files and refreshes `reports\summaries\latest.json`.
+JSON/Markdown files, refreshes `reports\summaries\latest.json`, and prepares an
+LLM review pack under `reports\llm-review-packs`. Deterministic scripts do not
+author the final management report; they clean, bound, correlate, and package
+evidence for a Codex/LLM analyst.
+Production Codex session context is collected by the workstation-side
+`addons/usage-intelligence/scripts/install-codex-session-export-task.ps1`
+scheduled task, which runs
+`addons/usage-intelligence/scripts/publish-codex-session-context.ps1` under the
+current Windows user so it can read that user's local Codex session store and
+write bounded context under `reports\codex-sessions`. The exporter uses a
+small default lookback window to catch recent missed workstation runs without
+turning into a broad historical transcript scan.
+`addons/usage-intelligence/scripts/prepare-llm-review-pack.ps1` combines daily
+summaries, bounded Codex session contexts, source paths, and correlation
+evidence into `revagent.usage.llmReviewPack.v1`. A new Codex chat can use that
+pack to produce semantic Turkish-first analysis about projects, levels,
+workflows, user understanding, training needs, and product improvements.
+The add-on owns the companion `revagent-usage-analyst` Codex skill under
+`addons/usage-intelligence/skills`, and its installer copies that skill into
+the current user's `.codex\skills` root on the coordinator/admin workstation so
+fresh chats know the evidence contract and analysis boundaries.
 `addons/usage-intelligence/scripts/install-usage-summary-task.ps1` installs the
 single-machine scheduled publisher, using a hidden launcher, a daily trigger, a
 publish lock, and NAS summary logs. The admin install path is

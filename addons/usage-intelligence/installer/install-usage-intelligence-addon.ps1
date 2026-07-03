@@ -15,7 +15,9 @@ param(
     [int]$TaskSampleLimit = 40,
     [int]$CorrelationWindowMinutes = 45,
     [bool]$IncludeYesterday = $true,
+    [string]$CodexSkillsRoot = "",
     [switch]$SkipCorrelation,
+    [switch]$SkipCodexSkillInstall,
     [switch]$SkipScheduledTasks,
     [switch]$RunNow
 )
@@ -31,6 +33,21 @@ function Resolve-DefaultInstallRoot {
     }
 
     return Join-Path $programDataRoot "DPE\revAgent\addons\usage-intelligence"
+}
+
+function Resolve-DefaultCodexSkillsRoot {
+    $userProfileRoot = if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    }
+    else {
+        $env:USERPROFILE
+    }
+
+    if ([string]::IsNullOrWhiteSpace($userProfileRoot)) {
+        throw "Could not resolve the current user's profile path for Codex skill installation."
+    }
+
+    return Join-Path $userProfileRoot ".codex\skills"
 }
 
 function Resolve-FileSystemPath {
@@ -122,6 +139,41 @@ function Copy-FilePayload {
     Copy-Item -LiteralPath $Source -Destination $safeDestination -Force
 }
 
+function Install-CodexSkillPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$CodexSkillsRoot,
+        [Parameter(Mandatory = $true)][string]$SkillName
+    )
+
+    if ($SkillName -notmatch '^[A-Za-z0-9._-]+$') {
+        throw "Unsafe Codex skill name: $SkillName"
+    }
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+        throw "Usage-intelligence Codex skill source directory was not found: $Source"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Source "SKILL.md") -PathType Leaf)) {
+        throw "Usage-intelligence Codex skill is missing SKILL.md: $Source"
+    }
+
+    New-Item -ItemType Directory -Path $CodexSkillsRoot -Force | Out-Null
+    $skillTarget = Assert-PathUnderRoot -Path (Join-Path $CodexSkillsRoot $SkillName) -Root $CodexSkillsRoot
+    if (Test-SamePath -Left $Source -Right $skillTarget) {
+        return $skillTarget
+    }
+
+    if (Test-Path -LiteralPath $skillTarget -PathType Container) {
+        Remove-Item -LiteralPath $skillTarget -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $skillTarget -Force | Out-Null
+    foreach ($item in Get-ChildItem -LiteralPath $Source -Force) {
+        Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $skillTarget $item.Name) -Recurse -Force
+    }
+
+    return $skillTarget
+}
+
 function Write-UsageIntelligenceConfig {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -188,13 +240,30 @@ if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
 }
 $WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
 
+if ([string]::IsNullOrWhiteSpace($CodexSkillsRoot)) {
+    $CodexSkillsRoot = Resolve-DefaultCodexSkillsRoot
+}
+$CodexSkillsRoot = [System.IO.Path]::GetFullPath($CodexSkillsRoot)
+
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 Copy-DirectoryPayload -Source (Join-Path $SourceRoot "scripts") -Destination (Join-Path $InstallRoot "scripts") -InstallRoot $InstallRoot
 Copy-DirectoryPayload -Source (Join-Path $SourceRoot "installer") -Destination (Join-Path $InstallRoot "installer") -InstallRoot $InstallRoot
+Copy-DirectoryPayload -Source (Join-Path $SourceRoot "skills") -Destination (Join-Path $InstallRoot "skills") -InstallRoot $InstallRoot
 Copy-FilePayload -Source (Join-Path $SourceRoot "addon.json") -Destination (Join-Path $InstallRoot "addon.json") -InstallRoot $InstallRoot
 
 $configPath = Join-Path $InstallRoot "config\usage-intelligence.json"
 Write-UsageIntelligenceConfig -Path $configPath
+
+$codexSkillName = "revagent-usage-analyst"
+$codexSkillPath = ""
+$codexSkillInstalled = $false
+if (-not $SkipCodexSkillInstall) {
+    $codexSkillPath = Install-CodexSkillPayload `
+        -Source (Join-Path $InstallRoot "skills\$codexSkillName") `
+        -CodexSkillsRoot $CodexSkillsRoot `
+        -SkillName $codexSkillName
+    $codexSkillInstalled = $true
+}
 
 if (-not $SkipScheduledTasks) {
     Install-UsageSummaryTask
@@ -208,6 +277,11 @@ $result = [ordered]@{
     workRoot = $WorkRoot
     taskName = if ($SkipScheduledTasks) { "" } else { $TaskName }
     scheduledTaskInstalled = -not [bool]$SkipScheduledTasks
+    codexSkillName = $codexSkillName
+    codexSkillsRoot = $CodexSkillsRoot
+    codexSkillPath = $codexSkillPath
+    codexSkillInstalled = [bool]$codexSkillInstalled
+    codexSkillInstallSkipped = [bool]$SkipCodexSkillInstall
     runNow = [bool]$RunNow
     skipCorrelation = [bool]$SkipCorrelation
 }
