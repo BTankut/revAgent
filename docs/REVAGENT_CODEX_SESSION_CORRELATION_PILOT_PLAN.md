@@ -56,10 +56,12 @@ images, and unbounded file contents are outside the exported context contract.
 ## Pilot Flow
 
 1. Install or copy the usage-intelligence add-on tools onto NET01.
-2. Run the Codex session context exporter on NET01 after a real pilot session.
-3. Confirm the context JSON lands under `reports\codex-sessions`.
-4. Run the correlation script for the same UTC date.
-5. Review whether each correlation can answer:
+2. Install the `revAgent Codex Session Context Export` scheduled task on NET01.
+3. Trigger the scheduled task once and confirm its local latest report is
+   written under the add-on state folder.
+4. Confirm the context JSON lands under `reports\codex-sessions`.
+5. Run the correlation script for the same UTC date.
+6. Review whether each correlation can answer:
    - What did the user ask for?
    - Which tools did Codex use?
    - What did revAgent do in Revit?
@@ -79,6 +81,7 @@ source.
 This package adds:
 
 - a NET01-ready Codex session context exporter
+- a workstation-side scheduled exporter task for NET01 automation testing
 - a deterministic revAgent telemetry correlator
 - daily publish integration for correlation outputs
 - tests with fixture Codex sessions and telemetry events

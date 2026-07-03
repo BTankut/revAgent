@@ -9,15 +9,26 @@
     "summary": "scripts\\summarize-usage-intelligence.ps1",
     "publish": "scripts\\publish-usage-summary.ps1",
     "installTask": "scripts\\install-usage-summary-task.ps1",
+    "publishCodexSessionContext": "scripts\\publish-codex-session-context.ps1",
+    "installCodexSessionExportTask": "scripts\\install-codex-session-export-task.ps1",
     "exportCodexSessionContext": "scripts\\export-codex-session-context.ps1",
     "correlateSessions": "scripts\\correlate-usage-sessions.ps1"
   },
   "ownedScheduledTasks": [
-    "revAgent Usage Summary Publish"
+    "revAgent Usage Summary Publish",
+    "revAgent Codex Session Context Export"
   ],
   "ownedStartupEntries": [
     {
       "name": "revAgent Usage Summary Publish",
+      "supportedMethods": [
+        "Register-ScheduledTask",
+        "schtasks.exe",
+        "HKCU Run"
+      ]
+    },
+    {
+      "name": "revAgent Codex Session Context Export",
       "supportedMethods": [
         "Register-ScheduledTask",
         "schtasks.exe",

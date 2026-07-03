@@ -379,6 +379,14 @@ snippets plus session/tool context, `evidenceStrength`, and
 automatically escalating priority.
 `addons/usage-intelligence/scripts/publish-usage-summary.ps1` writes the daily
 JSON/Markdown files and refreshes `reports\summaries\latest.json`.
+Production Codex session context is collected by the workstation-side
+`addons/usage-intelligence/scripts/install-codex-session-export-task.ps1`
+scheduled task, which runs
+`addons/usage-intelligence/scripts/publish-codex-session-context.ps1` under the
+current Windows user so it can read that user's local Codex session store and
+write bounded context under `reports\codex-sessions`. The exporter uses a
+small default lookback window to catch recent missed workstation runs without
+turning into a broad historical transcript scan.
 `addons/usage-intelligence/scripts/install-usage-summary-task.ps1` installs the
 single-machine scheduled publisher, using a hidden launcher, a daily trigger, a
 publish lock, and NAS summary logs. The admin install path is

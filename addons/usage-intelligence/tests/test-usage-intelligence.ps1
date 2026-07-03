@@ -643,6 +643,21 @@ try {
     Assert-True ($codexContext.userRequests[0].text -notmatch 'AGENTS\.md instructions') "Codex context must ignore injected AGENTS bootstrap text."
     Assert-True (@($codexContext.toolUsage | Where-Object { $_.name -eq "find_elements" -and $_.count -eq 1 }).Count -eq 1) "Codex context tool usage missing find_elements."
 
+    $codexPublishReportPath = Join-Path $tempRoot "codex-session-export-latest.json"
+    $codexPublishOutput = & (Join-Path $usageScriptsRoot "publish-codex-session-context.ps1") `
+        -SessionRoot $codexSessionRoot `
+        -ReportsRoot $reportsRoot `
+        -DateUtc "2026-05-27" `
+        -MachineName "TEST-PC" `
+        -UserName "USER1" `
+        -ReportPath $codexPublishReportPath `
+        -MaxTextChars 80 | ConvertFrom-Json
+    Assert-Equal $codexPublishOutput.schemaVersion "revagent.codex.session.publish.v1" "Codex session publish schema mismatch."
+    Assert-Equal $codexPublishOutput.contextCount 1 "Codex session publisher should report one exported context."
+    Assert-True (Test-Path -LiteralPath $codexPublishReportPath -PathType Leaf) "Codex session publisher should write the latest report path for scheduled-task evidence."
+    $codexPublishReport = Get-Content -Raw -Encoding UTF8 -LiteralPath $codexPublishReportPath | ConvertFrom-Json
+    Assert-Equal $codexPublishReport.contextCount 1 "Codex session latest report context count mismatch."
+
     $manualCorrelationPath = Join-Path $tempRoot "manual-session-correlations.json"
     $manualInsightsPath = Join-Path $tempRoot "manual-product-insights.md"
     $manualCorrelationOutput = & (Join-Path $usageScriptsRoot "correlate-usage-sessions.ps1") `
@@ -894,6 +909,15 @@ try {
     Assert-True ($taskScriptText -match '\$legacyCompatibilityLibRootCandidates') "Usage summary task installer must isolate legacy RevitMCP library fallbacks."
     Assert-True ($taskScriptText -match '\$legacyCompatibilityPublishScriptCandidates') "Usage summary task installer must isolate legacy RevitMCP publish-script fallbacks."
 
+    $codexTaskScriptText = Get-Content -Raw -LiteralPath (Join-Path $usageScriptsRoot "install-codex-session-export-task.ps1")
+    Assert-True ($codexTaskScriptText -match 'revAgent Codex Session Context Export') "Codex session export task must use a dedicated revAgent task name."
+    Assert-True ($codexTaskScriptText -match '\[string\]\$DailyAt = "20:15"') "Codex session export task must default before the daily summary publisher."
+    Assert-True ($codexTaskScriptText -match '\[int\]\$LookbackDays = 2') "Codex session export task must default to a bounded two-day lookback."
+    Assert-True ($codexTaskScriptText -match 'publish-codex-session-context\.ps1') "Codex session export task must run the Codex session publisher wrapper."
+    Assert-True ($codexTaskScriptText -match 'Write-RevAgentHiddenPowerShellLauncher') "Codex session export task must run hidden through the shared launcher."
+    Assert-True ($codexTaskScriptText -match 'codex-session-export-latest\.json') "Codex session export task must persist a latest report for verification."
+    Assert-True ($codexTaskScriptText -match '\$publishParameters = @\{' -and $codexTaskScriptText -match '& \$PublishScriptPath @publishParameters') "Codex session export task RunNow must use named splatting."
+
     $usageAddonInstallRoot = Join-Path $tempRoot "installed\addons\usage-intelligence"
     $usageAddonInstallResult = & (Join-Path $RepoRoot "addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") `
         -SourceRoot (Join-Path $RepoRoot "addons\usage-intelligence") `
@@ -907,6 +931,8 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\summarize-usage-intelligence.ps1") -PathType Leaf) "Installed usage summarizer missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\install-usage-summary-task.ps1") -PathType Leaf) "Installed usage task installer missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\export-codex-session-context.ps1") -PathType Leaf) "Installed Codex session exporter missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\publish-codex-session-context.ps1") -PathType Leaf) "Installed Codex session publisher missing."
+    Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\install-codex-session-export-task.ps1") -PathType Leaf) "Installed Codex session export task installer missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "scripts\correlate-usage-sessions.ps1") -PathType Leaf) "Installed session correlator missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "Installed usage add-on installer missing."
     Assert-True (Test-Path -LiteralPath (Join-Path $usageAddonInstallRoot "addon.json") -PathType Leaf) "Installed usage manifest missing."
@@ -937,6 +963,8 @@ try {
 
     $usageAddonManifest = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "addons\usage-intelligence\addon.json") | ConvertFrom-Json
     Assert-Equal $usageAddonManifest.entrypoints.installScript "installer\install-usage-intelligence-addon.ps1" "Usage-intelligence manifest must expose installer entrypoint."
+    Assert-Equal $usageAddonManifest.entrypoints.publishCodexSessionContext "scripts\publish-codex-session-context.ps1" "Usage-intelligence manifest must expose Codex session publisher entrypoint."
+    Assert-Equal $usageAddonManifest.entrypoints.installCodexSessionExportTask "scripts\install-codex-session-export-task.ps1" "Usage-intelligence manifest must expose Codex session export task installer entrypoint."
     Assert-Equal $usageAddonManifest.entrypoints.exportCodexSessionContext "scripts\export-codex-session-context.ps1" "Usage-intelligence manifest must expose Codex session exporter entrypoint."
     Assert-Equal $usageAddonManifest.entrypoints.correlateSessions "scripts\correlate-usage-sessions.ps1" "Usage-intelligence manifest must expose session correlator entrypoint."
     $usageStartupEntries = @($usageAddonManifest.ownedStartupEntries)
@@ -947,6 +975,13 @@ try {
                 ($methods -contains "schtasks.exe") -and
                 ($methods -contains "HKCU Run")
             }).Count -eq 1) "Usage-intelligence manifest must declare scheduled publish startup ownership including HKCU Run fallback."
+    Assert-True (@($usageStartupEntries | Where-Object {
+                $methods = @($_.supportedMethods)
+                $_.name -eq "revAgent Codex Session Context Export" -and
+                ($methods -contains "Register-ScheduledTask") -and
+                ($methods -contains "schtasks.exe") -and
+                ($methods -contains "HKCU Run")
+            }).Count -eq 1) "Usage-intelligence manifest must declare Codex session export task ownership including HKCU Run fallback."
     $usageAddonWrapper = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-usage-intelligence-addon.ps1")
     Assert-True ($usageAddonWrapper -match 'addons\\usage-intelligence\\installer\\install-usage-intelligence-addon\.ps1') "Usage-intelligence root installer wrapper must delegate to the add-on installer."
 }

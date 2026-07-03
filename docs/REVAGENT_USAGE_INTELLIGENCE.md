@@ -170,6 +170,35 @@ intentionally does not include a full raw transcript. It keeps only bounded user
 request snippets, bounded assistant outcome snippets, workspace hints, session
 identity, and tool-call names/counts.
 
+For production automation, the workstation-side publisher is:
+
+```text
+addons/usage-intelligence/scripts/publish-codex-session-context.ps1
+```
+
+It runs the bounded exporter for the requested UTC day, includes a bounded
+lookback window by default when used from the scheduled task, and writes a
+local latest-run report for verification under the installed add-on state
+folder.
+
+Install the workstation-side exporter task on a pilot workstation such as
+NET01:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-codex-session-export-task.ps1 `
+  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports" `
+  -DailyAt "20:15" `
+  -RunNow
+```
+
+The task name is `revAgent Codex Session Context Export`. It runs from the
+current Windows user context so it can read that user's local Codex session
+store, normally under `%USERPROFILE%\.codex\sessions`. It should be installed
+on each production workstation only after the NET01 pilot proves that the task
+can read local Codex sessions and write bounded context to NAS.
+The default lookback is today plus the previous two UTC days, so a workstation
+that missed yesterday's run can still publish recent bounded session context.
+
 Example NET01 pilot export:
 
 ```powershell
@@ -234,6 +263,10 @@ under that add-on root.
 The task name is `revAgent Usage Summary Publish`. It should be installed on
 one machine only. The publisher uses `reports\summaries\publish.lock` to avoid
 overlapping runs and writes logs under `reports\summaries\logs`.
+
+The coordinator summary task does not read workstation-local Codex files. It
+only consumes bounded context files that production workstation exporter tasks
+have already written under `reports\codex-sessions`.
 
 ## Event Shape
 
