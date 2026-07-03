@@ -307,6 +307,9 @@ pack by default after each daily summary. Pass `-SkipCorrelation` or
 matching window is 45 minutes and can be adjusted with
 `-CorrelationWindowMinutes`. When `-SkipMarkdown` is used, the publisher still
 writes JSON summaries, JSON session correlations, and JSON LLM review packs, but
+the Markdown prompt handoff is omitted. If `-OutputRoot` points to a custom
+summary folder, the publisher passes that folder's `daily` output as the review
+pack input so the pack cannot read stale default summaries.
 suppresses human-readable Markdown handoffs.
 
 On the single coordinator workstation, install the daily scheduled publisher:

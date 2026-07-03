@@ -765,7 +765,10 @@ try {
     Assert-Equal $llmReviewPack.packKind "llm_input_not_final_report" "LLM review pack must not claim to be a final report."
     Assert-Equal $llmReviewPack.dateRange.startUtc "2026-05-27" "Single-date LLM review pack start date mismatch."
     Assert-Equal $llmReviewPack.dateRange.endUtc "2026-05-27" "Single-date LLM review pack end date mismatch."
+    Assert-Equal $llmReviewPack.overview.machineCount 1 "LLM review pack should count machines from totals.byMachine."
     Assert-True (@($llmReviewPack.sessionEvidence).Count -eq 1) "LLM review pack should include correlated session evidence."
+    $llmDailySummarySource = @($llmReviewPack.sourceFiles | Where-Object { $_.kind -eq "daily_summary" }) | Select-Object -First 1
+    Assert-Equal ([string]$llmDailySummarySource.path) $dailyJson "LLM review pack should read daily evidence from the just-published OutputRoot."
     Assert-True ($llmReviewPack.llmInstructions.purpose -match 'Do not treat deterministic counters as the final report') "LLM review pack must carry analyst interpretation instructions."
     $publishedDay = @($publishReport.published)[0]
     Assert-Equal $publishedDay.sessionCorrelationCount 1 "Publish report must include session correlation count."

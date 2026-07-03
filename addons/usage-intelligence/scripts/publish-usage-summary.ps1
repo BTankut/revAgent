@@ -454,6 +454,7 @@ try {
         $llmReviewPackOutput = & $llmReviewPackScript `
             -ReportsRoot $ReportsRoot `
             -DateUtc $dateList `
+            -InputDailyRoot $dailyRoot `
             -Top $Top `
             -TaskSampleLimit $TaskSampleLimit `
             -CorrelationWindowMinutes $CorrelationWindowMinutes `

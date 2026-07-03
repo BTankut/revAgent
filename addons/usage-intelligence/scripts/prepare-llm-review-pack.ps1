@@ -16,6 +16,7 @@ param(
     [string[]]$DateUtc = @((Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")),
     [switch]$IncludeYesterday,
     [int]$DaysBack = 0,
+    [string]$InputDailyRoot = "",
     [string]$OutputRoot = "",
     [string]$OutputPath = "",
     [string]$MarkdownOutputPath = "",
@@ -220,7 +221,12 @@ if (-not (Test-Path -LiteralPath $correlationScript -PathType Leaf)) {
     throw "Session correlation script not found: $correlationScript"
 }
 
-$dailyRoot = Join-Path (Join-Path $ReportsRoot "summaries") "daily"
+if ([string]::IsNullOrWhiteSpace($InputDailyRoot)) {
+    $dailyRoot = Join-Path (Join-Path $ReportsRoot "summaries") "daily"
+}
+else {
+    $dailyRoot = [System.IO.Path]::GetFullPath($InputDailyRoot)
+}
 $sourceFiles = [System.Collections.Generic.List[object]]::new()
 $dailyEvidence = [System.Collections.Generic.List[object]]::new()
 $sessionEvidence = [System.Collections.Generic.List[object]]::new()
@@ -276,7 +282,12 @@ foreach ($dateValue in $dates) {
             $key = [string]$row.name
             if (-not [string]::IsNullOrWhiteSpace($key)) { $projectNames[$key] = $true }
         }
-        foreach ($row in @($summary.byMachine)) {
+        $totals = Get-PropertyValue -Object $summary -Name "totals"
+        $machineRows = Get-PropertyValue -Object $totals -Name "byMachine"
+        if ($null -eq $machineRows) {
+            $machineRows = Get-PropertyValue -Object $summary -Name "byMachine"
+        }
+        foreach ($row in @($machineRows)) {
             $key = [string]$row.name
             if (-not [string]::IsNullOrWhiteSpace($key)) { $machineNames[$key] = $true }
         }
