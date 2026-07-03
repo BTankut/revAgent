@@ -209,6 +209,29 @@ function Get-TextFragments {
     return $items.ToArray()
 }
 
+function Test-CodexBootstrapUserText {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $false
+    }
+
+    $trimmed = $Text.TrimStart()
+    foreach ($pattern in @(
+            '(?is)^#\s*AGENTS\.md instructions(\s|$)',
+            '(?is)^#\s*AGENTS\.md instructions for\s+',
+            '(?is)^<environment_context>',
+            '(?is)^##\s*Memory(\s|$)',
+            '(?is)^========= MEMORY_SUMMARY BEGINS ========='
+        )) {
+        if ($trimmed -match $pattern) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Get-ResponseItem {
     param([object]$Event)
 
@@ -352,6 +375,9 @@ function New-CodexSessionContext {
         if ($role -eq "user") {
             foreach ($fragment in Get-TextFragments -Value $content) {
                 $bounded = ConvertTo-BoundedText -Value $fragment -Limit $MaxTextChars
+                if (Test-CodexBootstrapUserText -Text $bounded) {
+                    continue
+                }
                 if (-not [string]::IsNullOrWhiteSpace($bounded)) {
                     Add-BoundedEntry -List $userRequests -Limit $MaxUserRequests -Entry ([ordered]@{
                             timestampUtc = if ($timestamp) { $timestamp.ToString("o") } else { $null }
