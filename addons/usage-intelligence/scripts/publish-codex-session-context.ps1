@@ -11,6 +11,7 @@
 [CmdletBinding()]
 param(
     [string]$SessionRoot = "",
+    [string]$SessionIndexFile = "",
     [string[]]$SessionFile = @(),
     [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports",
     [string[]]$DateUtc = @((Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")),
@@ -133,6 +134,9 @@ foreach ($dateValue in $dates) {
     if (-not [string]::IsNullOrWhiteSpace($SessionRoot)) {
         $parameters.SessionRoot = $SessionRoot
     }
+    if (-not [string]::IsNullOrWhiteSpace($SessionIndexFile)) {
+        $parameters.SessionIndexFile = $SessionIndexFile
+    }
     if ($SessionFile.Count -gt 0) {
         $parameters.SessionFile = $SessionFile
     }
@@ -159,6 +163,8 @@ $report = [ordered]@{
     outputRoot = if ([string]::IsNullOrWhiteSpace($OutputRoot)) { (Join-Path $ReportsRoot "codex-sessions") } else { $OutputRoot }
     machineName = $MachineName
     userName = $UserName
+    sessionRoot = $SessionRoot
+    sessionIndexFile = $SessionIndexFile
     dateSelection = [ordered]@{
         mode = $dateSelectionMode
         startDateUtc = $StartDateUtc

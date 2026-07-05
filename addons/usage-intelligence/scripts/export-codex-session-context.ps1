@@ -11,6 +11,7 @@
 [CmdletBinding()]
 param(
     [string]$SessionRoot = "",
+    [string]$SessionIndexFile = "",
     [string[]]$SessionFile = @(),
     [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports",
     [string]$DateUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd"),
@@ -118,6 +119,87 @@ function ConvertTo-SafePathSegment {
     return $text
 }
 
+function Resolve-CodexSessionRoot {
+    param([string]$Root)
+
+    if (-not [string]::IsNullOrWhiteSpace($Root)) {
+        return $Root
+    }
+
+    $codexHome = $env:CODEX_HOME
+    if ([string]::IsNullOrWhiteSpace($codexHome)) {
+        $codexHome = Join-Path $HOME ".codex"
+    }
+
+    return (Join-Path $codexHome "sessions")
+}
+
+function Resolve-CodexSessionIndexFile {
+    param(
+        [string]$Path,
+        [string]$ResolvedSessionRoot
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Path)) {
+        return $Path
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ResolvedSessionRoot)) {
+        return ""
+    }
+
+    $parent = Split-Path -Parent $ResolvedSessionRoot
+    if ([string]::IsNullOrWhiteSpace($parent)) {
+        return ""
+    }
+
+    return (Join-Path $parent "session_index.jsonl")
+}
+
+function Read-CodexSessionIndex {
+    param([string]$Path)
+
+    $map = @{}
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $map
+    }
+
+    foreach ($line in [System.IO.File]::ReadLines($Path, [System.Text.Encoding]::UTF8)) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        try {
+            $row = $line | ConvertFrom-Json
+        }
+        catch {
+            continue
+        }
+
+        $id = [string](Get-ReportValue -Object $row -Name "id")
+        if ([string]::IsNullOrWhiteSpace($id)) {
+            $id = [string](Get-ReportValue -Object $row -Name "thread_id")
+        }
+        if ([string]::IsNullOrWhiteSpace($id)) {
+            $id = [string](Get-ReportValue -Object $row -Name "threadId")
+        }
+
+        $title = [string](Get-ReportValue -Object $row -Name "thread_name")
+        if ([string]::IsNullOrWhiteSpace($title)) {
+            $title = [string](Get-ReportValue -Object $row -Name "title")
+        }
+        if ([string]::IsNullOrWhiteSpace($title)) {
+            $title = [string](Get-ReportValue -Object $row -Name "name")
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($id) -and -not [string]::IsNullOrWhiteSpace($title) -and -not $map.ContainsKey($id)) {
+            $map[$id] = $title
+        }
+    }
+
+    return $map
+}
+
 function Get-EventTimestamp {
     param([object]$Event)
 
@@ -146,6 +228,21 @@ function Get-EventTimestamp {
     }
 
     return $null
+}
+
+function Test-TimestampInUtcDate {
+    param(
+        [object]$Timestamp,
+        [datetime]$Date
+    )
+
+    if ($null -eq $Timestamp) {
+        return $false
+    }
+
+    $start = $Date.Date
+    $end = $start.AddDays(1)
+    return ($Timestamp -ge $start -and $Timestamp -lt $end)
 }
 
 function Add-UniqueString {
@@ -209,6 +306,83 @@ function Get-TextFragments {
     return $items.ToArray()
 }
 
+function Get-LocalImagePaths {
+    param([object]$Payload)
+
+    $paths = [System.Collections.Generic.List[string]]::new()
+    foreach ($collectionName in @("local_images", "images")) {
+        $collection = Get-ReportValue -Object $Payload -Name $collectionName
+        if ($null -eq $collection) {
+            continue
+        }
+
+        foreach ($image in @($collection)) {
+            if ($image -is [string]) {
+                Add-UniqueString -List $paths -Value ([string]$image)
+                continue
+            }
+
+            foreach ($pathName in @("path", "localPath", "local_path", "filePath", "file_path")) {
+                $candidate = [string](Get-ReportValue -Object $image -Name $pathName)
+                if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+                    Add-UniqueString -List $paths -Value $candidate
+                }
+            }
+        }
+    }
+
+    return $paths.ToArray()
+}
+
+function Get-EventMessageRole {
+    param([object]$Payload)
+
+    $payloadType = [string](Get-ReportValue -Object $Payload -Name "type")
+    if ($payloadType -eq "user_message") {
+        return "user"
+    }
+    if ($payloadType -eq "agent_message") {
+        return "assistant"
+    }
+
+    return ""
+}
+
+function Get-EventMessageText {
+    param([object]$Payload)
+
+    $message = Get-ReportValue -Object $Payload -Name "message"
+    if ($message -is [string]) {
+        return [string]$message
+    }
+
+    $fragments = Get-TextFragments -Value $message
+    if (@($fragments).Count -gt 0) {
+        return (($fragments | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join [Environment]::NewLine)
+    }
+
+    return ""
+}
+
+function Get-EventToolName {
+    param([object]$Payload)
+
+    foreach ($candidate in @(
+            (Get-ReportValue -Object $Payload -Name "name"),
+            (Get-ReportValue -Object $Payload -Name "tool"),
+            (Get-ReportValue -Object $Payload -Name "toolName"),
+            (Get-NestedReportValue -Object $Payload -Path @("invocation", "tool")),
+            (Get-NestedReportValue -Object $Payload -Path @("invocation", "name")),
+            (Get-NestedReportValue -Object $Payload -Path @("invocation", "toolName"))
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$candidate)) {
+            return [string]$candidate
+        }
+    }
+
+    return ""
+}
+
 function Test-CodexBootstrapUserText {
     param([string]$Text)
 
@@ -250,6 +424,57 @@ function Get-ResponseItem {
     return $item
 }
 
+function Test-CodexSessionFileHasVisibleMessageOnDate {
+    param(
+        [System.IO.FileInfo]$File,
+        [datetime]$Date
+    )
+
+    $hasEventMessageOnDate = $false
+    $hasResponseMessageOnDate = $false
+
+    foreach ($line in [System.IO.File]::ReadLines($File.FullName, [System.Text.Encoding]::UTF8)) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        try {
+            $event = $line | ConvertFrom-Json
+        }
+        catch {
+            continue
+        }
+
+        $timestamp = Get-EventTimestamp -Event $event
+        $type = [string](Get-ReportValue -Object $event -Name "type")
+        $payload = Get-ReportValue -Object $event -Name "payload"
+
+        if ($type -eq "event_msg") {
+            $role = Get-EventMessageRole -Payload $payload
+            if (-not [string]::IsNullOrWhiteSpace($role)) {
+                if (Test-TimestampInUtcDate -Timestamp $timestamp -Date $Date) {
+                    $hasEventMessageOnDate = $true
+                }
+            }
+            continue
+        }
+
+        $item = Get-ResponseItem -Event $event
+        if ($null -eq $item) {
+            continue
+        }
+
+        $itemType = [string](Get-ReportValue -Object $item -Name "type")
+        $role = [string](Get-ReportValue -Object $item -Name "role")
+        if ($itemType -eq "message" -and ($role -eq "user" -or $role -eq "assistant") -and
+            (Test-TimestampInUtcDate -Timestamp $timestamp -Date $Date)) {
+            $hasResponseMessageOnDate = $true
+        }
+    }
+
+    return ($hasEventMessageOnDate -or $hasResponseMessageOnDate)
+}
+
 function Get-CodexSessionFiles {
     param(
         [string]$Root,
@@ -265,44 +490,37 @@ function Get-CodexSessionFiles {
         })
     }
 
-    if ([string]::IsNullOrWhiteSpace($Root)) {
-        $codexHome = $env:CODEX_HOME
-        if ([string]::IsNullOrWhiteSpace($codexHome)) {
-            $codexHome = Join-Path $HOME ".codex"
-        }
-        $Root = Join-Path $codexHome "sessions"
-    }
-
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
         return @()
     }
 
-    $dateRoot = Join-Path (Join-Path (Join-Path $Root $Date.ToString("yyyy")) $Date.ToString("MM")) $Date.ToString("dd")
-    if (Test-Path -LiteralPath $dateRoot -PathType Container) {
-        return @(Get-ChildItem -LiteralPath $dateRoot -File -Filter "*.jsonl" -ErrorAction SilentlyContinue)
-    }
-
-    $start = $Date.Date
-    $end = $start.AddDays(1)
     return @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter "*.jsonl" -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTimeUtc -ge $start -and $_.LastWriteTimeUtc -lt $end })
+        Where-Object { Test-CodexSessionFileHasVisibleMessageOnDate -File $_ -Date $Date } |
+        Sort-Object FullName)
 }
 
 function New-CodexSessionContext {
     param(
         [System.IO.FileInfo]$File,
-        [datetime]$Date
+        [datetime]$Date,
+        [hashtable]$SessionIndex
     )
 
     $sessionId = ""
     $threadId = ""
+    $threadTitle = ""
     $workspacePaths = [System.Collections.Generic.List[string]]::new()
     $workspaceNames = [System.Collections.Generic.List[string]]::new()
-    $userRequests = [System.Collections.Generic.List[object]]::new()
-    $assistantOutcomes = [System.Collections.Generic.List[object]]::new()
+    $eventUserRequests = [System.Collections.Generic.List[object]]::new()
+    $eventAssistantOutcomes = [System.Collections.Generic.List[object]]::new()
+    $responseUserRequests = [System.Collections.Generic.List[object]]::new()
+    $responseAssistantOutcomes = [System.Collections.Generic.List[object]]::new()
     $toolCalls = [System.Collections.Generic.List[object]]::new()
     $toolCounts = @{}
     $timestamps = [System.Collections.Generic.List[datetime]]::new()
+    $eventMessageTimestamps = [System.Collections.Generic.List[datetime]]::new()
+    $responseMessageTimestamps = [System.Collections.Generic.List[datetime]]::new()
+    $hasEventMessageOnDate = $false
     $badLineCount = 0
     $lineCount = 0
 
@@ -326,6 +544,7 @@ function New-CodexSessionContext {
 
         $type = [string](Get-ReportValue -Object $event -Name "type")
         $payload = Get-ReportValue -Object $event -Name "payload"
+        $timestampInDate = Test-TimestampInUtcDate -Timestamp $timestamp -Date $Date
 
         if ($type -eq "session_meta" -or $null -ne (Get-ReportValue -Object $payload -Name "id")) {
             $payloadId = [string](Get-ReportValue -Object $payload -Name "id")
@@ -338,6 +557,50 @@ function New-CodexSessionContext {
             }
             if ([string]::IsNullOrWhiteSpace($threadId) -and -not [string]::IsNullOrWhiteSpace($payloadThread)) {
                 $threadId = $payloadThread
+            }
+        }
+
+        if ($type -eq "event_msg") {
+            $eventRole = Get-EventMessageRole -Payload $payload
+            if (-not [string]::IsNullOrWhiteSpace($eventRole)) {
+                if ($timestampInDate) {
+                    $hasEventMessageOnDate = $true
+                    $bounded = ConvertTo-BoundedText -Value (Get-EventMessageText -Payload $payload) -Limit $MaxTextChars
+                    if (-not [string]::IsNullOrWhiteSpace($bounded)) {
+                        if ($null -ne $timestamp) {
+                            [void]$eventMessageTimestamps.Add($timestamp)
+                        }
+                        $entry = [ordered]@{
+                            timestampUtc = if ($timestamp) { $timestamp.ToString("o") } else { $null }
+                            text = $bounded
+                        }
+                        $imagePaths = @(Get-LocalImagePaths -Payload $payload)
+                        if ($imagePaths.Count -gt 0) {
+                            $entry["localImagePaths"] = @($imagePaths)
+                        }
+                        if ($eventRole -eq "user") {
+                            Add-BoundedEntry -List $eventUserRequests -Limit $MaxUserRequests -Entry $entry
+                        }
+                        elseif ($eventRole -eq "assistant") {
+                            Add-BoundedEntry -List $eventAssistantOutcomes -Limit $MaxAssistantOutcomes -Entry $entry
+                        }
+                    }
+                }
+            }
+
+            $eventToolName = Get-EventToolName -Payload $payload
+            $eventPayloadType = [string](Get-ReportValue -Object $payload -Name "type")
+            if ($timestampInDate -and $eventPayloadType -match '(?i)(tool_call|mcp_tool_call)' -and
+                -not [string]::IsNullOrWhiteSpace($eventToolName)) {
+                if (-not $toolCounts.ContainsKey($eventToolName)) {
+                    $toolCounts[$eventToolName] = 0
+                }
+                $toolCounts[$eventToolName]++
+                Add-BoundedEntry -List $toolCalls -Limit $MaxToolCalls -Entry ([ordered]@{
+                        timestampUtc = if ($timestamp) { $timestamp.ToString("o") } else { $null }
+                        name = $eventToolName
+                        type = $eventPayloadType
+                    })
             }
         }
 
@@ -372,25 +635,31 @@ function New-CodexSessionContext {
             $content = Get-ReportValue -Object $item -Name "message"
         }
 
-        if ($role -eq "user") {
+        if ($timestampInDate -and $role -eq "user") {
             foreach ($fragment in Get-TextFragments -Value $content) {
                 $bounded = ConvertTo-BoundedText -Value $fragment -Limit $MaxTextChars
                 if (Test-CodexBootstrapUserText -Text $bounded) {
                     continue
                 }
                 if (-not [string]::IsNullOrWhiteSpace($bounded)) {
-                    Add-BoundedEntry -List $userRequests -Limit $MaxUserRequests -Entry ([ordered]@{
+                    if ($null -ne $timestamp) {
+                        [void]$responseMessageTimestamps.Add($timestamp)
+                    }
+                    Add-BoundedEntry -List $responseUserRequests -Limit $MaxUserRequests -Entry ([ordered]@{
                             timestampUtc = if ($timestamp) { $timestamp.ToString("o") } else { $null }
                             text = $bounded
                         })
                 }
             }
         }
-        elseif ($role -eq "assistant") {
+        elseif ($timestampInDate -and $role -eq "assistant") {
             foreach ($fragment in Get-TextFragments -Value $content) {
                 $bounded = ConvertTo-BoundedText -Value $fragment -Limit $MaxTextChars
                 if (-not [string]::IsNullOrWhiteSpace($bounded)) {
-                    Add-BoundedEntry -List $assistantOutcomes -Limit $MaxAssistantOutcomes -Entry ([ordered]@{
+                    if ($null -ne $timestamp) {
+                        [void]$responseMessageTimestamps.Add($timestamp)
+                    }
+                    Add-BoundedEntry -List $responseAssistantOutcomes -Limit $MaxAssistantOutcomes -Entry ([ordered]@{
                             timestampUtc = if ($timestamp) { $timestamp.ToString("o") } else { $null }
                             text = $bounded
                         })
@@ -402,7 +671,7 @@ function New-CodexSessionContext {
         if ([string]::IsNullOrWhiteSpace($toolName)) {
             $toolName = [string](Get-ReportValue -Object $item -Name "toolName")
         }
-        if (($itemType -match '(?i)(function_call|tool_call|mcp_call)') -and -not [string]::IsNullOrWhiteSpace($toolName)) {
+        if ($timestampInDate -and ($itemType -match '(?i)(function_call|tool_call|mcp_call)') -and -not [string]::IsNullOrWhiteSpace($toolName)) {
             if (-not $toolCounts.ContainsKey($toolName)) {
                 $toolCounts[$toolName] = 0
             }
@@ -418,17 +687,40 @@ function New-CodexSessionContext {
     if ([string]::IsNullOrWhiteSpace($sessionId)) {
         $sessionId = [System.IO.Path]::GetFileNameWithoutExtension($File.Name)
     }
+    if ($SessionIndex -and $SessionIndex.ContainsKey($sessionId)) {
+        $threadTitle = [string]$SessionIndex[$sessionId]
+    }
+    if ([string]::IsNullOrWhiteSpace($threadTitle) -and -not [string]::IsNullOrWhiteSpace($threadId) -and $SessionIndex -and $SessionIndex.ContainsKey($threadId)) {
+        $threadTitle = [string]$SessionIndex[$threadId]
+    }
 
-    $startedAt = $null
-    $endedAt = $null
+    $fullStartedAt = $null
+    $fullEndedAt = $null
     if ($timestamps.Count -gt 0) {
         $orderedTimes = @($timestamps | Sort-Object)
-        $startedAt = $orderedTimes[0]
-        $endedAt = $orderedTimes[$orderedTimes.Count - 1]
+        $fullStartedAt = $orderedTimes[0]
+        $fullEndedAt = $orderedTimes[$orderedTimes.Count - 1]
     }
     else {
-        $startedAt = $File.LastWriteTimeUtc
-        $endedAt = $File.LastWriteTimeUtc
+        $fullStartedAt = $File.LastWriteTimeUtc
+        $fullEndedAt = $File.LastWriteTimeUtc
+    }
+
+    $useEventMessages = $hasEventMessageOnDate -and (($eventUserRequests.Count + $eventAssistantOutcomes.Count) -gt 0)
+    $userRequestItems = if ($useEventMessages) { @($eventUserRequests.ToArray()) } else { @($responseUserRequests.ToArray()) }
+    $assistantOutcomeItems = if ($useEventMessages) { @($eventAssistantOutcomes.ToArray()) } else { @($responseAssistantOutcomes.ToArray()) }
+    $messageTimestampItems = if ($useEventMessages) { @($eventMessageTimestamps.ToArray()) } else { @($responseMessageTimestamps.ToArray()) }
+    $messageSource = if ($useEventMessages) { "event_msg" } else { "response_item" }
+    if (($userRequestItems.Count + $assistantOutcomeItems.Count) -eq 0) {
+        return $null
+    }
+
+    $startedAt = $fullStartedAt
+    $endedAt = $fullEndedAt
+    if ($messageTimestampItems.Count -gt 0) {
+        $orderedMessageTimes = @($messageTimestampItems | Sort-Object)
+        $startedAt = $orderedMessageTimes[0]
+        $endedAt = $orderedMessageTimes[$orderedMessageTimes.Count - 1]
     }
 
     $toolUsage = @($toolCounts.GetEnumerator() |
@@ -449,11 +741,16 @@ function New-CodexSessionContext {
             lineCount = $lineCount
             badLineCount = $badLineCount
             rawTranscriptIncluded = $false
+            messageSource = $messageSource
+            visibleMessageCount = ($userRequestItems.Count + $assistantOutcomeItems.Count)
+            fullStartedAtUtc = $fullStartedAt.ToUniversalTime().ToString("o")
+            fullEndedAtUtc = $fullEndedAt.ToUniversalTime().ToString("o")
         }
         machineName = $MachineName
         userName = $UserName
         codexSessionId = $sessionId
         threadId = $threadId
+        threadTitle = $threadTitle
         startedAtUtc = $startedAt.ToUniversalTime().ToString("o")
         endedAtUtc = $endedAt.ToUniversalTime().ToString("o")
         workspace = [ordered]@{
@@ -466,32 +763,39 @@ function New-CodexSessionContext {
             maxAssistantOutcomes = $MaxAssistantOutcomes
             maxToolCalls = $MaxToolCalls
         }
-        userRequests = @($userRequests.ToArray())
-        assistantOutcomes = @($assistantOutcomes.ToArray())
+        userRequests = @($userRequestItems)
+        assistantOutcomes = @($assistantOutcomeItems)
         toolCalls = @($toolCalls.ToArray())
         toolUsage = @($toolUsage)
     }
 }
 
 $date = ConvertTo-UtcDate -Value $DateUtc
+$resolvedSessionRoot = Resolve-CodexSessionRoot -Root $SessionRoot
+$resolvedSessionIndexFile = Resolve-CodexSessionIndexFile -Path $SessionIndexFile -ResolvedSessionRoot $resolvedSessionRoot
+$sessionIndex = Read-CodexSessionIndex -Path $resolvedSessionIndexFile
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $ReportsRoot "codex-sessions"
 }
 
-$files = @(Get-CodexSessionFiles -Root $SessionRoot -Date $date)
+$files = @(Get-CodexSessionFiles -Root $resolvedSessionRoot -Date $date)
 $written = [System.Collections.Generic.List[object]]::new()
 $machineSegment = ConvertTo-SafePathSegment -Value $MachineName
 $dayRoot = Join-Path (Join-Path (Join-Path (Join-Path $OutputRoot $date.ToString("yyyy")) $date.ToString("MM")) $date.ToString("dd")) $machineSegment
 New-Item -ItemType Directory -Path $dayRoot -Force | Out-Null
 
 foreach ($file in $files) {
-    $context = New-CodexSessionContext -File $file -Date $date
+    $context = New-CodexSessionContext -File $file -Date $date -SessionIndex $sessionIndex
+    if ($null -eq $context) {
+        continue
+    }
     $safeSessionId = ConvertTo-SafePathSegment -Value ([string]$context.codexSessionId)
     $outputPath = Join-Path $dayRoot ("{0}.context.json" -f $safeSessionId)
     $context | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $outputPath -Encoding UTF8
     [void]$written.Add([ordered]@{
             codexSessionId = $context.codexSessionId
             threadId = $context.threadId
+            threadTitle = $context.threadTitle
             path = $outputPath
             userRequestCount = @($context.userRequests).Count
             assistantOutcomeCount = @($context.assistantOutcomes).Count
@@ -507,6 +811,8 @@ foreach ($file in $files) {
     userName = $UserName
     reportsRoot = $ReportsRoot
     outputRoot = $OutputRoot
+    sessionRoot = $resolvedSessionRoot
+    sessionIndexFile = $resolvedSessionIndexFile
     sessionFileCount = $files.Count
     contextCount = $written.Count
     contexts = @($written.ToArray())

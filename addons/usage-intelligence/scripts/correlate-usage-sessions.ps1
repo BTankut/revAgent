@@ -526,6 +526,7 @@ foreach ($context in $contexts) {
     $correlation = [ordered]@{
         codexSessionId = Get-ReportValue -Object $context -Name "codexSessionId"
         threadId = Get-ReportValue -Object $context -Name "threadId"
+        threadTitle = Get-ReportValue -Object $context -Name "threadTitle"
         machineName = $machineName
         userName = $userName
         timeWindow = [ordered]@{

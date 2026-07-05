@@ -389,6 +389,7 @@ foreach ($dateValue in $dates) {
                     dateUtc = $dateValue
                     codexSessionId = $item.codexSessionId
                     threadId = $item.threadId
+                    threadTitle = $item.threadTitle
                     machineName = $item.machineName
                     userName = $item.userName
                     timeWindow = $item.timeWindow
