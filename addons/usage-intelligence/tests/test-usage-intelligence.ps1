@@ -657,6 +657,19 @@ try {
     Assert-True (Test-Path -LiteralPath $codexPublishReportPath -PathType Leaf) "Codex session publisher should write the latest report path for scheduled-task evidence."
     $codexPublishReport = Get-Content -Raw -Encoding UTF8 -LiteralPath $codexPublishReportPath | ConvertFrom-Json
     Assert-Equal $codexPublishReport.contextCount 1 "Codex session latest report context count mismatch."
+    Assert-Equal $codexPublishOutput.dateSelection.mode "explicit_dates" "Explicit DateUtc publish should stay scoped to the requested day."
+
+    $todayUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")
+    $codexBackfillOutput = & (Join-Path $usageScriptsRoot "publish-codex-session-context.ps1") `
+        -SessionRoot $codexSessionRoot `
+        -ReportsRoot $reportsRoot `
+        -StartDateUtc $todayUtc `
+        -MachineName "TEST-PC" `
+        -UserName "USER1" `
+        -MaxTextChars 80 | ConvertFrom-Json
+    Assert-Equal $codexBackfillOutput.dateSelection.mode "start_date_to_today" "Default Codex session publish should use StartDateUtc backfill mode."
+    Assert-Equal $codexBackfillOutput.dateSelection.startDateUtc $todayUtc "Codex session publish should report the configured start date."
+    Assert-True (@($codexBackfillOutput.dateSelection.datesUtc | Where-Object { $_ -eq $todayUtc }).Count -eq 1) "Codex session publish should include the requested start date."
 
     $manualCorrelationPath = Join-Path $tempRoot "manual-session-correlations.json"
     $manualEvidencePath = Join-Path $tempRoot "manual-session-correlation-evidence.md"
@@ -770,6 +783,15 @@ try {
     $llmDailySummarySource = @($llmReviewPack.sourceFiles | Where-Object { $_.kind -eq "daily_summary" }) | Select-Object -First 1
     Assert-Equal ([string]$llmDailySummarySource.path) $dailyJson "LLM review pack should read daily evidence from the just-published OutputRoot."
     Assert-True ($llmReviewPack.llmInstructions.purpose -match 'Do not treat deterministic counters as the final report') "LLM review pack must carry analyst interpretation instructions."
+    $startDatePackPath = Join-Path $tempRoot "start-date-review-pack.json"
+    $startDatePack = & (Join-Path $usageScriptsRoot "prepare-llm-review-pack.ps1") `
+        -ReportsRoot $reportsRoot `
+        -StartDateUtc "2026-05-27" `
+        -OutputPath $startDatePackPath `
+        -SkipMarkdown `
+        -UseExistingInputs | ConvertFrom-Json
+    Assert-Equal $startDatePack.dateRange.startUtc "2026-05-27" "StartDateUtc review pack should start at the requested date."
+    Assert-True ($startDatePack.dateRange.endUtc -ge "2026-05-27") "StartDateUtc review pack should include dates through the current UTC date."
     $publishedDay = @($publishReport.published)[0]
     Assert-Equal $publishedDay.sessionCorrelationCount 1 "Publish report must include session correlation count."
     Assert-True ($publishedDay.reviewSignalCount -ge 1) "Publish report must include review signal count."
@@ -932,7 +954,9 @@ try {
     $codexTaskScriptText = Get-Content -Raw -LiteralPath (Join-Path $usageScriptsRoot "install-codex-session-export-task.ps1")
     Assert-True ($codexTaskScriptText -match 'revAgent Codex Session Context Export') "Codex session export task must use a dedicated revAgent task name."
     Assert-True ($codexTaskScriptText -match '\[string\]\$DailyAt = "20:15"') "Codex session export task must default before the daily summary publisher."
-    Assert-True ($codexTaskScriptText -match '\[int\]\$LookbackDays = 2') "Codex session export task must default to a bounded two-day lookback."
+    Assert-True ($codexTaskScriptText -match '\[string\]\$StartDateUtc = "2026-06-29"') "Codex session export task must default to the rollout-to-date backfill start."
+    Assert-True ($codexTaskScriptText -match '\[int\]\$LookbackDays = 0') "Codex session export task must not default to a short rolling lookback."
+    Assert-True ($codexTaskScriptText -match '"-StartDateUtc", \$StartDateUtc') "Codex session export task must pass the configured backfill start date to the publisher."
     Assert-True ($codexTaskScriptText -match 'publish-codex-session-context\.ps1') "Codex session export task must run the Codex session publisher wrapper."
     Assert-True ($codexTaskScriptText -match 'Write-RevAgentHiddenPowerShellLauncher') "Codex session export task must run hidden through the shared launcher."
     Assert-True ($codexTaskScriptText -match 'codex-session-export-latest\.json') "Codex session export task must persist a latest report for verification."
@@ -964,6 +988,7 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $tempRoot "codex-skills") "revagent-usage-analyst\SKILL.md") -PathType Leaf) "Usage analyst Codex skill was not installed under the requested Codex skills root."
     $installedUsageSkillText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path (Join-Path $tempRoot "codex-skills") "revagent-usage-analyst\SKILL.md")
     Assert-True ($installedUsageSkillText -match 'llm_input_not_final_report') "Usage analyst skill must instruct the LLM to treat review packs as evidence, not final reports."
+    Assert-True ($installedUsageSkillText -match '2026-06-29') "Usage analyst skill must document the rollout-to-date Codex context start date."
     Assert-True ($installedUsageSkillText -match 'Istekten Sonuca') "Usage analyst skill must define the user-intent-to-outcome report section."
     $usageAddonConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $usageAddonInstallRoot "config\usage-intelligence.json") | ConvertFrom-Json
     Assert-Equal $usageAddonConfig.schemaVersion "revagent.usage-intelligence.addon.config.v1" "Usage-intelligence add-on config schema mismatch."

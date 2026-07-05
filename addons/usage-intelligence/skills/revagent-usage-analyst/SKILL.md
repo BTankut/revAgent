@@ -130,6 +130,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\BT\Projects\revAge
   -DateUtc @("2026-07-01", "2026-07-02")
 ```
 
+For rollout-to-date analysis from the production Codex session backfill start:
+
+```powershell
+$reports = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports"
+powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\BT\Projects\revAgent\scripts\prepare-llm-review-pack.ps1" `
+  -ReportsRoot $reports `
+  -StartDateUtc "2026-06-29"
+```
+
+The workstation Codex session exporter is expected to publish bounded context
+from `2026-06-29` through the current UTC date. Do not assume the old
+short rolling window when evaluating coverage.
+
 For read-only use of already prepared files, add `-UseExistingInputs`. If
 `review-pack.json` is missing, use the script without `-UseExistingInputs` so it
 can refresh summaries/correlation evidence first.

@@ -182,10 +182,9 @@ For production automation, the workstation-side publisher is:
 addons/usage-intelligence/scripts/publish-codex-session-context.ps1
 ```
 
-It runs the bounded exporter for the requested UTC day, includes a bounded
-lookback window by default when used from the scheduled task, and writes a
-local latest-run report for verification under the installed add-on state
-folder.
+It runs the bounded exporter for the requested UTC day or a configured UTC date
+range, and writes a local latest-run report for verification under the
+installed add-on state folder.
 
 Install the workstation-side exporter task on a pilot workstation such as
 NET01:
@@ -202,15 +201,19 @@ current Windows user context so it can read that user's local Codex session
 store, normally under `%USERPROFILE%\.codex\sessions`. It should be installed
 on each production workstation only after the NET01 pilot proves that the task
 can read local Codex sessions and write bounded context to NAS.
-The default lookback is today plus the previous two UTC days, so a workstation
-that missed yesterday's run can still publish recent bounded session context.
+The default workstation task exports bounded Codex context for every UTC date
+from `2026-06-29` through today. This intentionally backfills the historical
+Codex sessions that remain on each production workstation, so LLM analysis can
+start at the usage-intelligence rollout date instead of only a short rolling
+window. `-DateUtc` can still be used for exact single-day diagnostics, and
+`-LookbackDays` remains an optional compatibility override.
 
 Example NET01 pilot export:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\export-codex-session-context.ps1 `
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-codex-session-context.ps1 `
   -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports" `
-  -DateUtc "2026-07-03" `
+  -StartDateUtc "2026-06-29" `
   -MachineName "NET01"
 ```
 
@@ -291,6 +294,14 @@ Example two-day analyst entrypoint:
 powershell -ExecutionPolicy Bypass -File .\scripts\prepare-llm-review-pack.ps1 `
   -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports" `
   -DaysBack 2
+```
+
+Example rollout-to-date analyst entrypoint:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\prepare-llm-review-pack.ps1 `
+  -ReportsRoot "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports" `
+  -StartDateUtc "2026-06-29"
 ```
 
 Example Codex prompt after the pack exists:
