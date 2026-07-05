@@ -20,8 +20,9 @@ param(
     [int]$MaxUserRequests = 12,
     [int]$MaxAssistantOutcomes = 8,
     [int]$MaxToolCalls = 80,
-    [bool]$IncludeYesterday = $true,
-    [int]$LookbackDays = 2,
+    [bool]$IncludeYesterday = $false,
+    [string]$StartDateUtc = "2026-06-29",
+    [int]$LookbackDays = 0,
     [switch]$RunNow
 )
 
@@ -168,6 +169,7 @@ $config = [ordered]@{
     reportPath = $reportPath
     sessionRoot = $SessionRoot
     includeYesterday = [bool]$IncludeYesterday
+    startDateUtc = $StartDateUtc
     lookbackDays = $LookbackDays
     maxTextChars = $MaxTextChars
     maxUserRequests = $MaxUserRequests
@@ -188,6 +190,7 @@ $scriptArguments = @(
     "-MaxUserRequests", [string]$MaxUserRequests,
     "-MaxAssistantOutcomes", [string]$MaxAssistantOutcomes,
     "-MaxToolCalls", [string]$MaxToolCalls,
+    "-StartDateUtc", $StartDateUtc,
     "-LookbackDays", [string]$LookbackDays
 )
 if (-not [string]::IsNullOrWhiteSpace($SessionRoot)) {
@@ -239,6 +242,7 @@ if ($RunNow) {
         MaxUserRequests = $MaxUserRequests
         MaxAssistantOutcomes = $MaxAssistantOutcomes
         MaxToolCalls = $MaxToolCalls
+        StartDateUtc = $StartDateUtc
         LookbackDays = $LookbackDays
     }
     if (-not [string]::IsNullOrWhiteSpace($SessionRoot)) {

@@ -387,9 +387,10 @@ Production Codex session context is collected by the workstation-side
 scheduled task, which runs
 `addons/usage-intelligence/scripts/publish-codex-session-context.ps1` under the
 current Windows user so it can read that user's local Codex session store and
-write bounded context under `reports\codex-sessions`. The exporter uses a
-small default lookback window to catch recent missed workstation runs without
-turning into a broad historical transcript scan.
+write bounded context under `reports\codex-sessions`. The exporter defaults to
+the rollout-to-date window starting at `2026-06-29`, because production
+workstations retain their local Codex sessions and management analysis needs the
+full bounded context history from that date forward.
 `addons/usage-intelligence/scripts/prepare-llm-review-pack.ps1` combines daily
 summaries, bounded Codex session contexts, source paths, and correlation
 evidence into `revagent.usage.llmReviewPack.v1`. A new Codex chat can use that

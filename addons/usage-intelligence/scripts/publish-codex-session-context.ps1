@@ -14,8 +14,9 @@ param(
     [string[]]$SessionFile = @(),
     [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports",
     [string[]]$DateUtc = @((Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")),
+    [string]$StartDateUtc = "2026-06-29",
     [switch]$IncludeYesterday,
-    [int]$LookbackDays = 2,
+    [int]$LookbackDays = 0,
     [string]$OutputRoot = "",
     [string]$ReportPath = "",
     [string]$MachineName = $env:COMPUTERNAME,
@@ -48,22 +49,68 @@ function ConvertTo-UtcDateString {
     }
 }
 
+function ConvertTo-UtcDate {
+    param(
+        [string]$Value,
+        [string]$ParameterName = "DateUtc"
+    )
+
+    try {
+        return ([datetime]::ParseExact(
+            $Value,
+            "yyyy-MM-dd",
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal
+        )).ToUniversalTime().Date
+    }
+    catch {
+        throw "$ParameterName must use yyyy-MM-dd, got '$Value'."
+    }
+}
+
+function Add-UtcDateString {
+    param(
+        [System.Collections.Generic.List[string]]$List,
+        [string]$Value
+    )
+
+    $normalized = ConvertTo-UtcDateString -Value $Value
+    if (-not $List.Contains($normalized)) {
+        [void]$List.Add($normalized)
+    }
+}
+
 $exportScript = Join-Path $PSScriptRoot "export-codex-session-context.ps1"
 if (-not (Test-Path -LiteralPath $exportScript -PathType Leaf)) {
     throw "Codex session exporter was not found: $exportScript"
 }
 
 $dateList = [System.Collections.Generic.List[string]]::new()
-foreach ($dateValue in $DateUtc) {
-    $dateList.Add((ConvertTo-UtcDateString -Value $dateValue))
+$dateSelectionMode = "explicit_dates"
+$dateUtcWasExplicit = $PSBoundParameters.ContainsKey("DateUtc")
+$todayUtc = (Get-Date).ToUniversalTime().Date
+if (-not $dateUtcWasExplicit -and -not [string]::IsNullOrWhiteSpace($StartDateUtc)) {
+    $dateSelectionMode = "start_date_to_today"
+    $startDate = ConvertTo-UtcDate -Value $StartDateUtc -ParameterName "StartDateUtc"
+    if ($startDate -gt $todayUtc) {
+        throw "StartDateUtc cannot be in the future: $StartDateUtc."
+    }
+
+    for ($cursor = $startDate; $cursor -le $todayUtc; $cursor = $cursor.AddDays(1)) {
+        Add-UtcDateString -List $dateList -Value $cursor.ToString("yyyy-MM-dd")
+    }
+}
+else {
+    foreach ($dateValue in $DateUtc) {
+        Add-UtcDateString -List $dateList -Value $dateValue
+    }
 }
 if ($IncludeYesterday) {
-    $dateList.Add((Get-Date).ToUniversalTime().AddDays(-1).ToString("yyyy-MM-dd"))
+    Add-UtcDateString -List $dateList -Value (Get-Date).ToUniversalTime().AddDays(-1).ToString("yyyy-MM-dd")
 }
 if ($LookbackDays -gt 0) {
-    $boundedLookbackDays = [Math]::Min(14, $LookbackDays)
-    for ($offset = 1; $offset -le $boundedLookbackDays; $offset++) {
-        $dateList.Add((Get-Date).ToUniversalTime().AddDays(-1 * $offset).ToString("yyyy-MM-dd"))
+    for ($offset = 1; $offset -le $LookbackDays; $offset++) {
+        Add-UtcDateString -List $dateList -Value (Get-Date).ToUniversalTime().AddDays(-1 * $offset).ToString("yyyy-MM-dd")
     }
 }
 $dates = @($dateList.ToArray() | Sort-Object -Unique)
@@ -112,6 +159,13 @@ $report = [ordered]@{
     outputRoot = if ([string]::IsNullOrWhiteSpace($OutputRoot)) { (Join-Path $ReportsRoot "codex-sessions") } else { $OutputRoot }
     machineName = $MachineName
     userName = $UserName
+    dateSelection = [ordered]@{
+        mode = $dateSelectionMode
+        startDateUtc = $StartDateUtc
+        includeYesterday = [bool]$IncludeYesterday
+        lookbackDays = $LookbackDays
+        datesUtc = @($dates)
+    }
     dateCount = $dates.Count
     sessionFileCount = $totalSessionFiles
     contextCount = $totalContexts

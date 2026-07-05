@@ -14,6 +14,7 @@
 param(
     [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports",
     [string[]]$DateUtc = @((Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")),
+    [string]$StartDateUtc = "",
     [switch]$IncludeYesterday,
     [int]$DaysBack = 0,
     [string]$InputDailyRoot = "",
@@ -30,6 +31,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$dateUtcWasExplicit = $PSBoundParameters.ContainsKey("DateUtc")
 
 function ConvertTo-UtcDateString {
     param([string]$Value)
@@ -48,6 +50,37 @@ function ConvertTo-UtcDateString {
     }
     catch {
         throw "DateUtc must use yyyy-MM-dd, got '$Value'."
+    }
+}
+
+function ConvertTo-UtcDate {
+    param(
+        [string]$Value,
+        [string]$ParameterName = "DateUtc"
+    )
+
+    try {
+        return ([datetime]::ParseExact(
+            $Value,
+            "yyyy-MM-dd",
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal
+        )).ToUniversalTime().Date
+    }
+    catch {
+        throw "$ParameterName must use yyyy-MM-dd, got '$Value'."
+    }
+}
+
+function Add-UtcDateString {
+    param(
+        [System.Collections.Generic.List[string]]$List,
+        [string]$Value
+    )
+
+    $normalized = ConvertTo-UtcDateString -Value $Value
+    if (-not $List.Contains($normalized)) {
+        [void]$List.Add($normalized)
     }
 }
 
@@ -132,16 +165,29 @@ function Join-NonEmptyText {
 
 function Convert-DateList {
     $dateList = [System.Collections.Generic.List[string]]::new()
-    foreach ($dateValue in $DateUtc) {
-        $dateList.Add((ConvertTo-UtcDateString -Value $dateValue))
+    $todayUtc = (Get-Date).ToUniversalTime().Date
+
+    if (-not $dateUtcWasExplicit -and -not [string]::IsNullOrWhiteSpace($StartDateUtc)) {
+        $startDate = ConvertTo-UtcDate -Value $StartDateUtc -ParameterName "StartDateUtc"
+        if ($startDate -gt $todayUtc) {
+            throw "StartDateUtc cannot be in the future: $StartDateUtc."
+        }
+
+        for ($cursor = $startDate; $cursor -le $todayUtc; $cursor = $cursor.AddDays(1)) {
+            Add-UtcDateString -List $dateList -Value $cursor.ToString("yyyy-MM-dd")
+        }
+    }
+    else {
+        foreach ($dateValue in $DateUtc) {
+            Add-UtcDateString -List $dateList -Value $dateValue
+        }
     }
     if ($IncludeYesterday) {
-        $dateList.Add((Get-Date).ToUniversalTime().AddDays(-1).ToString("yyyy-MM-dd"))
+        Add-UtcDateString -List $dateList -Value (Get-Date).ToUniversalTime().AddDays(-1).ToString("yyyy-MM-dd")
     }
     if ($DaysBack -gt 0) {
-        $boundedDaysBack = [Math]::Min(14, $DaysBack)
-        for ($offset = 0; $offset -lt $boundedDaysBack; $offset++) {
-            $dateList.Add((Get-Date).ToUniversalTime().AddDays(-1 * $offset).ToString("yyyy-MM-dd"))
+        for ($offset = 0; $offset -lt $DaysBack; $offset++) {
+            Add-UtcDateString -List $dateList -Value (Get-Date).ToUniversalTime().AddDays(-1 * $offset).ToString("yyyy-MM-dd")
         }
     }
 
