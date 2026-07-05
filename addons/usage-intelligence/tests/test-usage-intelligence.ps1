@@ -643,6 +643,132 @@ try {
     Assert-True ($codexContext.userRequests[0].text -notmatch 'AGENTS\.md instructions') "Codex context must ignore injected AGENTS bootstrap text."
     Assert-True (@($codexContext.toolUsage | Where-Object { $_.name -eq "find_elements" -and $_.count -eq 1 }).Count -eq 1) "Codex context tool usage missing find_elements."
 
+    $recursiveCodexHome = Join-Path $tempRoot "codex-recursive"
+    $recursiveSessionRoot = Join-Path $recursiveCodexHome "sessions"
+    $recursiveReportsRoot = Join-Path $tempRoot "recursive-reports"
+    $recursiveOldDayRoot = Join-Path (Join-Path (Join-Path $recursiveSessionRoot "2026") "05") "01"
+    $recursiveTargetDayRoot = Join-Path (Join-Path (Join-Path $recursiveSessionRoot "2026") "05") "27"
+    New-Item -ItemType Directory -Path $recursiveOldDayRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $recursiveTargetDayRoot -Force | Out-Null
+    ([ordered]@{ id = "old-folder-session"; thread_name = "Old folder continued thread"; updated_at = "2026-05-27T09:10:00.000Z" } |
+        ConvertTo-Json -Depth 10 -Compress) | Set-Content -LiteralPath (Join-Path $recursiveCodexHome "session_index.jsonl") -Encoding UTF8
+    $recursiveOldSessionFile = Join-Path $recursiveOldDayRoot "old-folder-session.jsonl"
+    $recursiveEvents = @(
+        [ordered]@{
+            type = "session_meta"
+            timestampUtc = "2026-05-01T07:00:00.000Z"
+            payload = [ordered]@{ id = "old-folder-session"; thread_id = "thread-old-folder" }
+        }
+        [ordered]@{
+            type = "turn_context"
+            timestampUtc = "2026-05-01T07:00:01.000Z"
+            payload = [ordered]@{ cwd = "C:\Projects\Office Tower" }
+        }
+        [ordered]@{
+            type = "event_msg"
+            timestamp = "2026-05-27T09:00:00.000Z"
+            payload = [ordered]@{
+                type = "user_message"
+                message = "Old folder date-scoped visible request"
+                local_images = @([ordered]@{ path = "C:\Projects\evidence.png" })
+            }
+        }
+        [ordered]@{
+            type = "response_item"
+            timestampUtc = "2026-05-27T09:00:02.000Z"
+            payload = [ordered]@{
+                item = [ordered]@{
+                    type = "message"
+                    role = "user"
+                    content = @([ordered]@{ type = "input_text"; text = "response_item duplicate should not be exported when event_msg exists" })
+                }
+            }
+        }
+        [ordered]@{
+            type = "event_msg"
+            timestamp = "2026-05-27T09:01:00.000Z"
+            payload = [ordered]@{ type = "agent_message"; message = "Old folder date-scoped visible answer" }
+        }
+        [ordered]@{
+            type = "event_msg"
+            timestamp = "2026-05-27T09:01:05.000Z"
+            payload = [ordered]@{
+                type = "mcp_tool_call_end"
+                invocation = [ordered]@{ server = "revit-mcp"; tool = "inspect_schedules"; arguments = [ordered]@{} }
+                result = [ordered]@{ ok = $true }
+            }
+        }
+    )
+    $recursiveEvents | ForEach-Object { ($_ | ConvertTo-Json -Depth 20 -Compress) } | Set-Content -LiteralPath $recursiveOldSessionFile -Encoding UTF8
+    $recursiveExportOutput = & (Join-Path $usageScriptsRoot "export-codex-session-context.ps1") `
+        -SessionRoot $recursiveSessionRoot `
+        -ReportsRoot $recursiveReportsRoot `
+        -DateUtc "2026-05-27" `
+        -MachineName "TEST-PC" `
+        -UserName "USER1" `
+        -MaxTextChars 120 | ConvertFrom-Json
+    Assert-Equal $recursiveExportOutput.contextCount 1 "Recursive Codex exporter must include old-folder sessions with visible messages on the requested date."
+    Assert-Equal $recursiveExportOutput.sessionFileCount 1 "Recursive Codex exporter should select exactly the internally matching old-folder session."
+    $recursiveContextPath = Join-Path $recursiveReportsRoot "codex-sessions\2026\05\27\TEST-PC\old-folder-session.context.json"
+    Assert-True (Test-Path -LiteralPath $recursiveContextPath -PathType Leaf) "Recursive old-folder Codex context was not written to the requested date."
+    $recursiveContext = Get-Content -Raw -Encoding UTF8 -LiteralPath $recursiveContextPath | ConvertFrom-Json
+    Assert-Equal $recursiveContext.source.messageSource "event_msg" "Codex exporter must prefer visible event_msg messages over response_item duplicates."
+    Assert-Equal $recursiveContext.threadTitle "Old folder continued thread" "Codex exporter must attach thread title from session_index.jsonl."
+    Assert-True ($recursiveContext.startedAtUtc -match '^2026-05-27T09:00:00') "Date-scoped context start must come from visible message time, not old folder creation time."
+    Assert-True ($recursiveContext.source.fullStartedAtUtc -match '^2026-05-01T07:00:00') "Codex context should preserve full thread first activity separately."
+    Assert-True ($recursiveContext.userRequests[0].text -match 'Old folder date-scoped visible request') "Event message user request missing."
+    Assert-True ($recursiveContext.userRequests[0].text -notmatch 'response_item duplicate') "Response item duplicate must not be exported when event_msg is available."
+    Assert-True (@($recursiveContext.userRequests[0].localImagePaths).Count -eq 1) "Event message local image path should be preserved as bounded evidence."
+
+    $hybridSessionFile = Join-Path $recursiveOldDayRoot "hybrid-response-fallback.jsonl"
+    $hybridEvents = @(
+        [ordered]@{
+            type = "session_meta"
+            timestampUtc = "2026-05-01T08:00:00.000Z"
+            payload = [ordered]@{ id = "hybrid-response-fallback"; thread_id = "thread-hybrid" }
+        }
+        [ordered]@{
+            type = "event_msg"
+            timestamp = "2026-05-01T08:00:05.000Z"
+            payload = [ordered]@{ type = "user_message"; message = "Older event message outside target date" }
+        }
+        [ordered]@{
+            type = "response_item"
+            timestampUtc = "2026-05-28T10:00:00.000Z"
+            payload = [ordered]@{
+                item = [ordered]@{
+                    type = "message"
+                    role = "user"
+                    content = @([ordered]@{ type = "input_text"; text = "Target date response_item request" })
+                }
+            }
+        }
+        [ordered]@{
+            type = "response_item"
+            timestampUtc = "2026-05-28T10:01:00.000Z"
+            payload = [ordered]@{
+                item = [ordered]@{
+                    type = "message"
+                    role = "assistant"
+                    content = @([ordered]@{ type = "output_text"; text = "Target date response_item answer" })
+                }
+            }
+        }
+    )
+    $hybridEvents | ForEach-Object { ($_ | ConvertTo-Json -Depth 20 -Compress) } | Set-Content -LiteralPath $hybridSessionFile -Encoding UTF8
+    $hybridExportOutput = & (Join-Path $usageScriptsRoot "export-codex-session-context.ps1") `
+        -SessionRoot $recursiveSessionRoot `
+        -ReportsRoot $recursiveReportsRoot `
+        -DateUtc "2026-05-28" `
+        -MachineName "TEST-PC" `
+        -UserName "USER1" `
+        -MaxTextChars 120 | ConvertFrom-Json
+    Assert-Equal $hybridExportOutput.contextCount 1 "Codex exporter must fall back to target-date response_item messages when event_msg exists only on other dates."
+    $hybridContextPath = Join-Path $recursiveReportsRoot "codex-sessions\2026\05\28\TEST-PC\hybrid-response-fallback.context.json"
+    $hybridContext = Get-Content -Raw -Encoding UTF8 -LiteralPath $hybridContextPath | ConvertFrom-Json
+    Assert-Equal $hybridContext.source.messageSource "response_item" "Codex exporter should only prefer event_msg for the target date."
+    Assert-True ($hybridContext.userRequests[0].text -match 'Target date response_item request') "Target-date response_item request was not exported."
+
     $codexPublishReportPath = Join-Path $tempRoot "codex-session-export-latest.json"
     $codexPublishOutput = & (Join-Path $usageScriptsRoot "publish-codex-session-context.ps1") `
         -SessionRoot $codexSessionRoot `

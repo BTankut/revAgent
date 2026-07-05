@@ -16,6 +16,7 @@ param(
     [string]$WorkRoot = "",
     [string]$PublishScriptPath = "",
     [string]$SessionRoot = "",
+    [string]$SessionIndexFile = "",
     [int]$MaxTextChars = 600,
     [int]$MaxUserRequests = 12,
     [int]$MaxAssistantOutcomes = 8,
@@ -168,6 +169,7 @@ $config = [ordered]@{
     workRoot = $WorkRoot
     reportPath = $reportPath
     sessionRoot = $SessionRoot
+    sessionIndexFile = $SessionIndexFile
     includeYesterday = [bool]$IncludeYesterday
     startDateUtc = $StartDateUtc
     lookbackDays = $LookbackDays
@@ -195,6 +197,9 @@ $scriptArguments = @(
 )
 if (-not [string]::IsNullOrWhiteSpace($SessionRoot)) {
     $scriptArguments += @("-SessionRoot", $SessionRoot)
+}
+if (-not [string]::IsNullOrWhiteSpace($SessionIndexFile)) {
+    $scriptArguments += @("-SessionIndexFile", $SessionIndexFile)
 }
 if ($IncludeYesterday) {
     $scriptArguments += "-IncludeYesterday"
@@ -247,6 +252,9 @@ if ($RunNow) {
     }
     if (-not [string]::IsNullOrWhiteSpace($SessionRoot)) {
         $publishParameters["SessionRoot"] = $SessionRoot
+    }
+    if (-not [string]::IsNullOrWhiteSpace($SessionIndexFile)) {
+        $publishParameters["SessionIndexFile"] = $SessionIndexFile
     }
     if ($IncludeYesterday) {
         $publishParameters["IncludeYesterday"] = $true
