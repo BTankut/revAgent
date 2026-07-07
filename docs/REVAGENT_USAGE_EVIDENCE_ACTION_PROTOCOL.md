@@ -136,7 +136,7 @@ Likely gates:
 
 ### S3: Schedule visual structure design spike
 
-Status: active.
+Status: complete in PR #208.
 
 Evidence:
 
@@ -166,6 +166,8 @@ Likely gates:
 
 ### S4: Model-save policy
 
+Status: active.
+
 Evidence:
 
 - 27 `model_save_policy` calls.
@@ -173,7 +175,8 @@ Evidence:
 Scope:
 
 - Write the product policy before any save implementation.
-- Decide whether revAgent exposes an explicit model-save tool at all.
+- Decide whether revAgent exposes an explicit model-save tool at all. Current
+  decision: no native save tool in the current product surface.
 - If allowed later, define exact confirmation, blocked cases, reporting, and
   verification.
 

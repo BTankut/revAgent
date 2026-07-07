@@ -284,6 +284,10 @@ save is a model-wide side effect and has office workflow implications.
 
 ### Policy Recommendation
 
+The binding policy is now maintained in
+`docs/REVAGENT_MODEL_SAVE_POLICY.md`. The summary below is kept here only to
+show the split from schedule visual structure work.
+
 - Normal revAgent tools must not save the model.
 - Write tools may report `documentModifiedBefore`, `documentModifiedAfter`,
   `documentPath`, and a user-facing reminder that the model needs normal Revit
@@ -294,8 +298,8 @@ save is a model-wide side effect and has office workflow implications.
 - The save tool should be blocked for detached/unsaved/cloud/workshared cases
   until those policies are written.
 
-Decision needed before implementation: whether revAgent is allowed to expose an
-explicit model-save tool at all.
+Current decision: no native save tool in the current product surface; revisit
+only as a separate explicit-save design review.
 
 ## PDF And Print Policy
 
