@@ -64,7 +64,7 @@ waits for explicit human approval after all planned PRs are merged.
 
 ### S0: Protocol note
 
-Status: active.
+Status: complete in PR #205.
 
 Goal: bind the execution protocol and convert the weekly evidence into a
 sequenced product plan.
@@ -76,6 +76,8 @@ Exit criteria:
   usage-derived workstream.
 
 ### S1: Existing-tool routing and tuning
+
+Status: complete in PR #206.
 
 Evidence:
 
@@ -108,6 +110,8 @@ Likely gates:
 
 ### S2: Classifier and manual triage for unclassified writes
 
+Status: complete in PR #207.
+
 Evidence:
 
 - 168 low-confidence `unclassified_write_pattern` calls.
@@ -131,6 +135,8 @@ Likely gates:
   ambiguous cases.
 
 ### S3: Schedule visual structure design spike
+
+Status: active.
 
 Evidence:
 
