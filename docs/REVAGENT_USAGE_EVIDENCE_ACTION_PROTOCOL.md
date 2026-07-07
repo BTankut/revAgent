@@ -166,7 +166,7 @@ Likely gates:
 
 ### S4: Model-save policy
 
-Status: active.
+Status: complete in PR #209.
 
 Evidence:
 
@@ -188,6 +188,8 @@ Non-goals:
 
 ### S5: PDF/print policy and view/image asset split
 
+Status: active.
+
 Evidence:
 
 - 54 `pdf_print_settings_policy` calls.
@@ -198,7 +200,9 @@ Scope:
 - Keep PDF/print settings separate from evidence image export.
 - Keep placed image asset mutation separate from view/sheet evidence export.
 - Decide whether PDF output belongs in core, an add-on, or outside current
-  automation.
+  automation. Current decision: outside the current core runtime surface;
+  revisit only as a separately named office-profile add-on or policy-approved
+  workflow.
 
 Non-goals:
 

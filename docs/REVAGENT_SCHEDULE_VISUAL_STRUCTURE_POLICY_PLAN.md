@@ -312,6 +312,10 @@ PDF or Revit `PrintManager` policy.
 
 ### Policy Recommendation
 
+The binding policy is now maintained in
+`docs/REVAGENT_PDF_PRINT_IMAGE_POLICY.md`. The summary below is kept here only
+to show the split from schedule visual structure work.
+
 - Keep `export_revit_view_image` as the supported evidence/export path for now.
 - Do not change Revit print settings or printer/PDF settings through raw code.
 - Treat PDF generation as a separate product decision because it can depend on
@@ -321,8 +325,9 @@ PDF or Revit `PrintManager` policy.
   scope, dry-run preview, output path control, no global print-setting drift,
   and read-back verification of generated files.
 
-Decision needed before implementation: whether PDF output belongs in revAgent
-core, an add-on, or remains outside automation for now.
+Current decision: PDF/print output is outside the current core runtime surface;
+revisit only as a separately named office-profile add-on or policy-approved
+workflow.
 
 ## View And Image Asset Workflow
 
@@ -336,7 +341,9 @@ with PDF/print policy. There are two separate intents:
 
 Image asset mutation is a model write. If implemented, it needs exact sheet or
 view scope, explicit image path validation, placement coordinates, dry-run,
-commit confirmation, and visual verification.
+commit confirmation, and visual verification. The current decision is no
+placed image asset mutation in the current core runtime surface; revisit only
+through `docs/REVAGENT_PDF_PRINT_IMAGE_POLICY.md`.
 
 ## Routing And Tuning Follow-up
 
