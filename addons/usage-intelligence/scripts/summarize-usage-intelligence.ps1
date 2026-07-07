@@ -400,10 +400,13 @@ function New-SendCodeClassification {
         [string]$Confidence,
         [string[]]$Reasons,
         [string[]]$CoveredToolCandidates,
-        [string]$SuggestedAction
+        [string]$SuggestedAction,
+        [string]$ReviewBucket = "",
+        [string[]]$ReviewSignals = @(),
+        [bool]$RequiresManualTriage = $false
     )
 
-    return [ordered]@{
+    $result = [ordered]@{
         classification = $Classification
         subtype = $Subtype
         confidence = $Confidence
@@ -411,6 +414,62 @@ function New-SendCodeClassification {
         coveredToolCandidates = @($CoveredToolCandidates)
         suggestedAction = $SuggestedAction
     }
+    if (-not [string]::IsNullOrWhiteSpace($ReviewBucket)) {
+        $result.reviewBucket = $ReviewBucket
+    }
+    if (@($ReviewSignals).Count -gt 0) {
+        $result.reviewSignals = @($ReviewSignals)
+    }
+    if ($RequiresManualTriage) {
+        $result.requiresManualTriage = $true
+    }
+
+    return $result
+}
+
+function Get-SendCodeWriteReviewTriage {
+    param(
+        [string]$Preview,
+        [string[]]$WritePatterns,
+        [bool]$HasManualTransaction = $false
+    )
+
+    $signals = [System.Collections.Generic.List[string]]::new()
+    if ($HasManualTransaction) {
+        Add-UniqueString -List $signals -Value "manual_transaction"
+    }
+    foreach ($pattern in @($WritePatterns)) {
+        Add-UniqueString -List $signals -Value ("write_pattern:{0}" -f $pattern)
+    }
+
+    $writePatternText = (@($WritePatterns) -join " ")
+    $lower = (@($Preview, $writePatternText) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join " "
+    $lower = $lower.ToLowerInvariant()
+
+    $dbMutationPattern = 'document\s*\.\s*(delete|create|regenerate)\s*\(|\.create\s*\(|newfamilyinstance|newopening|elementtransformutils\s*\.\s*(move|rotate|copy|mirror)|\.set\s*\(|setvaluestring\s*\(|setcelltext\s*\(|setcellstyle\s*\(|setmergedcell\s*\(|insertrow\s*\(|removerow\s*\(|insertcolumn\s*\(|removecolumn\s*\(|viewsheet\s*\.\s*create|schedulesheetinstance\s*\.\s*create|imageinstance\s*\.\s*create|setelementoverrides\s*\(|overridegraphicsettings|pinned\s*=|location\s*\.'
+    $localAdapterPattern = 'stringbuilder|datatable|dictionary\s*<|list\s*<|hashset\s*<|jobject|jsonconvert|serializeobject|file\s*\.\s*(write|append|read)|streamwriter|csv|tsv|clipboard|excel|workbook|worksheet|xlsx|html|markdown|report|debug|output'
+    $readHelperPattern = 'filteredelementcollector|getelement\s*\(|getparameters\s*\(|lookupparameter\s*\(|getcelltext\s*\(|getitemtext\s*\(|boundingbox|getboundingbox|transform|xyz|solid|geometry|viewport|textnote|independenttag'
+
+    $hasDbMutation = $lower -match $dbMutationPattern
+    $hasLocalAdapter = $lower -match $localAdapterPattern
+    $hasReadHelper = $lower -match $readHelperPattern
+
+    if ($hasDbMutation) {
+        Add-UniqueString -List $signals -Value "revit_db_mutation_signal"
+        return [ordered]@{ reviewBucket = "revit_db_mutation_review"; reviewSignals = @($signals.ToArray()) }
+    }
+    if ($hasLocalAdapter) {
+        Add-UniqueString -List $signals -Value "local_export_or_report_adapter"
+        return [ordered]@{ reviewBucket = "local_export_adapter_review"; reviewSignals = @($signals.ToArray()) }
+    }
+    if ($hasReadHelper) {
+        Add-UniqueString -List $signals -Value "read_or_geometry_helper"
+        return [ordered]@{ reviewBucket = "read_helper_or_geometry_review"; reviewSignals = @($signals.ToArray()) }
+    }
+
+    Add-UniqueString -List $signals -Value "ambiguous_write_signal"
+    return [ordered]@{ reviewBucket = "ambiguous_write_review"; reviewSignals = @($signals.ToArray()) }
 }
 
 function Get-SendCodeDiagnosticClassification {
@@ -574,13 +633,17 @@ function Get-SendCodeDiagnosticClassification {
     }
 
     if ($HasManualTransaction -or @($WritePatterns).Count -gt 0) {
+        $triage = Get-SendCodeWriteReviewTriage -Preview $Preview -WritePatterns $WritePatterns -HasManualTransaction $HasManualTransaction
         return New-SendCodeClassification `
             -Classification "capability_gap" `
             -Subtype "unclassified_write_pattern" `
             -Confidence "low" `
             -Reasons @("write_pattern_requires_human_review") `
             -CoveredToolCandidates @() `
-            -SuggestedAction "Inspect the exact code preview before deciding whether this is routing, tuning, or a real native capability gap."
+            -SuggestedAction "Manual triage required; use reviewBucket before deciding whether this is routing, tuning, acceptable escape hatch, or a real native capability gap." `
+            -ReviewBucket ([string]$triage.reviewBucket) `
+            -ReviewSignals @($triage.reviewSignals) `
+            -RequiresManualTriage $true
     }
 
     return New-SendCodeClassification `
@@ -1550,10 +1613,14 @@ $sendCodeEvents = @($eventArray | Where-Object {
 
 $sendCodeClassificationCounts = @{}
 $sendCodeClassificationSubtypeCounts = @{}
+$sendCodeUnclassifiedWriteReviewBucketCounts = @{}
 foreach ($event in $sendCodeEvents) {
     $classification = Get-SendCodeEventClassification -Event $event
     Add-Count -Map $sendCodeClassificationCounts -Key ([string]$classification.classification)
     Add-Count -Map $sendCodeClassificationSubtypeCounts -Key ([string]$classification.subtype)
+    if ([string]$classification.subtype -eq "unclassified_write_pattern") {
+        Add-Count -Map $sendCodeUnclassifiedWriteReviewBucketCounts -Key ([string]$classification.reviewBucket)
+    }
 }
 
 $sendCodeSamples = @($sendCodeEvents |
@@ -1676,7 +1743,7 @@ $nativeToolCandidates = @($sendCodePatternGroups.Values |
     Where-Object { $_.count -ge $promotionRepeatThreshold } |
     ForEach-Object {
         $classification = Get-SendCodePatternGroupClassification -Entry $_
-        if ([string]$classification.classification -eq "capability_gap") {
+        if ([string]$classification.classification -eq "capability_gap" -and [string]$classification.subtype -ne "unclassified_write_pattern") {
             $reasons = @("repeated_raw_safe_code_pattern")
             $registryMatch = Resolve-DynamicPromotionRegistryMatch -Reasons @("repeated_hash") -Registry $promotionRegistry
             $extra = [ordered]@{
@@ -1940,8 +2007,10 @@ $summary = [ordered]@{
         writePatterns = @(Convert-CountMapToRows -Map $sendCodeWritePatterns -Limit $Top)
         classificationCounts = @(Convert-CountMapToRows -Map $sendCodeClassificationCounts -Limit $Top)
         classificationSubtypes = @(Convert-CountMapToRows -Map $sendCodeClassificationSubtypeCounts -Limit $Top)
+        unclassifiedWriteReviewBuckets = @(Convert-CountMapToRows -Map $sendCodeUnclassifiedWriteReviewBucketCounts -Limit $Top)
         classificationPolicy = [ordered]@{
             nativeToolCandidatesRequireCapabilityGap = $true
+            nativeToolCandidatesExcludeUnclassifiedWritePattern = $true
             note = "Repeated send_code is human-review evidence only. Use classification before opening native-tool work."
         }
         candidateRepeatThreshold = $promotionRepeatThreshold
