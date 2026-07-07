@@ -129,12 +129,22 @@ The current labels are:
 - `accepted_escape_hatch`: low-signal custom code that should remain audited
   unless it repeats with clear production value.
 
+For low-confidence `unclassified_write_pattern` results, the summary also emits
+`sendCode.unclassifiedWriteReviewBuckets` and per-classification `reviewBucket`
+signals. These buckets split the ambiguous evidence into
+`revit_db_mutation_review`, `local_export_adapter_review`,
+`read_helper_or_geometry_review`, and `ambiguous_write_review`. They are triage
+evidence only: the analyst should inspect the exact preview/session before
+calling the pattern a routing miss, tuning gap, missing native capability, or
+acceptable escape hatch.
+
 `nativeToolCandidates` only includes repeated raw/safe code patterns classified
-as `capability_gap`. Repeated patterns classified as `routing_miss`,
-`tool_tuning_gap`, `policy_gap`, or `accepted_escape_hatch` remain visible in
-`sendCode.promotionCandidates` and classification counters, but should become
-training, routing, tuning, policy, or watch-list work instead of automatic
-native-tool tickets.
+as `capability_gap`, excluding low-confidence `unclassified_write_pattern`.
+Repeated patterns classified as `routing_miss`, `tool_tuning_gap`,
+`policy_gap`, `accepted_escape_hatch`, or `unclassified_write_pattern` remain
+visible in `sendCode.promotionCandidates`, review buckets, and classification
+counters, but should become training, routing, tuning, policy, manual-triage,
+or watch-list work instead of automatic native-tool tickets.
 
 Promotion tracking is deterministic and review-first. The summarizer maps
 repeated capability-gap raw/safe code patterns to `nativeToolCandidates`, repeated

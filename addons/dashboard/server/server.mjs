@@ -837,6 +837,7 @@ function compactSendCode(sendCode) {
     writePatternCount: sendCode.writePatternCount || 0,
     classificationCounts: Array.isArray(sendCode.classificationCounts) ? sendCode.classificationCounts : [],
     classificationSubtypes: Array.isArray(sendCode.classificationSubtypes) ? sendCode.classificationSubtypes : [],
+    unclassifiedWriteReviewBuckets: Array.isArray(sendCode.unclassifiedWriteReviewBuckets) ? sendCode.unclassifiedWriteReviewBuckets : [],
     classificationPolicy: sendCode.classificationPolicy && typeof sendCode.classificationPolicy === "object" ? sendCode.classificationPolicy : {},
     promotionCandidates: compactCandidateList(sendCode.promotionCandidates, 20),
   };

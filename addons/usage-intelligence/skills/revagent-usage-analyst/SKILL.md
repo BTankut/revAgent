@@ -220,6 +220,11 @@ Always look for:
 - `send_code` classification: use `routing_miss`, `tool_tuning_gap`,
   `capability_gap`, `policy_gap`, and `accepted_escape_hatch` fields when they
   exist; do not treat repeated raw/safe code as automatic native-tool work
+- `unclassified_write_pattern` review buckets: treat
+  `revit_db_mutation_review`, `local_export_adapter_review`,
+  `read_helper_or_geometry_review`, and `ambiguous_write_review` as manual
+  triage evidence only; do not promote them to product work without inspecting
+  the exact preview/session
 - training signal: users who repeatedly hit guards, partial results, ambiguous
   requests, or inefficient tool paths
 - follow-up signal: questions the user should ask next before making a product

@@ -339,8 +339,10 @@ $dailySendCodeCount = 0
 $correlatedDynamicCodeCount = 0
 $dailySendCodeClassificationCounts = @{}
 $dailySendCodeClassificationSubtypeCounts = @{}
+$dailyUnclassifiedWriteReviewBucketCounts = @{}
 $correlatedSendCodeClassificationCounts = @{}
 $correlatedSendCodeClassificationSubtypeCounts = @{}
+$correlatedUnclassifiedWriteReviewBucketCounts = @{}
 $correlationCountingPolicies = [System.Collections.Generic.List[object]]::new()
 $machineNames = @{}
 $userNames = @{}
@@ -382,6 +384,7 @@ foreach ($dateValue in $dates) {
             $dailySendCodeCount += [int](Get-PropertyValue -Object $summarySendCode -Name "count")
             Add-CountRows -Map $dailySendCodeClassificationCounts -Rows (Get-PropertyValue -Object $summarySendCode -Name "classificationCounts")
             Add-CountRows -Map $dailySendCodeClassificationSubtypeCounts -Rows (Get-PropertyValue -Object $summarySendCode -Name "classificationSubtypes")
+            Add-CountRows -Map $dailyUnclassifiedWriteReviewBucketCounts -Rows (Get-PropertyValue -Object $summarySendCode -Name "unclassifiedWriteReviewBuckets")
         }
 
         foreach ($row in @($summary.production.byMachineUser)) {
@@ -423,6 +426,7 @@ foreach ($dateValue in $dates) {
                     manualTransactionCount = [int](Get-PropertyValue -Object $summarySendCode -Name "manualTransactionCount")
                     classificationCounts = @(Select-Rows -Rows (Get-PropertyValue -Object $summarySendCode -Name "classificationCounts") -Limit 10)
                     classificationSubtypes = @(Select-Rows -Rows (Get-PropertyValue -Object $summarySendCode -Name "classificationSubtypes") -Limit 10)
+                    unclassifiedWriteReviewBuckets = @(Select-Rows -Rows (Get-PropertyValue -Object $summarySendCode -Name "unclassifiedWriteReviewBuckets") -Limit 10)
                     classificationPolicy = Get-PropertyValue -Object $summarySendCode -Name "classificationPolicy"
                 }
                 promotionCandidates = @(Select-Rows -Rows $summary.promotionCandidates -Limit 8)
@@ -462,6 +466,7 @@ foreach ($dateValue in $dates) {
                     suggestedAction = $signal.suggestedAction
                     classificationCounts = @(Select-Rows -Rows (Get-PropertyValue -Object $signal -Name "classificationCounts") -Limit 10)
                     classificationSubtypes = @(Select-Rows -Rows (Get-PropertyValue -Object $signal -Name "classificationSubtypes") -Limit 10)
+                    unclassifiedWriteReviewBuckets = @(Select-Rows -Rows (Get-PropertyValue -Object $signal -Name "unclassifiedWriteReviewBuckets") -Limit 10)
                 })
         }
 
@@ -470,6 +475,7 @@ foreach ($dateValue in $dates) {
             if ($itemSendCode) {
                 Add-CountRows -Map $correlatedSendCodeClassificationCounts -Rows (Get-PropertyValue -Object $itemSendCode -Name "classificationCounts")
                 Add-CountRows -Map $correlatedSendCodeClassificationSubtypeCounts -Rows (Get-PropertyValue -Object $itemSendCode -Name "classificationSubtypes")
+                Add-CountRows -Map $correlatedUnclassifiedWriteReviewBucketCounts -Rows (Get-PropertyValue -Object $itemSendCode -Name "unclassifiedWriteReviewBuckets")
             }
         }
 
@@ -535,6 +541,7 @@ $pack = [ordered]@{
             "Use daily summary send_code counts for factual volume.",
             "Session correlation windows may overlap. Do not sum session dynamic-code counts as daily totals; use them only as intent-linked evidence.",
             "Repeated send_code becomes native-tool work only when classification is capability_gap; routing_miss, tool_tuning_gap, policy_gap, and accepted_escape_hatch need different follow-up.",
+            "unclassified_write_pattern review buckets are manual triage evidence only; do not treat them as native-tool candidates until a human confirms the actual mutation or missing capability.",
             "Use source paths in this pack when a claim needs deeper verification.",
             "Ask follow-up questions when management decisions require more detail than the bounded pack contains."
         )
@@ -552,8 +559,10 @@ $pack = [ordered]@{
         correlatedDynamicCodeCount = $correlatedDynamicCodeCount
         dailySendCodeClassificationCounts = @(Convert-CountMapToRows -Map $dailySendCodeClassificationCounts -Limit 20)
         dailySendCodeClassificationSubtypes = @(Convert-CountMapToRows -Map $dailySendCodeClassificationSubtypeCounts -Limit 20)
+        dailyUnclassifiedWriteReviewBuckets = @(Convert-CountMapToRows -Map $dailyUnclassifiedWriteReviewBucketCounts -Limit 20)
         correlatedSendCodeClassificationCounts = @(Convert-CountMapToRows -Map $correlatedSendCodeClassificationCounts -Limit 20)
         correlatedSendCodeClassificationSubtypes = @(Convert-CountMapToRows -Map $correlatedSendCodeClassificationSubtypeCounts -Limit 20)
+        correlatedUnclassifiedWriteReviewBuckets = @(Convert-CountMapToRows -Map $correlatedUnclassifiedWriteReviewBucketCounts -Limit 20)
         countingPolicy = [ordered]@{
             dailySummariesAreFactualCounts = $true
             sessionWindowsMayOverlap = $true

@@ -447,6 +447,106 @@ try {
         }
         [ordered]@{
             schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-unclassified-local-1"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-28T08:04:10.000Z"
+            sessionId = "session-promotion"
+            sequence = 41
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            toolName = "send_code_to_revit_safe"
+            taskName = "Manual transaction local export adapter"
+            durationMs = 0
+            result = [ordered]@{ success = $false; guarded = $true; state = "guarded"; responseKeys = @("guarded", "state") }
+            params = [ordered]@{
+                code = [ordered]@{
+                    hash = "unclassified-local-repeat"
+                    length = 160
+                    lineCount = 7
+                    hasManualTransaction = $true
+                    writePatterns = @("Manual Transaction")
+                    preview = "using (var t = new Transaction(document, ""manual"")) { var sb = new StringBuilder(); File.WriteAllText(path, sb.ToString()); }"
+                }
+            }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-unclassified-local-2"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-28T08:04:20.000Z"
+            sessionId = "session-promotion"
+            sequence = 42
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            toolName = "send_code_to_revit"
+            taskName = "Manual transaction local export adapter"
+            durationMs = 0
+            result = [ordered]@{ success = $false; guarded = $true; state = "guarded"; responseKeys = @("guarded", "state") }
+            params = [ordered]@{
+                code = [ordered]@{
+                    hash = "unclassified-local-repeat"
+                    length = 162
+                    lineCount = 7
+                    hasManualTransaction = $true
+                    writePatterns = @("Manual Transaction")
+                    preview = "using (var t = new Transaction(document, ""manual"")) { var sb = new StringBuilder(); File.WriteAllText(path, sb.ToString()); }"
+                }
+            }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-unclassified-db"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-28T08:04:30.000Z"
+            sessionId = "session-promotion"
+            sequence = 43
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            toolName = "send_code_to_revit_safe"
+            taskName = "Manual transaction move helper"
+            durationMs = 0
+            result = [ordered]@{ success = $false; guarded = $true; state = "guarded"; responseKeys = @("guarded", "state") }
+            params = [ordered]@{
+                code = [ordered]@{
+                    hash = "unclassified-db-single"
+                    length = 130
+                    lineCount = 5
+                    hasManualTransaction = $true
+                    writePatterns = @("Manual Transaction")
+                    preview = "using (var t = new Transaction(document, ""manual"")) { ElementTransformUtils.MoveElement(document, id, XYZ.BasisX); }"
+                }
+            }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-unclassified-read"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-28T08:04:40.000Z"
+            sessionId = "session-promotion"
+            sequence = 44
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            toolName = "send_code_to_revit_safe"
+            taskName = "Manual transaction geometry helper"
+            durationMs = 0
+            result = [ordered]@{ success = $false; guarded = $true; state = "guarded"; responseKeys = @("guarded", "state") }
+            params = [ordered]@{
+                code = [ordered]@{
+                    hash = "unclassified-read-single"
+                    length = 140
+                    lineCount = 6
+                    hasManualTransaction = $true
+                    writePatterns = @("Manual Transaction")
+                    preview = "using (var t = new Transaction(document, ""manual"")) { var rows = new FilteredElementCollector(document); var box = element.get_BoundingBox(null); }"
+                }
+            }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
             eventId = "evt-promo-hotfix-1"
             eventType = "production.context"
             timestampUtc = "2026-05-28T08:05:00.000Z"
@@ -1057,11 +1157,16 @@ try {
         -Top 10
 
     $promotionSummary = Get-Content -Raw -Encoding UTF8 -LiteralPath $promotionOutputPath | ConvertFrom-Json
-    Assert-Equal $promotionSummary.source.eventCount 13 "Promotion fixture event count mismatch."
+    Assert-Equal $promotionSummary.source.eventCount 17 "Promotion fixture event count mismatch."
     Assert-Equal $promotionSummary.evidenceStrength "medium" "Promotion summary should surface medium aggregate evidence."
     Assert-Equal ([bool]$promotionSummary.humanReviewRequired) $true "Promotion summary must require human review."
     Assert-True (($promotionSummary.sendCode.classificationCounts | Where-Object { $_.name -eq "routing_miss" }).count -ge 1) "Promotion summary should classify covered-tool send_code as routing_miss."
     Assert-True (($promotionSummary.sendCode.classificationCounts | Where-Object { $_.name -eq "capability_gap" }).count -ge 1) "Promotion summary should classify unsupported send_code as capability_gap."
+    Assert-True (($promotionSummary.sendCode.classificationSubtypes | Where-Object { $_.name -eq "unclassified_write_pattern" }).count -eq 4) "Promotion summary should preserve unclassified write subtype counts."
+    Assert-True (($promotionSummary.sendCode.unclassifiedWriteReviewBuckets | Where-Object { $_.name -eq "local_export_adapter_review" }).count -eq 2) "Unclassified local/export bucket count mismatch."
+    Assert-True (($promotionSummary.sendCode.unclassifiedWriteReviewBuckets | Where-Object { $_.name -eq "revit_db_mutation_review" }).count -eq 1) "Unclassified Revit DB mutation bucket count mismatch."
+    Assert-True (($promotionSummary.sendCode.unclassifiedWriteReviewBuckets | Where-Object { $_.name -eq "read_helper_or_geometry_review" }).count -eq 1) "Unclassified read/helper bucket count mismatch."
+    Assert-Equal ([bool]$promotionSummary.sendCode.classificationPolicy.nativeToolCandidatesExcludeUnclassifiedWritePattern) $true "Native-tool candidate policy must exclude unclassified write patterns."
 
     $coveredRoutingCandidate = @($promotionSummary.nativeToolCandidates | Where-Object { $_.hash -eq "native-repeat" }) | Select-Object -First 1
     Assert-True ($null -eq $coveredRoutingCandidate) "Repeated sheet-note lookup should not become a native-tool candidate when inspect_sheet_text covers the workflow."
@@ -1085,6 +1190,15 @@ try {
     Assert-True (@($manualPromotionCandidate.promotionReasons | Where-Object { $_ -eq "manual_transaction" }).Count -eq 1) "Manual transaction reason missing."
     Assert-Equal $manualPromotionCandidate.classification.classification "routing_miss" "Manual transaction with existing schedule write tool should be a routing signal, not a native capability gap."
     Assert-Equal $manualPromotionCandidate.classification.subtype "manual_transaction_existing_write_tool_available" "Manual transaction routing subtype mismatch."
+
+    $unclassifiedNativeCandidate = @($promotionSummary.nativeToolCandidates | Where-Object { $_.hash -eq "unclassified-local-repeat" }) | Select-Object -First 1
+    Assert-True ($null -eq $unclassifiedNativeCandidate) "Repeated unclassified write pattern must not become a native-tool candidate before manual triage."
+    $unclassifiedSendCodeCandidate = @($promotionSummary.sendCode.promotionCandidates | Where-Object { $_.hash -eq "unclassified-local-repeat" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $unclassifiedSendCodeCandidate -Message "Unclassified send_code candidate"
+    Assert-Equal $unclassifiedSendCodeCandidate.classification.classification "capability_gap" "Unclassified candidate classification mismatch."
+    Assert-Equal $unclassifiedSendCodeCandidate.classification.subtype "unclassified_write_pattern" "Unclassified candidate subtype mismatch."
+    Assert-Equal $unclassifiedSendCodeCandidate.classification.reviewBucket "local_export_adapter_review" "Unclassified candidate review bucket mismatch."
+    Assert-Equal ([bool]$unclassifiedSendCodeCandidate.classification.requiresManualTriage) $true "Unclassified candidate must require manual triage."
 
     $hotfixCandidate = @($promotionSummary.hotfixCandidates | Where-Object { $_.scanStoppedReason -eq "max_elapsed" }) | Select-Object -First 1
     Assert-CandidateEvidenceContext -Candidate $hotfixCandidate -Message "Hotfix candidate"
@@ -1119,6 +1233,9 @@ try {
     $publishedNativeCandidate = @($publishedPromotionSummary.nativeToolCandidates | Where-Object { $_.hash -eq "format-repeat" }) | Select-Object -First 1
     Assert-CandidateEvidenceContext -Candidate $publishedNativeCandidate -Message "Published native tool candidate"
     Assert-Equal ([bool]$publishedPromotionSummary.humanReviewRequired) $true "Published promotion summary must require human review."
+    $promotionReviewPack = Get-Content -Raw -Encoding UTF8 -LiteralPath $promotionPublishReport.llmReviewPackJsonPath | ConvertFrom-Json
+    $promotionReviewPackBucket = @($promotionReviewPack.overview.dailyUnclassifiedWriteReviewBuckets | Where-Object { $_.name -eq "local_export_adapter_review" }) | Select-Object -First 1
+    Assert-Equal $promotionReviewPackBucket.count 2 "LLM review pack must carry daily unclassified write review buckets."
 
     Push-Location $RepoRoot
     try {
@@ -1131,6 +1248,7 @@ try {
     Assert-Equal $dashboardBrief.schemaVersion "revagent.dashboard.brief.v1" "Promotion dashboard brief schema mismatch."
     Assert-Equal $dashboardBrief.summaryDateUtc "2026-05-28" "Dashboard brief must consume the published promotion summary."
     Assert-True (($dashboardBrief.sendCode.classificationCounts | Where-Object { $_.name -eq "routing_miss" }).count -ge 1) "Dashboard brief must preserve send_code classification counts."
+    Assert-True (($dashboardBrief.sendCode.unclassifiedWriteReviewBuckets | Where-Object { $_.name -eq "local_export_adapter_review" }).count -eq 2) "Dashboard brief must preserve unclassified write review buckets."
     $dashboardCoveredCandidate = @($dashboardBrief.sendCode.promotionCandidates | Where-Object { $_.hash -eq "native-repeat" }) | Select-Object -First 1
     Assert-CandidateEvidenceContext -Candidate $dashboardCoveredCandidate -Message "Dashboard covered routing send_code candidate"
     Assert-Equal $dashboardCoveredCandidate.classification.classification "routing_miss" "Dashboard must preserve routing classification."
