@@ -320,7 +320,7 @@ catch (Exception ex)
 }`;
 }
 export function registerSetScheduleCellsTool(server) {
-    server.tool("set_schedule_cells", "[PRODUCTION_SCHEDULE_CELL_WRITE] Writes exact Revit schedule cells by scheduleId, section, row, and column. Defaults to dryRun, blocks mismatched expectedCurrentText, guards non-writable standard schedule body cells as non_writable_standard_body_cell, and verifies committed values.", {
+    server.tool("set_schedule_cells", "[PRODUCTION_SCHEDULE_CELL_WRITE] Writes exact Revit schedule cells by scheduleId, section, row, and column. Defaults to dryRun, blocks mismatched expectedCurrentText, guards non-writable standard schedule body cells as non_writable_standard_body_cell, and verifies committed values. Schedule cell text writes are not a raw-code reason: use this after inspect_schedules has found exact row/column coordinates for renumbering, title/spec/mark edits, key schedule/header/footer cells, or other direct cell text updates. Do not use this for visual schedule formatting such as borders, merges, colors, row heights, column widths, or placed schedule movement.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         scheduleId: z.union([z.number(), z.string()]).describe("Exact ViewSchedule element id. Schedule names are not accepted for writes."),

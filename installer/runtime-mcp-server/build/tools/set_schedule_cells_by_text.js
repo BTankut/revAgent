@@ -562,7 +562,7 @@ catch (Exception ex)
 }`;
 }
 export function registerSetScheduleCellsByTextTool(server) {
-    server.tool("set_schedule_cells_by_text", "[PRODUCTION_SCHEDULE_CELL_WRITE_BY_TEXT] Finds bounded schedule rows by sheet/schedule filters and row text, then previews or commits a target column update with readback verification. Guards non-writable standard schedule body cells as non_writable_standard_body_cell. Prefer this over generic send_code_to_revit for repeated schedule row text writes.", {
+    server.tool("set_schedule_cells_by_text", "[PRODUCTION_SCHEDULE_CELL_WRITE_BY_TEXT] Finds bounded schedule rows by sheet/schedule filters and row text, then previews or commits a target column update with readback verification. Guards non-writable standard schedule body cells as non_writable_standard_body_cell. Prefer this over generic send_code_to_revit for repeated schedule row text writes. Schedule cell text writes are not a raw-code reason: use this when the user identifies the target row by visible row text, item code, equipment tag, or schedule line label and the requested change is a direct cell text value. Keep allowMultipleMatches=false unless every matched row is intended; use dryRun first to resolve ambiguity.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         scheduleIds: z.array(z.union([z.number(), z.string()])).optional().describe("Exact ViewSchedule ids to inspect. Preferred when known."),

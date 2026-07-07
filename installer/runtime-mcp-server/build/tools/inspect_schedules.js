@@ -395,7 +395,7 @@ export function normalizeScheduleResult(payload, args, elapsedMs) {
     })), args);
 }
 export function registerInspectSchedulesTool(server) {
-    server.tool("inspect_schedules", "[SCHEDULE_INSPECTION_READ_ONLY] Read-only native Revit schedule discovery and bounded cell inspection with partial-result continuation state. Prefer this over generic send_code_to_revit when finding schedules or reading schedule cells. For large models, use nameQuery/scheduleIds first; broad cell scans require allowExpensiveSearch=true. Default responseMode=compact omits bulky section.cells; use responseMode=full when the next step needs raw schedule body rows, such as reconcile_schedule_excel schedule adaptation.", {
+    server.tool("inspect_schedules", "[SCHEDULE_INSPECTION_READ_ONLY] Read-only native Revit schedule discovery and bounded cell inspection with partial-result continuation state. Prefer this over generic send_code_to_revit when finding schedules, reading schedule cells, exporting schedule text to a local TSV/CSV/Excel-style report, or preparing exact row/column coordinates for set_schedule_cells. For large models, use nameQuery/scheduleIds first; broad cell scans require allowExpensiveSearch=true. Default responseMode=compact omits bulky section.cells; use responseMode=full when the next step needs raw schedule body rows, such as reconcile_schedule_excel schedule adaptation or a local TSV conversion. Do not use raw C# only to dump schedule cells.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         query: z.string().optional().describe("Alias for nameQuery. Matches schedule names with Turkish/diacritic/Cyrillic-U normalization."),
