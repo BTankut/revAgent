@@ -1305,6 +1305,10 @@ Background updater notifications:
 - `updated`: background update completed.
 - Notifications are throttled per version/status; default throttle is 240
   minutes.
+- For supervised rollouts where the normal notification path is unsuitable for
+  remote execution, use
+  `docs/REVAGENT_NO_NOTIFICATION_UPDATE_RUNBOOK.md`. This is a runbook-only
+  path, not deploy approval and not a separate installed updater launcher.
 
 ## Revit-Close Update Policy
 

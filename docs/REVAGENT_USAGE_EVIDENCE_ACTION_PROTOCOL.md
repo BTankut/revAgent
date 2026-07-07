@@ -188,7 +188,7 @@ Non-goals:
 
 ### S5: PDF/print policy and view/image asset split
 
-Status: active.
+Status: complete in PR #210.
 
 Evidence:
 
@@ -212,6 +212,9 @@ Non-goals:
 
 ### S6: Operational deploy follow-up
 
+Status: complete as runbook-only follow-up. No deploy is authorized by this
+status.
+
 Evidence:
 
 - During deployment of `2026.07.07.514-0c217fb3`, remote triggering of the
@@ -223,7 +226,9 @@ Scope:
 
 - Treat this as an operational product signal, separate from the usage pack.
 - Consider a supported remote/manual no-notification update launcher or
-  runbook-only helper.
+  runbook-only helper. Current decision: keep this as a runbook-only procedure
+  in `docs/REVAGENT_NO_NOTIFICATION_UPDATE_RUNBOOK.md`; do not add a launcher
+  in the usage-evidence PR sequence.
 
 Non-goals:
 
@@ -235,7 +240,7 @@ Non-goals:
 
 The usage-derived action plan is complete when:
 
-- S1 through S5 are merged, or a later protocol note explicitly closes or
+- S1 through S6 are merged or closed, or a later protocol note explicitly closes or
   reorders a workstream with evidence.
 - Every merged PR has passed local targeted tests, required GitHub gates, and
   review.
