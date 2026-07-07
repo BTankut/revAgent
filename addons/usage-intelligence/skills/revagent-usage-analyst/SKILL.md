@@ -217,6 +217,9 @@ Always look for:
   preview themes, repeated custom tasks that may deserve native tools
 - generated-output signal: image/export/report files
 - machine/user distribution: who and which workstation produced the work
+- `send_code` classification: use `routing_miss`, `tool_tuning_gap`,
+  `capability_gap`, `policy_gap`, and `accepted_escape_hatch` fields when they
+  exist; do not treat repeated raw/safe code as automatic native-tool work
 - training signal: users who repeatedly hit guards, partial results, ambiguous
   requests, or inefficient tool paths
 - follow-up signal: questions the user should ask next before making a product
@@ -259,6 +262,14 @@ invite follow-up by topic. Do not dump every row from the pack.
 - Treat guards as potentially correct safety behavior.
 - Treat partial results as a workflow/scope signal, not automatically as a
   failure.
+- Use daily summary `sendCode.count` / review-pack
+  `overview.dailySendCodeCount` for factual send-code volume.
+- Treat session-correlation dynamic-code counts as intent-linked evidence only;
+  correlation windows can overlap, so do not add session counts as daily totals.
+- Escalate native-tool candidates only when the evidence is classified as
+  `capability_gap`. Route `routing_miss` to existing-tool training/routing,
+  `tool_tuning_gap` to guard or ergonomics review, `policy_gap` to product
+  policy, and `accepted_escape_hatch` to watch-list monitoring.
 - Use Turkish labels and clear management language by default.
 
 ## Backlog Handoff Format

@@ -151,6 +151,55 @@ function Select-Rows {
     return @($Rows | Where-Object { $null -ne $_ } | Select-Object -First $Limit)
 }
 
+function Add-Count {
+    param(
+        [hashtable]$Map,
+        [string]$Key,
+        [int]$Count = 1
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Key) -or $Count -le 0) {
+        return
+    }
+    if (-not $Map.ContainsKey($Key)) {
+        $Map[$Key] = 0
+    }
+    $Map[$Key] += $Count
+}
+
+function Add-CountRows {
+    param(
+        [hashtable]$Map,
+        [object]$Rows
+    )
+
+    foreach ($row in @($Rows)) {
+        $name = [string](Get-PropertyValue -Object $row -Name "name")
+        $count = Get-PropertyValue -Object $row -Name "count"
+        if ($null -eq $count) {
+            $count = 1
+        }
+        Add-Count -Map $Map -Key $name -Count ([int]$count)
+    }
+}
+
+function Convert-CountMapToRows {
+    param(
+        [hashtable]$Map,
+        [int]$Limit = 20
+    )
+
+    return @($Map.GetEnumerator() |
+        Sort-Object @{ Expression = { $_.Value }; Descending = $true }, Name |
+        Select-Object -First $Limit |
+        ForEach-Object {
+            [ordered]@{
+                name = [string]$_.Key
+                count = [int]$_.Value
+            }
+        })
+}
+
 function Join-NonEmptyText {
     param(
         [object]$Items,
@@ -226,6 +275,8 @@ function New-PackMarkdown {
     $lines.Add("- Session correlations: $($Pack.overview.sessionCorrelationCount)")
     $lines.Add("- revAgent events: $($Pack.overview.revAgentEventCount)")
     $lines.Add("- Review signals: $($Pack.overview.reviewSignalCount)")
+    $lines.Add("- Daily send_code count: $($Pack.overview.dailySendCodeCount)")
+    $lines.Add("- Correlated dynamic-code count: $($Pack.overview.correlatedDynamicCodeCount)")
     $lines.Add("")
     $lines.Add("## LLM job")
     $lines.Add("")
@@ -284,6 +335,13 @@ $totalGeneratedFiles = 0
 $totalCodexContexts = 0
 $totalCorrelations = 0
 $totalCorrelationsWithEvents = 0
+$dailySendCodeCount = 0
+$correlatedDynamicCodeCount = 0
+$dailySendCodeClassificationCounts = @{}
+$dailySendCodeClassificationSubtypeCounts = @{}
+$correlatedSendCodeClassificationCounts = @{}
+$correlatedSendCodeClassificationSubtypeCounts = @{}
+$correlationCountingPolicies = [System.Collections.Generic.List[object]]::new()
 $machineNames = @{}
 $userNames = @{}
 $projectNames = @{}
@@ -319,6 +377,12 @@ foreach ($dateValue in $dates) {
         $totalEvents += [int]$summary.source.eventCount
         $totalOperations += [int]$summary.production.operationCount
         $totalGeneratedFiles += [int]$summary.production.generatedFileCount
+        $summarySendCode = Get-PropertyValue -Object $summary -Name "sendCode"
+        if ($summarySendCode) {
+            $dailySendCodeCount += [int](Get-PropertyValue -Object $summarySendCode -Name "count")
+            Add-CountRows -Map $dailySendCodeClassificationCounts -Rows (Get-PropertyValue -Object $summarySendCode -Name "classificationCounts")
+            Add-CountRows -Map $dailySendCodeClassificationSubtypeCounts -Rows (Get-PropertyValue -Object $summarySendCode -Name "classificationSubtypes")
+        }
 
         foreach ($row in @($summary.production.byMachineUser)) {
             $key = [string]$row.name
@@ -352,6 +416,15 @@ foreach ($dateValue in $dates) {
                 guardedSamples = @(Select-Rows -Rows $summary.friction.guarded -Limit 8)
                 failedSamples = @(Select-Rows -Rows $summary.friction.failed -Limit 8)
                 slowSamples = @(Select-Rows -Rows $summary.friction.slow -Limit 8)
+                sendCode = [ordered]@{
+                    count = [int](Get-PropertyValue -Object $summarySendCode -Name "count")
+                    rawCount = [int](Get-PropertyValue -Object $summarySendCode -Name "rawCount")
+                    safeCount = [int](Get-PropertyValue -Object $summarySendCode -Name "safeCount")
+                    manualTransactionCount = [int](Get-PropertyValue -Object $summarySendCode -Name "manualTransactionCount")
+                    classificationCounts = @(Select-Rows -Rows (Get-PropertyValue -Object $summarySendCode -Name "classificationCounts") -Limit 10)
+                    classificationSubtypes = @(Select-Rows -Rows (Get-PropertyValue -Object $summarySendCode -Name "classificationSubtypes") -Limit 10)
+                    classificationPolicy = Get-PropertyValue -Object $summarySendCode -Name "classificationPolicy"
+                }
                 promotionCandidates = @(Select-Rows -Rows $summary.promotionCandidates -Limit 8)
                 nativeToolCandidates = @(Select-Rows -Rows $summary.nativeToolCandidates -Limit 8)
                 hotfixCandidates = @(Select-Rows -Rows $summary.hotfixCandidates -Limit 8)
@@ -364,6 +437,14 @@ foreach ($dateValue in $dates) {
         $totalCodexContexts += [int]$correlation.source.codexContextFileCount
         $totalCorrelations += [int]$correlation.summary.correlationCount
         $totalCorrelationsWithEvents += [int]$correlation.summary.correlationsWithRevAgentEvents
+        $correlatedDynamicCodeCount += [int](Get-PropertyValue -Object $correlation.summary -Name "correlatedDynamicCodeCount")
+        $correlationCountingPolicy = Get-PropertyValue -Object $correlation.summary -Name "countingPolicy"
+        if ($correlationCountingPolicy) {
+            [void]$correlationCountingPolicies.Add([ordered]@{
+                    dateUtc = $dateValue
+                    policy = $correlationCountingPolicy
+                })
+        }
 
         $contextRoot = [string]$correlation.source.codexContextRoot
         $eventRoot = [string]$correlation.source.revAgentEventRoot
@@ -379,12 +460,23 @@ foreach ($dateValue in $dates) {
                     signal = $signal.signal
                     evidence = $signal.evidence
                     suggestedAction = $signal.suggestedAction
+                    classificationCounts = @(Select-Rows -Rows (Get-PropertyValue -Object $signal -Name "classificationCounts") -Limit 10)
+                    classificationSubtypes = @(Select-Rows -Rows (Get-PropertyValue -Object $signal -Name "classificationSubtypes") -Limit 10)
                 })
+        }
+
+        foreach ($item in @($correlation.correlations)) {
+            $itemSendCode = Get-PropertyValue -Object $item -Name "sendCode"
+            if ($itemSendCode) {
+                Add-CountRows -Map $correlatedSendCodeClassificationCounts -Rows (Get-PropertyValue -Object $itemSendCode -Name "classificationCounts")
+                Add-CountRows -Map $correlatedSendCodeClassificationSubtypeCounts -Rows (Get-PropertyValue -Object $itemSendCode -Name "classificationSubtypes")
+            }
         }
 
         foreach ($item in @($correlation.correlations | Select-Object -First $MaxSessions)) {
             $intent = Join-NonEmptyText -Items $item.userIntent -Limit 5
             $outcome = Join-NonEmptyText -Items $item.assistantOutcome -Limit 3
+            $itemSendCode = Get-PropertyValue -Object $item -Name "sendCode"
             [void]$sessionEvidence.Add([ordered]@{
                     dateUtc = $dateValue
                     codexSessionId = $item.codexSessionId
@@ -399,6 +491,7 @@ foreach ($dateValue in $dates) {
                     codex = $item.codex
                     revAgent = $item.revAgent
                     outcome = $item.outcome
+                    sendCode = $itemSendCode
                     friction = @($item.friction)
                     reviewSignals = @($item.productSignals)
                     source = [ordered]@{
@@ -439,6 +532,9 @@ $pack = [ordered]@{
             "Bounded Codex context is not a full transcript.",
             "Guarded revAgent operations can be correct safety behavior, not necessarily failures.",
             "Partial results usually mean bounded scan budgets or scope pressure; inspect follow-up turns before calling them failures.",
+            "Use daily summary send_code counts for factual volume.",
+            "Session correlation windows may overlap. Do not sum session dynamic-code counts as daily totals; use them only as intent-linked evidence.",
+            "Repeated send_code becomes native-tool work only when classification is capability_gap; routing_miss, tool_tuning_gap, policy_gap, and accepted_escape_hatch need different follow-up.",
             "Use source paths in this pack when a claim needs deeper verification.",
             "Ask follow-up questions when management decisions require more detail than the bounded pack contains."
         )
@@ -452,6 +548,18 @@ $pack = [ordered]@{
         productionOperationCount = $totalOperations
         generatedFileCount = $totalGeneratedFiles
         reviewSignalCount = $reviewSignals.Count
+        dailySendCodeCount = $dailySendCodeCount
+        correlatedDynamicCodeCount = $correlatedDynamicCodeCount
+        dailySendCodeClassificationCounts = @(Convert-CountMapToRows -Map $dailySendCodeClassificationCounts -Limit 20)
+        dailySendCodeClassificationSubtypes = @(Convert-CountMapToRows -Map $dailySendCodeClassificationSubtypeCounts -Limit 20)
+        correlatedSendCodeClassificationCounts = @(Convert-CountMapToRows -Map $correlatedSendCodeClassificationCounts -Limit 20)
+        correlatedSendCodeClassificationSubtypes = @(Convert-CountMapToRows -Map $correlatedSendCodeClassificationSubtypeCounts -Limit 20)
+        countingPolicy = [ordered]@{
+            dailySummariesAreFactualCounts = $true
+            sessionWindowsMayOverlap = $true
+            note = "Do not sum session correlation operation or dynamic-code counts as daily totals; use session correlation as intent-linked evidence."
+        }
+        correlationCountingPolicies = @($correlationCountingPolicies.ToArray())
         machineCount = $machineNames.Keys.Count
         machineUserCount = $userNames.Keys.Count
         projectCount = $projectNames.Keys.Count

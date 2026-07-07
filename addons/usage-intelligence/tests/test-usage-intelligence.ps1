@@ -347,6 +347,56 @@ try {
         }
         [ordered]@{
             schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-format-1"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-28T08:02:20.000Z"
+            sessionId = "session-promotion"
+            sequence = 21
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            toolName = "send_code_to_revit"
+            taskName = "Repeated schedule border formatting"
+            durationMs = 130
+            result = [ordered]@{ success = $true; guarded = $false; state = "completed"; responseKeys = @("success") }
+            params = [ordered]@{
+                code = [ordered]@{
+                    hash = "format-repeat"
+                    length = 118
+                    lineCount = 5
+                    hasManualTransaction = $false
+                    writePatterns = @("Schedule table edit")
+                    preview = "sectionData.SetCellStyle(1, 2, style); sectionData.SetMergedCell(1, 1, 1, 2);"
+                }
+            }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
+            eventId = "evt-promo-format-2"
+            eventType = "mcp.tool"
+            timestampUtc = "2026-05-28T08:02:40.000Z"
+            sessionId = "session-promotion"
+            sequence = 22
+            machineName = "TEST-PC"
+            userName = "USER1"
+            runtime = [ordered]@{ version = "2026.05.28.200-test"; buildHash = "test" }
+            toolName = "send_code_to_revit_safe"
+            taskName = "Repeated schedule border formatting"
+            durationMs = 125
+            result = [ordered]@{ success = $true; guarded = $false; state = "completed"; responseKeys = @("success") }
+            params = [ordered]@{
+                code = [ordered]@{
+                    hash = "format-repeat"
+                    length = 120
+                    lineCount = 5
+                    hasManualTransaction = $false
+                    writePatterns = @("Schedule table edit")
+                    preview = "sectionData.SetCellStyle(1, 2, style); sectionData.SetMergedCell(1, 1, 1, 2);"
+                }
+            }
+        }
+        [ordered]@{
+            schemaVersion = "revagent.telemetry.v1"
             eventId = "evt-promo-manual-1"
             eventType = "mcp.tool"
             timestampUtc = "2026-05-28T08:03:00.000Z"
@@ -815,6 +865,14 @@ try {
     Assert-True ($manualCorrelation.outcome.guardedCount -ge 1) "Correlation should surface guarded revAgent operations."
     Assert-True (@($manualCorrelation.productSignals | Where-Object { $_.signal -eq "guarded_workflow_friction" }).Count -eq 1) "Correlation should create a guarded workflow product signal."
     Assert-True (@($manualCorrelation.reviewSignals | Where-Object { $_.signal -eq "guarded_workflow_friction" }).Count -eq 1) "Correlation should expose review signal aliases for LLM packs."
+    Assert-Equal $manualCorrelationOutput.summary.correlatedDynamicCodeCount 1 "Session correlation should report dynamic-code count separately."
+    Assert-Equal ([bool]$manualCorrelationOutput.summary.countingPolicy.sessionWindowsMayOverlap) $true "Session correlation must declare overlap counting policy."
+    Assert-Equal $manualCorrelation.sendCode.count 1 "Correlation send_code count mismatch."
+    Assert-True (($manualCorrelation.sendCode.classificationCounts | Where-Object { $_.name -eq "capability_gap" }).count -eq 1) "Correlation send_code classification missing."
+    Assert-True ($manualCorrelation.sendCode.countingNote -match 'overlap|Session correlation windows') "Correlation send_code evidence must warn about overlapping windows."
+    $manualDynamicSignal = @($manualCorrelation.productSignals | Where-Object { $_.signal -eq "dynamic_code_usage" }) | Select-Object -First 1
+    Assert-True ($null -ne $manualDynamicSignal) "Correlation should create dynamic-code usage product signal."
+    Assert-True (($manualDynamicSignal.classificationCounts | Where-Object { $_.name -eq "capability_gap" }).count -eq 1) "Dynamic-code signal must carry classification counts."
     Assert-True (Test-Path -LiteralPath $manualEvidencePath -PathType Leaf) "Session correlation evidence Markdown was not written."
     $manualEvidenceText = Get-Content -Raw -Encoding UTF8 -LiteralPath $manualEvidencePath
     Assert-True ($manualEvidenceText -match 'Session Correlation Evidence') "Session correlation evidence title missing."
@@ -847,14 +905,19 @@ try {
     Assert-Equal $summary.sendCode.manualTransactionCount 1 "Manual transaction count mismatch."
     Assert-True (($summary.sendCode.writePatterns | Where-Object { $_.name -eq "Document.Delete" }).count -eq 1) "Write pattern summary missing Document.Delete."
     Assert-True (($summary.sendCode.writePatterns | Where-Object { $_.name -eq "Schedule.SetCellText" }).count -eq 1) "Write pattern summary missing Schedule.SetCellText preview detection."
+    Assert-True (($summary.sendCode.classificationCounts | Where-Object { $_.name -eq "capability_gap" }).count -eq 1) "Destructive dynamic code must be classified as a capability-gap review item."
+    Assert-True (($summary.sendCode.classificationSubtypes | Where-Object { $_.name -eq "destructive_write_pattern" }).count -eq 1) "Destructive dynamic code subtype missing."
+    Assert-Equal ([bool]$summary.sendCode.classificationPolicy.nativeToolCandidatesRequireCapabilityGap) $true "Native-tool candidate policy must require capability_gap classification."
     Assert-Equal $summary.sendCode.candidateRepeatThreshold 2 "Dynamic promotion repeat threshold mismatch."
     $dynamicCandidate = @($summary.sendCode.promotionCandidates | Where-Object { $_.hash -eq "abc" }) | Select-Object -First 1
-    Assert-True ($null -ne $dynamicCandidate) "Dynamic write/manual transaction pattern must be promoted as a native tool candidate."
+    Assert-True ($null -ne $dynamicCandidate) "Dynamic write/manual transaction pattern must be promoted as a send_code review candidate."
     Assert-True (@($dynamicCandidate.promotionReasons | Where-Object { $_ -eq "write_patterns_present" }).Count -eq 1) "Dynamic candidate must include write pattern reason."
     Assert-True (@($dynamicCandidate.promotionReasons | Where-Object { $_ -eq "manual_transaction" }).Count -eq 1) "Dynamic candidate must include manual transaction reason."
     Assert-Equal $dynamicCandidate.candidateAction "design_native_tool_with_preflight_and_verification" "Dynamic candidate action should come from the promotion registry."
     Assert-True (@($dynamicCandidate.registryMatches).Count -ge 1) "Dynamic candidate must include registry matches."
     Assert-True (@(@($dynamicCandidate.writePatterns) | Where-Object { $_.name -eq "Schedule.SetCellText" }).Count -eq 1) "Dynamic candidate must carry Schedule.SetCellText pattern evidence."
+    Assert-Equal $dynamicCandidate.classification.classification "capability_gap" "Dynamic candidate classification mismatch."
+    Assert-Equal $dynamicCandidate.classification.subtype "destructive_write_pattern" "Dynamic candidate subtype mismatch."
     Assert-True (($summary.production.byProject | Where-Object { $_.name -eq "Office Tower" }).count -eq 3) "Project rollup mismatch."
     Assert-True (($summary.production.byDiscipline | Where-Object { $_.name -eq "mechanical_hvac" }).count -eq 3) "Discipline fallback rollup mismatch."
     Assert-True (($summary.production.byLevel | Where-Object { $_.name -eq "Level 03" }).count -eq 1) "Level fallback rollup mismatch."
@@ -905,10 +968,17 @@ try {
     Assert-Equal $llmReviewPack.dateRange.startUtc "2026-05-27" "Single-date LLM review pack start date mismatch."
     Assert-Equal $llmReviewPack.dateRange.endUtc "2026-05-27" "Single-date LLM review pack end date mismatch."
     Assert-Equal $llmReviewPack.overview.machineCount 1 "LLM review pack should count machines from totals.byMachine."
+    Assert-Equal $llmReviewPack.overview.dailySendCodeCount 1 "LLM review pack must carry daily factual send_code count."
+    Assert-Equal $llmReviewPack.overview.correlatedDynamicCodeCount 1 "LLM review pack must carry correlated dynamic-code count separately."
+    Assert-Equal ([bool]$llmReviewPack.overview.countingPolicy.sessionWindowsMayOverlap) $true "LLM review pack must warn that session windows can overlap."
+    Assert-True (@($llmReviewPack.overview.dailySendCodeClassificationCounts | Where-Object { $_.name -eq "capability_gap" }).Count -eq 1) "LLM review pack daily send_code classification counts missing."
     Assert-True (@($llmReviewPack.sessionEvidence).Count -eq 1) "LLM review pack should include correlated session evidence."
+    Assert-Equal $llmReviewPack.sessionEvidence[0].sendCode.count 1 "LLM review pack session evidence must carry send_code evidence."
+    Assert-True ($llmReviewPack.sessionEvidence[0].sendCode.countingNote -match 'overlap|Session correlation windows') "Session send_code evidence must warn about overlap."
     $llmDailySummarySource = @($llmReviewPack.sourceFiles | Where-Object { $_.kind -eq "daily_summary" }) | Select-Object -First 1
     Assert-Equal ([string]$llmDailySummarySource.path) $dailyJson "LLM review pack should read daily evidence from the just-published OutputRoot."
     Assert-True ($llmReviewPack.llmInstructions.purpose -match 'Do not treat deterministic counters as the final report') "LLM review pack must carry analyst interpretation instructions."
+    Assert-True (@($llmReviewPack.llmInstructions.interpretationRules | Where-Object { $_ -match 'daily summary send_code counts' }).Count -eq 1) "LLM review pack must instruct analysts to use daily send_code counts for factual volume."
     $startDatePackPath = Join-Path $tempRoot "start-date-review-pack.json"
     $startDatePack = & (Join-Path $usageScriptsRoot "prepare-llm-review-pack.ps1") `
         -ReportsRoot $reportsRoot `
@@ -987,20 +1057,34 @@ try {
         -Top 10
 
     $promotionSummary = Get-Content -Raw -Encoding UTF8 -LiteralPath $promotionOutputPath | ConvertFrom-Json
-    Assert-Equal $promotionSummary.source.eventCount 11 "Promotion fixture event count mismatch."
+    Assert-Equal $promotionSummary.source.eventCount 13 "Promotion fixture event count mismatch."
     Assert-Equal $promotionSummary.evidenceStrength "medium" "Promotion summary should surface medium aggregate evidence."
     Assert-Equal ([bool]$promotionSummary.humanReviewRequired) $true "Promotion summary must require human review."
+    Assert-True (($promotionSummary.sendCode.classificationCounts | Where-Object { $_.name -eq "routing_miss" }).count -ge 1) "Promotion summary should classify covered-tool send_code as routing_miss."
+    Assert-True (($promotionSummary.sendCode.classificationCounts | Where-Object { $_.name -eq "capability_gap" }).count -ge 1) "Promotion summary should classify unsupported send_code as capability_gap."
 
-    $nativeRepeatCandidate = @($promotionSummary.nativeToolCandidates | Where-Object { $_.hash -eq "native-repeat" }) | Select-Object -First 1
+    $coveredRoutingCandidate = @($promotionSummary.nativeToolCandidates | Where-Object { $_.hash -eq "native-repeat" }) | Select-Object -First 1
+    Assert-True ($null -eq $coveredRoutingCandidate) "Repeated sheet-note lookup should not become a native-tool candidate when inspect_sheet_text covers the workflow."
+    $coveredSendCodeCandidate = @($promotionSummary.sendCode.promotionCandidates | Where-Object { $_.hash -eq "native-repeat" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $coveredSendCodeCandidate -Message "Covered routing send_code candidate"
+    Assert-Equal $coveredSendCodeCandidate.classification.classification "routing_miss" "Covered send_code classification mismatch."
+    Assert-Equal $coveredSendCodeCandidate.classification.subtype "sheet_text_lookup_tool_available" "Covered send_code subtype mismatch."
+    Assert-True (@($coveredSendCodeCandidate.classification.coveredToolCandidates | Where-Object { $_ -eq "inspect_sheet_text" }).Count -eq 1) "Covered send_code candidate must name inspect_sheet_text."
+
+    $nativeRepeatCandidate = @($promotionSummary.nativeToolCandidates | Where-Object { $_.hash -eq "format-repeat" }) | Select-Object -First 1
     Assert-CandidateEvidenceContext -Candidate $nativeRepeatCandidate -Message "Native tool candidate"
     Assert-Equal $nativeRepeatCandidate.signal "repeated_raw_safe_code_pattern" "Native candidate signal mismatch."
     Assert-Equal $nativeRepeatCandidate.count 2 "Native candidate repeat count mismatch."
     Assert-Equal $nativeRepeatCandidate.evidenceStrength "medium" "Native candidate evidence strength mismatch."
+    Assert-Equal $nativeRepeatCandidate.classification.classification "capability_gap" "Native candidate must require capability_gap classification."
+    Assert-Equal $nativeRepeatCandidate.classification.subtype "schedule_visual_structure" "Native candidate subtype mismatch."
 
     $manualPromotionCandidate = @($promotionSummary.promotionCandidates | Where-Object { $_.hash -eq "manual-repeat" }) | Select-Object -First 1
     Assert-CandidateEvidenceContext -Candidate $manualPromotionCandidate -Message "Manual transaction promotion candidate"
     Assert-Equal $manualPromotionCandidate.signal "manual_transaction_write_guard" "Manual transaction candidate signal mismatch."
     Assert-True (@($manualPromotionCandidate.promotionReasons | Where-Object { $_ -eq "manual_transaction" }).Count -eq 1) "Manual transaction reason missing."
+    Assert-Equal $manualPromotionCandidate.classification.classification "routing_miss" "Manual transaction with existing schedule write tool should be a routing signal, not a native capability gap."
+    Assert-Equal $manualPromotionCandidate.classification.subtype "manual_transaction_existing_write_tool_available" "Manual transaction routing subtype mismatch."
 
     $hotfixCandidate = @($promotionSummary.hotfixCandidates | Where-Object { $_.scanStoppedReason -eq "max_elapsed" }) | Select-Object -First 1
     Assert-CandidateEvidenceContext -Candidate $hotfixCandidate -Message "Hotfix candidate"
@@ -1032,7 +1116,7 @@ try {
 
     $publishedPromotionSummary = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $summaryRoot "latest.json") | ConvertFrom-Json
     Assert-Equal $publishedPromotionSummary.dateUtc "2026-05-28" "Published promotion latest date mismatch."
-    $publishedNativeCandidate = @($publishedPromotionSummary.nativeToolCandidates | Where-Object { $_.hash -eq "native-repeat" }) | Select-Object -First 1
+    $publishedNativeCandidate = @($publishedPromotionSummary.nativeToolCandidates | Where-Object { $_.hash -eq "format-repeat" }) | Select-Object -First 1
     Assert-CandidateEvidenceContext -Candidate $publishedNativeCandidate -Message "Published native tool candidate"
     Assert-Equal ([bool]$publishedPromotionSummary.humanReviewRequired) $true "Published promotion summary must require human review."
 
@@ -1046,10 +1130,14 @@ try {
     $dashboardBrief = $dashboardBriefJson | ConvertFrom-Json
     Assert-Equal $dashboardBrief.schemaVersion "revagent.dashboard.brief.v1" "Promotion dashboard brief schema mismatch."
     Assert-Equal $dashboardBrief.summaryDateUtc "2026-05-28" "Dashboard brief must consume the published promotion summary."
-    $dashboardNativeCandidate = @($dashboardBrief.nativeToolCandidates | Where-Object { $_.hash -eq "native-repeat" }) | Select-Object -First 1
+    Assert-True (($dashboardBrief.sendCode.classificationCounts | Where-Object { $_.name -eq "routing_miss" }).count -ge 1) "Dashboard brief must preserve send_code classification counts."
+    $dashboardCoveredCandidate = @($dashboardBrief.sendCode.promotionCandidates | Where-Object { $_.hash -eq "native-repeat" }) | Select-Object -First 1
+    Assert-CandidateEvidenceContext -Candidate $dashboardCoveredCandidate -Message "Dashboard covered routing send_code candidate"
+    Assert-Equal $dashboardCoveredCandidate.classification.classification "routing_miss" "Dashboard must preserve routing classification."
+    $dashboardNativeCandidate = @($dashboardBrief.nativeToolCandidates | Where-Object { $_.hash -eq "format-repeat" }) | Select-Object -First 1
     Assert-CandidateEvidenceContext -Candidate $dashboardNativeCandidate -Message "Dashboard native tool candidate"
     Assert-True (@($dashboardNativeCandidate.toolNames).Count -ge 1) "Dashboard native tool candidate must preserve toolNames."
-    Assert-Equal $dashboardNativeCandidate.maxLength 82 "Dashboard native tool candidate must preserve maxLength."
+    Assert-Equal $dashboardNativeCandidate.maxLength 120 "Dashboard native tool candidate must preserve maxLength."
     $dashboardManualCandidate = @($dashboardBrief.promotionCandidates | Where-Object { $_.hash -eq "manual-repeat" }) | Select-Object -First 1
     Assert-CandidateEvidenceContext -Candidate $dashboardManualCandidate -Message "Dashboard manual promotion candidate"
     Assert-True (@($dashboardManualCandidate.writePatterns | Where-Object { $_.name -eq "Schedule.SetCellText" }).Count -eq 1) "Dashboard manual candidate must preserve writePatterns."
@@ -1116,6 +1204,8 @@ try {
     Assert-True ($installedUsageSkillText -match 'llm_input_not_final_report') "Usage analyst skill must instruct the LLM to treat review packs as evidence, not final reports."
     Assert-True ($installedUsageSkillText -match '2026-06-29') "Usage analyst skill must document the rollout-to-date Codex context start date."
     Assert-True ($installedUsageSkillText -match 'Istekten Sonuca') "Usage analyst skill must define the user-intent-to-outcome report section."
+    Assert-True ($installedUsageSkillText -match 'routing_miss') "Usage analyst skill must document send_code classification labels."
+    Assert-True ($installedUsageSkillText -match 'overview\.dailySendCodeCount') "Usage analyst skill must document factual daily send_code counting."
     $usageAddonConfig = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $usageAddonInstallRoot "config\usage-intelligence.json") | ConvertFrom-Json
     Assert-Equal $usageAddonConfig.schemaVersion "revagent.usage-intelligence.addon.config.v1" "Usage-intelligence add-on config schema mismatch."
     Assert-Equal $usageAddonConfig.reportsRoot $reportsRoot "Usage-intelligence add-on config must preserve reports root."

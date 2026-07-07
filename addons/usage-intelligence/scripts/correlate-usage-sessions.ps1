@@ -143,6 +143,61 @@ function Convert-CountMapToRows {
         })
 }
 
+function ConvertTo-StringArray {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return @()
+    }
+    if ($Value -is [string]) {
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            return @()
+        }
+        return @($Value)
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        return @($Value | ForEach-Object {
+            if ($null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_)) {
+                [string]$_
+            }
+        })
+    }
+    return @([string]$Value)
+}
+
+function Add-UniqueString {
+    param(
+        [System.Collections.Generic.List[string]]$List,
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return
+    }
+    if (-not $List.Contains($Value)) {
+        [void]$List.Add($Value)
+    }
+}
+
+function Get-CodeWritePatterns {
+    param([object]$Code)
+
+    $patterns = [System.Collections.Generic.List[string]]::new()
+    foreach ($pattern in ConvertTo-StringArray (Get-ReportValue -Object $Code -Name "writePatterns")) {
+        Add-UniqueString -List $patterns -Value $pattern
+    }
+
+    $preview = [string](Get-ReportValue -Object $Code -Name "preview")
+    if ($preview -match '(?i)\.\s*SetCellText\s*\(') {
+        Add-UniqueString -List $patterns -Value "Schedule.SetCellText"
+    }
+    if ($preview -match '(?i)\.\s*(InsertRow|RemoveRow|InsertColumn|RemoveColumn|SetCellStyle|SetMergedCell)\s*\(') {
+        Add-UniqueString -List $patterns -Value "Schedule table edit"
+    }
+
+    return $patterns.ToArray()
+}
+
 function Read-JsonFileOrNull {
     param([string]$Path)
 
@@ -231,6 +286,119 @@ function Get-EventOperation {
         return Get-ReportValue -Object $Event -Name "operation"
     }
     return Get-ReportValue -Object $Event -Name "result"
+}
+
+function New-SendCodeClassification {
+    param(
+        [string]$Classification,
+        [string]$Subtype,
+        [string]$Confidence,
+        [string[]]$Reasons,
+        [string[]]$CoveredToolCandidates,
+        [string]$SuggestedAction
+    )
+
+    return [ordered]@{
+        classification = $Classification
+        subtype = $Subtype
+        confidence = $Confidence
+        reasons = @($Reasons)
+        coveredToolCandidates = @($CoveredToolCandidates)
+        suggestedAction = $SuggestedAction
+    }
+}
+
+function Get-SendCodeDiagnosticClassification {
+    param(
+        [string]$ToolName,
+        [string]$TaskName,
+        [string]$Preview,
+        [string[]]$WritePatterns,
+        [bool]$HasManualTransaction = $false,
+        [string]$ErrorMessage = ""
+    )
+
+    $writePatternText = (@($WritePatterns) -join " ")
+    $text = (@($ToolName, $TaskName, $Preview, $writePatternText, $ErrorMessage) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join " "
+    $lower = $text.ToLowerInvariant()
+
+    if ($lower -match 'rejected write-looking code') {
+        return New-SendCodeClassification -Classification "tool_tuning_gap" -Subtype "safe_guard_false_positive_review" -Confidence "medium" -Reasons @("safe_guard_rejected_read_intent") -CoveredToolCandidates @("send_code_to_revit_safe", "inspect_schedules", "inspect_sheet_text") -SuggestedAction "Review the safe-code guard and route read-only extraction through bounded native readers before considering a new tool."
+    }
+    if ($lower -match 'document\.save|modeli kaydet|kaydet|save model|son kayit|son kayit') {
+        return New-SendCodeClassification -Classification "policy_gap" -Subtype "model_save_policy" -Confidence "high" -Reasons @("document_save_pattern") -CoveredToolCandidates @() -SuggestedAction "Decide product policy for explicit model save before adding or recommending a native save tool."
+    }
+    if ($lower -match 'printmanager|print color|color depth|blackline|black line|test pdf|export active sheet test pdf|pdf') {
+        return New-SendCodeClassification -Classification "policy_gap" -Subtype "pdf_print_settings_policy" -Confidence "medium" -Reasons @("pdf_or_print_setting_pattern") -CoveredToolCandidates @("export_revit_view_image") -SuggestedAction "Treat PDF and print-setting changes as a policy/design question; image export coverage alone is not enough."
+    }
+    if ($lower -match 'image type|reload placed|replace .*image|isometry|source view export|high resolution|white background|zoom out by view axes|view display style|views colored|make fcu views colored') {
+        return New-SendCodeClassification -Classification "capability_gap" -Subtype "view_image_asset_workflow" -Confidence "medium" -Reasons @("view_or_image_asset_workflow") -CoveredToolCandidates @("export_revit_view_image", "activate_view") -SuggestedAction "Watch for repetition before designing a guarded view/image asset workflow."
+    }
+    if ($lower -match 'schedule table edit|setcellstyle|setmergedcell|insertrow|removerow|insertcolumn|removecolumn|border|borders|cerceve|cizgi|çizgi|grid|merged|merge|birles|birleştir|row height|font|text color|renk|style|width|genislik|genişlik|resize|fit sheet|create and place|recreate|manual schedule|visible schedule sections|split crsl|match uu02 block') {
+        return New-SendCodeClassification -Classification "capability_gap" -Subtype "schedule_visual_structure" -Confidence "high" -Reasons @("schedule_visual_or_structure_pattern") -CoveredToolCandidates @("inspect_schedules", "set_schedule_cells") -SuggestedAction "Consider one guarded schedule-formatting design spike instead of one tool per table request."
+    }
+
+    $hasScheduleTextWrite = @($WritePatterns | Where-Object { $_ -eq "Schedule.SetCellText" }).Count -gt 0
+    $hasParameterWrite = @($WritePatterns | Where-Object { $_ -eq "Parameter.Set" -or $_ -eq "Parameter.SetValueString" }).Count -gt 0
+    $hasDestructiveWrite = @($WritePatterns | Where-Object { $_ -eq "Document.Delete" }).Count -gt 0 -or $lower -match 'document\s*\.\s*delete\s*\('
+    if ($hasDestructiveWrite) {
+        return New-SendCodeClassification -Classification "capability_gap" -Subtype "destructive_write_pattern" -Confidence "medium" -Reasons @("destructive_write_requires_human_review") -CoveredToolCandidates @() -SuggestedAction "Inspect the exact requested model mutation before deciding whether this is a real native capability, a policy gap, or an unsafe escape hatch."
+    }
+    if (($hasScheduleTextWrite -and $hasParameterWrite) -or $lower -match 'mixed renumber|header cells and body parameters|body parameters|body numbering') {
+        return New-SendCodeClassification -Classification "capability_gap" -Subtype "mixed_schedule_parameter_workflow" -Confidence "medium" -Reasons @("mixed_schedule_cell_and_parameter_write") -CoveredToolCandidates @("set_schedule_cells", "set_element_parameter") -SuggestedAction "Review whether separate existing writes are enough or a guarded batch workflow is justified."
+    }
+    if ($HasManualTransaction -and ($hasScheduleTextWrite -or $hasParameterWrite)) {
+        $coveredTools = @()
+        if ($hasScheduleTextWrite) {
+            $coveredTools += @("set_schedule_cells", "set_schedule_cells_by_text")
+        }
+        if ($hasParameterWrite) {
+            $coveredTools += @("set_element_parameter")
+        }
+        return New-SendCodeClassification -Classification "routing_miss" -Subtype "manual_transaction_existing_write_tool_available" -Confidence "medium" -Reasons @("manual_transaction_with_existing_write_tool") -CoveredToolCandidates $coveredTools -SuggestedAction "Prefer the existing guarded write tools; inspect whether missing preflight, dry-run, or argument ergonomics pushed Codex into raw code."
+    }
+    if ($hasScheduleTextWrite) {
+        return New-SendCodeClassification -Classification "routing_miss" -Subtype "schedule_cell_write_tool_available" -Confidence "medium" -Reasons @("schedule_cell_text_write_pattern") -CoveredToolCandidates @("set_schedule_cells", "set_schedule_cells_by_text") -SuggestedAction "Prefer existing schedule-cell write tools unless the task also needs unsupported formatting or batching."
+    }
+    if ($hasParameterWrite) {
+        return New-SendCodeClassification -Classification "routing_miss" -Subtype "element_parameter_tool_available" -Confidence "medium" -Reasons @("parameter_write_pattern") -CoveredToolCandidates @("set_element_parameter") -SuggestedAction "Prefer set_element_parameter after inspect_parameter_schema preflight."
+    }
+
+    if (-not $HasManualTransaction -and @($WritePatterns).Count -eq 0) {
+        if ($lower -match 'to tsv|export .*rows|export current|export placed|readable excel report|final qa tsv|schedule cells to') {
+            return New-SendCodeClassification -Classification "tool_tuning_gap" -Subtype "export_friendly_read_output" -Confidence "medium" -Reasons @("read_only_export_or_report_shape") -CoveredToolCandidates @("inspect_schedules", "inspect_sheet_text", "reconcile_schedule_excel") -SuggestedAction "Improve read-tool output ergonomics or provide a standard local report adapter before adding a Revit tool."
+        }
+        if ($lower -match 'textnote|text note|sheet text|titleblock|title block|drawing list|sheet note|visible spl labels') {
+            return New-SendCodeClassification -Classification "routing_miss" -Subtype "sheet_text_lookup_tool_available" -Confidence "medium" -Reasons @("sheet_or_textnote_read_pattern") -CoveredToolCandidates @("inspect_sheet_text") -SuggestedAction "Route sheet text, titleblock, and text note lookup through inspect_sheet_text first."
+        }
+        if ($lower -match 'schedule rows|schedule cells|header rows|placed schedules|inspect .*schedule|verify .*schedule|recheck .*schedule') {
+            return New-SendCodeClassification -Classification "routing_miss" -Subtype "schedule_inspection_tool_available" -Confidence "medium" -Reasons @("schedule_read_pattern") -CoveredToolCandidates @("inspect_schedules") -SuggestedAction "Route schedule discovery and bounded cell reading through inspect_schedules first."
+        }
+        if ($lower -match 'count .*annotation|count .*convector|count .*fcu|nearest annotation|annotation texts') {
+            return New-SendCodeClassification -Classification "routing_miss" -Subtype "annotation_or_element_count_tool_available" -Confidence "low" -Reasons @("count_or_annotation_read_pattern") -CoveredToolCandidates @("count_annotations", "find_elements") -SuggestedAction "Try count_annotations or find_elements with bounded scope before custom read-only code."
+        }
+    }
+
+    if ($HasManualTransaction -or @($WritePatterns).Count -gt 0) {
+        return New-SendCodeClassification -Classification "capability_gap" -Subtype "unclassified_write_pattern" -Confidence "low" -Reasons @("write_pattern_requires_human_review") -CoveredToolCandidates @() -SuggestedAction "Inspect the exact code preview before deciding whether this is routing, tuning, or a real native capability gap."
+    }
+
+    return New-SendCodeClassification -Classification "accepted_escape_hatch" -Subtype "custom_low_signal_dynamic_code" -Confidence "low" -Reasons @("insufficient_repetition_or_no_obvious_tool") -CoveredToolCandidates @() -SuggestedAction "Keep as an audited escape hatch unless the pattern repeats with clear production value."
+}
+
+function Get-SendCodeEventClassification {
+    param([object]$Event)
+
+    $code = Get-NestedReportValue -Object $Event -Path @("params", "code")
+    $operation = Get-EventOperation -Event $Event
+    return Get-SendCodeDiagnosticClassification `
+        -ToolName ([string](Get-EventToolName -Event $Event)) `
+        -TaskName ([string](Get-ReportValue -Object $Event -Name "taskName")) `
+        -Preview ([string](Get-ReportValue -Object $code -Name "preview")) `
+        -WritePatterns (Get-CodeWritePatterns -Code $code) `
+        -HasManualTransaction ((Get-BooleanOrNull (Get-ReportValue -Object $code -Name "hasManualTransaction")) -eq $true) `
+        -ErrorMessage ([string](Get-ReportValue -Object $operation -Name "errorMessage"))
 }
 
 function Test-EventGuarded {
@@ -450,12 +618,18 @@ foreach ($context in $contexts) {
     $failedCount = 0
     $partialCount = 0
     $sendCodeCount = 0
+    $sendCodeClassificationMap = @{}
+    $sendCodeClassificationSubtypeMap = @{}
     foreach ($event in $matchedEvents) {
+        $eventType = [string](Get-ReportValue -Object $event -Name "eventType")
         $toolName = Get-EventToolName -Event $event
         Add-Count -Map $revAgentToolMap -Key $toolName
         Add-Count -Map $projectMap -Key (Get-EventProject -Event $event)
-        if ($toolName -eq "send_code_to_revit" -or $toolName -eq "send_code_to_revit_safe") {
+        if ($eventType -eq "mcp.tool" -and ($toolName -eq "send_code_to_revit" -or $toolName -eq "send_code_to_revit_safe")) {
             $sendCodeCount++
+            $classification = Get-SendCodeEventClassification -Event $event
+            Add-Count -Map $sendCodeClassificationMap -Key ([string]$classification.classification)
+            Add-Count -Map $sendCodeClassificationSubtypeMap -Key ([string]$classification.subtype)
         }
         if (Test-EventGuarded -Event $event) {
             $guardedCount++
@@ -518,7 +692,9 @@ foreach ($context in $contexts) {
         [void]$productSignals.Add([ordered]@{
                 signal = "dynamic_code_usage"
                 evidence = "$sendCodeCount send_code operation(s) matched the user's request window."
-                suggestedAction = "review repeated dynamic-code task for possible native revAgent tool promotion"
+                suggestedAction = "classify as routing_miss, tool_tuning_gap, capability_gap, accepted_escape_hatch, or policy_gap before opening native-tool work"
+                classificationCounts = @(Convert-CountMapToRows -Map $sendCodeClassificationMap -Limit 10)
+                classificationSubtypes = @(Convert-CountMapToRows -Map $sendCodeClassificationSubtypeMap -Limit 10)
             })
     }
 
@@ -557,6 +733,12 @@ foreach ($context in $contexts) {
             partialCount = $partialCount
             dynamicCodeCount = $sendCodeCount
         }
+        sendCode = [ordered]@{
+            count = $sendCodeCount
+            classificationCounts = @(Convert-CountMapToRows -Map $sendCodeClassificationMap -Limit 10)
+            classificationSubtypes = @(Convert-CountMapToRows -Map $sendCodeClassificationSubtypeMap -Limit 10)
+            countingNote = "Session correlation windows can overlap. Use daily summaries for factual send_code totals; use session counts only as intent-linked evidence."
+        }
         friction = @($friction.ToArray())
         reviewSignals = @($productSignals.ToArray())
         productSignals = @($productSignals.ToArray())
@@ -570,6 +752,8 @@ foreach ($context in $contexts) {
                 signal = $signal.signal
                 evidence = $signal.evidence
                 suggestedAction = $signal.suggestedAction
+                classificationCounts = @(Get-ReportValue -Object $signal -Name "classificationCounts")
+                classificationSubtypes = @(Get-ReportValue -Object $signal -Name "classificationSubtypes")
             })
     }
 
@@ -577,6 +761,10 @@ foreach ($context in $contexts) {
 }
 
 $correlationsWithEvents = @($correlations.ToArray() | Where-Object { $_.revAgent.operationCount -gt 0 }).Count
+$correlatedDynamicCodeCount = 0
+foreach ($item in @($correlations.ToArray())) {
+    $correlatedDynamicCodeCount += [int](Get-NestedReportValue -Object $item -Path @("outcome", "dynamicCodeCount"))
+}
 $report = [ordered]@{
     schemaVersion = "revagent.usage.sessionCorrelation.v1"
     generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
@@ -596,6 +784,12 @@ $report = [ordered]@{
         reviewSignalCount = $allProductSignals.Count
         productSignalCount = $allProductSignals.Count
         timeWindowMinutes = $windowMinutes
+        correlatedDynamicCodeCount = $correlatedDynamicCodeCount
+        countingPolicy = [ordered]@{
+            dailySummariesAreFactualCounts = $true
+            sessionWindowsMayOverlap = $true
+            note = "Do not sum session correlation operation or dynamic-code counts as daily totals; use them as intent-linked evidence."
+        }
     }
     correlations = @($correlations.ToArray())
     reviewSignals = @($allProductSignals.ToArray())
