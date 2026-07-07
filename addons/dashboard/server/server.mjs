@@ -835,6 +835,10 @@ function compactSendCode(sendCode) {
     failedCount: sendCode.failedCount || 0,
     manualTransactionCount: sendCode.manualTransactionCount || 0,
     writePatternCount: sendCode.writePatternCount || 0,
+    classificationCounts: Array.isArray(sendCode.classificationCounts) ? sendCode.classificationCounts : [],
+    classificationSubtypes: Array.isArray(sendCode.classificationSubtypes) ? sendCode.classificationSubtypes : [],
+    classificationPolicy: sendCode.classificationPolicy && typeof sendCode.classificationPolicy === "object" ? sendCode.classificationPolicy : {},
+    promotionCandidates: compactCandidateList(sendCode.promotionCandidates, 20),
   };
 }
 
@@ -857,6 +861,7 @@ function compactCandidateList(items, limit = 50) {
       toolName: item?.toolName || "",
       scanStoppedReason: item?.scanStoppedReason || "",
       hasManualTransaction: item?.hasManualTransaction === true,
+      classification: item?.classification && typeof item.classification === "object" ? item.classification : null,
       toolNames: Array.isArray(item?.toolNames) ? item.toolNames : [],
       taskNames: Array.isArray(item?.taskNames) ? item.taskNames : [],
       writePatterns: Array.isArray(item?.writePatterns) ? item.writePatterns : [],
@@ -1038,11 +1043,12 @@ export function buildDashboardBrief(data) {
     })),
     recentActivity: (snapshot.activity || []).slice(0, 80).map(compactTask),
     toolUsage: Array.isArray(snapshot.summary?.toolUsage) ? snapshot.summary.toolUsage.slice(0, 20) : [],
-    promotionCandidates: Array.isArray(snapshot.summary?.promotionCandidates) ? snapshot.summary.promotionCandidates.slice(0, 20) : [],
-    nativeToolCandidates: Array.isArray(snapshot.summary?.nativeToolCandidates) ? snapshot.summary.nativeToolCandidates.slice(0, 20) : [],
-    hotfixCandidates: Array.isArray(snapshot.summary?.hotfixCandidates) ? snapshot.summary.hotfixCandidates.slice(0, 20) : [],
-    reconciliationCandidates: Array.isArray(snapshot.summary?.reconciliationCandidates) ? snapshot.summary.reconciliationCandidates.slice(0, 20) : [],
-    annotationInventoryCandidates: Array.isArray(snapshot.summary?.annotationInventoryCandidates) ? snapshot.summary.annotationInventoryCandidates.slice(0, 20) : [],
+    sendCode: compactSendCode(snapshot.summary?.sendCode),
+    promotionCandidates: compactCandidateList(snapshot.summary?.promotionCandidates, 20),
+    nativeToolCandidates: compactCandidateList(snapshot.summary?.nativeToolCandidates, 20),
+    hotfixCandidates: compactCandidateList(snapshot.summary?.hotfixCandidates, 20),
+    reconciliationCandidates: compactCandidateList(snapshot.summary?.reconciliationCandidates, 20),
+    annotationInventoryCandidates: compactCandidateList(snapshot.summary?.annotationInventoryCandidates, 20),
     evidenceStrength: snapshot.summary?.evidenceStrength || "none",
     humanReviewRequired: snapshot.summary?.humanReviewRequired === true,
     friction: {

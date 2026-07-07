@@ -10,7 +10,8 @@ from real usage evidence:
 
 - Which tools are used most often?
 - Which commands produce the most guarded, failed, or slow outcomes?
-- Which repeated `send_code_to_revit` patterns should become native tools?
+- Which repeated `send_code_to_revit` patterns are routing misses, tuning gaps,
+  true capability gaps, policy questions, or acceptable escape hatches?
 - Which workflows need better UI, documentation, or safer defaults?
 - Which issues deserve hotfix priority because they repeat across machines?
 - Which project/session/floor/work-area patterns show production friction or
@@ -78,7 +79,7 @@ The summary schema is `revagent.usage.summary.v1`. It includes:
   category
 - guarded, failed, and slow operation samples
 - `send_code_to_revit` / `send_code_to_revit_safe` code-preview summaries,
-  write-pattern counts, and manual transaction counts
+  write-pattern counts, manual transaction counts, and classification counts
 - promotion tracking fields: `promotionCandidates`, `nativeToolCandidates`,
   `hotfixCandidates`, `reconciliationCandidates`,
   `annotationInventoryCandidates`, `evidenceStrength`, and
@@ -101,10 +102,42 @@ Summary readers and writers use UTF-8 explicitly. If task names contain Turkish
 characters, the daily JSON/Markdown should preserve the original text rather
 than mojibake such as `Ã¼` or `Ä±`. Dynamic-code write-pattern detection also
 recognizes schedule cell edits such as `SetCellText` and schedule table edits,
-so repeated schedule-write snippets can be promoted into native tools.
+so repeated schedule-write snippets can be classified before any native-tool
+promotion decision.
+
+### Send-code classification
+
+Repeated `send_code` is human-review evidence, not automatic proof that a new
+native tool is needed. The summary emits `sendCode.classificationCounts`,
+`sendCode.classificationSubtypes`, per-sample `classification`, and
+`sendCode.classificationPolicy.nativeToolCandidatesRequireCapabilityGap=true`.
+
+The current labels are:
+
+- `routing_miss`: an existing revAgent tool likely covers the intent, such as
+  `inspect_sheet_text`, `inspect_schedules`, `set_schedule_cells`,
+  `set_schedule_cells_by_text`, `set_element_parameter`,
+  `count_annotations`, or `find_elements`.
+- `tool_tuning_gap`: a tool exists, but guard behavior, output shape, or
+  ergonomics may have pushed Codex into raw code.
+- `capability_gap`: the request appears to need unsupported native behavior,
+  such as schedule visual structure/formatting, mixed schedule/parameter
+  workflows, view/image asset workflows, or destructive model mutations that
+  need explicit product design.
+- `policy_gap`: the request needs product policy before tool work, such as
+  model save or PDF/print-setting behavior.
+- `accepted_escape_hatch`: low-signal custom code that should remain audited
+  unless it repeats with clear production value.
+
+`nativeToolCandidates` only includes repeated raw/safe code patterns classified
+as `capability_gap`. Repeated patterns classified as `routing_miss`,
+`tool_tuning_gap`, `policy_gap`, or `accepted_escape_hatch` remain visible in
+`sendCode.promotionCandidates` and classification counters, but should become
+training, routing, tuning, policy, or watch-list work instead of automatic
+native-tool tickets.
 
 Promotion tracking is deterministic and review-first. The summarizer maps
-repeated raw/safe code patterns to `nativeToolCandidates`, repeated
+repeated capability-gap raw/safe code patterns to `nativeToolCandidates`, repeated
 timeout/partial-result friction to `hotfixCandidates`, repeated annotation
 counting requests to `annotationInventoryCandidates`, repeated
 schedule-spreadsheet reconciliation requests to `reconciliationCandidates`, and
@@ -244,6 +277,11 @@ revAgent did, whether the result succeeded/guarded/failed/returned partial
 results, and which review signal should be inspected by an LLM or human
 reviewer. It is not the final product insight report.
 
+Session correlation windows can overlap. Use daily summaries for factual
+operation and `send_code` volume. Use `summary.correlatedDynamicCodeCount` and
+per-session `sendCode` counts only as intent-linked evidence, not as daily
+totals.
+
 The LLM review pack preparer is:
 
 ```text
@@ -269,6 +307,31 @@ The review pack uses schema `revagent.usage.llmReviewPack.v1` and carries
 Codex/LLM chat clean evidence, source paths, privacy limits, and analysis
 instructions. The LLM, not the deterministic script, prepares the semantic
 management report and answers follow-up questions.
+
+The review pack carries `overview.dailySendCodeCount` for factual send-code
+volume, `overview.correlatedDynamicCodeCount` for intent-linked correlation
+evidence, `overview.countingPolicy`, daily `sendCode` classification summaries,
+and per-session `sendCode` evidence. Analysts must not add session counts
+together as daily totals.
+
+## Current Action Plan
+
+P0 is the active implementation package: add deterministic send-code
+classification, separate daily factual counts from overlapping session
+correlation evidence, filter `nativeToolCandidates` to true
+`capability_gap` patterns, and preserve those fields through the LLM review
+pack and dashboard brief. This package does not deploy.
+
+P1 is the follow-up analysis package after P0 review: regenerate the
+2026-06-29 to 2026-07-05 review pack with the new schema, classify the
+high-volume send-code sessions into `routing_miss`, `tool_tuning_gap`,
+`capability_gap`, `policy_gap`, and `accepted_escape_hatch`, then produce a
+prioritized product/training backlog from real examples.
+
+P2 is the implementation package for only the validated backlog items. Each
+native-tool, tuning, routing, policy, or training item should stay as a separate
+PR-sized workstream unless the evidence shows they must ship together. NAS
+publish/deploy waits for explicit human approval after the full plan is done.
 
 The add-on also carries the Codex skill source:
 
