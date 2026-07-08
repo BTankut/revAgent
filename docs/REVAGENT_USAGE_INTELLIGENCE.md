@@ -225,12 +225,11 @@ For production automation, the workstation-side publisher is:
 addons/usage-intelligence/scripts/publish-codex-session-context.ps1
 ```
 
-It runs the bounded exporter for the requested UTC day or a configured UTC date
-range, and writes a local latest-run report for verification under the
-installed add-on state folder.
+It runs the bounded exporter for the requested UTC day, the default daily window,
+or a configured UTC date range, and writes a local latest-run report for
+verification under the installed add-on state folder.
 
-Install the workstation-side exporter task on a pilot workstation such as
-NET01:
+Install the workstation-side exporter task on each production workstation:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install-codex-session-export-task.ps1 `
@@ -241,14 +240,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-codex-session-export-
 
 The task name is `revAgent Codex Session Context Export`. It runs from the
 current Windows user context so it can read that user's local Codex session
-store, normally under `%USERPROFILE%\.codex\sessions`. It should be installed
-on each production workstation only after the NET01 pilot proves that the task
-can read local Codex sessions and write bounded context to NAS.
-The default workstation task exports bounded Codex context for every UTC date
-from `2026-06-29` through today. This intentionally backfills the historical
-Codex sessions that remain on each production workstation, so LLM analysis can
-start at the usage-intelligence rollout date instead of only a short rolling
-window. `-DateUtc` can still be used for exact single-day diagnostics, and
+store, normally under `%USERPROFILE%\.codex\sessions`. The installer default
+uses `StartDateUtc=2026-06-29` for rollout backfill, so historical Codex
+sessions that remain on each production workstation can be correlated after
+first installation. After that backfill has succeeded, re-register the same task
+with an empty `-StartDateUtc` and `-IncludeYesterday $true` so the daily
+automation exports only today and yesterday before the 20:30 coordinator
+summary run. `-DateUtc` can still be used for exact single-day diagnostics, and
 `-LookbackDays` remains an optional compatibility override.
 
 Example NET01 pilot export:

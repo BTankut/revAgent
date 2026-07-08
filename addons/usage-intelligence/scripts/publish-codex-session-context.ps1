@@ -15,7 +15,7 @@ param(
     [string[]]$SessionFile = @(),
     [string]$ReportsRoot = "\\DPE-NAS\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports",
     [string[]]$DateUtc = @((Get-Date).ToUniversalTime().ToString("yyyy-MM-dd")),
-    [string]$StartDateUtc = "2026-06-29",
+    [string]$StartDateUtc = "",
     [switch]$IncludeYesterday,
     [int]$LookbackDays = 0,
     [string]$OutputRoot = "",
@@ -87,8 +87,8 @@ if (-not (Test-Path -LiteralPath $exportScript -PathType Leaf)) {
 }
 
 $dateList = [System.Collections.Generic.List[string]]::new()
-$dateSelectionMode = "explicit_dates"
 $dateUtcWasExplicit = $PSBoundParameters.ContainsKey("DateUtc")
+$dateSelectionMode = if ($dateUtcWasExplicit) { "explicit_dates" } else { "default_daily" }
 $todayUtc = (Get-Date).ToUniversalTime().Date
 if (-not $dateUtcWasExplicit -and -not [string]::IsNullOrWhiteSpace($StartDateUtc)) {
     $dateSelectionMode = "start_date_to_today"
