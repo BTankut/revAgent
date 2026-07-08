@@ -870,6 +870,33 @@ try {
     Assert-True ($recursiveContext.userRequests[0].text -notmatch 'response_item duplicate') "Response item duplicate must not be exported when event_msg is available."
     Assert-True (@($recursiveContext.userRequests[0].localImagePaths).Count -eq 1) "Event message local image path should be preserved as bounded evidence."
 
+    $lockedSessionFile = Join-Path $recursiveOldDayRoot "locked-active-session.jsonl"
+    $lockedStream = [System.IO.File]::Open(
+        $lockedSessionFile,
+        [System.IO.FileMode]::Create,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+    try {
+        $lockedBytes = [System.Text.Encoding]::UTF8.GetBytes('{"type":"event_msg","timestamp":"2026-05-27T09:02:00.000Z","payload":{"type":"user_message","message":"Locked active session"}}')
+        $lockedStream.Write($lockedBytes, 0, $lockedBytes.Length)
+        $lockedStream.Flush()
+        $lockedExportOutput = & (Join-Path $usageScriptsRoot "export-codex-session-context.ps1") `
+            -SessionRoot $recursiveSessionRoot `
+            -ReportsRoot $recursiveReportsRoot `
+            -DateUtc "2026-05-27" `
+            -MachineName "TEST-PC" `
+            -UserName "USER1" `
+            -MaxTextChars 120 | ConvertFrom-Json
+        Assert-Equal $lockedExportOutput.contextCount 1 "Locked active Codex session files must not block export of readable sessions."
+        Assert-True ($lockedExportOutput.warningCount -ge 1) "Locked active Codex session files should be reported as exporter warnings."
+        Assert-True (@($lockedExportOutput.warnings | Where-Object { $_.path -match 'locked-active-session\.jsonl' }).Count -ge 1) "Locked session warning should identify the unreadable file."
+    }
+    finally {
+        $lockedStream.Dispose()
+        Remove-Item -LiteralPath $lockedSessionFile -Force -ErrorAction SilentlyContinue
+    }
+
     $hybridSessionFile = Join-Path $recursiveOldDayRoot "hybrid-response-fallback.jsonl"
     $hybridEvents = @(
         [ordered]@{

@@ -192,9 +192,11 @@ $scriptArguments = @(
     "-MaxUserRequests", [string]$MaxUserRequests,
     "-MaxAssistantOutcomes", [string]$MaxAssistantOutcomes,
     "-MaxToolCalls", [string]$MaxToolCalls,
-    "-StartDateUtc", $StartDateUtc,
     "-LookbackDays", [string]$LookbackDays
 )
+if (-not [string]::IsNullOrWhiteSpace($StartDateUtc)) {
+    $scriptArguments += @("-StartDateUtc", $StartDateUtc)
+}
 if (-not [string]::IsNullOrWhiteSpace($SessionRoot)) {
     $scriptArguments += @("-SessionRoot", $SessionRoot)
 }
@@ -247,8 +249,10 @@ if ($RunNow) {
         MaxUserRequests = $MaxUserRequests
         MaxAssistantOutcomes = $MaxAssistantOutcomes
         MaxToolCalls = $MaxToolCalls
-        StartDateUtc = $StartDateUtc
         LookbackDays = $LookbackDays
+    }
+    if (-not [string]::IsNullOrWhiteSpace($StartDateUtc)) {
+        $publishParameters["StartDateUtc"] = $StartDateUtc
     }
     if (-not [string]::IsNullOrWhiteSpace($SessionRoot)) {
         $publishParameters["SessionRoot"] = $SessionRoot

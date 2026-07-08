@@ -156,6 +156,53 @@ function Resolve-CodexSessionIndexFile {
     return (Join-Path $parent "session_index.jsonl")
 }
 
+$script:CodexSessionExportWarnings = [System.Collections.Generic.List[object]]::new()
+
+function Add-CodexSessionExportWarning {
+    param(
+        [string]$Code,
+        [string]$Path,
+        [string]$Message
+    )
+
+    [void]$script:CodexSessionExportWarnings.Add([ordered]@{
+            code = $Code
+            path = $Path
+            message = $Message
+        })
+}
+
+function Read-CodexSessionTextLines {
+    param(
+        [string]$Path,
+        [string]$WarningCode = "codex_session_read_failed"
+    )
+
+    try {
+        $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $share)
+        try {
+            $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8, $true)
+            try {
+                while (-not $reader.EndOfStream) {
+                    $reader.ReadLine()
+                }
+            }
+            finally {
+                $reader.Dispose()
+            }
+        }
+        finally {
+            if ($null -ne $stream) {
+                $stream.Dispose()
+            }
+        }
+    }
+    catch {
+        Add-CodexSessionExportWarning -Code $WarningCode -Path $Path -Message $_.Exception.Message
+    }
+}
+
 function Read-CodexSessionIndex {
     param([string]$Path)
 
@@ -164,7 +211,7 @@ function Read-CodexSessionIndex {
         return $map
     }
 
-    foreach ($line in [System.IO.File]::ReadLines($Path, [System.Text.Encoding]::UTF8)) {
+    foreach ($line in Read-CodexSessionTextLines -Path $Path -WarningCode "codex_session_index_read_failed") {
         if ([string]::IsNullOrWhiteSpace($line)) {
             continue
         }
@@ -433,7 +480,7 @@ function Test-CodexSessionFileHasVisibleMessageOnDate {
     $hasEventMessageOnDate = $false
     $hasResponseMessageOnDate = $false
 
-    foreach ($line in [System.IO.File]::ReadLines($File.FullName, [System.Text.Encoding]::UTF8)) {
+    foreach ($line in Read-CodexSessionTextLines -Path $File.FullName) {
         if ([string]::IsNullOrWhiteSpace($line)) {
             continue
         }
@@ -524,7 +571,7 @@ function New-CodexSessionContext {
     $badLineCount = 0
     $lineCount = 0
 
-    foreach ($line in [System.IO.File]::ReadLines($File.FullName, [System.Text.Encoding]::UTF8)) {
+    foreach ($line in Read-CodexSessionTextLines -Path $File.FullName) {
         if ([string]::IsNullOrWhiteSpace($line)) {
             continue
         }
@@ -815,5 +862,7 @@ foreach ($file in $files) {
     sessionIndexFile = $resolvedSessionIndexFile
     sessionFileCount = $files.Count
     contextCount = $written.Count
+    warningCount = $script:CodexSessionExportWarnings.Count
+    warnings = @($script:CodexSessionExportWarnings.ToArray())
     contexts = @($written.ToArray())
 } | ConvertTo-Json -Depth 20
