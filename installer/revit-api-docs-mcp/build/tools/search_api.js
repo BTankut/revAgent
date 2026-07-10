@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { searchApi } from "../utils/docIndex.js";
+import { formatJsonToolResult, formatToolFailure } from "./tool_result.js";
 export function registerSearchApiTool(server) {
     server.tool("search_api", "Search the local Revit API index built from Revit assemblies and XML documentation.", {
         query: z.string().min(1).describe("Free-form search query such as 'Wall.Create', 'FilteredElementCollector', or 'Autodesk.Revit.DB.Plumbing'."),
@@ -16,24 +17,10 @@ export function registerSearchApiTool(server) {
                 revitVersion: args.revit_version,
                 limit: args.limit,
             });
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
+            return formatJsonToolResult(result);
         }
         catch (error) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: `search_api failed: ${error instanceof Error ? error.message : String(error)}`,
-                    },
-                ],
-            };
+            return formatToolFailure("search_api", error);
         }
     });
 }

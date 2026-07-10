@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { listNamespace } from "../utils/docIndex.js";
+import { formatJsonToolResult, formatToolFailure } from "./tool_result.js";
 export function registerListNamespaceTool(server) {
     server.tool("list_namespace", "List types and child namespaces under a Revit API namespace.", {
         namespace: z.string().min(1).describe("Namespace to inspect, such as Autodesk.Revit.DB or Autodesk.Revit.UI.Selection."),
@@ -12,24 +13,10 @@ export function registerListNamespaceTool(server) {
                 revitVersion: args.revit_version,
                 includeChildNamespaces: args.include_child_namespaces,
             });
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
+            return formatJsonToolResult(result);
         }
         catch (error) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: `list_namespace failed: ${error instanceof Error ? error.message : String(error)}`,
-                    },
-                ],
-            };
+            return formatToolFailure("list_namespace", error);
         }
     });
 }

@@ -705,6 +705,13 @@ On first query, the docs server builds a local cache from the installed `RevitAP
 `get_member_details` also resolves common Revit C# convenience aliases such as
 `Element.get_Parameter(...)` to the XML-doc member that Autodesk exposes as the
 `Element.Parameter` property.
+Lookup failures return MCP `isError=true` with a structured JSON payload whose
+`success` field is `false`. `resolve_api_symbols_bulk` preserves per-symbol
+results and reports aggregate counts; its top-level `success` is true only when
+every symbol resolves. Bulk `type` symbols default to compact member samples
+and accept per-symbol `response_mode` and `max_members_per_group` controls;
+request `response_mode="full"` only when the complete member inventory is
+needed.
 
 Default cache path:
 
