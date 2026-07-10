@@ -1,6 +1,7 @@
 import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import { listNamespace } from "../utils/docIndex.js";
+import { formatJsonToolResult, formatToolFailure } from "./tool_result.js";
 
 export function registerListNamespaceTool(server: ToolServer) {
     server.tool("list_namespace", "List types and child namespaces under a Revit API namespace.", {
@@ -14,24 +15,10 @@ export function registerListNamespaceTool(server: ToolServer) {
                 revitVersion: args.revit_version,
                 includeChildNamespaces: args.include_child_namespaces,
             });
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
+            return formatJsonToolResult(result);
         }
         catch (error) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: `list_namespace failed: ${error instanceof Error ? error.message : String(error)}`,
-                    },
-                ],
-            };
+            return formatToolFailure("list_namespace", error);
         }
     });
 }

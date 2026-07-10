@@ -282,9 +282,22 @@ namespace RevAgentCommandSet.Commands.View
 
             try
             {
-                TableSectionData data = schedule.GetTableData().GetSectionData(sectionType);
-                rowCount = data.NumberOfRows;
-                columnCount = data.NumberOfColumns;
+                TableData tableData = schedule.GetTableData();
+                if (tableData == null)
+                {
+                    throw new InvalidOperationException("Schedule table data is not available.");
+                }
+
+                TableSectionData data = tableData.GetSectionData(sectionType);
+                if (data != null)
+                {
+                    rowCount = data.NumberOfRows;
+                    columnCount = data.NumberOfColumns;
+                }
+                else if (sectionType != SectionType.Footer)
+                {
+                    throw new InvalidOperationException("Schedule " + normalizedSection + " section data is not available.");
+                }
             }
             catch (Exception ex)
             {

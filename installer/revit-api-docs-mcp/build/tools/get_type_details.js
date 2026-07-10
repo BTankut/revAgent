@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { getTypeDetails } from "../utils/docIndex.js";
+import { formatJsonToolResult, formatToolFailure } from "./tool_result.js";
 const DEFAULT_MAX_MEMBERS_PER_GROUP = 20;
 function responseModeFor(value) {
     return value === "full" || value === "debug" ? value : "compact";
@@ -93,24 +94,10 @@ export function registerGetTypeDetailsTool(server) {
                 responseMode: args.response_mode,
                 maxMembersPerGroup: args.max_members_per_group,
             });
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: JSON.stringify(shapedResult, null, 2),
-                    },
-                ],
-            };
+            return formatJsonToolResult(shapedResult);
         }
         catch (error) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: `get_type_details failed: ${error instanceof Error ? error.message : String(error)}`,
-                    },
-                ],
-            };
+            return formatToolFailure("get_type_details", error);
         }
     });
 }

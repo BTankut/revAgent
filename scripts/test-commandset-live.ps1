@@ -623,13 +623,14 @@ Write-Host "Discover one schedule for native inspect_schedules checks"
 $scheduleInventory = Invoke-InspectSchedules `
     -TaskName "$prefix schedule inventory scoped seed" `
     -Params ([ordered]@{
-        maxSchedules = 1
+        maxSchedules = 10
         searchBudget = "fast"
-        maxElapsedMs = 2000
-        timeoutMs = 7000
+        maxElapsedMs = 5000
+        timeoutMs = 10000
     })
 Assert-Equal ([bool]$scheduleInventory.success) $true "Schedule inventory seed should succeed."
 Assert-True (@($scheduleInventory.schedules).Count -ge 1) "Live commandset schedule checks require at least one schedule in the active test model."
+$scheduleIds = @($scheduleInventory.schedules | ForEach-Object { [int]$_.id })
 $firstSchedule = @($scheduleInventory.schedules)[0]
 $firstScheduleId = [int]$firstSchedule.id
 
@@ -653,6 +654,48 @@ Assert-Equal ([bool]$scheduleSmallRead.guarded) $false "Scoped native schedule r
 Assert-Equal ([string]$scheduleSmallRead.action) "inspect_schedules" "Scoped native schedule action changed."
 Assert-True ([int]$scheduleSmallRead.returnedCount -ge 1) "Scoped native schedule read should return the requested schedule."
 Assert-True ($scheduleSmallRead.scanPolicy.maxElapsedMs -lt $scheduleSmallRead.scanPolicy.timeoutMs) "Native schedule budget must stay below socket timeout."
+
+Write-Host "Test native inspect_schedules empty footer contract"
+$scheduleFooterRead = Invoke-InspectSchedules `
+    -TaskName "$prefix schedule empty footer" `
+    -Params ([ordered]@{
+        scheduleIds = $scheduleIds
+        includeCells = $true
+        sections = @("footer")
+        maxRowsPerSection = 2
+        maxColumnsPerSection = 2
+        maxCells = 100
+        maxResponseBytes = 1000000
+        responseMode = "full"
+        searchBudget = "fast"
+        maxElapsedMs = 10000
+        timeoutMs = 15000
+    })
+Assert-Equal ([bool]$scheduleFooterRead.success) $true "Scoped native footer read should succeed."
+Assert-Equal ([bool]$scheduleFooterRead.guarded) $false "Scoped native footer read should not be guarded."
+Assert-True (@($scheduleFooterRead.schedules).Count -ge 1) "Scoped native footer read should return the requested schedule."
+$emptyFooterEvidence = @(
+    foreach ($schedule in @($scheduleFooterRead.schedules)) {
+        foreach ($section in @($schedule.sections)) {
+            if ([string]$section.section -eq "footer" -and [int]$section.rowCount -eq 0 -and [int]$section.columnCount -eq 0) {
+                [pscustomobject]@{
+                    scheduleId = [int]$schedule.id
+                    scheduleName = [string]$schedule.name
+                    section = $section
+                }
+            }
+        }
+    }
+)
+Assert-True ($emptyFooterEvidence.Count -ge 1) "Live commandset footer checks require at least one schedule with a zero-row/zero-column footer."
+$footerSection = $emptyFooterEvidence[0].section
+Assert-Equal ([int]$footerSection.rowCount) 0 "A normal empty footer must report zero rows."
+Assert-Equal ([int]$footerSection.columnCount) 0 "A normal empty footer must report zero columns."
+Assert-Equal ([bool]$footerSection.readFailed) $false "A schedule without footer data must be reported as an empty section, not a failed read."
+Assert-Equal ([string]$footerSection.readError) "" "A normal empty footer must not expose a read error."
+$footerWarnings = @($scheduleFooterRead.warnings) -join "`n"
+Assert-True ($footerWarnings -notmatch 'Schedule section read failed.+footer') "A normal empty footer must not emit a section-read warning."
+Assert-True ($footerWarnings -notmatch 'Object reference not set') "A normal empty footer must not leak a NullReferenceException warning."
 
 Write-Host "Test native inspect_schedules max_cells partial metadata"
 $scheduleCellCap = Invoke-InspectSchedules `

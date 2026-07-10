@@ -1,6 +1,7 @@
 import type { ToolServer } from "./types.js";
 import { z } from "zod";
 import { getMemberDetails } from "../utils/docIndex.js";
+import { formatJsonToolResult, formatToolFailure } from "./tool_result.js";
 
 export function registerGetMemberDetailsTool(server: ToolServer) {
     server.tool("get_member_details", "Get detailed information about a Revit API member, including signature, parameters, and XML documentation.", {
@@ -16,24 +17,10 @@ export function registerGetMemberDetailsTool(server: ToolServer) {
                 kind: args.kind,
                 revitVersion: args.revit_version,
             });
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: JSON.stringify(result, null, 2),
-                    },
-                ],
-            };
+            return formatJsonToolResult(result);
         }
         catch (error) {
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: `get_member_details failed: ${error instanceof Error ? error.message : String(error)}`,
-                    },
-                ],
-            };
+            return formatToolFailure("get_member_details", error);
         }
     });
 }

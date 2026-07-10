@@ -4,6 +4,16 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Hardened the five-tool Revit API docs surface after pilot validation:
+  direct lookup failures now return MCP `isError=true` with structured
+  `success=false` JSON, bulk resolution reports aggregate success/failure
+  counts and distinguishes partial/all-failed calls, and bulk type resolution
+  now defaults to the same bounded compact member shape as
+  `get_type_details` with explicit per-symbol response/limit controls.
+- Fixed `inspect_schedules` footer reads so Revit schedules without a Footer
+  section return a normal zero-row/zero-column section instead of a
+  `NullReferenceException` warning. The runtime tool surface is now `.39`, and
+  the native live gate covers the empty-footer contract.
 - Added an SSH rollout evidence collector:
   `scripts\collect-rollout-evidence.ps1` stages read-only evidence tools on
   target workstations, runs source-free inventory in `dryRun`, runs desktop

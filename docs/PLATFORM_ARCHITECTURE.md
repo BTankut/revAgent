@@ -158,7 +158,10 @@ transaction, uses the same standard body-cell guard, and verifies readback.
 
 The companion docs server registers 5 lookup tools: `search_api`,
 `get_type_details`, `get_member_details`, `list_namespace`, and
-`resolve_api_symbols_bulk`.
+`resolve_api_symbols_bulk`. Direct lookup failures use MCP `isError=true` and
+structured `success=false` JSON. Bulk resolution reports total, succeeded, and
+failed counts; type requests default to bounded compact member groups with an
+explicit full-response opt-in.
 
 Dynamic execution is split between the Node wrapper and the bundled C# command
 payload:

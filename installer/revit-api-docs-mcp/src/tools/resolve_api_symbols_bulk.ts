@@ -6,6 +6,8 @@ import {
     listNamespace,
     searchApi,
 } from "../utils/docIndex.js";
+import { compactTypeDetailsResult } from "./get_type_details.js";
+import { formatJsonToolResult } from "./tool_result.js";
 
 const symbolSchema = z.object({
     mode: z.enum(["search", "type", "member", "namespace"]),
@@ -16,6 +18,8 @@ const symbolSchema = z.object({
     namespace: z.string().optional(),
     include_inherited: z.boolean().optional(),
     include_child_namespaces: z.boolean().optional(),
+    response_mode: z.enum(["compact", "full", "debug"]).optional(),
+    max_members_per_group: z.number().int().min(1).max(200).optional(),
     limit: z.number().int().min(1).max(100).optional(),
 });
 
@@ -41,10 +45,14 @@ async function resolveSymbol(revitVersion: string, symbol: SymbolRequest) {
         if (!typeName) {
             throw new Error("type mode requires type_name or query");
         }
-        return await getTypeDetails({
+        const result = await getTypeDetails({
             typeName,
             revitVersion,
             includeInherited: symbol.include_inherited,
+        });
+        return compactTypeDetailsResult(result, {
+            responseMode: symbol.response_mode,
+            maxMembersPerGroup: symbol.max_members_per_group,
         });
     }
     if (symbol.mode === "member") {
@@ -80,7 +88,7 @@ async function resolveSymbol(revitVersion: string, symbol: SymbolRequest) {
 }
 
 export function registerResolveApiSymbolsBulkTool(server: ToolServer) {
-    server.tool("resolve_api_symbols_bulk", "Resolve multiple Revit API searches/types/members/namespaces in one call, preserving input order.", {
+    server.tool("resolve_api_symbols_bulk", "Resolve multiple Revit API searches/types/members/namespaces in one call, preserving input order. Type results default to compact bounded member samples; set response_mode=full explicitly for every member row.", {
         revit_version: z.string().min(1).describe("Revit version to resolve against, e.g. 2022."),
         symbols: z.array(symbolSchema).min(1).max(25).describe("Symbols to resolve in order."),
     }, async (args) => {
@@ -104,17 +112,23 @@ export function registerResolveApiSymbolsBulkTool(server: ToolServer) {
                 });
             }
         }
-        return {
-            content: [
-                {
-                    type: "text",
-                    text: JSON.stringify({
-                        success: true,
-                        revitVersion: args.revit_version,
-                        results,
-                    }, null, 2),
-                },
-            ],
+        const succeededCount = results.filter((result) => result.ok === true).length;
+        const failedCount = results.length - succeededCount;
+        const allFailed = succeededCount === 0;
+        const payload: Record<string, any> = {
+            success: failedCount === 0,
+            state: allFailed ? "failed" : failedCount > 0 ? "partial" : "completed",
+            action: "resolve_api_symbols_bulk",
+            partial: succeededCount > 0 && failedCount > 0,
+            revitVersion: args.revit_version,
+            totalCount: results.length,
+            succeededCount,
+            failedCount,
+            results,
         };
+        if (allFailed) {
+            payload.error = "All requested Revit API symbols failed to resolve.";
+        }
+        return formatJsonToolResult(payload, { isError: allFailed });
     });
 }
