@@ -77,6 +77,26 @@ assertContains(setScheduleCells, "IsStandardScheduleBodyCellWriteForbidden", "se
 assertContains(setScheduleCells, "IsKeySchedule", "set_schedule_cells must keep key schedule body writes out of the standard body-cell guard.");
 assertContains(setScheduleCells, "bool standardScheduleBodyCellWriteForbidden = IsStandardScheduleBodyCellWriteForbidden(schedule, sectionType);", "set_schedule_cells must compute the standard body-cell guard once per schedule section.");
 assertContains(setScheduleCells, "Schedule cell verification failed", "set_schedule_cells must verify committed cell text.");
+for (const field of ["actualAfter", "projectedAfter", "wouldChange", "actualAfterBasis", "projectedAfterBasis"]) {
+  assertContains(setScheduleCells, `${field} =`, `set_schedule_cells change rows must expose explicit ${field} semantics.`);
+}
+assertContains(setScheduleCells, 'deprecatedLegacyFields = new string[] { "after", "changed" }', "set_schedule_cells must mark ambiguous legacy change fields as deprecated without removing them.");
+assertContains(setScheduleCells, "changeFieldContract = ChangeFieldContract()", "set_schedule_cells responses with change rows must publish the explicit field contract.");
+assert.match(
+  setScheduleCells,
+  /string actualAfter = readable \? before : null;[\s\S]*string projectedAfter = !blocked && readable \? requestedValue : null;[\s\S]*bool wouldChange = !blocked && cellWouldChange;/,
+  "set_schedule_cells dry-run must distinguish the current observed value from the requested projected value and block-ineligible changes.",
+);
+assertContains(
+  setScheduleCells,
+  "planned.Add(CellResult(i, row, column, requestedValue, before, before, actualAfter, projectedAfter, readable, cellWouldChange, wouldChange, actualAfterBasis, projectedAfterBasis, false, blocked, reason, error));",
+  "set_schedule_cells dry-run must keep legacy after/before behavior while returning requestedValue through projectedAfter and the explicit wouldChange result.",
+);
+assertContains(
+  setScheduleCells,
+  'committedChanges.Add(CellResult(i, row, column, requestedValue, before, after, after, requestedValue, readableBefore, changed, changed, actualAfterBasis, "requested_value_committed_target", verified, !verified, verified ? "" : "verification_failed", writeError));',
+  "set_schedule_cells commit rows must expose verified readback as actualAfter and the requested target as projectedAfter.",
+);
 
 const setScheduleCellsByText = readSource("src/tools/set_schedule_cells_by_text.ts");
 assertContains(setScheduleCellsByText, "[PRODUCTION_SCHEDULE_CELL_WRITE_BY_TEXT]", "set_schedule_cells_by_text must stay marked as a production row-text schedule write tool.");

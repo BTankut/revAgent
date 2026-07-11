@@ -4,6 +4,13 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Clarified the `set_schedule_cells` dry-run change contract without breaking
+  existing consumers. Change rows now separate the observed model value
+  (`actualAfter`) from the requested post-commit projection (`projectedAfter`),
+  report an explicit `wouldChange`, and identify each value's basis. Legacy
+  `after` and `changed` fields remain available but are marked deprecated by
+  `changeFieldContract`; committed writes still require verified Revit
+  readback.
 - Hardened Spatial Context Engine Phase 0 after real-model testing: added the
   native/runtime read-only `inspect_levels` surface, project-origin Level
   elevation semantics, MEP curve level fallbacks, placement-qualified exact

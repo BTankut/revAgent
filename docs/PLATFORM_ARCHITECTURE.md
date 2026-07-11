@@ -167,6 +167,11 @@ schedule cells: it never resolves by schedule name, defaults to dry-run, blocks
 stale cells with `expectedCurrentText` unless explicitly allowed, commits
 through the wrapper transaction, guards non-writable standard schedule body
 cells as `non_writable_standard_body_cell`, and verifies the final cell text.
+Its change rows distinguish `actualAfter` (the observed current or committed
+readback value), `projectedAfter` (the requested post-commit target), and
+`wouldChange`. `after` and `changed` remain compatibility fields whose legacy
+semantics are disclosed by `changeFieldContract`; dry-run never presents a
+projected value as verified model state.
 `set_schedule_cells_by_text` covers the common production workflow where the
 operator knows a sheet/schedule and visible row label but not exact coordinates:
 it requires bounded scope, previews row matches, blocks ambiguous matches by

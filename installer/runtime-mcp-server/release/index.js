@@ -2815,7 +2815,7 @@ bool IsStandardScheduleBodyCellWriteForbidden(ViewSchedule schedule, SectionType
     return true;
 }
 
-object CellResult(int index, int row, int column, string requestedValue, string beforeValue, string afterValue, bool readable, bool changed, bool verified, bool blocked, string reason, string error)
+object CellResult(int index, int row, int column, string requestedValue, string beforeValue, string afterValue, string actualAfterValue, string projectedAfterValue, bool readable, bool changed, bool wouldChange, string actualAfterBasis, string projectedAfterBasis, bool verified, bool blocked, string reason, string error)
 {
     return new {
         index = index,
@@ -2824,12 +2824,29 @@ object CellResult(int index, int row, int column, string requestedValue, string 
         requestedValue = requestedValue,
         before = beforeValue,
         after = afterValue,
+        actualAfter = actualAfterValue,
+        projectedAfter = projectedAfterValue,
         readable = readable,
         changed = changed,
+        wouldChange = wouldChange,
+        afterBasis = actualAfterBasis,
+        actualAfterBasis = actualAfterBasis,
+        projectedAfterBasis = projectedAfterBasis,
         verified = verified,
         blocked = blocked,
         reason = reason,
         error = error
+    };
+}
+
+object ChangeFieldContract()
+{
+    return new {
+        version = "2",
+        preferredFields = new string[] { "actualAfter", "projectedAfter", "wouldChange" },
+        deprecatedLegacyFields = new string[] { "after", "changed" },
+        after = "Legacy actual-value field; an empty string may also mean the cell was unreadable. Use actualAfter with actualAfterBasis.",
+        changed = "Legacy before-versus-requested comparison. It does not prove a committed write and may be true on a blocked preflight row. Use wouldChange."
     };
 }
 
@@ -2933,8 +2950,14 @@ try
             errors.Add(reason + " at row " + row.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", column " + column.ToString(System.Globalization.CultureInfo.InvariantCulture) + ": " + error);
         }
 
-        if (!blocked && cellWouldChange) wouldChangeCount++;
-        planned.Add(CellResult(i, row, column, requestedValue, before, before, readable, cellWouldChange, false, blocked, reason, error));
+        string actualAfter = readable ? before : null;
+        string projectedAfter = !blocked && readable ? requestedValue : null;
+        bool wouldChange = !blocked && cellWouldChange;
+        string actualAfterBasis = readable ? "current_observed_no_write" : "unavailable_not_readable";
+        string projectedAfterBasis = projectedAfter == null ? "unavailable_preflight_blocked" : "requested_value_after_successful_preflight";
+
+        if (wouldChange) wouldChangeCount++;
+        planned.Add(CellResult(i, row, column, requestedValue, before, before, actualAfter, projectedAfter, readable, cellWouldChange, wouldChange, actualAfterBasis, projectedAfterBasis, false, blocked, reason, error));
     }
 
     if (errors.Count > 0)
@@ -2953,6 +2976,7 @@ try
             columnCount = columnCount,
             committed = false,
             dryRun = dryRun,
+            changeFieldContract = ChangeFieldContract(),
             changes = planned.ToArray(),
             errors = errors.ToArray()
         };
@@ -2974,6 +2998,7 @@ try
             dryRun = true,
             requestedCellCount = rows.Length,
             wouldChangeCount = wouldChangeCount,
+            changeFieldContract = ChangeFieldContract(),
             changes = planned.ToArray(),
             warnings = new string[] { "Dry run only. Re-run with mode=commit to write schedule cell text." }
         };
@@ -3016,7 +3041,8 @@ try
             throw new Exception("Schedule cell verification failed at row " + row.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", column " + column.ToString(System.Globalization.CultureInfo.InvariantCulture) + ": requested value was not observed after write.");
         }
         if (verified) verifiedCount++;
-        committedChanges.Add(CellResult(i, row, column, requestedValue, before, after, readableBefore, changed, verified, !verified, verified ? "" : "verification_failed", writeError));
+        string actualAfterBasis = changed ? "post_commit_readback" : "current_observed_no_write_needed";
+        committedChanges.Add(CellResult(i, row, column, requestedValue, before, after, after, requestedValue, readableBefore, changed, changed, actualAfterBasis, "requested_value_committed_target", verified, !verified, verified ? "" : "verification_failed", writeError));
     }
 
     bool success = verifiedCount == rows.Length;
@@ -3036,6 +3062,7 @@ try
         requestedCellCount = rows.Length,
         changedCount = changedCount,
         verifiedCount = verifiedCount,
+        changeFieldContract = ChangeFieldContract(),
         changes = committedChanges.ToArray()
     };
 }
@@ -3055,7 +3082,7 @@ catch (Exception ex)
         scheduleId = scheduleId,
         committed = false
     };
-}`}function rs(e){e.tool("set_schedule_cells","[PRODUCTION_SCHEDULE_CELL_WRITE] Writes exact Revit schedule cells by scheduleId, section, row, and column. Defaults to dryRun, blocks mismatched expectedCurrentText, guards non-writable standard schedule body cells as non_writable_standard_body_cell, and verifies committed values. Schedule cell text writes are not a raw-code reason: use this after inspect_schedules has found exact row/column coordinates for renumbering, title/spec/mark edits, key schedule/header/footer cells, or other direct cell text updates. Do not use this for visual schedule formatting such as borders, merges, colors, row heights, column widths, or placed schedule movement.",{...w(he),...x(he),scheduleId:he.union([he.number(),he.string()]).describe("Exact ViewSchedule element id. Schedule names are not accepted for writes."),section:he.enum(["header","body","footer"]).describe("Exact schedule section containing the target cells."),cells:he.array(he.object({row:he.number().int().min(0).describe("Zero-based row index in the selected schedule section."),column:he.number().int().min(0).describe("Zero-based column index in the selected schedule section."),value:he.string().describe("Target cell text."),expectedCurrentText:he.string().optional().describe("Optional exact preflight value. Commit is blocked if current text differs unless allowCurrentMismatch=true.")})).min(1).max(200).describe("Exact cells to update. Use inspect_schedules first to discover row/column coordinates."),mode:he.enum(["dryRun","commit"]).optional().describe("Defaults to dryRun. commit writes schedule cell text in one Revit transaction."),allowCurrentMismatch:he.boolean().optional().describe("Defaults false. Keep false for production writes so stale row/column targets are blocked."),timeoutMs:he.number().int().positive().max(12e4).optional().describe("Socket timeout in milliseconds. Defaults 120000.")},async t=>{try{let n=t.mode==="commit"?"commit":"dryRun",r=await K(cp(t),{...se(t),...ye(t,n==="commit"?"Set Revit schedule cells":"Preview Revit schedule cell changes"),toolName:"set_schedule_cells",transactionMode:n==="commit"?"auto":"none"});return h(r&&r.result?r.result:r)}catch(n){return h(Ie({action:"set_schedule_cells",reason:"set_schedule_cells_runtime_error",error:n instanceof Error?n.message:String(n),extra:{committed:!1}}))}})}import{z as F}from"zod";var up=25;function os(e,t=100){return(Array.isArray(e)?e:[]).slice(0,t).map(n=>Number.parseInt(String(n),10)).filter(n=>Number.isFinite(n))}function is(e){return`new int[] { ${e.join(", ")} }`}function dp(e){let t=[];if(typeof e.rowTextQuery=="string"&&e.rowTextQuery.trim()&&t.push(e.rowTextQuery.trim()),Array.isArray(e.rowTextQueries))for(let n of e.rowTextQueries){let r=String(n??"").trim();r&&t.push(r)}return[...new Set(t)].slice(0,20)}function mp(e,t){let n=Array.isArray(e)?[...new Set(e.map(r=>String(r??"").trim()).filter(r=>r.length>0))]:[];return{rows:n.slice(0,t),totalCount:Array.isArray(e)?e.length:0,uniqueCount:n.length,returnedCount:Math.min(n.length,t),omittedCount:Math.max(0,n.length-t)}}function pp(e,t){let n=t.responseMode||"compact";if(!e||typeof e!="object"||nt(n))return{...e,responseMode:n};let r=Pe(t.maxResultRows,up,500),o=Se(e.matches,{limit:r}),i=Se(e.changes,{limit:r}),a=mp(e.errors,r),s={...e,responseMode:"compact",compactResponse:!0,maxReturnedRows:r};return Array.isArray(e.matches)&&(s.matches=o.rows,s.returnedMatchCount=o.returnedCount,s.omittedMatchCount=o.omittedCount,s.duplicateMatchCount=o.duplicateCount),Array.isArray(e.changes)&&(s.changes=i.rows,s.returnedChangeCount=i.returnedCount,s.omittedChangeCount=i.omittedCount,s.duplicateChangeCount=i.duplicateCount),Array.isArray(e.errors)&&(s.errors=a.rows,s.returnedErrorCount=a.returnedCount,s.omittedErrorCount=a.omittedCount),s.notices=[...Array.isArray(e.notices)?e.notices:[],'Compact response bounds matches/changes/errors. Use responseMode="full" for all row details.'],s}function hp(e){let t=os(e.scheduleIds,200),n=os(e.sheetIds,200),r=dp(e),o=Number.parseInt(String(e.targetColumn),10),i=Math.max(1,Math.min(Number.parseInt(String(e.maxSchedules??20),10)||20,200)),a=Math.max(1,Math.min(Number.parseInt(String(e.maxRowsPerSchedule??250),10)||250,2e3)),s=Math.max(1,Math.min(Number.parseInt(String(e.maxColumnsPerSchedule??80),10)||80,300)),l=Math.max(1,Math.min(Number.parseInt(String(e.maxMatches??50),10)||50,500)),u=e.mode==="commit"?"commit":"dryRun",m=e.section||"body",p=e.rowMatchMode==="any"?"any":"all",g=e.allowMultipleMatches===!0?"true":"false",y=e.allowCurrentMismatch===!0?"true":"false",S=e.expectedCurrentText!==void 0&&e.expectedCurrentText!==null?"true":"false",E=N(e.expectedCurrentText??"");return`
+}`}function rs(e){e.tool("set_schedule_cells","[PRODUCTION_SCHEDULE_CELL_WRITE] Writes exact Revit schedule cells by scheduleId, section, row, and column. Defaults to dryRun, blocks mismatched expectedCurrentText, guards non-writable standard schedule body cells as non_writable_standard_body_cell, and verifies committed values. Change rows expose actualAfter (observed value), projectedAfter (requested target), and wouldChange; legacy after/changed fields remain for compatibility and are marked deprecated by changeFieldContract. Schedule cell text writes are not a raw-code reason: use this after inspect_schedules has found exact row/column coordinates for renumbering, title/spec/mark edits, key schedule/header/footer cells, or other direct cell text updates. Do not use this for visual schedule formatting such as borders, merges, colors, row heights, column widths, or placed schedule movement.",{...w(he),...x(he),scheduleId:he.union([he.number(),he.string()]).describe("Exact ViewSchedule element id. Schedule names are not accepted for writes."),section:he.enum(["header","body","footer"]).describe("Exact schedule section containing the target cells."),cells:he.array(he.object({row:he.number().int().min(0).describe("Zero-based row index in the selected schedule section."),column:he.number().int().min(0).describe("Zero-based column index in the selected schedule section."),value:he.string().describe("Target cell text."),expectedCurrentText:he.string().optional().describe("Optional exact preflight value. Commit is blocked if current text differs unless allowCurrentMismatch=true.")})).min(1).max(200).describe("Exact cells to update. Use inspect_schedules first to discover row/column coordinates."),mode:he.enum(["dryRun","commit"]).optional().describe("Defaults to dryRun. commit writes schedule cell text in one Revit transaction."),allowCurrentMismatch:he.boolean().optional().describe("Defaults false. Keep false for production writes so stale row/column targets are blocked."),timeoutMs:he.number().int().positive().max(12e4).optional().describe("Socket timeout in milliseconds. Defaults 120000.")},async t=>{try{let n=t.mode==="commit"?"commit":"dryRun",r=await K(cp(t),{...se(t),...ye(t,n==="commit"?"Set Revit schedule cells":"Preview Revit schedule cell changes"),toolName:"set_schedule_cells",transactionMode:n==="commit"?"auto":"none"});return h(r&&r.result?r.result:r)}catch(n){return h(Ie({action:"set_schedule_cells",reason:"set_schedule_cells_runtime_error",error:n instanceof Error?n.message:String(n),extra:{committed:!1}}))}})}import{z as F}from"zod";var up=25;function os(e,t=100){return(Array.isArray(e)?e:[]).slice(0,t).map(n=>Number.parseInt(String(n),10)).filter(n=>Number.isFinite(n))}function is(e){return`new int[] { ${e.join(", ")} }`}function dp(e){let t=[];if(typeof e.rowTextQuery=="string"&&e.rowTextQuery.trim()&&t.push(e.rowTextQuery.trim()),Array.isArray(e.rowTextQueries))for(let n of e.rowTextQueries){let r=String(n??"").trim();r&&t.push(r)}return[...new Set(t)].slice(0,20)}function mp(e,t){let n=Array.isArray(e)?[...new Set(e.map(r=>String(r??"").trim()).filter(r=>r.length>0))]:[];return{rows:n.slice(0,t),totalCount:Array.isArray(e)?e.length:0,uniqueCount:n.length,returnedCount:Math.min(n.length,t),omittedCount:Math.max(0,n.length-t)}}function pp(e,t){let n=t.responseMode||"compact";if(!e||typeof e!="object"||nt(n))return{...e,responseMode:n};let r=Pe(t.maxResultRows,up,500),o=Se(e.matches,{limit:r}),i=Se(e.changes,{limit:r}),a=mp(e.errors,r),s={...e,responseMode:"compact",compactResponse:!0,maxReturnedRows:r};return Array.isArray(e.matches)&&(s.matches=o.rows,s.returnedMatchCount=o.returnedCount,s.omittedMatchCount=o.omittedCount,s.duplicateMatchCount=o.duplicateCount),Array.isArray(e.changes)&&(s.changes=i.rows,s.returnedChangeCount=i.returnedCount,s.omittedChangeCount=i.omittedCount,s.duplicateChangeCount=i.duplicateCount),Array.isArray(e.errors)&&(s.errors=a.rows,s.returnedErrorCount=a.returnedCount,s.omittedErrorCount=a.omittedCount),s.notices=[...Array.isArray(e.notices)?e.notices:[],'Compact response bounds matches/changes/errors. Use responseMode="full" for all row details.'],s}function hp(e){let t=os(e.scheduleIds,200),n=os(e.sheetIds,200),r=dp(e),o=Number.parseInt(String(e.targetColumn),10),i=Math.max(1,Math.min(Number.parseInt(String(e.maxSchedules??20),10)||20,200)),a=Math.max(1,Math.min(Number.parseInt(String(e.maxRowsPerSchedule??250),10)||250,2e3)),s=Math.max(1,Math.min(Number.parseInt(String(e.maxColumnsPerSchedule??80),10)||80,300)),l=Math.max(1,Math.min(Number.parseInt(String(e.maxMatches??50),10)||50,500)),u=e.mode==="commit"?"commit":"dryRun",m=e.section||"body",p=e.rowMatchMode==="any"?"any":"all",g=e.allowMultipleMatches===!0?"true":"false",y=e.allowCurrentMismatch===!0?"true":"false",S=e.expectedCurrentText!==void 0&&e.expectedCurrentText!==null?"true":"false",E=N(e.expectedCurrentText??"");return`
 int[] exactScheduleIds = ${is(t)};
 int[] exactSheetIds = ${is(n)};
 string scheduleNameQuery = ${N(e.scheduleNameQuery||e.scheduleQuery||"")};
