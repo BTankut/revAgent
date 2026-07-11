@@ -1,7 +1,7 @@
 # revAgent Spatial Context Engine Plan
 
-Status: codex_final
-Revision: v2.3 — Phase 0 real-model audit hot-fix (2026-07-11).
+Status: codex_final; execution completed through Phase 0.
+Revision: v2.4 — Phase 0 completion recorded (2026-07-11).
 Supersedes draft v2.1, v2, and the draft previously named
 `REVAGENT_SPATIAL_DESIGN_ENGINE_PLAN.md`.
 
@@ -620,6 +620,25 @@ but only after its extraction adapter and rule set pass Layer 1 gates.
 Change class per `AGENTS.md` deployment discipline. Raw dynamic snippets
 only in Phase 0.
 
+Execution checkpoint (2026-07-11):
+
+- [x] **Phase 0 — Contract + extraction spike.** Completed and
+  operator-accepted against the real office model on runtime
+  `2026.07.11.530-c383ffa6`. Host/linked Level inventory, placement-qualified
+  exact linked Room scope, pagination-versus-coverage reporting, MEP Level
+  identity, omission classification, and repeat-capture determinism were
+  verified. The Phase 0 trust boundary remains `atomic=false` and
+  `liveness=unknown`.
+- [ ] **Phase 1a — Truth foundations.** Next phase; not started.
+- [ ] **Phase 1b — Deterministic queries + diff.** Not started.
+- [ ] **Phase 1c — Clash detection.** Not started.
+- [ ] **Phase 2a — Terminal placement (propose-only).** Not started.
+- [ ] **Phase 2b — Terminal materialization.** Not started.
+- [ ] **Phase 3a — Duct routing (propose-only).** Not started.
+- [ ] **Phase 3b — Routing materialization.** Not started.
+- [ ] **Phase 4 — Sizing + coordination.** Not started.
+- [ ] **Phase 5 — Second discipline.** Not started.
+
 Initial production SLOs below are acceptance ceilings, not permanent product
 promises. Phase 0 records the frozen reference-level size and baseline; changing
 an SLO later requires an explicit plan revision, not an informal waiver.
@@ -694,6 +713,11 @@ numeric id guard
 
 ## Revision Record
 
+- v2.4 / `codex_final` (2026-07-11): Marked Phase 0 complete after the
+  operator's real-model acceptance pass. Recorded the verified Level/spatial
+  scope, coverage, MEP Level identity, omission, and deterministic-repeat
+  evidence; retained the non-atomic/unknown-liveness boundary; and identified
+  Phase 1a as the next unstarted phase.
 - v2.3 / `codex_final` (2026-07-11): Post-Phase 0 real-model audit hot-fix.
   Added deterministic host/linked Level inventory, project-origin Level
   elevation semantics, placement-qualified exact linked Room/Space selectors,
