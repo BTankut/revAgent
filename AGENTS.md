@@ -201,6 +201,13 @@ runtime compatibility normalizer. For raw and safe dynamic execution,
 practical, including double-encoded result strings; `parseJsonResult=false` is
 the debugging path for preserving raw wire text.
 
+`capture_spatial_snapshot` is a Phase 0 read-only extraction spike, not a
+production current-state store. It requires explicit level scope, returns one
+native `extract_spatial_snapshot` page per call, and uses an opaque cursor.
+Treat `atomic=false` and `liveness="unknown"` as hard trust limits. Do not make
+current-state, clash-free, or clearance claims from this output; durable
+capture/liveness, query/diff, and clash verification belong to later phases.
+
 For DrawingSheet and placed-view annotation lookup in large projects, use
 `inspect_sheet_text` before raw dynamic C# sheet or viewport loops. Start with
 `sheetQuery` or exact `sheetIds`, keep limits bounded, enable

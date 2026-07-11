@@ -7,7 +7,7 @@ description: >
   inspection, controlled model edits, sheet/schedule review, image export, and
   mechanical MEP engineering workflows.
 license: UNLICENSED
-version: 0.5.0
+version: 0.5.1
 ---
 
 # revAgent Revit MEP Production Skill
@@ -60,6 +60,10 @@ Use dedicated production tools before raw code:
 - Element discovery: `find_elements`.
 - Element/selection inspection: `inspect_elements`.
 - Parameter preflight: `inspect_parameter_schema`.
+- Phase 0 spatial extraction: `capture_spatial_snapshot`. Require an explicit
+  level scope, consume one page per call, and pass `nextCursor` unchanged.
+  Treat `atomic=false` and `liveness="unknown"` as hard limits: do not make a
+  current-state, clearance, or clash-free claim from this spike.
 - Live view navigation: `focus_elements`, `smart_focus_elements`,
   `create_3d_view_for_elements`, `show_element_in_plan_and_3d`,
   `activate_view`, `close_view`, `list_open_views`, `get_ui_state`, and

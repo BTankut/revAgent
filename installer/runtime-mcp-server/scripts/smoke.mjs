@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,8 +18,11 @@ import { stripViewCleanupFields } from "../build/tools/view_operation_result.js"
 import {
   recordTelemetryEvent,
   extractProductionContext,
+  isSpatialExtractionTelemetry,
   resolveTelemetryTargets,
   sanitizeTelemetryPathSegment,
+  summarizeSpatialExtractionTelemetryParams,
+  summarizeSpatialExtractionTelemetryResponse,
   summarizeTelemetryParams,
   summarizeTelemetryResponse,
   flushTelemetryWritesForTests,
@@ -26,6 +30,13 @@ import {
 import {
   buildFindElementsSearchPolicy,
 } from "../build/utils/searchPolicy.js";
+import {
+  buildSpatialCaptureParams,
+  resolveSpatialCapturePolicy,
+} from "../build/tools/capture_spatial_snapshot.js";
+import {
+  normalizeSpatialPage,
+} from "../build/spatial/spatialPage.js";
 
 const tools = new Map();
 const server = {
@@ -101,6 +112,7 @@ const expectedTools = [
   "set_element_parameter",
   "set_schedule_cells",
   "set_schedule_cells_by_text",
+  "capture_spatial_snapshot",
 ];
 
 assert.deepEqual([...tools.keys()], expectedTools);
@@ -110,6 +122,308 @@ assert.match(statusTool.description, /runtimeActivity/);
 assert.equal("includeRuntimeActivity" in statusTool.schema, true);
 assert.equal("runtimeActivityLimit" in statusTool.schema, true);
 assert.equal("runtimeActivityMode" in statusTool.schema, true);
+
+const captureSpatialTool = tools.get("capture_spatial_snapshot");
+assert.match(captureSpatialTool.description, /SPATIAL_CAPTURE_READ_ONLY/);
+assert.match(captureSpatialTool.description, /one native extract_spatial_snapshot command per MCP call/);
+assert.match(captureSpatialTool.description, /non-atomic extraction spike with liveness=unknown/);
+for (const field of [
+  "levelIds",
+  "levelNames",
+  "sourceScope",
+  "cursor",
+  "pageTargetBytes",
+  "maxElements",
+  "maxElapsedMs",
+]) {
+  assert.equal(field in captureSpatialTool.schema, true, `capture_spatial_snapshot is missing ${field}.`);
+}
+const spatialPolicy = resolveSpatialCapturePolicy({});
+assert.equal(spatialPolicy.pageTargetBytes, 4 * 1024 * 1024);
+assert.equal(spatialPolicy.maxElements, 5000);
+assert.equal(spatialPolicy.maxElapsedMs, 4500);
+const opaqueCursor = "spatial-cursor-v0.1.opaque-payload";
+const spatialParams = buildSpatialCaptureParams({
+  levelIds: [9, "9", 3],
+  levelNames: ["Level 2", "Level 2"],
+  cursor: opaqueCursor,
+});
+assert.deepEqual(spatialParams.levelIds, [3, 9]);
+assert.deepEqual(spatialParams.levelNames, ["Level 2"]);
+assert.equal(spatialParams.cursor, opaqueCursor, "The runtime must pass the opaque spatial cursor through unchanged.");
+assert.equal(spatialParams.suppressTaskStatusWindow, true, "Paged spatial capture must not block continuation on a per-page Revit status window.");
+for (const nativeRejectedCursor of [
+  "spatial-cursor-v0.1.",
+  "spatial-cursor-v0.1.payload-only",
+  "wrong-prefix.payload.signature",
+  "spatial-cursor-v0.1.payload.signature.extra",
+]) {
+  assert.equal(
+    buildSpatialCaptureParams({ levelIds: [3], cursor: nativeRejectedCursor }).cursor,
+    nativeRejectedCursor,
+    "Cursor prefix/signature/envelope validation is native-owned; the runtime must not decode or rewrite opaque cursor bytes.",
+  );
+}
+const canonicalJson = (value) => {
+  if (typeof value === "number" && !Number.isFinite(value)) throw new Error("Spatial canonical JSON rejects non-finite numbers.");
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+const canonicalSha256 = (value) => `sha256:${crypto.createHash("sha256").update(canonicalJson(value), "utf8").digest("hex")}`;
+const semanticCanonicalJson = (value) => {
+  if (value === null) return "null";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("Semantic spatial JSON cannot contain a non-finite number.");
+    const normalized = Object.is(value, -0) ? 0 : value;
+    const bytes = new ArrayBuffer(8);
+    const view = new DataView(bytes);
+    view.setFloat64(0, normalized, false);
+    return JSON.stringify(`n:${view.getBigUint64(0, false).toString(16).padStart(16, "0")}`);
+  }
+  if (typeof value === "string") return JSON.stringify(`s:${value}`);
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(semanticCanonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${semanticCanonicalJson(value[key])}`).join(",")}}`;
+};
+const semanticCanonicalSha256 = (value) => `sha256:${crypto.createHash("sha256").update(semanticCanonicalJson(value), "utf8").digest("hex")}`;
+assert.equal(canonicalJson({ integralDouble: 1.0, negativeZero: -0.0, oneMicro: 0.000001, tiny: 1e-7, large: 1e20, huge: 1e21 }), "{\"huge\":1e+21,\"integralDouble\":1,\"large\":100000000000000000000,\"negativeZero\":0,\"oneMicro\":0.000001,\"tiny\":1e-7}");
+assert.throws(() => canonicalJson(Number.NaN), /non-finite/);
+assert.throws(() => canonicalJson(Number.NEGATIVE_INFINITY), /non-finite/);
+const spatialFixture = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "spatial", "double-placed-link.golden.json"), "utf8"));
+const fixturePage = spatialFixture.pages[0];
+const fixtureSnapshot = spatialFixture.snapshot;
+const nativeNodes = fixturePage.rows.map((row) => ({
+  nodeId: row.node.nodeId,
+  nodeKind: row.node.nodeKind,
+  nodeRef: row.node,
+  elementRef: row.node.elementRef,
+  sourceRefs: row.node.sourceRefs,
+  category: row.category,
+  builtInCategory: "OST_Rooms",
+  categoryRole: "spatial",
+  name: row.elementName,
+  familyName: "",
+  typeName: "Room",
+  levelRef: { sourceLevelId: 2001, sourceLevelName: "Level 02" },
+  geometry: {
+    coordinateFrame: "host_internal_mm",
+    lengthUnit: "mm",
+    aabb: {
+      min: row.hostPointMm.map((value) => value - 10),
+      max: row.hostPointMm.map((value) => value + 10),
+    },
+    centerline: null,
+    pointLocation: { point: row.hostPointMm, rotationRadians: 0 },
+    boundaryLoops: [],
+    basis: "revit_element_aabb",
+    precisionClass: "aabb_only",
+    verdictCapability: "context_only",
+    geometryFingerprint: canonicalSha256(row.hostPointMm),
+  },
+}));
+const nativeRows = fixturePage.rows.map((row, index) => ({ orderKey: row.orderKey, node: nativeNodes[index] }));
+const pagePayloadBytes = Buffer.byteLength(semanticCanonicalJson(nativeRows), "utf8");
+const nativePageHash = semanticCanonicalSha256({
+  captureId: spatialFixture.captureId,
+  pageOrdinal: 0,
+  priorPageHash: null,
+  rows: nativeRows,
+});
+const nativeSpatialPage = {
+  resultContractVersion: 2,
+  success: true,
+  guarded: false,
+  state: "completed",
+  action: "extract_spatial_snapshot",
+  reason: null,
+  message: "A bounded Phase 0 spatial extraction page was produced with explicit continuation/partial state.",
+  error: null,
+  schemaVersion: "0.1",
+  coordinateFrame: "host_internal_mm",
+  lengthUnit: "mm",
+  extractorVersion: "phase0-spike/0.1.0",
+  captureId: spatialFixture.captureId,
+  snapshotId: spatialFixture.captureId,
+  capturedAt: fixtureSnapshot.capturedAt,
+  scope: {
+    ...fixtureSnapshot.scope,
+    sourceDocumentPolicy: "host_and_loaded_links",
+    phaseSelectionPolicy: "collector_unfiltered_phase0",
+    designOptionsInEffect: ["collector_default_phase0"],
+    worksetVisibilityPolicy: "collector_unfiltered_phase0",
+    effectiveVerticalBands: [{
+      levelId: 2001,
+      levelUniqueId: fixtureSnapshot.scope.requestedLevelUniqueIds[0],
+      levelName: "Level 02",
+      elevationMm: 0,
+      minHostZMm: -1000,
+      maxHostZMm: 6000,
+    }],
+  },
+  effectiveSourcePolicy: {
+    requestedSourceScope: "hostAndLinked",
+    sourceDocumentPolicy: "host_and_loaded_links",
+    includeHostMep: true,
+    includeRoomsSpaces: true,
+    includeLinkedObstructions: true,
+    selectedLinkCount: 3,
+    loadedSelectedLinkCount: 3,
+    effectiveSourceCount: fixtureSnapshot.sourceRevisions.length,
+    effectiveCategories: ["OST_DuctCurves", "OST_Rooms", "OST_StructuralColumns"],
+    effectiveSources: fixtureSnapshot.sourceRevisions.map((revision) => ({
+      documentKey: revision.documentKey,
+      sourceKind: revision.linkInstanceUniqueId ? "link" : "host",
+      linkPlacementKey: revision.linkInstanceUniqueId ?? "host",
+      categories: revision.linkInstanceUniqueId
+        ? [revision.documentKey.includes("structure") ? "OST_StructuralColumns" : "OST_Rooms"]
+        : ["OST_DuctCurves"],
+    })),
+    hasEffectiveExtractionPolicy: true,
+  },
+  scopeFingerprint: fixtureSnapshot.scopeFingerprint,
+  revisionFingerprint: fixtureSnapshot.revisionFingerprint,
+  sourceRevisions: fixtureSnapshot.sourceRevisions.map((revision) => ({
+    ...revision,
+    changeSequence: 0,
+    changeSequenceState: "unknown_phase0_sentinel",
+  })),
+  counts: fixtureSnapshot.counts,
+  liveness: "unknown",
+  atomic: false,
+  revisionBasisCaveat: "Phase 0 is non-atomic and cannot make current-state claims.",
+  nodes: nativeNodes,
+  omissions: [],
+  coverage: {
+    sourceCount: fixtureSnapshot.sourceRevisions.length,
+    effectiveScope: true,
+    selectionComplete: true,
+    selectedLinkCount: 3,
+    loadedLinkCount: 3,
+    unloadedLinkCount: 0,
+    scannedElementCount: fixtureSnapshot.counts.totalNodes,
+    filteredOutOfScopeCount: 0,
+    sourceAvailabilityOmissionCount: 0,
+    totalOrderedRowCount: fixtureSnapshot.counts.totalNodes,
+    pageNodeCount: nativeNodes.length,
+    pageOmissionCount: 0,
+    eligibleByCategory: { Rooms: 2, Ducts: 1, "Structural Columns": 1 },
+    extractedByCategory: { Rooms: 2, Ducts: 1, "Structural Columns": 1 },
+    omittedByClassification: {},
+    sourceOmittedByClassification: {},
+    classifiedOmissionCount: 0,
+    allEligibleOmissionsClassified: true,
+    extractionCoverageRatio: 1,
+    phase0TargetAtLeast0_995: true,
+    complete: false,
+  },
+  transformValidation: {
+    transformCount: fixtureSnapshot.sourceRevisions.length,
+    validatedCount: fixtureSnapshot.sourceRevisions.length,
+    failedCount: 0,
+    maxRoundTripErrorMm: 0,
+    allWithin0_5mm: true,
+  },
+  page: {
+    ordinal: 0,
+    targetBytes: 4 * 1024 * 1024,
+    payloadBytes: pagePayloadBytes,
+    recordCount: nativeNodes.length,
+    rowCount: nativeRows.length,
+    nodeCount: nativeNodes.length,
+    omissionCount: 0,
+    hasMore: true,
+    pageSha256: nativePageHash,
+    pageHash: nativePageHash,
+    priorPageSha256: null,
+    priorPageHash: null,
+    firstSortPosition: canonicalJson(nativeRows[0].orderKey),
+    lastSortPosition: canonicalJson(nativeRows.at(-1).orderKey),
+    nextCursor: fixturePage.nextCursor,
+    rows: nativeRows,
+  },
+  pageCount: fixtureSnapshot.pageCount,
+  payloadBytes: fixtureSnapshot.payloadBytes,
+  nextCursor: fixturePage.nextCursor,
+  partial: true,
+  scanStoppedReason: "max_bytes",
+  scanPolicy: {
+    levelScopeRequired: true,
+    maxElements: 5000,
+    maxElapsedMs: 4500,
+    pageTargetBytes: 4 * 1024 * 1024,
+    pagePayloadBasis: "canonical_ieee754_rows_utf8_v1",
+    hardPageCap: true,
+    maxGeometryPointsPerElement: 8192,
+    maxBoundarySegmentsPerElement: 2048,
+    ordering: ["documentKey", "linkPlacement", "nodeKind", "stableSourceIdentity"],
+    selectionAndFilteringBeforeMaxElements: true,
+    coordinateFrame: "host_internal_mm",
+    cursorVersion: "0.1",
+    cursorIntegrity: "hmac_sha256_process_session",
+    cursorInvalidAfterRestart: true,
+    readOnly: true,
+    transactionOpened: false,
+  },
+  suggestedNextScopes: ["cursor"],
+  elapsedMs: 50,
+  lastReadDocumentKey: nativeRows.at(-1).orderKey.documentKey,
+  lastReadLinkInstanceUniqueId: nativeRows.at(-1).orderKey.linkPlacementKey,
+  lastReadNodeKind: nativeRows.at(-1).orderKey.nodeKind,
+  lastReadItemId: nativeNodes.at(-1).elementRef.elementId,
+  warnings: [],
+  notices: ["Phase 0 non-atomic extraction."],
+};
+const normalizedSpatialPage = normalizeSpatialPage(nativeSpatialPage);
+assert.equal(normalizedSpatialPage.valid, true, normalizedSpatialPage.errors.join("; "));
+assert.equal(normalizedSpatialPage.payload.pageHash, nativePageHash);
+assert.equal(normalizedSpatialPage.payload.snapshot.snapshotId, spatialFixture.captureId);
+assert.equal(normalizedSpatialPage.payload.payloadBytes, fixtureSnapshot.payloadBytes, "Logical capture payloadBytes must be preserved.");
+assert.equal(normalizedSpatialPage.payload.pagePayloadBytes, pagePayloadBytes);
+assert.deepEqual(normalizedSpatialPage.payload.page.rows, nativeRows, "Exact native hash rows must remain visible without aggregation.");
+assert.deepEqual(
+  Object.keys(normalizedSpatialPage.payload.snapshot).sort(),
+  [
+    "capturedAt",
+    "coordinateFrame",
+    "counts",
+    "extractorVersion",
+    "lengthUnit",
+    "pageCount",
+    "partial",
+    "payloadBytes",
+    "revisionFingerprint",
+    "scanStoppedReason",
+    "schemaVersion",
+    "scope",
+    "scopeFingerprint",
+    "snapshotId",
+    "sourceRevisions",
+    "suggestedNextScopes",
+  ].sort(),
+  "Normalized pages must expose an exact SpatialSnapshot v0.1 contract view.",
+);
+
+const invalidSpatialRevisionPage = structuredClone(nativeSpatialPage);
+invalidSpatialRevisionPage.sourceRevisions = [];
+const invalidSpatialRevisionResult = normalizeSpatialPage(invalidSpatialRevisionPage);
+assert.equal(invalidSpatialRevisionResult.valid, false);
+assert.match(invalidSpatialRevisionResult.errors.join("; "), /sourceRevisions/);
+
+const invalidSpatialHashPage = structuredClone(nativeSpatialPage);
+invalidSpatialHashPage.page.pageHash = `sha256:${"f".repeat(64)}`;
+invalidSpatialHashPage.page.pageSha256 = invalidSpatialHashPage.page.pageHash;
+const invalidSpatialHashResult = normalizeSpatialPage(invalidSpatialHashPage);
+assert.equal(invalidSpatialHashResult.valid, false);
+assert.match(invalidSpatialHashResult.errors.join("; "), /canonical extraction-row envelope hash/);
+
+const invalidSpatialCountPage = structuredClone(nativeSpatialPage);
+invalidSpatialCountPage.page.omissionCount = 1;
+const invalidSpatialCountResult = normalizeSpatialPage(invalidSpatialCountPage);
+assert.equal(invalidSpatialCountResult.valid, false);
+assert.match(invalidSpatialCountResult.errors.join("; "), /omissionCount/);
 
 const create3dDescription = tools.get("create_3d_view_for_elements").description;
 const showPlan3dDescription = tools.get("show_element_in_plan_and_3d").description;
@@ -550,6 +864,53 @@ const safeRejectionSummary = summarizeTelemetryResponse({
 });
 assert.equal(safeRejectionSummary.guarded, true);
 assert.equal(safeRejectionSummary.guardSource, "runtime");
+
+const spatialSecret = "Level 09 Room 901 element-7788 cursor-secret";
+const spatialTelemetryParams = summarizeSpatialExtractionTelemetryParams({
+  levelNames: [spatialSecret],
+  levelIds: [7788],
+  linkInstanceUniqueIds: ["link-secret"],
+  cursor: spatialSecret,
+  sourceScope: "hostAndLinked",
+  pageTargetBytes: 262144,
+  maxElements: 5000,
+  maxElapsedMs: 4500,
+});
+assert.equal(spatialTelemetryParams.levelNameCount, 1);
+assert.equal(spatialTelemetryParams.levelIdCount, 1);
+assert.equal(spatialTelemetryParams.linkInstanceSelectorCount, 1);
+assert.equal(spatialTelemetryParams.cursorPresent, true);
+assert.doesNotMatch(JSON.stringify(spatialTelemetryParams), /Level 09|Room 901|7788|cursor-secret|link-secret/);
+const spatialTelemetryResponse = summarizeSpatialExtractionTelemetryResponse({
+  success: true,
+  guarded: false,
+  state: "completed",
+  action: "capture_spatial_snapshot",
+  nodes: [{ nodeId: spatialSecret, roomName: spatialSecret }],
+  omissions: [{ classification: spatialSecret }],
+  sourceRevisions: [{ documentKey: spatialSecret }],
+  page: {
+    ordinal: 0,
+    recordCount: 1,
+    omissionCount: 1,
+    payloadBytes: 900,
+    hasMore: true,
+    nextCursor: spatialSecret,
+  },
+  scanStoppedReason: "max_bytes",
+});
+assert.equal(spatialTelemetryResponse.recordCount, 1);
+assert.equal(spatialTelemetryResponse.omissionCount, 1);
+assert.equal(spatialTelemetryResponse.sourceRevisionCount, 1);
+assert.equal(spatialTelemetryResponse.nextCursorPresent, true);
+assert.doesNotMatch(JSON.stringify(spatialTelemetryResponse), /Level 09|Room 901|7788|cursor-secret/);
+assert.equal(isSpatialExtractionTelemetry({ toolName: "capture_spatial_snapshot" }), true);
+assert.equal(extractProductionContext({
+  sourceEventType: "mcp.tool",
+  toolName: "capture_spatial_snapshot",
+  params: { levelNames: [spatialSecret], cursor: spatialSecret },
+  response: { nodes: [{ nodeId: spatialSecret }] },
+}), null);
 
 const productionContext = extractProductionContext({
   sourceEventType: "revit.command",

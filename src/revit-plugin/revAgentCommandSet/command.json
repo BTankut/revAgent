@@ -79,6 +79,11 @@
       "assemblyPath": "revAgentCommandSet.dll"
     },
     {
+      "commandName": "extract_spatial_snapshot",
+      "description": "Extract a read-only, level-bounded Phase 0 spatial snapshot page with deterministic host/link identity and host-mm geometry evidence",
+      "assemblyPath": "revAgentCommandSet.dll"
+    },
+    {
       "commandName": "open_existing_plan_for_element_level",
       "description": "Open an existing plan view for an element's level and focus the element without creating a new view",
       "assemblyPath": "revAgentCommandSet.dll"

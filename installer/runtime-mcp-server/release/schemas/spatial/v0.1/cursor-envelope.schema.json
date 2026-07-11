@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.1/cursor-envelope.schema.json",
+  "title": "revAgent Spatial CursorEnvelope v0.1",
+  "description": "Decoded form of the opaque continuation cursor used by paged spatial extraction.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "cursorVersion",
+    "captureId",
+    "pageOrdinal",
+    "sortPosition",
+    "priorPageHash",
+    "revisionFingerprint",
+    "scopeFingerprint",
+    "capturedAt"
+  ],
+  "properties": {
+    "cursorVersion": {
+      "const": "0.1"
+    },
+    "captureId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pageOrdinal": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sortPosition": {
+      "$ref": "#/$defs/sortPosition"
+    },
+    "priorPageHash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "revisionFingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "scopeFingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "capturedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "sortPosition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentKey",
+        "linkPlacementKey",
+        "nodeKind",
+        "stableSourceIdentity"
+      ],
+      "properties": {
+        "documentKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "linkPlacementKey": {
+          "type": "string",
+          "minLength": 1,
+          "description": "linkInstanceUniqueId for linked rows; the literal host for host rows."
+        },
+        "nodeKind": {
+          "type": "string",
+          "enum": [
+            "revit_element",
+            "connector",
+            "derived",
+            "revit_element_omission",
+            "source_omission"
+          ]
+        },
+        "stableSourceIdentity": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

@@ -56,13 +56,16 @@ structural, and electrical modules should add module-specific MCP tools in the
 runtime layer while reusing this shared Revit bridge for common execution,
 context, selection, view, and navigation operations.
 
-The current runtime server registers 30 tools:
+The current runtime server registers 31 tools:
 
 - status and targeting: `list_revit_instances`, `get_revit_mcp_status`
 - dynamic execution: `send_code_to_revit`, `send_code_to_revit_safe`
 - model/session context: `get_revit_session_context`,
   `get_active_view_context`, `inspect_elements`, `inspect_sheet_text`,
   `inspect_schedules`, `count_annotations`, `inspect_parameter_schema`
+- Phase 0 spatial capture: `capture_spatial_snapshot`, a read-only,
+  explicit-level, single-page wrapper over native `extract_spatial_snapshot`;
+  it is non-atomic with unknown liveness until Phase 1a
 - review/reconciliation: `reconcile_schedule_excel` for deterministic,
   write-free schedule-to-Excel review output
 - controlled data writes: `set_element_parameter` for exact-schema

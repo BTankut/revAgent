@@ -7,6 +7,8 @@ const packageJsonPath = path.join(packageRoot, "package.json");
 const packageLockPath = path.join(packageRoot, "package-lock.json");
 const releaseRoot = path.join(packageRoot, "release");
 const releaseBundlePath = path.join(releaseRoot, "index.js");
+const spatialSchemasSource = path.join(packageRoot, "schemas", "spatial", "v0.1");
+const spatialSchemasRelease = path.join(releaseRoot, "schemas", "spatial", "v0.1");
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
@@ -14,6 +16,27 @@ function readJson(filePath) {
 
 function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function copyNormalizedJsonTree(sourceRoot, targetRoot) {
+  fs.mkdirSync(targetRoot, { recursive: true });
+  const entries = fs.readdirSync(sourceRoot, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name));
+
+  for (const entry of entries) {
+    const sourcePath = path.join(sourceRoot, entry.name);
+    const targetPath = path.join(targetRoot, entry.name);
+    if (entry.isDirectory()) {
+      copyNormalizedJsonTree(sourcePath, targetPath);
+      continue;
+    }
+    if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".json") {
+      throw new Error(`Spatial schema payload contains an unsupported entry: ${sourcePath}`);
+    }
+    const sourceText = fs.readFileSync(sourcePath, "utf8").replace(/^\uFEFF/, "");
+    JSON.parse(sourceText);
+    fs.writeFileSync(targetPath, sourceText.replace(/\r\n?/g, "\n"), "utf8");
+  }
 }
 
 function buildRuntimePackageJson(sourcePackage) {
@@ -102,6 +125,9 @@ async function main() {
 
   fs.rmSync(releaseRoot, { recursive: true, force: true });
   fs.mkdirSync(releaseRoot, { recursive: true });
+  if (fs.existsSync(spatialSchemasSource)) {
+    copyNormalizedJsonTree(spatialSchemasSource, spatialSchemasRelease);
+  }
 
   await esbuild.build({
     entryPoints: [path.join(packageRoot, "src", "index.ts")],

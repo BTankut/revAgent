@@ -12,6 +12,24 @@ const LIVE_STATUS_SCHEMA_VERSION = "revagent.live.status.v1";
 const LIVE_ACTIVITY_SCHEMA_VERSION = "revagent.live.activity.v1";
 const TELEMETRY_SESSION_ID = crypto.randomUUID();
 const TELEMETRY_PROCESS_STARTED_AT_UTC = new Date().toISOString();
+const SPATIAL_EXTRACTION_NAMES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot"]);
+const SPATIAL_STATE_CODES = new Set(["running", "completed", "guarded", "failed"]);
+const SPATIAL_ACTION_CODES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot"]);
+const SPATIAL_REASON_CODES = new Set([
+    "needs_scope",
+    "read_failed",
+    "invalid_request",
+    "invalid_cursor",
+    "invalid_cursor_sort_position",
+    "cursor_scope_mismatch",
+    "cursor_revision_mismatch",
+    "cursor_hash_mismatch",
+    "capture_interrupted_by_change",
+    "invalid_spatial_page_contract",
+    "runtime_exception",
+    "invalid_response_kind",
+]);
+const SPATIAL_STOP_CODES = new Set(["completed", "max_elapsed", "max_items", "max_bytes", "read_failed", "needs_scope"]);
 let telemetrySequence = 0;
 const liveActiveTasks = new Map();
 const liveRecentActivity = [];
@@ -67,6 +85,45 @@ function liveMaxWriteInFlight() {
 }
 function liveHeartbeatIntervalMs() {
     return clampTelemetryInt(process.env.REVAGENT_LIVE_STATUS_HEARTBEAT_MS, 5000, 0, 60000);
+}
+function isSpatialExtractionName(value) {
+    return SPATIAL_EXTRACTION_NAMES.has(String(value ?? "").trim().toLowerCase());
+}
+export function isSpatialExtractionTelemetry(details = {}) {
+    const params = details.params || {};
+    return [
+        details.toolName,
+        details.commandName,
+        details.logicalToolName,
+        params.logicalToolName,
+        params.wrapperAction,
+    ].some(isSpatialExtractionName);
+}
+export function summarizeSpatialExtractionTelemetryParams(params = {}) {
+    const count = (value) => Array.isArray(value) ? value.length : 0;
+    const finiteInteger = (value) => {
+        const parsed = Number.parseInt(String(value ?? ""), 10);
+        return Number.isFinite(parsed) ? parsed : null;
+    };
+    const sourceScope = ["hostOnly", "linkedOnly", "hostAndLinked"].includes(String(params.sourceScope || ""))
+        ? params.sourceScope
+        : null;
+    return {
+        privacyBoundary: "spatial_extraction",
+        levelSelectorCount: count(params.levelIds) + count(params.levelNames),
+        levelIdCount: count(params.levelIds),
+        levelNameCount: count(params.levelNames),
+        linkInstanceSelectorCount: count(params.linkInstanceIds) + count(params.linkInstanceUniqueIds),
+        sourceScope,
+        cursorPresent: typeof params.cursor === "string" && params.cursor.length > 0,
+        pageTargetBytes: finiteInteger(params.pageTargetBytes),
+        maxElements: finiteInteger(params.maxElements),
+        maxElapsedMs: finiteInteger(params.maxElapsedMs),
+        timeoutMs: finiteInteger(params.timeoutMs),
+        includeHostMep: params.includeHostMep !== false,
+        includeRoomsSpaces: params.includeRoomsSpaces !== false,
+        includeLinkedObstructions: params.includeLinkedObstructions !== false,
+    };
 }
 function summarizeText(value, maxChars) {
     const text = String(value || "");
@@ -296,6 +353,66 @@ function unwrapMcpToolResult(result) {
     catch {
     }
     return result;
+}
+function safeSpatialCode(value, allowed) {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    return allowed.has(normalized) ? normalized : null;
+}
+export function summarizeSpatialExtractionTelemetryResponse(response, error = null) {
+    if (error) {
+        return {
+            success: false,
+            guarded: false,
+            state: "failed",
+            reason: "runtime_exception",
+            privacyBoundary: "spatial_extraction",
+        };
+    }
+    const unwrappedMcp = response?.content ? unwrapMcpToolResult(response) : response;
+    const target = unwrapResponse(unwrappedMcp);
+    const object = asObject(target);
+    if (!object) {
+        return {
+            success: false,
+            guarded: false,
+            state: "failed",
+            reason: "invalid_response_kind",
+            privacyBoundary: "spatial_extraction",
+        };
+    }
+    const page = asObject(getValueCaseInsensitiveLocal(object, ["page", "Page"]));
+    const nodes = getValueCaseInsensitiveLocal(object, ["nodes", "Nodes"]);
+    const omissions = getValueCaseInsensitiveLocal(object, ["omissions", "Omissions"]);
+    const revisions = getValueCaseInsensitiveLocal(object, ["sourceRevisions", "SourceRevisions"]);
+    const successValue = getValueCaseInsensitiveLocal(object, ["success", "Success"]);
+    const guarded = getValueCaseInsensitiveLocal(object, ["guarded", "Guarded"]) === true;
+    const pageOrdinal = coerceNumber(getValueCaseInsensitiveLocal(page, ["ordinal", "Ordinal", "pageOrdinal", "PageOrdinal"]))
+        ?? coerceNumber(getValueCaseInsensitiveLocal(object, ["pageOrdinal", "PageOrdinal"]));
+    const recordCount = coerceNumber(getValueCaseInsensitiveLocal(page, ["recordCount", "RecordCount", "rowCount", "RowCount"]))
+        ?? (Array.isArray(nodes) ? nodes.length : null);
+    const omissionCount = coerceNumber(getValueCaseInsensitiveLocal(page, ["omissionCount", "OmissionCount"]))
+        ?? (Array.isArray(omissions) ? omissions.length : null);
+    const payloadBytes = coerceNumber(getValueCaseInsensitiveLocal(page, ["payloadBytes", "PayloadBytes"]))
+        ?? coerceNumber(getValueCaseInsensitiveLocal(object, ["payloadBytes", "PayloadBytes"]));
+    const nextCursor = getValueCaseInsensitiveLocal(object, ["nextCursor", "NextCursor"])
+        ?? getValueCaseInsensitiveLocal(page, ["nextCursor", "NextCursor"]);
+    return {
+        success: typeof successValue === "boolean" ? successValue : !guarded,
+        guarded,
+        state: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["state", "State"]), SPATIAL_STATE_CODES) || (guarded ? "guarded" : "completed"),
+        action: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["action", "Action"]), SPATIAL_ACTION_CODES),
+        reason: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["reason", "Reason"]), SPATIAL_REASON_CODES),
+        scanStoppedReason: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["scanStoppedReason", "ScanStoppedReason"]), SPATIAL_STOP_CODES),
+        partial: getValueCaseInsensitiveLocal(object, ["partial", "Partial"]) === true,
+        pageOrdinal,
+        recordCount,
+        omissionCount,
+        sourceRevisionCount: Array.isArray(revisions) ? revisions.length : null,
+        payloadBytes,
+        hasMore: getValueCaseInsensitiveLocal(page, ["hasMore", "HasMore"]) === true,
+        nextCursorPresent: typeof nextCursor === "string" && nextCursor.length > 0,
+        privacyBoundary: "spatial_extraction",
+    };
 }
 function asObject(value) {
     return value && typeof value === "object" && !Array.isArray(value) ? value : null;
@@ -631,6 +748,9 @@ function inferLevelNameFromText(...values) {
     return null;
 }
 export function extractProductionContext(details = {}) {
+    if (isSpatialExtractionTelemetry(details)) {
+        return null;
+    }
     const responseTarget = details.sourceEventType === "mcp.tool"
         ? unwrapMcpToolResult(details.response)
         : unwrapResponse(details.response);
@@ -890,6 +1010,8 @@ function publicRevitStatusTask(task) {
     }
     const commandName = task.commandName || task.method || null;
     const toolName = task.wrapperAction || task.logicalToolName || task.toolName || commandName;
+    const spatialExtraction = [commandName, toolName, task.wrapperAction, task.logicalToolName]
+        .some(isSpatialExtractionName);
     return {
         id: task.id || null,
         requestId: task.requestId || null,
@@ -898,9 +1020,9 @@ function publicRevitStatusTask(task) {
         commandName,
         wrapperAction: task.wrapperAction || null,
         logicalToolName: task.logicalToolName || null,
-        taskName: task.taskName || null,
-        parentTaskName: task.parentTaskName || null,
-        parentTaskIdPresent: Boolean(task.parentTaskIdPresent || task.parentTaskId),
+        taskName: spatialExtraction ? null : task.taskName || null,
+        parentTaskName: spatialExtraction ? null : task.parentTaskName || null,
+        parentTaskIdPresent: spatialExtraction ? false : Boolean(task.parentTaskIdPresent || task.parentTaskId),
         state: task.state || null,
         startedAtUtc: task.startedAtUtc || null,
         finishedAtUtc: task.finishedAtUtc || null,
@@ -908,7 +1030,7 @@ function publicRevitStatusTask(task) {
         requestBytes: task.requestBytes ?? null,
         responseBytes: task.responseBytes ?? null,
         port: task.port || null,
-        error: task.error || null,
+        error: spatialExtraction ? null : task.error || null,
     };
 }
 function publicRuntimeActivityRow(task, mode) {
@@ -1143,28 +1265,40 @@ export function recordLiveActivityStarted(details = {}) {
     if (liveStatusDisabled()) {
         return null;
     }
-    const startedAtMs = details.startedAtMs || Date.now();
+    const spatialExtraction = isSpatialExtractionTelemetry(details);
+    const safeDetails = spatialExtraction
+        ? {
+            ...details,
+            taskName: null,
+            taskId: null,
+            parentTaskName: null,
+            parentTaskId: null,
+        }
+        : details;
+    const startedAtMs = safeDetails.startedAtMs || Date.now();
     const startedAtUtc = new Date(startedAtMs).toISOString();
-    const liveTaskId = buildLiveTaskId(details, startedAtMs);
+    const liveTaskId = buildLiveTaskId(safeDetails, startedAtMs);
     const event = buildTelemetryEvent({
         schemaVersion: LIVE_ACTIVITY_SCHEMA_VERSION,
         eventType: "live.activity",
         phase: "started",
         state: "running",
         liveTaskId,
-        scope: details.scope || "runtime",
-        toolName: details.toolName || null,
-        commandName: details.commandName || null,
-        logicalToolName: details.logicalToolName || null,
-        executionKind: details.executionKind || null,
-        taskName: details.taskName || null,
-        taskId: details.taskId || null,
-        taskIdPresent: Boolean(details.taskId),
-        parentTaskName: details.parentTaskName || null,
-        parentTaskId: details.parentTaskId || null,
-        parentTaskIdPresent: Boolean(details.parentTaskId),
+        scope: safeDetails.scope || "runtime",
+        toolName: safeDetails.toolName || null,
+        commandName: safeDetails.commandName || null,
+        logicalToolName: safeDetails.logicalToolName || null,
+        executionKind: safeDetails.executionKind || null,
+        taskName: safeDetails.taskName || null,
+        taskId: safeDetails.taskId || null,
+        taskIdPresent: Boolean(safeDetails.taskId),
+        parentTaskName: safeDetails.parentTaskName || null,
+        parentTaskId: safeDetails.parentTaskId || null,
+        parentTaskIdPresent: Boolean(safeDetails.parentTaskId),
         startedAtUtc,
-        params: summarizeTelemetryParams(details.params),
+        params: spatialExtraction
+            ? summarizeSpatialExtractionTelemetryParams(safeDetails.params)
+            : summarizeTelemetryParams(safeDetails.params),
     });
     writeLiveActivity(event);
     return {
@@ -1189,7 +1323,10 @@ export function recordLiveActivityFinished(task, details = {}) {
     }
     const finishedAtMs = Date.now();
     const durationMs = details.durationMs ?? Math.max(0, finishedAtMs - (task.startedAtMs || finishedAtMs));
-    const result = details.responseSummary || summarizeTelemetryResponse(details.response, details.error);
+    const spatialExtraction = isSpatialExtractionTelemetry({ ...details, ...task });
+    const result = spatialExtraction
+        ? summarizeSpatialExtractionTelemetryResponse(details.response, details.error)
+        : details.responseSummary || summarizeTelemetryResponse(details.response, details.error);
     const state = result.guarded ? "guarded" : result.success === false ? "failed" : "completed";
     const guardSource = result.guarded
         ? normalizeGuardSource(details.guardSource || task.guardSource || result.guardSource) || "runtime"
@@ -1276,24 +1413,29 @@ export function recordRuntimeSessionStart() {
 }
 export function recordRevitCommandTelemetry(details = {}) {
     const durationMs = Math.max(0, Date.now() - (details.startedAtMs || Date.now()));
-    const responseSummary = summarizeTelemetryResponse(details.response, details.error);
+    const spatialExtraction = isSpatialExtractionTelemetry(details);
+    const responseSummary = spatialExtraction
+        ? summarizeSpatialExtractionTelemetryResponse(details.response, details.error)
+        : summarizeTelemetryResponse(details.response, details.error);
     void recordTelemetryEvent({
         eventType: "revit.command",
         commandName: details.commandName,
         logicalToolName: details.logicalToolName || details.commandName,
         executionKind: details.executionKind || "bridgeCommand",
-        taskName: details.params?.taskName || details.options?.taskName || null,
-        taskIdPresent: Boolean(details.params?.taskId || details.options?.taskId),
-        parentTaskName: details.params?.parentTaskName || details.options?.parentTaskName || null,
-        parentTaskIdPresent: Boolean(details.params?.parentTaskId || details.options?.parentTaskId),
-        transactionMode: details.params?.transactionMode || details.options?.transactionMode || null,
-        connection: {
+        taskName: spatialExtraction ? null : details.params?.taskName || details.options?.taskName || null,
+        taskIdPresent: spatialExtraction ? false : Boolean(details.params?.taskId || details.options?.taskId),
+        parentTaskName: spatialExtraction ? null : details.params?.parentTaskName || details.options?.parentTaskName || null,
+        parentTaskIdPresent: spatialExtraction ? false : Boolean(details.params?.parentTaskId || details.options?.parentTaskId),
+        transactionMode: spatialExtraction ? null : details.params?.transactionMode || details.options?.transactionMode || null,
+        connection: spatialExtraction ? undefined : {
             targetPresent: Boolean(details.options?.target),
             hostPresent: Boolean(details.options?.host),
             port: details.options?.port || null,
         },
         durationMs,
-        params: summarizeTelemetryParams(details.params),
+        params: spatialExtraction
+            ? summarizeSpatialExtractionTelemetryParams(details.params)
+            : summarizeTelemetryParams(details.params),
         result: responseSummary,
     });
     recordProductionContextTelemetry({
@@ -1328,6 +1470,7 @@ export function wrapServerWithTelemetry(server) {
             const wrappedHandler = async (args, extra) => {
                 const startedAtMs = Date.now();
                 const shouldRecord = shouldRecordMcpTool(name);
+                const spatialExtraction = isSpatialExtractionName(name);
                 const liveTask = shouldRecord
                     ? recordLiveActivityStarted({
                         scope: "mcp.tool",
@@ -1344,16 +1487,20 @@ export function wrapServerWithTelemetry(server) {
                     const result = await actualHandler(args, extra);
                     if (shouldRecord) {
                         const durationMs = Math.max(0, Date.now() - startedAtMs);
-                        const responseSummary = summarizeMcpToolResult(result);
+                        const responseSummary = spatialExtraction
+                            ? summarizeSpatialExtractionTelemetryResponse(result)
+                            : summarizeMcpToolResult(result);
                         void recordTelemetryEvent({
                             eventType: "mcp.tool",
                             toolName: name,
-                            taskName: args?.taskName || null,
-                            taskIdPresent: Boolean(args?.taskId),
-                            parentTaskName: args?.parentTaskName || null,
-                            parentTaskIdPresent: Boolean(args?.parentTaskId),
+                            taskName: spatialExtraction ? null : args?.taskName || null,
+                            taskIdPresent: spatialExtraction ? false : Boolean(args?.taskId),
+                            parentTaskName: spatialExtraction ? null : args?.parentTaskName || null,
+                            parentTaskIdPresent: spatialExtraction ? false : Boolean(args?.parentTaskId),
                             durationMs,
-                            params: summarizeTelemetryParams(args),
+                            params: spatialExtraction
+                                ? summarizeSpatialExtractionTelemetryParams(args)
+                                : summarizeTelemetryParams(args),
                             result: responseSummary,
                         });
                         recordProductionContextTelemetry({
@@ -1380,16 +1527,20 @@ export function wrapServerWithTelemetry(server) {
                 catch (error) {
                     if (shouldRecord) {
                         const durationMs = Math.max(0, Date.now() - startedAtMs);
-                        const responseSummary = summarizeMcpToolResult(null, error);
+                        const responseSummary = spatialExtraction
+                            ? summarizeSpatialExtractionTelemetryResponse(null, error)
+                            : summarizeMcpToolResult(null, error);
                         void recordTelemetryEvent({
                             eventType: "mcp.tool",
                             toolName: name,
-                            taskName: args?.taskName || null,
-                            taskIdPresent: Boolean(args?.taskId),
-                            parentTaskName: args?.parentTaskName || null,
-                            parentTaskIdPresent: Boolean(args?.parentTaskId),
+                            taskName: spatialExtraction ? null : args?.taskName || null,
+                            taskIdPresent: spatialExtraction ? false : Boolean(args?.taskId),
+                            parentTaskName: spatialExtraction ? null : args?.parentTaskName || null,
+                            parentTaskIdPresent: spatialExtraction ? false : Boolean(args?.parentTaskId),
                             durationMs,
-                            params: summarizeTelemetryParams(args),
+                            params: spatialExtraction
+                                ? summarizeSpatialExtractionTelemetryParams(args)
+                                : summarizeTelemetryParams(args),
                             result: responseSummary,
                         });
                         recordProductionContextTelemetry({

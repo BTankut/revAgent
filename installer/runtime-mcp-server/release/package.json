@@ -13,6 +13,8 @@
   "dependencies": {
     "@e965/xlsx": "^0.20.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "better-sqlite3": "12.9.0",
     "csv-parse": "^6.2.1",
     "ws": "^8.20.1",

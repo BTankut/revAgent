@@ -317,6 +317,18 @@ function Copy-UserPackReleaseMcpPackage {
     Copy-Item -LiteralPath $bundlePath -Destination (Join-Path $destinationPath "build\index.js") -Force
     Copy-Item -LiteralPath $runtimePackageJson -Destination (Join-Path $destinationPath "package.json") -Force
     Copy-Item -LiteralPath $runtimePackageLock -Destination (Join-Path $destinationPath "package-lock.json") -Force
+
+    $releaseSchemasPath = Join-Path $releasePath "schemas"
+    if (Test-Path -LiteralPath $releaseSchemasPath -PathType Container) {
+        $destinationSchemasPath = Join-Path $destinationPath "schemas"
+        if (Test-Path -LiteralPath $destinationSchemasPath) {
+            throw "Unexpected stale MCP schema destination: $destinationSchemasPath"
+        }
+        New-Item -ItemType Directory -Path $destinationSchemasPath -Force | Out-Null
+        Get-ChildItem -LiteralPath $releaseSchemasPath -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $destinationSchemasPath -Recurse -Force
+        }
+    }
 }
 
 function Assert-RevAgentUserPackNoSourceLeak {
@@ -498,6 +510,15 @@ function Assert-RevAgentUserPackHardenedJsPayload {
             }
             if ($packageLockText -match '"dev"\s*:\s*true') {
                 $issues.Add("$relativePackageRoot package-lock must not include dev dependency entries")
+            }
+        }
+
+        if ($relativePackageRoot -eq "installer\runtime-mcp-server") {
+            foreach ($schemaName in @("element-ref", "node-ref", "source-revision", "cursor-envelope", "spatial-snapshot", "extraction-page")) {
+                $schemaPath = Join-Path $packageRootPath "schemas\spatial\v0.1\$schemaName.schema.json"
+                if (-not (Test-Path -LiteralPath $schemaPath -PathType Leaf)) {
+                    $issues.Add("$relativePackageRoot missing published Spatial Phase 0 schema $schemaName")
+                }
             }
         }
     }
