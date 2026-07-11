@@ -1,0 +1,890 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.1/extraction-page.schema.json",
+  "title": "revAgent Spatial Extraction Page v0.1",
+  "description": "Strict successful native extract_spatial_snapshot page response. This is a transport page, not an atomic/current SpatialSnapshot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "resultContractVersion",
+    "success",
+    "guarded",
+    "state",
+    "action",
+    "reason",
+    "message",
+    "error",
+    "schemaVersion",
+    "extractorVersion",
+    "coordinateFrame",
+    "lengthUnit",
+    "captureId",
+    "snapshotId",
+    "capturedAt",
+    "atomic",
+    "liveness",
+    "revisionBasisCaveat",
+    "scope",
+    "effectiveSourcePolicy",
+    "sourceRevisions",
+    "scopeFingerprint",
+    "revisionFingerprint",
+    "nodes",
+    "omissions",
+    "counts",
+    "coverage",
+    "transformValidation",
+    "page",
+    "pageCount",
+    "payloadBytes",
+    "nextCursor",
+    "partial",
+    "scanStoppedReason",
+    "scanPolicy",
+    "suggestedNextScopes",
+    "elapsedMs",
+    "lastReadDocumentKey",
+    "lastReadLinkInstanceUniqueId",
+    "lastReadNodeKind",
+    "lastReadItemId",
+    "warnings",
+    "notices"
+  ],
+  "properties": {
+    "resultContractVersion": {
+      "type": "integer",
+      "minimum": 2
+    },
+    "success": {
+      "const": true
+    },
+    "guarded": {
+      "const": false
+    },
+    "state": {
+      "const": "completed"
+    },
+    "action": {
+      "const": "extract_spatial_snapshot"
+    },
+    "reason": {
+      "type": ["string", "null"]
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1
+    },
+    "error": {
+      "type": ["string", "null"]
+    },
+    "schemaVersion": {
+      "const": "0.1"
+    },
+    "extractorVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "coordinateFrame": {
+      "const": "host_internal_mm"
+    },
+    "lengthUnit": {
+      "const": "mm"
+    },
+    "captureId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "snapshotId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capturedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "atomic": {
+      "const": false
+    },
+    "liveness": {
+      "const": "unknown"
+    },
+    "revisionBasisCaveat": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope": {
+      "allOf": [
+        {
+          "$ref": "./spatial-snapshot.schema.json#/$defs/scope"
+        },
+        {
+          "type": "object",
+          "required": ["sourceDocumentPolicy", "effectiveVerticalBands"],
+          "properties": {
+            "sourceDocumentPolicy": {},
+            "effectiveVerticalBands": {}
+          }
+        }
+      ]
+    },
+    "effectiveSourcePolicy": {
+      "$ref": "#/$defs/effectiveSourcePolicy"
+    },
+    "sourceRevisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "./source-revision.schema.json"
+      }
+    },
+    "scopeFingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "revisionFingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nodeRecord"
+      }
+    },
+    "omissions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/omissionRecord"
+      }
+    },
+    "counts": {
+      "$ref": "./spatial-snapshot.schema.json#/$defs/counts"
+    },
+    "coverage": {
+      "$ref": "#/$defs/coverage"
+    },
+    "transformValidation": {
+      "$ref": "#/$defs/transformValidation"
+    },
+    "page": {
+      "$ref": "#/$defs/page"
+    },
+    "pageCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "payloadBytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "nextCursor": {
+      "type": ["string", "null"]
+    },
+    "partial": {
+      "type": "boolean"
+    },
+    "scanStoppedReason": {
+      "$ref": "./spatial-snapshot.schema.json#/$defs/scanStoppedReason"
+    },
+    "scanPolicy": {
+      "$ref": "#/$defs/scanPolicy"
+    },
+    "suggestedNextScopes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "elapsedMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "lastReadDocumentKey": {
+      "type": ["string", "null"]
+    },
+    "lastReadLinkInstanceUniqueId": {
+      "type": ["string", "null"]
+    },
+    "lastReadNodeKind": {
+      "type": ["string", "null"]
+    },
+    "lastReadItemId": {
+      "type": ["integer", "null"]
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notices": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "object",
+            "properties": {
+              "hasMore": {
+                "const": true
+              }
+            },
+            "required": ["hasMore"]
+          }
+        },
+        "required": ["page"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "partial": {
+            "const": true
+          },
+          "nextCursor": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "else": {
+        "type": "object",
+        "properties": {
+          "nextCursor": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "point3d": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number"
+      }
+    },
+    "levelRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceLevelId", "sourceLevelName"],
+      "properties": {
+        "sourceLevelId": {
+          "type": ["integer", "null"]
+        },
+        "sourceLevelName": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "aabb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": {
+          "$ref": "#/$defs/point3d"
+        },
+        "max": {
+          "$ref": "#/$defs/point3d"
+        }
+      }
+    },
+    "centerline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["curveType", "points"],
+      "properties": {
+        "curveType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "points": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/point3d"
+          }
+        }
+      }
+    },
+    "pointLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["point", "rotationRadians"],
+      "properties": {
+        "point": {
+          "$ref": "#/$defs/point3d"
+        },
+        "rotationRadians": {
+          "type": ["number", "null"]
+        }
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "coordinateFrame",
+        "lengthUnit",
+        "aabb",
+        "centerline",
+        "pointLocation",
+        "boundaryLoops",
+        "basis",
+        "precisionClass",
+        "verdictCapability",
+        "geometryFingerprint"
+      ],
+      "properties": {
+        "coordinateFrame": {
+          "const": "host_internal_mm"
+        },
+        "lengthUnit": {
+          "const": "mm"
+        },
+        "aabb": {
+          "$ref": "#/$defs/aabb"
+        },
+        "centerline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/centerline"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pointLocation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/pointLocation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "boundaryLoops": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 3,
+            "items": {
+              "$ref": "#/$defs/point3d"
+            }
+          }
+        },
+        "basis": {
+          "type": "string",
+          "enum": [
+            "revit_spatial_boundary_and_aabb",
+            "revit_location_curve_and_aabb",
+            "revit_element_aabb"
+          ]
+        },
+        "precisionClass": {
+          "type": "string",
+          "enum": [
+            "boundary_curve_tessellation",
+            "centerline_tessellation",
+            "aabb_only"
+          ]
+        },
+        "verdictCapability": {
+          "const": "context_only"
+        },
+        "geometryFingerprint": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "nodeRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nodeId",
+        "nodeKind",
+        "nodeRef",
+        "elementRef",
+        "sourceRefs",
+        "category",
+        "builtInCategory",
+        "categoryRole",
+        "name",
+        "familyName",
+        "typeName",
+        "levelRef",
+        "geometry"
+      ],
+      "properties": {
+        "nodeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nodeKind": {
+          "const": "revit_element"
+        },
+        "nodeRef": {
+          "$ref": "./node-ref.schema.json"
+        },
+        "elementRef": {
+          "$ref": "./element-ref.schema.json"
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "./node-ref.schema.json#/$defs/sourceRef"
+          }
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "builtInCategory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "categoryRole": {
+          "type": "string",
+          "enum": ["host_mep", "spatial", "linked_obstruction"]
+        },
+        "name": {
+          "type": "string"
+        },
+        "familyName": {
+          "type": "string"
+        },
+        "typeName": {
+          "type": "string"
+        },
+        "levelRef": {
+          "$ref": "#/$defs/levelRef"
+        },
+        "geometry": {
+          "$ref": "#/$defs/geometry"
+        }
+      }
+    },
+    "sessionEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentKey",
+        "documentSessionId",
+        "linkInstanceUniqueId",
+        "elementId"
+      ],
+      "properties": {
+        "documentKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "documentSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "linkInstanceUniqueId": {
+          "type": ["string", "null"]
+        },
+        "elementId": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "elementOmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "detail",
+        "eligible",
+        "nodeKind",
+        "category",
+        "levelRef"
+      ],
+      "properties": {
+        "classification": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": ["string", "null"]
+        },
+        "eligible": {
+          "const": true
+        },
+        "nodeKind": {
+          "const": "revit_element"
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "levelRef": {
+          "$ref": "#/$defs/levelRef"
+        },
+        "elementRef": {
+          "$ref": "./element-ref.schema.json"
+        },
+        "sessionEvidence": {
+          "$ref": "#/$defs/sessionEvidence"
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["elementRef"],
+          "not": {
+            "required": ["sessionEvidence"]
+          }
+        },
+        {
+          "type": "object",
+          "required": ["sessionEvidence"],
+          "not": {
+            "required": ["elementRef"]
+          }
+        }
+      ]
+    },
+    "sourceOmission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "detail",
+        "eligible",
+        "nodeKind",
+        "documentKey",
+        "linkInstanceUniqueId",
+        "linkInstanceId"
+      ],
+      "properties": {
+        "classification": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": ["string", "null"]
+        },
+        "eligible": {
+          "const": true
+        },
+        "nodeKind": {
+          "const": "source_availability"
+        },
+        "documentKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "linkInstanceUniqueId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "linkInstanceId": {
+          "type": ["integer", "null"]
+        }
+      }
+    },
+    "omissionRecord": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/elementOmission"
+        },
+        {
+          "$ref": "#/$defs/sourceOmission"
+        }
+      ]
+    },
+    "extractionRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orderKey"],
+      "properties": {
+        "orderKey": {
+          "$ref": "./cursor-envelope.schema.json#/$defs/sortPosition"
+        },
+        "node": {
+          "$ref": "#/$defs/nodeRecord"
+        },
+        "omission": {
+          "$ref": "#/$defs/omissionRecord"
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["node"],
+          "not": {
+            "required": ["omission"]
+          }
+        },
+        {
+          "type": "object",
+          "required": ["omission"],
+          "not": {
+            "required": ["node"]
+          }
+        }
+      ]
+    },
+    "effectiveSourcePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestedSourceScope",
+        "sourceDocumentPolicy",
+        "includeHostMep",
+        "includeRoomsSpaces",
+        "includeLinkedObstructions",
+        "selectedLinkCount",
+        "loadedSelectedLinkCount",
+        "effectiveSourceCount",
+        "effectiveCategories",
+        "effectiveSources",
+        "hasEffectiveExtractionPolicy"
+      ],
+      "properties": {
+        "requestedSourceScope": {
+          "type": "string",
+          "enum": ["hostOnly", "linkedOnly", "hostAndLinked"]
+        },
+        "sourceDocumentPolicy": {
+          "type": "string",
+          "enum": ["host_only", "linked_only", "host_and_loaded_links"]
+        },
+        "includeHostMep": { "type": "boolean" },
+        "includeRoomsSpaces": { "type": "boolean" },
+        "includeLinkedObstructions": { "type": "boolean" },
+        "selectedLinkCount": { "type": "integer", "minimum": 0 },
+        "loadedSelectedLinkCount": { "type": "integer", "minimum": 0 },
+        "effectiveSourceCount": { "type": "integer", "minimum": 1 },
+        "effectiveCategories": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "effectiveSources": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/effectiveSource" }
+        },
+        "hasEffectiveExtractionPolicy": { "const": true }
+      }
+    },
+    "effectiveSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documentKey", "sourceKind", "linkPlacementKey", "categories"],
+      "properties": {
+        "documentKey": { "type": "string", "minLength": 1 },
+        "sourceKind": { "type": "string", "enum": ["host", "link"] },
+        "linkPlacementKey": { "type": "string", "minLength": 1 },
+        "categories": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "coverageCountMap": {
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceCount",
+        "effectiveScope",
+        "selectionComplete",
+        "selectedLinkCount",
+        "loadedLinkCount",
+        "unloadedLinkCount",
+        "scannedElementCount",
+        "filteredOutOfScopeCount",
+        "sourceAvailabilityOmissionCount",
+        "totalOrderedRowCount",
+        "pageNodeCount",
+        "pageOmissionCount",
+        "eligibleByCategory",
+        "extractedByCategory",
+        "omittedByClassification",
+        "sourceOmittedByClassification",
+        "classifiedOmissionCount",
+        "allEligibleOmissionsClassified",
+        "extractionCoverageRatio",
+        "phase0TargetAtLeast0_995",
+        "complete"
+      ],
+      "properties": {
+        "sourceCount": { "type": "integer", "minimum": 0 },
+        "effectiveScope": { "const": true },
+        "selectionComplete": { "type": "boolean" },
+        "selectedLinkCount": { "type": "integer", "minimum": 0 },
+        "loadedLinkCount": { "type": "integer", "minimum": 0 },
+        "unloadedLinkCount": { "type": "integer", "minimum": 0 },
+        "scannedElementCount": { "type": "integer", "minimum": 0 },
+        "filteredOutOfScopeCount": { "type": "integer", "minimum": 0 },
+        "sourceAvailabilityOmissionCount": { "type": "integer", "minimum": 0 },
+        "totalOrderedRowCount": { "type": "integer", "minimum": 0 },
+        "pageNodeCount": { "type": "integer", "minimum": 0 },
+        "pageOmissionCount": { "type": "integer", "minimum": 0 },
+        "eligibleByCategory": { "$ref": "#/$defs/coverageCountMap" },
+        "extractedByCategory": { "$ref": "#/$defs/coverageCountMap" },
+        "omittedByClassification": { "$ref": "#/$defs/coverageCountMap" },
+        "sourceOmittedByClassification": { "$ref": "#/$defs/coverageCountMap" },
+        "classifiedOmissionCount": { "type": "integer", "minimum": 0 },
+        "allEligibleOmissionsClassified": { "type": "boolean" },
+        "extractionCoverageRatio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "phase0TargetAtLeast0_995": { "type": "boolean" },
+        "complete": { "type": "boolean" }
+      }
+    },
+    "transformValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transformCount",
+        "validatedCount",
+        "failedCount",
+        "maxRoundTripErrorMm",
+        "allWithin0_5mm"
+      ],
+      "properties": {
+        "transformCount": { "type": "integer", "minimum": 0 },
+        "validatedCount": { "type": "integer", "minimum": 0 },
+        "failedCount": { "type": "integer", "minimum": 0 },
+        "maxRoundTripErrorMm": { "type": ["number", "null"], "minimum": 0 },
+        "allWithin0_5mm": { "type": "boolean" }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "targetBytes",
+        "payloadBytes",
+        "rows",
+        "rowCount",
+        "recordCount",
+        "nodeCount",
+        "omissionCount",
+        "hasMore",
+        "pageSha256",
+        "pageHash",
+        "priorPageSha256",
+        "priorPageHash",
+        "firstSortPosition",
+        "lastSortPosition",
+        "nextCursor"
+      ],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "targetBytes": { "type": "integer", "minimum": 65536, "maximum": 8388608 },
+        "payloadBytes": { "type": "integer", "minimum": 0 },
+        "recordCount": { "type": "integer", "minimum": 0 },
+        "rowCount": { "type": "integer", "minimum": 0 },
+        "nodeCount": { "type": "integer", "minimum": 0 },
+        "omissionCount": { "type": "integer", "minimum": 0 },
+        "hasMore": { "type": "boolean" },
+        "pageSha256": { "$ref": "#/$defs/sha256" },
+        "pageHash": { "$ref": "#/$defs/sha256" },
+        "priorPageSha256": {
+          "anyOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "priorPageHash": {
+          "anyOf": [
+            { "$ref": "#/$defs/sha256" },
+            { "type": "null" }
+          ]
+        },
+        "firstSortPosition": { "type": ["string", "null"] },
+        "lastSortPosition": { "type": ["string", "null"] },
+        "nextCursor": { "type": ["string", "null"] },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/extractionRow"
+          }
+        }
+      }
+    },
+    "scanPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "levelScopeRequired",
+        "maxElements",
+        "maxElapsedMs",
+        "pageTargetBytes",
+        "pagePayloadBasis",
+        "hardPageCap",
+        "maxGeometryPointsPerElement",
+        "maxBoundarySegmentsPerElement",
+        "ordering",
+        "selectionAndFilteringBeforeMaxElements",
+        "coordinateFrame",
+        "cursorVersion",
+        "cursorIntegrity",
+        "cursorInvalidAfterRestart",
+        "readOnly",
+        "transactionOpened"
+      ],
+      "properties": {
+        "levelScopeRequired": { "const": true },
+        "maxElements": { "type": "integer", "minimum": 1, "maximum": 25000 },
+        "maxElapsedMs": { "type": "integer", "minimum": 250, "maximum": 25000 },
+        "pageTargetBytes": { "type": "integer", "minimum": 65536, "maximum": 8388608 },
+        "pagePayloadBasis": { "const": "canonical_ieee754_rows_utf8_v1" },
+        "hardPageCap": { "const": true },
+        "maxGeometryPointsPerElement": { "type": "integer", "minimum": 64, "maximum": 20000 },
+        "maxBoundarySegmentsPerElement": { "type": "integer", "minimum": 16, "maximum": 10000 },
+        "ordering": {
+          "type": "array",
+          "prefixItems": [
+            { "const": "documentKey" },
+            { "const": "linkPlacement" },
+            { "const": "nodeKind" },
+            { "const": "stableSourceIdentity" }
+          ],
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "selectionAndFilteringBeforeMaxElements": { "const": true },
+        "coordinateFrame": { "const": "host_internal_mm" },
+        "cursorVersion": { "const": "0.1" },
+        "cursorIntegrity": { "const": "hmac_sha256_process_session" },
+        "cursorInvalidAfterRestart": { "const": true },
+        "readOnly": { "const": true },
+        "transactionOpened": { "const": false }
+      }
+    }
+  }
+}

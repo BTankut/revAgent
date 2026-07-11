@@ -4,6 +4,15 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Implemented Spatial Context Engine Phase 0: published the v0.1 identity,
+  revision, snapshot, and cursor schemas; added the read-only native
+  `extract_spatial_snapshot` command and one-page `capture_spatial_snapshot`
+  runtime wrapper; added deterministic host/link identity, host-mm geometry,
+  classified coverage, transform and pagination evidence; added a
+  double-placed-link golden fixture, bounded deterministic probes, a live
+  reference-level acceptance gate, and a strict no-model-data telemetry
+  boundary. The runtime tool surface is now `.40`. Durable/current capture,
+  queries, diffs, and clash verdicts remain out of scope until later phases.
 - Hardened the five-tool Revit API docs surface after pilot validation:
   direct lookup failures now return MCP `isError=true` with structured
   `success=false` JSON, bulk resolution reports aggregate success/failure

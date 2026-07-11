@@ -12,7 +12,7 @@ description: >
   critical path, or system flow. Localized Turkish requests for the same
   mechanical MEP tasks are also in scope.
 license: UNLICENSED
-version: 0.4.6
+version: 0.4.7
 ---
 
 # revAgent - MEP Automation Expert
@@ -116,6 +116,14 @@ normalizer.
   `detailLevel="minimal"` so large-model document checks do not perform MEP
   category or linked room/space counts; request `counts` or `full` only when
   those expensive summaries are needed.
+- `capture_spatial_snapshot` - Phase 0 read-only spatial extraction spike. It
+  requires exact `levelIds` and/or `levelNames`, returns exactly one bounded
+  native page per call, and treats `nextCursor` as opaque. It extracts
+  deterministic host/link identity plus canonical host-internal millimetre
+  geometry for the declared Phase 0 categories. `atomic=false` and
+  `liveness="unknown"` are deliberate: never use this spike for a current-state,
+  clash-free, or clearance verdict. Durable storage, change tracking, queries,
+  diffs, and live clash verification begin only in later phases.
 - `get_active_view_context` - model-view vs sheet-view context; sheets return
   placed viewports and `scheduleSheetInstances` instead of direct
   model-category assumptions

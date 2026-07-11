@@ -25,6 +25,7 @@
     "find-elements-compact-test": "node scripts/find-elements-compact.test.mjs",
     "write-tool-contract-test": "node scripts/write-tool-contract.test.mjs",
     "bridge-result-contract-test": "node scripts/bridge-result-contract.test.mjs",
+    "spatial-phase0-contract-test": "node scripts/spatial-phase0-contract.test.mjs",
     "casing-member-access-test": "node scripts/casing-member-access.test.mjs",
     "tool-inference-test": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck scripts/tool-inference-contract.test.ts",
     "revit-task-merge-test": "node scripts/revit-task-merge.test.mjs",
@@ -32,10 +33,11 @@
     "socket-test": "node scripts/socket-client.test.mjs",
     "env-alias-test": "node scripts/env-alias.test.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "npm run build && npm run guard-test && npm run runtime-result-test && npm run broad-scan-result-test && npm run excel-ingestion-test && npm run schedule-adapter-test && npm run matching-scoring-test && npm run reconcile-tool-test && npm run find-elements-compact-test && npm run write-tool-contract-test && npm run bridge-result-contract-test && npm run casing-member-access-test && npm run tool-inference-test && npm run revit-task-merge-test && npm run live-feed-test && npm run socket-test && npm run env-alias-test && npm run smoke"
+    "test": "npm run build && npm run guard-test && npm run runtime-result-test && npm run broad-scan-result-test && npm run excel-ingestion-test && npm run schedule-adapter-test && npm run matching-scoring-test && npm run reconcile-tool-test && npm run find-elements-compact-test && npm run write-tool-contract-test && npm run bridge-result-contract-test && npm run spatial-phase0-contract-test && npm run casing-member-access-test && npm run tool-inference-test && npm run revit-task-merge-test && npm run live-feed-test && npm run socket-test && npm run env-alias-test && npm run smoke"
   },
   "files": [
     "build",
+    "schemas",
     "src",
     "scripts",
     "tsconfig.json"
@@ -58,6 +60,8 @@
   "dependencies": {
     "@e965/xlsx": "^0.20.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "better-sqlite3": "12.9.0",
     "csv-parse": "^6.2.1",
     "ws": "^8.20.1",

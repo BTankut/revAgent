@@ -427,6 +427,7 @@ function Copy-RevAgentRuntimeUserPayload {
     )
 
     Copy-RevAgentDirectoryPayload -Source (Join-Path $SourceRoot "build") -Destination (Join-Path $DestinationRoot "build")
+    Copy-RevAgentDirectoryPayload -Source (Join-Path $SourceRoot "schemas") -Destination (Join-Path $DestinationRoot "schemas")
     foreach ($fileName in @("package.json", "package-lock.json")) {
         Copy-RevAgentFilePayload -Source (Join-Path $SourceRoot $fileName) -Destination (Join-Path $DestinationRoot $fileName)
     }

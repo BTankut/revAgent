@@ -541,6 +541,8 @@ namespace RevAgentPlugin.Core
                     string logicalToolName = ExtractRequestParamText(request, "logicalToolName", "toolName");
                     string parentTaskName = ExtractRequestParamText(request, "parentTaskName");
                     string parentTaskId = ExtractRequestParamText(request, "parentTaskId");
+                    bool suppressTaskStatusWindow = string.Equals(request.Method, "extract_spatial_snapshot", StringComparison.OrdinalIgnoreCase) &&
+                        ExtractRequestParamBool(request, "suppressTaskStatusWindow");
                     activeTask = McpTaskStatusService.Instance.BeginTask(
                         request.Id,
                         request.Method,
@@ -554,7 +556,7 @@ namespace RevAgentPlugin.Core
                         logicalToolName,
                         parentTaskName,
                         parentTaskId);
-                    McpTaskStatusWindowController.Instance.ShowRunning(activeTask);
+                    if (!suppressTaskStatusWindow) McpTaskStatusWindowController.Instance.ShowRunning(activeTask);
 
                     System.Diagnostics.Stopwatch executeTimer = System.Diagnostics.Stopwatch.StartNew();
                     object result = command.Execute(request.GetParamsObject(), request.Id);
@@ -578,7 +580,7 @@ namespace RevAgentPlugin.Core
                             metrics != null ? (long?)metrics.ExecuteMs : null,
                             metrics != null ? (long?)metrics.ResponseBytes : null);
                         LogTaskMetrics(guardedTask, metrics);
-                        McpTaskStatusWindowController.Instance.ShowGuarded(guardedTask);
+                        if (!suppressTaskStatusWindow) McpTaskStatusWindowController.Instance.ShowGuarded(guardedTask);
                     }
                     else if (IsCommandResultFailure(result, out string commandError))
                     {
@@ -588,7 +590,7 @@ namespace RevAgentPlugin.Core
                             metrics != null ? (long?)metrics.ExecuteMs : null,
                             metrics != null ? (long?)metrics.ResponseBytes : null);
                         LogTaskMetrics(failedTask, metrics);
-                        McpTaskStatusWindowController.Instance.ShowFailed(failedTask);
+                        if (!suppressTaskStatusWindow) McpTaskStatusWindowController.Instance.ShowFailed(failedTask);
                     }
                     else
                     {
@@ -597,7 +599,7 @@ namespace RevAgentPlugin.Core
                             metrics != null ? (long?)metrics.ExecuteMs : null,
                             metrics != null ? (long?)metrics.ResponseBytes : null);
                         LogTaskMetrics(completedTask, metrics);
-                        McpTaskStatusWindowController.Instance.ShowCompleted(completedTask);
+                        if (!suppressTaskStatusWindow) McpTaskStatusWindowController.Instance.ShowCompleted(completedTask);
                     }
 
                     return response;
@@ -734,6 +736,21 @@ namespace RevAgentPlugin.Core
             }
 
             return null;
+        }
+
+        private bool ExtractRequestParamBool(JsonRPCRequest request, params string[] keys)
+        {
+            JObject paramsObject = GetRequestParamsObject(request);
+            if (paramsObject == null || keys == null) return false;
+            foreach (string key in keys)
+            {
+                JToken value;
+                if (!paramsObject.TryGetValue(key, StringComparison.OrdinalIgnoreCase, out value) || value == null || value.Type == JTokenType.Null) continue;
+                if (value.Type == JTokenType.Boolean) return value.Value<bool>();
+                bool parsed;
+                if (bool.TryParse(value.ToString(), out parsed)) return parsed;
+            }
+            return false;
         }
 
         private bool IsCommandResultGuarded(object result, out string reason)

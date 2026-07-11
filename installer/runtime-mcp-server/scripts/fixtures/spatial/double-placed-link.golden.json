@@ -1,0 +1,862 @@
+{
+  "fixtureVersion": "0.1",
+  "scenario": "double_placed_link",
+  "description": "A bounded Phase 0 office-level capture with host MEP, one architectural Room reached through two placements, and linked structural obstruction evidence.",
+  "algorithms": {
+    "nodeId": "sha256('revit_element|' + documentKey + '|' + (linkInstanceUniqueId || 'host') + '|' + elementUniqueId)",
+    "pageHash": "sha256(canonicalJson({captureId,pageOrdinal,priorPageHash,rows}))",
+    "cursorEncoding": "spatial-cursor-v0.1.<base64url(canonicalJson(cursorEnvelope))>.<base64url(HMAC-SHA256(fixtureCursorHmacKeyBase64,cursorPayload))>",
+    "fixtureCursorHmacKeyBase64": "cmV2QWdlbnQtcGhhc2UwLWZpeHR1cmUtaG1hYy1rZXk=",
+    "canonicalJson": "recursive_object_key_sort_utf8"
+  },
+  "captureId": "capture:phase0-double-link-001",
+  "snapshot": {
+    "snapshotId": "snapshot:phase0-double-link-001",
+    "capturedAt": "2026-07-11T08:00:00.000Z",
+    "sourceRevisions": [
+      {
+        "documentKey": "cloud:office:architecture",
+        "documentSessionId": "session:architecture:001",
+        "loadedVersion": "cloud-version:42",
+        "changeSequence": 0,
+        "changeSequenceState": "unknown_phase0_sentinel",
+        "linkInstanceUniqueId": "ARCH-LINK-A-UID",
+        "sourceToHostTransform": {
+          "representation": "affine_4x4_row_major",
+          "fromFrame": "source_internal",
+          "toFrame": "host_internal_mm",
+          "lengthUnit": "mm",
+          "matrix": [
+            1,
+            0,
+            0,
+            10000,
+            0,
+            1,
+            0,
+            20000,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "externalLinkUpdateAvailable": false,
+        "documentKeyResolution": {
+          "resolverVersion": "phase0-spike/0.1",
+          "basis": "cloud",
+          "crossSessionComparable": true
+        }
+      },
+      {
+        "documentKey": "cloud:office:architecture",
+        "documentSessionId": "session:architecture:001",
+        "loadedVersion": "cloud-version:42",
+        "changeSequence": 0,
+        "changeSequenceState": "unknown_phase0_sentinel",
+        "linkInstanceUniqueId": "ARCH-LINK-B-UID",
+        "sourceToHostTransform": {
+          "representation": "affine_4x4_row_major",
+          "fromFrame": "source_internal",
+          "toFrame": "host_internal_mm",
+          "lengthUnit": "mm",
+          "matrix": [
+            0,
+            -1,
+            0,
+            40000,
+            1,
+            0,
+            0,
+            5000,
+            0,
+            0,
+            1,
+            300,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "externalLinkUpdateAvailable": false,
+        "documentKeyResolution": {
+          "resolverVersion": "phase0-spike/0.1",
+          "basis": "cloud",
+          "crossSessionComparable": true
+        }
+      },
+      {
+        "documentKey": "cloud:office:host",
+        "documentSessionId": "session:host:001",
+        "loadedVersion": "cloud-version:105",
+        "changeSequence": 0,
+        "changeSequenceState": "unknown_phase0_sentinel",
+        "sourceToHostTransform": {
+          "representation": "affine_4x4_row_major",
+          "fromFrame": "source_internal",
+          "toFrame": "host_internal_mm",
+          "lengthUnit": "mm",
+          "matrix": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "documentKeyResolution": {
+          "resolverVersion": "phase0-spike/0.1",
+          "basis": "cloud",
+          "crossSessionComparable": true
+        }
+      },
+      {
+        "documentKey": "cloud:office:structure",
+        "documentSessionId": "session:structure:001",
+        "loadedVersion": "cloud-version:17",
+        "changeSequence": 0,
+        "changeSequenceState": "unknown_phase0_sentinel",
+        "linkInstanceUniqueId": "STRUCT-LINK-01-UID",
+        "sourceToHostTransform": {
+          "representation": "affine_4x4_row_major",
+          "fromFrame": "source_internal",
+          "toFrame": "host_internal_mm",
+          "lengthUnit": "mm",
+          "matrix": [
+            1,
+            0,
+            0,
+            -5000,
+            0,
+            1,
+            0,
+            10000,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        "externalLinkUpdateAvailable": false,
+        "documentKeyResolution": {
+          "resolverVersion": "phase0-spike/0.1",
+          "basis": "cloud",
+          "crossSessionComparable": true
+        }
+      }
+    ],
+    "scope": {
+      "hostDocumentKey": "cloud:office:host",
+      "requestedLevelUniqueIds": [
+        "HOST-LEVEL-02-UID"
+      ],
+      "categories": [
+        "Ducts",
+        "Rooms",
+        "Structural Columns"
+      ],
+      "linkInclusionPolicy": "loaded_links",
+      "sourceDocumentPolicy": "host_and_loaded_links",
+      "effectiveVerticalBands": [
+        {
+          "levelId": 2001,
+          "levelUniqueId": "HOST-LEVEL-02-UID",
+          "levelName": "Level 02",
+          "elevationMm": 0,
+          "minHostZMm": -1000,
+          "maxHostZMm": 6000
+        }
+      ],
+      "activePhase": "New Construction",
+      "phaseSelectionPolicy": "collector_unfiltered_phase0",
+      "designOptionsInEffect": [
+        "collector_default_phase0"
+      ],
+      "worksetVisibilityPolicy": "collector_unfiltered_phase0",
+      "categoryRuleSetSelection": [
+        "phase0-spatial-extraction"
+      ],
+      "coordinateFrame": "host_internal_mm"
+    },
+    "scopeFingerprint": "sha256:4db614de8a2d8332d7cfe6611d825e5f58d771c1d85a8fba73568e9c453fc41b",
+    "revisionFingerprint": "sha256:fcea4ec863dc8f4375f50426545190954d3c567ff8ae7e294e88676507e5df3a",
+    "coordinateFrame": "host_internal_mm",
+    "lengthUnit": "mm",
+    "schemaVersion": "0.1",
+    "extractorVersion": "phase0-spike/0.1.0",
+    "counts": {
+      "totalNodes": 4,
+      "nodesByKind": {
+        "revit_element": 4,
+        "connector": 0,
+        "derived": 0
+      },
+      "expectedSupportedNodes": 4,
+      "extractedSupportedNodes": 4,
+      "omittedSupportedNodes": 0,
+      "omissionsByReason": {}
+    },
+    "partial": false,
+    "scanStoppedReason": "completed",
+    "suggestedNextScopes": [],
+    "pageCount": 2,
+    "payloadBytes": 3526
+  },
+  "fingerprintEvidence": {
+    "scopeBasis": {
+      "schemaMajor": 0,
+      "hostDocumentKey": "cloud:office:host",
+      "requestedLevelUniqueIds": [
+        "HOST-LEVEL-02-UID"
+      ],
+      "categories": [
+        "Ducts",
+        "Rooms",
+        "Structural Columns"
+      ],
+      "linkInclusionPolicy": "loaded_links",
+      "sourceDocumentPolicy": "host_and_loaded_links",
+      "effectiveVerticalBands": [
+        {
+          "levelId": 2001,
+          "levelUniqueId": "HOST-LEVEL-02-UID",
+          "levelName": "Level 02",
+          "elevationMm": 0,
+          "minHostZMm": -1000,
+          "maxHostZMm": 6000
+        }
+      ],
+      "activePhase": "New Construction",
+      "phaseSelectionPolicy": "collector_unfiltered_phase0",
+      "designOptionsInEffect": [
+        "collector_default_phase0"
+      ],
+      "worksetVisibilityPolicy": "collector_unfiltered_phase0",
+      "categoryRuleSetSelection": [
+        "phase0-spatial-extraction"
+      ],
+      "coordinateFrame": "host_internal_mm"
+    },
+    "revisionBasis": {
+      "extractorVersion": "phase0-spike/0.1.0",
+      "sources": [
+        {
+          "documentKey": "cloud:office:architecture",
+          "documentSessionId": "session:architecture:001",
+          "loadedVersion": "cloud-version:42",
+          "changeSequence": 0,
+          "changeSequenceState": "unknown_phase0_sentinel",
+          "linkInstanceUniqueId": "ARCH-LINK-A-UID",
+          "sourceToHostMatrix": [
+            1,
+            0,
+            0,
+            10000,
+            0,
+            1,
+            0,
+            20000,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "documentKey": "cloud:office:architecture",
+          "documentSessionId": "session:architecture:001",
+          "loadedVersion": "cloud-version:42",
+          "changeSequence": 0,
+          "changeSequenceState": "unknown_phase0_sentinel",
+          "linkInstanceUniqueId": "ARCH-LINK-B-UID",
+          "sourceToHostMatrix": [
+            0,
+            -1,
+            0,
+            40000,
+            1,
+            0,
+            0,
+            5000,
+            0,
+            0,
+            1,
+            300,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "documentKey": "cloud:office:host",
+          "documentSessionId": "session:host:001",
+          "loadedVersion": "cloud-version:105",
+          "changeSequence": 0,
+          "changeSequenceState": "unknown_phase0_sentinel",
+          "linkInstanceUniqueId": null,
+          "sourceToHostMatrix": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "documentKey": "cloud:office:structure",
+          "documentSessionId": "session:structure:001",
+          "loadedVersion": "cloud-version:17",
+          "changeSequence": 0,
+          "changeSequenceState": "unknown_phase0_sentinel",
+          "linkInstanceUniqueId": "STRUCT-LINK-01-UID",
+          "sourceToHostMatrix": [
+            1,
+            0,
+            0,
+            -5000,
+            0,
+            1,
+            0,
+            10000,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ]
+        }
+      ],
+      "contentFingerprints": [
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      ]
+    }
+  },
+  "pages": [
+    {
+      "pageOrdinal": 0,
+      "priorPageHash": null,
+      "rows": [
+        {
+          "orderKey": {
+            "documentKey": "cloud:office:architecture",
+            "linkPlacementKey": "ARCH-LINK-A-UID",
+            "nodeKind": "revit_element",
+            "stableSourceIdentity": "ARCH-ROOM-101-UID"
+          },
+          "node": {
+            "nodeId": "node:sha256:bc18fcd0ec286eea40f119d14312a345f1bf0fd702214c4928884023dfd4fe51",
+            "nodeKind": "revit_element",
+            "elementRef": {
+              "documentKey": "cloud:office:architecture",
+              "documentSessionId": "session:architecture:001",
+              "linkInstanceUniqueId": "ARCH-LINK-A-UID",
+              "elementUniqueId": "ARCH-ROOM-101-UID",
+              "elementId": 4101,
+              "sourceKind": "link"
+            },
+            "sourceRefs": [
+              {
+                "documentKey": "cloud:office:architecture",
+                "documentSessionId": "session:architecture:001",
+                "linkInstanceUniqueId": "ARCH-LINK-A-UID"
+              }
+            ]
+          },
+          "category": "Rooms",
+          "elementName": "Room 101",
+          "sourcePointMm": [
+            2500,
+            1500,
+            100
+          ],
+          "hostPointMm": [
+            12500,
+            21500,
+            100
+          ]
+        },
+        {
+          "orderKey": {
+            "documentKey": "cloud:office:architecture",
+            "linkPlacementKey": "ARCH-LINK-B-UID",
+            "nodeKind": "revit_element",
+            "stableSourceIdentity": "ARCH-ROOM-101-UID"
+          },
+          "node": {
+            "nodeId": "node:sha256:fa47967632f9bf11b955890a9a8e5038fd675a6dac42cc44c36fe7954fa67337",
+            "nodeKind": "revit_element",
+            "elementRef": {
+              "documentKey": "cloud:office:architecture",
+              "documentSessionId": "session:architecture:001",
+              "linkInstanceUniqueId": "ARCH-LINK-B-UID",
+              "elementUniqueId": "ARCH-ROOM-101-UID",
+              "elementId": 4101,
+              "sourceKind": "link"
+            },
+            "sourceRefs": [
+              {
+                "documentKey": "cloud:office:architecture",
+                "documentSessionId": "session:architecture:001",
+                "linkInstanceUniqueId": "ARCH-LINK-B-UID"
+              }
+            ]
+          },
+          "category": "Rooms",
+          "elementName": "Room 101",
+          "sourcePointMm": [
+            2500,
+            1500,
+            100
+          ],
+          "hostPointMm": [
+            38500,
+            7500,
+            400
+          ]
+        }
+      ],
+      "rowCount": 2,
+      "payloadBytes": 1815,
+      "pageHash": "sha256:96ea89ac84d74a5efc300ea7dad72e124ab932d9c8ae805186d6e72090c60a02",
+      "nextCursor": "spatial-cursor-v0.1.eyJjYXB0dXJlSWQiOiJjYXB0dXJlOnBoYXNlMC1kb3VibGUtbGluay0wMDEiLCJjYXB0dXJlZEF0IjoiMjAyNi0wNy0xMVQwODowMDowMC4wMDBaIiwiY3Vyc29yVmVyc2lvbiI6IjAuMSIsInBhZ2VPcmRpbmFsIjoxLCJwcmlvclBhZ2VIYXNoIjoic2hhMjU2Ojk2ZWE4OWFjODRkNzRhNWVmYzMwMGVhN2RhZDcyZTEyNGFiOTMyZDljOGFlODA1MTg2ZDZlNzIwOTBjNjBhMDIiLCJyZXZpc2lvbkZpbmdlcnByaW50Ijoic2hhMjU2OmZjZWE0ZWM4NjNkYzhmNDM3NWY1MDQyNjU0NTE5MDk1NGQzYzU2N2ZmOGFlN2UyOTRlODg2NzY1MDdlNWRmM2EiLCJzY29wZUZpbmdlcnByaW50Ijoic2hhMjU2OjRkYjYxNGRlOGEyZDgzMzJkN2NmZTY2MTFkODI1ZTVmNThkNzcxYzFkODVhOGZiYTczNTY4ZTljNDUzZmM0MWIiLCJzb3J0UG9zaXRpb24iOnsiZG9jdW1lbnRLZXkiOiJjbG91ZDpvZmZpY2U6YXJjaGl0ZWN0dXJlIiwibGlua1BsYWNlbWVudEtleSI6IkFSQ0gtTElOSy1CLVVJRCIsIm5vZGVLaW5kIjoicmV2aXRfZWxlbWVudCIsInN0YWJsZVNvdXJjZUlkZW50aXR5IjoiQVJDSC1ST09NLTEwMS1VSUQifX0.F6wCRz4fZ5oWpLDhXGxp3ulJIQ7Yt1mTx3Dy9RBrrvU",
+      "nextCursorEnvelope": {
+        "cursorVersion": "0.1",
+        "captureId": "capture:phase0-double-link-001",
+        "pageOrdinal": 1,
+        "sortPosition": {
+          "documentKey": "cloud:office:architecture",
+          "linkPlacementKey": "ARCH-LINK-B-UID",
+          "nodeKind": "revit_element",
+          "stableSourceIdentity": "ARCH-ROOM-101-UID"
+        },
+        "priorPageHash": "sha256:96ea89ac84d74a5efc300ea7dad72e124ab932d9c8ae805186d6e72090c60a02",
+        "revisionFingerprint": "sha256:fcea4ec863dc8f4375f50426545190954d3c567ff8ae7e294e88676507e5df3a",
+        "scopeFingerprint": "sha256:4db614de8a2d8332d7cfe6611d825e5f58d771c1d85a8fba73568e9c453fc41b",
+        "capturedAt": "2026-07-11T08:00:00.000Z"
+      }
+    },
+    {
+      "pageOrdinal": 1,
+      "priorPageHash": "sha256:96ea89ac84d74a5efc300ea7dad72e124ab932d9c8ae805186d6e72090c60a02",
+      "rows": [
+        {
+          "orderKey": {
+            "documentKey": "cloud:office:host",
+            "linkPlacementKey": "host",
+            "nodeKind": "revit_element",
+            "stableSourceIdentity": "HOST-DUCT-001-UID"
+          },
+          "node": {
+            "nodeId": "node:sha256:7074662e37d81f741ed2b1bcf3b701adef8fdc10325169c1ffbf43f230665a56",
+            "nodeKind": "revit_element",
+            "elementRef": {
+              "documentKey": "cloud:office:host",
+              "documentSessionId": "session:host:001",
+              "elementUniqueId": "HOST-DUCT-001-UID",
+              "elementId": 8101,
+              "sourceKind": "host"
+            },
+            "sourceRefs": [
+              {
+                "documentKey": "cloud:office:host",
+                "documentSessionId": "session:host:001"
+              }
+            ]
+          },
+          "category": "Ducts",
+          "elementName": "Supply Duct 001",
+          "sourcePointMm": [
+            8000,
+            12000,
+            2700
+          ],
+          "hostPointMm": [
+            8000,
+            12000,
+            2700
+          ]
+        },
+        {
+          "orderKey": {
+            "documentKey": "cloud:office:structure",
+            "linkPlacementKey": "STRUCT-LINK-01-UID",
+            "nodeKind": "revit_element",
+            "stableSourceIdentity": "STRUCT-COLUMN-007-UID"
+          },
+          "node": {
+            "nodeId": "node:sha256:54f43960780e86b35b49f3aa13145d940483b11662ff7a7584471dc0cd8fd9aa",
+            "nodeKind": "revit_element",
+            "elementRef": {
+              "documentKey": "cloud:office:structure",
+              "documentSessionId": "session:structure:001",
+              "linkInstanceUniqueId": "STRUCT-LINK-01-UID",
+              "elementUniqueId": "STRUCT-COLUMN-007-UID",
+              "elementId": 7007,
+              "sourceKind": "link"
+            },
+            "sourceRefs": [
+              {
+                "documentKey": "cloud:office:structure",
+                "documentSessionId": "session:structure:001",
+                "linkInstanceUniqueId": "STRUCT-LINK-01-UID"
+              }
+            ]
+          },
+          "category": "Structural Columns",
+          "elementName": "Concrete Column 007",
+          "sourcePointMm": [
+            3000,
+            2000,
+            0
+          ],
+          "hostPointMm": [
+            -2000,
+            12000,
+            0
+          ]
+        }
+      ],
+      "rowCount": 2,
+      "payloadBytes": 1711,
+      "pageHash": "sha256:f676557495e4ea1623cc0844601fa9b30c2e549e2713b865989f879458a170cb",
+      "nextCursor": null,
+      "nextCursorEnvelope": null
+    }
+  ],
+  "acceptanceEvidence": {
+    "stableIdentity": {
+      "auditedSupportedNodeCount": 4,
+      "stableNodeIdCount": 4,
+      "ratio": 1
+    },
+    "coverage": {
+      "expectedSupportedNodeCount": 4,
+      "extractedSupportedNodeCount": 4,
+      "omittedSupportedNodeCount": 0,
+      "ratio": 1,
+      "classifiedOmissions": []
+    },
+    "pagination": {
+      "expectedPageCount": 2,
+      "expectedOrderedNodeIds": [
+        "node:sha256:bc18fcd0ec286eea40f119d14312a345f1bf0fd702214c4928884023dfd4fe51",
+        "node:sha256:fa47967632f9bf11b955890a9a8e5038fd675a6dac42cc44c36fe7954fa67337",
+        "node:sha256:7074662e37d81f741ed2b1bcf3b701adef8fdc10325169c1ffbf43f230665a56",
+        "node:sha256:54f43960780e86b35b49f3aa13145d940483b11662ff7a7584471dc0cd8fd9aa"
+      ],
+      "duplicateNodeIds": [],
+      "omittedNodeIds": []
+    },
+    "transformRoundTrip": {
+      "toleranceMm": 0.5,
+      "maxObservedErrorMm": 0,
+      "samples": [
+        {
+          "documentKey": "cloud:office:architecture",
+          "linkInstanceUniqueId": "ARCH-LINK-A-UID",
+          "sourcePointMm": [
+            2500,
+            1500,
+            100
+          ],
+          "expectedHostPointMm": [
+            12500,
+            21500,
+            100
+          ],
+          "expectedRoundTripPointMm": [
+            2500,
+            1500,
+            100
+          ],
+          "observedRoundTripErrorMm": 0
+        },
+        {
+          "documentKey": "cloud:office:architecture",
+          "linkInstanceUniqueId": "ARCH-LINK-B-UID",
+          "sourcePointMm": [
+            2500,
+            1500,
+            100
+          ],
+          "expectedHostPointMm": [
+            38500,
+            7500,
+            400
+          ],
+          "expectedRoundTripPointMm": [
+            2500,
+            1500,
+            100
+          ],
+          "observedRoundTripErrorMm": 0
+        },
+        {
+          "documentKey": "cloud:office:host",
+          "linkInstanceUniqueId": null,
+          "sourcePointMm": [
+            8000,
+            12000,
+            2700
+          ],
+          "expectedHostPointMm": [
+            8000,
+            12000,
+            2700
+          ],
+          "expectedRoundTripPointMm": [
+            8000,
+            12000,
+            2700
+          ],
+          "observedRoundTripErrorMm": 0
+        },
+        {
+          "documentKey": "cloud:office:structure",
+          "linkInstanceUniqueId": "STRUCT-LINK-01-UID",
+          "sourcePointMm": [
+            3000,
+            2000,
+            0
+          ],
+          "expectedHostPointMm": [
+            -2000,
+            12000,
+            0
+          ],
+          "expectedRoundTripPointMm": [
+            3000,
+            2000,
+            0
+          ],
+          "observedRoundTripErrorMm": 0
+        }
+      ]
+    },
+    "manualAudit": {
+      "status": "complete",
+      "auditedEvidence": [
+        "host_mep_geometry",
+        "linked_room_location",
+        "linked_structural_obstruction"
+      ]
+    }
+  },
+  "boundedProbeEvidence": {
+    "contractVersion": "0.1",
+    "probes": [
+      {
+        "probeId": "probe:double-link-placement-identity-001",
+        "operation": "lookup_link_placements_for_source_element",
+        "bounds": {
+          "maxInputNodeRefs": 1,
+          "maxEvidenceRows": 2,
+          "maxEvidenceBytes": 4096
+        },
+        "input": {
+          "snapshotId": "snapshot:phase0-double-link-001",
+          "sourceDocumentKey": "cloud:office:architecture",
+          "elementUniqueId": "ARCH-ROOM-101-UID"
+        },
+        "deterministicOperationOutput": {
+          "resultCode": "two_distinct_placements",
+          "snapshotId": "snapshot:phase0-double-link-001",
+          "revisionFingerprint": "sha256:fcea4ec863dc8f4375f50426545190954d3c567ff8ae7e294e88676507e5df3a",
+          "rowCount": 2,
+          "truncated": false,
+          "evidenceRows": [
+            {
+              "nodeId": "node:sha256:bc18fcd0ec286eea40f119d14312a345f1bf0fd702214c4928884023dfd4fe51",
+              "linkInstanceUniqueId": "ARCH-LINK-A-UID",
+              "hostPointMm": [
+                12500,
+                21500,
+                100
+              ]
+            },
+            {
+              "nodeId": "node:sha256:fa47967632f9bf11b955890a9a8e5038fd675a6dac42cc44c36fe7954fa67337",
+              "linkInstanceUniqueId": "ARCH-LINK-B-UID",
+              "hostPointMm": [
+                38500,
+                7500,
+                400
+              ]
+            }
+          ]
+        },
+        "evidenceBytes": 556,
+        "operationOutputHash": "sha256:b23d6841f64be26dccd8309b77a4075408d56dd02c407c195224bf94afd8d927",
+        "llmProbe": {
+          "inputMode": "bounded_deterministic_operation_output",
+          "wholeGraphProvided": false,
+          "prompt": "Do the cited rows represent distinct placements of the same linked Room?",
+          "response": "Yes. One source Room is bound to two link-instance ids and two placement-aware node ids.",
+          "assessmentCode": "identity_is_placement_aware",
+          "citedNodeIds": [
+            "node:sha256:bc18fcd0ec286eea40f119d14312a345f1bf0fd702214c4928884023dfd4fe51",
+            "node:sha256:fa47967632f9bf11b955890a9a8e5038fd675a6dac42cc44c36fe7954fa67337"
+          ]
+        }
+      },
+      {
+        "probeId": "probe:vertical-relation-001",
+        "operation": "compare_vertical_relation",
+        "bounds": {
+          "maxInputNodeRefs": 2,
+          "maxEvidenceRows": 2,
+          "maxEvidenceBytes": 4096
+        },
+        "input": {
+          "snapshotId": "snapshot:phase0-double-link-001",
+          "firstNodeId": "node:sha256:7074662e37d81f741ed2b1bcf3b701adef8fdc10325169c1ffbf43f230665a56",
+          "secondNodeId": "node:sha256:54f43960780e86b35b49f3aa13145d940483b11662ff7a7584471dc0cd8fd9aa"
+        },
+        "deterministicOperationOutput": {
+          "resultCode": "first_above_second",
+          "snapshotId": "snapshot:phase0-double-link-001",
+          "revisionFingerprint": "sha256:fcea4ec863dc8f4375f50426545190954d3c567ff8ae7e294e88676507e5df3a",
+          "rowCount": 2,
+          "truncated": false,
+          "computed": {
+            "relation": "above",
+            "deltaZMm": 2700
+          },
+          "evidenceRows": [
+            {
+              "nodeId": "node:sha256:7074662e37d81f741ed2b1bcf3b701adef8fdc10325169c1ffbf43f230665a56",
+              "role": "first",
+              "hostPointMm": [
+                8000,
+                12000,
+                2700
+              ]
+            },
+            {
+              "nodeId": "node:sha256:54f43960780e86b35b49f3aa13145d940483b11662ff7a7584471dc0cd8fd9aa",
+              "role": "second",
+              "hostPointMm": [
+                -2000,
+                12000,
+                0
+              ]
+            }
+          ]
+        },
+        "evidenceBytes": 547,
+        "operationOutputHash": "sha256:4f73a69842b877d20b545a3e1a8015edb27c6f3332a3126330c4c32fd8c77b45",
+        "llmProbe": {
+          "inputMode": "bounded_deterministic_operation_output",
+          "wholeGraphProvided": false,
+          "prompt": "Which cited reference point is vertically above the other, and by how much?",
+          "response": "The host duct reference point is 2700 mm above the linked structural-column reference point.",
+          "assessmentCode": "vertical_relation_cited",
+          "citedNodeIds": [
+            "node:sha256:7074662e37d81f741ed2b1bcf3b701adef8fdc10325169c1ffbf43f230665a56",
+            "node:sha256:54f43960780e86b35b49f3aa13145d940483b11662ff7a7584471dc0cd8fd9aa"
+          ]
+        }
+      },
+      {
+        "probeId": "probe:clearance-capability-001",
+        "operation": "assess_clearance_verdict_capability",
+        "bounds": {
+          "maxInputNodeRefs": 2,
+          "maxEvidenceRows": 2,
+          "maxEvidenceBytes": 4096
+        },
+        "input": {
+          "snapshotId": "snapshot:phase0-double-link-001",
+          "pairNodeIds": [
+            "node:sha256:7074662e37d81f741ed2b1bcf3b701adef8fdc10325169c1ffbf43f230665a56",
+            "node:sha256:54f43960780e86b35b49f3aa13145d940483b11662ff7a7584471dc0cd8fd9aa"
+          ]
+        },
+        "deterministicOperationOutput": {
+          "resultCode": "context_only_no_clearance_verdict",
+          "snapshotId": "snapshot:phase0-double-link-001",
+          "revisionFingerprint": "sha256:fcea4ec863dc8f4375f50426545190954d3c567ff8ae7e294e88676507e5df3a",
+          "rowCount": 2,
+          "truncated": false,
+          "verdictCapability": "context_only",
+          "clearanceVerdict": null,
+          "reasonCode": "representative_points_are_not_clearance_geometry",
+          "evidenceRows": [
+            {
+              "nodeId": "node:sha256:7074662e37d81f741ed2b1bcf3b701adef8fdc10325169c1ffbf43f230665a56",
+              "geometryEvidenceKind": "representative_point",
+              "hostPointMm": [
+                8000,
+                12000,
+                2700
+              ]
+            },
+            {
+              "nodeId": "node:sha256:54f43960780e86b35b49f3aa13145d940483b11662ff7a7584471dc0cd8fd9aa",
+              "geometryEvidenceKind": "representative_point",
+              "hostPointMm": [
+                -2000,
+                12000,
+                0
+              ]
+            }
+          ]
+        },
+        "evidenceBytes": 698,
+        "operationOutputHash": "sha256:92c24ea3885054e4c435bd54c41e727e6d60b4e2c88acb40890799c3f07f2091",
+        "llmProbe": {
+          "inputMode": "bounded_deterministic_operation_output",
+          "wholeGraphProvided": false,
+          "prompt": "Do these cited rows support a clearance pass/fail verdict?",
+          "response": "No. They provide representative context points only; exact clearance geometry and a live rule basis are absent.",
+          "assessmentCode": "clearance_verdict_refused",
+          "citedNodeIds": [
+            "node:sha256:7074662e37d81f741ed2b1bcf3b701adef8fdc10325169c1ffbf43f230665a56",
+            "node:sha256:54f43960780e86b35b49f3aa13145d940483b11662ff7a7584471dc0cd8fd9aa"
+          ]
+        }
+      }
+    ]
+  }
+}

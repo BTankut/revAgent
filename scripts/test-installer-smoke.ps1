@@ -321,6 +321,10 @@ try {
         "src\revit-plugin\revAgentCommandSet\Commands\Access\GetSelectedElementsCommand.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeCommand.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Spatial\ExtractSpatialSnapshotCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Spatial\ExtractSpatialSnapshotEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Spatial\SpatialSnapshotContracts.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Spatial\SpatialSnapshotHelpers.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\View\ActivateViewCommand.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\View\ActivateViewEventHandler.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\View\AnnotationEvidenceHelpers.cs",
@@ -376,6 +380,7 @@ try {
     foreach ($name in @($bridgeCommandJson.commands | ForEach-Object { [string]$_.commandName })) {
         Assert-True ($registeredCommandNames -contains $name) "commandRegistry.json is missing Revit bridge command '$name'."
     }
+    Assert-True ($registeredCommandNames -contains "extract_spatial_snapshot") "commandRegistry.json must include the read-only Phase 0 spatial extractor."
     foreach ($path in @($commandRegistry.Commands | ForEach-Object { [string]$_.assemblyPath })) {
         Assert-Equal $path "revAgentCommandSet\\2022\\revAgentCommandSet.dll" "Bridge command registry must load every command from the revAgent bridge payload folder."
     }
@@ -539,6 +544,7 @@ try {
     $runtimePackageLockText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\package-lock.json")
     $runtimeReleasePackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\release\package.json")
     $runtimeReleasePackageLockText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\release\package-lock.json")
+    $buildMcpReleaseText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\build-mcp-release-bundle.mjs")
     $docsPackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\package.json")
     $docsPackageLockText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\package-lock.json")
     $docsReleasePackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\release\package.json")
@@ -553,6 +559,12 @@ try {
     Assert-True ($buildRevitPluginText -match 'Remove-RevitPayloadDebugArtifacts -RepoRoot \$RepoRoot' -and $buildRevitPluginText -match 'Assert-RevitPayloadNoDebugArtifacts -RepoRoot \$RepoRoot') "Revit payload build refresh must remove and reject stale .NET debug artifacts."
     Assert-True ($packageTestHelpersText -match 'node_modules' -and $packageTestHelpersText -match '\.package-lock\.json' -and $packageTestHelpersText -match 'GetTempPath' -and $packageTestHelpersText -match 'REVIT_MCP_REPO_ROOT') "MCP package test helpers must skip live dependency folders, use temporary work copies, and preserve repo-root context."
     Assert-True ($runtimePackageText -match '"@e965/xlsx"' -and $runtimePackageText -notmatch '"exceljs"') "Runtime Excel ingestion must avoid the deprecated exceljs transitive dependency chain."
+    Assert-True ($runtimePackageText -match '"ajv"' -and $runtimePackageText -match '"ajv-formats"' -and $runtimePackageText -match '"schemas"') "Spatial response validation must declare its schema runtime dependencies and package the published schemas."
+    Assert-True ($buildMcpReleaseText -match 'schemas.*spatial.*v0\.1' -and $buildMcpReleaseText -match 'cpSync') "Runtime release assembly must copy the published Spatial Phase 0 schemas."
+    foreach ($schemaName in @("element-ref", "node-ref", "source-revision", "cursor-envelope", "spatial-snapshot", "extraction-page")) {
+        Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\schemas\spatial\v0.1\$schemaName.schema.json") -PathType Leaf) "Published Spatial Phase 0 schema is missing: $schemaName."
+        Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\release\schemas\spatial\v0.1\$schemaName.schema.json") -PathType Leaf) "Runtime release Spatial Phase 0 schema is missing: $schemaName."
+    }
     Assert-True ($runtimePackageText -match '"build:release"' -and $docsPackageText -match '"build:release"') "MCP packages must expose a hardened release bundle build script."
     Assert-True ($runtimeReleasePackageText -notmatch '"(scripts|devDependencies|files)"' -and $docsReleasePackageText -notmatch '"(scripts|devDependencies|files)"') "Release MCP package manifests must be runtime-only."
     Assert-True ($runtimeReleasePackageLockText -notmatch '"dev": true' -and $docsReleasePackageLockText -notmatch '"dev": true') "Release MCP package locks must not include dev dependency entries."
@@ -697,8 +709,14 @@ try {
     $setScheduleCellsByTextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\set_schedule_cells_by_text.ts")
     $safeCodeGuardsCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit_safe_guards.ts")
     $telemetryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\telemetry.ts")
+    $captureSpatialToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\capture_spatial_snapshot.ts")
+    $spatialPageCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\spatial\spatialPage.ts")
+    $spatialPageSchemaCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\spatial\spatialPageSchema.ts")
     $safeCodeToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit_safe.ts")
     $apiDocsIndexCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\src\utils\docIndex.ts")
+    Assert-True ($captureSpatialToolCode -match 'extract_spatial_snapshot' -and $captureSpatialToolCode -match 'hasExplicitLevelScope' -and $captureSpatialToolCode -match 'invalid_spatial_page_contract') "capture_spatial_snapshot must remain an explicit-level, strict-contract wrapper over the native Phase 0 extractor."
+    Assert-True ($spatialPageSchemaCode -match 'extraction-page\.schema\.json' -and $spatialPageSchemaCode -match 'canonicalJson' -and $spatialPageCode -match 'pagePayloadBytes') "Spatial page normalization must validate the published transport schema, recompute canonical hashes, and preserve page-vs-snapshot byte totals."
+    Assert-True ($telemetryCode -match 'SPATIAL_EXTRACTION_NAMES' -and $telemetryCode -match 'summarizeSpatialExtractionTelemetryParams' -and $telemetryCode -match 'summarizeSpatialExtractionTelemetryResponse' -and $telemetryCode -match 'return null') "Spatial extraction telemetry must keep the strict no-model-data production-context boundary."
     Assert-True ($focusHelpersCode -match 'new FilteredElementCollector\(document, view\.Id\)') "View visibility helper must use a view-specific collector."
     Assert-True ($focusHelpersCode -match 'ElementIdSetFilter') "View visibility helper must filter directly by target element id instead of materializing all visible ids."
     Assert-True ($focusHelpersCode -match 'elementNotVisibleInTargetView') "View visibility helper must report non-visible target elements."
@@ -807,7 +825,7 @@ try {
     Assert-True ($statusToolCode -match 'runtimeVersion') "Status output must include the active runtime version."
     Assert-True ($statusToolCode -match 'schemaVersion') "Status output must include the status/schema version."
     Assert-True ($statusToolCode -match 'toolSurfaceVersion') "Status output must include the registered tool surface version."
-    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.39') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
+    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.40') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
     Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
     Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
@@ -1105,6 +1123,7 @@ try {
     Assert-True ($publishText -match 'scripts\\invoke-live-smoke-over-ssh\.ps1' -and $publishText -match 'toolsRoot "invoke-live-smoke-over-ssh\.ps1"') "NAS tools must publish the SSH live smoke runner for representative Revit tests."
     Assert-True ($publishText -match 'scripts\\test-commandset-live\.ps1' -and $publishText -match 'toolsRoot "test-commandset-live\.ps1"') "NAS tools must publish the live smoke evidence helper for rollout closure."
     Assert-True ($publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\runtime-mcp-server"' -and $publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\revit-api-docs-mcp"') "User pack must use hardened MCP release bundles instead of developer build trees."
+    Assert-True ($publishText -match '\$releaseSchemasPath' -and $publishText -match '\$destinationSchemasPath' -and $publishText -match 'missing published Spatial Phase 0 schema') "Source-free runtime packaging must copy and verify the published Spatial Phase 0 schemas."
     Assert-True ($publishText -match 'Assert-RevAgentUserPackNoSourceLeak -Root \$packageRoot') "Publish must gate the user pack against source/developer artifact leaks."
     Assert-True ($publishText -match '"addons"') "Publish source-leak gate must block admin add-on payloads from the workstation user pack."
     Assert-True ($publishText -match 'Assert-RevAgentUserPackDotNetPayloadHardened -Root \$packageRoot') "Publish must gate the user pack against .NET debug symbol artifacts."
@@ -1258,6 +1277,7 @@ try {
     Assert-True ($installerText -match 'RevAgent\.ConfigSync\.psm1' -and $installerText -match 'Sync-RevAgentUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Self-contained installer must use the shared config sync helper."
     Assert-True ($installerText -notmatch 'Remove-Item -LiteralPath \$configDestination -Recurse -Force') "Self-contained installer must not delete local config because that removes pinned release keys."
     Assert-True ($installerText -match 'Copy-RevAgentRuntimeUserPayload') "Installer must copy only the runtime user payload."
+    Assert-True ($installerText -match 'Copy-RevAgentDirectoryPayload -Source \(Join-Path \$SourceRoot "schemas"\) -Destination \(Join-Path \$DestinationRoot "schemas"\)') "Installer runtime payload must include the published Spatial Phase 0 schemas."
     Assert-True ($installerText -match 'revagent-runtime"\s*,\s*"revit-mcp"') "Installer runtime-directory validation must accept canonical and legacy runtime package identities during rolling updates."
     Assert-True ($installerText -match 'codexUserSourceRoot') "Installer must source Codex orchestration from the user pack."
     Assert-True ($installerText -match 'Resolve-CodexInstructionPolicy' -and $installerText -match 'Codex instructions: preserved local developer instruction surface by policy') "Installer must support preserve-local Codex instruction policy."

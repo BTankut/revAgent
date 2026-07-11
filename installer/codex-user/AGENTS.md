@@ -58,6 +58,9 @@ Mandatory routing examples:
 - Exact schedule cell writes go through `set_schedule_cells`.
 - Row-text-driven schedule writes go through `set_schedule_cells_by_text`.
 - Element parameter writes go through `set_element_parameter`.
+- Phase 0 spatial extraction goes through `capture_spatial_snapshot` with an
+  explicit level scope and opaque-cursor continuation. It is non-atomic with
+  unknown liveness and cannot support current-state or clearance claims.
 - Live Revit navigation uses live navigation tools.
 - Evidence images use export tools.
 - Selection cleanup goes through `clear_selection`.

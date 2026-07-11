@@ -7,6 +7,8 @@ const packageJsonPath = path.join(packageRoot, "package.json");
 const packageLockPath = path.join(packageRoot, "package-lock.json");
 const releaseRoot = path.join(packageRoot, "release");
 const releaseBundlePath = path.join(releaseRoot, "index.js");
+const spatialSchemasSource = path.join(packageRoot, "schemas", "spatial", "v0.1");
+const spatialSchemasRelease = path.join(releaseRoot, "schemas", "spatial", "v0.1");
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
@@ -102,6 +104,9 @@ async function main() {
 
   fs.rmSync(releaseRoot, { recursive: true, force: true });
   fs.mkdirSync(releaseRoot, { recursive: true });
+  if (fs.existsSync(spatialSchemasSource)) {
+    fs.cpSync(spatialSchemasSource, spatialSchemasRelease, { recursive: true });
+  }
 
   await esbuild.build({
     entryPoints: [path.join(packageRoot, "src", "index.ts")],

@@ -830,7 +830,7 @@ Host-specific notes:
 
 ## Bundled runtime tool surface
 
-The runtime MCP server registers 30 tools in
+The runtime MCP server registers 31 tools in
 `installer/runtime-mcp-server/src/tools/register.ts`. They intentionally cover a
 small production surface instead of many narrow one-off commands.
 
@@ -839,6 +839,7 @@ small production surface instead of many narrow one-off commands.
 | Instance and status | `list_revit_instances`, `get_revit_mcp_status` | Read-only. `get_revit_mcp_status` is the only runtime tool intended to run while another Revit task is active. |
 | Dynamic execution | `send_code_to_revit`, `send_code_to_revit_safe` | Raw `send_code_to_revit` can write if the supplied C# writes. `transactionMode: "auto"` opens a wrapper-managed transaction and guards manual transaction snippets; `transactionMode: "none"` executes without an outer transaction. `send_code_to_revit_safe` is for read/preview work, rejects write-looking snippets, and uses `none`. |
 | Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_sheet_text`, `inspect_schedules`, `count_annotations`, `inspect_parameter_schema` | Read-only model/session/element/sheet/schedule/annotation/parameter inspection before engineering decisions or writes. `get_revit_session_context` defaults to `detailLevel="minimal"` so document checks do not perform heavy category or linked room/space counts. `get_active_view_context` reports both sheet `viewports` and `scheduleSheetInstances`. `inspect_sheet_text` is the native bounded DrawingSheet text-note, placed-schedule, and viewport-linked text-note inspection path for large projects and should be used instead of broad custom C# sheet or placed-view scans. `inspect_schedules` is the bounded schedule name/cell inspection path for large projects and should be used instead of broad custom C# schedule scans. `count_annotations` is the native bounded annotation count/inventory path for sheet text-note, viewport text-note, placed schedule-cell, and viewport tag evidence. |
+| Spatial Phase 0 spike | `capture_spatial_snapshot` | Read-only, explicit-level, one-page-at-a-time extraction through native `extract_spatial_snapshot`. It returns deterministic host/link identity and host-mm geometry evidence with an opaque cursor. Phase 0 is non-atomic with `liveness="unknown"`; it is not a durable/current snapshot, query, diff, or clash-verdict service. |
 | Review and reconciliation | `reconcile_schedule_excel` | Runtime-only, review-first, and write-free. It ingests explicit `.xlsx`, `.csv`, `.tsv`, or `rows` input plus normalized `inspect_schedules` evidence, applies deterministic matching/scoring, and returns compact `reviewTable`, `evidenceRows`, and count metadata by default. Use `responseMode="full"`/`"debug"` for raw `reviewRows`, token profiles, raw cells, and nested candidates. Accepted edits route separately through `set_schedule_cells`, `set_schedule_cells_by_text`, or a workbook-specific workflow after human review. |
 | Controlled data writes | `set_element_parameter`, `set_schedule_cells`, `set_schedule_cells_by_text` | `set_element_parameter` is the production-safe single-parameter set/clear path. It defaults to `mode="dryRun"` and `operation="set"`, performs exact `inspect_parameter_schema`-style identity resolution, blocks duplicate display names/read-only parameters/type writes without explicit approval, commits only with `mode="commit"`, and verifies the value by reading it back. `operation="clear"` attempts Revit `Parameter.ClearValue` for a true no-value state and reports `clear_value_not_supported` instead of faking clear with an empty string when Revit does not support it. `operation="clearVisibleValue"` is the explicit string-only visible cleanup path; it writes an empty string and reports that Revit may keep `HasValue=true`. `set_schedule_cells` writes exact schedule cells only by `scheduleId`, `section`, `row`, and `column`; it defaults to dry-run, can require `expectedCurrentText`, guards non-writable standard schedule body cells as `non_writable_standard_body_cell`, commits through the wrapper transaction, and verifies committed cell text. `set_schedule_cells_by_text` is the higher-level schedule workflow for bounded sheet/schedule scope plus row-text matching; it blocks ambiguous matches by default, supports `expectedCurrentText`, defaults to dry-run, guards the same standard body-cell restriction, and verifies commit readback. |
 | Live view navigation | `list_open_views`, `activate_view`, `close_view`, `clear_selection`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. `clear_selection` only clears the current UI selection and opens no transaction. |
@@ -1006,6 +1007,13 @@ office-internal signal stream, so useful task names, search text, paths, and
 bounded code previews are retained for later dashboard and LLM analysis. It
 still avoids full Revit response payloads, model geometry dumps, and exported
 images.
+
+Spatial extraction is a stricter exception. For `capture_spatial_snapshot` and
+native `extract_spatial_snapshot`, geometry, model/level/room/space names,
+element/link ids, cursor contents, task metadata, and error text are excluded
+from telemetry and production-context events. Only tool/command identity,
+coarse selector/count/byte/budget fields, duration, and guard/state codes are
+retained.
 
 Local events are written under
 `C:\ProgramData\DPE\revAgent\state\telemetry\events`. When workstation updater
