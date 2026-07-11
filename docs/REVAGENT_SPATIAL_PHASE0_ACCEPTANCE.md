@@ -2,7 +2,7 @@
 
 Status: implementation and evidence guide for Phase 0 only.
 
-Normative plan: `docs/REVAGENT_SPATIAL_CONTEXT_ENGINE_PLAN.md` v2.2.
+Normative plan: `docs/REVAGENT_SPATIAL_CONTEXT_ENGINE_PLAN.md` v2.3.
 This document does not authorize or begin Phase 1a.
 
 ## Delivered surface
@@ -27,6 +27,17 @@ This document does not authorize or begin Phase 1a.
   seconds for scoped reference-model audits.
 - The double-placed-link golden fixture and deterministic bounded-operation
   probes live under `installer/runtime-mcp-server/scripts/fixtures/spatial/`.
+- `inspect_levels` is the read-only discovery surface for the required host
+  Level scope and optional exact linked Room/Space Level selectors.
+- `page.hasMore` reports pagination only. Additive `coverageStatus` reports
+  `complete`, `incomplete_omissions`, or `incomplete_budget` independently.
+- The runtime derives `coverageStatus` from older native pages that omit it.
+  Because v0.1 schemas are strict, a new native page containing this field must
+  ship with the matching runtime/schema bundle; it is not accepted by an old
+  strict-schema consumer.
+- Legacy `coverage.complete` is page-sensitive. It can be false on a paginated
+  page while `coverageStatus` is `complete`; use `page.hasMore` and
+  `coverageStatus` for their separate meanings.
 
 ## Phase 0 support boundary
 
@@ -43,6 +54,23 @@ All coordinates are host internal coordinates expressed in millimetres.
 Linked rows carry their link-instance placement identity and source-to-host
 transform. Unsupported or unreadable eligible rows are reported as classified
 omissions.
+
+The explicit host Level creates a host-Z vertical band; it is not exact linked
+Level membership. Optional placement-qualified `linkedSourceLevels` (or the
+less-specific `linkedSourceLevelNames` convenience filter) narrows linked
+Room/Space rows after the host band check. Linked obstruction rows deliberately
+remain physical band-overlap evidence. Effective band bounds, filter mode, and
+resolved linked Level refs are returned in `scope` and bound into the scope
+fingerprint.
+
+Every emitted supported node must have readable bounds that physically overlap
+the transformed host-Z band. Source Level name/elevation never bypasses this
+test; when bounds are unavailable, Level evidence can only reject a clearly
+different band or produce a classified `scope_unresolved` omission.
+
+Geometry Z values are absolute host-internal coordinates. Level-associated
+Revit parameters may be relative to their resolved source Level and must not be
+reported as interchangeable with absolute geometry Z.
 
 Phase 0 is not a durable or current-state snapshot service. It has no
 `DocumentChanged` journal, atomic staging store, R-tree, migration lifecycle,
@@ -105,6 +133,12 @@ coarse counts, hashes, durations, guard/state codes, and audit sign-off.
 
 ## Frozen reference-level baseline
 
+This is the pre-hotfix `.40` Phase 0 baseline. It remains evidence for the
+original extractor, but it does not requalify the `.41` hot-fix contract. The
+`.41` live Revit smoke remains pending explicit operator approval; deterministic
+contract, compile, and installer gates are the only checks authorized in this
+PR until then.
+
 The Phase 0 exit run was completed on 2026-07-11 against Autodesk's local
 Revit 2022 sample `BIM_Projekt_Golden_Nugget-Gebaeudetechnik.rvt`, with its
 architectural link loaded, at host level `HG_EG_FBOK` (Revit element id
@@ -148,7 +182,7 @@ Phase 0 is `go` only when all of these are true on the frozen reference level:
 - audited supported node identities are 100% stable;
 - extraction coverage is at least 99.5% and every omission is classified;
 - host/link transform round-trip error is no more than 0.5 mm;
-- pagination has zero duplicates and zero omissions;
+- pagination has zero duplicates and zero unaccounted cross-page missing rows;
 - manual geometry and Room/Space audit is complete; and
 - bounded deterministic operation probes are recorded.
 

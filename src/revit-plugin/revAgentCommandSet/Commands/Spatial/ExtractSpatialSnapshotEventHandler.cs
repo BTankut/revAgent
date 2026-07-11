@@ -84,6 +84,7 @@ namespace RevAgentCommandSet.Commands.Spatial
                 ResolveSources(hostDocument, hostIdentity, sources, rows, extraction, warnings);
                 extraction.SourceCount = sources.Count;
                 Dictionary<string, object> scope = SpatialSnapshotHelpers.BuildScope(_request, bands, hostDocument, hostIdentity);
+                scope["resolvedLinkedSourceLevels"] = BuildResolvedLinkedSourceLevelRecords(sources);
                 string scopeFingerprint = SpatialSnapshotHelpers.BuildScopeFingerprint(_request, bands, scope);
                 bool hasEffectiveSourcePolicy;
                 Dictionary<string, object> effectiveSourcePolicy = BuildEffectiveSourcePolicy(sources, extraction, out hasEffectiveSourcePolicy);
@@ -106,6 +107,34 @@ namespace RevAgentCommandSet.Commands.Spatial
                         { "allEligibleOmissionsClassified", false },
                         { "phase0TargetAtLeast0_995", false },
                         { "complete", false }
+                    };
+                    Complete(guarded);
+                    return;
+                }
+                if (!ValidateLinkedSourceLevelScope(sources, warnings, notices))
+                {
+                    SpatialSnapshotResult guarded = BuildGuarded(
+                        "needs_scope",
+                        "One or more exact linked source-level selectors did not resolve in the selected loaded links. Use inspect_levels and restart without cursor.",
+                        stopwatch,
+                        warnings,
+                        notices);
+                    guarded.Scope = scope;
+                    guarded.ScopeFingerprint = scopeFingerprint;
+                    guarded.EffectiveSourcePolicy = effectiveSourcePolicy;
+                    guarded.Omissions = rows.Where(row => !row.IsNode).Select(row => row.Payload).ToList();
+                    guarded.Coverage = new Dictionary<string, object>
+                    {
+                        { "effectiveScope", false },
+                        { "extractionCoverageRatio", 0.0 },
+                        { "allEligibleOmissionsClassified", false },
+                        { "phase0TargetAtLeast0_995", false },
+                        { "complete", false }
+                    };
+                    guarded.SuggestedNextScopes = new List<string>
+                    {
+                        "Call inspect_levels with the same source/link scope, then use a returned placement-qualified selector.",
+                        "Restart capture without cursor after correcting linkedSourceLevels or linkedSourceLevelNames."
                     };
                     Complete(guarded);
                     return;
@@ -207,6 +236,7 @@ namespace RevAgentCommandSet.Commands.Spatial
 
                 bool hasCoverageGaps = extraction.OmittedElementCount > 0 || extraction.SourceAvailabilityOmissionCount > 0;
                 bool partial = hasMore || extraction.BudgetStopped || hasCoverageGaps;
+                string coverageStatus = extraction.BudgetStopped ? "incomplete_budget" : hasCoverageGaps ? "incomplete_omissions" : "complete";
                 string stoppedReason = extraction.BudgetStopped ? extraction.ScanStoppedReason : hasMore ? "max_bytes" : hasCoverageGaps ? "read_failed" : "completed";
                 SpatialRow lastRead = pageRows.Count > 0 ? pageRows[pageRows.Count - 1] : null;
                 if (lastRead != null)
@@ -319,6 +349,7 @@ namespace RevAgentCommandSet.Commands.Spatial
                     PayloadBytes = totalPayloadBytes,
                     NextCursor = nextCursor,
                     Partial = partial,
+                    CoverageStatus = coverageStatus,
                     ScanStoppedReason = stoppedReason,
                     ScanPolicy = BuildScanPolicy(),
                     SuggestedNextScopes = BuildSuggestedNextScopes(hasMore, extraction),
@@ -436,6 +467,136 @@ namespace RevAgentCommandSet.Commands.Spatial
             return _request.LinkInstanceIds.Contains(id) || _request.LinkInstanceUniqueIds.Contains(uniqueId, StringComparer.Ordinal);
         }
 
+        private static List<Level> GetLevels(Document document)
+        {
+            if (document == null) return new List<Level>();
+            try
+            {
+                using (FilteredElementCollector collector = new FilteredElementCollector(document))
+                {
+                    return collector.OfClass(typeof(Level)).Cast<Level>()
+                        .OrderBy(level => SpatialSnapshotHelpers.GetProjectElevationFeet(level))
+                        .ThenBy(level => level.Id.GetIdValue())
+                        .ToList();
+                }
+            }
+            catch
+            {
+                return new List<Level>();
+            }
+        }
+
+        private bool HasLinkedSourceLevelFilter()
+        {
+            return _request.LinkedSourceLevels.Count > 0 || _request.LinkedSourceLevelNames.Count > 0;
+        }
+
+        private bool MatchesLinkedSourceLevelFilter(SpatialCandidate candidate)
+        {
+            if (!RequiresLinkedSourceLevelFilter(candidate)) return true;
+            if (!string.IsNullOrWhiteSpace(candidate.LevelName) && _request.LinkedSourceLevelNames.Contains(candidate.LevelName, StringComparer.OrdinalIgnoreCase)) return true;
+            return _request.LinkedSourceLevels.Any(selector =>
+                string.Equals(selector.LinkInstanceUniqueId, candidate.Source.PlacementKey, StringComparison.Ordinal) &&
+                (!selector.LevelId.HasValue || selector.LevelId == candidate.LevelId) &&
+                (string.IsNullOrWhiteSpace(selector.LevelUniqueId) || string.Equals(selector.LevelUniqueId, candidate.LevelUniqueId, StringComparison.Ordinal)) &&
+                (string.IsNullOrWhiteSpace(selector.LevelName) || string.Equals(selector.LevelName, candidate.LevelName, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        private bool RequiresLinkedSourceLevelFilter(SpatialCandidate candidate)
+        {
+            return candidate != null && candidate.Source != null && !candidate.Source.IsHost && HasLinkedSourceLevelFilter() &&
+                SpatialSnapshotHelpers.SpatialCategories.Contains(SpatialSnapshotHelpers.GetBuiltInCategory(candidate.Element));
+        }
+
+        private static bool MatchesLevelSelector(Level level, LinkedSourceLevelSelector selector)
+        {
+            if (level == null || selector == null) return false;
+            return (!selector.LevelId.HasValue || selector.LevelId.Value == level.Id.GetIdValue()) &&
+                (string.IsNullOrWhiteSpace(selector.LevelUniqueId) || string.Equals(selector.LevelUniqueId, SafeUniqueId(level), StringComparison.Ordinal)) &&
+                (string.IsNullOrWhiteSpace(selector.LevelName) || string.Equals(selector.LevelName, level.Name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private List<Dictionary<string, object>> BuildResolvedLinkedSourceLevelRecords(IList<SpatialSource> sources)
+        {
+            List<Dictionary<string, object>> records = new List<Dictionary<string, object>>();
+            if (!HasLinkedSourceLevelFilter()) return records;
+            foreach (SpatialSource source in sources.Where(item => !item.IsHost && item.ExtractElements).OrderBy(item => item.PlacementKey, StringComparer.Ordinal))
+            {
+                foreach (Level level in GetLevels(source.Document))
+                {
+                    bool matchesName = !string.IsNullOrWhiteSpace(level.Name) && _request.LinkedSourceLevelNames.Contains(level.Name, StringComparer.OrdinalIgnoreCase);
+                    bool matchesSelector = _request.LinkedSourceLevels.Any(selector =>
+                        string.Equals(selector.LinkInstanceUniqueId, source.PlacementKey, StringComparison.Ordinal) && MatchesLevelSelector(level, selector));
+                    if (!matchesName && !matchesSelector) continue;
+                    records.Add(new Dictionary<string, object>
+                    {
+                        { "linkInstanceUniqueId", source.PlacementKey },
+                        { "levelId", level.Id.GetIdValue() },
+                        { "levelUniqueId", SafeUniqueId(level) },
+                        { "levelName", level.Name }
+                    });
+                }
+            }
+            return records
+                .OrderBy(record => Convert.ToString(record["linkInstanceUniqueId"], CultureInfo.InvariantCulture), StringComparer.Ordinal)
+                .ThenBy(record => Convert.ToString(record["levelUniqueId"], CultureInfo.InvariantCulture), StringComparer.Ordinal)
+                .ToList();
+        }
+
+        private bool ValidateLinkedSourceLevelScope(IList<SpatialSource> sources, List<string> warnings, List<string> notices)
+        {
+            List<SpatialSource> linkedSources = sources.Where(source => !source.IsHost && source.ExtractElements).ToList();
+            if (!HasLinkedSourceLevelFilter())
+            {
+                if (linkedSources.Count > 0)
+                {
+                    notices.Add("Host level scope uses an explicit host-Z vertical band and is not an exact linked source-level filter. Adjacent linked levels can overlap the band; use placement-qualified linkedSourceLevels and/or linkedSourceLevelNames when exact linked-level membership is required.");
+                }
+                return true;
+            }
+            if (!_request.IncludeRoomsSpaces)
+            {
+                warnings.Add("Exact linked source-level selectors apply only to linked Room/Space rows, but includeRoomsSpaces=false.");
+                return false;
+            }
+            if (linkedSources.Count == 0)
+            {
+                warnings.Add("Exact linked source-level selectors were supplied, but no selected loaded link is available for extraction.");
+                return false;
+            }
+
+            bool valid = true;
+            HashSet<string> availableNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (SpatialSource linkedSource in linkedSources)
+            {
+                foreach (Level level in GetLevels(linkedSource.Document))
+                {
+                    if (!string.IsNullOrWhiteSpace(level.Name)) availableNames.Add(level.Name);
+                }
+            }
+            foreach (string requestedName in _request.LinkedSourceLevelNames.Where(name => !availableNames.Contains(name)))
+            {
+                warnings.Add("Requested exact linked source level name was not found in the selected loaded links: " + requestedName + ".");
+                valid = false;
+            }
+            foreach (LinkedSourceLevelSelector selector in _request.LinkedSourceLevels)
+            {
+                SpatialSource source = linkedSources.FirstOrDefault(item => string.Equals(item.PlacementKey, selector.LinkInstanceUniqueId, StringComparison.Ordinal));
+                if (source == null)
+                {
+                    warnings.Add("Requested exact linked source level selector references a link instance that is not selected and loaded: " + selector.LinkInstanceUniqueId + ".");
+                    valid = false;
+                    continue;
+                }
+                if (!GetLevels(source.Document).Any(level => MatchesLevelSelector(level, selector)))
+                {
+                    warnings.Add("Requested exact linked source level selector did not resolve inside link instance " + selector.LinkInstanceUniqueId + ".");
+                    valid = false;
+                }
+            }
+            return valid;
+        }
+
         private static string SafeUniqueId(Element element)
         {
             try { return element.UniqueId ?? ""; }
@@ -473,6 +634,10 @@ namespace RevAgentCommandSet.Commands.Spatial
                 { "includeHostMep", _request.IncludeHostMep },
                 { "includeRoomsSpaces", _request.IncludeRoomsSpaces },
                 { "includeLinkedObstructions", _request.IncludeLinkedObstructions },
+                { "linkedSourceLevelFilterMode", HasLinkedSourceLevelFilter() ? "exact" : "none" },
+                { "linkedSourceLevelFilterAppliesTo", new List<string> { "linked_room_space" } },
+                { "requestedLinkedSourceLevels", SpatialSnapshotHelpers.BuildLinkedSourceLevelSelectorRecords(_request.LinkedSourceLevels) },
+                { "requestedLinkedSourceLevelNames", _request.LinkedSourceLevelNames.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList() },
                 { "selectedLinkCount", state.SelectedLinkCount },
                 { "loadedSelectedLinkCount", state.LoadedLinkCount },
                 { "effectiveSourceCount", effectiveSources.Count },
@@ -564,17 +729,29 @@ namespace RevAgentCommandSet.Commands.Spatial
                         candidate.Source,
                         bands,
                         out candidate.LevelName,
-                        out candidate.LevelId);
+                        out candidate.LevelId,
+                        out candidate.LevelUniqueId);
                 }
                 catch (Exception ex)
                 {
                     candidate.ScopeClassification = "scope_read_failed";
                     candidate.LevelName = null;
                     candidate.LevelId = null;
+                    candidate.LevelUniqueId = null;
                     warnings.Add("Element scope read failed for " + candidate.StableSourceIdentity + ": " + ex.Message);
                 }
 
                 if (string.Equals(candidate.ScopeClassification, "out_of_scope", StringComparison.Ordinal))
+                {
+                    state.FilteredOutOfScopeCount++;
+                    continue;
+                }
+                if (RequiresLinkedSourceLevelFilter(candidate) &&
+                    !candidate.LevelId.HasValue && string.IsNullOrWhiteSpace(candidate.LevelUniqueId) && string.IsNullOrWhiteSpace(candidate.LevelName))
+                {
+                    candidate.ScopeClassification = "linked_source_level_unresolved";
+                }
+                else if (!MatchesLinkedSourceLevelFilter(candidate))
                 {
                     state.FilteredOutOfScopeCount++;
                     continue;
@@ -625,15 +802,17 @@ namespace RevAgentCommandSet.Commands.Spatial
                 if (!string.Equals(candidate.ScopeClassification, "eligible", StringComparison.Ordinal))
                 {
                     string detail = string.Equals(candidate.ScopeClassification, "scope_unresolved", StringComparison.Ordinal)
-                        ? "Element has neither a resolvable source level nor a readable bounding box for host level-band filtering."
+                        ? "Element has no readable bounding box for physical host level-band filtering; source Level identity, when available, is diagnostic only."
+                        : string.Equals(candidate.ScopeClassification, "linked_source_level_unresolved", StringComparison.Ordinal)
+                            ? "Linked Room/Space has no resolvable source level for the requested exact linked source-level filter."
                         : "Element scope could not be read reliably.";
-                    AddElementOmission(rows, candidate.Source, candidate.Element, candidate.CategoryName, candidate.ScopeClassification, detail, candidate.LevelName, candidate.LevelId, state, true);
+                    AddElementOmission(rows, candidate.Source, candidate.Element, candidate.CategoryName, candidate.ScopeClassification, detail, candidate.LevelName, candidate.LevelId, candidate.LevelUniqueId, state, true);
                     continue;
                 }
 
                 if (candidate.StableSourceIdentity.StartsWith("element-id:", StringComparison.Ordinal))
                 {
-                    AddElementOmission(rows, candidate.Source, candidate.Element, candidate.CategoryName, "stable_identity_unavailable", "Element.UniqueId was unavailable; the numeric ElementId is retained only as session evidence and no stable node was emitted.", candidate.LevelName, candidate.LevelId, state, true);
+                    AddElementOmission(rows, candidate.Source, candidate.Element, candidate.CategoryName, "stable_identity_unavailable", "Element.UniqueId was unavailable; the numeric ElementId is retained only as session evidence and no stable node was emitted.", candidate.LevelName, candidate.LevelId, candidate.LevelUniqueId, state, true);
                     continue;
                 }
 
@@ -650,7 +829,7 @@ namespace RevAgentCommandSet.Commands.Spatial
                     out omissionClassification,
                     out omissionDetail))
                 {
-                    AddElementOmission(rows, candidate.Source, candidate.Element, candidate.CategoryName, omissionClassification ?? "geometry_unavailable", omissionDetail, candidate.LevelName, candidate.LevelId, state, true);
+                    AddElementOmission(rows, candidate.Source, candidate.Element, candidate.CategoryName, omissionClassification ?? "geometry_unavailable", omissionDetail, candidate.LevelName, candidate.LevelId, candidate.LevelUniqueId, state, true);
                     if (string.Equals(omissionClassification, "geometry_deadline_exceeded", StringComparison.Ordinal))
                     {
                         int remaining = processCount - index - 1;
@@ -662,10 +841,10 @@ namespace RevAgentCommandSet.Commands.Spatial
                     continue;
                 }
 
-                SpatialRow row = BuildNodeRow(candidate.Source, candidate.Element, candidate.CategoryName, candidate.LevelName, candidate.LevelId, geometry);
+                SpatialRow row = BuildNodeRow(candidate.Source, candidate.Element, candidate.CategoryName, candidate.LevelName, candidate.LevelId, candidate.LevelUniqueId, geometry);
                 if (GetCanonicalRowByteCount(row) + 2 > _request.PageTargetBytes)
                 {
-                    AddElementOmission(rows, candidate.Source, candidate.Element, candidate.CategoryName, "row_payload_too_large", "The canonical element row exceeds pageTargetBytes and was replaced with this classified omission.", candidate.LevelName, candidate.LevelId, state, true);
+                    AddElementOmission(rows, candidate.Source, candidate.Element, candidate.CategoryName, "row_payload_too_large", "The canonical element row exceeds pageTargetBytes and was replaced with this classified omission.", candidate.LevelName, candidate.LevelId, candidate.LevelUniqueId, state, true);
                     continue;
                 }
                 rows.Add(row);
@@ -674,7 +853,7 @@ namespace RevAgentCommandSet.Commands.Spatial
             }
         }
 
-        private static SpatialRow BuildNodeRow(SpatialSource source, Element element, string categoryName, string levelName, int? levelId, Dictionary<string, object> geometry)
+        private static SpatialRow BuildNodeRow(SpatialSource source, Element element, string categoryName, string levelName, int? levelId, string levelUniqueId, Dictionary<string, object> geometry)
         {
             string uniqueId = SpatialSnapshotHelpers.StableUniqueId(element);
             string nodeId = SpatialSnapshotHelpers.BuildNodeId(source, uniqueId);
@@ -713,7 +892,8 @@ namespace RevAgentCommandSet.Commands.Spatial
                 { "levelRef", new Dictionary<string, object>
                     {
                         { "sourceLevelId", levelId },
-                        { "sourceLevelName", levelName }
+                        { "sourceLevelName", levelName },
+                        { "sourceLevelUniqueId", levelUniqueId }
                     }
                 },
                 { "geometry", geometry }
@@ -733,7 +913,7 @@ namespace RevAgentCommandSet.Commands.Spatial
             };
         }
 
-        private static void AddElementOmission(List<SpatialRow> rows, SpatialSource source, Element element, string categoryName, string classification, string detail, string levelName, int? levelId, SpatialExtractionState state, bool alreadyCountedEligible = false)
+        private static void AddElementOmission(List<SpatialRow> rows, SpatialSource source, Element element, string categoryName, string classification, string detail, string levelName, int? levelId, string levelUniqueId, SpatialExtractionState state, bool alreadyCountedEligible = false)
         {
             if (!alreadyCountedEligible)
             {
@@ -751,7 +931,7 @@ namespace RevAgentCommandSet.Commands.Spatial
                 { "eligible", true },
                 { "nodeKind", "revit_element" },
                 { "category", categoryName },
-                { "levelRef", new Dictionary<string, object> { { "sourceLevelId", levelId }, { "sourceLevelName", levelName } } }
+                { "levelRef", new Dictionary<string, object> { { "sourceLevelId", levelId }, { "sourceLevelName", levelName }, { "sourceLevelUniqueId", levelUniqueId } } }
             };
             if (hasStableUniqueId)
             {

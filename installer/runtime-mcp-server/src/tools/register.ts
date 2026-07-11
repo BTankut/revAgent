@@ -19,6 +19,7 @@ import { registerExportRevitViewImageTool } from "./export_revit_view_image.js";
 import { registerShowElementInPlanAnd3DTool } from "./show_element_in_plan_and_3d.js";
 import { registerSmartFocusElementsTool } from "./smart_focus_elements.js";
 import { registerInspectElementsTool } from "./inspect_elements.js";
+import { registerInspectLevelsTool } from "./inspect_levels.js";
 import { registerInspectSheetTextTool } from "./inspect_sheet_text.js";
 import { registerInspectSchedulesTool } from "./inspect_schedules.js";
 import { registerReconcileScheduleExcelTool } from "./reconcile_schedule_excel.js";
@@ -56,6 +57,7 @@ export async function registerTools(server: ToolServer) {
     registerShowElementInPlanAnd3DTool(telemetryServer);
     registerSmartFocusElementsTool(telemetryServer);
     registerInspectElementsTool(telemetryServer);
+    registerInspectLevelsTool(telemetryServer);
     registerInspectSheetTextTool(telemetryServer);
     registerInspectSchedulesTool(telemetryServer);
     registerReconcileScheduleExcelTool(telemetryServer);
@@ -65,5 +67,5 @@ export async function registerTools(server: ToolServer) {
     registerSetScheduleCellsTool(telemetryServer);
     registerSetScheduleCellsByTextTool(telemetryServer);
     registerCaptureSpatialSnapshotTool(telemetryServer);
-    console.error("Registered 31 revAgent tools");
+    console.error("Registered 32 revAgent tools");
 }

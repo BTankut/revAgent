@@ -10,6 +10,11 @@ const canonicalStopReasons = new Set([
     "read_failed",
     "needs_scope",
 ]);
+const canonicalCoverageStatuses = new Set([
+    "complete",
+    "incomplete_omissions",
+    "incomplete_budget",
+]);
 function isObject(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -69,6 +74,22 @@ function normalizeStopReason(value, hasMore, success) {
     }
     return hasMore ? "max_items" : "completed";
 }
+function deriveCoverageStatus(source, scanStoppedReason) {
+    const raw = String(readField(source, "coverageStatus") ?? "").trim().toLowerCase();
+    if (canonicalCoverageStatuses.has(raw)) {
+        return raw;
+    }
+    if (scanStoppedReason === "max_elapsed" || scanStoppedReason === "max_items") {
+        return "incomplete_budget";
+    }
+    const counts = readField(source, "counts");
+    const coverage = readField(source, "coverage");
+    const elementOmissions = finiteInteger(readField(counts, "omittedSupportedNodes")) ?? 0;
+    const sourceOmissions = finiteInteger(readField(coverage, "sourceAvailabilityOmissionCount")) ?? 0;
+    return elementOmissions + sourceOmissions > 0
+        ? "incomplete_omissions"
+        : "complete";
+}
 function isSha256(value) {
     return typeof value === "string" && /^sha256:[a-f0-9]{64}$/i.test(value);
 }
@@ -109,6 +130,7 @@ export function normalizeSpatialPage(payload, elapsedMs) {
     const partialValue = readField(source, "partial");
     const partial = typeof partialValue === "boolean" ? partialValue : hasMore;
     const scanStoppedReason = normalizeStopReason(readField(source, "scanStoppedReason"), hasMore, success);
+    const coverageStatus = success && !guarded ? deriveCoverageStatus(source, scanStoppedReason) : null;
     const normalizedElapsedMs = finiteNumber(readField(source, "elapsedMs")) ?? finiteNumber(elapsedMs);
     const suggestedNextScopes = cleanStrings(readField(source, "suggestedNextScopes"));
     if (hasMore && !suggestedNextScopes.includes("cursor")) {
@@ -149,6 +171,7 @@ export function normalizeSpatialPage(payload, elapsedMs) {
         priorPageHash,
         nextCursor,
         partial,
+        coverageStatus,
         scanStoppedReason,
         suggestedNextScopes,
         elapsedMs: normalizedElapsedMs,
@@ -166,6 +189,7 @@ export function normalizeSpatialPage(payload, elapsedMs) {
         extractorVersion: readField(source, "extractorVersion"),
         counts: readField(source, "counts"),
         partial,
+        coverageStatus,
         scanStoppedReason,
         suggestedNextScopes: normalized.suggestedNextScopes,
         pageCount: finiteInteger(readField(source, "pageCount")),
@@ -274,6 +298,33 @@ export function normalizeSpatialPage(payload, elapsedMs) {
     }
     if (hasMore && !partial) {
         errors.push("partial must be true while page.hasMore is true");
+    }
+    const rawCoverageStatus = readField(source, "coverageStatus");
+    if (rawCoverageStatus !== undefined && !canonicalCoverageStatuses.has(String(rawCoverageStatus).trim().toLowerCase())) {
+        errors.push("coverageStatus must be complete, incomplete_omissions, or incomplete_budget");
+    }
+    if (rawCoverageStatus !== undefined && String(rawCoverageStatus).trim().toLowerCase() !== deriveCoverageStatus({
+        ...source,
+        coverageStatus: undefined,
+    }, scanStoppedReason)) {
+        errors.push("coverageStatus conflicts with total omission/budget evidence");
+    }
+    if (scanStoppedReason === "read_failed" && coverageStatus === "complete") {
+        errors.push("read_failed requires omission coverage evidence");
+    }
+    const expectedPartial = hasMore || coverageStatus !== "complete";
+    if (partial !== expectedPartial) {
+        errors.push("partial conflicts with pagination/coverage state");
+    }
+    const expectedStopReasons = coverageStatus === "incomplete_budget"
+        ? new Set(["max_elapsed", "max_items"])
+        : hasMore
+            ? new Set(["max_bytes"])
+            : coverageStatus === "incomplete_omissions"
+                ? new Set(["read_failed"])
+                : new Set(["completed"]);
+    if (!expectedStopReasons.has(scanStoppedReason)) {
+        errors.push("scanStoppedReason conflicts with pagination/coverage state");
     }
     normalized.contractValidation = {
         version: SPATIAL_PAGE_CONTRACT_VERSION,

@@ -35,6 +35,10 @@ import {
   resolveSpatialCapturePolicy,
 } from "../build/tools/capture_spatial_snapshot.js";
 import {
+  buildInspectLevelsParams,
+  normalizeInspectLevelsResult,
+} from "../build/tools/inspect_levels.js";
+import {
   normalizeSpatialPage,
 } from "../build/spatial/spatialPage.js";
 
@@ -104,6 +108,7 @@ const expectedTools = [
   "show_element_in_plan_and_3d",
   "smart_focus_elements",
   "inspect_elements",
+  "inspect_levels",
   "inspect_sheet_text",
   "inspect_schedules",
   "reconcile_schedule_excel",
@@ -123,6 +128,137 @@ assert.equal("includeRuntimeActivity" in statusTool.schema, true);
 assert.equal("runtimeActivityLimit" in statusTool.schema, true);
 assert.equal("runtimeActivityMode" in statusTool.schema, true);
 
+const inspectLevelsTool = tools.get("inspect_levels");
+assert.match(inspectLevelsTool.description, /LEVEL_INSPECTION_READ_ONLY/);
+assert.match(inspectLevelsTool.description, /partial\/max_items/);
+assert.match(inspectLevelsTool.description, /partial\/read_failed/);
+for (const field of [
+  "sourceScope",
+  "linkInstanceIds",
+  "linkInstanceUniqueIds",
+  "nameQuery",
+  "nameMatchMode",
+  "maxResults",
+  "timeoutMs",
+]) {
+  assert.equal(field in inspectLevelsTool.schema, true, `inspect_levels is missing ${field}.`);
+}
+const inspectLevelsParams = buildInspectLevelsParams({
+  sourceScope: "linkedOnly",
+  linkInstanceIds: [9, "9", 3, -1, "bad"],
+  linkInstanceUniqueIds: ["link-b", "link-a", "link-b", ""],
+  nameQuery: "  2FL  ",
+  nameMatchMode: "exact",
+  maxResults: 2,
+  timeoutMs: 70000,
+});
+assert.equal(inspectLevelsParams.sourceScope, "linkedOnly");
+assert.deepEqual(inspectLevelsParams.linkInstanceIds, [3, 9]);
+assert.deepEqual(inspectLevelsParams.linkInstanceUniqueIds, ["link-a", "link-b"]);
+assert.equal(inspectLevelsParams.nameQuery, "2FL");
+assert.equal(inspectLevelsParams.nameMatchMode, "exact");
+assert.equal(inspectLevelsParams.maxResults, 2);
+assert.equal(inspectLevelsParams.timeoutMs, 60000);
+assert.equal(buildInspectLevelsParams({ sourceScope: "invalid", nameMatchMode: "invalid" }).sourceScope, "hostAndLinked");
+assert.equal(buildInspectLevelsParams({ sourceScope: "invalid", nameMatchMode: "invalid" }).nameMatchMode, "contains");
+const normalizedInspectLevels = normalizeInspectLevelsResult({
+  Success: true,
+  Guarded: false,
+  State: "completed",
+  Action: "inspect_levels",
+  SourceScope: "linkedOnly",
+  NameQuery: "2FL",
+  NameMatchMode: "exact",
+  EffectiveSourceCount: 1,
+  SelectedLinkCount: 1,
+  LoadedSelectedLinkCount: 1,
+  UnavailableSourceCount: 0,
+  ScannedLevelCount: 3,
+  MatchedLevelCount: 3,
+  ReturnedCount: 2,
+  Partial: true,
+  ScanStoppedReason: "max_items",
+  LastReadItemId: 202,
+  Levels: [
+    {
+      SourceKind: "link",
+      DocumentKey: "standalone:linked-doc",
+      DocumentSessionId: "session-linked-doc",
+      LevelId: 201,
+      LevelUniqueId: "level-201",
+      Name: "2FL",
+      SourceProjectElevationMm: 4900,
+      SourceProjectElevationFrame: "linked_document_internal_mm",
+      HostElevationMm: 5000,
+      HostElevationFrame: "host_internal_mm",
+      HostElevationTransformBasis: "revit_link_instance_get_transform_source_origin_project_elevation_point",
+      LinkInstanceId: 91,
+      LinkInstanceUniqueId: "link-a",
+      LinkedSourceLevelSelector: {
+        LinkInstanceUniqueId: "link-a",
+        LevelId: 201,
+        LevelUniqueId: "level-201",
+        LevelName: "2FL",
+      },
+    },
+    {
+      SourceKind: "link",
+      DocumentKey: "standalone:linked-doc",
+      DocumentSessionId: "session-linked-doc",
+      LevelId: 202,
+      LevelUniqueId: "level-202",
+      Name: "2FL",
+      SourceProjectElevationMm: 5100,
+      SourceProjectElevationFrame: "linked_document_internal_mm",
+      HostElevationMm: 5200,
+      HostElevationFrame: "host_internal_mm",
+      HostElevationTransformBasis: "revit_link_instance_get_transform_source_origin_project_elevation_point",
+      LinkInstanceId: 91,
+      LinkInstanceUniqueId: "link-a",
+      LinkedSourceLevelSelector: {
+        LinkInstanceUniqueId: "link-a",
+        LevelId: 202,
+        LevelUniqueId: "level-202",
+        LevelName: "2FL",
+      },
+    },
+  ],
+}, inspectLevelsParams, 12);
+assert.equal(normalizedInspectLevels.action, "inspect_levels");
+assert.equal(normalizedInspectLevels.partial, true);
+assert.equal(normalizedInspectLevels.scanStoppedReason, "max_items");
+assert.equal(normalizedInspectLevels.levels.length, 2);
+assert.equal(normalizedInspectLevels.levels[0].sourceKind, "link");
+assert.equal(normalizedInspectLevels.levels[0].documentKey, "standalone:linked-doc");
+assert.equal(normalizedInspectLevels.levels[0].hostElevationMm, 5000);
+assert.equal(normalizedInspectLevels.levels[0].sourceProjectElevationMm, 4900);
+assert.deepEqual(normalizedInspectLevels.levels[0].linkedSourceLevelSelector, {
+  linkInstanceUniqueId: "link-a",
+  levelId: 201,
+  levelUniqueId: "level-201",
+  levelName: "2FL",
+});
+assert.equal(normalizedInspectLevels.evidenceRows.length, 2);
+assert.equal(normalizedInspectLevels.summary.matchedLevelCount, 3);
+assert.equal(normalizedInspectLevels.summary.unavailableSourceCount, 0);
+assert.equal(normalizedInspectLevels.lastReadItemId, 202);
+assert.equal("Levels" in normalizedInspectLevels, false);
+const unavailableInspectLevels = normalizeInspectLevelsResult({
+  Success: true,
+  Guarded: false,
+  State: "completed",
+  Action: "inspect_levels",
+  SourceScope: "linkedOnly",
+  UnavailableSourceCount: 1,
+  Levels: [],
+  Warnings: ["Selected link is unloaded."],
+}, { sourceScope: "linkedOnly" }, 4);
+assert.equal(unavailableInspectLevels.success, true);
+assert.equal(unavailableInspectLevels.state, "completed");
+assert.equal(unavailableInspectLevels.partial, true);
+assert.equal(unavailableInspectLevels.scanStoppedReason, "read_failed");
+assert.equal(unavailableInspectLevels.summary.unavailableSourceCount, 1);
+
 const captureSpatialTool = tools.get("capture_spatial_snapshot");
 assert.match(captureSpatialTool.description, /SPATIAL_CAPTURE_READ_ONLY/);
 assert.match(captureSpatialTool.description, /one native extract_spatial_snapshot command per MCP call/);
@@ -131,6 +267,8 @@ for (const field of [
   "levelIds",
   "levelNames",
   "sourceScope",
+  "linkedSourceLevels",
+  "linkedSourceLevelNames",
   "cursor",
   "pageTargetBytes",
   "maxElements",
@@ -146,10 +284,21 @@ const opaqueCursor = "spatial-cursor-v0.1.opaque-payload";
 const spatialParams = buildSpatialCaptureParams({
   levelIds: [9, "9", 3],
   levelNames: ["Level 2", "Level 2"],
+  linkedSourceLevels: [
+    { linkInstanceUniqueId: "link-b", levelUniqueId: "level-2", levelName: "2FL" },
+    { linkInstanceUniqueId: "link-a", levelId: "22", levelName: "2FL" },
+    { linkInstanceUniqueId: "link-a", levelId: 22, levelName: "2FL" },
+  ],
+  linkedSourceLevelNames: ["2FL", "2FL"],
   cursor: opaqueCursor,
 });
 assert.deepEqual(spatialParams.levelIds, [3, 9]);
 assert.deepEqual(spatialParams.levelNames, ["Level 2"]);
+assert.deepEqual(spatialParams.linkedSourceLevels, [
+  { linkInstanceUniqueId: "link-a", levelId: 22, levelUniqueId: null, levelName: "2FL" },
+  { linkInstanceUniqueId: "link-b", levelId: null, levelUniqueId: "level-2", levelName: "2FL" },
+]);
+assert.deepEqual(spatialParams.linkedSourceLevelNames, ["2FL"]);
 assert.equal(spatialParams.cursor, opaqueCursor, "The runtime must pass the opaque spatial cursor through unchanged.");
 assert.equal(spatialParams.suppressTaskStatusWindow, true, "Paged spatial capture must not block continuation on a per-page Revit status window.");
 for (const nativeRejectedCursor of [
@@ -348,6 +497,7 @@ const nativeSpatialPage = {
   payloadBytes: fixtureSnapshot.payloadBytes,
   nextCursor: fixturePage.nextCursor,
   partial: true,
+  coverageStatus: "complete",
   scanStoppedReason: "max_bytes",
   scanPolicy: {
     levelScopeRequired: true,
@@ -382,6 +532,8 @@ assert.equal(normalizedSpatialPage.payload.pageHash, nativePageHash);
 assert.equal(normalizedSpatialPage.payload.snapshot.snapshotId, spatialFixture.captureId);
 assert.equal(normalizedSpatialPage.payload.payloadBytes, fixtureSnapshot.payloadBytes, "Logical capture payloadBytes must be preserved.");
 assert.equal(normalizedSpatialPage.payload.pagePayloadBytes, pagePayloadBytes);
+assert.equal(normalizedSpatialPage.payload.coverageStatus, "complete");
+assert.equal(normalizedSpatialPage.payload.snapshot.coverageStatus, "complete");
 assert.deepEqual(normalizedSpatialPage.payload.page.rows, nativeRows, "Exact native hash rows must remain visible without aggregation.");
 assert.deepEqual(
   Object.keys(normalizedSpatialPage.payload.snapshot).sort(),
@@ -389,6 +541,7 @@ assert.deepEqual(
     "capturedAt",
     "coordinateFrame",
     "counts",
+    "coverageStatus",
     "extractorVersion",
     "lengthUnit",
     "pageCount",
@@ -405,6 +558,52 @@ assert.deepEqual(
   ].sort(),
   "Normalized pages must expose an exact SpatialSnapshot v0.1 contract view.",
 );
+
+const legacySpatialCoveragePage = structuredClone(nativeSpatialPage);
+delete legacySpatialCoveragePage.coverageStatus;
+legacySpatialCoveragePage.counts.omittedSupportedNodes = 1;
+legacySpatialCoveragePage.counts.expectedSupportedNodes += 1;
+legacySpatialCoveragePage.page.hasMore = false;
+legacySpatialCoveragePage.page.nextCursor = null;
+legacySpatialCoveragePage.nextCursor = null;
+legacySpatialCoveragePage.suggestedNextScopes = [];
+legacySpatialCoveragePage.scanStoppedReason = "read_failed";
+const legacySpatialCoverageResult = normalizeSpatialPage(legacySpatialCoveragePage);
+assert.equal(legacySpatialCoverageResult.valid, true, legacySpatialCoverageResult.errors.join("; "));
+assert.equal(legacySpatialCoverageResult.payload.coverageStatus, "incomplete_omissions");
+
+const legacySpatialBudgetPage = structuredClone(nativeSpatialPage);
+delete legacySpatialBudgetPage.coverageStatus;
+legacySpatialBudgetPage.scanStoppedReason = "max_items";
+const legacySpatialBudgetResult = normalizeSpatialPage(legacySpatialBudgetPage);
+assert.equal(legacySpatialBudgetResult.valid, true, legacySpatialBudgetResult.errors.join("; "));
+assert.equal(legacySpatialBudgetResult.payload.coverageStatus, "incomplete_budget");
+
+const conflictingSpatialCoveragePage = structuredClone(nativeSpatialPage);
+conflictingSpatialCoveragePage.coverageStatus = "incomplete_omissions";
+const conflictingSpatialCoverageResult = normalizeSpatialPage(conflictingSpatialCoveragePage);
+assert.equal(conflictingSpatialCoverageResult.valid, false);
+assert.match(conflictingSpatialCoverageResult.errors.join("; "), /coverageStatus conflicts/);
+
+const invalidPaginatedOmissionPage = structuredClone(nativeSpatialPage);
+delete invalidPaginatedOmissionPage.coverageStatus;
+invalidPaginatedOmissionPage.counts.omittedSupportedNodes = 1;
+invalidPaginatedOmissionPage.counts.expectedSupportedNodes += 1;
+invalidPaginatedOmissionPage.scanStoppedReason = "read_failed";
+const invalidPaginatedOmissionResult = normalizeSpatialPage(invalidPaginatedOmissionPage);
+assert.equal(invalidPaginatedOmissionResult.valid, false);
+assert.match(invalidPaginatedOmissionResult.errors.join("; "), /scanStoppedReason conflicts/);
+
+const invalidCompletedPartialPage = structuredClone(nativeSpatialPage);
+invalidCompletedPartialPage.page.hasMore = false;
+invalidCompletedPartialPage.page.nextCursor = null;
+invalidCompletedPartialPage.nextCursor = null;
+invalidCompletedPartialPage.partial = true;
+invalidCompletedPartialPage.scanStoppedReason = "completed";
+invalidCompletedPartialPage.suggestedNextScopes = [];
+const invalidCompletedPartialResult = normalizeSpatialPage(invalidCompletedPartialPage);
+assert.equal(invalidCompletedPartialResult.valid, false);
+assert.match(invalidCompletedPartialResult.errors.join("; "), /partial conflicts/);
 
 const invalidSpatialRevisionPage = structuredClone(nativeSpatialPage);
 invalidSpatialRevisionPage.sourceRevisions = [];
@@ -870,6 +1069,8 @@ const spatialTelemetryParams = summarizeSpatialExtractionTelemetryParams({
   levelNames: [spatialSecret],
   levelIds: [7788],
   linkInstanceUniqueIds: ["link-secret"],
+  linkedSourceLevels: [{ linkInstanceUniqueId: "linked-level-placement-secret", levelUniqueId: "linked-level-secret" }],
+  linkedSourceLevelNames: ["linked-level-name-secret"],
   cursor: spatialSecret,
   sourceScope: "hostAndLinked",
   pageTargetBytes: 262144,
@@ -879,8 +1080,22 @@ const spatialTelemetryParams = summarizeSpatialExtractionTelemetryParams({
 assert.equal(spatialTelemetryParams.levelNameCount, 1);
 assert.equal(spatialTelemetryParams.levelIdCount, 1);
 assert.equal(spatialTelemetryParams.linkInstanceSelectorCount, 1);
+assert.equal(spatialTelemetryParams.linkedSourceLevelSelectorCount, 2);
 assert.equal(spatialTelemetryParams.cursorPresent, true);
-assert.doesNotMatch(JSON.stringify(spatialTelemetryParams), /Level 09|Room 901|7788|cursor-secret|link-secret/);
+assert.doesNotMatch(JSON.stringify(spatialTelemetryParams), /Level 09|Room 901|7788|cursor-secret|link-secret|linked-level/);
+const inspectLevelsTelemetryParams = summarizeSpatialExtractionTelemetryParams({
+  sourceScope: "linkedOnly",
+  linkInstanceUniqueIds: ["inspect-levels-link-secret"],
+  nameQuery: "inspect-levels-name-secret",
+  maxResults: 25,
+}, "inspect_levels");
+assert.equal(inspectLevelsTelemetryParams.linkInstanceSelectorCount, 1);
+assert.equal(inspectLevelsTelemetryParams.nameQueryPresent, true);
+assert.equal(inspectLevelsTelemetryParams.maxResults, 25);
+assert.equal(Object.hasOwn(inspectLevelsTelemetryParams, "includeHostMep"), false);
+assert.equal(Object.hasOwn(inspectLevelsTelemetryParams, "includeRoomsSpaces"), false);
+assert.equal(Object.hasOwn(inspectLevelsTelemetryParams, "includeLinkedObstructions"), false);
+assert.doesNotMatch(JSON.stringify(inspectLevelsTelemetryParams), /inspect-levels/);
 const spatialTelemetryResponse = summarizeSpatialExtractionTelemetryResponse({
   success: true,
   guarded: false,
@@ -898,18 +1113,27 @@ const spatialTelemetryResponse = summarizeSpatialExtractionTelemetryResponse({
     nextCursor: spatialSecret,
   },
   scanStoppedReason: "max_bytes",
+  coverageStatus: "incomplete_omissions",
 });
 assert.equal(spatialTelemetryResponse.recordCount, 1);
 assert.equal(spatialTelemetryResponse.omissionCount, 1);
 assert.equal(spatialTelemetryResponse.sourceRevisionCount, 1);
 assert.equal(spatialTelemetryResponse.nextCursorPresent, true);
+assert.equal(spatialTelemetryResponse.coverageStatus, "incomplete_omissions");
 assert.doesNotMatch(JSON.stringify(spatialTelemetryResponse), /Level 09|Room 901|7788|cursor-secret/);
 assert.equal(isSpatialExtractionTelemetry({ toolName: "capture_spatial_snapshot" }), true);
+assert.equal(isSpatialExtractionTelemetry({ toolName: "inspect_levels" }), true);
 assert.equal(extractProductionContext({
   sourceEventType: "mcp.tool",
   toolName: "capture_spatial_snapshot",
   params: { levelNames: [spatialSecret], cursor: spatialSecret },
   response: { nodes: [{ nodeId: spatialSecret }] },
+}), null);
+assert.equal(extractProductionContext({
+  sourceEventType: "mcp.tool",
+  toolName: "inspect_levels",
+  params: { nameQuery: "inspect-levels-name-secret" },
+  response: { levels: [{ name: "inspect-levels-name-secret", levelId: 99 }] },
 }), null);
 
 const productionContext = extractProductionContext({

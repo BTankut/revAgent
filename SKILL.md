@@ -52,6 +52,9 @@ Hard routing rules:
 - Sheet text lookup: use `inspect_sheet_text` before any custom sheet loop.
 - Schedule discovery/cell reading: use `inspect_schedules` before any custom
   schedule loop.
+- Host/linked Level discovery: use `inspect_levels` before any custom Level or
+  RevitLinkInstance loop, especially before choosing a linked source level for
+  `capture_spatial_snapshot`.
 - Schedule-to-Excel reconciliation/review: use `reconcile_schedule_excel` after
   bounded schedule evidence is available.
 - Annotation inventory/count: use `count_annotations` before any custom
@@ -120,7 +123,14 @@ normalizer.
   requires exact `levelIds` and/or `levelNames`, returns exactly one bounded
   native page per call, and treats `nextCursor` as opaque. It extracts
   deterministic host/link identity plus canonical host-internal millimetre
-  geometry for the declared Phase 0 categories. `atomic=false` and
+  geometry for the declared Phase 0 categories. The host Level creates a host-Z
+  band, and every emitted node must physically overlap it after link transform;
+  source Level identity never bypasses that test. Use placement-qualified
+  `linkedSourceLevels` returned by `inspect_levels` when linked Room/Space rows
+  must match an exact source Level; linked obstructions remain physical
+  band-overlap evidence. Read `page.hasMore` for pagination and
+  `coverageStatus` (`complete`, `incomplete_omissions`, or
+  `incomplete_budget`) for extraction coverage. `atomic=false` and
   `liveness="unknown"` are deliberate: never use this spike for a current-state,
   clash-free, or clearance verdict. Durable storage, change tracking, queries,
   diffs, and live clash verification begin only in later phases.
@@ -217,6 +227,17 @@ normalizer.
   after whichever live focus step succeeds.
 - `inspect_elements` - targeted/selection element inspection: class,
   category, type, level, key parameters, connector counts
+- `inspect_levels` - read-only deterministic host/loaded-link Level inventory.
+  Use `sourceScope` plus exact `linkInstanceIds`/`linkInstanceUniqueIds`, and
+  optionally `nameQuery` with `nameMatchMode: "exact"` or `"contains"`. Rows
+  report document identity, source level identity, `sourceProjectElevationMm`,
+  and host elevation in millimetres. Linked rows include a copy-ready
+  `linkedSourceLevelSelector`; host elevation is explicitly based on the link
+  transform applied to the source-origin project-elevation point. `maxResults`
+  is applied after deterministic sorting and returns partial/max_items when
+  truncated. Missing, unloaded, or unreadable selected links return
+  `unavailableSourceCount` with partial/read_failed. Prefer this over raw C#
+  Level/link loops.
 - `inspect_sheet_text` - read-only native sheet and viewport annotation
   inspection. It covers DrawingSheet text notes, placed schedule inventory,
   bounded placed schedule body-cell search, and optional viewport-linked text
@@ -363,6 +384,9 @@ Default workflow for every Revit runtime task:
    `inspect_elements`. For ordinary parameter writes, prefer
    `set_element_parameter` over raw dynamic C# because it performs the exact
    schema preflight and readback verification itself.
+   Before a host/linked level-scoped workflow when the exact source Level name,
+   id, link placement, or transformed host elevation is unknown, call
+   `inspect_levels` and use exact link selectors where available.
 6. For DrawingSheet or placed-view annotation lookup, call
    `inspect_sheet_text` before writing raw C# sheet or viewport loops. Use
    `sheetQuery` or exact `sheetIds` and bounded limits; enable

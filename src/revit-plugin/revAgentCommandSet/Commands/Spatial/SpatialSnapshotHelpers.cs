@@ -18,7 +18,7 @@ namespace RevAgentCommandSet.Commands.Spatial
     {
         internal const double FeetToMillimetres = 304.8;
         internal const string SchemaVersion = "0.1";
-        internal const string ExtractorVersion = "phase0-spike/0.1.0";
+        internal const string ExtractorVersion = "phase0-spike/0.1.1";
         internal const string CoordinateFrame = "host_internal_mm";
         internal const string CursorVersion = "0.1";
         internal const string Phase0Caveat = "Phase 0 extraction is read-only but is not atomic and cannot establish current liveness. Continuation cursors are HMAC-bound to this add-in process session and are intentionally invalid after restart. Atomic multi-page capture and change-sequence validation begin in Phase 1a.";
@@ -490,7 +490,7 @@ namespace RevAgentCommandSet.Commands.Spatial
             }
             foreach (string name in request.LevelNames)
             {
-                List<Level> matches = allLevels.Where(level => string.Equals(level.Name, name, StringComparison.OrdinalIgnoreCase)).OrderBy(level => level.Elevation).ThenBy(level => level.Id.GetIdValue()).ToList();
+                List<Level> matches = allLevels.Where(level => string.Equals(level.Name, name, StringComparison.OrdinalIgnoreCase)).OrderBy(GetProjectElevationFeet).ThenBy(level => level.Id.GetIdValue()).ToList();
                 if (matches.Count == 0)
                 {
                     warnings.Add("Requested host level name was not found: " + name + ".");
@@ -502,15 +502,22 @@ namespace RevAgentCommandSet.Commands.Spatial
                 }
             }
 
-            return selected.OrderBy(level => level.Elevation).ThenBy(level => level.Id.GetIdValue()).Select(level => new LevelBand
+            return selected.OrderBy(GetProjectElevationFeet).ThenBy(level => level.Id.GetIdValue()).Select(level => new LevelBand
             {
                 Id = level.Id.GetIdValue(),
                 UniqueId = SafeGet(delegate { return level.UniqueId; }),
                 Name = level.Name,
-                ElevationFeet = level.Elevation,
-                MinHostZFeet = level.Elevation - request.BelowLevelMm / FeetToMillimetres,
-                MaxHostZFeet = level.Elevation + request.AboveLevelMm / FeetToMillimetres
+                ElevationFeet = GetProjectElevationFeet(level),
+                MinHostZFeet = GetProjectElevationFeet(level) - request.BelowLevelMm / FeetToMillimetres,
+                MaxHostZFeet = GetProjectElevationFeet(level) + request.AboveLevelMm / FeetToMillimetres
             }).ToList();
+        }
+
+        internal static double GetProjectElevationFeet(Level level)
+        {
+            if (level == null) return 0.0;
+            try { return level.ProjectElevation; }
+            catch { return level.Elevation; }
         }
 
         internal static List<BuiltInCategory> GetCategoriesForSource(SpatialSource source, SpatialSnapshotRequest request)
@@ -539,34 +546,78 @@ namespace RevAgentCommandSet.Commands.Spatial
             return "unsupported";
         }
 
-        internal static string ClassifyLevelScope(Element element, SpatialSource source, IList<LevelBand> bands, out string resolvedLevelName, out int? resolvedLevelId)
+        internal static Level ResolveSourceLevel(Element element, Document sourceDocument)
+        {
+            if (element == null || sourceDocument == null) return null;
+
+            try
+            {
+                ElementId directLevelId = element.LevelId;
+                if (directLevelId != null && directLevelId != ElementId.InvalidElementId)
+                {
+                    Level directLevel = sourceDocument.GetElement(directLevelId) as Level;
+                    if (directLevel != null) return directLevel;
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                MEPCurve mepCurve = element as MEPCurve;
+                if (mepCurve != null && mepCurve.ReferenceLevel != null)
+                {
+                    return mepCurve.ReferenceLevel;
+                }
+            }
+            catch
+            {
+            }
+
+            foreach (BuiltInParameter builtInParameter in new[]
+            {
+                BuiltInParameter.INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM,
+                BuiltInParameter.FAMILY_LEVEL_PARAM,
+                BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM,
+                BuiltInParameter.RBS_START_LEVEL_PARAM
+            })
+            {
+                try
+                {
+                    Parameter parameter = element.get_Parameter(builtInParameter);
+                    if (parameter == null || parameter.StorageType != StorageType.ElementId) continue;
+
+                    ElementId parameterLevelId = parameter.AsElementId();
+                    if (parameterLevelId == null || parameterLevelId == ElementId.InvalidElementId) continue;
+
+                    Level parameterLevel = sourceDocument.GetElement(parameterLevelId) as Level;
+                    if (parameterLevel != null) return parameterLevel;
+                }
+                catch
+                {
+                }
+            }
+
+            return null;
+        }
+
+        internal static string ClassifyLevelScope(Element element, SpatialSource source, IList<LevelBand> bands, out string resolvedLevelName, out int? resolvedLevelId, out string resolvedLevelUniqueId)
         {
             resolvedLevelName = null;
             resolvedLevelId = null;
-            bool requiresHostVolumeOverlap = !source.IsHost && LinkedObstructionCategories.Contains(GetBuiltInCategory(element));
+            resolvedLevelUniqueId = null;
+            double? sourceLevelHostZFeet = null;
             try
             {
-                ElementId levelId = element.LevelId;
-                if (levelId != null && levelId != ElementId.InvalidElementId)
+                Level sourceLevel = ResolveSourceLevel(element, source.Document);
+                if (sourceLevel != null)
                 {
-                    Level sourceLevel = source.Document.GetElement(levelId) as Level;
-                    if (sourceLevel != null)
-                    {
-                        resolvedLevelName = sourceLevel.Name;
-                        resolvedLevelId = sourceLevel.Id.GetIdValue();
-                        XYZ hostPoint = source.SourceToHost.OfPoint(new XYZ(0, 0, sourceLevel.Elevation));
-                        foreach (LevelBand band in bands)
-                        {
-                            // A matching linked level name is diagnostic context only for
-                            // obstructions; eligibility requires transformed host-volume overlap.
-                            if (!requiresHostVolumeOverlap && (
-                                string.Equals(sourceLevel.Name, band.Name, StringComparison.OrdinalIgnoreCase) ||
-                                Math.Abs(hostPoint.Z - band.ElevationFeet) * FeetToMillimetres <= 100.0))
-                            {
-                                return "eligible";
-                            }
-                        }
-                    }
+                    resolvedLevelName = sourceLevel.Name;
+                    resolvedLevelId = sourceLevel.Id.GetIdValue();
+                    resolvedLevelUniqueId = StableUniqueId(sourceLevel);
+                    XYZ hostPoint = source.SourceToHost.OfPoint(new XYZ(0, 0, GetProjectElevationFeet(sourceLevel)));
+                    sourceLevelHostZFeet = hostPoint.Z;
                 }
             }
             catch
@@ -586,8 +637,19 @@ namespace RevAgentCommandSet.Commands.Spatial
                     return bands.Any(band => maxZ >= band.MinHostZFeet && minZ <= band.MaxHostZFeet) ? "eligible" : "out_of_scope";
                 }
             }
-            if (requiresHostVolumeOverlap) return "scope_unresolved";
-            return resolvedLevelId.HasValue ? "out_of_scope" : "scope_unresolved";
+
+            // Source Level identity is useful for deterministic filtering and
+            // diagnostics, but it is not proof that element geometry overlaps a
+            // host-Z band. When bounds are unavailable, use the transformed Level
+            // point only to reject clearly different bands; a matching band remains
+            // an explicit omission rather than a false-positive spatial node.
+            if (sourceLevelHostZFeet.HasValue)
+            {
+                return bands.Any(band => sourceLevelHostZFeet.Value >= band.MinHostZFeet && sourceLevelHostZFeet.Value <= band.MaxHostZFeet)
+                    ? "scope_unresolved"
+                    : "out_of_scope";
+            }
+            return "scope_unresolved";
         }
 
         internal static bool TryBuildGeometry(
@@ -1038,6 +1100,12 @@ namespace RevAgentCommandSet.Commands.Spatial
                         { "maxHostZMm", RoundMm(band.MaxHostZFeet * FeetToMillimetres) }
                     }).ToList()
                 },
+                { "levelScopeSemantics", "host_vertical_band" },
+                { "verticalBandIsExactLevelMembership", false },
+                { "linkedSourceLevelFilterMode", request.LinkedSourceLevels.Count > 0 || request.LinkedSourceLevelNames.Count > 0 ? "exact" : "none" },
+                { "linkedSourceLevelFilterAppliesTo", new List<string> { "linked_room_space" } },
+                { "requestedLinkedSourceLevels", BuildLinkedSourceLevelSelectorRecords(request.LinkedSourceLevels) },
+                { "requestedLinkedSourceLevelNames", request.LinkedSourceLevelNames.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList() },
                 { "categories", categories },
                 { "linkInclusionPolicy", string.Equals(request.SourceScope, "hostOnly", StringComparison.OrdinalIgnoreCase) ? "host_only" : "loaded_links" },
                 { "sourceDocumentPolicy", string.Equals(request.SourceScope, "hostOnly", StringComparison.OrdinalIgnoreCase)
@@ -1065,6 +1133,8 @@ namespace RevAgentCommandSet.Commands.Spatial
                 { "sourceScope", request.SourceScope },
                 { "requestedLinkInstanceIds", request.LinkInstanceIds.OrderBy(value => value).ToList() },
                 { "requestedLinkInstanceUniqueIds", request.LinkInstanceUniqueIds.OrderBy(value => value, StringComparer.Ordinal).ToList() },
+                { "requestedLinkedSourceLevels", BuildLinkedSourceLevelSelectorRecords(request.LinkedSourceLevels) },
+                { "requestedLinkedSourceLevelNames", request.LinkedSourceLevelNames.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList() },
                 { "includeHostMep", request.IncludeHostMep },
                 { "includeRoomsSpaces", request.IncludeRoomsSpaces },
                 { "includeLinkedObstructions", request.IncludeLinkedObstructions },
@@ -1072,6 +1142,22 @@ namespace RevAgentCommandSet.Commands.Spatial
                 { "aboveLevelMm", request.AboveLevelMm }
             };
             return Sha256(CanonicalJson(fingerprintBasis));
+        }
+
+        internal static List<Dictionary<string, object>> BuildLinkedSourceLevelSelectorRecords(IEnumerable<LinkedSourceLevelSelector> selectors)
+        {
+            return (selectors ?? Enumerable.Empty<LinkedSourceLevelSelector>())
+                .OrderBy(value => value.LinkInstanceUniqueId, StringComparer.Ordinal)
+                .ThenBy(value => value.LevelId ?? int.MaxValue)
+                .ThenBy(value => value.LevelUniqueId, StringComparer.Ordinal)
+                .ThenBy(value => value.LevelName, StringComparer.OrdinalIgnoreCase)
+                .Select(value => new Dictionary<string, object>
+                {
+                    { "linkInstanceUniqueId", value.LinkInstanceUniqueId },
+                    { "levelId", value.LevelId },
+                    { "levelUniqueId", string.IsNullOrWhiteSpace(value.LevelUniqueId) ? null : value.LevelUniqueId },
+                    { "levelName", string.IsNullOrWhiteSpace(value.LevelName) ? null : value.LevelName }
+                }).ToList();
         }
 
         internal static string SerializePayload(Dictionary<string, object> payload)

@@ -52,6 +52,7 @@ Mandatory routing examples:
 
 - Sheet text lookup goes through `inspect_sheet_text`.
 - Schedule discovery and cell reading go through `inspect_schedules`.
+- Host/linked Level discovery goes through `inspect_levels`.
 - Schedule-to-Excel reconciliation/review goes through
   `reconcile_schedule_excel`.
 - Annotation inventory/count work goes through `count_annotations`.
@@ -61,6 +62,19 @@ Mandatory routing examples:
 - Phase 0 spatial extraction goes through `capture_spatial_snapshot` with an
   explicit level scope and opaque-cursor continuation. It is non-atomic with
   unknown liveness and cannot support current-state or clearance claims.
+  The host Level is a vertical host-Z band, not exact linked Level membership.
+  Every emitted node must physically overlap it after link transform; source
+  Level identity never bypasses that test. Use placement-qualified
+  `linkedSourceLevels` from `inspect_levels` for exact linked Room/Space scope;
+  linked obstructions remain physical-overlap evidence. Report `page.hasMore`
+  and `coverageStatus` separately.
+- When an exact host/linked Level name, id, link placement, or transformed host
+  elevation is unknown, call read-only `inspect_levels` before spatial capture
+  or raw Level/RevitLinkInstance loops. Use exact link instance selectors when
+  available; deterministic `maxResults` truncation reports partial/max_items.
+  Missing, unloaded, or unreadable selected links report
+  `unavailableSourceCount` with partial/read_failed and are not a complete
+  inventory.
 - Live Revit navigation uses live navigation tools.
 - Evidence images use export tools.
 - Selection cleanup goes through `clear_selection`.

@@ -64,6 +64,11 @@
       "assemblyPath": "revAgentCommandSet.dll"
     },
     {
+      "commandName": "inspect_levels",
+      "description": "Inspect host and loaded linked Revit levels with deterministic source and host elevation evidence",
+      "assemblyPath": "revAgentCommandSet.dll"
+    },
+    {
       "commandName": "inspect_sheet_text",
       "description": "Inspect sheet text notes, placed schedule instances, and viewport-linked text notes with native budgeted partial results",
       "assemblyPath": "revAgentCommandSet.dll"

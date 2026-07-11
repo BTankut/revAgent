@@ -12,9 +12,9 @@ const LIVE_STATUS_SCHEMA_VERSION = "revagent.live.status.v1";
 const LIVE_ACTIVITY_SCHEMA_VERSION = "revagent.live.activity.v1";
 const TELEMETRY_SESSION_ID = crypto.randomUUID();
 const TELEMETRY_PROCESS_STARTED_AT_UTC = new Date().toISOString();
-const SPATIAL_EXTRACTION_NAMES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot"]);
+const SPATIAL_EXTRACTION_NAMES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot", "inspect_levels"]);
 const SPATIAL_STATE_CODES = new Set(["running", "completed", "guarded", "failed"]);
-const SPATIAL_ACTION_CODES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot"]);
+const SPATIAL_ACTION_CODES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot", "inspect_levels"]);
 const SPATIAL_REASON_CODES = new Set([
     "needs_scope",
     "read_failed",
@@ -30,6 +30,7 @@ const SPATIAL_REASON_CODES = new Set([
     "invalid_response_kind",
 ]);
 const SPATIAL_STOP_CODES = new Set(["completed", "max_elapsed", "max_items", "max_bytes", "read_failed", "needs_scope"]);
+const SPATIAL_COVERAGE_CODES = new Set(["complete", "incomplete_omissions", "incomplete_budget"]);
 let telemetrySequence = 0;
 const liveActiveTasks = new Map();
 const liveRecentActivity = [];
@@ -99,7 +100,7 @@ export function isSpatialExtractionTelemetry(details = {}) {
         params.wrapperAction,
     ].some(isSpatialExtractionName);
 }
-export function summarizeSpatialExtractionTelemetryParams(params = {}) {
+export function summarizeSpatialExtractionTelemetryParams(params = {}, operationName) {
     const count = (value) => Array.isArray(value) ? value.length : 0;
     const finiteInteger = (value) => {
         const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -108,22 +109,28 @@ export function summarizeSpatialExtractionTelemetryParams(params = {}) {
     const sourceScope = ["hostOnly", "linkedOnly", "hostAndLinked"].includes(String(params.sourceScope || ""))
         ? params.sourceScope
         : null;
-    return {
+    const summary = {
         privacyBoundary: "spatial_extraction",
         levelSelectorCount: count(params.levelIds) + count(params.levelNames),
         levelIdCount: count(params.levelIds),
         levelNameCount: count(params.levelNames),
+        nameQueryPresent: typeof params.nameQuery === "string" && params.nameQuery.length > 0,
         linkInstanceSelectorCount: count(params.linkInstanceIds) + count(params.linkInstanceUniqueIds),
+        linkedSourceLevelSelectorCount: count(params.linkedSourceLevels) + count(params.linkedSourceLevelNames),
         sourceScope,
         cursorPresent: typeof params.cursor === "string" && params.cursor.length > 0,
         pageTargetBytes: finiteInteger(params.pageTargetBytes),
         maxElements: finiteInteger(params.maxElements),
+        maxResults: finiteInteger(params.maxResults),
         maxElapsedMs: finiteInteger(params.maxElapsedMs),
         timeoutMs: finiteInteger(params.timeoutMs),
-        includeHostMep: params.includeHostMep !== false,
-        includeRoomsSpaces: params.includeRoomsSpaces !== false,
-        includeLinkedObstructions: params.includeLinkedObstructions !== false,
     };
+    if (String(operationName ?? "").trim().toLowerCase() !== "inspect_levels") {
+        summary.includeHostMep = params.includeHostMep !== false;
+        summary.includeRoomsSpaces = params.includeRoomsSpaces !== false;
+        summary.includeLinkedObstructions = params.includeLinkedObstructions !== false;
+    }
+    return summary;
 }
 function summarizeText(value, maxChars) {
     const text = String(value || "");
@@ -389,6 +396,7 @@ export function summarizeSpatialExtractionTelemetryResponse(response, error = nu
     const pageOrdinal = coerceNumber(getValueCaseInsensitiveLocal(page, ["ordinal", "Ordinal", "pageOrdinal", "PageOrdinal"]))
         ?? coerceNumber(getValueCaseInsensitiveLocal(object, ["pageOrdinal", "PageOrdinal"]));
     const recordCount = coerceNumber(getValueCaseInsensitiveLocal(page, ["recordCount", "RecordCount", "rowCount", "RowCount"]))
+        ?? coerceNumber(getValueCaseInsensitiveLocal(object, ["returnedCount", "ReturnedCount"]))
         ?? (Array.isArray(nodes) ? nodes.length : null);
     const omissionCount = coerceNumber(getValueCaseInsensitiveLocal(page, ["omissionCount", "OmissionCount"]))
         ?? (Array.isArray(omissions) ? omissions.length : null);
@@ -403,6 +411,7 @@ export function summarizeSpatialExtractionTelemetryResponse(response, error = nu
         action: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["action", "Action"]), SPATIAL_ACTION_CODES),
         reason: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["reason", "Reason"]), SPATIAL_REASON_CODES),
         scanStoppedReason: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["scanStoppedReason", "ScanStoppedReason"]), SPATIAL_STOP_CODES),
+        coverageStatus: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["coverageStatus", "CoverageStatus"]), SPATIAL_COVERAGE_CODES),
         partial: getValueCaseInsensitiveLocal(object, ["partial", "Partial"]) === true,
         pageOrdinal,
         recordCount,
@@ -1297,7 +1306,7 @@ export function recordLiveActivityStarted(details = {}) {
         parentTaskIdPresent: Boolean(safeDetails.parentTaskId),
         startedAtUtc,
         params: spatialExtraction
-            ? summarizeSpatialExtractionTelemetryParams(safeDetails.params)
+            ? summarizeSpatialExtractionTelemetryParams(safeDetails.params, safeDetails.toolName || safeDetails.logicalToolName || safeDetails.commandName)
             : summarizeTelemetryParams(safeDetails.params),
     });
     writeLiveActivity(event);
@@ -1434,7 +1443,7 @@ export function recordRevitCommandTelemetry(details = {}) {
         },
         durationMs,
         params: spatialExtraction
-            ? summarizeSpatialExtractionTelemetryParams(details.params)
+            ? summarizeSpatialExtractionTelemetryParams(details.params, details.logicalToolName || details.commandName)
             : summarizeTelemetryParams(details.params),
         result: responseSummary,
     });
@@ -1499,7 +1508,7 @@ export function wrapServerWithTelemetry(server) {
                             parentTaskIdPresent: spatialExtraction ? false : Boolean(args?.parentTaskId),
                             durationMs,
                             params: spatialExtraction
-                                ? summarizeSpatialExtractionTelemetryParams(args)
+                                ? summarizeSpatialExtractionTelemetryParams(args, name)
                                 : summarizeTelemetryParams(args),
                             result: responseSummary,
                         });
@@ -1539,7 +1548,7 @@ export function wrapServerWithTelemetry(server) {
                             parentTaskIdPresent: spatialExtraction ? false : Boolean(args?.parentTaskId),
                             durationMs,
                             params: spatialExtraction
-                                ? summarizeSpatialExtractionTelemetryParams(args)
+                                ? summarizeSpatialExtractionTelemetryParams(args, name)
                                 : summarizeTelemetryParams(args),
                             result: responseSummary,
                         });

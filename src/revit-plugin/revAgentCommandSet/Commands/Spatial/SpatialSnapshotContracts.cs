@@ -11,6 +11,8 @@ namespace RevAgentCommandSet.Commands.Spatial
         public string SourceScope { get; set; }
         public List<int> LinkInstanceIds { get; set; }
         public List<string> LinkInstanceUniqueIds { get; set; }
+        public List<LinkedSourceLevelSelector> LinkedSourceLevels { get; set; }
+        public List<string> LinkedSourceLevelNames { get; set; }
         public bool IncludeHostMep { get; set; }
         public bool IncludeRoomsSpaces { get; set; }
         public bool IncludeLinkedObstructions { get; set; }
@@ -23,6 +25,14 @@ namespace RevAgentCommandSet.Commands.Spatial
         public int MaxGeometryPointsPerElement { get; set; }
         public int MaxBoundarySegmentsPerElement { get; set; }
         public int TimeoutMs { get; set; }
+    }
+
+    public class LinkedSourceLevelSelector
+    {
+        public string LinkInstanceUniqueId { get; set; }
+        public int? LevelId { get; set; }
+        public string LevelUniqueId { get; set; }
+        public string LevelName { get; set; }
     }
 
     public class SpatialSnapshotResult
@@ -59,6 +69,7 @@ namespace RevAgentCommandSet.Commands.Spatial
         public long PayloadBytes { get; set; }
         public string NextCursor { get; set; }
         public bool Partial { get; set; }
+        public string CoverageStatus { get; set; }
         public string ScanStoppedReason { get; set; }
         public object ScanPolicy { get; set; }
         public List<string> SuggestedNextScopes { get; set; }
@@ -119,6 +130,7 @@ namespace RevAgentCommandSet.Commands.Spatial
         public string ScopeClassification;
         public string LevelName;
         public int? LevelId;
+        public string LevelUniqueId;
     }
 
     internal sealed class LevelBand

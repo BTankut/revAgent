@@ -144,16 +144,42 @@ assert.ok(
   "Native canonical JSON must select the shortest exact double representation before applying ECMAScript exponent thresholds.",
 );
 assert.ok(
-  spatialHelpersSource.includes("bool requiresHostVolumeOverlap = !source.IsHost"),
-  "Linked obstruction scope must require transformed host-volume overlap.",
+  spatialHelpersSource.includes("List<XYZ> corners = GetHostBoundingCorners(box, source.SourceToHost);")
+    && spatialHelpersSource.includes("maxZ >= band.MinHostZFeet && minZ <= band.MaxHostZFeet")
+    && !spatialHelpersSource.includes("string.Equals(sourceLevel.Name, band.Name"),
+  "Every supported spatial row must require transformed physical host-band overlap; Level-name equality is diagnostic only.",
 );
 assert.ok(
-  spatialHelpersSource.includes("if (!requiresHostVolumeOverlap && ("),
-  "Linked level-name equality must not independently make an obstruction eligible.",
+  spatialHelpersSource.includes("double? sourceLevelHostZFeet = null;")
+    && spatialHelpersSource.includes('? "scope_unresolved"')
+    && spatialHelpersSource.includes(': "out_of_scope";'),
+  "Rows without readable bounds may use transformed Level Z only to reject a different band, never to emit a spatial node.",
 );
 assert.ok(
-  spatialHelpersSource.includes('if (requiresHostVolumeOverlap) return "scope_unresolved";'),
-  "Linked obstructions without transformed bounds must be classified as unresolved, not silently eligible.",
+  spatialHelpersSource.includes("Level sourceLevel = ResolveSourceLevel(element, source.Document);")
+    && spatialHelpersSource.includes("MEPCurve mepCurve = element as MEPCurve;")
+    && spatialHelpersSource.includes("mepCurve.ReferenceLevel"),
+  "Host MEP curves must populate source level identity from MEPCurve.ReferenceLevel when Element.LevelId is unavailable.",
+);
+for (const builtInParameter of [
+  "INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM",
+  "FAMILY_LEVEL_PARAM",
+  "INSTANCE_REFERENCE_LEVEL_PARAM",
+  "RBS_START_LEVEL_PARAM",
+]) {
+  assert.ok(
+    spatialHelpersSource.includes(`BuiltInParameter.${builtInParameter}`),
+    `Spatial source-level resolution must retain the ${builtInParameter} fallback.`,
+  );
+}
+assert.ok(
+  spatialHelpersSource.includes("return level.ProjectElevation;")
+    && spatialHelpersSource.includes("catch { return level.Elevation; }"),
+  "Spatial host-Z level bands must use project-origin Level.ProjectElevation with a compatibility fallback.",
+);
+assert.ok(
+  spatialHelpersSource.includes('{ "linkedSourceLevelFilterAppliesTo", new List<string> { "linked_room_space" } }'),
+  "Spatial scope metadata must make exact linked Room/Space filtering explicit.",
 );
 assert.ok(
   spatialHelpersSource.includes("jsonReader.DateParseHandling = DateParseHandling.None;"),
@@ -283,6 +309,30 @@ assert.equal(schemas.spatialSnapshot.properties.coordinateFrame.const, "host_int
 assert.equal(schemas.spatialSnapshot.$defs.scope.properties.coordinateFrame.const, "host_internal_mm");
 assert.equal(schemas.spatialSnapshot.properties.lengthUnit.const, "mm");
 assert.equal(schemas.spatialSnapshot.properties.schemaVersion.const, "0.1");
+assert.deepEqual(
+  schemas.spatialSnapshot.$defs.coverageStatus.enum,
+  ["complete", "incomplete_omissions", "incomplete_budget"],
+);
+assert.deepEqual(
+  schemas.spatialSnapshot.$defs.scanStoppedReason.enum,
+  ["completed", "max_elapsed", "max_items", "max_bytes", "read_failed", "needs_scope"],
+);
+for (const [coverageStatus, expectedReasons] of [
+  ["complete", ["completed", "max_bytes"]],
+  ["incomplete_omissions", ["read_failed", "max_bytes"]],
+  ["incomplete_budget", ["max_elapsed", "max_items"]],
+]) {
+  assert.ok(
+    schemas.spatialSnapshot.allOf.some((rule) =>
+      rule.if?.properties?.coverageStatus?.const === coverageStatus
+      && expectedReasons.every((reason) => rule.then?.properties?.scanStoppedReason?.enum?.includes(reason))),
+    `SpatialSnapshot ${coverageStatus} must constrain compatible stop reasons.`,
+  );
+}
+assert.equal(schemas.spatialSnapshot.$defs.scope.properties.levelScopeSemantics.const, "host_vertical_band");
+assert.equal(schemas.spatialSnapshot.$defs.scope.properties.verticalBandIsExactLevelMembership.const, false);
+assert.deepEqual(schemas.spatialSnapshot.$defs.scope.properties.linkedSourceLevelFilterMode.enum, ["none", "exact"]);
+assert.ok(Object.hasOwn(schemas.spatialSnapshot.$defs.scope.properties, "resolvedLinkedSourceLevels"));
 assertRequired(
   schemas.extractionPage,
   [
@@ -311,6 +361,25 @@ assert.equal(schemas.extractionPage.properties.effectiveSourcePolicy.$ref, "#/$d
 assert.equal(schemas.extractionPage.$defs.coverage.properties.effectiveScope.const, true);
 assert.equal(schemas.extractionPage.$defs.scanPolicy.properties.pagePayloadBasis.const, "canonical_ieee754_rows_utf8_v1");
 assert.deepEqual(schemas.extractionPage.$defs.pointLocation.properties.rotationRadians.type, ["number", "null"]);
+assert.deepEqual(schemas.extractionPage.$defs.levelRef.properties.sourceLevelId.type, ["integer", "null"]);
+assert.deepEqual(schemas.extractionPage.$defs.levelRef.properties.sourceLevelName.type, ["string", "null"]);
+assert.deepEqual(schemas.extractionPage.$defs.levelRef.properties.sourceLevelUniqueId.type, ["string", "null"]);
+assert.equal(schemas.extractionPage.properties.coverageStatus.$ref, "./spatial-snapshot.schema.json#/$defs/coverageStatus");
+assert.ok(
+  schemas.extractionPage.allOf.some((rule) =>
+    rule.if?.properties?.coverageStatus?.const === "complete"
+    && rule.if?.properties?.page?.properties?.hasMore?.const === false
+    && rule.then?.properties?.partial?.const === false
+    && rule.then?.properties?.scanStoppedReason?.const === "completed"),
+  "A final complete native page must reject partial/non-completed state.",
+);
+assert.ok(
+  schemas.extractionPage.allOf.some((rule) =>
+    rule.if?.properties?.coverageStatus?.enum?.includes("complete")
+    && rule.if?.properties?.page?.properties?.hasMore?.const === true
+    && rule.then?.properties?.scanStoppedReason?.const === "max_bytes"),
+  "A non-budget paginated native page must use max_bytes.",
+);
 assert.ok(
   spatialHelpersSource.includes("try { rotationRadians = location.Rotation; }")
     && spatialHelpersSource.includes('{ "rotationRadians", rotationRadians }'),
@@ -336,9 +405,31 @@ const spatialCommandSource = fs.readFileSync(
   path.join(repoRoot, "src", "revit-plugin", "revAgentCommandSet", "Commands", "Spatial", "ExtractSpatialSnapshotCommand.cs"),
   "utf8",
 );
+const spatialEventHandlerSource = fs.readFileSync(
+  path.join(repoRoot, "src", "revit-plugin", "revAgentCommandSet", "Commands", "Spatial", "ExtractSpatialSnapshotEventHandler.cs"),
+  "utf8",
+);
 assert.ok(
   spatialCommandSource.includes('ReadInt(parameters, "maxElapsedMs", 4500, 250, 25000)'),
   "The native explicitly scoped audit budget must allow up to 25 seconds while retaining the 4.5 second default.",
+);
+assert.ok(
+  spatialCommandSource.includes('ReadLinkedSourceLevelSelectors(parameters, "linkedSourceLevels")')
+    && spatialEventHandlerSource.includes("ValidateLinkedSourceLevelScope")
+    && spatialEventHandlerSource.includes("RequiresLinkedSourceLevelFilter")
+    && spatialEventHandlerSource.includes("SpatialSnapshotHelpers.SpatialCategories.Contains")
+    && spatialEventHandlerSource.includes('scope["resolvedLinkedSourceLevels"]'),
+  "Placement-qualified exact linked source levels must be guarded and apply only to linked Room/Space rows.",
+);
+assert.ok(
+  spatialEventHandlerSource.includes('candidate.ScopeClassification = "linked_source_level_unresolved";')
+    && spatialEventHandlerSource.includes('{ "sourceLevelUniqueId", levelUniqueId }'),
+  "Unresolved exact linked Room/Space levels must become classified omissions and resolved nodes must preserve source level UniqueId.",
+);
+assert.ok(
+  spatialEventHandlerSource.includes('string coverageStatus = extraction.BudgetStopped ? "incomplete_budget"')
+    && spatialEventHandlerSource.includes("CoverageStatus = coverageStatus"),
+  "Native extraction must report coverageStatus independently from pagination.",
 );
 for (const scanPolicyField of [
   "pagePayloadBasis",
