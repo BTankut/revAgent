@@ -181,6 +181,9 @@
     "partial": {
       "type": "boolean"
     },
+    "coverageStatus": {
+      "$ref": "./spatial-snapshot.schema.json#/$defs/coverageStatus"
+    },
     "scanStoppedReason": {
       "$ref": "./spatial-snapshot.schema.json#/$defs/scanStoppedReason"
     },
@@ -260,6 +263,87 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "required": ["coverageStatus"],
+        "properties": {
+          "coverageStatus": { "const": "incomplete_budget" }
+        }
+      },
+      "then": {
+        "properties": {
+          "partial": { "const": true },
+          "scanStoppedReason": {
+            "enum": ["max_elapsed", "max_items"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["coverageStatus", "page"],
+        "properties": {
+          "coverageStatus": {
+            "enum": ["complete", "incomplete_omissions"]
+          },
+          "page": {
+            "type": "object",
+            "required": ["hasMore"],
+            "properties": {
+              "hasMore": { "const": true }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "partial": { "const": true },
+          "scanStoppedReason": { "const": "max_bytes" }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["coverageStatus", "page"],
+        "properties": {
+          "coverageStatus": { "const": "incomplete_omissions" },
+          "page": {
+            "type": "object",
+            "required": ["hasMore"],
+            "properties": {
+              "hasMore": { "const": false }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "partial": { "const": true },
+          "scanStoppedReason": { "const": "read_failed" }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["coverageStatus", "page"],
+        "properties": {
+          "coverageStatus": { "const": "complete" },
+          "page": {
+            "type": "object",
+            "required": ["hasMore"],
+            "properties": {
+              "hasMore": { "const": false }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "partial": { "const": false },
+          "scanStoppedReason": { "const": "completed" }
+        }
+      }
     }
   ],
   "$defs": {
@@ -284,6 +368,9 @@
           "type": ["integer", "null"]
         },
         "sourceLevelName": {
+          "type": ["string", "null"]
+        },
+        "sourceLevelUniqueId": {
           "type": ["string", "null"]
         }
       }
@@ -670,6 +757,19 @@
         "includeHostMep": { "type": "boolean" },
         "includeRoomsSpaces": { "type": "boolean" },
         "includeLinkedObstructions": { "type": "boolean" },
+        "linkedSourceLevelFilterMode": { "type": "string", "enum": ["none", "exact"] },
+        "linkedSourceLevelFilterAppliesTo": {
+          "type": "array",
+          "prefixItems": [{ "const": "linked_room_space" }],
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "requestedLinkedSourceLevels": {
+          "$ref": "./spatial-snapshot.schema.json#/$defs/scope/properties/requestedLinkedSourceLevels"
+        },
+        "requestedLinkedSourceLevelNames": {
+          "$ref": "./spatial-snapshot.schema.json#/$defs/scope/properties/requestedLinkedSourceLevelNames"
+        },
         "selectedLinkCount": { "type": "integer", "minimum": 0 },
         "loadedSelectedLinkCount": { "type": "integer", "minimum": 0 },
         "effectiveSourceCount": { "type": "integer", "minimum": 1 },

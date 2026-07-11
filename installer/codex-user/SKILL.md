@@ -52,6 +52,11 @@ Use dedicated production tools before raw code:
 
 - Sheet text lookup: `inspect_sheet_text`.
 - Schedule discovery and cell reading: `inspect_schedules`.
+- Host/linked Level discovery: `inspect_levels`. Use exact link instance
+  selectors when known; use its copy-ready linked source-level selector and
+  transformed `hostElevationMm` evidence before choosing linked level scope for
+  spatial extraction. Treat unavailable-source partial/read_failed as an
+  incomplete inventory.
 - Schedule-to-Excel review: `reconcile_schedule_excel`.
 - Annotation inventory/count: `count_annotations`.
 - Exact schedule-cell writes: `set_schedule_cells`.
@@ -59,9 +64,14 @@ Use dedicated production tools before raw code:
 - Element parameter writes: `set_element_parameter`.
 - Element discovery: `find_elements`.
 - Element/selection inspection: `inspect_elements`.
+- Host/linked Level inventory: `inspect_levels`.
 - Parameter preflight: `inspect_parameter_schema`.
 - Phase 0 spatial extraction: `capture_spatial_snapshot`. Require an explicit
-  level scope, consume one page per call, and pass `nextCursor` unchanged.
+  host Level scope, consume one page per call, and pass `nextCursor` unchanged.
+  Host scope is a vertical band and every emitted node must physically overlap
+  it after link transform. Use placement-qualified `linkedSourceLevels` from
+  `inspect_levels` for an additional exact linked Room/Space constraint. Read
+  `page.hasMore` for pagination and `coverageStatus` for coverage.
   Treat `atomic=false` and `liveness="unknown"` as hard limits: do not make a
   current-state, clearance, or clash-free claim from this spike.
 - Live view navigation: `focus_elements`, `smart_focus_elements`,

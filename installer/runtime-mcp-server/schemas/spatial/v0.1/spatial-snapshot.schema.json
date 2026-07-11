@@ -67,6 +67,9 @@
     "partial": {
       "type": "boolean"
     },
+    "coverageStatus": {
+      "$ref": "#/$defs/coverageStatus"
+    },
     "scanStoppedReason": {
       "$ref": "#/$defs/scanStoppedReason"
     },
@@ -112,6 +115,53 @@
             "not": {
               "const": "completed"
             }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["coverageStatus"],
+        "properties": {
+          "coverageStatus": { "const": "complete" }
+        }
+      },
+      "then": {
+        "properties": {
+          "scanStoppedReason": {
+            "enum": ["completed", "max_bytes"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["coverageStatus"],
+        "properties": {
+          "coverageStatus": { "const": "incomplete_omissions" }
+        }
+      },
+      "then": {
+        "properties": {
+          "partial": { "const": true },
+          "scanStoppedReason": {
+            "enum": ["read_failed", "max_bytes"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["coverageStatus"],
+        "properties": {
+          "coverageStatus": { "const": "incomplete_budget" }
+        }
+      },
+      "then": {
+        "properties": {
+          "partial": { "const": true },
+          "scanStoppedReason": {
+            "enum": ["max_elapsed", "max_items"]
           }
         }
       }
@@ -186,6 +236,92 @@
           "minItems": 1,
           "items": {
             "$ref": "#/$defs/effectiveVerticalBand"
+          }
+        },
+        "levelScopeSemantics": {
+          "const": "host_vertical_band"
+        },
+        "verticalBandIsExactLevelMembership": {
+          "const": false
+        },
+        "linkedSourceLevelFilterMode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "exact"
+          ]
+        },
+        "linkedSourceLevelFilterAppliesTo": {
+          "type": "array",
+          "prefixItems": [
+            { "const": "linked_room_space" }
+          ],
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "requestedLinkedSourceLevels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "linkInstanceUniqueId",
+              "levelId",
+              "levelUniqueId",
+              "levelName"
+            ],
+            "properties": {
+              "linkInstanceUniqueId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "levelId": {
+                "type": ["integer", "null"],
+                "minimum": 1
+              },
+              "levelUniqueId": {
+                "type": ["string", "null"],
+                "minLength": 1
+              },
+              "levelName": {
+                "type": ["string", "null"],
+                "minLength": 1
+              }
+            },
+            "anyOf": [
+              { "properties": { "levelId": { "type": "integer" } } },
+              { "properties": { "levelUniqueId": { "type": "string" } } },
+              { "properties": { "levelName": { "type": "string" } } }
+            ]
+          }
+        },
+        "requestedLinkedSourceLevelNames": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "resolvedLinkedSourceLevels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "linkInstanceUniqueId",
+              "levelId",
+              "levelUniqueId",
+              "levelName"
+            ],
+            "properties": {
+              "linkInstanceUniqueId": { "type": "string", "minLength": 1 },
+              "levelId": { "type": "integer", "minimum": 1 },
+              "levelUniqueId": { "type": "string", "minLength": 1 },
+              "levelName": { "type": "string", "minLength": 1 }
+            }
           }
         },
         "activePhase": {
@@ -371,13 +507,18 @@
       "enum": [
         "completed",
         "max_elapsed",
-        "max_rows",
-        "max_columns",
-        "max_cells",
         "max_items",
         "max_bytes",
         "read_failed",
         "needs_scope"
+      ]
+    },
+    "coverageStatus": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "incomplete_omissions",
+        "incomplete_budget"
       ]
     }
   }

@@ -56,15 +56,18 @@ structural, and electrical modules should add module-specific MCP tools in the
 runtime layer while reusing this shared Revit bridge for common execution,
 context, selection, view, and navigation operations.
 
-The current runtime server registers 31 tools:
+The current runtime server registers 32 tools:
 
 - status and targeting: `list_revit_instances`, `get_revit_mcp_status`
 - dynamic execution: `send_code_to_revit`, `send_code_to_revit_safe`
 - model/session context: `get_revit_session_context`,
-  `get_active_view_context`, `inspect_elements`, `inspect_sheet_text`,
+  `get_active_view_context`, `inspect_elements`, `inspect_levels`, `inspect_sheet_text`,
   `inspect_schedules`, `count_annotations`, `inspect_parameter_schema`
 - Phase 0 spatial capture: `capture_spatial_snapshot`, a read-only,
   explicit-level, single-page wrapper over native `extract_spatial_snapshot`;
+  every emitted node must physically overlap the transformed host-Z band,
+  placement-qualified linked Level selectors apply only as an additional linked
+  Room/Space constraint, and `coverageStatus` is independent of `page.hasMore`;
   it is non-atomic with unknown liveness until Phase 1a
 - review/reconciliation: `reconcile_schedule_excel` for deterministic,
   write-free schedule-to-Excel review output
@@ -85,6 +88,17 @@ The current runtime server registers 31 tools:
 document checks do not perform MEP category counts or linked room/space scans.
 Callers must opt into `detailLevel="counts"` or `detailLevel="full"` when those
 expensive summaries are truly needed.
+
+`inspect_levels` is the read-only native/runtime Level inventory path for host
+and loaded linked documents. It accepts `hostOnly`, `linkedOnly`, or
+`hostAndLinked`, exact link instance id/UniqueId selectors, and exact/contains
+name matching. Source project elevation uses the shared
+`SpatialSnapshotHelpers.GetProjectElevationFeet` resolver. Rows carry source
+document identity; linked rows also carry transformed host elevation, explicit
+link-transform basis, and a copy-ready source-level selector. Native collection
+is fully sorted before `maxResults`; deterministic truncation reports
+partial/max_items. Missing, unloaded, or unreadable selected links report
+`unavailableSourceCount` with partial/read_failed rather than a complete result.
 
 `find_elements` is the progressive MEP-aware discovery tool for element search.
 The runtime infers obvious engineering scope before calling Revit, for example

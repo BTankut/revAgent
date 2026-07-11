@@ -323,6 +323,8 @@ try {
         "src\revit-plugin\revAgentCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Spatial\ExtractSpatialSnapshotCommand.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Spatial\ExtractSpatialSnapshotEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Spatial\InspectLevelsCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Spatial\InspectLevelsEventHandler.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Spatial\SpatialSnapshotContracts.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Spatial\SpatialSnapshotHelpers.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\View\ActivateViewCommand.cs",
@@ -381,6 +383,7 @@ try {
         Assert-True ($registeredCommandNames -contains $name) "commandRegistry.json is missing Revit bridge command '$name'."
     }
     Assert-True ($registeredCommandNames -contains "extract_spatial_snapshot") "commandRegistry.json must include the read-only Phase 0 spatial extractor."
+    Assert-True ($registeredCommandNames -contains "inspect_levels") "commandRegistry.json must include the read-only host/linked Level inspector."
     foreach ($path in @($commandRegistry.Commands | ForEach-Object { [string]$_.assemblyPath })) {
         Assert-Equal $path "revAgentCommandSet\\2022\\revAgentCommandSet.dll" "Bridge command registry must load every command from the revAgent bridge payload folder."
     }
@@ -603,6 +606,8 @@ try {
     Assert-True ($listInstancesToolText -notmatch 'Revit MCP socket instances' -and $listInstancesToolText -match 'revAgent Revit bridge instances') "Instance discovery tool description must use revAgent wording."
     Assert-True ($userSkillText -notmatch 'Revit MCP runtime|Revit MCP review|Revit MCP runtime tools|name: revit-mcp') "User-pack SKILL.md must not expose legacy product wording."
     Assert-True ($userAgentsText -notmatch 'Revit MCP runtime|Revit MCP work|Revit MCP Coordination|revAgent/Revit MCP') "User-pack AGENTS.md must not expose legacy product wording."
+    Assert-True ($userSkillText -match 'inspect_levels') "User-pack SKILL.md must route host/linked Level discovery through inspect_levels."
+    Assert-True ($userAgentsText -match 'inspect_levels') "User-pack AGENTS.md must route host/linked Level discovery through inspect_levels."
 
     Write-Host "Test Revit task status window product surface"
     $taskStatusXaml = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\UI\McpTaskStatusWindow.xaml")
@@ -686,6 +691,9 @@ try {
     $searchPolicyCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\searchPolicy.ts")
     $broadScanResultCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\broadScanResult.ts")
     $inspectElementsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_elements.ts")
+    $inspectLevelsToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\inspect_levels.ts")
+    $inspectLevelsCommandCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\Spatial\InspectLevelsCommand.cs")
+    $inspectLevelsHandlerCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\Spatial\InspectLevelsEventHandler.cs")
     $showPlan3dToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\show_element_in_plan_and_3d.ts")
     $sessionContextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_revit_session_context.ts")
     $activeViewContextToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\get_active_view_context.ts")
@@ -716,7 +724,7 @@ try {
     $apiDocsIndexCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\src\utils\docIndex.ts")
     Assert-True ($captureSpatialToolCode -match 'extract_spatial_snapshot' -and $captureSpatialToolCode -match 'hasExplicitLevelScope' -and $captureSpatialToolCode -match 'invalid_spatial_page_contract') "capture_spatial_snapshot must remain an explicit-level, strict-contract wrapper over the native Phase 0 extractor."
     Assert-True ($spatialPageSchemaCode -match 'extraction-page\.schema\.json' -and $spatialPageSchemaCode -match 'canonicalJson' -and $spatialPageCode -match 'pagePayloadBytes') "Spatial page normalization must validate the published transport schema, recompute canonical hashes, and preserve page-vs-snapshot byte totals."
-    Assert-True ($telemetryCode -match 'SPATIAL_EXTRACTION_NAMES' -and $telemetryCode -match 'summarizeSpatialExtractionTelemetryParams' -and $telemetryCode -match 'summarizeSpatialExtractionTelemetryResponse' -and $telemetryCode -match 'return null') "Spatial extraction telemetry must keep the strict no-model-data production-context boundary."
+    Assert-True ($telemetryCode -match 'SPATIAL_EXTRACTION_NAMES' -and $telemetryCode -match 'inspect_levels' -and $telemetryCode -match 'summarizeSpatialExtractionTelemetryParams' -and $telemetryCode -match 'summarizeSpatialExtractionTelemetryResponse' -and $telemetryCode -match 'return null') "Spatial extraction and Level-inventory telemetry must keep the strict no-model-data production-context boundary."
     Assert-True ($focusHelpersCode -match 'new FilteredElementCollector\(document, view\.Id\)') "View visibility helper must use a view-specific collector."
     Assert-True ($focusHelpersCode -match 'ElementIdSetFilter') "View visibility helper must filter directly by target element id instead of materializing all visible ids."
     Assert-True ($focusHelpersCode -match 'elementNotVisibleInTargetView') "View visibility helper must report non-visible target elements."
@@ -825,7 +833,7 @@ try {
     Assert-True ($statusToolCode -match 'runtimeVersion') "Status output must include the active runtime version."
     Assert-True ($statusToolCode -match 'schemaVersion') "Status output must include the status/schema version."
     Assert-True ($statusToolCode -match 'toolSurfaceVersion') "Status output must include the registered tool surface version."
-    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.40') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
+    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.41') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
     Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
     Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
@@ -878,6 +886,18 @@ try {
     Assert-True ($inspectElementsToolCode -match 'connectorsIncluded = includeConnectors') "inspect_elements must report whether connector counting was requested."
     Assert-True ($inspectElementsToolCode -match 'int\? connectorCount = null') "inspect_elements must leave connectorCount null when connector counting is disabled."
     Assert-True ($inspectElementsToolCode -match 'int\? openConnectorCount = null') "inspect_elements must leave openConnectorCount null when connector counting is disabled."
+    Assert-True ($inspectLevelsToolCode -match 'LEVEL_INSPECTION_READ_ONLY' -and $inspectLevelsToolCode -match 'sendRevitCommand\("inspect_levels"') "inspect_levels must be a read-only wrapper over the native inspect_levels command."
+    Assert-True ($inspectLevelsToolCode -match 'normalizeBroadScanResult' -and $inspectLevelsToolCode -match 'partial/max_items' -and $inspectLevelsToolCode -match 'partial/read_failed') "inspect_levels must expose shared truncation and unavailable-source partial contracts."
+    Assert-True ($inspectLevelsToolCode -match 'unavailableSourceCount\(payload\) > 0' -and $inspectLevelsToolCode -match 'return "read_failed"') "inspect_levels wrapper must normalize unavailable native sources to partial/read_failed even when legacy casing or fields vary."
+    Assert-True ($inspectLevelsToolCode -match 'sourceScope' -and $inspectLevelsToolCode -match 'linkInstanceIds' -and $inspectLevelsToolCode -match 'linkInstanceUniqueIds' -and $inspectLevelsToolCode -match 'nameMatchMode' -and $inspectLevelsToolCode -match 'maxResults') "inspect_levels must expose source, exact-link, name-match, and deterministic result-cap controls."
+    Assert-True ($inspectLevelsCommandCode -match 'CommandName[\s\S]+inspect_levels' -and $inspectLevelsCommandCode -match 'hostAndLinked' -and $inspectLevelsCommandCode -match 'linkedOnly' -and $inspectLevelsCommandCode -match 'hostOnly') "Native inspect_levels command must parse the complete sourceScope policy."
+    Assert-True ($inspectLevelsHandlerCode -match 'OfClass\(typeof\(Level\)\)' -and $inspectLevelsHandlerCode -match 'RevitLinkInstance' -and $inspectLevelsHandlerCode -match 'MatchesLinkSelector') "Native inspect_levels must read host/linked Levels and apply exact link-instance selectors."
+    Assert-True ($inspectLevelsHandlerCode -match 'string\.Equals\(name, _request\.NameQuery, StringComparison\.OrdinalIgnoreCase\)' -and $inspectLevelsHandlerCode -match 'IndexOf\(_request\.NameQuery, StringComparison\.OrdinalIgnoreCase\)') "Native inspect_levels must implement exact and contains Level-name matching deterministically."
+    Assert-True ($inspectLevelsHandlerCode -match 'SpatialSnapshotHelpers\.GetProjectElevationFeet\(level\)' -and $inspectLevelsHandlerCode -match 'link\.GetTransform\(\)' -and $inspectLevelsHandlerCode -match 'OfPoint\(new XYZ\(0, 0, sourceProjectElevation\)\)' -and $inspectLevelsHandlerCode -match 'revit_link_instance_get_transform_source_origin_project_elevation_point') "Native inspect_levels must use the shared project-elevation resolver and derive linked hostElevationMm from the transformed source-origin point."
+    Assert-True ($inspectLevelsHandlerCode -match 'ResolveDocumentIdentity\(sourceDocument\)' -and $inspectLevelsHandlerCode -match 'documentKey' -and $inspectLevelsHandlerCode -match 'documentSessionId' -and $inspectLevelsHandlerCode -match 'linkedSourceLevelSelector') "Native inspect_levels rows must expose source document identity and a copy-ready linked source-level selector."
+    Assert-True ($inspectLevelsHandlerCode -match 'OrderBy\(row => row\.SourceSortOrder\)' -and $inspectLevelsHandlerCode -match 'ThenBy\(row => row\.SourceProjectElevationMm\)' -and $inspectLevelsHandlerCode -match 'Take\(_request\.MaxResults\)' -and $inspectLevelsHandlerCode -match 'truncated \? "max_items" : "completed"') "Native inspect_levels must apply maxResults only after deterministic sorting and report canonical max_items partial state."
+    Assert-True ($inspectLevelsHandlerCode -match 'UnavailableSourceCount = unavailableSources\.Count' -and $inspectLevelsHandlerCode -match 'hasUnavailableSources \? "read_failed"' -and $inspectLevelsHandlerCode -match 'unloaded or inaccessible' -and $inspectLevelsHandlerCode -match 'Requested linkInstanceId was not found') "Native inspect_levels must mark missing, unloaded, or unreadable selected linked sources as partial/read_failed."
+    Assert-True ($commandSetRegistryCode -match '"commandName": "inspect_levels"') "Command payload registry must include native inspect_levels."
     Assert-True ($inspectSheetTextToolCode -match 'SHEET_TEXT_INSPECTION_READ_ONLY') "inspect_sheet_text must identify itself as a read-only sheet text inspection tool."
     Assert-True ($inspectSheetTextToolCode -match 'normalizeBroadScanResult' -and $inspectSheetTextToolCode -match 'buildBroadScanGuardedResult') "inspect_sheet_text must use the shared broad-scan result contract."
     Assert-True ($inspectSheetTextToolCode -match 'maxTextNotesPerSheet') "inspect_sheet_text must bound text-note reads by sheet."

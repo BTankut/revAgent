@@ -3,6 +3,7 @@ using Newtonsoft.Json.Linq;
 using RevitMCPSDK.API.Base;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace RevAgentCommandSet.Commands.Spatial
 {
@@ -44,6 +45,8 @@ namespace RevAgentCommandSet.Commands.Spatial
                 SourceScope = ReadSourceScope(parameters),
                 LinkInstanceIds = ReadIntArray(parameters, "linkInstanceIds"),
                 LinkInstanceUniqueIds = ReadStringArray(parameters, "linkInstanceUniqueIds"),
+                LinkedSourceLevels = ReadLinkedSourceLevelSelectors(parameters, "linkedSourceLevels"),
+                LinkedSourceLevelNames = ReadStringArray(parameters, "linkedSourceLevelNames"),
                 IncludeHostMep = ReadBool(parameters, "includeHostMep", true),
                 IncludeRoomsSpaces = ReadBool(parameters, "includeRoomsSpaces", true),
                 IncludeLinkedObstructions = ReadBool(parameters, "includeLinkedObstructions", true),
@@ -138,6 +141,47 @@ namespace RevAgentCommandSet.Commands.Spatial
             }
             values.Sort(StringComparer.OrdinalIgnoreCase);
             return values;
+        }
+
+        private static List<LinkedSourceLevelSelector> ReadLinkedSourceLevelSelectors(JObject parameters, string name)
+        {
+            Dictionary<string, LinkedSourceLevelSelector> values = new Dictionary<string, LinkedSourceLevelSelector>(StringComparer.Ordinal);
+            JArray array = parameters != null ? parameters[name] as JArray : null;
+            if (array == null) return new List<LinkedSourceLevelSelector>();
+            foreach (JToken token in array)
+            {
+                JObject item = token as JObject;
+                if (item == null) throw new ArgumentException("Each linkedSourceLevels entry must be an object.");
+                string linkInstanceUniqueId = ReadString(item, "linkInstanceUniqueId", "").Trim();
+                string levelUniqueId = ReadString(item, "levelUniqueId", "").Trim();
+                string levelName = ReadString(item, "levelName", "").Trim();
+                string rawLevelId = ReadString(item, "levelId", "").Trim();
+                int parsedLevelId;
+                int? levelId = int.TryParse(rawLevelId, out parsedLevelId) && parsedLevelId > 0
+                    ? (int?)parsedLevelId
+                    : null;
+                if (!string.IsNullOrWhiteSpace(rawLevelId) && !levelId.HasValue) throw new ArgumentException("linkedSourceLevels.levelId must be a positive integer when supplied.");
+                if (string.IsNullOrWhiteSpace(linkInstanceUniqueId) ||
+                    (!levelId.HasValue && string.IsNullOrWhiteSpace(levelUniqueId) && string.IsNullOrWhiteSpace(levelName)))
+                {
+                    throw new ArgumentException("Each linkedSourceLevels entry requires linkInstanceUniqueId and levelId, levelUniqueId, and/or levelName.");
+                }
+                LinkedSourceLevelSelector selector = new LinkedSourceLevelSelector
+                {
+                    LinkInstanceUniqueId = linkInstanceUniqueId,
+                    LevelId = levelId,
+                    LevelUniqueId = levelUniqueId,
+                    LevelName = levelName
+                };
+                string key = linkInstanceUniqueId + "\u001f" + (levelId.HasValue ? levelId.Value.ToString() : "") + "\u001f" + levelUniqueId + "\u001f" + levelName.ToUpperInvariant();
+                values[key] = selector;
+            }
+            return values.Values
+                .OrderBy(value => value.LinkInstanceUniqueId, StringComparer.Ordinal)
+                .ThenBy(value => value.LevelId ?? int.MaxValue)
+                .ThenBy(value => value.LevelUniqueId, StringComparer.Ordinal)
+                .ThenBy(value => value.LevelName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
     }
 }

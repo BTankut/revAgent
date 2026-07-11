@@ -4,6 +4,16 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Hardened Spatial Context Engine Phase 0 after real-model testing: added the
+  native/runtime read-only `inspect_levels` surface, project-origin Level
+  elevation semantics, MEP curve level fallbacks, placement-qualified exact
+  linked Room/Space selectors, source Level UniqueId evidence, explicit
+  host-band scope metadata, and pagination-independent `coverageStatus`.
+  Every emitted node now requires transformed physical host-band overlap;
+  linked Room/Space rows may be narrowed further by exact source Level while
+  linked obstructions remain physical-overlap evidence. The runtime tool surface
+  is now `.41`; durable/current capture and clash/clearance verdicts remain out
+  of scope.
 - Implemented Spatial Context Engine Phase 0: published the v0.1 identity,
   revision, snapshot, and cursor schemas; added the read-only native
   `extract_spatial_snapshot` command and one-page `capture_spatial_snapshot`

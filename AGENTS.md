@@ -51,6 +51,7 @@ Mandatory routing examples:
 
 - Sheet text lookup goes through `inspect_sheet_text`.
 - Schedule discovery and cell reading go through `inspect_schedules`.
+- Host/linked Level discovery goes through `inspect_levels`.
 - Schedule-to-Excel reconciliation/review goes through `reconcile_schedule_excel`.
 - Annotation inventory/count work goes through `count_annotations`.
 - Exact schedule cell writes go through `set_schedule_cells`.
@@ -184,7 +185,8 @@ not reach Revit. Request `runtimeActivityMode="full"` only for debug. Wrapper
 tools should preserve `wrapperAction`, `logicalToolName`, and parent task
 metadata so compact audit surfaces show the public tool name as
 `method`/`toolName` and keep the native bridge command as `commandName`.
-Broad scan tools such as `inspect_sheet_text` and `inspect_schedules` also use
+Broad scan tools such as `inspect_levels`, `inspect_sheet_text`, and
+`inspect_schedules` also use
 the shared scan result contract: `partial`, `scanStoppedReason`, `scanPolicy`,
 `suggestedNextScopes`, `elapsedMs`, `summary`, `evidenceRows`,
 `lastReadSection`, `lastReadRow`, `lastReadColumn`, `lastReadSheetId`,
@@ -207,6 +209,25 @@ native `extract_spatial_snapshot` page per call, and uses an opaque cursor.
 Treat `atomic=false` and `liveness="unknown"` as hard trust limits. Do not make
 current-state, clash-free, or clearance claims from this output; durable
 capture/liveness, query/diff, and clash verification belong to later phases.
+The explicit host Level is a host-Z vertical band, not exact linked Level
+membership. Every emitted node must physically overlap that transformed band;
+source Level identity never bypasses it. Use placement-qualified
+`linkedSourceLevels` from `inspect_levels` when linked Room/Space rows must match
+an exact source Level; linked obstructions remain physical-overlap evidence. Report
+`page.hasMore` as pagination and `coverageStatus` as the independent extraction
+coverage state. `read_failed` with `coverageStatus="incomplete_omissions"` does
+not by itself mean pagination stopped or every omission threw an API exception.
+
+Use `inspect_levels` before raw Level/RevitLinkInstance loops or when a spatial
+request names a linked source level but its exact link placement or transformed
+host elevation is not yet known. It is read-only and supports `hostOnly`,
+`linkedOnly`, and `hostAndLinked`, exact link instance id/UniqueId selectors,
+and exact/contains Level-name matching. Linked rows report both source elevation
+and `hostElevationMm`, with an explicit transform basis, document identity, and
+a copy-ready `linkedSourceLevelSelector`. `maxResults` is applied after
+deterministic sorting; truncation is partial/max_items. Missing, unloaded, or
+unreadable selected links must remain visible as `unavailableSourceCount` with
+partial/read_failed; do not describe such an inventory as complete.
 
 For DrawingSheet and placed-view annotation lookup in large projects, use
 `inspect_sheet_text` before raw dynamic C# sheet or viewport loops. Start with

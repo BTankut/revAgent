@@ -20,6 +20,8 @@ param(
     [int]$Port = 0,
     [string[]]$LevelNames = @(),
     [int[]]$LevelIds = @(),
+    [object[]]$LinkedSourceLevels = @(),
+    [string[]]$LinkedSourceLevelNames = @(),
     [ValidateSet("hostOnly", "linkedOnly", "hostAndLinked")]
     [string]$SourceScope = "hostAndLinked",
     [int]$PageTargetBytes = 262144,
@@ -197,6 +199,8 @@ function Invoke-SpatialCapture {
         $params = [ordered]@{
             levelNames = @($LevelNames)
             levelIds = @($LevelIds)
+            linkedSourceLevels = @($LinkedSourceLevels)
+            linkedSourceLevelNames = @($LinkedSourceLevelNames)
             sourceScope = $SourceScope
             includeHostMep = $true
             includeRoomsSpaces = $true
@@ -220,6 +224,23 @@ function Invoke-SpatialCapture {
         Assert-True ([string](Get-Field -Object $result -Names @("lengthUnit", "LengthUnit")) -eq "mm") "$RunName length unit changed."
         Assert-True (-not [bool](Get-Field -Object $result -Names @("atomic", "Atomic"))) "$RunName must remain explicitly non-atomic in Phase 0."
         Assert-True ([string](Get-Field -Object $result -Names @("liveness", "Liveness")) -eq "unknown") "$RunName must report unknown liveness in Phase 0."
+        $coverageStatus = [string](Get-Field -Object $result -Names @("coverageStatus", "CoverageStatus"))
+        Assert-True (@("complete", "incomplete_omissions", "incomplete_budget") -contains $coverageStatus) "$RunName returned invalid coverageStatus '$coverageStatus'."
+        $scanStoppedReason = [string](Get-Field -Object $result -Names @("scanStoppedReason", "ScanStoppedReason"))
+        $counts = Get-Field -Object $result -Names @("counts", "Counts")
+        $coverage = Get-Field -Object $result -Names @("coverage", "Coverage")
+        $totalCoverageOmissions = [int](Get-Field -Object $counts -Names @("omittedSupportedNodes", "OmittedSupportedNodes")) +
+            [int](Get-Field -Object $coverage -Names @("sourceAvailabilityOmissionCount", "SourceAvailabilityOmissionCount"))
+        $expectedCoverageStatus = if (@("max_elapsed", "max_items") -contains $scanStoppedReason) {
+            "incomplete_budget"
+        }
+        elseif ($totalCoverageOmissions -gt 0) {
+            "incomplete_omissions"
+        }
+        else {
+            "complete"
+        }
+        Assert-True ($coverageStatus -eq $expectedCoverageStatus) "$RunName coverageStatus '$coverageStatus' conflicts with omission/budget evidence '$expectedCoverageStatus'."
         $captureId = [string](Get-Field -Object $result -Names @("captureId", "CaptureId"))
         $scopeFingerprint = [string](Get-Field -Object $result -Names @("scopeFingerprint", "ScopeFingerprint"))
         $revisionFingerprint = [string](Get-Field -Object $result -Names @("revisionFingerprint", "RevisionFingerprint"))
@@ -267,6 +288,33 @@ function Invoke-SpatialCapture {
     Assert-True (@($omissions | Where-Object { [string]::IsNullOrWhiteSpace([string](Get-Field -Object $_ -Names @('classification','Classification'))) }).Count -eq 0) "$RunName contains an unclassified omission."
     $omissionIds = @($omissions | ForEach-Object { Get-OmissionIdentity -Omission $_ })
     Assert-True (($omissionIds | Sort-Object -Unique).Count -eq $omissionIds.Count) "$RunName contains duplicate omissions across pages."
+    if ($LinkedSourceLevels.Count -gt 0 -or $LinkedSourceLevelNames.Count -gt 0) {
+        foreach ($node in $nodes) {
+            if ([string](Get-Field -Object $node -Names @("categoryRole", "CategoryRole")) -ne "spatial") { continue }
+            $elementRef = Get-Field -Object $node -Names @("elementRef", "ElementRef")
+            if ([string](Get-Field -Object $elementRef -Names @("sourceKind", "SourceKind")) -ne "link") { continue }
+            $placement = [string](Get-Field -Object $elementRef -Names @("linkInstanceUniqueId", "LinkInstanceUniqueId"))
+            $levelRef = Get-Field -Object $node -Names @("levelRef", "LevelRef")
+            $levelId = [int](Get-Field -Object $levelRef -Names @("sourceLevelId", "SourceLevelId"))
+            $levelUniqueId = [string](Get-Field -Object $levelRef -Names @("sourceLevelUniqueId", "SourceLevelUniqueId"))
+            $levelName = [string](Get-Field -Object $levelRef -Names @("sourceLevelName", "SourceLevelName"))
+            $matches = @($LinkedSourceLevelNames | Where-Object { [string]::Equals($_, $levelName, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+            if (-not $matches) {
+                foreach ($selector in $LinkedSourceLevels) {
+                    if (-not [string]::Equals([string](Get-Field -Object $selector -Names @("linkInstanceUniqueId", "LinkInstanceUniqueId")), $placement, [System.StringComparison]::Ordinal)) { continue }
+                    $selectorLevelId = Get-Field -Object $selector -Names @("levelId", "LevelId")
+                    $selectorLevelUniqueId = [string](Get-Field -Object $selector -Names @("levelUniqueId", "LevelUniqueId"))
+                    $selectorLevelName = [string](Get-Field -Object $selector -Names @("levelName", "LevelName"))
+                    if ($null -ne $selectorLevelId -and [int]$selectorLevelId -ne $levelId) { continue }
+                    if (-not [string]::IsNullOrWhiteSpace($selectorLevelUniqueId) -and -not [string]::Equals($selectorLevelUniqueId, $levelUniqueId, [System.StringComparison]::Ordinal)) { continue }
+                    if (-not [string]::IsNullOrWhiteSpace($selectorLevelName) -and -not [string]::Equals($selectorLevelName, $levelName, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                    $matches = $true
+                    break
+                }
+            }
+            Assert-True $matches "$RunName linked spatial node $($elementRef.elementId) escaped the exact linked source-level filter."
+        }
+    }
 
     return [pscustomobject]@{
         Pages = $pages.ToArray()
@@ -310,6 +358,7 @@ $firstOmissions = @($first.Omissions | ForEach-Object { Get-OmissionIdentity -Om
 $secondOmissions = @($second.Omissions | ForEach-Object { Get-OmissionIdentity -Omission $_ } | Sort-Object -Unique)
 Assert-True (($firstOmissions -join "`n") -ceq ($secondOmissions -join "`n")) "Classified omission identities changed between repeated captures."
 $coverageRecord = Get-Field -Object $first.Pages[0] -Names @("coverage", "Coverage")
+$firstCoverageStatus = [string](Get-Field -Object $first.Pages[0] -Names @("coverageStatus", "CoverageStatus"))
 $coverage = [double](Get-Field -Object $coverageRecord -Names @("extractionCoverageRatio", "ExtractionCoverageRatio"))
 $allOmissionsClassified = [bool](Get-Field -Object $coverageRecord -Names @("allEligibleOmissionsClassified", "AllEligibleOmissionsClassified"))
 $phase0CoverageTarget = [bool](Get-Field -Object $coverageRecord -Names @("phase0TargetAtLeast0_995", "Phase0TargetAtLeast0_995"))
@@ -379,7 +428,13 @@ $evidence = [ordered]@{
     status = "passed"
     startedAtUtc = $startedAtUtc.ToString("o")
     completedAtUtc = $completedAtUtc.ToString("o")
-    target = [ordered]@{ port = $Port; levelNameCount = $LevelNames.Count; levelIdCount = $LevelIds.Count }
+    target = [ordered]@{
+        port = $Port
+        levelNameCount = $LevelNames.Count
+        levelIdCount = $LevelIds.Count
+        linkedSourceLevelSelectorCount = $LinkedSourceLevels.Count
+        linkedSourceLevelNameCount = $LinkedSourceLevelNames.Count
+    }
     contract = [ordered]@{ snapshotSchemaVersion = "0.1"; coordinateFrame = "host_internal_mm"; pageTargetBytes = $PageTargetBytes }
     identity = [ordered]@{ stable = $stableIdentity; auditedNodeCount = $firstIds.Count; nodeIdentitySetSha256 = $nodeIdentityHash }
     extraction = [ordered]@{
@@ -388,6 +443,7 @@ $evidence = [ordered]@{
         omissionCount = $firstOmissions.Count
         omissionsClassified = $true
         coverage = $coverage
+        coverageStatus = $firstCoverageStatus
         duplicateNodeCount = 0
         omittedAcrossPages = $omittedAcrossPages
     }

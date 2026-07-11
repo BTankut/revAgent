@@ -37,6 +37,41 @@ function cleanIntegerIds(values) {
             .filter((value) => Number.isSafeInteger(value) && value > 0))]
         .sort((left, right) => left - right);
 }
+function cleanLinkedSourceLevelSelectors(values) {
+    if (!Array.isArray(values)) {
+        return [];
+    }
+    const selectors = values.flatMap((value) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return [];
+        }
+        const source = value;
+        const linkInstanceUniqueId = String(source.linkInstanceUniqueId ?? "").trim();
+        const rawLevelId = String(source.levelId ?? "").trim();
+        const levelId = /^\d+$/.test(rawLevelId) && Number.parseInt(rawLevelId, 10) > 0
+            ? Number.parseInt(rawLevelId, 10)
+            : null;
+        const levelUniqueId = String(source.levelUniqueId ?? "").trim();
+        const levelName = String(source.levelName ?? "").trim();
+        if (!linkInstanceUniqueId || (levelId === null && !levelUniqueId && !levelName)) {
+            return [];
+        }
+        return [{
+                linkInstanceUniqueId,
+                levelId,
+                levelUniqueId: levelUniqueId || null,
+                levelName: levelName || null,
+            }];
+    });
+    return [...new Map(selectors.map((selector) => [
+            `${selector.linkInstanceUniqueId}\u001f${selector.levelId ?? ""}\u001f${selector.levelUniqueId ?? ""}\u001f${(selector.levelName ?? "").toUpperCase()}`,
+            selector,
+        ])).values()].sort((left, right) => {
+        const leftKey = `${left.linkInstanceUniqueId}\u001f${left.levelId ?? ""}\u001f${left.levelUniqueId ?? ""}\u001f${left.levelName ?? ""}`;
+        const rightKey = `${right.linkInstanceUniqueId}\u001f${right.levelId ?? ""}\u001f${right.levelUniqueId ?? ""}\u001f${right.levelName ?? ""}`;
+        return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    });
+}
 export function resolveSpatialCapturePolicy(args = {}) {
     const pageTargetBytes = clampInteger(args.pageTargetBytes, DEFAULT_SPATIAL_PAGE_TARGET_BYTES, MIN_SPATIAL_PAGE_TARGET_BYTES, MAX_SPATIAL_PAGE_TARGET_BYTES);
     const maxElements = clampInteger(args.maxElements, DEFAULT_SPATIAL_MAX_ELEMENTS, 1, MAX_SPATIAL_MAX_ELEMENTS);
@@ -56,6 +91,8 @@ export function buildSpatialCaptureParams(args, policy = resolveSpatialCapturePo
         sourceScope: args.sourceScope || "hostAndLinked",
         linkInstanceIds: cleanIntegerIds(args.linkInstanceIds),
         linkInstanceUniqueIds: cleanStrings(args.linkInstanceUniqueIds),
+        linkedSourceLevels: cleanLinkedSourceLevelSelectors(args.linkedSourceLevels),
+        linkedSourceLevelNames: cleanStrings(args.linkedSourceLevelNames),
         includeHostMep: args.includeHostMep !== false,
         includeRoomsSpaces: args.includeRoomsSpaces !== false,
         includeLinkedObstructions: args.includeLinkedObstructions !== false,
@@ -92,7 +129,7 @@ function guardedNeedsScope(policy) {
     };
 }
 export function registerCaptureSpatialSnapshotTool(server) {
-    server.tool("capture_spatial_snapshot", "[SPATIAL_CAPTURE_READ_ONLY] Extract exactly one deterministic, bounded spatial snapshot page from one explicitly scoped Revit level. This wrapper sends one native extract_spatial_snapshot command per MCP call, never decodes the opaque cursor, and never aggregates the whole graph. It also exposes snapshot as the exact published SpatialSnapshot v0.1 contract view for the capture metadata. Start without cursor; when page.hasMore is true, call again with the returned nextCursor. Phase 0 is a non-atomic extraction spike with liveness=unknown, not a durable/current snapshot store.", {
+    server.tool("capture_spatial_snapshot", "[SPATIAL_CAPTURE_READ_ONLY] Extract exactly one deterministic, bounded spatial snapshot page from one explicitly scoped Revit host level. The host scope is a host-Z vertical band, not exact linked-level membership; use placement-qualified linkedSourceLevels or linkedSourceLevelNames when linked Room/Space rows must come from exact source levels. Linked obstruction evidence intentionally remains physical host-band overlap even when that filter is present. This wrapper sends one native extract_spatial_snapshot command per MCP call, never decodes the opaque cursor, and never aggregates the whole graph. It also exposes snapshot as the exact published SpatialSnapshot v0.1 contract view for the capture metadata. Read page.hasMore for pagination and coverageStatus for extraction coverage. Phase 0 is a non-atomic extraction spike with liveness=unknown, not a durable/current snapshot store.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         levelIds: z.array(z.union([z.number().int().positive(), z.string()])).max(20).optional().describe("Explicit host Revit level ids. At least one levelIds or levelNames entry is required on every page call."),
@@ -100,6 +137,13 @@ export function registerCaptureSpatialSnapshotTool(server) {
         sourceScope: z.enum(["hostOnly", "linkedOnly", "hostAndLinked"]).optional().describe("Source-document policy. Defaults hostAndLinked for the Phase 0 host/architecture/structure audit."),
         linkInstanceIds: z.array(z.union([z.number().int().positive(), z.string()])).max(100).optional().describe("Optional exact RevitLinkInstance ids inside the explicit level scope."),
         linkInstanceUniqueIds: z.array(z.string().min(1)).max(100).optional().describe("Optional exact RevitLinkInstance unique ids inside the explicit level scope."),
+        linkedSourceLevels: z.array(z.object({
+            linkInstanceUniqueId: z.string().min(1),
+            levelId: z.union([z.number().int().positive(), z.string().regex(/^[1-9]\d*$/)]).optional(),
+            levelUniqueId: z.string().min(1).optional(),
+            levelName: z.string().min(1).optional(),
+        }).refine((value) => value.levelId !== undefined || value.levelUniqueId !== undefined || value.levelName !== undefined, "Each linked source level selector requires levelId, levelUniqueId, and/or levelName.")).max(100).optional().describe("Optional placement-qualified exact linked source Level selectors for linked Room/Space rows. Use inspect_levels to obtain linkInstanceUniqueId plus level id/unique id/name. Applied in addition to the required host-Z level band; linked obstructions remain physical band-overlap evidence."),
+        linkedSourceLevelNames: z.array(z.string().min(1)).max(100).optional().describe("Optional exact source Level names for linked Room/Space rows, matched case-insensitively across selected links. Applied in addition to the required host-Z level band; use placement-qualified linkedSourceLevels for unambiguous audit identity."),
         includeHostMep: z.boolean().optional().describe("Include supported host-model MEP evidence. Defaults true."),
         includeRoomsSpaces: z.boolean().optional().describe("Include supported Room/Space evidence from the selected source scope. Defaults true."),
         includeLinkedObstructions: z.boolean().optional().describe("Include supported linked structural/architectural obstruction evidence. Defaults true."),

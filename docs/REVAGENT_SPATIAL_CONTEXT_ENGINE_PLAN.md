@@ -1,7 +1,7 @@
 # revAgent Spatial Context Engine Plan
 
 Status: codex_final
-Revision: v2.2 — implementation baseline for Phase 0 (2026-07-11).
+Revision: v2.3 — Phase 0 real-model audit hot-fix (2026-07-11).
 Supersedes draft v2.1, v2, and the draft previously named
 `REVAGENT_SPATIAL_DESIGN_ENGINE_PLAN.md`.
 
@@ -524,7 +524,10 @@ scheduled until the Layer 1 production gate passes.
 - `SpatialSnapshot`: `{ snapshotId, capturedAt, sourceRevisions[], scope,
   scopeFingerprint, revisionFingerprint, coordinateFrame:
   "host_internal_mm", schemaVersion, extractorVersion, counts, partial,
-  scanStoppedReason, suggestedNextScopes, pageCount, payloadBytes }`
+  coverageStatus?, scanStoppedReason, suggestedNextScopes, pageCount,
+  payloadBytes }`. `page.hasMore` is pagination state; `coverageStatus` is the
+  orthogonal `complete | incomplete_omissions | incomplete_budget` extraction
+  coverage state.
 - `QueryResult`: `{ snapshotId, revisionFingerprint, liveness, mode,
   operation?, inputs?, nodes[], edges[], computed?, basis?, precisionClass?,
   verdictCapability?, partial, truncated, nextCursor? }`
@@ -691,6 +694,14 @@ numeric id guard
 
 ## Revision Record
 
+- v2.3 / `codex_final` (2026-07-11): Post-Phase 0 real-model audit hot-fix.
+  Added deterministic host/linked Level inventory, project-origin Level
+  elevation semantics, placement-qualified exact linked Room/Space selectors,
+  source Level UniqueId evidence, explicit host-band scope metadata, and
+  pagination-independent `coverageStatus`. Made transformed physical host-band
+  overlap the eligibility gate for every emitted node, with exact linked source
+  Level filtering applied only as an additional Room/Space constraint, and
+  retained the Phase 0 non-atomic/unknown-liveness boundary.
 - v2.2 / `codex_final` (2026-07-11): Final review findings incorporated.
   Separated immutable scope-selection identity from mutable source revision so
   link reload/add/remove/content changes remain diffable; replaced the

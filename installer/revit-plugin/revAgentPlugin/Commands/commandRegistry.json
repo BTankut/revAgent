@@ -166,6 +166,21 @@
       "description": "Find Revit elements by category and text across name, family, type, mark, and comments"
     },
     {
+      "commandName": "inspect_levels",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Inspect host and loaded linked Revit levels with deterministic source and host elevation evidence"
+    },
+    {
       "commandName": "inspect_sheet_text",
       "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
       "enabled": true,
