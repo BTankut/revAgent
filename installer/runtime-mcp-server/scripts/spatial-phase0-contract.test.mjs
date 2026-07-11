@@ -129,8 +129,10 @@ for (const field of ["activePhase", "designOptionsInEffect", "worksetVisibilityP
   assert.ok(spatialHelpersSource.includes(`{ "${field}",`), `Native scope must emit ${field}.`);
 }
 assert.ok(
-  spatialHelpersSource.includes('{ "emittedScopeSemantics", emittedScopeSemantics }'),
-  "Native scope fingerprint must bind the exact emitted Phase 0 scope policy values.",
+  spatialHelpersSource.includes('{ "requestedLevelUniqueIds", bands.Select')
+    && spatialHelpersSource.includes('{ "activePhase", scope != null')
+    && !spatialHelpersSource.includes('{ "emittedScopeSemantics", emittedScopeSemantics }'),
+  "Production scope fingerprints must retain requested Phase 0 selection semantics without hashing resolved revision evidence.",
 );
 assert.ok(
   spatialHelpersSource.includes("return Sha256(CanonicalJson(fingerprintBasis));"),
@@ -381,9 +383,15 @@ assert.ok(
   "A non-budget paginated native page must use max_bytes.",
 );
 assert.ok(
-  spatialHelpersSource.includes("try { rotationRadians = location.Rotation; }")
+  spatialHelpersSource.includes("double sourceRotation = location.Rotation;")
+    && spatialHelpersSource.includes("sourceToHost.OfVector(sourceDirection)")
+    && spatialHelpersSource.includes("rotationRadians = Math.Atan2(hostDirection.Y, hostDirection.X);")
     && spatialHelpersSource.includes('{ "rotationRadians", rotationRadians }'),
-  "SpatialElement point locations must preserve unsupported Revit rotation as null instead of omitting Room/Space geometry.",
+  "SpatialElement point rotations must be transformed into the canonical host frame while unsupported rotation remains null.",
+);
+assert.ok(
+  !spatialHelpersSource.includes("try { rotationRadians = location.Rotation; }"),
+  "SpatialElement point rotations must not persist raw source-frame rotation.",
 );
 const liveVerifierSource = fs.readFileSync(path.join(repoRoot, "scripts", "verify-spatial-phase0-pages.mjs"), "utf8");
 assert.ok(
@@ -410,8 +418,8 @@ const spatialEventHandlerSource = fs.readFileSync(
   "utf8",
 );
 assert.ok(
-  spatialCommandSource.includes('ReadInt(parameters, "maxElapsedMs", 4500, 250, 25000)'),
-  "The native explicitly scoped audit budget must allow up to 25 seconds while retaining the 4.5 second default.",
+  spatialCommandSource.includes('ReadInt(parameters, "maxElapsedMs", 1800, 250, 5000)'),
+  "The production native page budget must default below the 2 second target and hard-cap at 5 seconds.",
 );
 assert.ok(
   spatialCommandSource.includes('ReadLinkedSourceLevelSelectors(parameters, "linkedSourceLevels")')
@@ -427,7 +435,7 @@ assert.ok(
   "Unresolved exact linked Room/Space levels must become classified omissions and resolved nodes must preserve source level UniqueId.",
 );
 assert.ok(
-  spatialEventHandlerSource.includes('string coverageStatus = extraction.BudgetStopped ? "incomplete_budget"')
+  spatialEventHandlerSource.includes('string coverageStatus = prepared.Extraction.BudgetStopped ? "incomplete_budget"')
     && spatialEventHandlerSource.includes("CoverageStatus = coverageStatus"),
   "Native extraction must report coverageStatus independently from pagination.",
 );

@@ -25,6 +25,10 @@ server, package, assembly, manifest, or installed path is being named.
 - `installer/runtime-mcp-server/src/`: TypeScript source for the live revAgent
   runtime server. `npm run build` emits `build/`, which remains the installer
   and Codex registration contract.
+- `%LOCALAPPDATA%\revAgent\spatial\spatial.db`: Phase 1a user-local spatial
+  state store. It is separate from the replaceable managed package, uses an
+  explicit schema lifecycle with migration backup/recovery, and requires SQLite
+  R*Tree support. `REVAGENT_SPATIAL_DB_PATH` is the development/test override.
 - `installer/revit-api-docs-mcp/src/`: TypeScript source for the Revit API docs
   MCP server. It indexes local Revit API DLL/XML files and serves API lookup
   tools from `build/index.js`.
@@ -43,7 +47,9 @@ and sourced under `revAgentCommandSet`, with registered bridge commands such as
 `send_code_to_revit`,
 `get_current_view_elements`, `get_current_view_info`,
 `get_selected_elements`, `list_open_views`, `activate_view`, `close_view`,
-`get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`,
+`get_ui_state`, `find_elements`, `inspect_levels`,
+`extract_spatial_snapshot`, `get_spatial_change_state`,
+`open_existing_plan_for_element_level`,
 `focus_elements`, `section_box_elements`, and
 `create_3d_view_for_elements`.
 
@@ -63,12 +69,12 @@ The current runtime server registers 32 tools:
 - model/session context: `get_revit_session_context`,
   `get_active_view_context`, `inspect_elements`, `inspect_levels`, `inspect_sheet_text`,
   `inspect_schedules`, `count_annotations`, `inspect_parameter_schema`
-- Phase 0 spatial capture: `capture_spatial_snapshot`, a read-only,
-  explicit-level, single-page wrapper over native `extract_spatial_snapshot`;
-  every emitted node must physically overlap the transformed host-Z band,
-  placement-qualified linked Level selectors apply only as an additional linked
-  Room/Space constraint, and `coverageStatus` is independent of `page.hasMore`;
-  it is non-atomic with unknown liveness until Phase 1a
+- Phase 1a spatial capture: `capture_spatial_snapshot`, a read-only,
+  explicit-level durable capture orchestrator over native
+  `extract_spatial_snapshot`; the runtime owns opaque native continuation,
+  validates page hashes and one revision basis, stages v0.2 rows, and exposes a
+  snapshot only after atomic store commit. `coverageStatus` remains independent
+  of atomicity and liveness; query/diff/clash capabilities are not part of 1a
 - review/reconciliation: `reconcile_schedule_excel` for deterministic,
   write-free schedule-to-Excel review output
 - controlled data writes: `set_element_parameter` for exact-schema
@@ -99,6 +105,58 @@ link-transform basis, and a copy-ready source-level selector. Native collection
 is fully sorted before `maxResults`; deterministic truncation reports
 partial/max_items. Missing, unloaded, or unreadable selected links report
 `unavailableSourceCount` with partial/read_failed rather than a complete result.
+
+### Spatial Phase 1a truth foundation
+
+`capture_spatial_snapshot` keeps the Phase 0 explicit host-Level and transformed
+host-Z physical-overlap rules, but replaces caller-owned one-page continuation
+with runtime-owned capture orchestration. Native `extract_spatial_snapshot`
+responses are sequence-bound staging pages (`atomic=false`,
+`liveness="staging"`); they are validated and never exposed as a committed
+snapshot. The runtime verifies page order/hash continuity and invariant scope
+and revision metadata, discards interrupted staging, retries a bounded number
+of times, and commits the staged chain as one SpatialSnapshot v0.2.
+
+The durable store is a dedicated SQLite database under
+`%LOCALAPPDATA%\revAgent\spatial\spatial.db` by default. Store schema migration
+is transactional, preserves a recovery backup, performs startup integrity
+checks, and fails as a guarded capability when migration/recovery or R*Tree
+availability cannot be established. Snapshot AABBs are indexed in SQLite
+R*Tree. Spatial rows, geometry, names, and identifiers remain local and are not
+part of release packaging or usage-intelligence telemetry.
+
+The hardened runtime entrypoint also exposes a local-only `spatial-store`
+maintenance CLI. `preview` requires exactly one `--all`, `--document-key`, or
+one-or-more `--snapshot-id` selector and never mutates. `purge` repeats that
+preview and remains guarded until the operator supplies `--confirm`; database
+rows and associated local artifacts are then cleaned through the store's purge
+contract. This CLI is not an MCP tool, never calls Revit, and is invoked with
+the same configured Node executable plus
+`%ProgramData%\DPE\revAgent\package\installer\runtime-mcp-server\build\index.js`.
+Purge requires an explicit operator request, preview of the exact selector, and
+the same selector repeated with `--confirm`. A nonzero exit, `partial=true`, or
+artifact cleanup warnings mean maintenance is incomplete; they are never
+reported as a completed purge.
+Database, artifact, temporary acceptance, and evidence roots reject UNC and
+mapped network drives through fail-closed Windows drive-type verification.
+
+Capture results separate four trust dimensions:
+
+- `committed=true` and `atomic=true` mean the staged page chain became visible
+  as one store transaction; they do not mean extraction coverage is complete;
+- `partial` and `coverageStatus` (`complete`, `incomplete_omissions`, or
+  `incomplete_budget`) describe extraction coverage independently;
+- `liveness=current|stale|unknown` is evaluated against process-local
+  `DocumentChanged` sequences and bounded journal evidence, not snapshot age;
+- `scopeFingerprint` identifies immutable requested scope while
+  `revisionFingerprint` identifies captured source state.
+
+`current` therefore means only that the committed snapshot's tracked revision
+still matches at liveness evaluation time. It does not turn the stored graph
+into a deterministic relation or verdict service. Phase 1a exposes no
+`query_spatial_context`, snapshot-diff, clash-screening, or live
+clash/clearance-verdict tool. Those claims remain prohibited until their later
+phase tools and coverage gates exist.
 
 `find_elements` is the progressive MEP-aware discovery tool for element search.
 The runtime infers obvious engineering scope before calling Revit, for example
@@ -525,11 +583,18 @@ Optional aggregate command from repo root:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-ci.ps1
 ```
 
 The aggregate gate includes installer smoke, usage intelligence, live dashboard
 helpers, TypeScript `@ts-nocheck` policy enforcement, both MCP package tests,
 and MCP/Revit payload freshness verification.
+
+`test-ci.ps1` is the local form of the protected `Engineering gates` check.
+Neither local command publishes. After they pass, changes continue through a
+topic-branch PR and protected `main`; signed source-free CD builds and validates
+on `main` without publishing, and production NAS stable changes only through an
+explicitly approved manual dispatch with `publish_to_nas=true`.
 
 Revit add-in build check:
 

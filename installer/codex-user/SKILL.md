@@ -66,14 +66,23 @@ Use dedicated production tools before raw code:
 - Element/selection inspection: `inspect_elements`.
 - Host/linked Level inventory: `inspect_levels`.
 - Parameter preflight: `inspect_parameter_schema`.
-- Phase 0 spatial extraction: `capture_spatial_snapshot`. Require an explicit
-  host Level scope, consume one page per call, and pass `nextCursor` unchanged.
-  Host scope is a vertical band and every emitted node must physically overlap
-  it after link transform. Use placement-qualified `linkedSourceLevels` from
-  `inspect_levels` for an additional exact linked Room/Space constraint. Read
-  `page.hasMore` for pagination and `coverageStatus` for coverage.
-  Treat `atomic=false` and `liveness="unknown"` as hard limits: do not make a
-  current-state, clearance, or clash-free claim from this spike.
+- Phase 1a durable spatial capture: `capture_spatial_snapshot`. Require an
+  explicit host Level scope. The runtime owns native pagination, validates the
+  v0.2 page/revision chain, stages it in the user-local versioned store, and
+  exposes a snapshot only after atomic commit. Host scope is a vertical band and
+  every emitted node must physically overlap it after link transform. Use
+  placement-qualified `linkedSourceLevels` from `inspect_levels` for an
+  additional exact linked Room/Space constraint. Inspect `committed`, `atomic`,
+  `liveness`, `partial`, and `coverageStatus` separately: atomic does not mean
+  complete, and stale/unknown cannot support current-state wording. Phase 1a
+  still has no deterministic query, diff, clash-screening, or live
+  clash/clearance-verdict surface.
+- Spatial-store purge is local CLI maintenance, not an MCP tool. Run it only
+  for an explicit user request, with the same `node.exe` from the revAgent MCP
+  config and `%ProgramData%\DPE\revAgent\package\installer\runtime-mcp-server\build\index.js`.
+  Preview one exact selector first; repeat it with
+  `spatial-store purge ... --confirm` only after approval. A nonzero exit,
+  warning, `partial=true`, or artifact cleanup warning remains incomplete.
 - Live view navigation: `focus_elements`, `smart_focus_elements`,
   `create_3d_view_for_elements`, `show_element_in_plan_and_3d`,
   `activate_view`, `close_view`, `list_open_views`, `get_ui_state`, and

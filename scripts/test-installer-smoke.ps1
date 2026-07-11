@@ -323,8 +323,11 @@ try {
         "src\revit-plugin\revAgentCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Spatial\ExtractSpatialSnapshotCommand.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Spatial\ExtractSpatialSnapshotEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Spatial\GetSpatialChangeStateCommand.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Spatial\GetSpatialChangeStateEventHandler.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Spatial\InspectLevelsCommand.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Spatial\InspectLevelsEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Spatial\SpatialCaptureSessionManager.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Spatial\SpatialSnapshotContracts.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Spatial\SpatialSnapshotHelpers.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\View\ActivateViewCommand.cs",
@@ -382,7 +385,8 @@ try {
     foreach ($name in @($bridgeCommandJson.commands | ForEach-Object { [string]$_.commandName })) {
         Assert-True ($registeredCommandNames -contains $name) "commandRegistry.json is missing Revit bridge command '$name'."
     }
-    Assert-True ($registeredCommandNames -contains "extract_spatial_snapshot") "commandRegistry.json must include the read-only Phase 0 spatial extractor."
+    Assert-True ($registeredCommandNames -contains "extract_spatial_snapshot") "commandRegistry.json must include the read-only Phase 1a spatial extractor."
+    Assert-True ($registeredCommandNames -contains "get_spatial_change_state") "commandRegistry.json must include the read-only Phase 1a spatial liveness command."
     Assert-True ($registeredCommandNames -contains "inspect_levels") "commandRegistry.json must include the read-only host/linked Level inspector."
     foreach ($path in @($commandRegistry.Commands | ForEach-Object { [string]$_.assemblyPath })) {
         Assert-Equal $path "revAgentCommandSet\\2022\\revAgentCommandSet.dll" "Bridge command registry must load every command from the revAgent bridge payload folder."
@@ -543,6 +547,8 @@ try {
     $revitPayloadManifestText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\RevitPayloadManifest.psm1")
     $buildRevitPluginText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\build-revit-plugin.ps1")
     $ciText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-ci.ps1")
+    $phase1aLiveWrapperText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-spatial-phase1a-live.ps1")
+    $phase1aLiveHarnessText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-spatial-phase1a-live.mjs")
     $runtimePackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\package.json")
     $runtimePackageLockText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\package-lock.json")
     $runtimeReleasePackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\release\package.json")
@@ -563,10 +569,16 @@ try {
     Assert-True ($packageTestHelpersText -match 'node_modules' -and $packageTestHelpersText -match '\.package-lock\.json' -and $packageTestHelpersText -match 'GetTempPath' -and $packageTestHelpersText -match 'REVIT_MCP_REPO_ROOT') "MCP package test helpers must skip live dependency folders, use temporary work copies, and preserve repo-root context."
     Assert-True ($runtimePackageText -match '"@e965/xlsx"' -and $runtimePackageText -notmatch '"exceljs"') "Runtime Excel ingestion must avoid the deprecated exceljs transitive dependency chain."
     Assert-True ($runtimePackageText -match '"ajv"' -and $runtimePackageText -match '"ajv-formats"' -and $runtimePackageText -match '"schemas"') "Spatial response validation must declare its schema runtime dependencies and package the published schemas."
-    Assert-True ($buildMcpReleaseText -match 'schemas.*spatial.*v0\.1' -and $buildMcpReleaseText -match 'copyNormalizedJsonTree' -and $buildMcpReleaseText -match 'JSON\.parse\(sourceText\)' -and $buildMcpReleaseText -match 'sourceText\.replace') "Runtime release assembly must validate, normalize, and copy the published Spatial Phase 0 schemas."
-    foreach ($schemaName in @("element-ref", "node-ref", "source-revision", "cursor-envelope", "spatial-snapshot", "extraction-page")) {
-        Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\schemas\spatial\v0.1\$schemaName.schema.json") -PathType Leaf) "Published Spatial Phase 0 schema is missing: $schemaName."
-        Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\release\schemas\spatial\v0.1\$schemaName.schema.json") -PathType Leaf) "Runtime release Spatial Phase 0 schema is missing: $schemaName."
+    Assert-True ($buildMcpReleaseText -match 'schemas.*spatial' -and $buildMcpReleaseText -match 'copyNormalizedJsonTree' -and $buildMcpReleaseText -match 'JSON\.parse\(sourceText\)' -and $buildMcpReleaseText -match 'sourceText\.replace') "Runtime release assembly must validate, normalize, and copy every published spatial schema version."
+    $spatialSchemaNamesByVersion = [ordered]@{
+        "v0.1" = @("element-ref", "node-ref", "source-revision", "cursor-envelope", "spatial-snapshot", "extraction-page")
+        "v0.2" = @("element-ref", "node-ref", "source-revision", "cursor-envelope", "spatial-snapshot", "extraction-page", "work-continuation", "work-cursor-envelope")
+    }
+    foreach ($schemaVersion in $spatialSchemaNamesByVersion.Keys) {
+        foreach ($schemaName in $spatialSchemaNamesByVersion[$schemaVersion]) {
+            Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\schemas\spatial\$schemaVersion\$schemaName.schema.json") -PathType Leaf) "Published spatial schema is missing: $schemaVersion/$schemaName."
+            Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\release\schemas\spatial\$schemaVersion\$schemaName.schema.json") -PathType Leaf) "Runtime release spatial schema is missing: $schemaVersion/$schemaName."
+        }
     }
     Assert-True ($runtimePackageText -match '"build:release"' -and $docsPackageText -match '"build:release"') "MCP packages must expose a hardened release bundle build script."
     Assert-True ($runtimeReleasePackageText -notmatch '"(scripts|devDependencies|files)"' -and $docsReleasePackageText -notmatch '"(scripts|devDependencies|files)"') "Release MCP package manifests must be runtime-only."
@@ -577,6 +589,21 @@ try {
     Assert-True ($payloadFreshnessText -notmatch 'Get-NewestPayloadSourceFile|Assert-RevitPayloadFresh|LastWriteTimeUtc -gt') "Payload freshness gate must not use Revit source/payload mtimes."
     Assert-True ($ciText -match 'Get-McpPackageTscPath' -and $ciText -notmatch 'tsc\.cmd') "CI forced TypeScript checks must resolve the package-local compiler portably."
     Assert-True ($testAllText -match 'New-McpPackageWorkCopy' -and $testAllText -match 'Invoke-McpPackageNpmCi' -and $testAllText -match 'Invoke-McpPackageCommand -PackageName "\$\(\$package\.Name\) npm test"') "Local test-all gate must restore package npm dependencies in an isolated work copy before npm tests and payload freshness."
+    Assert-True ($phase1aLiveWrapperText -match 'test-spatial-phase1a-live\.mjs' -and $phase1aLiveWrapperText -match '--config') "Phase 1a live wrapper must delegate through the dedicated Node harness."
+    Assert-True ($phase1aLiveHarnessText -match 'registerCaptureSpatialSnapshotTool' -and $phase1aLiveHarnessText -match 'captureHandler\(captureArgs\)') "Phase 1a live gate must exercise the built runtime public capture_spatial_snapshot handler."
+    Assert-True ($phase1aLiveHarnessText -match 'registerGetRevitMcpStatusTool' -and $phase1aLiveHarnessText -match 'name === "get_revit_mcp_status"' -and $phase1aLiveHarnessText -match 'assertReady\("capture_spatial_snapshot"\)' -and $phase1aLiveHarnessText -match 'get_spatial_change_state') "Phase 1a live gate must use the built public get_revit_mcp_status handler before capture and persisted liveness commands."
+    Assert-True ($phase1aLiveHarnessText -match 'probeStoredSpatialSnapshotLiveness' -and $phase1aLiveHarnessText -match 'getSnapshotRecord' -and $phase1aLiveHarnessText -match 'countRTreeEntries' -and $phase1aLiveHarnessText -match 'queryIntersectingAabbs') "Phase 1a live gate must recheck persisted liveness and inspect the committed SQLite/R*Tree state."
+    Assert-True ($phase1aLiveHarnessText -match 'nativeUiOccupancy' -and $phase1aLiveHarnessText -match 'preparationPerformance' -and $phase1aLiveHarnessText -match 'preparationContinuationCount' -and $phase1aLiveHarnessText -match 'PREPARATION_PHASE_ORDER' -and $phase1aLiveHarnessText -match 'p95Within2000Ms' -and $phase1aLiveHarnessText -match 'maxWithin5000Ms' -and $phase1aLiveHarnessText -match 'combinedNativeChunkCount' -and $phase1aLiveHarnessText -match 'DEFAULT_CAPTURE_P95_LIMIT_MS = 45_000' -and $phase1aLiveHarnessText -match 'DEFAULT_CAPTURE_MAX_LIMIT_MS = 60_000') "Phase 1a live gate must fail closed on data-page and preparation native UI occupancy plus total capture SLOs."
+    Assert-True ($phase1aLiveWrapperText -match '\[switch\]\$TestConcurrentEdit' -and $phase1aLiveHarnessText -match 'runConcurrentEditProbe' -and $phase1aLiveHarnessText -match 'maxRetries: 0' -and $phase1aLiveHarnessText -match 'capture_interrupted_by_change' -and $phase1aLiveHarnessText -match 'getStagingCaptureCount' -and $phase1aLiveHarnessText -match 'snapshotIdentitySetUnchanged') "Phase 1a live gate must prove operator-assisted concurrent-edit interruption without a committed or staged mixed-revision snapshot."
+    Assert-True ($phase1aLiveHarnessText -match 'connectorNodeCount > 0' -and $phase1aLiveHarnessText -match 'doublePlacedGroups' -and $phase1aLiveHarnessText -match 'maximumDistinctPlacementCount' -and $phase1aLiveWrapperText -match 'RequireConnectorEvidence' -and $phase1aLiveWrapperText -match 'RequireDoublePlacedLinkEvidence') "Phase 1a live gate must prove connector extraction and same-document double-placement source bindings by default."
+    Assert-True ($phase1aLiveHarnessText -match 'gateDAccepted' -and $phase1aLiveHarnessText -match 'process\.exitCode = 2' -and $phase1aLiveHarnessText -match 'concurrentEdit\.passed === true') "Phase 1a live gate must remain pending unless its operator-assisted concurrent-edit gate passes."
+    Assert-True ($phase1aLiveHarnessText -match 'database\.mode === "explicit"' -and $phase1aLiveHarnessText -match 'requireRetainedExplicitDatabase: true') "Phase 1a Gate D must require a retained explicit database that can be rechecked after restart."
+    Assert-True ($phase1aLiveHarnessText -match 'phase1a-live-capture-evidence-latest\.json' -and $phase1aLiveHarnessText -match 'phase1a-live-recheck-evidence-latest\.json') "Phase 1a capture and restart recheck must preserve separate default evidence artifacts."
+    Assert-True ($phase1aLiveWrapperText -match '\[ValidateSet\("stale", "unknown"\)\]\s*\[string\[\]\]\$ExpectedPostEditLiveness' -and $phase1aLiveHarnessText -match '\["stale", "unknown"\]\.includes\(postEditLiveness\.liveness\)') "Phase 1a Gate D must never accept current as a post-edit liveness outcome."
+    Assert-True ($phase1aLiveHarnessText -match 'sanitizeEvidence' -and $phase1aLiveHarnessText -match 'snapshotIdSha256' -and $phase1aLiveHarnessText -match 'databasePath must not be a UNC/network path' -and $phase1aLiveHarnessText -match 'evidencePath must stay outside the Git repository' -and $phase1aLiveWrapperText -match 'must stay outside the Git repository') "Phase 1a live gate must keep its database local and emit only sanitized evidence outside the repository."
+    Assert-True ($phase1aLiveHarnessText -match 'ALLOWED_LOCAL_DRIVE_TYPES = new Set\(\[2, 3, 6\]\)' -and $phase1aLiveHarnessText -match '\[IO\.DriveInfo\]::new' -and $phase1aLiveHarnessText -match 'assertSpatialLocalFilesystemPath' -and $phase1aLiveHarnessText -match 'prepareDatabase\(config, assertRuntimeLocalFilesystemPath\)' -and $phase1aLiveHarnessText -match 'assertRuntimeLocalFilesystemPath' -and $phase1aLiveWrapperText -match '\[System\.IO\.DriveInfo\]::new' -and $phase1aLiveWrapperText -match '\$driveType -notin @\(2, 3, 6\)') "Phase 1a local artifacts must reuse the runtime guard, reject mapped Network/Unknown/NoRoot drives, and allow only ready Fixed, Removable, or RAM roots before writes."
+    Assert-True ($phase1aLiveHarnessText -notmatch 'send_code_to_revit|set_element_parameter|set_schedule_cells|transactionMode|create_3d_view|delete_review_view' -and $phase1aLiveWrapperText -notmatch 'publish-nas-release|update-from-nas|install-self-contained') "Phase 1a live gate must not contain model-write, install, publish, or deploy entrypoints."
+    Assert-True ($testAllText -notmatch 'test-spatial-phase1a-live' -and $ciText -notmatch 'test-spatial-phase1a-live') "Phase 1a live Revit gate must remain outside test-all and CI-safe Engineering gates."
     Assert-True ($revitPayloadManifestText -match 'installer\\revit-payload-manifest\.json') "Revit payload manifest path must be centralized."
     Assert-True ($revitPayloadManifestText -match 'gitBlobSha' -and $revitPayloadManifestText -match 'hash-object' -and $revitPayloadManifestText -match '--path=') "Revit source freshness must use Git blob SHAs."
     Assert-True ($revitPayloadManifestText -match 'System\.Management\.Automation\.ErrorRecord') "Revit payload Git helper must filter stderr warning records from successful output."
@@ -718,11 +745,12 @@ try {
     $safeCodeGuardsCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit_safe_guards.ts")
     $telemetryCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\telemetry.ts")
     $captureSpatialToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\capture_spatial_snapshot.ts")
+    $spatialCaptureCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\spatial\spatialCapture.ts")
     $spatialPageCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\spatial\spatialPage.ts")
     $spatialPageSchemaCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\spatial\spatialPageSchema.ts")
     $safeCodeToolCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\tools\send_code_to_revit_safe.ts")
     $apiDocsIndexCode = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\revit-api-docs-mcp\src\utils\docIndex.ts")
-    Assert-True ($captureSpatialToolCode -match 'extract_spatial_snapshot' -and $captureSpatialToolCode -match 'hasExplicitLevelScope' -and $captureSpatialToolCode -match 'invalid_spatial_page_contract') "capture_spatial_snapshot must remain an explicit-level, strict-contract wrapper over the native Phase 0 extractor."
+    Assert-True ($captureSpatialToolCode -match 'extract_spatial_snapshot' -and $captureSpatialToolCode -match 'hasExplicitLevelScope' -and $captureSpatialToolCode -match 'captureSpatialSnapshotAtomic' -and $spatialCaptureCode -match 'invalid_spatial_page_contract') "capture_spatial_snapshot must remain an explicit-level, strict-contract Phase 1a atomic capture orchestrator over the native extractor."
     Assert-True ($spatialPageSchemaCode -match 'extraction-page\.schema\.json' -and $spatialPageSchemaCode -match 'canonicalJson' -and $spatialPageCode -match 'pagePayloadBytes') "Spatial page normalization must validate the published transport schema, recompute canonical hashes, and preserve page-vs-snapshot byte totals."
     Assert-True ($telemetryCode -match 'SPATIAL_EXTRACTION_NAMES' -and $telemetryCode -match 'inspect_levels' -and $telemetryCode -match 'summarizeSpatialExtractionTelemetryParams' -and $telemetryCode -match 'summarizeSpatialExtractionTelemetryResponse' -and $telemetryCode -match 'return null') "Spatial extraction and Level-inventory telemetry must keep the strict no-model-data production-context boundary."
     Assert-True ($focusHelpersCode -match 'new FilteredElementCollector\(document, view\.Id\)') "View visibility helper must use a view-specific collector."
@@ -833,7 +861,7 @@ try {
     Assert-True ($statusToolCode -match 'runtimeVersion') "Status output must include the active runtime version."
     Assert-True ($statusToolCode -match 'schemaVersion') "Status output must include the status/schema version."
     Assert-True ($statusToolCode -match 'toolSurfaceVersion') "Status output must include the registered tool surface version."
-    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.41') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
+    Assert-True ($statusToolCode -match 'revit-mcp-runtime-tools\.42') "Runtime tool surface version must be bumped when exported tool behavior/schema changes."
     Assert-True ($statusToolCode -match 'processStartedAtUtc') "Status output must include the runtime process start time."
     Assert-True ($statusToolCode -match 'buildTimestampUtc') "Status output must include build/install timestamp metadata when available."
     Assert-True ($statusToolCode -match 'buildHash') "Status output must include the git build hash when encoded in the installed version."
@@ -1143,7 +1171,7 @@ try {
     Assert-True ($publishText -match 'scripts\\invoke-live-smoke-over-ssh\.ps1' -and $publishText -match 'toolsRoot "invoke-live-smoke-over-ssh\.ps1"') "NAS tools must publish the SSH live smoke runner for representative Revit tests."
     Assert-True ($publishText -match 'scripts\\test-commandset-live\.ps1' -and $publishText -match 'toolsRoot "test-commandset-live\.ps1"') "NAS tools must publish the live smoke evidence helper for rollout closure."
     Assert-True ($publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\runtime-mcp-server"' -and $publishText -match 'Copy-UserPackReleaseMcpPackage -SourceRelativePath "installer\\revit-api-docs-mcp"') "User pack must use hardened MCP release bundles instead of developer build trees."
-    Assert-True ($publishText -match '\$releaseSchemasPath' -and $publishText -match '\$destinationSchemasPath' -and $publishText -match 'missing published Spatial Phase 0 schema') "Source-free runtime packaging must copy and verify the published Spatial Phase 0 schemas."
+    Assert-True ($publishText -match '\$releaseSchemasPath' -and $publishText -match '\$destinationSchemasPath' -and $publishText -match 'missing published spatial schema') "Source-free runtime packaging must copy and verify every published spatial schema version."
     Assert-True ($publishText -match 'Assert-RevAgentUserPackNoSourceLeak -Root \$packageRoot') "Publish must gate the user pack against source/developer artifact leaks."
     Assert-True ($publishText -match '"addons"') "Publish source-leak gate must block admin add-on payloads from the workstation user pack."
     Assert-True ($publishText -match 'Assert-RevAgentUserPackDotNetPayloadHardened -Root \$packageRoot') "Publish must gate the user pack against .NET debug symbol artifacts."
@@ -1297,7 +1325,7 @@ try {
     Assert-True ($installerText -match 'RevAgent\.ConfigSync\.psm1' -and $installerText -match 'Sync-RevAgentUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Self-contained installer must use the shared config sync helper."
     Assert-True ($installerText -notmatch 'Remove-Item -LiteralPath \$configDestination -Recurse -Force') "Self-contained installer must not delete local config because that removes pinned release keys."
     Assert-True ($installerText -match 'Copy-RevAgentRuntimeUserPayload') "Installer must copy only the runtime user payload."
-    Assert-True ($installerText -match 'Copy-RevAgentDirectoryPayload -Source \(Join-Path \$SourceRoot "schemas"\) -Destination \(Join-Path \$DestinationRoot "schemas"\)') "Installer runtime payload must include the published Spatial Phase 0 schemas."
+    Assert-True ($installerText -match 'Copy-RevAgentDirectoryPayload -Source \(Join-Path \$SourceRoot "schemas"\) -Destination \(Join-Path \$DestinationRoot "schemas"\)') "Installer runtime payload must include every published spatial schema version."
     Assert-True ($installerText -match 'revagent-runtime"\s*,\s*"revit-mcp"') "Installer runtime-directory validation must accept canonical and legacy runtime package identities during rolling updates."
     Assert-True ($installerText -match 'codexUserSourceRoot') "Installer must source Codex orchestration from the user pack."
     Assert-True ($installerText -match 'Resolve-CodexInstructionPolicy' -and $installerText -match 'Codex instructions: preserved local developer instruction surface by policy') "Installer must support preserve-local Codex instruction policy."

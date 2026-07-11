@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.2/element-ref.schema.json",
+  "title": "revAgent Spatial ElementRef v0.2",
+  "description": "Composite Revit element identity. Numeric elementId is valid only with its document and open-document session identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "documentKey",
+    "documentSessionId",
+    "elementUniqueId",
+    "elementId",
+    "sourceKind"
+  ],
+  "properties": {
+    "documentKey": {
+      "$ref": "#/$defs/nonEmptyString",
+      "description": "Versioned stable owning-model key."
+    },
+    "documentSessionId": {
+      "$ref": "#/$defs/nonEmptyString",
+      "description": "Identity of the current open document object/session."
+    },
+    "linkInstanceUniqueId": {
+      "$ref": "#/$defs/nonEmptyString",
+      "description": "Placement identity for an element reached through a Revit link instance."
+    },
+    "elementUniqueId": {
+      "$ref": "#/$defs/nonEmptyString",
+      "description": "Revit UniqueId in the owning document."
+    },
+    "elementId": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Numeric Revit ElementId, scoped to documentKey and documentSessionId."
+    },
+    "sourceKind": {
+      "type": "string",
+      "enum": [
+        "host",
+        "link"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "sourceKind"
+        ],
+        "properties": {
+          "sourceKind": {
+            "const": "link"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "linkInstanceUniqueId"
+        ],
+        "properties": {
+          "linkInstanceUniqueId": {}
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "sourceKind"
+        ],
+        "properties": {
+          "sourceKind": {
+            "const": "host"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "linkInstanceUniqueId": false
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

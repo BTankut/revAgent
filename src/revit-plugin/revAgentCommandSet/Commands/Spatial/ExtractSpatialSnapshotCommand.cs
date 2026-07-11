@@ -55,7 +55,7 @@ namespace RevAgentCommandSet.Commands.Spatial
                 Cursor = ReadString(parameters, "cursor", ""),
                 PageTargetBytes = ReadInt(parameters, "pageTargetBytes", 4 * 1024 * 1024, 64 * 1024, 8 * 1024 * 1024),
                 MaxElements = ReadInt(parameters, "maxElements", 5000, 1, 25000),
-                MaxElapsedMs = ReadInt(parameters, "maxElapsedMs", 4500, 250, 25000),
+                MaxElapsedMs = ReadInt(parameters, "maxElapsedMs", 1800, 250, 5000),
                 MaxGeometryPointsPerElement = ReadInt(parameters, "maxGeometryPointsPerElement", 8192, 64, 20000),
                 MaxBoundarySegmentsPerElement = ReadInt(parameters, "maxBoundarySegmentsPerElement", 2048, 16, 10000)
             };

@@ -203,20 +203,38 @@ runtime compatibility normalizer. For raw and safe dynamic execution,
 practical, including double-encoded result strings; `parseJsonResult=false` is
 the debugging path for preserving raw wire text.
 
-`capture_spatial_snapshot` is a Phase 0 read-only extraction spike, not a
-production current-state store. It requires explicit level scope, returns one
-native `extract_spatial_snapshot` page per call, and uses an opaque cursor.
-Treat `atomic=false` and `liveness="unknown"` as hard trust limits. Do not make
-current-state, clash-free, or clearance claims from this output; durable
-capture/liveness, query/diff, and clash verification belong to later phases.
+`capture_spatial_snapshot` is the Phase 1a read-only durable capture surface.
+It requires explicit level scope. The runtime owns opaque native pagination,
+validates the SpatialSnapshot v0.2 page/hash/revision chain, stages rows in the
+user-local versioned SQLite store, and exposes a snapshot only after atomic
+commit. Native `extract_spatial_snapshot` pages remain internal staging evidence
+with `atomic=false` and `liveness="staging"`; callers do not pass their cursor.
+Inspect `committed`, `atomic`, `liveness`, `partial`, and `coverageStatus`
+independently. Atomic commit does not imply complete extraction, and
+`stale`/`unknown` cannot support current-state wording. Phase 1a provides no
+deterministic spatial query, snapshot diff, clash screening, or live
+clash/clearance verdict, so do not infer those claims from stored coordinates or
+from `liveness="current"`.
 The explicit host Level is a host-Z vertical band, not exact linked Level
 membership. Every emitted node must physically overlap that transformed band;
 source Level identity never bypasses it. Use placement-qualified
 `linkedSourceLevels` from `inspect_levels` when linked Room/Space rows must match
-an exact source Level; linked obstructions remain physical-overlap evidence. Report
-`page.hasMore` as pagination and `coverageStatus` as the independent extraction
-coverage state. `read_failed` with `coverageStatus="incomplete_omissions"` does
-not by itself mean pagination stopped or every omission threw an API exception.
+an exact source Level; linked obstructions remain physical-overlap evidence.
+Treat `coverageStatus` as the extraction coverage state independently of atomicity
+and liveness. `read_failed` with `coverageStatus="incomplete_omissions"` does
+not by itself mean every omission threw an API exception. The spatial store
+defaults to `%LOCALAPPDATA%\revAgent\spatial\spatial.db`, is migration/recovery
+guarded, and requires R*Tree support; model geometry and identifiers remain
+local and must not enter release packages or usage-intelligence events.
+
+Spatial-store cleanup is an operator-maintenance CLI, not a Revit MCP task.
+Use it only after an explicit user request. Invoke the same `node.exe` configured
+for revAgent with
+`%ProgramData%\DPE\revAgent\package\installer\runtime-mcp-server\build\index.js`,
+run `spatial-store preview` for one exact selector first, and repeat the same
+selector with `spatial-store purge ... --confirm` only after approval. Do not
+report completion when the CLI exits nonzero or returns warnings,
+`partial=true`, or incomplete artifact cleanup.
 
 Use `inspect_levels` before raw Level/RevitLinkInstance loops or when a spatial
 request names a linked source level but its exact link placement or transformed
@@ -348,6 +366,11 @@ cleanup diagnostics.
 - Before publishing, run the non-Revit local gate and keep committed MCP build
   payloads fresh; the NAS publish script also runs the payload freshness
   preflight.
+- Canonical delivery order is generated-payload refresh, `test-all.ps1`, local
+  `test-ci.ps1`, draft PR, protected checks/review, merge to `main`, automatic
+  signed source-free build/validation, then a separately approved manual
+  `publish_to_nas=true` dispatch. A topic branch or green local test never
+  authorizes NAS stable publish.
 - Keep documentation in sync with tool behavior, especially write-action level,
   safety gates, deployment behavior, and update behavior.
 - Product-facing strings should use the `revAgent` brand. Keep implementation

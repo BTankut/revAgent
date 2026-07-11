@@ -119,21 +119,29 @@ normalizer.
   `detailLevel="minimal"` so large-model document checks do not perform MEP
   category or linked room/space counts; request `counts` or `full` only when
   those expensive summaries are needed.
-- `capture_spatial_snapshot` - Phase 0 read-only spatial extraction spike. It
-  requires exact `levelIds` and/or `levelNames`, returns exactly one bounded
-  native page per call, and treats `nextCursor` as opaque. It extracts
-  deterministic host/link identity plus canonical host-internal millimetre
-  geometry for the declared Phase 0 categories. The host Level creates a host-Z
-  band, and every emitted node must physically overlap it after link transform;
-  source Level identity never bypasses that test. Use placement-qualified
+- `capture_spatial_snapshot` - Phase 1a read-only durable spatial capture. It
+  requires exact `levelIds` and/or `levelNames`; the runtime, not the caller,
+  owns opaque native pagination, validates one v0.2 page/hash/revision chain,
+  stages it in the user-local spatial store, and returns only after atomic
+  commit or a guarded/failed result. The host Level creates a host-Z band, and
+  every emitted node must physically overlap it after link transform; source
+  Level identity never bypasses that test. Use placement-qualified
   `linkedSourceLevels` returned by `inspect_levels` when linked Room/Space rows
   must match an exact source Level; linked obstructions remain physical
-  band-overlap evidence. Read `page.hasMore` for pagination and
-  `coverageStatus` (`complete`, `incomplete_omissions`, or
-  `incomplete_budget`) for extraction coverage. `atomic=false` and
-  `liveness="unknown"` are deliberate: never use this spike for a current-state,
-  clash-free, or clearance verdict. Durable storage, change tracking, queries,
-  diffs, and live clash verification begin only in later phases.
+  band-overlap evidence. Inspect `committed`, `atomic`, `liveness`, `partial`,
+  and `coverageStatus` independently. `coverageStatus` is `complete`,
+  `incomplete_omissions`, or `incomplete_budget`; an atomic commit may still be
+  partial. `stale` or `unknown` cannot support current-state wording. Even a
+  current, complete snapshot is only the Phase 1a truth foundation: no
+  deterministic spatial query, snapshot diff, clash screening, or live
+  clash/clearance verdict is available yet.
+- Spatial-store purge is local CLI maintenance, not an MCP tool. Run it only
+  for an explicit user request, with the same `node.exe` from the revAgent MCP
+  config and `%ProgramData%\DPE\revAgent\package\installer\runtime-mcp-server\build\index.js`.
+  Preview one exact `--all`, `--document-key`, or `--snapshot-id` selector
+  first; repeat that selector with `spatial-store purge ... --confirm` only
+  after approval. A nonzero exit, warning, `partial=true`, or artifact cleanup
+  warning is incomplete and must not be reported as a successful purge.
 - `get_active_view_context` - model-view vs sheet-view context; sheets return
   placed viewports and `scheduleSheetInstances` instead of direct
   model-category assumptions

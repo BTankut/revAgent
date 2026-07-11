@@ -3,6 +3,7 @@ using Autodesk.Revit.UI;
 using Newtonsoft.Json;
 using RevitMCPSDK.API.Interfaces;
 using RevAgentCommandSet.Extensions;
+using RevAgentPlugin.Core;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -15,6 +16,8 @@ namespace RevAgentCommandSet.Commands.Spatial
 {
     public class ExtractSpatialSnapshotEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
     {
+        private const int MaximumDiscoveredCandidateCount = 250000;
+        private const long MaximumPreparedCanonicalBytes = 512L * 1024L * 1024L;
         private readonly ManualResetEvent _resetEvent = new ManualResetEvent(false);
         private SpatialSnapshotRequest _request;
 
@@ -41,19 +44,25 @@ namespace RevAgentCommandSet.Commands.Spatial
         public void Execute(UIApplication app)
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
-            SpatialExtractionState extraction = new SpatialExtractionState();
             List<string> warnings = new List<string>();
-            List<string> notices = new List<string> { SpatialSnapshotHelpers.Phase0Caveat };
-            List<SpatialRow> rows = new List<SpatialRow>();
-            List<SpatialSource> sources = new List<SpatialSource>();
-            CursorEnvelope cursor;
+            List<string> notices = new List<string> { SpatialSnapshotHelpers.Phase1aCaveat };
+            CursorEnvelope pageCursor = null;
+            WorkCursorEnvelope workCursor = null;
             string cursorError;
 
             try
             {
-                if (!SpatialSnapshotHelpers.TryDecodeCursor(_request.Cursor, out cursor, out cursorError))
+                if (SpatialSnapshotHelpers.IsWorkCursor(_request.Cursor))
                 {
-                    Complete(BuildGuarded("invalid_cursor", "The continuation cursor could not be decoded: " + cursorError, stopwatch, warnings, notices));
+                    if (!SpatialSnapshotHelpers.TryDecodeWorkCursor(_request.Cursor, out workCursor, out cursorError))
+                    {
+                        Complete(BuildGuarded("invalid_work_cursor", "The work continuation cursor could not be decoded: " + cursorError, stopwatch, warnings, notices));
+                        return;
+                    }
+                }
+                else if (!SpatialSnapshotHelpers.TryDecodeCursor(_request.Cursor, out pageCursor, out cursorError))
+                {
+                    Complete(BuildGuarded("invalid_cursor", "The page continuation cursor could not be decoded: " + cursorError, stopwatch, warnings, notices));
                     return;
                 }
 
@@ -71,7 +80,40 @@ namespace RevAgentCommandSet.Commands.Spatial
                     return;
                 }
 
+                if (workCursor != null)
+                {
+                    CompletePreparedWorkContinuation(hostDocument, workCursor, stopwatch, warnings, notices);
+                    return;
+                }
+                if (pageCursor != null)
+                {
+                    CompletePreparedPageContinuation(hostDocument, pageCursor, stopwatch, warnings, notices);
+                    return;
+                }
+
+                StartPreparedCapture(hostDocument, stopwatch, warnings, notices);
+            }
+            catch (Exception ex)
+            {
+                if (workCursor != null) SpatialCaptureSessionManager.Instance.Remove(workCursor.CaptureId);
+                if (pageCursor != null) SpatialCaptureSessionManager.Instance.Remove(pageCursor.CaptureId);
+                Complete(BuildFailed(ex.Message, stopwatch, warnings, notices));
+            }
+        }
+
+        private void StartPreparedCapture(Document hostDocument, Stopwatch stopwatch, List<string> warnings, List<string> notices)
+        {
+            SpatialExtractionState extraction = new SpatialExtractionState();
+            List<SpatialRow> rows = new List<SpatialRow>();
+            List<SpatialSource> sources = new List<SpatialSource>();
+            try
+            {
                 DocumentIdentity hostIdentity = SpatialSnapshotHelpers.ResolveDocumentIdentity(hostDocument);
+                if (!hostIdentity.TrackerSubscribed)
+                {
+                    Complete(BuildGuarded("change_tracker_unavailable", "The shared Revit DocumentChanged tracker is not subscribed; a sequence-bound capture cannot start.", stopwatch, warnings, notices));
+                    return;
+                }
 
                 List<LevelBand> bands = SpatialSnapshotHelpers.ResolveLevelBands(hostDocument, _request, warnings);
                 if (bands.Count == 0)
@@ -80,9 +122,21 @@ namespace RevAgentCommandSet.Commands.Spatial
                     return;
                 }
 
-                DateTime deadlineUtc = DateTime.UtcNow.AddMilliseconds(_request.MaxElapsedMs);
                 ResolveSources(hostDocument, hostIdentity, sources, rows, extraction, warnings);
                 extraction.SourceCount = sources.Count;
+                if (sources.Any(source => source.Identity == null || !source.Identity.TrackerSubscribed))
+                {
+                    Complete(BuildGuarded("change_tracker_unavailable", "At least one in-scope document has no subscribed DocumentChanged binding; the capture was not prepared.", stopwatch, warnings, notices));
+                    return;
+                }
+
+                string transformReason;
+                if (!ValidateSourceTransforms(sources, extraction, out transformReason))
+                {
+                    Complete(BuildGuarded("invalid_source_transform", transformReason, stopwatch, warnings, notices));
+                    return;
+                }
+
                 Dictionary<string, object> scope = SpatialSnapshotHelpers.BuildScope(_request, bands, hostDocument, hostIdentity);
                 scope["resolvedLinkedSourceLevels"] = BuildResolvedLinkedSourceLevelRecords(sources);
                 string scopeFingerprint = SpatialSnapshotHelpers.BuildScopeFingerprint(_request, bands, scope);
@@ -140,227 +194,60 @@ namespace RevAgentCommandSet.Commands.Spatial
                     return;
                 }
 
-                List<SpatialCandidate> candidates;
-                if (TryDiscoverAndFilterCandidates(sources, bands, rows, extraction, deadlineUtc, warnings, out candidates))
+                string captureId = Guid.NewGuid().ToString("N");
+                string capturedAt = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+                PreparedSpatialCapture prepared = new PreparedSpatialCapture
                 {
-                    ExtractCandidates(candidates, rows, extraction, deadlineUtc, warnings);
-                }
-
-                List<SpatialRow> orderedRows = rows
-                    .OrderBy(row => row.DocumentKey, StringComparer.Ordinal)
-                    .ThenBy(row => row.PlacementKey, StringComparer.Ordinal)
-                    .ThenBy(row => row.NodeKind, StringComparer.Ordinal)
-                    .ThenBy(row => row.StableSourceIdentity, StringComparer.Ordinal)
-                    .ToList();
-
-                foreach (SpatialSource source in sources)
-                {
-                    string prefix = source.Identity.DocumentKey + "\u001f" + source.PlacementKey + "\u001f";
-                    source.ContentFingerprint = SpatialSnapshotHelpers.Sha256(string.Join("\n", orderedRows
-                        .Where(row => row.SortKey.StartsWith(prefix, StringComparison.Ordinal))
-                        .Select(row => row.SortKey + "|" + row.PayloadFingerprint)));
-                }
-
-                List<Dictionary<string, object>> sourceRevisions = BuildSourceRevisions(sources, extraction);
-                string revisionFingerprint = BuildRevisionFingerprint(sourceRevisions, orderedRows);
-
-                if (cursor != null && !string.Equals(cursor.ScopeFingerprint, scopeFingerprint, StringComparison.Ordinal))
-                {
-                    Complete(BuildCursorGuarded("cursor_scope_mismatch", "The cursor was created for a different spatial scope. Start a new capture without cursor.", stopwatch, warnings, notices, scope, effectiveSourcePolicy, scopeFingerprint, revisionFingerprint, sourceRevisions));
-                    return;
-                }
-                if (cursor != null && !string.Equals(cursor.RevisionFingerprint, revisionFingerprint, StringComparison.Ordinal))
-                {
-                    Complete(BuildCursorGuarded("cursor_revision_mismatch", "The bounded Phase 0 revision fingerprint changed between pages. Start a new capture; this spike cannot guarantee an atomic/current multi-page result.", stopwatch, warnings, notices, scope, effectiveSourcePolicy, scopeFingerprint, revisionFingerprint, sourceRevisions));
-                    return;
-                }
-
-                int pageOrdinal = cursor != null ? cursor.PageOrdinal : 0;
-                string captureId = cursor != null ? cursor.CaptureId : Guid.NewGuid().ToString("N");
-                string capturedAt = cursor != null && !string.IsNullOrWhiteSpace(cursor.CapturedAt)
-                    ? cursor.CapturedAt
-                    : DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
-                string priorPageHash = cursor != null ? cursor.PriorPageHash : null;
-                int startIndex = 0;
-                if (cursor != null)
-                {
-                    string cursorSortKey = SpatialSnapshotHelpers.BuildSortKey(cursor.SortPosition.DocumentKey, cursor.SortPosition.LinkPlacementKey, cursor.SortPosition.NodeKind, cursor.SortPosition.StableSourceIdentity);
-                    int exactIndex = orderedRows.FindIndex(row => string.Equals(row.SortKey, cursorSortKey, StringComparison.Ordinal));
-                    if (exactIndex < 0)
-                    {
-                        Complete(BuildCursorGuarded("invalid_cursor_sort_position", "The cursor sort position is not present in the revision-bound extraction. Start a new capture.", stopwatch, warnings, notices, scope, effectiveSourcePolicy, scopeFingerprint, revisionFingerprint, sourceRevisions));
-                        return;
-                    }
-                    startIndex = exactIndex + 1;
-                    int expectedOrdinal;
-                    string expectedPriorPageHash;
-                    if (!TryResolveContinuationBoundary(orderedRows, _request.PageTargetBytes, cursor.CaptureId, startIndex, out expectedOrdinal, out expectedPriorPageHash) ||
-                        cursor.PageOrdinal != expectedOrdinal || !string.Equals(cursor.PriorPageHash, expectedPriorPageHash, StringComparison.Ordinal))
-                    {
-                        Complete(BuildCursorGuarded("invalid_cursor_chain", "The signed cursor ordinal, page boundary, or prior-page hash does not match the deterministic page chain.", stopwatch, warnings, notices, scope, effectiveSourcePolicy, scopeFingerprint, revisionFingerprint, sourceRevisions));
-                        return;
-                    }
-                }
-
-                List<SpatialRow> pageRows = PackPage(orderedRows, startIndex, _request.PageTargetBytes, warnings);
-                int nextIndex = startIndex + pageRows.Count;
-                bool hasMore = nextIndex < orderedRows.Count;
-                List<Dictionary<string, object>> nodes = pageRows.Where(row => row.IsNode).Select(row => row.Payload).ToList();
-                List<Dictionary<string, object>> omissions = pageRows.Where(row => !row.IsNode).Select(row => row.Payload).ToList();
-                List<Dictionary<string, object>> canonicalPageRows = BuildCanonicalPageRows(pageRows);
-                string pageHash = BuildPageHash(captureId, pageOrdinal, priorPageHash, canonicalPageRows);
-                int payloadBytes = Encoding.UTF8.GetByteCount(SpatialSnapshotHelpers.SemanticCanonicalJson(canonicalPageRows));
-                long totalPayloadBytes = ComputeTotalPayloadBytes(orderedRows, _request.PageTargetBytes);
-                int totalPageCount = CountPages(orderedRows, _request.PageTargetBytes);
-                string nextCursor = null;
-                if (hasMore && pageRows.Count > 0)
-                {
-                    nextCursor = SpatialSnapshotHelpers.EncodeCursor(new CursorEnvelope
-                    {
-                        CursorVersion = SpatialSnapshotHelpers.CursorVersion,
-                        CaptureId = captureId,
-                        PageOrdinal = pageOrdinal + 1,
-                        SortPosition = new CursorSortPosition
-                        {
-                            DocumentKey = pageRows[pageRows.Count - 1].DocumentKey,
-                            LinkPlacementKey = pageRows[pageRows.Count - 1].PlacementKey,
-                            NodeKind = pageRows[pageRows.Count - 1].NodeKind,
-                            StableSourceIdentity = pageRows[pageRows.Count - 1].StableSourceIdentity
-                        },
-                        PriorPageHash = pageHash,
-                        RevisionFingerprint = revisionFingerprint,
-                        ScopeFingerprint = scopeFingerprint,
-                        CapturedAt = capturedAt
-                    });
-                }
-
-                bool hasCoverageGaps = extraction.OmittedElementCount > 0 || extraction.SourceAvailabilityOmissionCount > 0;
-                bool partial = hasMore || extraction.BudgetStopped || hasCoverageGaps;
-                string coverageStatus = extraction.BudgetStopped ? "incomplete_budget" : hasCoverageGaps ? "incomplete_omissions" : "complete";
-                string stoppedReason = extraction.BudgetStopped ? extraction.ScanStoppedReason : hasMore ? "max_bytes" : hasCoverageGaps ? "read_failed" : "completed";
-                SpatialRow lastRead = pageRows.Count > 0 ? pageRows[pageRows.Count - 1] : null;
-                if (lastRead != null)
-                {
-                    extraction.LastReadDocumentKey = lastRead.DocumentKey;
-                    extraction.LastReadLinkInstanceUniqueId = string.Equals(lastRead.PlacementKey, "host", StringComparison.Ordinal) ? null : lastRead.PlacementKey;
-                    extraction.LastReadNodeKind = lastRead.NodeKind;
-                    extraction.LastReadItemId = lastRead.ElementId;
-                }
-
-                double coverageRatio = !extraction.SelectionComplete
-                    ? 0.0
-                    : extraction.EligibleElementCount == 0
-                        ? 1.0
-                        : (double)extraction.ExtractedNodeCount / extraction.EligibleElementCount;
-                int classifiedOmissions = extraction.OmittedByClassification.Values.Sum() + extraction.SourceOmittedByClassification.Values.Sum();
-                Dictionary<string, object> page = new Dictionary<string, object>
-                {
-                    { "ordinal", pageOrdinal },
-                    { "targetBytes", _request.PageTargetBytes },
-                    { "payloadBytes", payloadBytes },
-                    { "rows", canonicalPageRows },
-                    { "rowCount", canonicalPageRows.Count },
-                    { "recordCount", nodes.Count },
-                    { "nodeCount", nodes.Count },
-                    { "omissionCount", omissions.Count },
-                    { "hasMore", hasMore },
-                    { "pageSha256", pageHash },
-                    { "pageHash", pageHash },
-                    { "priorPageSha256", priorPageHash },
-                    { "priorPageHash", priorPageHash },
-                    { "firstSortPosition", pageRows.Count > 0 ? pageRows[0].SortKey : null },
-                    { "lastSortPosition", pageRows.Count > 0 ? pageRows[pageRows.Count - 1].SortKey : null },
-                    { "nextCursor", nextCursor }
-                };
-
-                Complete(new SpatialSnapshotResult
-                {
-                    Success = true,
-                    Guarded = false,
-                    State = "completed",
-                    Action = "extract_spatial_snapshot",
-                    Message = partial ? "A bounded Phase 0 spatial extraction page was produced with explicit continuation/partial state." : "The complete bounded Phase 0 spatial extraction was produced in this page.",
-                    SchemaVersion = SpatialSnapshotHelpers.SchemaVersion,
-                    ExtractorVersion = SpatialSnapshotHelpers.ExtractorVersion,
-                    CoordinateFrame = SpatialSnapshotHelpers.CoordinateFrame,
-                    LengthUnit = "mm",
                     CaptureId = captureId,
-                    SnapshotId = captureId,
                     CapturedAt = capturedAt,
-                    Atomic = false,
-                    Liveness = "unknown",
-                    RevisionBasisCaveat = SpatialSnapshotHelpers.Phase0Caveat,
+                    CreatedAtUtc = DateTime.UtcNow,
+                    HostDocument = hostDocument,
+                    PageTargetBytes = _request.PageTargetBytes,
+                    Request = _request,
+                    Sources = sources,
+                    Bands = bands,
+                    DiscoveryPartitions = BuildDiscoveryPartitions(sources),
+                    DiscoveryPartitionIndex = 0,
+                    ActiveDiscoveryElementIds = new List<int>(),
+                    ActiveDiscoveryElementIndex = 0,
+                    DiscoveredCandidates = new List<SpatialCandidateRecord>(),
+                    EligibleCandidates = new List<SpatialCandidateRecord>(),
+                    FilterIndex = 0,
+                    ExtractIndex = 0,
+                    OrderedRows = rows,
+                    Extraction = extraction,
                     Scope = scope,
                     EffectiveSourcePolicy = effectiveSourcePolicy,
-                    SourceRevisions = sourceRevisions,
                     ScopeFingerprint = scopeFingerprint,
-                    RevisionFingerprint = revisionFingerprint,
-                    Nodes = nodes,
-                    Omissions = omissions,
-                    Counts = new Dictionary<string, object>
-                    {
-                        { "totalNodes", extraction.ExtractedNodeCount },
-                        { "nodesByKind", new Dictionary<string, object>
-                            {
-                                { "revit_element", extraction.ExtractedNodeCount },
-                                { "connector", 0 },
-                                { "derived", 0 }
-                            }
-                        },
-                        { "expectedSupportedNodes", extraction.EligibleElementCount },
-                        { "extractedSupportedNodes", extraction.ExtractedNodeCount },
-                        { "omittedSupportedNodes", extraction.OmittedElementCount },
-                        { "omissionsByReason", extraction.OmittedByClassification }
-                    },
-                    Coverage = new Dictionary<string, object>
-                    {
-                        { "sourceCount", extraction.SourceCount },
-                        { "selectedLinkCount", extraction.SelectedLinkCount },
-                        { "loadedLinkCount", extraction.LoadedLinkCount },
-                        { "unloadedLinkCount", extraction.UnloadedLinkCount },
-                        { "scannedElementCount", extraction.ScannedElementCount },
-                        { "filteredOutOfScopeCount", extraction.FilteredOutOfScopeCount },
-                        { "sourceAvailabilityOmissionCount", extraction.SourceAvailabilityOmissionCount },
-                        { "totalOrderedRowCount", orderedRows.Count },
-                        { "pageNodeCount", nodes.Count },
-                        { "pageOmissionCount", omissions.Count },
-                        { "eligibleByCategory", extraction.EligibleByCategory },
-                        { "extractedByCategory", extraction.ExtractedByCategory },
-                        { "omittedByClassification", extraction.OmittedByClassification },
-                        { "sourceOmittedByClassification", extraction.SourceOmittedByClassification },
-                        { "classifiedOmissionCount", classifiedOmissions },
-                        { "effectiveScope", hasEffectiveSourcePolicy },
-                        { "selectionComplete", extraction.SelectionComplete },
-                        { "allEligibleOmissionsClassified", extraction.SelectionComplete && classifiedOmissions == extraction.OmittedElementCount + extraction.SourceAvailabilityOmissionCount },
-                        { "extractionCoverageRatio", Math.Round(coverageRatio, 6, MidpointRounding.AwayFromZero) },
-                        { "phase0TargetAtLeast0_995", extraction.SelectionComplete && coverageRatio >= 0.995 && !extraction.BudgetStopped && extraction.SourceAvailabilityOmissionCount == 0 },
-                        { "complete", extraction.SelectionComplete && !partial && classifiedOmissions == extraction.OmittedElementCount + extraction.SourceAvailabilityOmissionCount }
-                    },
-                    TransformValidation = new Dictionary<string, object>
-                    {
-                        { "transformCount", extraction.TransformCount },
-                        { "validatedCount", extraction.TransformCount - extraction.TransformValidationFailureCount },
-                        { "failedCount", extraction.TransformValidationFailureCount },
-                        { "maxRoundTripErrorMm", extraction.TransformCount > 0 ? (object)Math.Round(extraction.MaxTransformRoundTripErrorMm, 6, MidpointRounding.AwayFromZero) : null },
-                        { "allWithin0_5mm", extraction.TransformValidationFailureCount == 0 }
-                    },
-                    Page = page,
-                    PageCount = totalPageCount,
-                    PayloadBytes = totalPayloadBytes,
-                    NextCursor = nextCursor,
-                    Partial = partial,
-                    CoverageStatus = coverageStatus,
-                    ScanStoppedReason = stoppedReason,
-                    ScanPolicy = BuildScanPolicy(),
-                    SuggestedNextScopes = BuildSuggestedNextScopes(hasMore, extraction),
-                    ElapsedMs = stopwatch.ElapsedMilliseconds,
-                    LastReadDocumentKey = extraction.LastReadDocumentKey,
-                    LastReadLinkInstanceUniqueId = extraction.LastReadLinkInstanceUniqueId,
-                    LastReadNodeKind = extraction.LastReadNodeKind,
-                    LastReadItemId = extraction.LastReadItemId,
+                    SourceBindingFingerprint = BuildSourceBindingFingerprint(sources, rows),
+                    WorkPhase = "discover",
+                    WorkStepOrdinal = 0,
+                    HasEffectiveSourcePolicy = hasEffectiveSourcePolicy,
+                    PreparationComplete = false,
                     Warnings = warnings,
                     Notices = notices
-                });
+                };
+
+                string consistencyReason;
+                if (!ValidatePreparedCaptureBindings(prepared, out consistencyReason))
+                {
+                    Complete(BuildInterruptedByChange(prepared, consistencyReason, stopwatch));
+                    return;
+                }
+
+                string workFailure;
+                DateTime deadlineUtc = ResolveWorkDeadline(stopwatch, prepared.Request.MaxElapsedMs);
+                if (!AdvancePreparedWork(prepared, deadlineUtc, out workFailure))
+                {
+                    Complete(BuildWorkFailure(prepared, workFailure, stopwatch));
+                    return;
+                }
+                if (!ValidatePreparedCaptureBindings(prepared, out consistencyReason))
+                {
+                    Complete(BuildInterruptedByChange(prepared, consistencyReason, stopwatch));
+                    return;
+                }
+                CompletePreparedOrProgress(prepared, stopwatch);
             }
             catch (Exception ex)
             {
@@ -368,7 +255,1048 @@ namespace RevAgentCommandSet.Commands.Spatial
             }
         }
 
-        private void ResolveSources(Document hostDocument, DocumentIdentity hostIdentity, List<SpatialSource> sources, List<SpatialRow> rows, SpatialExtractionState state, List<string> warnings)
+        private void CompletePreparedWorkContinuation(Document hostDocument, WorkCursorEnvelope cursor, Stopwatch stopwatch, List<string> warnings, List<string> notices)
+        {
+            PreparedSpatialCapture prepared;
+            if (!SpatialCaptureSessionManager.Instance.TryGet(cursor.CaptureId, out prepared))
+            {
+                Complete(BuildGuarded("expired_capture_session", "The prepared native capture session is missing or expired. Restart without cursor.", stopwatch, warnings, notices));
+                return;
+            }
+
+            if (!ReferenceEquals(prepared.HostDocument, hostDocument) ||
+                !string.Equals(cursor.CapturedAt, prepared.CapturedAt, StringComparison.Ordinal) ||
+                !string.Equals(cursor.ScopeFingerprint, prepared.ScopeFingerprint, StringComparison.Ordinal) ||
+                !string.Equals(cursor.SourceBindingFingerprint, prepared.SourceBindingFingerprint, StringComparison.Ordinal) ||
+                !string.Equals(cursor.WorkPhase, prepared.WorkPhase, StringComparison.Ordinal) ||
+                cursor.StepOrdinal != prepared.WorkStepOrdinal)
+            {
+                SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
+                Complete(BuildCursorGuarded("invalid_work_cursor", "The authenticated work cursor does not match the prepared phase, step, scope, binding, or active host document.", stopwatch, prepared.Warnings, prepared.Notices, prepared.Scope, prepared.EffectiveSourcePolicy, prepared.ScopeFingerprint, prepared.RevisionFingerprint, prepared.SourceRevisions));
+                return;
+            }
+
+            string consistencyReason;
+            if (!ValidatePreparedCaptureBindings(prepared, out consistencyReason))
+            {
+                Complete(BuildInterruptedByChange(prepared, consistencyReason, stopwatch));
+                return;
+            }
+
+            string workFailure;
+            if (!AdvancePreparedWork(prepared, ResolveWorkDeadline(stopwatch, prepared.Request.MaxElapsedMs), out workFailure))
+            {
+                Complete(BuildWorkFailure(prepared, workFailure, stopwatch));
+                return;
+            }
+            if (!ValidatePreparedCaptureBindings(prepared, out consistencyReason))
+            {
+                Complete(BuildInterruptedByChange(prepared, consistencyReason, stopwatch));
+                return;
+            }
+            CompletePreparedOrProgress(prepared, stopwatch);
+        }
+
+        private void CompletePreparedPageContinuation(Document hostDocument, CursorEnvelope cursor, Stopwatch stopwatch, List<string> warnings, List<string> notices)
+        {
+            PreparedSpatialCapture prepared;
+            if (!SpatialCaptureSessionManager.Instance.TryGet(cursor.CaptureId, out prepared))
+            {
+                Complete(BuildGuarded("expired_capture_session", "The prepared native capture session is missing or expired. Restart without cursor.", stopwatch, warnings, notices));
+                return;
+            }
+
+            if (!ReferenceEquals(prepared.HostDocument, hostDocument))
+            {
+                SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
+                Complete(BuildCursorGuarded("cursor_scope_mismatch", "The active host document no longer matches the prepared capture session.", stopwatch, prepared.Warnings, prepared.Notices, prepared.Scope, prepared.EffectiveSourcePolicy, prepared.ScopeFingerprint, prepared.RevisionFingerprint, prepared.SourceRevisions));
+                return;
+            }
+            if (!prepared.PreparationComplete || !string.Equals(cursor.ScopeFingerprint, prepared.ScopeFingerprint, StringComparison.Ordinal))
+            {
+                SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
+                Complete(BuildCursorGuarded("cursor_scope_mismatch", "The page cursor does not match a finalized prepared capture session.", stopwatch, prepared.Warnings, prepared.Notices, prepared.Scope, prepared.EffectiveSourcePolicy, prepared.ScopeFingerprint, prepared.RevisionFingerprint, prepared.SourceRevisions));
+                return;
+            }
+            if (!string.Equals(cursor.RevisionFingerprint, prepared.RevisionFingerprint, StringComparison.Ordinal) ||
+                !string.Equals(cursor.CapturedAt, prepared.CapturedAt, StringComparison.Ordinal))
+            {
+                SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
+                Complete(BuildCursorGuarded("cursor_revision_mismatch", "The signed page cursor revision basis does not match the prepared capture session.", stopwatch, prepared.Warnings, prepared.Notices, prepared.Scope, prepared.EffectiveSourcePolicy, prepared.ScopeFingerprint, prepared.RevisionFingerprint, prepared.SourceRevisions));
+                return;
+            }
+
+            string consistencyReason;
+            if (!ValidatePreparedCaptureBindings(prepared, out consistencyReason))
+            {
+                Complete(BuildInterruptedByChange(prepared, consistencyReason, stopwatch));
+                return;
+            }
+
+            string cursorSortKey = SpatialSnapshotHelpers.BuildSortKey(cursor.SortPosition.DocumentKey, cursor.SortPosition.LinkPlacementKey, cursor.SortPosition.NodeKind, cursor.SortPosition.StableSourceIdentity);
+            int exactIndex = prepared.OrderedRows.FindIndex(row => string.Equals(row.SortKey, cursorSortKey, StringComparison.Ordinal));
+            if (exactIndex < 0)
+            {
+                SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
+                Complete(BuildCursorGuarded("invalid_cursor_sort_position", "The signed cursor sort position is absent from the prepared capture session.", stopwatch, prepared.Warnings, prepared.Notices, prepared.Scope, prepared.EffectiveSourcePolicy, prepared.ScopeFingerprint, prepared.RevisionFingerprint, prepared.SourceRevisions));
+                return;
+            }
+
+            int startIndex = exactIndex + 1;
+            int expectedOrdinal;
+            string expectedPriorPageHash;
+            if (!TryResolveContinuationBoundary(prepared.OrderedRows, prepared.PageTargetBytes, prepared.CaptureId, startIndex, out expectedOrdinal, out expectedPriorPageHash) ||
+                cursor.PageOrdinal != expectedOrdinal || !string.Equals(cursor.PriorPageHash, expectedPriorPageHash, StringComparison.Ordinal))
+            {
+                SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
+                Complete(BuildCursorGuarded("invalid_cursor_chain", "The signed cursor ordinal, boundary, or prior-page hash is inconsistent with the prepared page chain.", stopwatch, prepared.Warnings, prepared.Notices, prepared.Scope, prepared.EffectiveSourcePolicy, prepared.ScopeFingerprint, prepared.RevisionFingerprint, prepared.SourceRevisions));
+                return;
+            }
+
+            SpatialSnapshotResult result = BuildPreparedPageResult(prepared, startIndex, cursor, stopwatch, true);
+            if (!ValidatePreparedCaptureBindings(prepared, out consistencyReason))
+            {
+                Complete(BuildInterruptedByChange(prepared, consistencyReason, stopwatch));
+                return;
+            }
+
+            // UI-occupancy evidence must include the mandatory post-page source
+            // binding check, not only page serialization.
+            result.ElapsedMs = stopwatch.ElapsedMilliseconds;
+            if (string.IsNullOrWhiteSpace(result.NextCursor)) SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
+            Complete(result);
+        }
+
+        private DateTime ResolveWorkDeadline(Stopwatch stopwatch, int requestedMaxElapsedMs)
+        {
+            int targetMs = Math.Max(250, Math.Min(5000, requestedMaxElapsedMs));
+            int remainingMs = targetMs - (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds) - 75;
+            return remainingMs > 25 ? DateTime.UtcNow.AddMilliseconds(remainingMs) : DateTime.UtcNow;
+        }
+
+        private static bool HasWorkTime(DateTime deadlineUtc, int reserveMs = 25)
+        {
+            return DateTime.UtcNow.AddMilliseconds(reserveMs) < deadlineUtc;
+        }
+
+        private static ElementId CreateElementId(int value)
+        {
+#if REVIT2024_OR_GREATER
+            return new ElementId((long)value);
+#else
+            return new ElementId(value);
+#endif
+        }
+
+        private List<SpatialDiscoveryPartition> BuildDiscoveryPartitions(IList<SpatialSource> sources)
+        {
+            List<SpatialDiscoveryPartition> result = new List<SpatialDiscoveryPartition>();
+            for (int sourceOrdinal = 0; sourceOrdinal < sources.Count; sourceOrdinal++)
+            {
+                SpatialSource source = sources[sourceOrdinal];
+                foreach (BuiltInCategory category in SpatialSnapshotHelpers.GetCategoriesForSource(source, _request)
+                    .Distinct()
+                    .OrderBy(value => value.ToString(), StringComparer.Ordinal))
+                {
+                    if (!source.ExtractElements) continue;
+                    result.Add(new SpatialDiscoveryPartition { SourceOrdinal = sourceOrdinal, Category = category });
+                }
+            }
+            return result;
+        }
+
+        private bool AdvancePreparedWork(PreparedSpatialCapture prepared, DateTime deadlineUtc, out string failureReason)
+        {
+            failureReason = null;
+            while (HasWorkTime(deadlineUtc))
+            {
+                if (string.Equals(prepared.WorkPhase, "discover", StringComparison.Ordinal))
+                {
+                    if (!AdvanceDiscovery(prepared, deadlineUtc, out failureReason)) return false;
+                }
+                else if (string.Equals(prepared.WorkPhase, "filter", StringComparison.Ordinal))
+                {
+                    if (!AdvanceFiltering(prepared, deadlineUtc, out failureReason)) return false;
+                }
+                else if (string.Equals(prepared.WorkPhase, "extract", StringComparison.Ordinal))
+                {
+                    if (!AdvanceExtraction(prepared, deadlineUtc, out failureReason)) return false;
+                }
+                else if (string.Equals(prepared.WorkPhase, "finalize", StringComparison.Ordinal))
+                {
+                    if (!FinalizePreparedCapture(prepared, deadlineUtc, out failureReason)) return false;
+                }
+                else if (string.Equals(prepared.WorkPhase, "transport", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+                else
+                {
+                    failureReason = "invalid_capture_work_phase";
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private bool AdvanceDiscovery(PreparedSpatialCapture prepared, DateTime deadlineUtc, out string failureReason)
+        {
+            failureReason = null;
+            while (prepared.DiscoveryPartitionIndex < prepared.DiscoveryPartitions.Count && HasWorkTime(deadlineUtc, 75))
+            {
+                SpatialDiscoveryPartition partition = prepared.DiscoveryPartitions[prepared.DiscoveryPartitionIndex];
+                SpatialSource source = prepared.Sources[partition.SourceOrdinal];
+                if (prepared.ActiveDiscoveryElementIds == null || prepared.ActiveDiscoveryElementIds.Count == 0)
+                {
+                    try
+                    {
+                        using (FilteredElementCollector collector = new FilteredElementCollector(source.Document))
+                        {
+                            prepared.ActiveDiscoveryElementIds = collector
+                                .OfCategory(partition.Category)
+                                .WhereElementIsNotElementType()
+                                .ToElementIds()
+                                .Select(id => id.GetIdValue())
+                                .OrderBy(id => id)
+                                .ToList();
+                        }
+                        prepared.ActiveDiscoveryElementIndex = 0;
+                        if ((long)prepared.DiscoveredCandidates.Count + prepared.ActiveDiscoveryElementIds.Count > MaximumDiscoveredCandidateCount)
+                        {
+                            failureReason = "candidate_inventory_limit_exceeded";
+                            return false;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        prepared.Warnings.Add("Source/category discovery failed for " + source.Identity.DocumentKey + " / " + source.PlacementKey + " / " + partition.Category + ": " + ex.GetType().Name + ".");
+                        AddSourceOmission(prepared.OrderedRows, source.Identity.DocumentKey, source.PlacementKey, "source_collector_failed", ex.Message, source.LinkInstanceId, prepared.Extraction, partition.Category.ToString());
+                        prepared.ActiveDiscoveryElementIds = new List<int>();
+                        prepared.ActiveDiscoveryElementIndex = 0;
+                        prepared.DiscoveryPartitionIndex++;
+                        continue;
+                    }
+                }
+
+                while (prepared.ActiveDiscoveryElementIndex < prepared.ActiveDiscoveryElementIds.Count && HasWorkTime(deadlineUtc))
+                {
+                    int elementId = prepared.ActiveDiscoveryElementIds[prepared.ActiveDiscoveryElementIndex];
+                    Element element = source.Document.GetElement(CreateElementId(elementId));
+                    if (element == null)
+                    {
+                        failureReason = "capture_candidate_identity_changed";
+                        return false;
+                    }
+                    prepared.DiscoveredCandidates.Add(new SpatialCandidateRecord
+                    {
+                        SourceOrdinal = partition.SourceOrdinal,
+                        ElementId = elementId,
+                        StableSourceIdentity = SpatialSnapshotHelpers.StableUniqueId(element),
+                        CategoryName = SpatialSnapshotHelpers.GetCategoryName(element),
+                        BuiltInCategory = partition.Category
+                    });
+                    prepared.ActiveDiscoveryElementIndex++;
+                }
+                if (prepared.ActiveDiscoveryElementIndex < prepared.ActiveDiscoveryElementIds.Count) return true;
+                prepared.ActiveDiscoveryElementIds = new List<int>();
+                prepared.ActiveDiscoveryElementIndex = 0;
+                prepared.DiscoveryPartitionIndex++;
+            }
+
+            prepared.Extraction.ScannedElementCount = prepared.DiscoveredCandidates.Count;
+            if (prepared.DiscoveryPartitionIndex < prepared.DiscoveryPartitions.Count) return true;
+            prepared.DiscoveredCandidates = prepared.DiscoveredCandidates
+                .GroupBy(item => item.SourceOrdinal.ToString(CultureInfo.InvariantCulture) + "\u001f" + item.StableSourceIdentity, StringComparer.Ordinal)
+                .Select(group => group.First())
+                .OrderBy(item => prepared.Sources[item.SourceOrdinal].Identity.DocumentKey, StringComparer.Ordinal)
+                .ThenBy(item => prepared.Sources[item.SourceOrdinal].PlacementKey, StringComparer.Ordinal)
+                .ThenBy(item => item.StableSourceIdentity, StringComparer.Ordinal)
+                .ToList();
+            prepared.WorkPhase = "filter";
+            return true;
+        }
+
+        private bool AdvanceFiltering(PreparedSpatialCapture prepared, DateTime deadlineUtc, out string failureReason)
+        {
+            failureReason = null;
+            while (prepared.FilterIndex < prepared.DiscoveredCandidates.Count && HasWorkTime(deadlineUtc))
+            {
+                SpatialCandidateRecord record = prepared.DiscoveredCandidates[prepared.FilterIndex];
+                SpatialSource source = prepared.Sources[record.SourceOrdinal];
+                Element element = source.Document.GetElement(CreateElementId(record.ElementId));
+                if (element == null || !string.Equals(SpatialSnapshotHelpers.StableUniqueId(element), record.StableSourceIdentity, StringComparison.Ordinal))
+                {
+                    failureReason = "capture_candidate_identity_changed";
+                    return false;
+                }
+
+                SpatialCandidate candidate = new SpatialCandidate
+                {
+                    Source = source,
+                    Element = element,
+                    CategoryName = record.CategoryName,
+                    StableSourceIdentity = record.StableSourceIdentity
+                };
+                try
+                {
+                    candidate.ScopeClassification = SpatialSnapshotHelpers.ClassifyLevelScope(
+                        element,
+                        source,
+                        prepared.Bands,
+                        out candidate.LevelName,
+                        out candidate.LevelId,
+                        out candidate.LevelUniqueId);
+                }
+                catch (Exception ex)
+                {
+                    candidate.ScopeClassification = "scope_read_failed";
+                    prepared.Warnings.Add("Element scope read failed for " + record.StableSourceIdentity + ": " + ex.GetType().Name + ".");
+                }
+
+                if (string.Equals(candidate.ScopeClassification, "out_of_scope", StringComparison.Ordinal))
+                {
+                    prepared.Extraction.FilteredOutOfScopeCount++;
+                }
+                else if (RequiresLinkedSourceLevelFilter(candidate) &&
+                    !candidate.LevelId.HasValue && string.IsNullOrWhiteSpace(candidate.LevelUniqueId) && string.IsNullOrWhiteSpace(candidate.LevelName))
+                {
+                    record.ScopeClassification = "linked_source_level_unresolved";
+                    record.LevelName = candidate.LevelName;
+                    record.LevelId = candidate.LevelId;
+                    record.LevelUniqueId = candidate.LevelUniqueId;
+                    prepared.EligibleCandidates.Add(record);
+                }
+                else if (!MatchesLinkedSourceLevelFilter(candidate))
+                {
+                    prepared.Extraction.FilteredOutOfScopeCount++;
+                }
+                else
+                {
+                    record.ScopeClassification = candidate.ScopeClassification;
+                    record.LevelName = candidate.LevelName;
+                    record.LevelId = candidate.LevelId;
+                    record.LevelUniqueId = candidate.LevelUniqueId;
+                    prepared.EligibleCandidates.Add(record);
+                }
+                prepared.FilterIndex++;
+            }
+
+            if (prepared.FilterIndex < prepared.DiscoveredCandidates.Count) return true;
+            prepared.EligibleCandidates = prepared.EligibleCandidates
+                .OrderBy(item => prepared.Sources[item.SourceOrdinal].Identity.DocumentKey, StringComparer.Ordinal)
+                .ThenBy(item => prepared.Sources[item.SourceOrdinal].PlacementKey, StringComparer.Ordinal)
+                .ThenBy(item => item.StableSourceIdentity, StringComparer.Ordinal)
+                .ToList();
+            prepared.Extraction.SelectionComplete = true;
+            prepared.Extraction.EligibleElementCount = prepared.EligibleCandidates.Count;
+            foreach (SpatialCandidateRecord candidate in prepared.EligibleCandidates)
+            {
+                prepared.Extraction.Increment(prepared.Extraction.EligibleByCategory, candidate.CategoryName);
+            }
+            prepared.WorkPhase = "extract";
+            return true;
+        }
+
+        private bool AdvanceExtraction(PreparedSpatialCapture prepared, DateTime deadlineUtc, out string failureReason)
+        {
+            failureReason = null;
+            int processCount = Math.Min(prepared.EligibleCandidates.Count, prepared.Request.MaxElements);
+            if (!prepared.ExtractLimitInitialized)
+            {
+                prepared.ExtractLimitInitialized = true;
+                int omittedByLimit = prepared.EligibleCandidates.Count - processCount;
+                if (omittedByLimit > 0)
+                {
+                    prepared.Extraction.SelectionLimited = true;
+                    prepared.Extraction.BudgetStopped = true;
+                    prepared.Extraction.ScanStoppedReason = "max_items";
+                    prepared.Extraction.OmittedElementCount += omittedByLimit;
+                    prepared.Extraction.UnmaterializedOmissionCount += omittedByLimit;
+                    prepared.Extraction.IncrementBy(prepared.Extraction.OmittedByClassification, "max_items", omittedByLimit);
+                    prepared.Extraction.IncrementBy(prepared.Extraction.UnmaterializedOmissionsByClassification, "max_items", omittedByLimit);
+                }
+            }
+
+            while (prepared.ExtractIndex < processCount && HasWorkTime(deadlineUtc))
+            {
+                SpatialCandidateRecord record = prepared.EligibleCandidates[prepared.ExtractIndex];
+                SpatialSource source = prepared.Sources[record.SourceOrdinal];
+                Element element = source.Document.GetElement(CreateElementId(record.ElementId));
+                if (element == null || !string.Equals(SpatialSnapshotHelpers.StableUniqueId(element), record.StableSourceIdentity, StringComparison.Ordinal))
+                {
+                    failureReason = "capture_candidate_identity_changed";
+                    return false;
+                }
+
+                if (!string.Equals(record.ScopeClassification, "eligible", StringComparison.Ordinal))
+                {
+                    string detail = string.Equals(record.ScopeClassification, "scope_unresolved", StringComparison.Ordinal)
+                        ? "Element has no readable bounding box for physical host level-band filtering; source Level identity is diagnostic only."
+                        : string.Equals(record.ScopeClassification, "linked_source_level_unresolved", StringComparison.Ordinal)
+                            ? "Linked Room/Space has no resolvable source level for the requested exact linked source-level filter."
+                            : "Element scope could not be read reliably.";
+                    AddElementOmission(prepared.OrderedRows, source, element, record.CategoryName, record.ScopeClassification, detail, record.LevelName, record.LevelId, record.LevelUniqueId, prepared.Extraction, true);
+                    prepared.ExtractIndex++;
+                    continue;
+                }
+                if (record.StableSourceIdentity.StartsWith("element-id:", StringComparison.Ordinal))
+                {
+                    AddElementOmission(prepared.OrderedRows, source, element, record.CategoryName, "stable_identity_unavailable", "Element.UniqueId was unavailable; no stable node or connector identities were emitted.", record.LevelName, record.LevelId, record.LevelUniqueId, prepared.Extraction, true);
+                    prepared.ExtractIndex++;
+                    continue;
+                }
+
+                Dictionary<string, object> geometry;
+                string omissionClassification;
+                string omissionDetail;
+                if (!SpatialSnapshotHelpers.TryBuildGeometry(
+                    element,
+                    source,
+                    deadlineUtc,
+                    prepared.Request.MaxGeometryPointsPerElement,
+                    prepared.Request.MaxBoundarySegmentsPerElement,
+                    out geometry,
+                    out omissionClassification,
+                    out omissionDetail))
+                {
+                    if (string.Equals(omissionClassification, "geometry_deadline_exceeded", StringComparison.Ordinal)) return true;
+                    AddElementOmission(prepared.OrderedRows, source, element, record.CategoryName, omissionClassification ?? "geometry_unavailable", omissionDetail, record.LevelName, record.LevelId, record.LevelUniqueId, prepared.Extraction, true);
+                    prepared.ExtractIndex++;
+                    continue;
+                }
+
+                SpatialRow row = BuildNodeRow(source, element, record.CategoryName, record.LevelName, record.LevelId, record.LevelUniqueId, geometry);
+                if (GetCanonicalRowByteCount(row) + 2 > prepared.PageTargetBytes)
+                {
+                    AddElementOmission(prepared.OrderedRows, source, element, record.CategoryName, "row_payload_too_large", "The canonical element row exceeds pageTargetBytes and was replaced with this classified omission.", record.LevelName, record.LevelId, record.LevelUniqueId, prepared.Extraction, true);
+                    prepared.ExtractIndex++;
+                    continue;
+                }
+                bool connectorReadFailed;
+                bool connectorDeadlineExceeded;
+                List<SpatialRow> connectorRows = SpatialSnapshotHelpers.BuildConnectorRows(
+                    source,
+                    element,
+                    Convert.ToString(row.Payload["nodeId"], CultureInfo.InvariantCulture),
+                    deadlineUtc,
+                    prepared.Warnings,
+                    out connectorReadFailed,
+                    out connectorDeadlineExceeded);
+                if (connectorDeadlineExceeded) return true;
+
+                prepared.OrderedRows.Add(row);
+                prepared.Extraction.ExtractedNodeCount++;
+                prepared.Extraction.Increment(prepared.Extraction.ExtractedByCategory, record.CategoryName);
+                if (connectorReadFailed)
+                {
+                    prepared.Extraction.OmittedConnectorCount++;
+                    prepared.Extraction.Increment(prepared.Extraction.ConnectorOmittedByClassification, "connector_read_failed");
+                    AddConnectorOmission(
+                        prepared.OrderedRows,
+                        source,
+                        element,
+                        Convert.ToString(row.Payload["nodeId"], CultureInfo.InvariantCulture),
+                        null,
+                        "connector_read_failed",
+                        "The owner connector manager or connector set could not be read completely.");
+                }
+                foreach (SpatialRow connectorRow in connectorRows)
+                {
+                    if (GetCanonicalRowByteCount(connectorRow) + 2 > prepared.PageTargetBytes)
+                    {
+                        prepared.Extraction.OmittedConnectorCount++;
+                        prepared.Extraction.Increment(prepared.Extraction.ConnectorOmittedByClassification, "row_payload_too_large");
+                        AddConnectorOmission(
+                            prepared.OrderedRows,
+                            source,
+                            element,
+                            Convert.ToString(row.Payload["nodeId"], CultureInfo.InvariantCulture),
+                            Convert.ToString(connectorRow.Payload["connectorKey"], CultureInfo.InvariantCulture),
+                            "row_payload_too_large",
+                            "The canonical connector row exceeds pageTargetBytes and was replaced with this classified omission.");
+                        continue;
+                    }
+                    prepared.OrderedRows.Add(connectorRow);
+                    prepared.Extraction.ExtractedConnectorCount++;
+                }
+                prepared.ExtractIndex++;
+            }
+
+            if (prepared.ExtractIndex < processCount) return true;
+            prepared.WorkPhase = "finalize";
+            return true;
+        }
+
+        private bool FinalizePreparedCapture(PreparedSpatialCapture prepared, DateTime deadlineUtc, out string failureReason)
+        {
+            failureReason = null;
+            if (prepared.FinalizeStage == 0)
+            {
+                prepared.OrderedRows = prepared.OrderedRows
+                    .OrderBy(row => row.DocumentKey, StringComparer.Ordinal)
+                    .ThenBy(row => row.PlacementKey, StringComparer.Ordinal)
+                    .ThenBy(row => row.NodeKind, StringComparer.Ordinal)
+                    .ThenBy(row => row.StableSourceIdentity, StringComparer.Ordinal)
+                    .ToList();
+                prepared.FinalizeStage = 1;
+            }
+            if (prepared.FinalizeStage == 1)
+            {
+                while (prepared.FinalizeRowIndex < prepared.OrderedRows.Count && HasWorkTime(deadlineUtc))
+                {
+                    prepared.PreparedCanonicalBytes += GetCanonicalRowByteCount(prepared.OrderedRows[prepared.FinalizeRowIndex]);
+                    if (prepared.PreparedCanonicalBytes > MaximumPreparedCanonicalBytes)
+                    {
+                        failureReason = "prepared_capture_byte_limit_exceeded";
+                        return false;
+                    }
+                    prepared.FinalizeRowIndex++;
+                }
+                if (prepared.FinalizeRowIndex < prepared.OrderedRows.Count) return true;
+                prepared.FinalizeStage = 2;
+            }
+            if (prepared.FinalizeStage == 2)
+            {
+                List<SpatialSource> orderedSources = prepared.Sources
+                    .OrderBy(source => source.Identity.DocumentKey, StringComparer.Ordinal)
+                    .ThenBy(source => source.PlacementKey, StringComparer.Ordinal)
+                    .ToList();
+                while (prepared.FinalizeSourceIndex < orderedSources.Count && HasWorkTime(deadlineUtc))
+                {
+                    SpatialSource source = orderedSources[prepared.FinalizeSourceIndex];
+                    string prefix = source.Identity.DocumentKey + "\u001f" + source.PlacementKey + "\u001f";
+                    source.ContentFingerprint = SpatialSnapshotHelpers.Sha256(string.Join("\n", prepared.OrderedRows
+                        .Where(row => row.SortKey.StartsWith(prefix, StringComparison.Ordinal))
+                        .Select(row => row.SortKey + "|" + row.PayloadFingerprint)));
+                    prepared.FinalizeSourceIndex++;
+                }
+                if (prepared.FinalizeSourceIndex < orderedSources.Count) return true;
+                prepared.FinalizeStage = 3;
+            }
+            if (prepared.FinalizeStage == 3 && HasWorkTime(deadlineUtc))
+            {
+                if (prepared.Sources.Any(source => !source.IsHost && source.Identity.ExternalLinkUpdateAvailable))
+                {
+                    prepared.Warnings.Add("One or more linked sources have a different external file version available; the snapshot contains the geometry currently loaded in Revit.");
+                }
+                prepared.Warnings = prepared.Warnings.Distinct(StringComparer.Ordinal).ToList();
+                prepared.SourceRevisions = BuildSourceRevisions(prepared.Sources, prepared.Extraction);
+                if (prepared.Extraction.TransformValidationFailureCount > 0)
+                {
+                    failureReason = "invalid_source_transform";
+                    return false;
+                }
+                prepared.RevisionFingerprint = BuildRevisionFingerprint(prepared.Sources, prepared.SourceRevisions, prepared.OrderedRows, prepared.SourceBindingFingerprint);
+                prepared.TotalPageCount = CountPages(prepared.OrderedRows, prepared.PageTargetBytes);
+                prepared.TotalPayloadBytes = ComputeTotalPayloadBytes(prepared.OrderedRows, prepared.PageTargetBytes);
+                prepared.FinalizeStage = 4;
+            }
+            if (prepared.FinalizeStage == 4)
+            {
+                prepared.PreparationComplete = true;
+                prepared.WorkPhase = "transport";
+            }
+            return true;
+        }
+
+        private void CompletePreparedOrProgress(PreparedSpatialCapture prepared, Stopwatch stopwatch)
+        {
+            if (prepared.PreparationComplete)
+            {
+                SpatialSnapshotResult firstPage = BuildPreparedPageResult(prepared, 0, null, stopwatch, true);
+                if (string.IsNullOrWhiteSpace(firstPage.NextCursor)) SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
+                else SpatialCaptureSessionManager.Instance.Store(prepared);
+                Complete(firstPage);
+                return;
+            }
+
+            prepared.WorkStepOrdinal++;
+            SpatialSnapshotResult progress = BuildWorkProgress(prepared, stopwatch);
+            SpatialCaptureSessionManager.Instance.Store(prepared);
+            Complete(progress);
+        }
+
+        private SpatialSnapshotResult BuildWorkProgress(PreparedSpatialCapture prepared, Stopwatch stopwatch)
+        {
+            int processed;
+            object total;
+            if (prepared.WorkPhase == "discover")
+            {
+                processed = prepared.DiscoveryPartitionIndex;
+                total = prepared.DiscoveryPartitions.Count;
+            }
+            else if (prepared.WorkPhase == "filter")
+            {
+                processed = prepared.FilterIndex;
+                total = prepared.DiscoveredCandidates.Count;
+            }
+            else if (prepared.WorkPhase == "extract")
+            {
+                processed = prepared.ExtractIndex;
+                total = Math.Min(prepared.EligibleCandidates.Count, prepared.Request.MaxElements);
+            }
+            else
+            {
+                processed = 0;
+                total = null;
+            }
+
+            string nextCursor = SpatialSnapshotHelpers.EncodeWorkCursor(new WorkCursorEnvelope
+            {
+                CursorVersion = SpatialSnapshotHelpers.WorkCursorVersion,
+                CursorKind = "work",
+                CaptureId = prepared.CaptureId,
+                WorkPhase = prepared.WorkPhase,
+                StepOrdinal = prepared.WorkStepOrdinal,
+                ScopeFingerprint = prepared.ScopeFingerprint,
+                SourceBindingFingerprint = prepared.SourceBindingFingerprint,
+                CapturedAt = prepared.CapturedAt
+            });
+            Dictionary<string, object> preparation = new Dictionary<string, object>
+            {
+                { "phase", prepared.WorkPhase },
+                { "stepOrdinal", prepared.WorkStepOrdinal },
+                { "processed", processed },
+                { "total", total },
+                { "hasMore", true },
+                { "cursorVersion", SpatialSnapshotHelpers.WorkCursorVersion },
+                { "nextCursor", nextCursor },
+                { "uiOccupancyTargetMs", Math.Max(250, Math.Min(5000, prepared.Request.MaxElapsedMs)) }
+            };
+            return new SpatialSnapshotResult
+            {
+                Success = true,
+                Guarded = false,
+                State = "in_progress",
+                Action = "extract_spatial_snapshot",
+                Message = "A bounded native preparation chunk completed; continue with the authenticated work cursor before staging spatial pages.",
+                ContinuationKind = "work",
+                SchemaVersion = SpatialSnapshotHelpers.SchemaVersion,
+                ExtractorVersion = SpatialSnapshotHelpers.ExtractorVersion,
+                CoordinateFrame = SpatialSnapshotHelpers.CoordinateFrame,
+                LengthUnit = "mm",
+                CaptureId = prepared.CaptureId,
+                SnapshotId = prepared.CaptureId,
+                CapturedAt = prepared.CapturedAt,
+                Atomic = false,
+                Liveness = "staging",
+                CaptureConsistency = SpatialSnapshotHelpers.CaptureConsistency,
+                RevisionBasisCaveat = SpatialSnapshotHelpers.Phase1aCaveat,
+                Scope = prepared.Scope,
+                EffectiveSourcePolicy = prepared.EffectiveSourcePolicy,
+                ScopeFingerprint = prepared.ScopeFingerprint,
+                SourceBindingFingerprint = prepared.SourceBindingFingerprint,
+                Preparation = preparation,
+                NextCursor = nextCursor,
+                Partial = false,
+                ScanPolicy = BuildScanPolicy(prepared.Request),
+                SuggestedNextScopes = new List<string>(),
+                ElapsedMs = stopwatch.ElapsedMilliseconds,
+                Warnings = new List<string>(prepared.Warnings ?? new List<string>()),
+                Notices = new List<string>(prepared.Notices ?? new List<string>())
+            };
+        }
+
+        private bool ValidatePreparedCaptureBindings(PreparedSpatialCapture prepared, out string reason)
+        {
+            reason = null;
+            if (prepared == null || prepared.Sources == null || prepared.Sources.Count == 0 || prepared.HostDocument == null)
+            {
+                reason = "capture_has_no_source_bindings";
+                return false;
+            }
+            List<SpatialSource> currentSources = new List<SpatialSource>();
+            List<SpatialRow> availabilityRows = new List<SpatialRow>();
+            SpatialExtractionState currentState = new SpatialExtractionState();
+            List<string> ignoredWarnings = new List<string>();
+            SpatialSnapshotRequest activeRequest = _request;
+            try
+            {
+                _request = prepared.Request;
+                DocumentIdentity hostIdentity = SpatialSnapshotHelpers.ResolveDocumentIdentity(prepared.HostDocument);
+                ResolveSources(prepared.HostDocument, hostIdentity, currentSources, availabilityRows, currentState, ignoredWarnings, false);
+            }
+            catch
+            {
+                reason = "capture_source_binding_read_failed";
+                return false;
+            }
+            finally
+            {
+                _request = activeRequest;
+            }
+
+            reason = DetermineBindingMismatchReason(prepared.Sources, prepared.OrderedRows, currentSources, availabilityRows);
+            if (reason != null) return false;
+            string currentFingerprint = BuildSourceBindingFingerprint(currentSources, availabilityRows);
+            if (!string.Equals(currentFingerprint, prepared.SourceBindingFingerprint, StringComparison.Ordinal))
+            {
+                reason = "capture_source_binding_fingerprint_changed";
+                return false;
+            }
+            for (int index = 0; index < currentSources.Count; index++)
+            {
+                currentSources[index].Identity.ExternalSourceVersion = prepared.Sources[index].Identity.ExternalSourceVersion;
+                currentSources[index].Identity.ExternalLinkUpdateAvailable = prepared.Sources[index].Identity.ExternalLinkUpdateAvailable;
+                currentSources[index].Identity.ExternalObservationBasis = prepared.Sources[index].Identity.ExternalObservationBasis;
+            }
+            prepared.Sources = currentSources;
+            return true;
+        }
+
+        private static string DetermineBindingMismatchReason(
+            IList<SpatialSource> expectedSources,
+            IList<SpatialRow> expectedRows,
+            IList<SpatialSource> currentSources,
+            IList<SpatialRow> currentRows)
+        {
+            if (expectedSources.Count != currentSources.Count) return "capture_source_set_changed";
+            for (int index = 0; index < expectedSources.Count; index++)
+            {
+                SpatialSource expected = expectedSources[index];
+                SpatialSource current = currentSources[index];
+                if (!string.Equals(expected.PlacementKey, current.PlacementKey, StringComparison.Ordinal) || expected.IsHost != current.IsHost)
+                    return "capture_source_set_changed";
+                if (!string.Equals(expected.Identity.DocumentKey, current.Identity.DocumentKey, StringComparison.Ordinal))
+                    return "capture_document_identity_changed";
+                if (!string.Equals(expected.Identity.TrackerSessionId, current.Identity.TrackerSessionId, StringComparison.Ordinal))
+                    return "capture_tracker_session_changed";
+                if (!current.Identity.TrackerSubscribed) return "change_tracker_unavailable";
+                if (!string.Equals(expected.Identity.DocumentSessionId, current.Identity.DocumentSessionId, StringComparison.Ordinal))
+                    return "capture_document_session_changed";
+                if (expected.Identity.ChangeSequence != current.Identity.ChangeSequence)
+                    return "capture_change_sequence_advanced";
+                if (!string.Equals(expected.Identity.LoadedVersion, current.Identity.LoadedVersion, StringComparison.Ordinal) ||
+                    expected.Identity.LoadedVersionAvailable != current.Identity.LoadedVersionAvailable)
+                    return "capture_loaded_version_changed";
+                if (!string.Equals(CanonicalSourceTransform(expected), CanonicalSourceTransform(current), StringComparison.Ordinal))
+                    return "capture_link_transform_changed";
+            }
+            string expectedAvailability = BuildAvailabilityFingerprint(expectedRows);
+            string currentAvailability = BuildAvailabilityFingerprint(currentRows);
+            return string.Equals(expectedAvailability, currentAvailability, StringComparison.Ordinal)
+                ? null
+                : "capture_source_availability_changed";
+        }
+
+        private static bool ValidateSourceTransforms(IList<SpatialSource> sources, SpatialExtractionState state, out string reason)
+        {
+            reason = null;
+            foreach (SpatialSource source in sources)
+            {
+                double errorMm;
+                bool valid;
+                SpatialSnapshotHelpers.BuildTransformRecord(source.SourceToHost, out errorMm, out valid);
+                if (!valid)
+                {
+                    reason = "Source-to-host transform validation failed for placement " + source.PlacementKey + ".";
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static string BuildSourceBindingFingerprint(IList<SpatialSource> sources, IList<SpatialRow> availabilityRows)
+        {
+            List<Dictionary<string, object>> sourceBindings = sources
+                .OrderBy(source => source.Identity.DocumentKey, StringComparer.Ordinal)
+                .ThenBy(source => source.PlacementKey, StringComparer.Ordinal)
+                .Select(source =>
+                {
+                    double errorMm;
+                    bool valid;
+                    return new Dictionary<string, object>
+                    {
+                        { "sourceKind", source.IsHost ? "host" : "link" },
+                        { "placementKey", source.PlacementKey },
+                        { "documentKey", source.Identity.DocumentKey },
+                        { "documentSessionId", source.Identity.DocumentSessionId },
+                        { "trackerSessionId", source.Identity.TrackerSessionId },
+                        { "changeSequence", source.Identity.ChangeSequence },
+                        { "loadedVersion", source.Identity.LoadedVersion },
+                        { "loadedVersionAvailable", source.Identity.LoadedVersionAvailable },
+                        { "loadedVersionBasis", source.Identity.LoadedVersionBasis },
+                        { "sourceToHostTransform", SpatialSnapshotHelpers.BuildTransformRecord(source.SourceToHost, out errorMm, out valid) },
+                        { "transformValid", valid }
+                    };
+                })
+                .ToList();
+            Dictionary<string, object> basis = new Dictionary<string, object>
+            {
+                { "bindingVersion", "phase1a-source-binding/1.0" },
+                { "sources", sourceBindings },
+                { "sourceAvailabilityFingerprint", BuildAvailabilityFingerprint(availabilityRows) }
+            };
+            return SpatialSnapshotHelpers.Sha256(SpatialSnapshotHelpers.SemanticCanonicalJson(basis));
+        }
+
+        private static string CanonicalSourceTransform(SpatialSource source)
+        {
+            double errorMm;
+            bool valid;
+            return SpatialSnapshotHelpers.SemanticCanonicalJson(SpatialSnapshotHelpers.BuildTransformRecord(source.SourceToHost, out errorMm, out valid));
+        }
+
+        private static string BuildAvailabilityFingerprint(IList<SpatialRow> rows)
+        {
+            IEnumerable<string> values = (rows ?? new List<SpatialRow>())
+                .Where(IsBindingAvailabilityRow)
+                .OrderBy(row => row.SortKey, StringComparer.Ordinal)
+                .Select(row => row.SortKey + "|" + SpatialSnapshotHelpers.SemanticCanonicalJson(new Dictionary<string, object>
+                {
+                    { "classification", row.Payload.ContainsKey("classification") ? row.Payload["classification"] : null },
+                    { "documentKey", row.Payload.ContainsKey("documentKey") ? row.Payload["documentKey"] : null },
+                    { "linkInstanceUniqueId", row.Payload.ContainsKey("linkInstanceUniqueId") ? row.Payload["linkInstanceUniqueId"] : null },
+                    { "linkInstanceId", row.Payload.ContainsKey("linkInstanceId") ? row.Payload["linkInstanceId"] : null }
+                }));
+            return SpatialSnapshotHelpers.Sha256(string.Join("\n", values));
+        }
+
+        private static bool IsBindingAvailabilityRow(SpatialRow row)
+        {
+            if (row == null || !string.Equals(row.NodeKind, "source_omission", StringComparison.Ordinal) || row.Payload == null) return false;
+            object raw;
+            string classification = row.Payload.TryGetValue("classification", out raw)
+                ? Convert.ToString(raw, CultureInfo.InvariantCulture)
+                : "";
+            return classification == "link_instance_identity_unavailable" ||
+                classification == "link_transform_unavailable" ||
+                classification == "linked_document_read_failed" ||
+                classification == "unloaded_link" ||
+                classification == "requested_link_not_found";
+        }
+
+        private SpatialSnapshotResult BuildWorkFailure(PreparedSpatialCapture prepared, string reason, Stopwatch stopwatch)
+        {
+            if (reason == "candidate_inventory_limit_exceeded" || reason == "prepared_capture_byte_limit_exceeded")
+            {
+                SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
+                SpatialSnapshotResult guarded = BuildCursorGuarded(
+                    "needs_scope",
+                    "The bounded native capture exceeded its candidate or prepared-byte lease. Narrow the explicit level/link/category scope and restart without cursor.",
+                    stopwatch,
+                    prepared.Warnings,
+                    prepared.Notices,
+                    prepared.Scope,
+                    prepared.EffectiveSourcePolicy,
+                    prepared.ScopeFingerprint,
+                    prepared.RevisionFingerprint,
+                    prepared.SourceRevisions);
+                guarded.CaptureId = prepared.CaptureId;
+                guarded.SnapshotId = prepared.CaptureId;
+                guarded.CapturedAt = prepared.CapturedAt;
+                guarded.SourceBindingFingerprint = prepared.SourceBindingFingerprint;
+                guarded.Notices = new List<string>(guarded.Notices ?? new List<string>());
+                guarded.Notices.Add("Preparation guard: " + reason);
+                return guarded;
+            }
+            return BuildInterruptedByChange(prepared, reason, stopwatch);
+        }
+
+        private SpatialSnapshotResult BuildInterruptedByChange(PreparedSpatialCapture prepared, string consistencyReason, Stopwatch stopwatch)
+        {
+            if (prepared != null) SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
+            List<string> warnings = prepared != null ? prepared.Warnings : new List<string>();
+            List<string> notices = prepared != null ? prepared.Notices : new List<string> { SpatialSnapshotHelpers.Phase1aCaveat };
+            SpatialSnapshotResult result = BuildCursorGuarded(
+                "capture_interrupted_by_change",
+                "The model revision changed while the sequence-bound capture was being prepared or paged. The native prepared session was discarded; restart without cursor.",
+                stopwatch,
+                warnings,
+                notices,
+                prepared != null ? prepared.Scope : null,
+                prepared != null ? prepared.EffectiveSourcePolicy : null,
+                prepared != null ? prepared.ScopeFingerprint : null,
+                prepared != null ? prepared.RevisionFingerprint : null,
+                prepared != null ? prepared.SourceRevisions : null);
+            result.CaptureId = prepared != null ? prepared.CaptureId : null;
+            result.SnapshotId = prepared != null ? prepared.CaptureId : null;
+            result.CapturedAt = prepared != null ? prepared.CapturedAt : null;
+            result.CaptureConsistency = SpatialSnapshotHelpers.CaptureConsistency;
+            result.SourceBindingFingerprint = prepared != null ? prepared.SourceBindingFingerprint : null;
+            result.Liveness = "staging";
+            result.Notices = new List<string>(notices ?? new List<string>());
+            result.Notices.Add("Consistency guard: " + (string.IsNullOrWhiteSpace(consistencyReason) ? "sequence_binding_changed" : consistencyReason));
+            return result;
+        }
+
+        private SpatialSnapshotResult BuildPreparedPageResult(PreparedSpatialCapture prepared, int startIndex, CursorEnvelope cursor, Stopwatch stopwatch, bool allowContinuation)
+        {
+            int pageOrdinal = cursor != null ? cursor.PageOrdinal : 0;
+            string priorPageHash = cursor != null ? cursor.PriorPageHash : null;
+            List<SpatialRow> pageRows = PackPage(prepared.OrderedRows, startIndex, prepared.PageTargetBytes, prepared.Warnings);
+            int nextIndex = startIndex + pageRows.Count;
+            bool hasMore = allowContinuation && nextIndex < prepared.OrderedRows.Count;
+            List<Dictionary<string, object>> nodes = pageRows.Where(row => row.IsNode).Select(row => row.Payload).ToList();
+            List<Dictionary<string, object>> omissions = pageRows.Where(row => !row.IsNode).Select(row => row.Payload).ToList();
+            List<Dictionary<string, object>> canonicalPageRows = BuildCanonicalPageRows(pageRows);
+            string pageHash = BuildPageHash(prepared.CaptureId, pageOrdinal, priorPageHash, canonicalPageRows);
+            int payloadBytes = Encoding.UTF8.GetByteCount(SpatialSnapshotHelpers.SemanticCanonicalJson(canonicalPageRows));
+            int totalPageCount = allowContinuation ? prepared.TotalPageCount : 1;
+            long totalPayloadBytes = allowContinuation ? prepared.TotalPayloadBytes : payloadBytes;
+            string nextCursor = null;
+            if (hasMore && pageRows.Count > 0)
+            {
+                SpatialRow last = pageRows[pageRows.Count - 1];
+                nextCursor = SpatialSnapshotHelpers.EncodeCursor(new CursorEnvelope
+                {
+                    CursorVersion = SpatialSnapshotHelpers.CursorVersion,
+                    CaptureId = prepared.CaptureId,
+                    PageOrdinal = pageOrdinal + 1,
+                    SortPosition = new CursorSortPosition
+                    {
+                        DocumentKey = last.DocumentKey,
+                        LinkPlacementKey = last.PlacementKey,
+                        NodeKind = last.NodeKind,
+                        StableSourceIdentity = last.StableSourceIdentity
+                    },
+                    PriorPageHash = pageHash,
+                    RevisionFingerprint = prepared.RevisionFingerprint,
+                    ScopeFingerprint = prepared.ScopeFingerprint,
+                    CapturedAt = prepared.CapturedAt
+                });
+            }
+
+            SpatialRow lastRead = pageRows.Count > 0 ? pageRows[pageRows.Count - 1] : null;
+            if (lastRead != null)
+            {
+                prepared.Extraction.LastReadDocumentKey = lastRead.DocumentKey;
+                prepared.Extraction.LastReadLinkInstanceUniqueId = string.Equals(lastRead.PlacementKey, "host", StringComparison.Ordinal) ? null : lastRead.PlacementKey;
+                prepared.Extraction.LastReadNodeKind = lastRead.NodeKind;
+                prepared.Extraction.LastReadItemId = lastRead.ElementId;
+            }
+
+            bool hasCoverageGaps = prepared.Extraction.OmittedElementCount > 0 ||
+                prepared.Extraction.OmittedConnectorCount > 0 ||
+                prepared.Extraction.SourceAvailabilityOmissionCount > 0 ||
+                prepared.Extraction.TransformValidationFailureCount > 0;
+            bool partial = hasMore || prepared.Extraction.BudgetStopped || hasCoverageGaps;
+            string coverageStatus = prepared.Extraction.BudgetStopped ? "incomplete_budget" : hasCoverageGaps ? "incomplete_omissions" : "complete";
+            string stoppedReason = prepared.Extraction.BudgetStopped
+                ? (string.IsNullOrWhiteSpace(prepared.Extraction.ScanStoppedReason) ? "max_elapsed" : prepared.Extraction.ScanStoppedReason)
+                : hasMore ? "max_bytes" : hasCoverageGaps ? "read_failed" : "completed";
+            int expectedSupportedNodeCount = prepared.Extraction.EligibleElementCount +
+                prepared.Extraction.ExtractedConnectorCount + prepared.Extraction.OmittedConnectorCount;
+            int extractedSupportedNodeCount = prepared.Extraction.ExtractedNodeCount + prepared.Extraction.ExtractedConnectorCount;
+            double coverageRatio = !prepared.Extraction.SelectionComplete
+                ? 0.0
+                : expectedSupportedNodeCount == 0
+                    ? 1.0
+                    : (double)extractedSupportedNodeCount / expectedSupportedNodeCount;
+            int classifiedOmissions = prepared.Extraction.OmittedByClassification.Values.Sum() +
+                prepared.Extraction.ConnectorOmittedByClassification.Values.Sum() +
+                prepared.Extraction.SourceOmittedByClassification.Values.Sum();
+            Dictionary<string, object> page = new Dictionary<string, object>
+            {
+                { "ordinal", pageOrdinal },
+                { "targetBytes", prepared.PageTargetBytes },
+                { "payloadBytes", payloadBytes },
+                { "rows", canonicalPageRows },
+                { "rowCount", canonicalPageRows.Count },
+                { "recordCount", nodes.Count },
+                { "nodeCount", nodes.Count },
+                { "omissionCount", omissions.Count },
+                { "hasMore", hasMore },
+                { "pageSha256", pageHash },
+                { "pageHash", pageHash },
+                { "priorPageSha256", priorPageHash },
+                { "priorPageHash", priorPageHash },
+                { "firstSortPosition", pageRows.Count > 0 ? pageRows[0].SortKey : null },
+                { "lastSortPosition", pageRows.Count > 0 ? pageRows[pageRows.Count - 1].SortKey : null },
+                { "nextCursor", nextCursor }
+            };
+
+            return new SpatialSnapshotResult
+            {
+                Success = true,
+                Guarded = false,
+                State = "completed",
+                Action = "extract_spatial_snapshot",
+                Message = partial ? "A sequence-bound Phase 1a staging page was produced with explicit continuation or coverage state." : "The final sequence-bound Phase 1a staging page was produced.",
+                SchemaVersion = SpatialSnapshotHelpers.SchemaVersion,
+                ExtractorVersion = SpatialSnapshotHelpers.ExtractorVersion,
+                CoordinateFrame = SpatialSnapshotHelpers.CoordinateFrame,
+                LengthUnit = "mm",
+                CaptureId = prepared.CaptureId,
+                SnapshotId = prepared.CaptureId,
+                CapturedAt = prepared.CapturedAt,
+                Atomic = false,
+                Liveness = "staging",
+                CaptureConsistency = SpatialSnapshotHelpers.CaptureConsistency,
+                RevisionBasisCaveat = SpatialSnapshotHelpers.Phase1aCaveat,
+                Scope = prepared.Scope,
+                EffectiveSourcePolicy = prepared.EffectiveSourcePolicy,
+                SourceRevisions = prepared.SourceRevisions,
+                ScopeFingerprint = prepared.ScopeFingerprint,
+                SourceBindingFingerprint = prepared.SourceBindingFingerprint,
+                RevisionFingerprint = prepared.RevisionFingerprint,
+                Nodes = nodes,
+                Omissions = omissions,
+                Counts = new Dictionary<string, object>
+                {
+                    { "totalNodes", prepared.Extraction.ExtractedNodeCount + prepared.Extraction.ExtractedConnectorCount },
+                    { "nodesByKind", new Dictionary<string, object> { { "revit_element", prepared.Extraction.ExtractedNodeCount }, { "connector", prepared.Extraction.ExtractedConnectorCount }, { "derived", 0 } } },
+                    { "expectedSupportedNodes", expectedSupportedNodeCount },
+                    { "extractedSupportedNodes", extractedSupportedNodeCount },
+                    { "omittedSupportedNodes", prepared.Extraction.OmittedElementCount + prepared.Extraction.OmittedConnectorCount },
+                    { "omissionsByReason", prepared.Extraction.OmittedByClassification },
+                    { "connectorOmissionsByReason", prepared.Extraction.ConnectorOmittedByClassification }
+                },
+                Coverage = new Dictionary<string, object>
+                {
+                    { "sourceCount", prepared.Extraction.SourceCount },
+                    { "selectedLinkCount", prepared.Extraction.SelectedLinkCount },
+                    { "loadedLinkCount", prepared.Extraction.LoadedLinkCount },
+                    { "unloadedLinkCount", prepared.Extraction.UnloadedLinkCount },
+                    { "scannedElementCount", prepared.Extraction.ScannedElementCount },
+                    { "filteredOutOfScopeCount", prepared.Extraction.FilteredOutOfScopeCount },
+                    { "sourceAvailabilityOmissionCount", prepared.Extraction.SourceAvailabilityOmissionCount },
+                    { "totalOrderedRowCount", prepared.OrderedRows.Count },
+                    { "pageNodeCount", nodes.Count },
+                    { "pageOmissionCount", omissions.Count },
+                    { "eligibleByCategory", prepared.Extraction.EligibleByCategory },
+                    { "extractedByCategory", prepared.Extraction.ExtractedByCategory },
+                    { "omittedByClassification", prepared.Extraction.OmittedByClassification },
+                    { "connectorOmittedByClassification", prepared.Extraction.ConnectorOmittedByClassification },
+                    { "unmaterializedOmissionCount", prepared.Extraction.UnmaterializedOmissionCount },
+                    { "unmaterializedOmissionsByClassification", prepared.Extraction.UnmaterializedOmissionsByClassification },
+                    { "sourceOmittedByClassification", prepared.Extraction.SourceOmittedByClassification },
+                    { "classifiedOmissionCount", classifiedOmissions },
+                    { "effectiveScope", prepared.HasEffectiveSourcePolicy },
+                    { "selectionComplete", prepared.Extraction.SelectionComplete },
+                    { "allEligibleOmissionsClassified", prepared.Extraction.SelectionComplete && classifiedOmissions == prepared.Extraction.OmittedElementCount + prepared.Extraction.OmittedConnectorCount + prepared.Extraction.SourceAvailabilityOmissionCount },
+                    { "extractionCoverageRatio", Math.Round(coverageRatio, 6, MidpointRounding.AwayFromZero) },
+                    { "phase0TargetAtLeast0_995", prepared.Extraction.SelectionComplete && coverageRatio >= 0.995 && !prepared.Extraction.BudgetStopped && prepared.Extraction.SourceAvailabilityOmissionCount == 0 && prepared.Extraction.TransformValidationFailureCount == 0 },
+                    { "complete", prepared.Extraction.SelectionComplete && !partial && prepared.Extraction.TransformValidationFailureCount == 0 && classifiedOmissions == prepared.Extraction.OmittedElementCount + prepared.Extraction.OmittedConnectorCount + prepared.Extraction.SourceAvailabilityOmissionCount }
+                },
+                TransformValidation = new Dictionary<string, object>
+                {
+                    { "transformCount", prepared.Extraction.TransformCount },
+                    { "validatedCount", prepared.Extraction.TransformCount - prepared.Extraction.TransformValidationFailureCount },
+                    { "failedCount", prepared.Extraction.TransformValidationFailureCount },
+                    { "maxRoundTripErrorMm", prepared.Extraction.TransformCount > 0 ? (object)Math.Round(prepared.Extraction.MaxTransformRoundTripErrorMm, 6, MidpointRounding.AwayFromZero) : null },
+                    { "allWithin0_5mm", prepared.Extraction.TransformValidationFailureCount == 0 }
+                },
+                Page = page,
+                PageCount = totalPageCount,
+                PayloadBytes = totalPayloadBytes,
+                NextCursor = nextCursor,
+                Partial = partial,
+                CoverageStatus = coverageStatus,
+                ScanStoppedReason = stoppedReason,
+                ScanPolicy = BuildScanPolicy(prepared.Request),
+                SuggestedNextScopes = BuildSuggestedNextScopes(hasMore, prepared.Extraction),
+                ElapsedMs = stopwatch.ElapsedMilliseconds,
+                LastReadDocumentKey = prepared.Extraction.LastReadDocumentKey,
+                LastReadLinkInstanceUniqueId = prepared.Extraction.LastReadLinkInstanceUniqueId,
+                LastReadNodeKind = prepared.Extraction.LastReadNodeKind,
+                LastReadItemId = prepared.Extraction.LastReadItemId,
+                Warnings = new List<string>(prepared.Warnings ?? new List<string>()),
+                Notices = new List<string>(prepared.Notices ?? new List<string>())
+            };
+        }
+
+        private void ResolveSources(Document hostDocument, DocumentIdentity hostIdentity, List<SpatialSource> sources, List<SpatialRow> rows, SpatialExtractionState state, List<string> warnings, bool observeExternalVersions = true)
         {
             if (!hostIdentity.CrossSessionStable)
             {
@@ -378,6 +1306,8 @@ namespace RevAgentCommandSet.Commands.Spatial
             {
                 Document = hostDocument,
                 LinkInstance = null,
+                IsHostSource = true,
+                LinkInstanceId = null,
                 SourceToHost = Transform.Identity,
                 Identity = hostIdentity,
                 PlacementKey = "host",
@@ -435,15 +1365,25 @@ namespace RevAgentCommandSet.Commands.Spatial
                 }
 
                 state.LoadedLinkCount++;
-                DocumentIdentity linkIdentity = SpatialSnapshotHelpers.ResolveDocumentIdentity(linkDocument);
+                DocumentIdentity linkIdentity = SpatialSnapshotHelpers.ResolveDocumentIdentity(linkDocument, true, observeExternalVersions);
                 if (!linkIdentity.CrossSessionStable)
                 {
                     warnings.Add("Linked source identity is not cross-session comparable for placement " + linkUniqueId + "; its node identity is session-scoped.");
                 }
+                if (!linkIdentity.LoadedVersionAvailable)
+                {
+                    warnings.Add("The in-memory loaded version could not be resolved for linked placement " + linkUniqueId + "; revision identity remains session/sequence/content bound.");
+                }
+                if (linkIdentity.ExternalLinkUpdateAvailable)
+                {
+                    warnings.Add("A different external file version is available for linked placement " + linkUniqueId + "; the currently loaded Revit geometry remains the capture truth until the link is reloaded.");
+                }
                 sources.Add(new SpatialSource
                 {
                     Document = linkDocument,
-                    LinkInstance = link,
+                    LinkInstance = null,
+                    IsHostSource = false,
+                    LinkInstanceId = linkId,
                     SourceToHost = transform,
                     Identity = linkIdentity,
                     PlacementKey = linkUniqueId,
@@ -702,7 +1642,7 @@ namespace RevAgentCommandSet.Commands.Spatial
                 catch (Exception ex)
                 {
                     warnings.Add("Source collector failed for " + source.Identity.DocumentKey + " / " + source.PlacementKey + ": " + ex.Message);
-                    AddSourceOmission(rows, source.Identity.DocumentKey, source.PlacementKey, "source_collector_failed", ex.Message, source.LinkInstance != null ? (int?)source.LinkInstance.Id.GetIdValue() : null, state);
+                    AddSourceOmission(rows, source.Identity.DocumentKey, source.PlacementKey, "source_collector_failed", ex.Message, source.LinkInstanceId, state);
                 }
             }
 
@@ -962,7 +1902,42 @@ namespace RevAgentCommandSet.Commands.Spatial
             });
         }
 
-        private static void AddSourceOmission(List<SpatialRow> rows, string documentKey, string placementKey, string classification, string detail, int? linkInstanceId, SpatialExtractionState state)
+        private static void AddConnectorOmission(
+            List<SpatialRow> rows,
+            SpatialSource source,
+            Element owner,
+            string ownerNodeId,
+            string connectorKey,
+            string classification,
+            string detail)
+        {
+            string ownerUniqueId = SpatialSnapshotHelpers.StableUniqueId(owner);
+            Dictionary<string, object> payload = new Dictionary<string, object>
+            {
+                { "classification", classification },
+                { "detail", TrimDetail(detail) },
+                { "eligible", true },
+                { "nodeKind", "connector" },
+                { "ownerNodeId", ownerNodeId },
+                { "connectorKey", string.IsNullOrWhiteSpace(connectorKey) ? null : connectorKey },
+                { "elementRef", SpatialSnapshotHelpers.BuildElementRef(source, owner, ownerUniqueId) }
+            };
+            string stableIdentity = ownerNodeId + "|" + (string.IsNullOrWhiteSpace(connectorKey) ? classification : connectorKey + "|" + classification);
+            rows.Add(new SpatialRow
+            {
+                SortKey = SpatialSnapshotHelpers.BuildSortKey(source.Identity.DocumentKey, source.PlacementKey, "connector_omission", stableIdentity),
+                DocumentKey = source.Identity.DocumentKey,
+                PlacementKey = source.PlacementKey,
+                NodeKind = "connector_omission",
+                StableSourceIdentity = stableIdentity,
+                ElementId = owner.Id.GetIdValue(),
+                IsNode = false,
+                Payload = payload,
+                PayloadFingerprint = SpatialSnapshotHelpers.Sha256(SpatialSnapshotHelpers.SerializePayload(payload))
+            });
+        }
+
+        private static void AddSourceOmission(List<SpatialRow> rows, string documentKey, string placementKey, string classification, string detail, int? linkInstanceId, SpatialExtractionState state, string sourcePartition = null)
         {
             state.SourceAvailabilityOmissionCount++;
             state.Increment(state.SourceOmittedByClassification, classification);
@@ -976,7 +1951,8 @@ namespace RevAgentCommandSet.Commands.Spatial
                 { "linkInstanceUniqueId", placementKey },
                 { "linkInstanceId", linkInstanceId }
             };
-            string stableIdentity = placementKey + ":" + classification;
+            if (!string.IsNullOrWhiteSpace(sourcePartition)) payload["sourcePartition"] = sourcePartition;
+            string stableIdentity = placementKey + ":" + classification + ":" + (sourcePartition ?? "");
             rows.Add(new SpatialRow
             {
                 SortKey = SpatialSnapshotHelpers.BuildSortKey(documentKey, placementKey, "source_omission", stableIdentity),
@@ -1016,12 +1992,18 @@ namespace RevAgentCommandSet.Commands.Spatial
                     { "documentKey", source.Identity.DocumentKey },
                     { "documentSessionId", source.Identity.DocumentSessionId },
                     { "loadedVersion", source.Identity.LoadedVersion },
-                    { "changeSequence", 0 },
-                    { "changeSequenceState", "unknown_phase0_sentinel" },
+                    { "changeSequence", source.Identity.ChangeSequence },
+                    { "changeSequenceState", "tracked" },
+                    { "oldestRetainedSequence", source.Identity.OldestRetainedSequence },
+                    { "trackerSessionId", source.Identity.TrackerSessionId },
+                    { "journalEntryCount", source.Identity.JournalEntryCount },
+                    { "journalCapacity", source.Identity.JournalCapacity },
+                    { "journalTruncated", source.Identity.JournalTruncated },
+                    { "externalLinkUpdateAvailable", !source.IsHost && source.Identity.ExternalLinkUpdateAvailable },
                     { "sourceToHostTransform", transform },
                     { "documentKeyResolution", new Dictionary<string, object>
                         {
-                            { "resolverVersion", "phase0-document-key/0.1" },
+                            { "resolverVersion", "phase1a-document-key/0.2" },
                             { "basis", MapDocumentIdentityBasis(source.Identity.ResolutionBasis) },
                             { "crossSessionComparable", source.Identity.CrossSessionStable }
                         }
@@ -1043,18 +2025,28 @@ namespace RevAgentCommandSet.Commands.Spatial
             return "session_only";
         }
 
-        private static string BuildRevisionFingerprint(IList<Dictionary<string, object>> sourceRevisions, IList<SpatialRow> rows)
+        private static string BuildRevisionFingerprint(IList<SpatialSource> sources, IList<Dictionary<string, object>> sourceRevisions, IList<SpatialRow> rows, string sourceBindingFingerprint)
         {
             StringBuilder text = new StringBuilder();
             text.Append("extractor=").Append(SpatialSnapshotHelpers.ExtractorVersion).Append('\n');
+            text.Append("source-binding=").Append(sourceBindingFingerprint ?? "").Append('\n');
             foreach (Dictionary<string, object> source in sourceRevisions)
             {
-                text.Append(SpatialSnapshotHelpers.CanonicalJson(source)).Append('\n');
+                Dictionary<string, object> revisionIdentity = source
+                    .Where(pair => !string.Equals(pair.Key, "externalLinkUpdateAvailable", StringComparison.Ordinal))
+                    .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+                text.Append(SpatialSnapshotHelpers.CanonicalJson(revisionIdentity)).Append('\n');
             }
-            foreach (SpatialRow row in rows)
+            foreach (SpatialSource source in sources
+                .OrderBy(item => item.Identity.DocumentKey, StringComparer.Ordinal)
+                .ThenBy(item => item.PlacementKey, StringComparer.Ordinal))
             {
-                text.Append(row.SortKey).Append('|').Append(row.PayloadFingerprint).Append('\n');
+                text.Append("content=")
+                    .Append(source.Identity.DocumentKey).Append('|')
+                    .Append(source.PlacementKey).Append('|')
+                    .Append(source.ContentFingerprint).Append('\n');
             }
+            text.Append("capture-content=").Append(SpatialSnapshotHelpers.Sha256(string.Join("\n", rows.Select(row => row.SortKey + "|" + row.PayloadFingerprint)))).Append('\n');
             return SpatialSnapshotHelpers.Sha256(text.ToString());
         }
 
@@ -1108,7 +2100,9 @@ namespace RevAgentCommandSet.Commands.Spatial
 
         private static int GetCanonicalRowByteCount(SpatialRow row)
         {
-            return Encoding.UTF8.GetByteCount(SpatialSnapshotHelpers.SemanticCanonicalJson(BuildCanonicalPageRows(new[] { row })[0]));
+            if (row.CanonicalByteCount > 0) return row.CanonicalByteCount;
+            row.CanonicalByteCount = Encoding.UTF8.GetByteCount(SpatialSnapshotHelpers.SemanticCanonicalJson(BuildCanonicalPageRows(new[] { row })[0]));
+            return row.CanonicalByteCount;
         }
 
         private static bool TryResolveContinuationBoundary(
@@ -1191,24 +2185,27 @@ namespace RevAgentCommandSet.Commands.Spatial
             return totalBytes;
         }
 
-        private object BuildScanPolicy()
+        private object BuildScanPolicy(SpatialSnapshotRequest request = null)
         {
+            SpatialSnapshotRequest policyRequest = request ?? _request ?? new SpatialSnapshotRequest();
             return new Dictionary<string, object>
             {
                 { "levelScopeRequired", true },
-                { "maxElements", _request.MaxElements },
-                { "maxElapsedMs", _request.MaxElapsedMs },
-                { "pageTargetBytes", _request.PageTargetBytes },
+                { "maxElements", policyRequest.MaxElements },
+                { "maxElapsedMs", Math.Max(250, Math.Min(5000, policyRequest.MaxElapsedMs)) },
+                { "pageTargetBytes", policyRequest.PageTargetBytes },
                 { "pagePayloadBasis", "canonical_ieee754_rows_utf8_v1" },
                 { "hardPageCap", true },
-                { "maxGeometryPointsPerElement", _request.MaxGeometryPointsPerElement },
-                { "maxBoundarySegmentsPerElement", _request.MaxBoundarySegmentsPerElement },
+                { "maxGeometryPointsPerElement", policyRequest.MaxGeometryPointsPerElement },
+                { "maxBoundarySegmentsPerElement", policyRequest.MaxBoundarySegmentsPerElement },
                 { "ordering", new[] { "documentKey", "linkPlacement", "nodeKind", "stableSourceIdentity" } },
                 { "selectionAndFilteringBeforeMaxElements", true },
                 { "coordinateFrame", SpatialSnapshotHelpers.CoordinateFrame },
                 { "cursorVersion", SpatialSnapshotHelpers.CursorVersion },
                 { "cursorIntegrity", "hmac_sha256_process_session" },
                 { "cursorInvalidAfterRestart", true },
+                { "sequenceBound", true },
+                { "maxUiOccupancyMs", 5000 },
                 { "readOnly", true },
                 { "transactionOpened", false }
             };
@@ -1241,8 +2238,9 @@ namespace RevAgentCommandSet.Commands.Spatial
                 CoordinateFrame = SpatialSnapshotHelpers.CoordinateFrame,
                 LengthUnit = "mm",
                 Atomic = false,
-                Liveness = "unknown",
-                RevisionBasisCaveat = SpatialSnapshotHelpers.Phase0Caveat,
+                Liveness = "staging",
+                CaptureConsistency = SpatialSnapshotHelpers.CaptureConsistency,
+                RevisionBasisCaveat = SpatialSnapshotHelpers.Phase1aCaveat,
                 Nodes = new List<Dictionary<string, object>>(),
                 Omissions = new List<Dictionary<string, object>>(),
                 Partial = true,
@@ -1263,7 +2261,7 @@ namespace RevAgentCommandSet.Commands.Spatial
             result.ScopeFingerprint = scopeFingerprint;
             result.RevisionFingerprint = revisionFingerprint;
             result.SourceRevisions = sourceRevisions;
-            result.SuggestedNextScopes = new List<string> { "Omit cursor and start a new Phase 0 capture for the current bounded revision." };
+            result.SuggestedNextScopes = new List<string> { "Omit cursor and start a new sequence-bound capture for the current bounded scope." };
             return result;
         }
 
@@ -1281,8 +2279,9 @@ namespace RevAgentCommandSet.Commands.Spatial
                 CoordinateFrame = SpatialSnapshotHelpers.CoordinateFrame,
                 LengthUnit = "mm",
                 Atomic = false,
-                Liveness = "unknown",
-                RevisionBasisCaveat = SpatialSnapshotHelpers.Phase0Caveat,
+                Liveness = "staging",
+                CaptureConsistency = SpatialSnapshotHelpers.CaptureConsistency,
+                RevisionBasisCaveat = SpatialSnapshotHelpers.Phase1aCaveat,
                 Nodes = new List<Dictionary<string, object>>(),
                 Omissions = new List<Dictionary<string, object>>(),
                 Partial = true,
@@ -1304,7 +2303,7 @@ namespace RevAgentCommandSet.Commands.Spatial
 
         public string GetName()
         {
-            return "Extract bounded Phase 0 spatial snapshot";
+            return "Extract sequence-bound Phase 1a spatial snapshot page";
         }
     }
 }

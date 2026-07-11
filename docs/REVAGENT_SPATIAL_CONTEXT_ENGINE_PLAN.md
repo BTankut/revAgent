@@ -1,7 +1,8 @@
 # revAgent Spatial Context Engine Plan
 
 Status: codex_final; execution completed through Phase 0.
-Revision: v2.4 — Phase 0 completion recorded (2026-07-11).
+Revision: v2.5 — Phase 1a implementation complete; live acceptance pending
+(2026-07-11).
 Supersedes draft v2.1, v2, and the draft previously named
 `REVAGENT_SPATIAL_DESIGN_ENGINE_PLAN.md`.
 
@@ -629,7 +630,10 @@ Execution checkpoint (2026-07-11):
   identity, omission classification, and repeat-capture determinism were
   verified. The Phase 0 trust boundary remains `atomic=false` and
   `liveness=unknown`.
-- [ ] **Phase 1a — Truth foundations.** Next phase; not started.
+- [ ] **Phase 1a — Truth foundations.** Implementation complete. Local payload,
+  targeted, aggregate, and protected-CI-equivalent Gates A-C passed on
+  2026-07-11. Live Revit Gate D and protected delivery Gate E remain pending,
+  so the phase is not yet accepted or marked complete.
 - [ ] **Phase 1b — Deterministic queries + diff.** Not started.
 - [ ] **Phase 1c — Clash detection.** Not started.
 - [ ] **Phase 2a — Terminal placement (propose-only).** Not started.
@@ -713,6 +717,17 @@ numeric id guard
 
 ## Revision Record
 
+- v2.5 / `codex_final` (2026-07-11): Implemented the Phase 1a truth
+  foundations without beginning Phase 1b: native composite identity and
+  canonical host-mm capture, resumable bounded native work, connector evidence,
+  `DocumentChanged` liveness tracking, strict v0.2 page/work contracts, atomic
+  durable SQLite/R*Tree storage, migration/recovery, retention and guarded
+  purge, plus a fail-closed live acceptance harness. Regenerated the hardened
+  runtime and Revit 2022 payload, compile-checked Revit 2023-2025, and passed
+  targeted tests, payload freshness, `test-all`, and the local protected-CI
+  equivalent `test-ci`. Kept Phase 1a unchecked because operator-approved live
+  identity/transform/concurrent-edit/performance evidence and protected
+  delivery remain pending; no deploy or NAS publish was performed.
 - v2.4 / `codex_final` (2026-07-11): Marked Phase 0 complete after the
   operator's real-model acceptance pass. Recorded the verified Level/spatial
   scope, coverage, MEP Level identity, omission, and deterministic-repeat

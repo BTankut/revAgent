@@ -541,7 +541,9 @@ namespace RevAgentPlugin.Core
                     string logicalToolName = ExtractRequestParamText(request, "logicalToolName", "toolName");
                     string parentTaskName = ExtractRequestParamText(request, "parentTaskName");
                     string parentTaskId = ExtractRequestParamText(request, "parentTaskId");
-                    bool suppressTaskStatusWindow = string.Equals(request.Method, "extract_spatial_snapshot", StringComparison.OrdinalIgnoreCase) &&
+                    bool suppressTaskStatusWindow =
+                        (string.Equals(request.Method, "extract_spatial_snapshot", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(request.Method, "get_spatial_change_state", StringComparison.OrdinalIgnoreCase)) &&
                         ExtractRequestParamBool(request, "suppressTaskStatusWindow");
                     activeTask = McpTaskStatusService.Instance.BeginTask(
                         request.Id,

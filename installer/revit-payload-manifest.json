@@ -45,7 +45,7 @@
         },
         {
           "path": "src/revit-plugin/revAgentPlugin/Core/Application.cs",
-          "gitBlobSha": "3fdb28b1ae26c540b83c1cb021c2dfd72a26c33c"
+          "gitBlobSha": "a4c37e28336f790aea11336eccb20a31a94b1186"
         },
         {
           "path": "src/revit-plugin/revAgentPlugin/Core/BridgeResultContract.cs",
@@ -97,7 +97,11 @@
         },
         {
           "path": "src/revit-plugin/revAgentPlugin/Core/SocketService.cs",
-          "gitBlobSha": "29ce514c06d64dd7a79100c226712c4c988dc3c1"
+          "gitBlobSha": "a7ef4b6bc687cfb92f30fbcbc2adaeeb2bc394ed"
+        },
+        {
+          "path": "src/revit-plugin/revAgentPlugin/Core/SpatialChangeTracker.cs",
+          "gitBlobSha": "636017e7e2e797ebbaa39c6cd49043668e662efa"
         },
         {
           "path": "src/revit-plugin/revAgentPlugin/Properties/AssemblyInfo.cs",
@@ -143,8 +147,8 @@
       "payloads": [
         {
           "path": "installer/revit-plugin/revAgentPlugin/revAgentPlugin.dll",
-          "sha256": "43cca9889fa553ef5ceb54d46838b1c2612d66b65f632c3067bace0f68a77be7",
-          "sizeBytes": 97280
+          "sha256": "a4205e100a02aba7081a494fe5799b9329a9821bac313588dc51b37fa2005d18",
+          "sizeBytes": 109568
         }
       ]
     },
@@ -168,7 +172,7 @@
       "inputs": [
         {
           "path": "src/revit-plugin/revAgentCommandSet/command.json",
-          "gitBlobSha": "2fe57cd13daa200b03de0e732048826157462b3e"
+          "gitBlobSha": "5bdef9a0adee123a0b02897054f164b286eaa988"
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/Commands/Access/GetCurrentViewElementsCommand.cs",
@@ -192,11 +196,19 @@
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/ExtractSpatialSnapshotCommand.cs",
-          "gitBlobSha": "1305fbd5a4a6af2214629303d2f0ed8f2cc8e40b"
+          "gitBlobSha": "1c44a5171f15ad98c20b4d30809b553f21cfd4bd"
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/ExtractSpatialSnapshotEventHandler.cs",
-          "gitBlobSha": "522509e13e98a599889e95727ff7a60eb3901c9d"
+          "gitBlobSha": "041c3d2c0e0c4c1769fb032a155070e0706c8560"
+        },
+        {
+          "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/GetSpatialChangeStateCommand.cs",
+          "gitBlobSha": "481bf366e279c8ec811af13c92cdec430a942f67"
+        },
+        {
+          "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/GetSpatialChangeStateEventHandler.cs",
+          "gitBlobSha": "ab47936afce276c728cc2afc75cd49b158d8127f"
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/InspectLevelsCommand.cs",
@@ -207,12 +219,16 @@
           "gitBlobSha": "4f46877825ad256f99f3f15dc8d7ba09c4acb8fc"
         },
         {
+          "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/SpatialCaptureSessionManager.cs",
+          "gitBlobSha": "216fee98c48fff9afe8b272ce14fe1fd653f41af"
+        },
+        {
           "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/SpatialSnapshotContracts.cs",
-          "gitBlobSha": "21a860c8d9ff85b4e0c4784fa063a4c6ee410c51"
+          "gitBlobSha": "6734f736eed3c2d45976925686ca168e0b95baeb"
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/SpatialSnapshotHelpers.cs",
-          "gitBlobSha": "20c146c2b291d05c689ab80cc3dd57899c0196bf"
+          "gitBlobSha": "cfe216b085da1e34534f0dcf6bc77cdae6b7181c"
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/Commands/View/ActivateViewCommand.cs",
@@ -360,7 +376,7 @@
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/revAgentCommandSet.csproj",
-          "gitBlobSha": "ce56a48c3e6bcd9d07c74b8391692c98ca3e5f08"
+          "gitBlobSha": "195b9b18fe4bac64e70bf815754482a247327016"
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/Services/GetCurrentViewElementsEventHandler.cs",
@@ -378,13 +394,13 @@
       "payloads": [
         {
           "path": "installer/command-payload/revAgentCommandSet.dll",
-          "sha256": "90431e68bc4c9bad6fcd8edf292546867ef59acd39a8cfccfb5ef683f69e6890",
-          "sizeBytes": 387072
+          "sha256": "790d4af8df193e4d185ac0f568cc20ab6acb9f9e22197691ebc8538a62861c86",
+          "sizeBytes": 474624
         },
         {
           "path": "installer/revit-plugin/revAgentPlugin/Commands/revAgentCommandSet/2022/revAgentCommandSet.dll",
-          "sha256": "90431e68bc4c9bad6fcd8edf292546867ef59acd39a8cfccfb5ef683f69e6890",
-          "sizeBytes": 387072
+          "sha256": "790d4af8df193e4d185ac0f568cc20ab6acb9f9e22197691ebc8538a62861c86",
+          "sizeBytes": 474624
         }
       ]
     }

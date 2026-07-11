@@ -3,14 +3,24 @@ import path from "node:path";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { getRuntimeRoot, readJsonFile } from "../utils/runtimeIdentity.js";
-export const SPATIAL_EXTRACTION_PAGE_SCHEMA_ID = "https://schemas.revagent.app/spatial/v0.1/extraction-page.schema.json";
-const schemaFileNames = [
+export const SPATIAL_EXTRACTION_PAGE_SCHEMA_IDS = {
+    "0.1": "https://schemas.revagent.app/spatial/v0.1/extraction-page.schema.json",
+    "0.2": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json",
+};
+export const SPATIAL_EXTRACTION_PAGE_SCHEMA_ID = SPATIAL_EXTRACTION_PAGE_SCHEMA_IDS["0.2"];
+export const SPATIAL_WORK_CONTINUATION_SCHEMA_ID = "https://schemas.revagent.app/spatial/v0.2/work-continuation.schema.json";
+const baseSchemaFileNames = [
     "element-ref.schema.json",
     "node-ref.schema.json",
     "source-revision.schema.json",
     "cursor-envelope.schema.json",
     "spatial-snapshot.schema.json",
     "extraction-page.schema.json",
+];
+const phase1aSchemaFileNames = [
+    ...baseSchemaFileNames,
+    "work-cursor-envelope.schema.json",
+    "work-continuation.schema.json",
 ];
 function isObject(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -61,8 +71,9 @@ function semanticCanonicalJson(value) {
 function sha256SemanticCanonical(value) {
     return `sha256:${crypto.createHash("sha256").update(semanticCanonicalJson(value), "utf8").digest("hex")}`;
 }
-function loadValidator() {
-    const schemaRoot = path.join(getRuntimeRoot(), "schemas", "spatial", "v0.1");
+function loadValidators(schemaVersion) {
+    const schemaRoot = path.join(getRuntimeRoot(), "schemas", "spatial", `v${schemaVersion}`);
+    const schemaFileNames = schemaVersion === "0.2" ? phase1aSchemaFileNames : baseSchemaFileNames;
     const schemas = schemaFileNames.map((fileName) => {
         const schema = readJsonFile(path.join(schemaRoot, fileName));
         if (!schema) {
@@ -80,13 +91,28 @@ function loadValidator() {
     for (const schema of schemas) {
         ajv.addSchema(schema);
     }
-    const validator = ajv.getSchema(SPATIAL_EXTRACTION_PAGE_SCHEMA_ID);
-    if (!validator) {
-        throw new Error(`Spatial extraction page schema was not compiled: ${SPATIAL_EXTRACTION_PAGE_SCHEMA_ID}`);
+    const schemaId = SPATIAL_EXTRACTION_PAGE_SCHEMA_IDS[schemaVersion];
+    const extractionPageValidator = ajv.getSchema(schemaId);
+    if (!extractionPageValidator) {
+        throw new Error(`Spatial extraction page schema was not compiled: ${schemaId}`);
     }
-    return validator;
+    const workContinuationValidator = schemaVersion === "0.2"
+        ? ajv.getSchema(SPATIAL_WORK_CONTINUATION_SCHEMA_ID)
+        : null;
+    if (schemaVersion === "0.2" && !workContinuationValidator) {
+        throw new Error(`Spatial work continuation schema was not compiled: ${SPATIAL_WORK_CONTINUATION_SCHEMA_ID}`);
+    }
+    return { extractionPageValidator, workContinuationValidator };
 }
-const extractionPageValidator = loadValidator();
+const validatorBundles = {
+    "0.1": loadValidators("0.1"),
+    "0.2": loadValidators("0.2"),
+};
+const extractionPageValidators = {
+    "0.1": validatorBundles["0.1"].extractionPageValidator,
+    "0.2": validatorBundles["0.2"].extractionPageValidator,
+};
+const workContinuationValidator = validatorBundles["0.2"].workContinuationValidator;
 function formatAjvErrors(errors) {
     return (errors || []).slice(0, 100).map((error) => {
         const pathText = error.instancePath || "/";
@@ -187,7 +213,35 @@ function semanticErrors(payload) {
     }
     return errors;
 }
+function workContinuationSemanticErrors(payload) {
+    const errors = [];
+    const preparation = isObject(payload.preparation) ? payload.preparation : {};
+    if (payload.snapshotId !== payload.captureId) {
+        errors.push("/snapshotId must equal captureId for a Phase 1a work continuation");
+    }
+    if (preparation.nextCursor !== payload.nextCursor) {
+        errors.push("/preparation/nextCursor must equal top-level nextCursor");
+    }
+    if (typeof preparation.total === "number" && preparation.processed > preparation.total) {
+        errors.push("/preparation/processed cannot exceed preparation.total");
+    }
+    return errors;
+}
 export function validateSpatialExtractionPageContract(payload) {
+    const schemaVersion = isObject(payload) && typeof payload.schemaVersion === "string"
+        ? payload.schemaVersion
+        : "";
+    const supportedSchemaVersion = schemaVersion === "0.1" || schemaVersion === "0.2" ? schemaVersion : null;
+    const extractionPageValidator = supportedSchemaVersion
+        ? extractionPageValidators[supportedSchemaVersion]
+        : null;
+    if (!supportedSchemaVersion || !extractionPageValidator) {
+        return {
+            valid: false,
+            errors: [`Unsupported spatial extraction schemaVersion: ${schemaVersion || "<missing>"}`],
+            schemaId: null,
+        };
+    }
     const validSchema = extractionPageValidator(payload);
     const errors = formatAjvErrors(extractionPageValidator.errors);
     if (validSchema && isObject(payload)) {
@@ -196,6 +250,18 @@ export function validateSpatialExtractionPageContract(payload) {
     return {
         valid: errors.length === 0,
         errors,
-        schemaId: SPATIAL_EXTRACTION_PAGE_SCHEMA_ID,
+        schemaId: SPATIAL_EXTRACTION_PAGE_SCHEMA_IDS[supportedSchemaVersion],
+    };
+}
+export function validateSpatialWorkContinuationContract(payload) {
+    const validSchema = workContinuationValidator(payload);
+    const errors = formatAjvErrors(workContinuationValidator.errors);
+    if (validSchema && isObject(payload)) {
+        errors.push(...workContinuationSemanticErrors(payload));
+    }
+    return {
+        valid: errors.length === 0,
+        errors,
+        schemaId: SPATIAL_WORK_CONTINUATION_SCHEMA_ID,
     };
 }
