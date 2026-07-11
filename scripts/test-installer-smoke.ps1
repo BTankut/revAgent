@@ -543,7 +543,23 @@ try {
     Assert-True ($publishText -notmatch 'kurulum|legacyEntryPoint|legacyInstaller') "Release publishing must not create the removed legacy kurulum package alias."
     $payloadFreshnessText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-mcp-build-payload-freshness.ps1")
     $testAllText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-all.ps1")
-    $packageTestHelpersText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\McpPackageTestHelpers.psm1")
+    $packageTestHelpersPath = Join-Path $RepoRoot "scripts\McpPackageTestHelpers.psm1"
+    $packageTestHelpersText = Get-Content -Raw -LiteralPath $packageTestHelpersPath
+    $packageTestHelpersTokens = $null
+    $packageTestHelpersErrors = $null
+    $packageTestHelpersAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        $packageTestHelpersPath,
+        [ref]$packageTestHelpersTokens,
+        [ref]$packageTestHelpersErrors
+    )
+    Assert-Equal $packageTestHelpersErrors.Count 0 "MCP package test helpers must parse without errors."
+    $npmCiFunctionAst = $packageTestHelpersAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq "Invoke-McpPackageNpmCi"
+    }, $true)
+    Assert-True ($null -ne $npmCiFunctionAst) "Invoke-McpPackageNpmCi must remain present in the MCP package test helpers."
+    $npmCiFunctionText = [string]$npmCiFunctionAst.Extent.Text
     $revitPayloadManifestText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\RevitPayloadManifest.psm1")
     $buildRevitPluginText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\build-revit-plugin.ps1")
     $ciText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\test-ci.ps1")
@@ -567,6 +583,7 @@ try {
     Assert-True ($revitPayloadManifestText -notmatch '\$artifacts \+=') "Revit debug-artifact scanning must not use array += accumulation."
     Assert-True ($buildRevitPluginText -match 'Remove-RevitPayloadDebugArtifacts -RepoRoot \$RepoRoot' -and $buildRevitPluginText -match 'Assert-RevitPayloadNoDebugArtifacts -RepoRoot \$RepoRoot') "Revit payload build refresh must remove and reject stale .NET debug artifacts."
     Assert-True ($packageTestHelpersText -match 'node_modules' -and $packageTestHelpersText -match '\.package-lock\.json' -and $packageTestHelpersText -match 'GetTempPath' -and $packageTestHelpersText -match 'REVIT_MCP_REPO_ROOT') "MCP package test helpers must skip live dependency folders, use temporary work copies, and preserve repo-root context."
+    Assert-True ($npmCiFunctionText -match '\$previousNpmIgnoreScripts = \[Environment\]::GetEnvironmentVariable\("npm_config_ignore_scripts", "Process"\)' -and $npmCiFunctionText -match 'try\s*\{' -and $npmCiFunctionText -match '\$env:npm_config_ignore_scripts = "false"' -and $npmCiFunctionText -match 'finally\s*\{' -and $npmCiFunctionText -match 'Remove-Item Env:\\npm_config_ignore_scripts' -and $npmCiFunctionText -match '\$env:npm_config_ignore_scripts = \$previousNpmIgnoreScripts') "MCP package npm ci must enable lifecycle scripts process-locally and restore the caller environment through finally."
     Assert-True ($runtimePackageText -match '"@e965/xlsx"' -and $runtimePackageText -notmatch '"exceljs"') "Runtime Excel ingestion must avoid the deprecated exceljs transitive dependency chain."
     Assert-True ($runtimePackageText -match '"ajv"' -and $runtimePackageText -match '"ajv-formats"' -and $runtimePackageText -match '"schemas"') "Spatial response validation must declare its schema runtime dependencies and package the published schemas."
     Assert-True ($buildMcpReleaseText -match 'schemas.*spatial' -and $buildMcpReleaseText -match 'copyNormalizedJsonTree' -and $buildMcpReleaseText -match 'JSON\.parse\(sourceText\)' -and $buildMcpReleaseText -match 'sourceText\.replace') "Runtime release assembly must validate, normalize, and copy every published spatial schema version."

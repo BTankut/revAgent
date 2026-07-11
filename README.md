@@ -572,13 +572,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-ci.ps1
 ```
 
 `test-ci.ps1` is the local equivalent of the protected `Engineering gates`
-job. Passing it does not publish or deploy. The canonical continuation is a
-topic-branch draft PR, protected review/checks, merge to `main`, automatic
-signed source-free build/validation, and only then a separately approved manual
-workflow dispatch with `publish_to_nas=true`. Never publish NAS stable directly
-from a topic branch. Spatial Phase 1a also has a separate live Revit acceptance
-gate documented in `docs/REVAGENT_SPATIAL_PHASE1A_ACCEPTANCE.md`; it is not part
-of `test-all.ps1` or `test-ci.ps1`.
+job. Its isolated `npm ci` helper enables lifecycle scripts process-locally and
+then restores the caller environment, so a user-level `ignore-scripts=true`
+setting cannot suppress native dependencies such as `better-sqlite3`. Passing
+it does not publish or deploy. The canonical continuation is a topic-branch
+draft PR, protected review/checks, merge to `main`, automatic signed source-free
+build/validation, and only then a separately approved manual workflow dispatch
+with `publish_to_nas=true`. Never publish NAS stable directly from a topic
+branch. Spatial Phase 1a also has a separate live Revit acceptance gate
+documented in `docs/REVAGENT_SPATIAL_PHASE1A_ACCEPTANCE.md`; it is not part of
+`test-all.ps1` or `test-ci.ps1`.
 
 The protected `main` branch runs GitHub Actions on pull requests and pushes to
 `main`: `Engineering gates`, GitGuardian Security Checks, Claude Code Review

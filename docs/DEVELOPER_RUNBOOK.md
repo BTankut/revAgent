@@ -590,11 +590,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-ci.ps1
 ```
 
 `test-ci.ps1` copies both MCP packages to isolated temporary work folders,
-restores dependencies there with `npm ci`, runs forced strict TypeScript checks
-in those copies, checks the zero `@ts-nocheck` policy, verifies distribution
+restores dependencies there with `npm ci`, and process-locally forces
+`npm_config_ignore_scripts=false` for that restore before returning the caller's
+environment to its previous state. This prevents a self-hosted runner's
+user-level npm configuration from silently skipping native lifecycle installs
+such as `better-sqlite3`. It then runs forced strict TypeScript checks in those
+copies, checks the zero `@ts-nocheck` policy, verifies distribution
 canonicalization/signature fixtures, verifies MCP build payload freshness with
-`test-mcp-build-payload-freshness.ps1`, then runs both package `npm test`
-chains from the temporary copies. The source package folders
+`test-mcp-build-payload-freshness.ps1`, and runs both package `npm test` chains
+from the temporary copies. The source package folders
 are not used as dependency restore targets, so live ProgramData package
 processes cannot lock `node_modules` cleanup. The Revit half reads
 `installer/revit-payload-manifest.json`; it does not rebuild the add-in or

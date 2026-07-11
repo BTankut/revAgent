@@ -112,8 +112,23 @@ function Invoke-McpPackageNpmCi {
         throw "package-lock.json was not found for $PackageRelativePath; cannot restore deterministic npm dependencies."
     }
 
-    Invoke-McpPackageCommand -PackageName "$PackageName dependencies" -PackageRoot $PackageRoot -Command {
-        npm ci
+    $previousNpmIgnoreScripts = [Environment]::GetEnvironmentVariable("npm_config_ignore_scripts", "Process")
+    try {
+        # Native runtime dependencies such as better-sqlite3 require their npm
+        # lifecycle install. A user-level ignore-scripts setting on a
+        # self-hosted runner must not silently weaken the canonical CI restore.
+        $env:npm_config_ignore_scripts = "false"
+        Invoke-McpPackageCommand -PackageName "$PackageName dependencies" -PackageRoot $PackageRoot -Command {
+            npm ci
+        }
+    }
+    finally {
+        if ($null -eq $previousNpmIgnoreScripts) {
+            Remove-Item Env:\npm_config_ignore_scripts -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:npm_config_ignore_scripts = $previousNpmIgnoreScripts
+        }
     }
 }
 
