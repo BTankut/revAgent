@@ -978,8 +978,11 @@ returns deterministic review buckets through compact `reviewTable`,
 `"debug"` when raw `reviewRows`, token profiles, raw cells, or nested
 candidates are needed. It does not write Revit schedule cells or workbook data.
 For schedule text edits, use `set_schedule_cells` after exact row/column targets
-are known. When the work starts from a visible row label or sheet/schedule text
-search, use `set_schedule_cells_by_text`: bound it with `sheetQuery`,
+are known. Its dry-run rows report the observed value as `actualAfter`, the
+requested target as `projectedAfter`, and the safe preview decision as
+`wouldChange`; `after` and `changed` remain deprecated compatibility fields.
+When the work starts from a visible row label or sheet/schedule text search,
+use `set_schedule_cells_by_text`: bound it with `sheetQuery`,
 `sheetIds`, `scheduleNameQuery`, or `scheduleIds`, provide row text terms, review
 the dry-run matches, then commit only after ambiguity and current text checks are
 clear. Raw dynamic C# schedule loops are a fallback for unsupported cases, not

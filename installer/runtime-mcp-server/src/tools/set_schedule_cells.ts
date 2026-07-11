@@ -101,7 +101,7 @@ bool IsStandardScheduleBodyCellWriteForbidden(ViewSchedule schedule, SectionType
     return true;
 }
 
-object CellResult(int index, int row, int column, string requestedValue, string beforeValue, string afterValue, bool readable, bool changed, bool verified, bool blocked, string reason, string error)
+object CellResult(int index, int row, int column, string requestedValue, string beforeValue, string afterValue, string actualAfterValue, string projectedAfterValue, bool readable, bool changed, bool wouldChange, string actualAfterBasis, string projectedAfterBasis, bool verified, bool blocked, string reason, string error)
 {
     return new {
         index = index,
@@ -110,12 +110,29 @@ object CellResult(int index, int row, int column, string requestedValue, string 
         requestedValue = requestedValue,
         before = beforeValue,
         after = afterValue,
+        actualAfter = actualAfterValue,
+        projectedAfter = projectedAfterValue,
         readable = readable,
         changed = changed,
+        wouldChange = wouldChange,
+        afterBasis = actualAfterBasis,
+        actualAfterBasis = actualAfterBasis,
+        projectedAfterBasis = projectedAfterBasis,
         verified = verified,
         blocked = blocked,
         reason = reason,
         error = error
+    };
+}
+
+object ChangeFieldContract()
+{
+    return new {
+        version = "2",
+        preferredFields = new string[] { "actualAfter", "projectedAfter", "wouldChange" },
+        deprecatedLegacyFields = new string[] { "after", "changed" },
+        after = "Legacy actual-value field; an empty string may also mean the cell was unreadable. Use actualAfter with actualAfterBasis.",
+        changed = "Legacy before-versus-requested comparison. It does not prove a committed write and may be true on a blocked preflight row. Use wouldChange."
     };
 }
 
@@ -219,8 +236,14 @@ try
             errors.Add(reason + " at row " + row.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", column " + column.ToString(System.Globalization.CultureInfo.InvariantCulture) + ": " + error);
         }
 
-        if (!blocked && cellWouldChange) wouldChangeCount++;
-        planned.Add(CellResult(i, row, column, requestedValue, before, before, readable, cellWouldChange, false, blocked, reason, error));
+        string actualAfter = readable ? before : null;
+        string projectedAfter = !blocked && readable ? requestedValue : null;
+        bool wouldChange = !blocked && cellWouldChange;
+        string actualAfterBasis = readable ? "current_observed_no_write" : "unavailable_not_readable";
+        string projectedAfterBasis = projectedAfter == null ? "unavailable_preflight_blocked" : "requested_value_after_successful_preflight";
+
+        if (wouldChange) wouldChangeCount++;
+        planned.Add(CellResult(i, row, column, requestedValue, before, before, actualAfter, projectedAfter, readable, cellWouldChange, wouldChange, actualAfterBasis, projectedAfterBasis, false, blocked, reason, error));
     }
 
     if (errors.Count > 0)
@@ -239,6 +262,7 @@ try
             columnCount = columnCount,
             committed = false,
             dryRun = dryRun,
+            changeFieldContract = ChangeFieldContract(),
             changes = planned.ToArray(),
             errors = errors.ToArray()
         };
@@ -260,6 +284,7 @@ try
             dryRun = true,
             requestedCellCount = rows.Length,
             wouldChangeCount = wouldChangeCount,
+            changeFieldContract = ChangeFieldContract(),
             changes = planned.ToArray(),
             warnings = new string[] { "Dry run only. Re-run with mode=commit to write schedule cell text." }
         };
@@ -302,7 +327,8 @@ try
             throw new Exception("Schedule cell verification failed at row " + row.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", column " + column.ToString(System.Globalization.CultureInfo.InvariantCulture) + ": requested value was not observed after write.");
         }
         if (verified) verifiedCount++;
-        committedChanges.Add(CellResult(i, row, column, requestedValue, before, after, readableBefore, changed, verified, !verified, verified ? "" : "verification_failed", writeError));
+        string actualAfterBasis = changed ? "post_commit_readback" : "current_observed_no_write_needed";
+        committedChanges.Add(CellResult(i, row, column, requestedValue, before, after, after, requestedValue, readableBefore, changed, changed, actualAfterBasis, "requested_value_committed_target", verified, !verified, verified ? "" : "verification_failed", writeError));
     }
 
     bool success = verifiedCount == rows.Length;
@@ -322,6 +348,7 @@ try
         requestedCellCount = rows.Length,
         changedCount = changedCount,
         verifiedCount = verifiedCount,
+        changeFieldContract = ChangeFieldContract(),
         changes = committedChanges.ToArray()
     };
 }
@@ -345,7 +372,7 @@ catch (Exception ex)
 }
 
 export function registerSetScheduleCellsTool(server: ToolServer) {
-    server.tool("set_schedule_cells", "[PRODUCTION_SCHEDULE_CELL_WRITE] Writes exact Revit schedule cells by scheduleId, section, row, and column. Defaults to dryRun, blocks mismatched expectedCurrentText, guards non-writable standard schedule body cells as non_writable_standard_body_cell, and verifies committed values. Schedule cell text writes are not a raw-code reason: use this after inspect_schedules has found exact row/column coordinates for renumbering, title/spec/mark edits, key schedule/header/footer cells, or other direct cell text updates. Do not use this for visual schedule formatting such as borders, merges, colors, row heights, column widths, or placed schedule movement.", {
+    server.tool("set_schedule_cells", "[PRODUCTION_SCHEDULE_CELL_WRITE] Writes exact Revit schedule cells by scheduleId, section, row, and column. Defaults to dryRun, blocks mismatched expectedCurrentText, guards non-writable standard schedule body cells as non_writable_standard_body_cell, and verifies committed values. Change rows expose actualAfter (observed value), projectedAfter (requested target), and wouldChange; legacy after/changed fields remain for compatibility and are marked deprecated by changeFieldContract. Schedule cell text writes are not a raw-code reason: use this after inspect_schedules has found exact row/column coordinates for renumbering, title/spec/mark edits, key schedule/header/footer cells, or other direct cell text updates. Do not use this for visual schedule formatting such as borders, merges, colors, row heights, column widths, or placed schedule movement.", {
         ...connectionTargetSchema(z),
         ...taskMetadataSchema(z),
         scheduleId: z.union([z.number(), z.string()]).describe("Exact ViewSchedule element id. Schedule names are not accepted for writes."),

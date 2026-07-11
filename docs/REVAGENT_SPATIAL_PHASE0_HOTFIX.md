@@ -134,12 +134,15 @@ Legacy `coverage.complete` remains page-sensitive and can be false while more
 pages exist even when `coverageStatus="complete"`; consumers must use
 `page.hasMore` for pagination and `coverageStatus` for extraction coverage.
 
-## Findings outside this PR
+## Follow-up finding outside the spatial PR
 
 The `set_schedule_cells` dry-run result can report `changed=true` and
 `wouldChangeCount=1` while leaving `after` equal to the old value. That is a
 schedule write-preview contract defect, but it is unrelated to the spatial
-Phase 0 truth layer and must be fixed and reviewed separately.
+Phase 0 truth layer. The separate follow-up keeps those legacy fields for
+compatibility and adds explicit `actualAfter`, `projectedAfter`, `wouldChange`,
+and basis metadata so consumers do not confuse observed model state with the
+dry-run projection.
 
 Clearing a non-shared string parameter to a visibly empty string while
 `HasValue=true` is expected Revit behavior and remains correctly reported as
