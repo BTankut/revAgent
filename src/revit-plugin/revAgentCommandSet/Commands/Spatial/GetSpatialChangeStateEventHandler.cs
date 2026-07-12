@@ -50,6 +50,9 @@ namespace RevAgentCommandSet.Commands.Spatial
         public bool Partial { get; set; }
         public string ScanStoppedReason { get; set; }
         public double ElapsedMs { get; set; }
+        public string LivenessProbeBasis { get; set; }
+        public bool LivenessCacheHit { get; set; }
+        public long LivenessGeneration { get; set; }
         public List<SpatialSourceChangeStateRow> SourceStates { get; set; }
         public List<string> Warnings { get; set; }
         public List<string> Notices { get; set; }

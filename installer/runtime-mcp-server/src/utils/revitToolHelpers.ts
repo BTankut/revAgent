@@ -37,12 +37,14 @@ interface ExecuteRevitCodeOptions extends ConnectionArgs {
     transactionMode?: string;
     toolName?: string;
     statusRefreshTimeoutMs?: number;
+    refreshStatusAfterCommand?: boolean;
     parseJsonResult?: boolean;
 }
 
 interface SendRevitCommandOptions extends ConnectionArgs {
     toolName?: string;
     statusRefreshTimeoutMs?: number;
+    refreshStatusAfterCommand?: boolean;
 }
 
 export function connectionTargetSchema(z: any) {
@@ -410,7 +412,7 @@ export async function executeRevitCode(code: string, options: ExecuteRevitCodeOp
             response: normalizedResponse,
             durationMs,
         });
-        void refreshLiveRevitStatus(options);
+        refreshLiveRevitStatusAfterCommand(options);
         return normalizedResponse;
     }
     catch (error) {
@@ -428,8 +430,22 @@ export async function executeRevitCode(code: string, options: ExecuteRevitCodeOp
             error,
             durationMs,
         });
-        void refreshLiveRevitStatus(options);
+        refreshLiveRevitStatusAfterCommand(options);
         throw error;
+    }
+}
+
+export function shouldRefreshLiveRevitStatusAfterCommand(
+    options: ExecuteRevitCodeOptions | SendRevitCommandOptions = {},
+) {
+    return options.refreshStatusAfterCommand !== false;
+}
+
+function refreshLiveRevitStatusAfterCommand(
+    options: ExecuteRevitCodeOptions | SendRevitCommandOptions = {},
+) {
+    if (shouldRefreshLiveRevitStatusAfterCommand(options)) {
+        void refreshLiveRevitStatus(options);
     }
 }
 
@@ -497,7 +513,7 @@ export async function sendRevitCommand(command: string, params: JsonObject = {},
             response: normalizedResponse,
             durationMs,
         });
-        void refreshLiveRevitStatus(options);
+        refreshLiveRevitStatusAfterCommand(options);
         return normalizedResponse;
     }
     catch (error) {
@@ -515,7 +531,7 @@ export async function sendRevitCommand(command: string, params: JsonObject = {},
             error,
             durationMs,
         });
-        void refreshLiveRevitStatus(options);
+        refreshLiveRevitStatusAfterCommand(options);
         throw error;
     }
 }

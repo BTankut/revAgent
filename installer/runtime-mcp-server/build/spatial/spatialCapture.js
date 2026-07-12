@@ -1,6 +1,7 @@
 import { normalizeSpatialPage } from "./spatialPage.js";
 import { validateSpatialWorkContinuationContract } from "./spatialPageSchema.js";
 export const PHASE1A_SPATIAL_SCHEMA_VERSION = "0.2";
+export const DURABLE_SPATIAL_SCHEMA_VERSION = "0.3";
 export const DEFAULT_SPATIAL_CAPTURE_MAX_ELAPSED_MS = 45_000;
 export const MAX_SPATIAL_CAPTURE_MAX_ELAPSED_MS = 120_000;
 export const SPATIAL_CAPTURE_MAX_RETRIES = 2;
@@ -433,6 +434,27 @@ function workContractFailure(message, details, scanPolicy, elapsedMs) {
         reason: "invalid_spatial_work_contract",
     };
 }
+function phase1bNativeContractRequired(receivedSchemaVersion, scanPolicy, elapsedMs) {
+    return {
+        success: true,
+        guarded: true,
+        state: "guarded",
+        action: "capture_spatial_snapshot",
+        reason: "phase1b_native_contract_required",
+        message: "The connected Revit add-in does not expose the SpatialSnapshot v0.3 Phase 1b native contract. Install the matching revAgent DLL before durable capture.",
+        requiredSchemaVersion: DURABLE_SPATIAL_SCHEMA_VERSION,
+        receivedSchemaVersion: text(receivedSchemaVersion) || null,
+        committed: false,
+        partial: false,
+        scanStoppedReason: "read_failed",
+        scanPolicy,
+        suggestedNextScopes: [],
+        warnings: [],
+        notices: [],
+        nextCursor: null,
+        elapsedMs,
+    };
+}
 export async function captureSpatialSnapshotAtomic(input, dependencies) {
     const now = dependencies.now ?? Date.now;
     const normalizePage = dependencies.normalizePage ?? normalizeSpatialPage;
@@ -508,7 +530,12 @@ export async function captureSpatialSnapshotAtomic(input, dependencies) {
                     if (!workValidation.valid || !isObject(rawPayload)) {
                         if (captureId && staged)
                             dependencies.store.abandonCapture(captureId);
-                        return workContractFailure("The native extract_spatial_snapshot progress response did not satisfy the strict Phase 1a work-continuation contract.", workValidation.errors, input.scanPolicy, now() - overallStartedAt);
+                        return workContractFailure("The native extract_spatial_snapshot progress response did not satisfy the strict versioned work-continuation contract.", workValidation.errors, input.scanPolicy, now() - overallStartedAt);
+                    }
+                    if (text(rawPayload.schemaVersion) !== DURABLE_SPATIAL_SCHEMA_VERSION) {
+                        if (captureId && staged)
+                            dependencies.store.abandonCapture(captureId);
+                        return phase1bNativeContractRequired(rawPayload.schemaVersion, input.scanPolicy, now() - overallStartedAt);
                     }
                     if (staged || expectedOrdinal > 0) {
                         dependencies.store.abandonCapture(captureId);
@@ -600,25 +627,10 @@ export async function captureSpatialSnapshotAtomic(input, dependencies) {
                         dependencies.store.abandonCapture(captureId);
                     return contractFailure("The native extract_spatial_snapshot response did not satisfy the strict versioned extraction-page contract.", payload.contractValidation || normalized.errors, input.scanPolicy, now() - overallStartedAt);
                 }
-                if (text(payload.schemaVersion) !== PHASE1A_SPATIAL_SCHEMA_VERSION) {
+                if (text(payload.schemaVersion) !== DURABLE_SPATIAL_SCHEMA_VERSION) {
                     if (captureId)
                         dependencies.store.abandonCapture(captureId);
-                    return {
-                        success: true,
-                        guarded: true,
-                        state: "guarded",
-                        action: "capture_spatial_snapshot",
-                        reason: "phase1a_native_contract_required",
-                        message: "The connected Revit add-in exposes the Phase 0 transport contract. Install the matching Phase 1a DLL before durable capture.",
-                        committed: false,
-                        partial: false,
-                        scanStoppedReason: "read_failed",
-                        scanPolicy: input.scanPolicy,
-                        suggestedNextScopes: [],
-                        warnings: [],
-                        notices: [],
-                        elapsedMs: now() - overallStartedAt,
-                    };
+                    return phase1bNativeContractRequired(payload.schemaVersion, input.scanPolicy, now() - overallStartedAt);
                 }
                 const page = isObject(payload.page) ? payload.page : {};
                 const ordinal = integer(page.ordinal);

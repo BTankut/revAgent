@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.3/topology-coverage.schema.json",
+  "title": "revAgent Connector Topology Coverage v0.3",
+  "description": "Explicit Connector.AllRefs identity-resolution coverage. Incomplete coverage forbids negative connectivity claims.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "basis", "complete", "targetMembershipValidated", "isConnectedRead", "allRefsRead",
+    "referencedConnectorCount", "resolvedConnectorNodeCount",
+    "unresolvedConnectorCount", "reasons"
+  ],
+  "properties": {
+    "basis": { "const": "revit_connector_all_refs" },
+    "complete": { "type": "boolean" },
+    "targetMembershipValidated": {
+      "const": false,
+      "description": "Native extraction cannot prove that every referenced connector is inside the committed snapshot; the runtime store must validate target membership before graph-complete claims."
+    },
+    "isConnectedRead": { "type": "boolean" },
+    "allRefsRead": { "type": "boolean" },
+    "referencedConnectorCount": { "type": "integer", "minimum": 0 },
+    "resolvedConnectorNodeCount": { "type": "integer", "minimum": 0 },
+    "unresolvedConnectorCount": { "type": "integer", "minimum": 0 },
+    "reasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

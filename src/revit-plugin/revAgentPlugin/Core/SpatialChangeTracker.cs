@@ -38,6 +38,7 @@ namespace RevAgentPlugin.Core
         private readonly Dictionary<int, DocumentState> _closingDocuments =
             new Dictionary<int, DocumentState>();
         private ControlledApplication _subscribedApplication;
+        private long _livenessGeneration;
 
         private SpatialChangeTracker()
         {
@@ -70,6 +71,36 @@ namespace RevAgentPlugin.Core
             }
         }
 
+        /// <summary>
+        /// Monotonic, process-local invalidation generation for sequence-bound
+        /// spatial liveness cache entries. This is not a model revision and is
+        /// never persisted; it only proves that no tracked invalidation event
+        /// occurred between a native liveness evaluation and a cache lookup.
+        /// </summary>
+        public long LivenessGeneration
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _livenessGeneration;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Invalidates process-local liveness cache entries when the operator
+        /// changes the active Revit document/view. Same-document view changes
+        /// are intentionally conservative and may invalidate unnecessarily.
+        /// </summary>
+        public void InvalidateActiveDocumentView()
+        {
+            lock (_gate)
+            {
+                AdvanceLivenessGeneration();
+            }
+        }
+
         public void Subscribe(ControlledApplication application)
         {
             if (application == null) throw new ArgumentNullException("application");
@@ -82,15 +113,22 @@ namespace RevAgentPlugin.Core
                     _subscribedApplication.DocumentChanged -= OnDocumentChanged;
                     _subscribedApplication.DocumentClosing -= OnDocumentClosing;
                     _subscribedApplication.DocumentClosed -= OnDocumentClosed;
+                    _subscribedApplication.DocumentSaved -= OnDocumentSaved;
                     _subscribedApplication.DocumentSavedAs -= OnDocumentSavedAs;
+                    _subscribedApplication.DocumentSynchronizedWithCentral -= OnDocumentSynchronizedWithCentral;
+                    _subscribedApplication.DocumentReloadedLatest -= OnDocumentReloadedLatest;
                     ResetDocumentBindings();
                 }
 
                 application.DocumentChanged += OnDocumentChanged;
                 application.DocumentClosing += OnDocumentClosing;
                 application.DocumentClosed += OnDocumentClosed;
+                application.DocumentSaved += OnDocumentSaved;
                 application.DocumentSavedAs += OnDocumentSavedAs;
+                application.DocumentSynchronizedWithCentral += OnDocumentSynchronizedWithCentral;
+                application.DocumentReloadedLatest += OnDocumentReloadedLatest;
                 _subscribedApplication = application;
+                AdvanceLivenessGeneration();
             }
         }
 
@@ -105,9 +143,13 @@ namespace RevAgentPlugin.Core
                 current.DocumentChanged -= OnDocumentChanged;
                 current.DocumentClosing -= OnDocumentClosing;
                 current.DocumentClosed -= OnDocumentClosed;
+                current.DocumentSaved -= OnDocumentSaved;
                 current.DocumentSavedAs -= OnDocumentSavedAs;
+                current.DocumentSynchronizedWithCentral -= OnDocumentSynchronizedWithCentral;
+                current.DocumentReloadedLatest -= OnDocumentReloadedLatest;
                 _subscribedApplication = null;
                 ResetDocumentBindings();
+                AdvanceLivenessGeneration();
             }
         }
 
@@ -206,6 +248,15 @@ namespace RevAgentPlugin.Core
             }
             if (document == null) return;
 
+            // Invalidate a previously cached current result before reading the
+            // potentially large change-id collections. Socket requests run on
+            // background threads and must not observe the old generation once
+            // Revit has begun publishing this committed change.
+            lock (_gate)
+            {
+                AdvanceLivenessGeneration();
+            }
+
             ElementIdReadResult added = ReadElementIds(delegate { return args.GetAddedElementIds(); });
             ElementIdReadResult modified = ReadElementIds(delegate { return args.GetModifiedElementIds(); });
             ElementIdReadResult deleted = ReadElementIds(delegate { return args.GetDeletedElementIds(); });
@@ -275,17 +326,29 @@ namespace RevAgentPlugin.Core
             lock (_gate)
             {
                 DocumentState state;
-                if (!_closingDocuments.TryGetValue(args.DocumentId, out state)) return;
-                _closingDocuments.Remove(args.DocumentId);
+                bool hasClosingState = _closingDocuments.TryGetValue(args.DocumentId, out state);
+                if (hasClosingState)
+                {
+                    _closingDocuments.Remove(args.DocumentId);
+                }
                 if (args.Status != RevitAPIEventStatus.Succeeded) return;
 
-                RemoveDocumentState(state);
+                if (hasClosingState) RemoveDocumentState(state);
+                AdvanceLivenessGeneration();
             }
         }
 
         private void OnDocumentSavedAs(object sender, DocumentSavedAsEventArgs args)
         {
             if (args == null || args.Status != RevitAPIEventStatus.Succeeded) return;
+
+            // Save As can change stable document identity without a
+            // DocumentChanged event. Invalidate before resolving the refreshed
+            // path/identity so no background cache hit can span this event.
+            lock (_gate)
+            {
+                AdvanceLivenessGeneration();
+            }
 
             Document document;
             try
@@ -329,6 +392,32 @@ namespace RevAgentPlugin.Core
                 }
 
                 GetOrCreateState(document);
+            }
+        }
+
+        private void OnDocumentSaved(object sender, DocumentSavedEventArgs args)
+        {
+            InvalidateSuccessfulDocumentBoundary(args != null ? args.Status : RevitAPIEventStatus.Failed);
+        }
+
+        private void OnDocumentSynchronizedWithCentral(
+            object sender,
+            DocumentSynchronizedWithCentralEventArgs args)
+        {
+            InvalidateSuccessfulDocumentBoundary(args != null ? args.Status : RevitAPIEventStatus.Failed);
+        }
+
+        private void OnDocumentReloadedLatest(object sender, DocumentReloadedLatestEventArgs args)
+        {
+            InvalidateSuccessfulDocumentBoundary(args != null ? args.Status : RevitAPIEventStatus.Failed);
+        }
+
+        private void InvalidateSuccessfulDocumentBoundary(RevitAPIEventStatus status)
+        {
+            if (status != RevitAPIEventStatus.Succeeded) return;
+            lock (_gate)
+            {
+                AdvanceLivenessGeneration();
             }
         }
 
@@ -468,6 +557,15 @@ namespace RevAgentPlugin.Core
             _documentAliases = new ConditionalWeakTable<Document, DocumentState>();
             _documentsByStableKey.Clear();
             _closingDocuments.Clear();
+            AdvanceLivenessGeneration();
+        }
+
+        private void AdvanceLivenessGeneration()
+        {
+            checked
+            {
+                _livenessGeneration++;
+            }
         }
 
         private static IList<string> ResolveStableDocumentKeys(Document document)

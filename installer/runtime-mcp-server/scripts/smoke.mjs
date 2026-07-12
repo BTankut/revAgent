@@ -120,6 +120,9 @@ const expectedTools = [
   "set_schedule_cells",
   "set_schedule_cells_by_text",
   "capture_spatial_snapshot",
+  "query_spatial_context",
+  "compare_spatial_snapshots",
+  "summarize_spatial_state",
 ];
 
 assert.deepEqual([...tools.keys()], expectedTools);
@@ -278,6 +281,23 @@ for (const field of [
   "maxCaptureElapsedMs",
 ]) {
   assert.equal(field in captureSpatialTool.schema, true, `capture_spatial_snapshot is missing ${field}.`);
+}
+const querySpatialTool = tools.get("query_spatial_context");
+assert.match(querySpatialTool.description, /SPATIAL_QUERY_READ_ONLY/);
+assert.match(querySpatialTool.description, /never a live clash or clearance verdict/i);
+for (const field of ["snapshotId", "mode", "filters", "operation", "cursor"]) {
+  assert.equal(field in querySpatialTool.schema, true, `query_spatial_context is missing ${field}.`);
+}
+const compareSpatialTool = tools.get("compare_spatial_snapshots");
+assert.match(compareSpatialTool.description, /SPATIAL_DIFF_READ_ONLY/);
+for (const field of ["baseSnapshotId", "headSnapshotId", "allowLegacyV02", "maxChanges"]) {
+  assert.equal(field in compareSpatialTool.schema, true, `compare_spatial_snapshots is missing ${field}.`);
+}
+const summarizeSpatialTool = tools.get("summarize_spatial_state");
+assert.match(summarizeSpatialTool.description, /SPATIAL_SUMMARY_ADVISORY_READ_ONLY/);
+assert.match(summarizeSpatialTool.description, /quotableAsVerification=false/);
+for (const field of ["snapshotId", "filters", "maxNodes", "maxLevels"]) {
+  assert.equal(field in summarizeSpatialTool.schema, true, `summarize_spatial_state is missing ${field}.`);
 }
 const spatialPolicy = resolveSpatialCapturePolicy({});
 assert.equal(spatialPolicy.pageTargetBytes, 4 * 1024 * 1024);
@@ -584,6 +604,23 @@ assert.equal(normalizedPhase1aPage.payload.liveness, "staging");
 assert.equal(normalizedPhase1aPage.payload.contractValidation.version, "spatial-extraction-page.v0.2");
 
 const strictAtomicPage = structuredClone(phase1aNativeSpatialPage);
+strictAtomicPage.schemaVersion = "0.3";
+strictAtomicPage.extractorVersion = "phase1b-native/0.3";
+const strictAtomicNodesById = new Map(strictAtomicPage.nodes.map((node) => [node.nodeId, node]));
+for (const node of strictAtomicPage.nodes) {
+  node.spatialProperties = { systemKey: null, systemName: null, systemClassification: null };
+  node.profile = { shape: "unknown", diameterMm: null, widthMm: null, heightMm: null, insulationThicknessMm: null };
+  node.fingerprints = {
+    version: "phase1b-spatial-fingerprint/1.0",
+    placement: canonicalSha256({ nodeId: node.nodeId, kind: "placement" }),
+    shape: canonicalSha256({ nodeId: node.nodeId, kind: "shape" }),
+    property: canonicalSha256({ nodeId: node.nodeId, kind: "property" }),
+    topology: canonicalSha256({ nodeId: node.nodeId, kind: "topology" }),
+  };
+}
+for (const row of strictAtomicPage.page.rows) {
+  row.node = strictAtomicNodesById.get(row.node.nodeId);
+}
 strictAtomicPage.page.hasMore = false;
 strictAtomicPage.page.nextCursor = null;
 strictAtomicPage.nextCursor = null;
@@ -599,6 +636,15 @@ strictAtomicPage.counts = {
   expectedSupportedNodes: strictAtomicPage.nodes.length,
   extractedSupportedNodes: strictAtomicPage.nodes.length,
 };
+strictAtomicPage.page.payloadBytes = Buffer.byteLength(semanticCanonicalJson(strictAtomicPage.page.rows), "utf8");
+strictAtomicPage.page.pageSha256 = semanticCanonicalSha256({
+  captureId: strictAtomicPage.captureId,
+  pageOrdinal: 0,
+  priorPageHash: null,
+  rows: strictAtomicPage.page.rows,
+});
+strictAtomicPage.page.pageHash = strictAtomicPage.page.pageSha256;
+strictAtomicPage.payloadBytes = strictAtomicPage.page.payloadBytes;
 strictAtomicPage.scanStoppedReason = "completed";
 strictAtomicPage.suggestedNextScopes = [];
 const strictAtomicValidation = normalizeSpatialPage(strictAtomicPage);
@@ -1213,6 +1259,25 @@ assert.equal(spatialWorkTelemetryResponse.workCursorPresent, true);
 assert.doesNotMatch(JSON.stringify(spatialWorkTelemetryResponse), /cursor-secret|Level 09|Room 901|7788/);
 assert.equal(isSpatialExtractionTelemetry({ toolName: "capture_spatial_snapshot" }), true);
 assert.equal(isSpatialExtractionTelemetry({ toolName: "inspect_levels" }), true);
+assert.equal(isSpatialExtractionTelemetry({ toolName: "query_spatial_context" }), true);
+assert.equal(isSpatialExtractionTelemetry({ toolName: "compare_spatial_snapshots" }), true);
+assert.equal(isSpatialExtractionTelemetry({ toolName: "summarize_spatial_state" }), true);
+const spatialQueryTelemetryParams = summarizeSpatialExtractionTelemetryParams({
+  snapshotId: spatialSecret,
+  mode: "operation",
+  operationName: "nearest_elements",
+  nodeIds: [spatialSecret],
+  categories: [spatialSecret],
+  cursor: spatialSecret,
+  maxItems: 25,
+}, "query_spatial_context");
+assert.equal(spatialQueryTelemetryParams.snapshotSelectorCount, 1);
+assert.equal(spatialQueryTelemetryParams.selectorCount, 2);
+assert.equal(spatialQueryTelemetryParams.mode, "operation");
+assert.equal(spatialQueryTelemetryParams.operationName, "nearest_elements");
+assert.equal(spatialQueryTelemetryParams.maxItems, 25);
+assert.equal(Object.hasOwn(spatialQueryTelemetryParams, "includeHostMep"), false);
+assert.doesNotMatch(JSON.stringify(spatialQueryTelemetryParams), /Level 09|Room 901|7788|cursor-secret/);
 assert.equal(extractProductionContext({
   sourceEventType: "mcp.tool",
   toolName: "capture_spatial_snapshot",

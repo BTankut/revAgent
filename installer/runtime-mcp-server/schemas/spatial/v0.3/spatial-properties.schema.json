@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.3/spatial-properties.schema.json",
+  "title": "revAgent Spatial Properties v0.3",
+  "description": "Spatial and system-significant property evidence. Missing Revit data is represented by null rather than guessed text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["systemKey", "systemName", "systemClassification"],
+  "properties": {
+    "systemKey": { "type": ["string", "null"], "minLength": 1 },
+    "systemName": { "type": ["string", "null"], "minLength": 1 },
+    "systemClassification": { "type": ["string", "null"], "minLength": 1 }
+  }
+}

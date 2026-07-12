@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.3/extraction-page.schema.json",
+  "title": "revAgent Spatial Extraction Page v0.3",
+  "description": "Strict successful native Phase 1b extraction page. The v0.2 HMAC cursor wire is retained, while node payloads add system, profile, versioned diff fingerprints, and Connector.AllRefs topology coverage.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "resultContractVersion", "success", "guarded", "state", "action",
+    "reason", "message", "error", "schemaVersion", "extractorVersion",
+    "coordinateFrame", "lengthUnit", "captureId", "snapshotId", "capturedAt",
+    "atomic", "liveness", "captureConsistency", "continuationKind",
+    "sourceBindingFingerprint", "preparation", "revisionBasisCaveat", "scope",
+    "effectiveSourcePolicy", "sourceRevisions", "scopeFingerprint",
+    "revisionFingerprint", "nodes", "omissions", "counts", "coverage",
+    "transformValidation", "page", "pageCount", "payloadBytes", "nextCursor",
+    "partial", "coverageStatus", "scanStoppedReason", "scanPolicy",
+    "suggestedNextScopes", "elapsedMs", "lastReadDocumentKey",
+    "lastReadLinkInstanceUniqueId", "lastReadNodeKind", "lastReadItemId",
+    "warnings", "notices"
+  ],
+  "properties": {
+    "resultContractVersion": { "type": "integer", "minimum": 2 },
+    "success": { "const": true },
+    "guarded": { "const": false },
+    "state": { "const": "completed" },
+    "action": { "const": "extract_spatial_snapshot" },
+    "reason": { "type": ["string", "null"] },
+    "message": { "type": "string", "minLength": 1 },
+    "error": { "type": ["string", "null"] },
+    "schemaVersion": { "const": "0.3" },
+    "extractorVersion": { "type": "string", "pattern": "^phase1b-native/" },
+    "coordinateFrame": { "const": "host_internal_mm" },
+    "lengthUnit": { "const": "mm" },
+    "captureId": { "type": "string", "minLength": 1 },
+    "snapshotId": { "type": "string", "minLength": 1 },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "atomic": { "const": false },
+    "liveness": { "const": "staging" },
+    "captureConsistency": { "const": "document_change_sequence_bound" },
+    "continuationKind": { "type": "null" },
+    "sourceBindingFingerprint": { "$ref": "#/$defs/sha256" },
+    "preparation": { "type": "null" },
+    "revisionBasisCaveat": { "type": "string", "minLength": 1 },
+    "scope": { "$ref": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json#/properties/scope" },
+    "effectiveSourcePolicy": { "$ref": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json#/properties/effectiveSourcePolicy" },
+    "sourceRevisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "https://schemas.revagent.app/spatial/v0.2/source-revision.schema.json" }
+    },
+    "scopeFingerprint": { "$ref": "#/$defs/sha256" },
+    "revisionFingerprint": { "$ref": "#/$defs/sha256" },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/nodeRecord" } },
+    "omissions": {
+      "type": "array",
+      "items": { "$ref": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json#/$defs/omissionRecord" }
+    },
+    "counts": { "$ref": "https://schemas.revagent.app/spatial/v0.2/spatial-snapshot.schema.json#/$defs/counts" },
+    "coverage": { "$ref": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json#/$defs/coverage" },
+    "transformValidation": { "$ref": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json#/$defs/transformValidation" },
+    "page": { "$ref": "#/$defs/page" },
+    "pageCount": { "type": "integer", "minimum": 1 },
+    "payloadBytes": { "type": "integer", "minimum": 0 },
+    "nextCursor": { "type": ["string", "null"], "pattern": "^spatial-cursor-v0\\.2\\." },
+    "partial": { "type": "boolean" },
+    "coverageStatus": { "$ref": "https://schemas.revagent.app/spatial/v0.2/spatial-snapshot.schema.json#/$defs/coverageStatus" },
+    "scanStoppedReason": { "$ref": "https://schemas.revagent.app/spatial/v0.2/spatial-snapshot.schema.json#/$defs/scanStoppedReason" },
+    "scanPolicy": { "$ref": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json#/$defs/scanPolicy" },
+    "suggestedNextScopes": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "elapsedMs": { "type": "integer", "minimum": 0 },
+    "lastReadDocumentKey": { "type": ["string", "null"] },
+    "lastReadLinkInstanceUniqueId": { "type": ["string", "null"] },
+    "lastReadNodeKind": { "type": ["string", "null"] },
+    "lastReadItemId": { "type": ["integer", "null"] },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "notices": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "nodeRecord": {
+      "oneOf": [
+        { "$ref": "#/$defs/elementNodeRecord" },
+        { "$ref": "#/$defs/connectorNodeRecord" }
+      ]
+    },
+    "elementNodeRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nodeId", "nodeKind", "nodeRef", "elementRef", "sourceRefs",
+        "category", "builtInCategory", "categoryRole", "name", "familyName",
+        "typeName", "levelRef", "spatialProperties", "profile", "fingerprints", "geometry"
+      ],
+      "properties": {
+        "nodeId": { "type": "string", "minLength": 1 },
+        "nodeKind": { "const": "revit_element" },
+        "nodeRef": { "$ref": "https://schemas.revagent.app/spatial/v0.2/node-ref.schema.json" },
+        "elementRef": { "$ref": "https://schemas.revagent.app/spatial/v0.2/element-ref.schema.json" },
+        "sourceRefs": {
+          "type": "array",
+          "items": { "$ref": "https://schemas.revagent.app/spatial/v0.2/node-ref.schema.json#/$defs/sourceRef" }
+        },
+        "category": { "type": "string", "minLength": 1 },
+        "builtInCategory": { "type": "string", "minLength": 1 },
+        "categoryRole": { "type": "string", "enum": ["host_mep", "spatial", "linked_obstruction"] },
+        "name": { "type": "string" },
+        "familyName": { "type": "string" },
+        "typeName": { "type": "string" },
+        "levelRef": { "$ref": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json#/$defs/levelRef" },
+        "spatialProperties": { "$ref": "./spatial-properties.schema.json" },
+        "profile": { "$ref": "./profile.schema.json" },
+        "fingerprints": { "$ref": "./fingerprints.schema.json" },
+        "geometry": { "$ref": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json#/$defs/geometry" }
+      }
+    },
+    "connectorNodeRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nodeId", "nodeKind", "nodeRef", "connectorRef", "sourceRefs",
+        "ownerNodeId", "connectorKey", "domain", "connectorType", "shape",
+        "isConnected", "spatialProperties", "profile", "connectedToNodeIds",
+        "connectedOwnerNodeIds", "connectionRefs", "topologyCoverage",
+        "fingerprints", "geometry"
+      ],
+      "properties": {
+        "nodeId": { "type": "string", "pattern": "^connector:.+:.+$" },
+        "nodeKind": { "const": "connector" },
+        "nodeRef": { "$ref": "https://schemas.revagent.app/spatial/v0.2/node-ref.schema.json" },
+        "connectorRef": { "$ref": "https://schemas.revagent.app/spatial/v0.2/node-ref.schema.json#/$defs/connectorRef" },
+        "sourceRefs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "https://schemas.revagent.app/spatial/v0.2/node-ref.schema.json#/$defs/sourceRef" }
+        },
+        "ownerNodeId": { "type": "string", "minLength": 1 },
+        "connectorKey": { "type": "string", "minLength": 1 },
+        "domain": { "type": "string" },
+        "connectorType": { "type": "string" },
+        "shape": { "type": "string" },
+        "isConnected": { "type": "boolean" },
+        "spatialProperties": { "$ref": "./spatial-properties.schema.json" },
+        "profile": { "$ref": "./profile.schema.json" },
+        "connectedToNodeIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^connector:.+:.+$" }
+        },
+        "connectedOwnerNodeIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "connectionRefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/connectionRef" }
+        },
+        "topologyCoverage": { "$ref": "./topology-coverage.schema.json" },
+        "fingerprints": { "$ref": "./fingerprints.schema.json" },
+        "geometry": { "$ref": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json#/$defs/geometry" }
+      }
+    },
+    "connectionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetOwnerNodeId", "targetConnectorNodeId", "relationKind", "basis", "resolved"],
+      "properties": {
+        "targetOwnerNodeId": { "type": "string", "minLength": 1 },
+        "targetConnectorNodeId": { "type": ["string", "null"], "pattern": "^connector:.+:.+$" },
+        "relationKind": { "type": "string", "enum": ["physical", "logical", "unknown"] },
+        "basis": { "const": "revit_connector_all_refs" },
+        "resolved": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "resolved": { "const": true } }, "required": ["resolved"] },
+          "then": { "properties": { "targetConnectorNodeId": { "type": "string" } } },
+          "else": { "properties": { "targetConnectorNodeId": { "type": "null" } } }
+        }
+      ]
+    },
+    "extractionRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["orderKey"],
+      "properties": {
+        "orderKey": { "$ref": "https://schemas.revagent.app/spatial/v0.2/cursor-envelope.schema.json#/$defs/sortPosition" },
+        "node": { "$ref": "#/$defs/nodeRecord" },
+        "omission": { "$ref": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json#/$defs/omissionRecord" }
+      },
+      "oneOf": [
+        { "required": ["node"], "not": { "required": ["omission"] } },
+        { "required": ["omission"], "not": { "required": ["node"] } }
+      ]
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal", "targetBytes", "payloadBytes", "rows", "rowCount",
+        "recordCount", "nodeCount", "omissionCount", "hasMore", "pageSha256",
+        "pageHash", "priorPageSha256", "priorPageHash", "firstSortPosition",
+        "lastSortPosition", "nextCursor"
+      ],
+      "properties": {
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "targetBytes": { "type": "integer", "minimum": 65536, "maximum": 8388608 },
+        "payloadBytes": { "type": "integer", "minimum": 0 },
+        "rows": { "type": "array", "items": { "$ref": "#/$defs/extractionRow" } },
+        "rowCount": { "type": "integer", "minimum": 0 },
+        "recordCount": { "type": "integer", "minimum": 0 },
+        "nodeCount": { "type": "integer", "minimum": 0 },
+        "omissionCount": { "type": "integer", "minimum": 0 },
+        "hasMore": { "type": "boolean" },
+        "pageSha256": { "$ref": "#/$defs/sha256" },
+        "pageHash": { "$ref": "#/$defs/sha256" },
+        "priorPageSha256": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "priorPageHash": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "firstSortPosition": { "type": ["string", "null"] },
+        "lastSortPosition": { "type": ["string", "null"] },
+        "nextCursor": { "type": ["string", "null"], "pattern": "^spatial-cursor-v0\\.2\\." }
+      }
+    }
+  }
+}

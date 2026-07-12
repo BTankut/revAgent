@@ -1,0 +1,2067 @@
+{
+  "fixtureVersion": "1.0",
+  "suite": "spatial_phase1b_operation_gold",
+  "schemaVersion": "0.3",
+  "description": "Synthetic, self-contained Phase 1b operation gold set. It contains no real project identity or geometry.",
+  "normalization": {
+    "contract": "QueryResult",
+    "coordinateFrame": "host_internal_mm",
+    "lengthUnit": "mm",
+    "sortRules": [
+      "nodes by nodeId",
+      "edges by relationType then sourceNodeId then targetNodeId",
+      "nearest rows by distanceMm then nodeId",
+      "warnings and notices by ordinal text"
+    ],
+    "excludedNondeterministicFields": [
+      "evaluatedAt",
+      "elapsedMs",
+      "requestId"
+    ],
+    "numericPolicy": "finite millimetre values rounded to 0.000001 mm before canonical JSON"
+  },
+  "snapshot": {
+    "snapshotId": "snapshot:phase1b-operation-gold",
+    "capturedAt": "2026-07-12T08:00:00.000Z",
+    "committedAt": "2026-07-12T08:00:01.000Z",
+    "schemaVersion": "0.3",
+    "extractorVersion": "phase1b-gold/1.0",
+    "coordinateFrame": "host_internal_mm",
+    "lengthUnit": "mm",
+    "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "atomic": true,
+    "liveness": "current",
+    "partial": false,
+    "coverageStatus": "complete",
+    "scanStoppedReason": "completed",
+    "sourceRevisions": [
+      {
+        "documentKey": "fixture:host",
+        "documentSessionId": "fixture:host:session",
+        "loadedVersion": "fixture-host-v1",
+        "changeSequence": 7,
+        "linkInstanceUniqueId": null,
+        "sourceToHostTransform": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      {
+        "documentKey": "fixture:architecture",
+        "documentSessionId": "fixture:architecture:session",
+        "loadedVersion": "fixture-architecture-v1",
+        "changeSequence": 3,
+        "linkInstanceUniqueId": "fixture-link-a",
+        "sourceToHostTransform": [
+          1,
+          0,
+          0,
+          20000,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      {
+        "documentKey": "fixture:architecture",
+        "documentSessionId": "fixture:architecture:session",
+        "loadedVersion": "fixture-architecture-v1",
+        "changeSequence": 3,
+        "linkInstanceUniqueId": "fixture-link-b",
+        "sourceToHostTransform": [
+          1,
+          0,
+          0,
+          40000,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          300,
+          0,
+          0,
+          0,
+          1
+        ]
+      }
+    ],
+    "nodes": [
+      {
+        "nodeId": "node:room-main",
+        "nodeKind": "revit_element",
+        "nodeType": "Room",
+        "levelRef": "level:02",
+        "geometry": {
+          "aabb": {
+            "min": [
+              0,
+              0,
+              0
+            ],
+            "max": [
+              10000,
+              10000,
+              3000
+            ]
+          },
+          "boundaryLoops": [
+            [
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                10000,
+                0,
+                0
+              ],
+              [
+                10000,
+                10000,
+                0
+              ],
+              [
+                0,
+                10000,
+                0
+              ]
+            ],
+            [
+              [
+                4000,
+                4000,
+                0
+              ],
+              [
+                4000,
+                6000,
+                0
+              ],
+              [
+                6000,
+                6000,
+                0
+              ],
+              [
+                6000,
+                4000,
+                0
+              ]
+            ]
+          ],
+          "verticalExtentMm": {
+            "min": 0,
+            "max": 3000
+          },
+          "placementFingerprint": "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+          "geometryFingerprint": "sha256:0202020202020202020202020202020202020202020202020202020202020202"
+        }
+      },
+      {
+        "nodeId": "node:room-linked-a",
+        "nodeKind": "revit_element",
+        "nodeType": "Room",
+        "sourceElementUniqueId": "fixture-room-source-101",
+        "linkInstanceUniqueId": "fixture-link-a",
+        "geometry": {
+          "aabb": {
+            "min": [
+              20000,
+              0,
+              0
+            ],
+            "max": [
+              30000,
+              10000,
+              3000
+            ]
+          },
+          "placementFingerprint": "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+          "geometryFingerprint": "sha256:0404040404040404040404040404040404040404040404040404040404040404"
+        }
+      },
+      {
+        "nodeId": "node:room-linked-b",
+        "nodeKind": "revit_element",
+        "nodeType": "Room",
+        "sourceElementUniqueId": "fixture-room-source-101",
+        "linkInstanceUniqueId": "fixture-link-b",
+        "geometry": {
+          "aabb": {
+            "min": [
+              40000,
+              0,
+              300
+            ],
+            "max": [
+              50000,
+              10000,
+              3300
+            ]
+          },
+          "placementFingerprint": "sha256:0505050505050505050505050505050505050505050505050505050505050505",
+          "geometryFingerprint": "sha256:0404040404040404040404040404040404040404040404040404040404040404"
+        }
+      },
+      {
+        "nodeId": "node:duct-inside",
+        "nodeKind": "revit_element",
+        "nodeType": "Duct",
+        "levelRef": "level:02",
+        "system": "Supply Air",
+        "geometry": {
+          "aabb": {
+            "min": [
+              1000,
+              1000,
+              2000
+            ],
+            "max": [
+              2000,
+              2000,
+              2200
+            ]
+          },
+          "centerline": [
+            [
+              1000,
+              1500,
+              2100
+            ],
+            [
+              2000,
+              1500,
+              2100
+            ]
+          ],
+          "profile": {
+            "shape": "rectangular",
+            "widthMm": 400,
+            "heightMm": 200,
+            "insulationMm": 0
+          }
+        }
+      },
+      {
+        "nodeId": "node:duct-in-hole",
+        "nodeKind": "revit_element",
+        "nodeType": "Duct",
+        "levelRef": "level:02",
+        "geometry": {
+          "aabb": {
+            "min": [
+              4500,
+              4500,
+              2000
+            ],
+            "max": [
+              5500,
+              5500,
+              2200
+            ]
+          }
+        }
+      },
+      {
+        "nodeId": "node:duct-above-room",
+        "nodeKind": "revit_element",
+        "nodeType": "Duct",
+        "levelRef": "level:02",
+        "geometry": {
+          "aabb": {
+            "min": [
+              1000,
+              1000,
+              3500
+            ],
+            "max": [
+              2000,
+              2000,
+              3700
+            ]
+          }
+        }
+      },
+      {
+        "nodeId": "node:boundary-point",
+        "nodeKind": "revit_element",
+        "nodeType": "Terminal",
+        "levelRef": "level:02",
+        "geometry": {
+          "aabb": {
+            "min": [
+              0,
+              2000,
+              1500
+            ],
+            "max": [
+              0,
+              2000,
+              1500
+            ]
+          },
+          "pointLocation": [
+            0,
+            2000,
+            1500
+          ]
+        }
+      },
+      {
+        "nodeId": "node:room-z-band",
+        "nodeKind": "revit_element",
+        "nodeType": "Room",
+        "levelRef": "level:z-band",
+        "geometry": {
+          "aabb": {
+            "min": [0, 0, 0],
+            "max": [10, 10, 10]
+          },
+          "boundaryLoops": [
+            [
+              [0, 0, 0],
+              [10, 0, 0],
+              [10, 10, 0],
+              [0, 10, 0]
+            ]
+          ],
+          "verticalExtentMm": {
+            "min": 0,
+            "max": 10
+          }
+        }
+      },
+      {
+        "nodeId": "node:z-band-crossing-segment",
+        "nodeKind": "revit_element",
+        "nodeType": "Duct",
+        "levelRef": "level:z-band",
+        "geometry": {
+          "aabb": {
+            "min": [-5, 5, -20],
+            "max": [5, 5, 10]
+          },
+          "centerline": [
+            [-5, 5, 10],
+            [5, 5, -20]
+          ]
+        }
+      },
+      {
+        "nodeId": "node:z-band-vertical-boundary-overlap",
+        "nodeKind": "revit_element",
+        "nodeType": "Duct",
+        "levelRef": "level:z-band",
+        "geometry": {
+          "aabb": {
+            "min": [0, 5, -100],
+            "max": [0, 5, 90]
+          },
+          "centerline": [
+            [0, 5, -100],
+            [0, 5, 90]
+          ]
+        }
+      },
+      {
+        "nodeId": "node:z-band-vertical-interior-overlap",
+        "nodeKind": "revit_element",
+        "nodeType": "Duct",
+        "levelRef": "level:z-band",
+        "geometry": {
+          "aabb": {
+            "min": [5, 5, -100],
+            "max": [5, 5, 90]
+          },
+          "centerline": [
+            [5, 5, -100],
+            [5, 5, 90]
+          ]
+        }
+      },
+      {
+        "nodeId": "node:pipe-below",
+        "nodeKind": "revit_element",
+        "nodeType": "Pipe",
+        "levelRef": "level:02",
+        "geometry": {
+          "aabb": {
+            "min": [
+              1000,
+              1000,
+              1000
+            ],
+            "max": [
+              2000,
+              2000,
+              1100
+            ]
+          },
+          "profile": {
+            "shape": "round",
+            "diameterMm": 100,
+            "insulationMm": 0
+          }
+        }
+      },
+      {
+        "nodeId": "node:nearest-a",
+        "nodeKind": "revit_element",
+        "nodeType": "Pipe",
+        "geometry": {
+          "aabb": {
+            "min": [
+              2500,
+              1400,
+              2050
+            ],
+            "max": [
+              2600,
+              1600,
+              2150
+            ]
+          }
+        }
+      },
+      {
+        "nodeId": "node:nearest-b",
+        "nodeKind": "revit_element",
+        "nodeType": "Pipe",
+        "geometry": {
+          "aabb": {
+            "min": [
+              2500,
+              1400,
+              2050
+            ],
+            "max": [
+              2600,
+              1600,
+              2150
+            ]
+          }
+        }
+      },
+      {
+        "nodeId": "node:rect-clearance",
+        "nodeKind": "revit_element",
+        "nodeType": "Duct",
+        "geometry": {
+          "aabb": {
+            "min": [
+              0,
+              11775,
+              1875
+            ],
+            "max": [
+              5000,
+              12225,
+              2125
+            ]
+          },
+          "centerline": [
+            [
+              0,
+              12000,
+              2000
+            ],
+            [
+              5000,
+              12000,
+              2000
+            ]
+          ],
+          "profile": {
+            "shape": "rectangular",
+            "widthMm": 400,
+            "heightMm": 200,
+            "insulationMm": 25
+          }
+        }
+      },
+      {
+        "nodeId": "node:round-clearance",
+        "nodeKind": "revit_element",
+        "nodeType": "Pipe",
+        "geometry": {
+          "aabb": {
+            "min": [
+              0,
+              12425,
+              1925
+            ],
+            "max": [
+              5000,
+              12575,
+              2075
+            ]
+          },
+          "centerline": [
+            [
+              0,
+              12500,
+              2000
+            ],
+            [
+              5000,
+              12500,
+              2000
+            ]
+          ],
+          "profile": {
+            "shape": "round",
+            "diameterMm": 100,
+            "insulationMm": 25
+          }
+        }
+      },
+      {
+        "nodeId": "node:round-clearance-peer",
+        "nodeKind": "revit_element",
+        "nodeType": "Pipe",
+        "geometry": {
+          "aabb": {
+            "min": [
+              0,
+              12775,
+              1925
+            ],
+            "max": [
+              5000,
+              12925,
+              2075
+            ]
+          },
+          "centerline": [
+            [
+              0,
+              12850,
+              2000
+            ],
+            [
+              5000,
+              12850,
+              2000
+            ]
+          ],
+          "profile": {
+            "shape": "round",
+            "diameterMm": 100,
+            "insulationMm": 25
+          }
+        }
+      },
+      {
+        "nodeId": "node:unsupported-geometry",
+        "nodeKind": "revit_element",
+        "nodeType": "EquipmentUnit",
+        "geometry": {
+          "aabb": {
+            "min": [
+              0,
+              15000,
+              0
+            ],
+            "max": [
+              1000,
+              16000,
+              1000
+            ]
+          },
+          "profile": null,
+          "unsupportedReason": "no_supported_analytic_profile"
+        }
+      },
+      {
+        "nodeId": "node:owner-a",
+        "nodeKind": "revit_element",
+        "nodeType": "Duct",
+        "geometry": {
+          "aabb": {
+            "min": [
+              -100,
+              19900,
+              1900
+            ],
+            "max": [
+              100,
+              20100,
+              2100
+            ]
+          }
+        }
+      },
+      {
+        "nodeId": "node:owner-b",
+        "nodeKind": "revit_element",
+        "nodeType": "DuctFitting",
+        "geometry": {
+          "aabb": {
+            "min": [
+              0,
+              19900,
+              1900
+            ],
+            "max": [
+              1100,
+              20100,
+              2100
+            ]
+          }
+        }
+      },
+      {
+        "nodeId": "node:owner-c",
+        "nodeKind": "revit_element",
+        "nodeType": "Duct",
+        "geometry": {
+          "aabb": {
+            "min": [
+              1000,
+              19900,
+              1900
+            ],
+            "max": [
+              2000,
+              20100,
+              2100
+            ]
+          }
+        }
+      },
+      {
+        "nodeId": "node:owner-d",
+        "nodeKind": "revit_element",
+        "nodeType": "Pipe",
+        "geometry": {
+          "aabb": {
+            "min": [
+              1900,
+              19900,
+              1900
+            ],
+            "max": [
+              2000,
+              20100,
+              2100
+            ]
+          }
+        }
+      },
+      {
+        "nodeId": "node:owner-e",
+        "nodeKind": "revit_element",
+        "nodeType": "Pipe",
+        "geometry": {
+          "aabb": {
+            "min": [
+              2000,
+              19900,
+              1900
+            ],
+            "max": [
+              2100,
+              20100,
+              2100
+            ]
+          }
+        }
+      },
+      {
+        "nodeId": "node:owner-f",
+        "nodeKind": "revit_element",
+        "nodeType": "Duct",
+        "geometry": {
+          "aabb": {
+            "min": [
+              900,
+              20900,
+              1900
+            ],
+            "max": [
+              1100,
+              21100,
+              2100
+            ]
+          }
+        }
+      },
+      {
+        "nodeId": "node:owner-g",
+        "nodeKind": "revit_element",
+        "nodeType": "EquipmentUnit",
+        "geometry": {
+          "aabb": {
+            "min": [
+              2900,
+              19900,
+              1900
+            ],
+            "max": [
+              3100,
+              20100,
+              2100
+            ]
+          }
+        }
+      },
+      {
+        "nodeId": "connector:a-in",
+        "nodeKind": "connector",
+        "ownerNodeId": "node:owner-a",
+        "pointMm": [
+          -100,
+          20000,
+          2000
+        ],
+        "connectedConnectorNodeIds": [
+          "connector:c-out"
+        ],
+        "topologyFingerprint": "sha256:1717171717171717171717171717171717171717171717171717171717171717"
+      },
+      {
+        "nodeId": "connector:a-out",
+        "nodeKind": "connector",
+        "ownerNodeId": "node:owner-a",
+        "pointMm": [
+          0,
+          20000,
+          2000
+        ],
+        "connectedConnectorNodeIds": [
+          "connector:b-in"
+        ],
+        "topologyFingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      {
+        "nodeId": "connector:b-in",
+        "nodeKind": "connector",
+        "ownerNodeId": "node:owner-b",
+        "pointMm": [
+          0,
+          20000,
+          2000
+        ],
+        "connectedConnectorNodeIds": [
+          "connector:a-out"
+        ],
+        "topologyFingerprint": "sha256:1212121212121212121212121212121212121212121212121212121212121212"
+      },
+      {
+        "nodeId": "connector:b-out",
+        "nodeKind": "connector",
+        "ownerNodeId": "node:owner-b",
+        "pointMm": [
+          1000,
+          20000,
+          2000
+        ],
+        "connectedConnectorNodeIds": [
+          "connector:c-in"
+        ],
+        "topologyFingerprint": "sha256:1313131313131313131313131313131313131313131313131313131313131313"
+      },
+      {
+        "nodeId": "connector:b-branch",
+        "nodeKind": "connector",
+        "ownerNodeId": "node:owner-b",
+        "pointMm": [
+          1000,
+          20100,
+          2000
+        ],
+        "connectedConnectorNodeIds": [
+          "connector:f-in"
+        ],
+        "topologyFingerprint": "sha256:1818181818181818181818181818181818181818181818181818181818181818"
+      },
+      {
+        "nodeId": "connector:c-in",
+        "nodeKind": "connector",
+        "ownerNodeId": "node:owner-c",
+        "pointMm": [
+          1000,
+          20000,
+          2000
+        ],
+        "connectedConnectorNodeIds": [
+          "connector:b-out"
+        ],
+        "topologyFingerprint": "sha256:1414141414141414141414141414141414141414141414141414141414141414"
+      },
+      {
+        "nodeId": "connector:c-out",
+        "nodeKind": "connector",
+        "ownerNodeId": "node:owner-c",
+        "pointMm": [
+          2000,
+          20000,
+          2000
+        ],
+        "connectedConnectorNodeIds": [
+          "connector:a-in"
+        ],
+        "topologyFingerprint": "sha256:1919191919191919191919191919191919191919191919191919191919191919"
+      },
+      {
+        "nodeId": "connector:f-in",
+        "nodeKind": "connector",
+        "ownerNodeId": "node:owner-f",
+        "pointMm": [
+          1000,
+          20100,
+          2000
+        ],
+        "connectedConnectorNodeIds": [
+          "connector:b-branch"
+        ],
+        "topologyFingerprint": "sha256:2020202020202020202020202020202020202020202020202020202020202020"
+      },
+      {
+        "nodeId": "connector:g-ambiguous",
+        "nodeKind": "connector",
+        "ownerNodeId": "node:owner-g",
+        "pointMm": [
+          3000,
+          20000,
+          2000
+        ],
+        "adjacencyState": "ambiguous",
+        "connectedConnectorNodeIds": [],
+        "candidatePeerNodeIds": [
+          "connector:coincident-disconnected-a",
+          "connector:coincident-disconnected-b"
+        ],
+        "ambiguityReason": "multiple_peer_signatures",
+        "topologyFingerprint": "sha256:2121212121212121212121212121212121212121212121212121212121212121"
+      },
+      {
+        "nodeId": "connector:coincident-disconnected-a",
+        "nodeKind": "connector",
+        "ownerNodeId": "node:owner-d",
+        "pointMm": [
+          2000,
+          20000,
+          2000
+        ],
+        "connectedConnectorNodeIds": [],
+        "topologyFingerprint": "sha256:1515151515151515151515151515151515151515151515151515151515151515"
+      },
+      {
+        "nodeId": "connector:coincident-disconnected-b",
+        "nodeKind": "connector",
+        "ownerNodeId": "node:owner-e",
+        "pointMm": [
+          2000,
+          20000,
+          2000
+        ],
+        "connectedConnectorNodeIds": [],
+        "topologyFingerprint": "sha256:1616161616161616161616161616161616161616161616161616161616161616"
+      }
+    ],
+    "edges": [
+      {
+        "edgeId": "edge:located-in:duct-inside:room-main",
+        "sourceNodeId": "node:duct-inside",
+        "targetNodeId": "node:room-main",
+        "relationType": "located_in",
+        "basis": "boundary_loops_and_vertical_extent"
+      },
+      {
+        "edgeId": "edge:connected:a-out:b-in",
+        "sourceNodeId": "connector:a-out",
+        "targetNodeId": "connector:b-in",
+        "relationType": "connected_to",
+        "basis": "native_connector_adjacency"
+      },
+      {
+        "edgeId": "edge:connected:b-out:c-in",
+        "sourceNodeId": "connector:b-out",
+        "targetNodeId": "connector:c-in",
+        "relationType": "connected_to",
+        "basis": "native_connector_adjacency"
+      },
+      {
+        "edgeId": "edge:connected:b-branch:f-in",
+        "sourceNodeId": "connector:b-branch",
+        "targetNodeId": "connector:f-in",
+        "relationType": "connected_to",
+        "basis": "native_connector_adjacency"
+      },
+      {
+        "edgeId": "edge:connected:c-out:a-in",
+        "sourceNodeId": "connector:c-out",
+        "targetNodeId": "connector:a-in",
+        "relationType": "connected_to",
+        "basis": "native_connector_adjacency"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "caseId": "containment_inside_outer_loop",
+      "gateDimension": "containment",
+      "mode": "operation",
+      "operation": "locate_in_space",
+      "input": {
+        "nodeId": "node:duct-inside",
+        "spaceNodeIds": [
+          "node:room-main"
+        ]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "locate_in_space",
+        "inputs": {
+          "nodeId": "node:duct-inside",
+          "spaceNodeIds": [
+            "node:room-main"
+          ]
+        },
+        "nodes": [
+          {
+            "nodeId": "node:duct-inside"
+          },
+          {
+            "nodeId": "node:room-main"
+          }
+        ],
+        "edges": [
+          {
+            "edgeId": "edge:located-in:duct-inside:room-main"
+          }
+        ],
+        "computed": {
+          "located": true,
+          "spaceNodeId": "node:room-main",
+          "boundaryPolicy": "outer_minus_holes_with_vertical_extent"
+        },
+        "basis": "boundary_loops_and_vertical_extent",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "containment_rejects_polygon_hole",
+      "gateDimension": "containment",
+      "mode": "operation",
+      "operation": "locate_in_space",
+      "input": {
+        "nodeId": "node:duct-in-hole",
+        "spaceNodeIds": [
+          "node:room-main"
+        ]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "locate_in_space",
+        "inputs": {
+          "nodeId": "node:duct-in-hole",
+          "spaceNodeIds": [
+            "node:room-main"
+          ]
+        },
+        "nodes": [
+          {
+            "nodeId": "node:duct-in-hole"
+          },
+          {
+            "nodeId": "node:room-main"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "located": false,
+          "spaceNodeId": null,
+          "reason": "inside_boundary_hole"
+        },
+        "basis": "boundary_loops_and_vertical_extent",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "containment_rejects_vertical_outside",
+      "gateDimension": "containment",
+      "mode": "operation",
+      "operation": "locate_in_space",
+      "input": {
+        "nodeId": "node:duct-above-room",
+        "spaceNodeIds": [
+          "node:room-main"
+        ]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "locate_in_space",
+        "inputs": {
+          "nodeId": "node:duct-above-room",
+          "spaceNodeIds": [
+            "node:room-main"
+          ]
+        },
+        "nodes": [
+          {
+            "nodeId": "node:duct-above-room"
+          },
+          {
+            "nodeId": "node:room-main"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "located": false,
+          "spaceNodeId": null,
+          "reason": "outside_vertical_extent"
+        },
+        "basis": "boundary_loops_and_vertical_extent",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "containment_ignores_xy_crossing_outside_vertical_band",
+      "gateDimension": "containment",
+      "mode": "operation",
+      "operation": "locate_in_space",
+      "input": {
+        "nodeId": "node:z-band-crossing-segment",
+        "spaceNodeIds": ["node:room-z-band"]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "locate_in_space",
+        "inputs": {
+          "nodeId": "node:z-band-crossing-segment",
+          "spaceNodeIds": ["node:room-z-band"]
+        },
+        "nodes": [{ "nodeId": "node:z-band-crossing-segment" }],
+        "edges": [],
+        "computed": {
+          "located": false,
+          "spaceNodeId": null,
+          "status": "outside",
+          "insideSampleCount": 0,
+          "boundarySampleCount": 0,
+          "outsideSampleCount": 5,
+          "segmentBoundaryCrossing": false
+        },
+        "basis": "boundary_loops_and_vertical_extent",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "containment_detects_vertical_boundary_overlap",
+      "gateDimension": "containment",
+      "mode": "operation",
+      "operation": "locate_in_space",
+      "input": {
+        "nodeId": "node:z-band-vertical-boundary-overlap",
+        "spaceNodeIds": ["node:room-z-band"]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "locate_in_space",
+        "inputs": {
+          "nodeId": "node:z-band-vertical-boundary-overlap",
+          "spaceNodeIds": ["node:room-z-band"]
+        },
+        "nodes": [
+          { "nodeId": "node:room-z-band" },
+          { "nodeId": "node:z-band-vertical-boundary-overlap" }
+        ],
+        "edges": [],
+        "computed": {
+          "located": true,
+          "spaceNodeId": "node:room-z-band",
+          "status": "partial",
+          "insideSampleCount": 0,
+          "boundarySampleCount": 3,
+          "outsideSampleCount": 3,
+          "segmentBoundaryCrossing": true
+        },
+        "basis": "boundary_loops_and_vertical_extent",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "containment_detects_vertical_interior_overlap",
+      "gateDimension": "containment",
+      "mode": "operation",
+      "operation": "locate_in_space",
+      "input": {
+        "nodeId": "node:z-band-vertical-interior-overlap",
+        "spaceNodeIds": ["node:room-z-band"]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "locate_in_space",
+        "inputs": {
+          "nodeId": "node:z-band-vertical-interior-overlap",
+          "spaceNodeIds": ["node:room-z-band"]
+        },
+        "nodes": [
+          { "nodeId": "node:room-z-band" },
+          { "nodeId": "node:z-band-vertical-interior-overlap" }
+        ],
+        "edges": [],
+        "computed": {
+          "located": true,
+          "spaceNodeId": "node:room-z-band",
+          "status": "partial",
+          "insideSampleCount": 3,
+          "boundarySampleCount": 0,
+          "outsideSampleCount": 3,
+          "segmentBoundaryCrossing": true
+        },
+        "basis": "boundary_loops_and_vertical_extent",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "containment_boundary_is_inclusive",
+      "gateDimension": "containment",
+      "mode": "operation",
+      "operation": "locate_in_space",
+      "input": {
+        "nodeId": "node:boundary-point",
+        "spaceNodeIds": [
+          "node:room-main"
+        ]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "locate_in_space",
+        "inputs": {
+          "nodeId": "node:boundary-point",
+          "spaceNodeIds": [
+            "node:room-main"
+          ]
+        },
+        "nodes": [
+          {
+            "nodeId": "node:boundary-point"
+          },
+          {
+            "nodeId": "node:room-main"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "located": true,
+          "spaceNodeId": "node:room-main",
+          "boundaryInclusive": true
+        },
+        "basis": "boundary_loops_and_vertical_extent",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "direction_above_below",
+      "gateDimension": "direction",
+      "mode": "operation",
+      "operation": "above_below",
+      "input": {
+        "firstNodeId": "node:duct-inside",
+        "secondNodeId": "node:pipe-below",
+        "toleranceMm": 1
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "above_below",
+        "inputs": {
+          "firstNodeId": "node:duct-inside",
+          "secondNodeId": "node:pipe-below",
+          "toleranceMm": 1
+        },
+        "nodes": [
+          {
+            "nodeId": "node:duct-inside"
+          },
+          {
+            "nodeId": "node:pipe-below"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "relation": "first_above_second",
+          "separationMm": 900
+        },
+        "basis": "analytic_profile",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "direction_overlapping_ranges_is_indeterminate",
+      "gateDimension": "direction",
+      "mode": "operation",
+      "operation": "above_below",
+      "input": {
+        "firstNodeId": "node:duct-inside",
+        "secondNodeId": "node:nearest-a",
+        "toleranceMm": 1
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "above_below",
+        "inputs": {
+          "firstNodeId": "node:duct-inside",
+          "secondNodeId": "node:nearest-a",
+          "toleranceMm": 1
+        },
+        "nodes": [
+          {
+            "nodeId": "node:duct-inside"
+          },
+          {
+            "nodeId": "node:nearest-a"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "relation": "overlapping_vertical_ranges",
+          "separationMm": 0
+        },
+        "basis": "aabb",
+        "precisionClass": "candidate",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": [
+          "Overlapping vertical extents do not support an above/below ordering."
+        ]
+      }
+    },
+    {
+      "caseId": "double_placed_link_identity",
+      "gateDimension": "containment",
+      "mode": "retrieve",
+      "operation": null,
+      "input": {
+        "sourceElementUniqueId": "fixture-room-source-101",
+        "nodeTypes": [
+          "Room"
+        ]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "retrieve",
+        "operation": null,
+        "inputs": {
+          "sourceElementUniqueId": "fixture-room-source-101",
+          "nodeTypes": [
+            "Room"
+          ]
+        },
+        "nodes": [
+          {
+            "nodeId": "node:room-linked-a"
+          },
+          {
+            "nodeId": "node:room-linked-b"
+          }
+        ],
+        "edges": [],
+        "computed": null,
+        "basis": "stored_subgraph",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "nearest_tie_orders_by_node_id",
+      "gateDimension": "direction",
+      "mode": "operation",
+      "operation": "nearest_elements",
+      "input": {
+        "sourceNodeId": "node:duct-inside",
+        "candidateNodeIds": [
+          "node:nearest-b",
+          "node:nearest-a"
+        ],
+        "limit": 2
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "nearest_elements",
+        "inputs": {
+          "sourceNodeId": "node:duct-inside",
+          "candidateNodeIds": [
+            "node:nearest-a",
+            "node:nearest-b"
+          ],
+          "limit": 2
+        },
+        "nodes": [
+          {
+            "nodeId": "node:duct-inside"
+          },
+          {
+            "nodeId": "node:nearest-a"
+          },
+          {
+            "nodeId": "node:nearest-b"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "nearest": [
+            {
+              "nodeId": "node:nearest-a",
+              "distanceMm": 500
+            },
+            {
+              "nodeId": "node:nearest-b",
+              "distanceMm": 500
+            }
+          ]
+        },
+        "basis": "aabb",
+        "precisionClass": "candidate",
+        "verdictCapability": "screening_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "elements_within_includes_boundary",
+      "gateDimension": "direction",
+      "mode": "operation",
+      "operation": "elements_within",
+      "input": {
+        "sourceNodeId": "node:duct-inside",
+        "candidateNodeIds": [
+          "node:nearest-a",
+          "node:nearest-b"
+        ],
+        "distanceMm": 500
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "elements_within",
+        "inputs": {
+          "sourceNodeId": "node:duct-inside",
+          "candidateNodeIds": [
+            "node:nearest-a",
+            "node:nearest-b"
+          ],
+          "distanceMm": 500
+        },
+        "nodes": [
+          {
+            "nodeId": "node:duct-inside"
+          },
+          {
+            "nodeId": "node:nearest-a"
+          },
+          {
+            "nodeId": "node:nearest-b"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "matchingNodeIds": [
+            "node:nearest-a",
+            "node:nearest-b"
+          ],
+          "boundaryInclusive": true
+        },
+        "basis": "aabb",
+        "precisionClass": "candidate",
+        "verdictCapability": "screening_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "topology_traces_native_adjacency",
+      "gateDimension": "topology",
+      "mode": "operation",
+      "operation": "trace_connectivity",
+      "input": {
+        "startNodeId": "node:owner-a",
+        "targetNodeId": "node:owner-c",
+        "maxDepth": 4
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "trace_connectivity",
+        "inputs": {
+          "startNodeId": "node:owner-a",
+          "targetNodeId": "node:owner-c",
+          "maxDepth": 4
+        },
+        "nodes": [
+          {
+            "nodeId": "connector:a-out"
+          },
+          {
+            "nodeId": "connector:b-in"
+          },
+          {
+            "nodeId": "connector:b-out"
+          },
+          {
+            "nodeId": "connector:c-in"
+          }
+        ],
+        "edges": [
+          {
+            "edgeId": "edge:connected:a-out:b-in"
+          },
+          {
+            "edgeId": "edge:connected:b-out:c-in"
+          }
+        ],
+        "computed": {
+          "connected": true,
+          "ownerPath": [
+            "node:owner-a",
+            "node:owner-b",
+            "node:owner-c"
+          ],
+          "depth": 2
+        },
+        "basis": "native_connector_adjacency",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "topology_does_not_infer_coincident_connection",
+      "gateDimension": "topology",
+      "mode": "operation",
+      "operation": "trace_connectivity",
+      "input": {
+        "startNodeId": "node:owner-d",
+        "targetNodeId": "node:owner-e",
+        "maxDepth": 2
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "trace_connectivity",
+        "inputs": {
+          "startNodeId": "node:owner-d",
+          "targetNodeId": "node:owner-e",
+          "maxDepth": 2
+        },
+        "nodes": [
+          {
+            "nodeId": "connector:coincident-disconnected-a"
+          },
+          {
+            "nodeId": "connector:coincident-disconnected-b"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "connected": false,
+          "ownerPath": [],
+          "reason": "no_native_connector_adjacency"
+        },
+        "basis": "native_connector_adjacency",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": [
+          "Coincident connector coordinates are not connectivity evidence."
+        ]
+      }
+    },
+    {
+      "caseId": "topology_branch_is_deterministic",
+      "gateDimension": "topology",
+      "mode": "operation",
+      "operation": "trace_connectivity",
+      "input": {
+        "startNodeId": "node:owner-b",
+        "targetNodeId": "node:owner-f",
+        "maxDepth": 2
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "trace_connectivity",
+        "inputs": {
+          "startNodeId": "node:owner-b",
+          "targetNodeId": "node:owner-f",
+          "maxDepth": 2
+        },
+        "nodes": [
+          {
+            "nodeId": "connector:b-branch"
+          },
+          {
+            "nodeId": "connector:f-in"
+          }
+        ],
+        "edges": [
+          {
+            "edgeId": "edge:connected:b-branch:f-in"
+          }
+        ],
+        "computed": {
+          "connected": true,
+          "ownerPath": [
+            "node:owner-b",
+            "node:owner-f"
+          ],
+          "depth": 1
+        },
+        "basis": "native_connector_adjacency",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "topology_cycle_terminates_without_duplicates",
+      "gateDimension": "topology",
+      "mode": "operation",
+      "operation": "trace_connectivity",
+      "input": {
+        "startNodeId": "node:owner-a",
+        "maxDepth": 4
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "trace_connectivity",
+        "inputs": {
+          "startNodeId": "node:owner-a",
+          "maxDepth": 4
+        },
+        "nodes": [
+          {
+            "nodeId": "connector:a-in"
+          },
+          {
+            "nodeId": "connector:a-out"
+          },
+          {
+            "nodeId": "connector:b-branch"
+          },
+          {
+            "nodeId": "connector:b-in"
+          },
+          {
+            "nodeId": "connector:b-out"
+          },
+          {
+            "nodeId": "connector:c-in"
+          },
+          {
+            "nodeId": "connector:c-out"
+          },
+          {
+            "nodeId": "connector:f-in"
+          }
+        ],
+        "edges": [
+          {
+            "edgeId": "edge:connected:a-out:b-in"
+          },
+          {
+            "edgeId": "edge:connected:b-branch:f-in"
+          },
+          {
+            "edgeId": "edge:connected:b-out:c-in"
+          },
+          {
+            "edgeId": "edge:connected:c-out:a-in"
+          }
+        ],
+        "computed": {
+          "connectedOwnerNodeIds": [
+            "node:owner-a",
+            "node:owner-b",
+            "node:owner-c",
+            "node:owner-f"
+          ],
+          "cycleDetected": true,
+          "duplicateVisitCount": 0
+        },
+        "basis": "native_connector_adjacency",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "topology_ambiguity_fails_closed",
+      "gateDimension": "topology",
+      "mode": "operation",
+      "operation": "trace_connectivity",
+      "input": {
+        "startNodeId": "node:owner-g",
+        "targetNodeId": "node:owner-d",
+        "maxDepth": 2
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": true,
+        "state": "guarded",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "trace_connectivity",
+        "inputs": {
+          "startNodeId": "node:owner-g",
+          "targetNodeId": "node:owner-d",
+          "maxDepth": 2
+        },
+        "nodes": [
+          {
+            "nodeId": "connector:g-ambiguous"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "connected": null,
+          "ownerPath": [],
+          "reason": "ambiguous_native_connector_adjacency"
+        },
+        "basis": "native_connector_adjacency",
+        "precisionClass": "unknown",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [
+          "Connector peer identity is ambiguous; no connectivity answer was produced."
+        ],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "analytic_clearance_round_round",
+      "gateDimension": "distance",
+      "mode": "operation",
+      "operation": "clearance_between",
+      "input": {
+        "firstNodeId": "node:round-clearance",
+        "secondNodeId": "node:round-clearance-peer"
+      },
+      "groundTruth": {
+        "source": "synthetic_analytic_fixture",
+        "revitLiveClassRequired": "parallel_round_to_round_straight_swept_profile",
+        "expectedSeparationMm": 200,
+        "maximumAllowedAbsoluteErrorMm": 1
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "clearance_between",
+        "inputs": {
+          "firstNodeId": "node:round-clearance",
+          "secondNodeId": "node:round-clearance-peer"
+        },
+        "nodes": [
+          {
+            "nodeId": "node:round-clearance"
+          },
+          {
+            "nodeId": "node:round-clearance-peer"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "supported": true,
+          "separationMm": 200,
+          "intersects": false,
+          "clearanceVerdict": null
+        },
+        "basis": "analytic_profile",
+        "precisionClass": "measured",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": [
+          "Measured separation is context evidence and not a clearance verdict."
+        ]
+      }
+    },
+    {
+      "caseId": "rectangular_clearance_is_screening_only",
+      "gateDimension": "distance",
+      "mode": "operation",
+      "operation": "clearance_between",
+      "input": {
+        "firstNodeId": "node:rect-clearance",
+        "secondNodeId": "node:round-clearance"
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "clearance_between",
+        "inputs": {
+          "firstNodeId": "node:rect-clearance",
+          "secondNodeId": "node:round-clearance"
+        },
+        "nodes": [
+          {
+            "nodeId": "node:rect-clearance"
+          },
+          {
+            "nodeId": "node:round-clearance"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "supported": true,
+          "analyticSupported": false,
+          "separationMm": 200,
+          "intersects": false,
+          "clearanceVerdict": null,
+          "reason": "rectangular_analytic_orientation_unavailable"
+        },
+        "basis": "aabb",
+        "precisionClass": "candidate",
+        "verdictCapability": "screening_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [
+          "Rectangular swept-profile orientation is not sufficient for an analytic measured distance in SpatialSnapshot v0.3; the returned separation is AABB candidate evidence."
+        ],
+        "notices": [
+          "AABB separation is screening-only and carries no exact analytic or clearance verdict."
+        ]
+      }
+    },
+    {
+      "caseId": "unsupported_geometry_fails_closed",
+      "gateDimension": "distance",
+      "mode": "operation",
+      "operation": "clearance_between",
+      "input": {
+        "firstNodeId": "node:unsupported-geometry",
+        "secondNodeId": "node:round-clearance"
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": true,
+        "state": "guarded",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "clearance_between",
+        "inputs": {
+          "firstNodeId": "node:unsupported-geometry",
+          "secondNodeId": "node:round-clearance"
+        },
+        "nodes": [
+          {
+            "nodeId": "node:round-clearance"
+          },
+          {
+            "nodeId": "node:unsupported-geometry"
+          }
+        ],
+        "edges": [],
+        "computed": {
+          "supported": false,
+          "separationMm": null,
+          "intersects": null,
+          "clearanceVerdict": null,
+          "reason": "unsupported_geometry"
+        },
+        "basis": "unsupported",
+        "precisionClass": "unknown",
+        "verdictCapability": "context_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [
+          "At least one node lacks a supported analytic profile."
+        ],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "intended_connected_overlap_is_not_a_verdict",
+      "gateDimension": "topology",
+      "mode": "operation",
+      "operation": "relation_between",
+      "input": {
+        "firstNodeId": "node:owner-a",
+        "secondNodeId": "node:owner-b"
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:phase1b-operation-gold",
+        "revisionFingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "liveness": "current",
+        "mode": "operation",
+        "operation": "relation_between",
+        "inputs": {
+          "firstNodeId": "node:owner-a",
+          "secondNodeId": "node:owner-b"
+        },
+        "nodes": [
+          {
+            "nodeId": "node:owner-a"
+          },
+          {
+            "nodeId": "node:owner-b"
+          }
+        ],
+        "edges": [
+          {
+            "edgeId": "edge:connected:a-out:b-in"
+          }
+        ],
+        "computed": {
+          "intersects": true,
+          "connected": true,
+          "connectionClassification": "native_connected_overlap",
+          "clearanceVerdict": null,
+          "clashVerdict": null
+        },
+        "basis": "aabb_plus_native_connector_adjacency",
+        "precisionClass": "candidate",
+        "verdictCapability": "screening_only",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [],
+        "notices": [
+          "Connected overlap classification is context only; Phase 1b emits no clash verdict."
+        ]
+      }
+    }
+  ]
+}

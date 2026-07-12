@@ -335,7 +335,7 @@ export async function executeRevitCode(code, options = {}) {
             response: normalizedResponse,
             durationMs,
         });
-        void refreshLiveRevitStatus(options);
+        refreshLiveRevitStatusAfterCommand(options);
         return normalizedResponse;
     }
     catch (error) {
@@ -353,8 +353,16 @@ export async function executeRevitCode(code, options = {}) {
             error,
             durationMs,
         });
-        void refreshLiveRevitStatus(options);
+        refreshLiveRevitStatusAfterCommand(options);
         throw error;
+    }
+}
+export function shouldRefreshLiveRevitStatusAfterCommand(options = {}) {
+    return options.refreshStatusAfterCommand !== false;
+}
+function refreshLiveRevitStatusAfterCommand(options = {}) {
+    if (shouldRefreshLiveRevitStatusAfterCommand(options)) {
+        void refreshLiveRevitStatus(options);
     }
 }
 export async function refreshLiveRevitStatus(options = {}) {
@@ -420,7 +428,7 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
             response: normalizedResponse,
             durationMs,
         });
-        void refreshLiveRevitStatus(options);
+        refreshLiveRevitStatusAfterCommand(options);
         return normalizedResponse;
     }
     catch (error) {
@@ -438,7 +446,7 @@ export async function sendRevitCommand(command, params = {}, options = {}) {
             error,
             durationMs,
         });
-        void refreshLiveRevitStatus(options);
+        refreshLiveRevitStatusAfterCommand(options);
         throw error;
     }
 }

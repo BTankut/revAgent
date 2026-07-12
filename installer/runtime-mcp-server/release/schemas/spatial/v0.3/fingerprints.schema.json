@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.3/fingerprints.schema.json",
+  "title": "revAgent Spatial Fingerprints v0.3",
+  "description": "Versioned placement, shape, property, and topology fingerprints used by deterministic Phase 1b diff classification.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "placement", "shape", "property", "topology"],
+  "properties": {
+    "version": { "const": "phase1b-spatial-fingerprint/1.0" },
+    "placement": { "$ref": "#/$defs/sha256" },
+    "shape": { "$ref": "#/$defs/sha256" },
+    "property": { "$ref": "#/$defs/sha256" },
+    "topology": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

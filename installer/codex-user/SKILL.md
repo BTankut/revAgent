@@ -7,7 +7,7 @@ description: >
   inspection, controlled model edits, sheet/schedule review, image export, and
   mechanical MEP engineering workflows.
 license: UNLICENSED
-version: 0.5.1
+version: 0.6.0
 ---
 
 # revAgent Revit MEP Production Skill
@@ -66,17 +66,28 @@ Use dedicated production tools before raw code:
 - Element/selection inspection: `inspect_elements`.
 - Host/linked Level inventory: `inspect_levels`.
 - Parameter preflight: `inspect_parameter_schema`.
-- Phase 1a durable spatial capture: `capture_spatial_snapshot`. Require an
+- Phase 1b-compatible durable spatial capture: `capture_spatial_snapshot`.
+  Require an
   explicit host Level scope. The runtime owns native pagination, validates the
-  v0.2 page/revision chain, stages it in the user-local versioned store, and
+  v0.3 page/revision chain, stages it in the user-local versioned store, and
   exposes a snapshot only after atomic commit. Host scope is a vertical band and
   every emitted node must physically overlap it after link transform. Use
   placement-qualified `linkedSourceLevels` from `inspect_levels` for an
   additional exact linked Room/Space constraint. Inspect `committed`, `atomic`,
   `liveness`, `partial`, and `coverageStatus` separately: atomic does not mean
-  complete, and stale/unknown cannot support current-state wording. Phase 1a
-  still has no deterministic query, diff, clash-screening, or live
-  clash/clearance-verdict surface.
+  complete, and stale/unknown cannot support current-state wording. v0.3
+  topology comes only from explicit Revit connector references, never
+  coincident coordinates.
+- Current spatial relations and bounded retrieval: `query_spatial_context` over
+  one explicit complete/current snapshot. Use its deterministic operations;
+  never perform coordinate arithmetic in the LLM. Respect `basis`,
+  `precisionClass`, and `verdictCapability`; Phase 1b never emits a live clash
+  or clearance verdict.
+- Historical spatial change: `compare_spatial_snapshots` with two explicit,
+  complete, compatible snapshots. Cite both snapshot and revision ids; stale
+  history is allowed only as immutable historical evidence.
+- Compact per-level spatial context: `summarize_spatial_state`. It is advisory
+  only and must not be quoted as verification.
 - Spatial-store purge is local CLI maintenance, not an MCP tool. Run it only
   for an explicit user request, with the same `node.exe` from the revAgent MCP
   config and `%ProgramData%\DPE\revAgent\package\installer\runtime-mcp-server\build\index.js`.

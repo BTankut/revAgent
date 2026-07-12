@@ -673,12 +673,6 @@ namespace RevAgentCommandSet.Commands.Spatial
                 }
 
                 SpatialRow row = BuildNodeRow(source, element, record.CategoryName, record.LevelName, record.LevelId, record.LevelUniqueId, geometry);
-                if (GetCanonicalRowByteCount(row) + 2 > prepared.PageTargetBytes)
-                {
-                    AddElementOmission(prepared.OrderedRows, source, element, record.CategoryName, "row_payload_too_large", "The canonical element row exceeds pageTargetBytes and was replaced with this classified omission.", record.LevelName, record.LevelId, record.LevelUniqueId, prepared.Extraction, true);
-                    prepared.ExtractIndex++;
-                    continue;
-                }
                 bool connectorReadFailed;
                 bool connectorDeadlineExceeded;
                 List<SpatialRow> connectorRows = SpatialSnapshotHelpers.BuildConnectorRows(
@@ -690,6 +684,13 @@ namespace RevAgentCommandSet.Commands.Spatial
                     out connectorReadFailed,
                     out connectorDeadlineExceeded);
                 if (connectorDeadlineExceeded) return true;
+                SpatialSnapshotHelpers.ApplyElementTopologyFingerprint(row, connectorRows);
+                if (GetCanonicalRowByteCount(row) + 2 > prepared.PageTargetBytes)
+                {
+                    AddElementOmission(prepared.OrderedRows, source, element, record.CategoryName, "row_payload_too_large", "The canonical element row exceeds pageTargetBytes and was replaced with this classified omission.", record.LevelName, record.LevelId, record.LevelUniqueId, prepared.Extraction, true);
+                    prepared.ExtractIndex++;
+                    continue;
+                }
 
                 prepared.OrderedRows.Add(row);
                 prepared.Extraction.ExtractedNodeCount++;
@@ -1878,6 +1879,30 @@ namespace RevAgentCommandSet.Commands.Spatial
                     }
                 }
             };
+            Dictionary<string, object> levelRef = new Dictionary<string, object>
+            {
+                { "sourceLevelId", levelId },
+                { "sourceLevelName", levelName },
+                { "sourceLevelUniqueId", levelUniqueId }
+            };
+            Dictionary<string, object> spatialProperties = SpatialSnapshotHelpers.BuildElementSpatialProperties(source.Document, element);
+            Dictionary<string, object> profile = SpatialSnapshotHelpers.BuildElementProfile(element);
+            SpatialSnapshotHelpers.ApplyAnalyticProfileEnvelopeToGeometry(geometry, profile);
+            Dictionary<string, object> propertyBasis = new Dictionary<string, object>
+            {
+                { "category", categoryName },
+                { "builtInCategory", category.ToString() },
+                { "categoryRole", SpatialSnapshotHelpers.GetCategoryRole(source, category) },
+                { "name", SpatialSnapshotHelpers.GetElementName(element) },
+                { "familyName", SpatialSnapshotHelpers.GetFamilyName(source.Document, element) },
+                { "typeName", SpatialSnapshotHelpers.GetTypeName(source.Document, element) },
+                { "levelRef", levelRef }
+            };
+            Dictionary<string, object> fingerprints = SpatialSnapshotHelpers.BuildElementFingerprints(
+                geometry,
+                spatialProperties,
+                profile,
+                propertyBasis);
             Dictionary<string, object> payload = new Dictionary<string, object>
             {
                 { "nodeId", nodeId },
@@ -1885,19 +1910,16 @@ namespace RevAgentCommandSet.Commands.Spatial
                 { "nodeRef", nodeRef },
                 { "elementRef", elementRef },
                 { "sourceRefs", nodeRef["sourceRefs"] },
-                { "category", categoryName },
-                { "builtInCategory", category.ToString() },
-                { "categoryRole", SpatialSnapshotHelpers.GetCategoryRole(source, category) },
-                { "name", SpatialSnapshotHelpers.GetElementName(element) },
-                { "familyName", SpatialSnapshotHelpers.GetFamilyName(source.Document, element) },
-                { "typeName", SpatialSnapshotHelpers.GetTypeName(source.Document, element) },
-                { "levelRef", new Dictionary<string, object>
-                    {
-                        { "sourceLevelId", levelId },
-                        { "sourceLevelName", levelName },
-                        { "sourceLevelUniqueId", levelUniqueId }
-                    }
-                },
+                { "category", propertyBasis["category"] },
+                { "builtInCategory", propertyBasis["builtInCategory"] },
+                { "categoryRole", propertyBasis["categoryRole"] },
+                { "name", propertyBasis["name"] },
+                { "familyName", propertyBasis["familyName"] },
+                { "typeName", propertyBasis["typeName"] },
+                { "levelRef", levelRef },
+                { "spatialProperties", spatialProperties },
+                { "profile", profile },
+                { "fingerprints", fingerprints },
                 { "geometry", geometry }
             };
             string sortKey = SpatialSnapshotHelpers.BuildSortKey(source.Identity.DocumentKey, source.PlacementKey, "revit_element", uniqueId);

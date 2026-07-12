@@ -25,7 +25,7 @@ server, package, assembly, manifest, or installed path is being named.
 - `installer/runtime-mcp-server/src/`: TypeScript source for the live revAgent
   runtime server. `npm run build` emits `build/`, which remains the installer
   and Codex registration contract.
-- `%LOCALAPPDATA%\revAgent\spatial\spatial.db`: Phase 1a user-local spatial
+- `%LOCALAPPDATA%\revAgent\spatial\spatial.db`: Phase 1b user-local spatial
   state store. It is separate from the replaceable managed package, uses an
   explicit schema lifecycle with migration backup/recovery, and requires SQLite
   R*Tree support. `REVAGENT_SPATIAL_DB_PATH` is the development/test override.
@@ -62,19 +62,23 @@ structural, and electrical modules should add module-specific MCP tools in the
 runtime layer while reusing this shared Revit bridge for common execution,
 context, selection, view, and navigation operations.
 
-The current runtime server registers 32 tools:
+The current runtime server registers 35 tools:
 
 - status and targeting: `list_revit_instances`, `get_revit_mcp_status`
 - dynamic execution: `send_code_to_revit`, `send_code_to_revit_safe`
 - model/session context: `get_revit_session_context`,
   `get_active_view_context`, `inspect_elements`, `inspect_levels`, `inspect_sheet_text`,
   `inspect_schedules`, `count_annotations`, `inspect_parameter_schema`
-- Phase 1a spatial capture: `capture_spatial_snapshot`, a read-only,
+- Spatial Context Engine: `capture_spatial_snapshot`, a read-only,
   explicit-level durable capture orchestrator over native
   `extract_spatial_snapshot`; the runtime owns opaque native continuation,
-  validates page hashes and one revision basis, stages v0.2 rows, and exposes a
+  validates page hashes and one revision basis, stages v0.3 rows, and exposes a
   snapshot only after atomic store commit. `coverageStatus` remains independent
-  of atomicity and liveness; query/diff/clash capabilities are not part of 1a
+  of atomicity and liveness. `query_spatial_context` provides deterministic
+  bounded retrieval and relation operations over a complete/current snapshot;
+  `compare_spatial_snapshots` provides immutable historical diff;
+  `summarize_spatial_state` provides advisory bounded per-level context. Phase
+  1b provides no live clash or clearance verdict
 - review/reconciliation: `reconcile_schedule_excel` for deterministic,
   write-free schedule-to-Excel review output
 - controlled data writes: `set_element_parameter` for exact-schema
@@ -106,7 +110,7 @@ is fully sorted before `maxResults`; deterministic truncation reports
 partial/max_items. Missing, unloaded, or unreadable selected links report
 `unavailableSourceCount` with partial/read_failed rather than a complete result.
 
-### Spatial Phase 1a truth foundation
+### Spatial Phase 1b deterministic context
 
 `capture_spatial_snapshot` keeps the Phase 0 explicit host-Level and transformed
 host-Z physical-overlap rules, but replaces caller-owned one-page continuation
@@ -115,7 +119,10 @@ responses are sequence-bound staging pages (`atomic=false`,
 `liveness="staging"`); they are validated and never exposed as a committed
 snapshot. The runtime verifies page order/hash continuity and invariant scope
 and revision metadata, discards interrupted staging, retries a bounded number
-of times, and commits the staged chain as one SpatialSnapshot v0.2.
+of times, and commits the staged chain as one SpatialSnapshot v0.3. v0.3 adds
+system/profile/insulation evidence, independent placement/shape/property/
+topology fingerprints, and connector adjacency sourced only from Revit
+`Connector.AllRefs`.
 
 The durable store is a dedicated SQLite database under
 `%LOCALAPPDATA%\revAgent\spatial\spatial.db` by default. Store schema migration
@@ -159,12 +166,15 @@ replacing obsolete path/unsaved aliases with the new stable identity; a
 successful close retires the binding so close/reopen and add-in restart remain
 liveness breaks.
 
-`current` therefore means only that the committed snapshot's tracked revision
-still matches at liveness evaluation time. It does not turn the stored graph
-into a deterministic relation or verdict service. Phase 1a exposes no
-`query_spatial_context`, snapshot-diff, clash-screening, or live
-clash/clearance-verdict tool. Those claims remain prohibited until their later
-phase tools and coverage gates exist.
+`current` means that the committed snapshot's tracked revision still matches at
+liveness evaluation time. `query_spatial_context` requires that state plus
+complete extraction, then computes relations in deterministic Node-side code;
+the LLM never derives relations from coordinates. `compare_spatial_snapshots`
+may use complete stale/unknown snapshots only as immutable historical evidence
+and cites both revisions. `summarize_spatial_state` is advisory-only. AABB
+relations remain screening evidence and supported straight-round analytic
+distance remains context-only. Live clash/clearance verdicts remain prohibited
+until Phase 1c.
 
 `find_elements` is the progressive MEP-aware discovery tool for element search.
 The runtime infers obvious engineering scope before calling Revit, for example

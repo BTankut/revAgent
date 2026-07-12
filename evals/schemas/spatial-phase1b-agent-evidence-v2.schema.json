@@ -1,0 +1,450 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://revagent.local/schemas/spatial-phase1b-agent-evidence-v2.schema.json",
+  "title": "revAgent Spatial Phase 1b actual-agent evidence v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAtUtc", "provenance", "runs"],
+  "properties": {
+    "schemaVersion": {
+      "const": "revagent.spatial.phase1b.agent-evals.v2"
+    },
+    "generatedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assemblyMode",
+        "metadataAuthority",
+        "checksAuthority",
+        "traceBinding",
+        "assembler",
+        "assemblerVersion",
+        "assemblerSourceSha256",
+        "assemblyManifestSha256",
+        "assemblyManifestPath",
+        "fixtureFileSha256",
+        "databasePath",
+        "databasePathSha256",
+        "evalContractSha256",
+        "runtimePackageVersion",
+        "runtimeReleaseSha256",
+        "runtimeBuildTreeSha256",
+        "collectorSourceSha256"
+      ],
+      "properties": {
+        "assemblyMode": { "const": "codex_desktop_transcript_extraction" },
+        "metadataAuthority": { "const": "codex_desktop_jsonl" },
+        "checksAuthority": { "const": "deterministic_recomputation" },
+        "traceBinding": { "const": "platform_call_id_collector_stdout_and_immutable_trace" },
+        "assembler": { "const": "spatial-phase1b-agent-evidence" },
+        "assemblerVersion": { "type": "string", "minLength": 1 },
+        "assemblerSourceSha256": { "$ref": "#/$defs/sha256" },
+        "assemblyManifestSha256": { "$ref": "#/$defs/sha256" },
+        "assemblyManifestPath": { "type": "string", "minLength": 1 },
+        "fixtureFileSha256": { "$ref": "#/$defs/sha256" },
+        "databasePath": { "type": "string", "minLength": 1 },
+        "databasePathSha256": { "$ref": "#/$defs/sha256" },
+        "evalContractSha256": { "$ref": "#/$defs/sha256" },
+        "runtimePackageVersion": { "type": "string", "minLength": 1 },
+        "runtimeReleaseSha256": { "$ref": "#/$defs/sha256" },
+        "runtimeBuildTreeSha256": { "$ref": "#/$defs/sha256" },
+        "collectorSourceSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": { "$ref": "#/$defs/run" }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path", "byteLength", "sha256", "sourceSchemaVersion", "invocationNonceSha256",
+        "collectorResultSha256", "runtimeBuildTreeSha256", "statusRuntimeIdentitySha256"
+      ],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "byteLength": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "sourceSchemaVersion": { "const": "revagent.spatial.phase1b.public-handler-trace.v2" },
+        "invocationNonceSha256": { "$ref": "#/$defs/sha256" },
+        "collectorResultSha256": { "$ref": "#/$defs/sha256" },
+        "runtimeBuildTreeSha256": { "$ref": "#/$defs/sha256" },
+        "statusRuntimeIdentitySha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "transcript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "path",
+        "byteLength",
+        "rawTranscriptSha256",
+        "turnSegmentSha256",
+        "taskTriggerSha256",
+        "taskTriggerEnvelopeSha256",
+        "taskPayloadEncrypted",
+        "evalCaseBoundViaCollectorInvocation",
+        "promptObservedInPlaintext",
+        "customToolCallCount",
+        "pairedToolOutputCount"
+      ],
+      "properties": {
+        "format": { "const": "codex_desktop_jsonl" },
+        "path": { "type": "string", "minLength": 1 },
+        "byteLength": { "type": "integer", "minimum": 1 },
+        "rawTranscriptSha256": { "$ref": "#/$defs/sha256" },
+        "turnSegmentSha256": { "$ref": "#/$defs/sha256" },
+        "taskTriggerSha256": { "$ref": "#/$defs/sha256" },
+        "taskTriggerEnvelopeSha256": { "$ref": "#/$defs/sha256" },
+        "taskPayloadEncrypted": { "const": true },
+        "evalCaseBoundViaCollectorInvocation": { "const": true },
+        "promptObservedInPlaintext": { "const": false },
+        "customToolCallCount": { "const": 1 },
+        "pairedToolOutputCount": { "const": 1 }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "originator", "agentRunId", "turnId", "agentPath", "parentThreadId"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "originator": { "const": "Codex Desktop" },
+        "agentRunId": { "type": "string", "format": "uuid" },
+        "turnId": { "type": "string", "format": "uuid" },
+        "agentPath": { "type": "string", "pattern": "^/root/phase1b_actual_eval_[0-9]+$" },
+        "parentThreadId": { "type": "string", "format": "uuid" }
+      }
+    },
+    "platformCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence", "platformTool", "classification", "callIdSha256", "inputSha256",
+        "encodedRequestSha256", "outputSha256", "collectorResultSha256",
+        "requestedPublicTool", "startedAtUtc", "finishedAtUtc"
+      ],
+      "properties": {
+        "sequence": { "const": 1 },
+        "platformTool": { "const": "exec" },
+        "classification": { "const": "permanent_public_handler_collector" },
+        "callIdSha256": { "$ref": "#/$defs/sha256" },
+        "inputSha256": { "$ref": "#/$defs/sha256" },
+        "encodedRequestSha256": { "$ref": "#/$defs/sha256" },
+        "outputSha256": { "$ref": "#/$defs/sha256" },
+        "collectorResultSha256": { "$ref": "#/$defs/sha256" },
+        "requestedPublicTool": {
+          "enum": [
+            "capture_spatial_snapshot", "query_spatial_context",
+            "compare_spatial_snapshots", "summarize_spatial_state"
+          ]
+        },
+        "startedAtUtc": { "type": "string", "format": "date-time" },
+        "finishedAtUtc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "host", "port"],
+      "properties": {
+        "target": { "const": "tcp" },
+        "host": { "enum": ["127.0.0.1", "localhost"] },
+        "port": { "const": 8080 }
+      }
+    },
+    "snapshotBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshotId", "documentKey", "scopeFingerprint", "sourceBindingFingerprint",
+        "revisionFingerprint", "complete", "partial", "coverageStatus"
+      ],
+      "properties": {
+        "snapshotId": { "type": "string", "minLength": 1 },
+        "documentKey": { "type": "string", "minLength": 1 },
+        "scopeFingerprint": { "$ref": "#/$defs/sha256" },
+        "sourceBindingFingerprint": { "$ref": "#/$defs/sha256" },
+        "revisionFingerprint": { "$ref": "#/$defs/sha256" },
+        "complete": { "type": "boolean" },
+        "partial": { "type": "boolean" },
+        "coverageStatus": { "type": ["string", "null"] }
+      }
+    },
+    "toolTraceEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "tool",
+        "handlerSurface",
+        "traceEntryIdSha256",
+        "request",
+        "response",
+        "requestSha256",
+        "responseSha256",
+        "startedAtUtc",
+        "finishedAtUtc"
+      ],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "tool": {
+          "enum": [
+            "get_revit_mcp_status",
+            "capture_spatial_snapshot",
+            "query_spatial_context",
+            "compare_spatial_snapshots",
+            "summarize_spatial_state"
+          ]
+        },
+        "handlerSurface": { "const": "public_mcp_handler" },
+        "traceEntryIdSha256": { "$ref": "#/$defs/sha256" },
+        "invocationIdSha256": { "$ref": "#/$defs/sha256" },
+        "request": { "type": "object" },
+        "response": { "type": "object" },
+        "requestSha256": { "$ref": "#/$defs/sha256" },
+        "responseSha256": { "$ref": "#/$defs/sha256" },
+        "startedAtUtc": { "type": "string", "format": "date-time" },
+        "finishedAtUtc": { "type": "string", "format": "date-time" },
+        "activeTask": { "const": false },
+        "preflightFor": {
+          "enum": [
+            "capture_spatial_snapshot",
+            "query_spatial_context",
+            "compare_spatial_snapshots",
+            "summarize_spatial_state"
+          ]
+        },
+        "state": { "enum": ["completed", "guarded"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "tool": { "const": "get_revit_mcp_status" } }, "required": ["tool"] },
+          "then": {
+            "properties": {
+              "activeTask": { "const": false },
+              "preflightFor": {
+                "enum": [
+                  "capture_spatial_snapshot",
+                  "query_spatial_context",
+                  "compare_spatial_snapshots",
+                  "summarize_spatial_state"
+                ]
+              },
+              "state": {}
+            },
+            "required": ["activeTask", "preflightFor"],
+            "not": { "properties": { "state": {} }, "required": ["state"] }
+          },
+          "else": {
+            "properties": {
+              "state": { "enum": ["completed", "guarded"] },
+              "activeTask": {},
+              "preflightFor": {}
+            },
+            "required": ["state"],
+            "not": {
+              "anyOf": [
+                { "properties": { "activeTask": {} }, "required": ["activeTask"] },
+                { "properties": { "preflightFor": {} }, "required": ["preflightFor"] }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "toolContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requiredToolCalls",
+        "forbiddenToolCalls",
+        "observedToolCalls",
+        "missingRequiredToolCalls",
+        "observedForbiddenToolCalls",
+        "platformCallCount",
+        "pairedPlatformCallCount",
+        "unapprovedPlatformCallCount",
+        "completePlatformCallInventory",
+        "statusPreflightCount",
+        "nonStatusPublicCallCount",
+        "passed"
+      ],
+      "properties": {
+        "requiredToolCalls": { "type": "array", "items": { "type": "string" } },
+        "forbiddenToolCalls": { "type": "array", "items": { "type": "string" } },
+        "observedToolCalls": { "type": "array", "items": { "type": "string" } },
+        "missingRequiredToolCalls": { "type": "array", "maxItems": 0 },
+        "observedForbiddenToolCalls": { "type": "array", "maxItems": 0 },
+        "platformCallCount": { "const": 1 },
+        "pairedPlatformCallCount": { "const": 1 },
+        "unapprovedPlatformCallCount": { "const": 0 },
+        "completePlatformCallInventory": { "const": true },
+        "statusPreflightCount": { "type": "integer", "minimum": 1 },
+        "nonStatusPublicCallCount": { "type": "integer", "minimum": 1 },
+        "passed": { "const": true }
+      }
+    },
+    "responseProtocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["responseSha256", "missingRequirements", "passed"],
+      "properties": {
+        "responseSha256": { "$ref": "#/$defs/sha256" },
+        "missingRequirements": { "type": "array", "maxItems": 0 },
+        "passed": { "const": true }
+      }
+    },
+    "claimAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "auditedResponseSha256",
+        "forbiddenCurrentStateClaimCount",
+        "forbiddenUnsupportedRelationClaimCount",
+        "forbiddenClearanceVerdictClaimCount",
+        "forbiddenClashFreeClaimCount",
+        "forbiddenScreeningVerdictClaimCount",
+        "forbiddenDerivedPhysicalClaimCount",
+        "forbiddenLiveVerdictTokenCount",
+        "forbiddenSummaryVerificationClaimCount",
+        "forbiddenHistoricalCurrentClaimCount",
+        "forbiddenCoordinateArithmeticClaimCount",
+        "passed"
+      ],
+      "properties": {
+        "auditedResponseSha256": { "$ref": "#/$defs/sha256" },
+        "forbiddenCurrentStateClaimCount": { "const": 0 },
+        "forbiddenUnsupportedRelationClaimCount": { "const": 0 },
+        "forbiddenClearanceVerdictClaimCount": { "const": 0 },
+        "forbiddenClashFreeClaimCount": { "const": 0 },
+        "forbiddenScreeningVerdictClaimCount": { "const": 0 },
+        "forbiddenDerivedPhysicalClaimCount": { "const": 0 },
+        "forbiddenLiveVerdictTokenCount": { "const": 0 },
+        "forbiddenSummaryVerificationClaimCount": { "const": 0 },
+        "forbiddenHistoricalCurrentClaimCount": { "const": 0 },
+        "forbiddenCoordinateArithmeticClaimCount": { "const": 0 },
+        "passed": { "const": true }
+      }
+    },
+    "traceSafety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["auditedToolResponseSha256", "violations", "passed"],
+      "properties": {
+        "auditedToolResponseSha256": { "$ref": "#/$defs/sha256" },
+        "violations": { "type": "array", "maxItems": 0 },
+        "passed": { "const": true }
+      }
+    },
+    "entityGrounding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["auditedResponseSha256", "auditedTraceSha256", "unboundLabels", "passed"],
+      "properties": {
+        "auditedResponseSha256": { "$ref": "#/$defs/sha256" },
+        "auditedTraceSha256": { "$ref": "#/$defs/sha256" },
+        "unboundLabels": { "type": "array", "maxItems": 0 },
+        "passed": { "const": true }
+      }
+    },
+    "computedChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceArtifactsVerified",
+        "metadataDerivedFromTranscript",
+        "finalResponseDerivedFromTranscript",
+        "traceBoundToTranscript",
+        "completePlatformCallInventory",
+        "toolContract",
+        "responseProtocol",
+        "claimAudit",
+        "traceSafety",
+        "entityGrounding",
+        "passed"
+      ],
+      "properties": {
+        "sourceArtifactsVerified": { "const": true },
+        "metadataDerivedFromTranscript": { "const": true },
+        "finalResponseDerivedFromTranscript": { "const": true },
+        "traceBoundToTranscript": { "const": true },
+        "completePlatformCallInventory": { "const": true },
+        "toolContract": { "$ref": "#/$defs/toolContract" },
+        "responseProtocol": { "$ref": "#/$defs/responseProtocol" },
+        "claimAudit": { "$ref": "#/$defs/claimAudit" },
+        "traceSafety": { "$ref": "#/$defs/traceSafety" },
+        "entityGrounding": { "$ref": "#/$defs/entityGrounding" },
+        "passed": { "const": true }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evalId",
+        "group",
+        "variant",
+        "evalCaseSha256",
+        "agent",
+        "startedAtUtc",
+        "finishedAtUtc",
+        "transcript",
+        "publicHandlerTraceArtifact",
+        "finalResponseEventId",
+        "finalResponse",
+        "finalResponseSha256",
+        "databasePathSha256",
+        "endpoint",
+        "snapshotBindings",
+        "platformCalls",
+        "toolTrace",
+        "computedChecks"
+      ],
+      "properties": {
+        "evalId": { "type": "integer", "minimum": 1 },
+        "group": { "enum": [1, 2, 4, 5, 6] },
+        "variant": { "type": "string", "minLength": 1 },
+        "evalCaseSha256": { "$ref": "#/$defs/sha256" },
+        "agent": { "$ref": "#/$defs/agent" },
+        "startedAtUtc": { "type": "string", "format": "date-time" },
+        "finishedAtUtc": { "type": "string", "format": "date-time" },
+        "transcript": { "$ref": "#/$defs/transcript" },
+        "publicHandlerTraceArtifact": { "$ref": "#/$defs/artifact" },
+        "finalResponseEventId": { "type": "string", "minLength": 1 },
+        "finalResponse": { "type": "string", "minLength": 1 },
+        "finalResponseSha256": { "$ref": "#/$defs/sha256" },
+        "databasePathSha256": { "$ref": "#/$defs/sha256" },
+        "endpoint": { "$ref": "#/$defs/endpoint" },
+        "snapshotBindings": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/snapshotBinding" }
+        },
+        "platformCalls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/platformCall" }
+        },
+        "toolTrace": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/toolTraceEntry" } },
+        "computedChecks": { "$ref": "#/$defs/computedChecks" }
+      }
+    }
+  }
+}

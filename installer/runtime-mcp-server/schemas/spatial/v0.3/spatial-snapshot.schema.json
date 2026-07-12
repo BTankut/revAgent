@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.3/spatial-snapshot.schema.json",
+  "title": "revAgent SpatialSnapshot v0.3",
+  "description": "Logical metadata contract for one durable atomically committed Phase 1b-ready spatial capture.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "snapshotId", "capturedAt", "sourceRevisions", "scope", "scopeFingerprint",
+    "sourceBindingFingerprint", "revisionFingerprint", "coordinateFrame", "lengthUnit",
+    "schemaVersion", "extractorVersion", "atomic", "liveness", "livenessBinding",
+    "committedAt", "counts", "partial", "coverageStatus", "scanStoppedReason",
+    "suggestedNextScopes", "pageCount", "payloadBytes"
+  ],
+  "properties": {
+    "snapshotId": { "type": "string", "minLength": 1 },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "sourceRevisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "https://schemas.revagent.app/spatial/v0.2/source-revision.schema.json" }
+    },
+    "scope": { "$ref": "https://schemas.revagent.app/spatial/v0.2/spatial-snapshot.schema.json#/$defs/scope" },
+    "scopeFingerprint": { "$ref": "#/$defs/sha256" },
+    "sourceBindingFingerprint": { "$ref": "#/$defs/sha256" },
+    "revisionFingerprint": { "$ref": "#/$defs/sha256" },
+    "coordinateFrame": { "const": "host_internal_mm" },
+    "lengthUnit": { "const": "mm" },
+    "schemaVersion": { "const": "0.3" },
+    "extractorVersion": { "type": "string", "pattern": "^phase1b-native/" },
+    "atomic": { "const": true },
+    "liveness": { "type": "string", "enum": ["current", "stale", "unknown"] },
+    "livenessBinding": { "$ref": "https://schemas.revagent.app/spatial/v0.2/spatial-snapshot.schema.json#/properties/livenessBinding" },
+    "committedAt": { "type": "string", "format": "date-time" },
+    "counts": { "$ref": "https://schemas.revagent.app/spatial/v0.2/spatial-snapshot.schema.json#/$defs/counts" },
+    "partial": { "type": "boolean" },
+    "coverageStatus": { "$ref": "https://schemas.revagent.app/spatial/v0.2/spatial-snapshot.schema.json#/$defs/coverageStatus" },
+    "scanStoppedReason": { "$ref": "https://schemas.revagent.app/spatial/v0.2/spatial-snapshot.schema.json#/$defs/scanStoppedReason" },
+    "suggestedNextScopes": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "pageCount": { "type": "integer", "minimum": 1 },
+    "payloadBytes": { "type": "integer", "minimum": 0 }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

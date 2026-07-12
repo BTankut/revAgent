@@ -6,9 +6,14 @@ import { getRuntimeRoot, readJsonFile } from "../utils/runtimeIdentity.js";
 export const SPATIAL_EXTRACTION_PAGE_SCHEMA_IDS = {
     "0.1": "https://schemas.revagent.app/spatial/v0.1/extraction-page.schema.json",
     "0.2": "https://schemas.revagent.app/spatial/v0.2/extraction-page.schema.json",
+    "0.3": "https://schemas.revagent.app/spatial/v0.3/extraction-page.schema.json",
 };
-export const SPATIAL_EXTRACTION_PAGE_SCHEMA_ID = SPATIAL_EXTRACTION_PAGE_SCHEMA_IDS["0.2"];
-export const SPATIAL_WORK_CONTINUATION_SCHEMA_ID = "https://schemas.revagent.app/spatial/v0.2/work-continuation.schema.json";
+export const SPATIAL_EXTRACTION_PAGE_SCHEMA_ID = SPATIAL_EXTRACTION_PAGE_SCHEMA_IDS["0.3"];
+export const SPATIAL_WORK_CONTINUATION_SCHEMA_IDS = {
+    "0.2": "https://schemas.revagent.app/spatial/v0.2/work-continuation.schema.json",
+    "0.3": "https://schemas.revagent.app/spatial/v0.3/work-continuation.schema.json",
+};
+export const SPATIAL_WORK_CONTINUATION_SCHEMA_ID = SPATIAL_WORK_CONTINUATION_SCHEMA_IDS["0.3"];
 const baseSchemaFileNames = [
     "element-ref.schema.json",
     "node-ref.schema.json",
@@ -20,6 +25,15 @@ const baseSchemaFileNames = [
 const phase1aSchemaFileNames = [
     ...baseSchemaFileNames,
     "work-cursor-envelope.schema.json",
+    "work-continuation.schema.json",
+];
+const phase1bSchemaFileNames = [
+    "profile.schema.json",
+    "spatial-properties.schema.json",
+    "fingerprints.schema.json",
+    "topology-coverage.schema.json",
+    "spatial-snapshot.schema.json",
+    "extraction-page.schema.json",
     "work-continuation.schema.json",
 ];
 function isObject(value) {
@@ -73,7 +87,20 @@ function sha256SemanticCanonical(value) {
 }
 function loadValidators(schemaVersion) {
     const schemaRoot = path.join(getRuntimeRoot(), "schemas", "spatial", `v${schemaVersion}`);
-    const schemaFileNames = schemaVersion === "0.2" ? phase1aSchemaFileNames : baseSchemaFileNames;
+    const schemaFileNames = schemaVersion === "0.3"
+        ? phase1bSchemaFileNames
+        : schemaVersion === "0.2"
+            ? phase1aSchemaFileNames
+            : baseSchemaFileNames;
+    const dependencySchemas = schemaVersion === "0.3"
+        ? baseSchemaFileNames.map((fileName) => {
+            const schema = readJsonFile(path.join(getRuntimeRoot(), "schemas", "spatial", "v0.2", fileName));
+            if (!schema) {
+                throw new Error(`Missing required spatial v0.2 dependency schema: ${fileName}`);
+            }
+            return schema;
+        })
+        : [];
     const schemas = schemaFileNames.map((fileName) => {
         const schema = readJsonFile(path.join(schemaRoot, fileName));
         if (!schema) {
@@ -88,7 +115,7 @@ function loadValidators(schemaVersion) {
         allowUnionTypes: true,
     });
     addFormats(ajv);
-    for (const schema of schemas) {
+    for (const schema of [...dependencySchemas, ...schemas]) {
         ajv.addSchema(schema);
     }
     const schemaId = SPATIAL_EXTRACTION_PAGE_SCHEMA_IDS[schemaVersion];
@@ -96,23 +123,31 @@ function loadValidators(schemaVersion) {
     if (!extractionPageValidator) {
         throw new Error(`Spatial extraction page schema was not compiled: ${schemaId}`);
     }
-    const workContinuationValidator = schemaVersion === "0.2"
-        ? ajv.getSchema(SPATIAL_WORK_CONTINUATION_SCHEMA_ID)
+    const workContinuationSchemaId = schemaVersion === "0.2" || schemaVersion === "0.3"
+        ? SPATIAL_WORK_CONTINUATION_SCHEMA_IDS[schemaVersion]
         : null;
-    if (schemaVersion === "0.2" && !workContinuationValidator) {
-        throw new Error(`Spatial work continuation schema was not compiled: ${SPATIAL_WORK_CONTINUATION_SCHEMA_ID}`);
+    const workContinuationValidator = workContinuationSchemaId
+        ? ajv.getSchema(workContinuationSchemaId)
+        : null;
+    if (workContinuationSchemaId && !workContinuationValidator) {
+        throw new Error(`Spatial work continuation schema was not compiled: ${workContinuationSchemaId}`);
     }
     return { extractionPageValidator, workContinuationValidator };
 }
 const validatorBundles = {
     "0.1": loadValidators("0.1"),
     "0.2": loadValidators("0.2"),
+    "0.3": loadValidators("0.3"),
 };
 const extractionPageValidators = {
     "0.1": validatorBundles["0.1"].extractionPageValidator,
     "0.2": validatorBundles["0.2"].extractionPageValidator,
+    "0.3": validatorBundles["0.3"].extractionPageValidator,
 };
-const workContinuationValidator = validatorBundles["0.2"].workContinuationValidator;
+const workContinuationValidators = {
+    "0.2": validatorBundles["0.2"].workContinuationValidator,
+    "0.3": validatorBundles["0.3"].workContinuationValidator,
+};
 function formatAjvErrors(errors) {
     return (errors || []).slice(0, 100).map((error) => {
         const pathText = error.instancePath || "/";
@@ -231,7 +266,7 @@ export function validateSpatialExtractionPageContract(payload) {
     const schemaVersion = isObject(payload) && typeof payload.schemaVersion === "string"
         ? payload.schemaVersion
         : "";
-    const supportedSchemaVersion = schemaVersion === "0.1" || schemaVersion === "0.2" ? schemaVersion : null;
+    const supportedSchemaVersion = schemaVersion === "0.1" || schemaVersion === "0.2" || schemaVersion === "0.3" ? schemaVersion : null;
     const extractionPageValidator = supportedSchemaVersion
         ? extractionPageValidators[supportedSchemaVersion]
         : null;
@@ -254,6 +289,20 @@ export function validateSpatialExtractionPageContract(payload) {
     };
 }
 export function validateSpatialWorkContinuationContract(payload) {
+    const schemaVersion = isObject(payload) && typeof payload.schemaVersion === "string"
+        ? payload.schemaVersion
+        : "";
+    const supportedSchemaVersion = schemaVersion === "0.2" || schemaVersion === "0.3" ? schemaVersion : null;
+    const workContinuationValidator = supportedSchemaVersion
+        ? workContinuationValidators[supportedSchemaVersion]
+        : null;
+    if (!workContinuationValidator || !supportedSchemaVersion) {
+        return {
+            valid: false,
+            errors: [`Unsupported spatial work continuation schemaVersion: ${schemaVersion || "<missing>"}`],
+            schemaId: null,
+        };
+    }
     const validSchema = workContinuationValidator(payload);
     const errors = formatAjvErrors(workContinuationValidator.errors);
     if (validSchema && isObject(payload)) {
@@ -262,6 +311,6 @@ export function validateSpatialWorkContinuationContract(payload) {
     return {
         valid: errors.length === 0,
         errors,
-        schemaId: SPATIAL_WORK_CONTINUATION_SCHEMA_ID,
+        schemaId: SPATIAL_WORK_CONTINUATION_SCHEMA_IDS[supportedSchemaVersion],
     };
 }

@@ -185,7 +185,7 @@ try {
     artifactRoot: join(root, "artifacts"),
     now: () => clock,
   });
-  assert.deepEqual(store.getSchemaVersion(), { major: 1, minor: 1 });
+  assert.deepEqual(store.getSchemaVersion(), { major: 1, minor: 2 });
   assert.equal(store.isRTreeAvailable(), true);
   assert.throws(() => store.beginCapture({
     captureId: "capture:unsafe-artifact",
@@ -552,7 +552,7 @@ try {
 
   store.close();
   const reopened = new SpatialStore({ databasePath, now: () => clock });
-  assert.deepEqual(reopened.getSchemaVersion(), { major: 1, minor: 1 });
+  assert.deepEqual(reopened.getSchemaVersion(), { major: 1, minor: 2 });
   assert.equal(reopened.listSnapshots(retentionDocument).length, 21);
   reopened.close();
 
@@ -673,7 +673,7 @@ try {
     now: () => clock,
     retentionPolicy: false,
   });
-  assert.deepEqual(legacyMigrated.getSchemaVersion(), { major: 1, minor: 1 });
+  assert.deepEqual(legacyMigrated.getSchemaVersion(), { major: 1, minor: 2 });
   const legacyRecord = legacyMigrated.getSnapshotRecord("legacy:snapshot");
   assert.equal(legacyRecord.documentKey, "legacy:doc");
   assert.equal(legacyRecord.revisionFingerprint, "legacy:revision");
@@ -706,7 +706,7 @@ try {
   );
   restoredSeed.close();
   const migrated = new SpatialStore({ databasePath: migrationPath, now: () => clock });
-  assert.deepEqual(migrated.getSchemaVersion(), { major: 1, minor: 1 });
+  assert.deepEqual(migrated.getSchemaVersion(), { major: 1, minor: 2 });
   migrated.close();
 
   const recoveryBackup = `${migrationPath}.migration-backup-manual`;
@@ -714,7 +714,7 @@ try {
   writeFileSync(migrationPath, "not a sqlite database", "utf8");
   const recovered = new SpatialStore({ databasePath: migrationPath, now: () => clock });
   assert.equal(recovered.recoveredFromBackupPath, recoveryBackup);
-  assert.deepEqual(recovered.getSchemaVersion(), { major: 1, minor: 1 });
+  assert.deepEqual(recovered.getSchemaVersion(), { major: 1, minor: 2 });
   recovered.close();
   assert.ok(readFileSync(migrationPath).subarray(0, 15).toString("utf8").startsWith("SQLite format 3"));
 

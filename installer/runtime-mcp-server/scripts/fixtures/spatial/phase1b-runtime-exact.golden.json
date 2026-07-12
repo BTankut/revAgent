@@ -1,0 +1,3061 @@
+{
+  "fixtureVersion": "1.0",
+  "normalizationContract": "phase1b-runtime-exact-projection/2",
+  "operationCases": {
+    "containment_inside_outer_loop": {
+      "action": "query_spatial_context",
+      "basis": "stored_boundary_loops_and_vertical_extent",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": [
+        {
+          "basis": "stored_boundary_loops_and_vertical_extent",
+          "boundarySampleCount": 0,
+          "elementNodeId": "node:duct-inside",
+          "insideSampleCount": 3,
+          "outsideSampleCount": 0,
+          "precisionClass": "measured",
+          "segmentBoundaryCrossing": false,
+          "spaceNodeId": "node:room-main",
+          "status": "inside",
+          "verdictCapability": "context_only"
+        }
+      ],
+      "counts": {
+        "computedCount": 1,
+        "edgeCount": 0,
+        "nodeCount": 2
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "locate_in_space",
+        "nodeId": "node:duct-inside",
+        "spaceNodeIds": [
+          "node:room-main"
+        ]
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:duct-inside",
+        "node:room-main"
+      ],
+      "normalizedResultSha256": "sha256:816370117cdad00d009ea69c21cb0ca40e9a966bb68d927a65443870472546fe",
+      "notices": [],
+      "operation": "locate_in_space",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-containment",
+      "scanPolicy": {
+        "maxSpaces": 100
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-containment",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "containment_rejects_polygon_hole": {
+      "action": "query_spatial_context",
+      "basis": "stored_boundary_loops_and_vertical_extent",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": [],
+      "counts": {
+        "computedCount": 0,
+        "edgeCount": 0,
+        "nodeCount": 1
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "locate_in_space",
+        "nodeId": "node:duct-in-hole",
+        "spaceNodeIds": [
+          "node:room-main"
+        ]
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:duct-in-hole"
+      ],
+      "normalizedResultSha256": "sha256:ee434426f2a966565c8fe0eaf9a21f3298dde028736db8d4cdec78aeceba2e0f",
+      "notices": [],
+      "operation": "locate_in_space",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-containment",
+      "scanPolicy": {
+        "maxSpaces": 100
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-containment",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "containment_rejects_vertical_outside": {
+      "action": "query_spatial_context",
+      "basis": "stored_boundary_loops_and_vertical_extent",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": [],
+      "counts": {
+        "computedCount": 0,
+        "edgeCount": 0,
+        "nodeCount": 1
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "locate_in_space",
+        "nodeId": "node:duct-above-room",
+        "spaceNodeIds": [
+          "node:room-main"
+        ]
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:duct-above-room"
+      ],
+      "normalizedResultSha256": "sha256:ad1ec64f2357993b97ce8d8ff556cabca6f745057fcd60202c24d10169b7ff81",
+      "notices": [],
+      "operation": "locate_in_space",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-containment",
+      "scanPolicy": {
+        "maxSpaces": 100
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-containment",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "containment_ignores_xy_crossing_outside_vertical_band": {
+      "action": "query_spatial_context",
+      "basis": "stored_boundary_loops_and_vertical_extent",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": [],
+      "counts": {
+        "computedCount": 0,
+        "edgeCount": 0,
+        "nodeCount": 1
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "locate_in_space",
+        "nodeId": "node:z-band-crossing-segment",
+        "spaceNodeIds": [
+          "node:room-z-band"
+        ]
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:z-band-crossing-segment"
+      ],
+      "normalizedResultSha256": "sha256:9158643fa535633a953d884fc670aade5abe4ad9035889999eba7fe44853992e",
+      "notices": [],
+      "operation": "locate_in_space",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-containment",
+      "scanPolicy": {
+        "maxSpaces": 100
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-containment",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ],
+      "containmentEvaluation": {
+        "basis": "stored_boundary_loops_and_vertical_extent",
+        "boundarySampleCount": 0,
+        "elementNodeId": "node:z-band-crossing-segment",
+        "insideSampleCount": 0,
+        "outsideSampleCount": 5,
+        "precisionClass": "measured",
+        "segmentBoundaryCrossing": false,
+        "spaceNodeId": "node:room-z-band",
+        "status": "outside",
+        "verdictCapability": "context_only"
+      }
+    },
+    "containment_detects_vertical_boundary_overlap": {
+      "action": "query_spatial_context",
+      "basis": "stored_boundary_loops_and_vertical_extent",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": [
+        {
+          "basis": "stored_boundary_loops_and_vertical_extent",
+          "boundarySampleCount": 3,
+          "elementNodeId": "node:z-band-vertical-boundary-overlap",
+          "insideSampleCount": 0,
+          "outsideSampleCount": 3,
+          "precisionClass": "measured",
+          "segmentBoundaryCrossing": true,
+          "spaceNodeId": "node:room-z-band",
+          "status": "partial",
+          "verdictCapability": "context_only"
+        }
+      ],
+      "counts": {
+        "computedCount": 1,
+        "edgeCount": 0,
+        "nodeCount": 2
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "locate_in_space",
+        "nodeId": "node:z-band-vertical-boundary-overlap",
+        "spaceNodeIds": [
+          "node:room-z-band"
+        ]
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:z-band-vertical-boundary-overlap",
+        "node:room-z-band"
+      ],
+      "normalizedResultSha256": "sha256:00e0b3e33d394e6b06d8386b83b4eae79cbcdb9a41d7861c4e3311b24898abee",
+      "notices": [],
+      "operation": "locate_in_space",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-containment",
+      "scanPolicy": {
+        "maxSpaces": 100
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-containment",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ],
+      "containmentEvaluation": {
+        "basis": "stored_boundary_loops_and_vertical_extent",
+        "boundarySampleCount": 3,
+        "elementNodeId": "node:z-band-vertical-boundary-overlap",
+        "insideSampleCount": 0,
+        "outsideSampleCount": 3,
+        "precisionClass": "measured",
+        "segmentBoundaryCrossing": true,
+        "spaceNodeId": "node:room-z-band",
+        "status": "partial",
+        "verdictCapability": "context_only"
+      }
+    },
+    "containment_detects_vertical_interior_overlap": {
+      "action": "query_spatial_context",
+      "basis": "stored_boundary_loops_and_vertical_extent",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": [
+        {
+          "basis": "stored_boundary_loops_and_vertical_extent",
+          "boundarySampleCount": 0,
+          "elementNodeId": "node:z-band-vertical-interior-overlap",
+          "insideSampleCount": 3,
+          "outsideSampleCount": 3,
+          "precisionClass": "measured",
+          "segmentBoundaryCrossing": true,
+          "spaceNodeId": "node:room-z-band",
+          "status": "partial",
+          "verdictCapability": "context_only"
+        }
+      ],
+      "counts": {
+        "computedCount": 1,
+        "edgeCount": 0,
+        "nodeCount": 2
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "locate_in_space",
+        "nodeId": "node:z-band-vertical-interior-overlap",
+        "spaceNodeIds": [
+          "node:room-z-band"
+        ]
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:z-band-vertical-interior-overlap",
+        "node:room-z-band"
+      ],
+      "normalizedResultSha256": "sha256:9782256beb7faad49c5aba46c7f82df3aceedade1e13f8246a2ac5f244ad331d",
+      "notices": [],
+      "operation": "locate_in_space",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-containment",
+      "scanPolicy": {
+        "maxSpaces": 100
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-containment",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ],
+      "containmentEvaluation": {
+        "basis": "stored_boundary_loops_and_vertical_extent",
+        "boundarySampleCount": 0,
+        "elementNodeId": "node:z-band-vertical-interior-overlap",
+        "insideSampleCount": 3,
+        "outsideSampleCount": 3,
+        "precisionClass": "measured",
+        "segmentBoundaryCrossing": true,
+        "spaceNodeId": "node:room-z-band",
+        "status": "partial",
+        "verdictCapability": "context_only"
+      }
+    },
+    "containment_boundary_is_inclusive": {
+      "action": "query_spatial_context",
+      "basis": "stored_boundary_loops_and_vertical_extent",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": [
+        {
+          "basis": "stored_boundary_loops_and_vertical_extent",
+          "boundarySampleCount": 1,
+          "elementNodeId": "node:boundary-point",
+          "insideSampleCount": 0,
+          "outsideSampleCount": 0,
+          "precisionClass": "measured",
+          "segmentBoundaryCrossing": false,
+          "spaceNodeId": "node:room-main",
+          "status": "boundary",
+          "verdictCapability": "context_only"
+        }
+      ],
+      "counts": {
+        "computedCount": 1,
+        "edgeCount": 0,
+        "nodeCount": 2
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "locate_in_space",
+        "nodeId": "node:boundary-point",
+        "spaceNodeIds": [
+          "node:room-main"
+        ]
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:boundary-point",
+        "node:room-main"
+      ],
+      "normalizedResultSha256": "sha256:400287840bd21da12e96cd494c262d16a26b0ca15fc82e7357835594cd5aa535",
+      "notices": [],
+      "operation": "locate_in_space",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-containment",
+      "scanPolicy": {
+        "maxSpaces": 100
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-containment",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "direction_above_below": {
+      "action": "query_spatial_context",
+      "basis": "aabb_vertical_extents",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": {
+        "basis": "aabb_vertical_extents",
+        "direction": [
+          0,
+          0,
+          -1
+        ],
+        "intersects": false,
+        "penetrationDepthMm": null,
+        "precisionClass": "candidate",
+        "relation": "vertical_above",
+        "separationMm": 900,
+        "sourceNodeId": "node:duct-inside",
+        "targetNodeId": "node:pipe-below",
+        "verdictCapability": "screening_only",
+        "verticalRelation": "above"
+      },
+      "counts": {
+        "computedCount": 1,
+        "edgeCount": 0,
+        "nodeCount": 2
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "above_below",
+        "sourceNodeId": "node:duct-inside",
+        "targetNodeId": "node:pipe-below",
+        "toleranceMm": 1
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:duct-inside",
+        "node:pipe-below"
+      ],
+      "normalizedResultSha256": "sha256:f241d4a8b68e2b5920e5f72cc02d252ad8d6f4e12b48a4dc5388787f551055f2",
+      "notices": [],
+      "operation": "above_below",
+      "partial": false,
+      "precisionClass": "candidate",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-direction",
+      "scanPolicy": {
+        "exactNodeCount": 2
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-direction",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "screening_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "direction_overlapping_ranges_is_indeterminate": {
+      "action": "query_spatial_context",
+      "basis": "aabb_vertical_extents",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": {
+        "basis": "aabb_vertical_extents",
+        "direction": [
+          1,
+          0,
+          0
+        ],
+        "intersects": false,
+        "penetrationDepthMm": null,
+        "precisionClass": "candidate",
+        "relation": "vertical_coincident",
+        "separationMm": 0,
+        "sourceNodeId": "node:duct-inside",
+        "targetNodeId": "node:nearest-a",
+        "verdictCapability": "screening_only",
+        "verticalRelation": "coincident"
+      },
+      "counts": {
+        "computedCount": 1,
+        "edgeCount": 0,
+        "nodeCount": 2
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "above_below",
+        "sourceNodeId": "node:duct-inside",
+        "targetNodeId": "node:nearest-a",
+        "toleranceMm": 1
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:duct-inside",
+        "node:nearest-a"
+      ],
+      "normalizedResultSha256": "sha256:23337bf62fe5d22670a91e5a61e4bd3b1543b0c211abdfc6e7a146e79b52a15b",
+      "notices": [],
+      "operation": "above_below",
+      "partial": false,
+      "precisionClass": "candidate",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-direction",
+      "scanPolicy": {
+        "exactNodeCount": 2
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-direction",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "screening_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "double_placed_link_identity": {
+      "action": "query_spatial_context",
+      "basis": null,
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": null,
+      "counts": {
+        "computedCount": 0,
+        "edgeCount": 0,
+        "nodeCount": 2,
+        "scannedNodeCount": 2
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": null,
+      "liveness": "unknown",
+      "mode": "retrieve",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:room-linked-a",
+        "node:room-linked-b"
+      ],
+      "normalizedResultSha256": "sha256:f58bb2c73fd72364c5dcc317a63c3d0b84ae060636d2c3b3ecba7c2511c95c8b",
+      "notices": [],
+      "operation": null,
+      "partial": false,
+      "precisionClass": null,
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-links",
+      "scanPolicy": {
+        "edgeOwnership": "source_node_page",
+        "maxEdges": 500,
+        "maxNodes": 100,
+        "maxWithinSpaceCandidates": null
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-links",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "nearest_tie_orders_by_node_id": {
+      "action": "query_spatial_context",
+      "basis": "rtree_candidates_then_stored_geometry",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": [
+        {
+          "basis": "aabb",
+          "direction": [
+            1,
+            0,
+            0
+          ],
+          "intersects": false,
+          "penetrationDepthMm": null,
+          "precisionClass": "candidate",
+          "relation": "separated",
+          "separationMm": 500,
+          "sourceNodeId": "node:duct-inside",
+          "targetNodeId": "node:nearest-a",
+          "verdictCapability": "screening_only"
+        },
+        {
+          "basis": "aabb",
+          "direction": [
+            -1,
+            0,
+            0
+          ],
+          "intersects": false,
+          "penetrationDepthMm": null,
+          "precisionClass": "candidate",
+          "relation": "separated",
+          "separationMm": 500,
+          "sourceNodeId": "node:duct-inside",
+          "targetNodeId": "node:nearest-b",
+          "verdictCapability": "screening_only"
+        }
+      ],
+      "counts": {
+        "candidateCount": 3,
+        "computedCount": 2,
+        "edgeCount": 0,
+        "nodeCount": 3
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "anchorNodeId": "node:duct-inside",
+        "filters": {
+          "categoryRoles": [
+            "mep_curve"
+          ]
+        },
+        "limit": 2,
+        "maxDistanceMm": 500,
+        "name": "nearest_elements"
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:duct-inside",
+        "node:nearest-a",
+        "node:nearest-b"
+      ],
+      "normalizedResultSha256": "sha256:40a57a2defd8b2b9ffb88df52c5caba3d95553660604ebdbb0625b90a52ffd6b",
+      "notices": [
+        "candidate_count:3"
+      ],
+      "operation": "nearest_elements",
+      "partial": false,
+      "precisionClass": "candidate",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-nearest",
+      "scanPolicy": {
+        "distanceMm": 500,
+        "maxCandidates": 10000,
+        "maxResults": 2
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-nearest",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "screening_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "elements_within_includes_boundary": {
+      "action": "query_spatial_context",
+      "basis": "rtree_candidates_then_stored_geometry",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": [
+        {
+          "basis": "aabb",
+          "direction": [
+            1,
+            0,
+            0
+          ],
+          "intersects": false,
+          "penetrationDepthMm": null,
+          "precisionClass": "candidate",
+          "relation": "separated",
+          "separationMm": 500,
+          "sourceNodeId": "node:duct-inside",
+          "targetNodeId": "node:nearest-a",
+          "verdictCapability": "screening_only"
+        },
+        {
+          "basis": "aabb",
+          "direction": [
+            -1,
+            0,
+            0
+          ],
+          "intersects": false,
+          "penetrationDepthMm": null,
+          "precisionClass": "candidate",
+          "relation": "separated",
+          "separationMm": 500,
+          "sourceNodeId": "node:duct-inside",
+          "targetNodeId": "node:nearest-b",
+          "verdictCapability": "screening_only"
+        }
+      ],
+      "counts": {
+        "candidateCount": 3,
+        "computedCount": 2,
+        "edgeCount": 0,
+        "nodeCount": 3
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "anchorNodeId": "node:duct-inside",
+        "distanceMm": 500,
+        "filters": {
+          "categoryRoles": [
+            "mep_curve"
+          ]
+        },
+        "limit": 2,
+        "name": "elements_within"
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:duct-inside",
+        "node:nearest-a",
+        "node:nearest-b"
+      ],
+      "normalizedResultSha256": "sha256:b58607c2cc56d16c9bde534dc3b7622b4613c41bcc907133b11ba35bcbcc290f",
+      "notices": [
+        "candidate_count:3"
+      ],
+      "operation": "elements_within",
+      "partial": false,
+      "precisionClass": "candidate",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-nearest",
+      "scanPolicy": {
+        "distanceMm": 500,
+        "maxCandidates": 10000,
+        "maxResults": 2
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-nearest",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "screening_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "topology_traces_native_adjacency": {
+      "action": "query_spatial_context",
+      "basis": "stored_connector_topology",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": {
+        "basis": "stored_connector_topology",
+        "complete": true,
+        "maxDepthReached": 6,
+        "pathEdgeIds": [
+          "edge:owns_connector:a808a97503792d87734b61f44e1a97679046249b9b604c7b3a6dbe6f0ca95733",
+          "edge:connected_to:cb8a4b53a311935f087078aee1ffaf156604e0da86fe35dac79ab7e1144884c1",
+          "edge:owns_connector:02f712d728185690dd652d8c9765a8e1854562a6547067b151d68d753a449d13",
+          "edge:owns_connector:516f23a96d362f6bb6da2106737e4301668d6a8caf155d1f10af82944f9ccebc",
+          "edge:connected_to:00e2a2ba85a646fb7428f303f0220f281d8aba28f19e6f0eb5bd5e127e3c608e",
+          "edge:owns_connector:a325082eb9ae4db1731d3249a53edf6de4ba0af6b2f22f4749f772c805c3ce50"
+        ],
+        "pathNodeIds": [
+          "node:owner-a",
+          "connector:a-out",
+          "connector:b-in",
+          "node:owner-b",
+          "connector:b-out",
+          "connector:c-in",
+          "node:owner-c"
+        ],
+        "precisionClass": "measured",
+        "reachedTarget": true,
+        "startNodeId": "node:owner-a",
+        "targetNodeId": "node:owner-c",
+        "truncated": false,
+        "unsupportedOwnerNodeIds": [],
+        "verdictCapability": "context_only",
+        "visitedNodeIds": [
+          "connector:a-out",
+          "connector:b-branch",
+          "connector:b-in",
+          "connector:b-out",
+          "connector:c-in",
+          "connector:f-in",
+          "node:owner-a",
+          "node:owner-b",
+          "node:owner-c",
+          "node:owner-f"
+        ]
+      },
+      "counts": {
+        "computedCount": 7,
+        "edgeCount": 9,
+        "nodeCount": 10
+      },
+      "edges": [
+        {
+          "bidirectional": true,
+          "relationType": "connected_to",
+          "sourceNodeId": "connector:a-out",
+          "targetNodeId": "connector:b-in"
+        },
+        {
+          "bidirectional": true,
+          "relationType": "connected_to",
+          "sourceNodeId": "connector:b-branch",
+          "targetNodeId": "connector:f-in"
+        },
+        {
+          "bidirectional": true,
+          "relationType": "connected_to",
+          "sourceNodeId": "connector:b-out",
+          "targetNodeId": "connector:c-in"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-a",
+          "targetNodeId": "connector:a-out"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-b",
+          "targetNodeId": "connector:b-branch"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-b",
+          "targetNodeId": "connector:b-in"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-b",
+          "targetNodeId": "connector:b-out"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-c",
+          "targetNodeId": "connector:c-in"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-f",
+          "targetNodeId": "connector:f-in"
+        }
+      ],
+      "guarded": false,
+      "inputs": {
+        "maxDepth": 10,
+        "name": "trace_connectivity",
+        "startNodeId": "node:owner-a",
+        "targetNodeId": "node:owner-c"
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "connector:a-out",
+        "connector:b-branch",
+        "connector:b-in",
+        "connector:b-out",
+        "connector:c-in",
+        "connector:f-in",
+        "node:owner-a",
+        "node:owner-b",
+        "node:owner-c",
+        "node:owner-f"
+      ],
+      "normalizedResultSha256": "sha256:75eb87bbaa9cb26edb1024938b328cdde06e8ef6949c563ccfc9254e6d03d5d8",
+      "notices": [],
+      "operation": "trace_connectivity",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-topology-line",
+      "scanPolicy": {
+        "maxDepth": 10,
+        "maxNodes": 500
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-topology-line",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "topology_does_not_infer_coincident_connection": {
+      "action": "query_spatial_context",
+      "basis": "stored_connector_topology",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": {
+        "basis": "stored_connector_topology",
+        "complete": true,
+        "maxDepthReached": 1,
+        "pathEdgeIds": [],
+        "pathNodeIds": [],
+        "precisionClass": "measured",
+        "reachedTarget": false,
+        "startNodeId": "node:owner-d",
+        "targetNodeId": "node:owner-e",
+        "truncated": false,
+        "unsupportedOwnerNodeIds": [],
+        "verdictCapability": "context_only",
+        "visitedNodeIds": [
+          "connector:coincident-disconnected-a",
+          "node:owner-d"
+        ]
+      },
+      "counts": {
+        "computedCount": 0,
+        "edgeCount": 1,
+        "nodeCount": 2
+      },
+      "edges": [
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-d",
+          "targetNodeId": "connector:coincident-disconnected-a"
+        }
+      ],
+      "guarded": false,
+      "inputs": {
+        "maxDepth": 10,
+        "name": "trace_connectivity",
+        "startNodeId": "node:owner-d",
+        "targetNodeId": "node:owner-e"
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "connector:coincident-disconnected-a",
+        "node:owner-d"
+      ],
+      "normalizedResultSha256": "sha256:cb7b71baa0ad7c8d3f1f918757aac501b0d428145e6cadd10c337ce0effa600a",
+      "notices": [],
+      "operation": "trace_connectivity",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-topology-disconnected",
+      "scanPolicy": {
+        "maxDepth": 10,
+        "maxNodes": 500
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-topology-disconnected",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "topology_branch_is_deterministic": {
+      "action": "query_spatial_context",
+      "basis": "stored_connector_topology",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": {
+        "basis": "stored_connector_topology",
+        "complete": true,
+        "maxDepthReached": 3,
+        "pathEdgeIds": [
+          "edge:owns_connector:b802584b96488334c9bdb796875e569d8d2e34491dd4481d605ab0d57eff5037",
+          "edge:connected_to:1dfaab89dfb2d8f5b653554767f22bad05453aaddf7fb1e6a2f7ae4a92f9faee",
+          "edge:owns_connector:754e595b013bc735076c2afd94a8e2abf754a0b1513273c28f36bac18b5848d3"
+        ],
+        "pathNodeIds": [
+          "node:owner-b",
+          "connector:b-branch",
+          "connector:f-in",
+          "node:owner-f"
+        ],
+        "precisionClass": "measured",
+        "reachedTarget": true,
+        "startNodeId": "node:owner-b",
+        "targetNodeId": "node:owner-f",
+        "truncated": false,
+        "unsupportedOwnerNodeIds": [],
+        "verdictCapability": "context_only",
+        "visitedNodeIds": [
+          "connector:a-out",
+          "connector:b-branch",
+          "connector:b-in",
+          "connector:b-out",
+          "connector:c-in",
+          "connector:f-in",
+          "node:owner-b",
+          "node:owner-f"
+        ]
+      },
+      "counts": {
+        "computedCount": 4,
+        "edgeCount": 9,
+        "nodeCount": 8
+      },
+      "edges": [
+        {
+          "bidirectional": true,
+          "relationType": "connected_to",
+          "sourceNodeId": "connector:a-out",
+          "targetNodeId": "connector:b-in"
+        },
+        {
+          "bidirectional": true,
+          "relationType": "connected_to",
+          "sourceNodeId": "connector:b-branch",
+          "targetNodeId": "connector:f-in"
+        },
+        {
+          "bidirectional": true,
+          "relationType": "connected_to",
+          "sourceNodeId": "connector:b-out",
+          "targetNodeId": "connector:c-in"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-a",
+          "targetNodeId": "connector:a-out"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-b",
+          "targetNodeId": "connector:b-branch"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-b",
+          "targetNodeId": "connector:b-in"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-b",
+          "targetNodeId": "connector:b-out"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-c",
+          "targetNodeId": "connector:c-in"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-f",
+          "targetNodeId": "connector:f-in"
+        }
+      ],
+      "guarded": false,
+      "inputs": {
+        "maxDepth": 10,
+        "name": "trace_connectivity",
+        "startNodeId": "node:owner-b",
+        "targetNodeId": "node:owner-f"
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "connector:a-out",
+        "connector:b-branch",
+        "connector:b-in",
+        "connector:b-out",
+        "connector:c-in",
+        "connector:f-in",
+        "node:owner-b",
+        "node:owner-f"
+      ],
+      "normalizedResultSha256": "sha256:1fac2689b65e95af21612982c0422bdbdebed33e1c761ba1776762a046fb629c",
+      "notices": [],
+      "operation": "trace_connectivity",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-topology-line",
+      "scanPolicy": {
+        "maxDepth": 10,
+        "maxNodes": 500
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-topology-line",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "topology_cycle_terminates_without_duplicates": {
+      "action": "query_spatial_context",
+      "basis": "stored_connector_topology",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": {
+        "basis": "stored_connector_topology",
+        "complete": true,
+        "maxDepthReached": 6,
+        "pathEdgeIds": [],
+        "pathNodeIds": [],
+        "precisionClass": "measured",
+        "reachedTarget": null,
+        "startNodeId": "node:owner-a",
+        "targetNodeId": null,
+        "truncated": false,
+        "unsupportedOwnerNodeIds": [],
+        "verdictCapability": "context_only",
+        "visitedNodeIds": [
+          "connector:a-in",
+          "connector:a-out",
+          "connector:b-branch",
+          "connector:b-in",
+          "connector:b-out",
+          "connector:c-in",
+          "connector:c-out",
+          "connector:f-in",
+          "node:owner-a",
+          "node:owner-b",
+          "node:owner-c",
+          "node:owner-f"
+        ]
+      },
+      "counts": {
+        "computedCount": 0,
+        "edgeCount": 12,
+        "nodeCount": 12
+      },
+      "edges": [
+        {
+          "bidirectional": true,
+          "relationType": "connected_to",
+          "sourceNodeId": "connector:a-in",
+          "targetNodeId": "connector:c-out"
+        },
+        {
+          "bidirectional": true,
+          "relationType": "connected_to",
+          "sourceNodeId": "connector:a-out",
+          "targetNodeId": "connector:b-in"
+        },
+        {
+          "bidirectional": true,
+          "relationType": "connected_to",
+          "sourceNodeId": "connector:b-branch",
+          "targetNodeId": "connector:f-in"
+        },
+        {
+          "bidirectional": true,
+          "relationType": "connected_to",
+          "sourceNodeId": "connector:b-out",
+          "targetNodeId": "connector:c-in"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-a",
+          "targetNodeId": "connector:a-in"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-a",
+          "targetNodeId": "connector:a-out"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-b",
+          "targetNodeId": "connector:b-branch"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-b",
+          "targetNodeId": "connector:b-in"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-b",
+          "targetNodeId": "connector:b-out"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-c",
+          "targetNodeId": "connector:c-in"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-c",
+          "targetNodeId": "connector:c-out"
+        },
+        {
+          "bidirectional": false,
+          "relationType": "owns_connector",
+          "sourceNodeId": "node:owner-f",
+          "targetNodeId": "connector:f-in"
+        }
+      ],
+      "guarded": false,
+      "inputs": {
+        "maxDepth": 20,
+        "maxNodes": 100,
+        "name": "trace_connectivity",
+        "startNodeId": "node:owner-a"
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "connector:a-in",
+        "connector:a-out",
+        "connector:b-branch",
+        "connector:b-in",
+        "connector:b-out",
+        "connector:c-in",
+        "connector:c-out",
+        "connector:f-in",
+        "node:owner-a",
+        "node:owner-b",
+        "node:owner-c",
+        "node:owner-f"
+      ],
+      "normalizedResultSha256": "sha256:1c2b8e717389008979e2dc176dcb19e7917ec76ec4dc60f27efcbdda5e6a50d0",
+      "notices": [],
+      "operation": "trace_connectivity",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-topology-cycle",
+      "scanPolicy": {
+        "maxDepth": 20,
+        "maxNodes": 100
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-topology-cycle",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "topology_ambiguity_fails_closed": {
+      "action": "query_spatial_context",
+      "basis": null,
+      "capabilityCoverage": null,
+      "computed": null,
+      "counts": {
+        "computedCount": 0,
+        "edgeCount": 0,
+        "nodeCount": 0
+      },
+      "edges": [],
+      "guarded": true,
+      "inputs": null,
+      "liveness": null,
+      "mode": null,
+      "nextCursor": null,
+      "nodeIds": [],
+      "normalizedResultSha256": "sha256:e3a69926b465c8d8a27c67c04a1fd00e0ac71d59137671aa0f1de1327a0c5a22",
+      "notices": [],
+      "operation": null,
+      "partial": false,
+      "precisionClass": null,
+      "reason": "incomplete_topology_coverage",
+      "revisionFingerprint": null,
+      "scanPolicy": {},
+      "scanStoppedReason": "read_failed",
+      "snapshotId": null,
+      "state": "guarded",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": null,
+      "warnings": [
+        "topology_ambiguous_connector_count:1",
+        "topology_read_complete:false",
+        "topology_target_membership_validated:false",
+        "topology_unresolved_peer_reference_count:0"
+      ]
+    },
+    "analytic_clearance_round_round": {
+      "action": "query_spatial_context",
+      "basis": "analytic_straight_round_swept_profile",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": {
+        "basis": "analytic_straight_round_swept_profile",
+        "direction": [
+          0,
+          1,
+          0
+        ],
+        "intersects": false,
+        "penetrationDepthMm": null,
+        "precisionClass": "measured",
+        "relation": "separated",
+        "separationMm": 200,
+        "sourceNodeId": "node:round-clearance",
+        "targetNodeId": "node:round-clearance-peer",
+        "verdictCapability": "context_only"
+      },
+      "counts": {
+        "computedCount": 1,
+        "edgeCount": 0,
+        "nodeCount": 2
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "clearance_between",
+        "sourceNodeId": "node:round-clearance",
+        "targetNodeId": "node:round-clearance-peer"
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:round-clearance",
+        "node:round-clearance-peer"
+      ],
+      "normalizedResultSha256": "sha256:e533a447596580c5d0c10a171e935fda2ef64719f5db85fc43ced8119691dfc9",
+      "notices": [],
+      "operation": "clearance_between",
+      "partial": false,
+      "precisionClass": "measured",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-clearance",
+      "scanPolicy": {
+        "exactNodeCount": 2
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-clearance",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "context_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "rectangular_clearance_is_screening_only": {
+      "action": "query_spatial_context",
+      "basis": "aabb",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": {
+        "basis": "aabb",
+        "direction": [
+          0,
+          1,
+          0
+        ],
+        "intersects": false,
+        "penetrationDepthMm": null,
+        "precisionClass": "candidate",
+        "relation": "clearance_screening",
+        "separationMm": 200,
+        "sourceNodeId": "node:rect-clearance",
+        "targetNodeId": "node:round-clearance",
+        "verdictCapability": "screening_only"
+      },
+      "counts": {
+        "computedCount": 1,
+        "edgeCount": 0,
+        "nodeCount": 2
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "clearance_between",
+        "sourceNodeId": "node:rect-clearance",
+        "targetNodeId": "node:round-clearance"
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:rect-clearance",
+        "node:round-clearance"
+      ],
+      "normalizedResultSha256": "sha256:bc27d132cff6aba6eba5386c1d5b0e335f2518031801cc04bc9187fea1a67dc3",
+      "notices": [],
+      "operation": "clearance_between",
+      "partial": false,
+      "precisionClass": "candidate",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-clearance",
+      "scanPolicy": {
+        "exactNodeCount": 2
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-clearance",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "screening_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "unsupported_geometry_fails_closed": {
+      "action": "query_spatial_context",
+      "basis": null,
+      "capabilityCoverage": null,
+      "computed": null,
+      "counts": {
+        "computedCount": 0,
+        "edgeCount": 0,
+        "nodeCount": 0
+      },
+      "edges": [],
+      "guarded": true,
+      "inputs": null,
+      "liveness": null,
+      "mode": null,
+      "nextCursor": null,
+      "nodeIds": [],
+      "normalizedResultSha256": "sha256:5b0f0e75f322514f9ac24b7a21bc648fe7386c0b0531bef59dd1ce6dbe635898",
+      "notices": [],
+      "operation": null,
+      "partial": false,
+      "precisionClass": null,
+      "reason": "node_not_found_or_geometry_unsupported",
+      "revisionFingerprint": null,
+      "scanPolicy": {},
+      "scanStoppedReason": "read_failed",
+      "snapshotId": null,
+      "state": "guarded",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": null,
+      "warnings": []
+    },
+    "intended_connected_overlap_is_not_a_verdict": {
+      "action": "query_spatial_context",
+      "basis": "aabb",
+      "capabilityCoverage": {
+        "adapter": "native_v03",
+        "analyticClearance": true,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+          "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": true,
+        "schemaVersion": "0.3",
+        "topology": true
+      },
+      "computed": {
+        "basis": "aabb",
+        "direction": [
+          1,
+          0,
+          0
+        ],
+        "intersects": true,
+        "penetrationDepthMm": 50,
+        "precisionClass": "candidate",
+        "relation": "intersects_candidate",
+        "separationMm": 0,
+        "sourceNodeId": "node:overlap-a",
+        "targetNodeId": "node:overlap-b",
+        "verdictCapability": "screening_only"
+      },
+      "counts": {
+        "computedCount": 1,
+        "edgeCount": 0,
+        "nodeCount": 2
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "relation_between",
+        "sourceNodeId": "node:overlap-a",
+        "targetNodeId": "node:overlap-b"
+      },
+      "liveness": "current",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:overlap-a",
+        "node:overlap-b"
+      ],
+      "normalizedResultSha256": "sha256:4e15c7ae3d6712b820f585fe265913288cf64e7119fcc0603cf6d309565266b6",
+      "notices": [],
+      "operation": "relation_between",
+      "partial": false,
+      "precisionClass": "candidate",
+      "reason": null,
+      "revisionFingerprint": "revision:snapshot:gold-connected-overlap",
+      "scanPolicy": {
+        "exactNodeCount": 2
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:gold-connected-overlap",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "screening_only",
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    }
+  },
+  "diffScenarios": {
+    "link_reload_add_remove_unload": {
+      "action": "compare_spatial_snapshots",
+      "addedIds": [],
+      "baseRevisionFingerprint": "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+      "baseSnapshotId": "snapshot:diff-source-base",
+      "capabilityCoverage": {
+        "base": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        },
+        "full": true,
+        "geometryChanges": {
+          "baseAabbOnlyNodeCount": 0,
+          "classification": "complete",
+          "headAabbOnlyNodeCount": 0,
+          "indeterminateChangeCount": 0
+        },
+        "head": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        }
+      },
+      "connectivityChanges": [],
+      "connectorChanges": [],
+      "counts": {
+        "addedCount": 0,
+        "baseNodeCount": 0,
+        "connectivityChangeCount": 0,
+        "connectorChangeCount": 0,
+        "geometryChangeCount": 0,
+        "geometryIndeterminateCount": 0,
+        "headNodeCount": 0,
+        "movedCount": 0,
+        "observedAddedCount": 0,
+        "observedChangeCount": 4,
+        "observedChangeCountIsLowerBound": 0,
+        "observedConnectivityChangeCount": 0,
+        "observedConnectorChangeCount": 0,
+        "observedGeometryChangeCount": 0,
+        "observedGeometryIndeterminateCount": 0,
+        "observedMovedCount": 0,
+        "observedPropertyChangeCount": 0,
+        "observedProximityChangeCount": 0,
+        "observedRemovedCount": 0,
+        "observedSourceAvailabilityChangeCount": 4,
+        "observedTransformChangeCount": 0,
+        "propertyChangeCount": 0,
+        "proximityChangeCount": 0,
+        "removedCount": 0,
+        "returnedChangeCount": 4,
+        "sourceAvailabilityChangeCount": 4,
+        "totalChangeCount": 4,
+        "transformChangeCount": 0
+      },
+      "geometryChanges": [],
+      "geometryIndeterminate": [],
+      "guarded": false,
+      "headRevisionFingerprint": "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+      "headSnapshotId": "snapshot:diff-source-head",
+      "moved": [],
+      "normalizedResultSha256": "sha256:f4127be078dc6a21ecc1df03f8ab2a1685b84c60d170292906e1bfa0c1af0465",
+      "notices": [
+        "Snapshot diff is historical evidence bound to both explicit revision fingerprints."
+      ],
+      "partial": false,
+      "propertyChanges": [],
+      "proximityChanges": [],
+      "reason": null,
+      "removedIds": [],
+      "scanPolicy": {
+        "maxChanges": 10000,
+        "maxProximityCandidates": 40000,
+        "maxProximityPairs": 10000,
+        "proximityRadiusMm": 1000
+      },
+      "scanStoppedReason": "completed",
+      "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceAvailabilityChanges": [
+        {
+          "changeType": "source_added_or_loaded",
+          "sourceKey": "fixture:add::fixture-link-add"
+        },
+        {
+          "changeType": "source_reloaded_or_content_version_changed",
+          "sourceKey": "fixture:reload::fixture-link-reload"
+        },
+        {
+          "changeType": "source_removed_or_unloaded",
+          "sourceKey": "fixture:remove::fixture-link-remove"
+        },
+        {
+          "changeType": "source_removed_or_unloaded",
+          "sourceKey": "fixture:unload::fixture-link-unload"
+        }
+      ],
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "transformChanges": [],
+      "truncated": false,
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "link_transform_change_preserves_node_identity": {
+      "action": "compare_spatial_snapshots",
+      "addedIds": [],
+      "baseRevisionFingerprint": "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+      "baseSnapshotId": "snapshot:diff-transform-base",
+      "capabilityCoverage": {
+        "base": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        },
+        "full": false,
+        "geometryChanges": {
+          "baseAabbOnlyNodeCount": 1,
+          "classification": "capability_limited",
+          "headAabbOnlyNodeCount": 1,
+          "indeterminateChangeCount": 1
+        },
+        "head": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        }
+      },
+      "connectivityChanges": [],
+      "connectorChanges": [],
+      "counts": {
+        "addedCount": 0,
+        "baseNodeCount": 1,
+        "connectivityChangeCount": 0,
+        "connectorChangeCount": 0,
+        "geometryChangeCount": 0,
+        "geometryIndeterminateCount": 1,
+        "headNodeCount": 1,
+        "movedCount": 1,
+        "observedAddedCount": 0,
+        "observedChangeCount": 3,
+        "observedChangeCountIsLowerBound": 0,
+        "observedConnectivityChangeCount": 0,
+        "observedConnectorChangeCount": 0,
+        "observedGeometryChangeCount": 0,
+        "observedGeometryIndeterminateCount": 1,
+        "observedMovedCount": 1,
+        "observedPropertyChangeCount": 0,
+        "observedProximityChangeCount": 0,
+        "observedRemovedCount": 0,
+        "observedSourceAvailabilityChangeCount": 0,
+        "observedTransformChangeCount": 1,
+        "propertyChangeCount": 0,
+        "proximityChangeCount": 0,
+        "removedCount": 0,
+        "returnedChangeCount": 3,
+        "sourceAvailabilityChangeCount": 0,
+        "totalChangeCount": 3,
+        "transformChangeCount": 1
+      },
+      "geometryChanges": [],
+      "geometryIndeterminate": [
+        {
+          "basis": null,
+          "changeType": null,
+          "changedFields": [
+            "aabb_or_geometry_fingerprint"
+          ],
+          "documentKey": "fixture:host",
+          "intersects": null,
+          "nodeId": "node:linked-transform-element",
+          "nodeKind": "revit_element",
+          "precisionClass": null,
+          "relation": null,
+          "separationMm": null,
+          "sourceNodeId": null,
+          "targetNodeId": null
+        }
+      ],
+      "guarded": false,
+      "headRevisionFingerprint": "sha256:0404040404040404040404040404040404040404040404040404040404040404",
+      "headSnapshotId": "snapshot:diff-transform-head",
+      "moved": [
+        {
+          "basis": null,
+          "changeType": null,
+          "changedFields": null,
+          "documentKey": "fixture:host",
+          "intersects": null,
+          "nodeId": "node:linked-transform-element",
+          "nodeKind": "revit_element",
+          "precisionClass": null,
+          "relation": null,
+          "separationMm": null,
+          "sourceNodeId": null,
+          "targetNodeId": null
+        }
+      ],
+      "normalizedResultSha256": "sha256:9792948cba6ee33c45a2a54357cb89aae00d7621c5d93cc98a1729287e968eeb",
+      "notices": [
+        "Snapshot diff is historical evidence bound to both explicit revision fingerprints."
+      ],
+      "partial": false,
+      "propertyChanges": [],
+      "proximityChanges": [],
+      "reason": null,
+      "removedIds": [],
+      "scanPolicy": {
+        "maxChanges": 10000,
+        "maxProximityCandidates": 40000,
+        "maxProximityPairs": 10000,
+        "proximityRadiusMm": 1000
+      },
+      "scanStoppedReason": "completed",
+      "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceAvailabilityChanges": [],
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "transformChanges": [
+        {
+          "changeType": "source_to_host_transform_changed",
+          "sourceKey": "fixture:transform::fixture-link-transform"
+        }
+      ],
+      "truncated": false,
+      "warnings": [
+        "aabb_only_geometry_change_classification_is_capability_limited",
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "resized_but_unmoved_duct": {
+      "action": "compare_spatial_snapshots",
+      "addedIds": [],
+      "baseRevisionFingerprint": "sha256:0505050505050505050505050505050505050505050505050505050505050505",
+      "baseSnapshotId": "snapshot:diff-resize-base",
+      "capabilityCoverage": {
+        "base": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        },
+        "full": false,
+        "geometryChanges": {
+          "baseAabbOnlyNodeCount": 1,
+          "classification": "capability_limited",
+          "headAabbOnlyNodeCount": 1,
+          "indeterminateChangeCount": 0
+        },
+        "head": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        }
+      },
+      "connectivityChanges": [],
+      "connectorChanges": [],
+      "counts": {
+        "addedCount": 0,
+        "baseNodeCount": 1,
+        "connectivityChangeCount": 0,
+        "connectorChangeCount": 0,
+        "geometryChangeCount": 1,
+        "geometryIndeterminateCount": 0,
+        "headNodeCount": 1,
+        "movedCount": 0,
+        "observedAddedCount": 0,
+        "observedChangeCount": 1,
+        "observedChangeCountIsLowerBound": 0,
+        "observedConnectivityChangeCount": 0,
+        "observedConnectorChangeCount": 0,
+        "observedGeometryChangeCount": 1,
+        "observedGeometryIndeterminateCount": 0,
+        "observedMovedCount": 0,
+        "observedPropertyChangeCount": 0,
+        "observedProximityChangeCount": 0,
+        "observedRemovedCount": 0,
+        "observedSourceAvailabilityChangeCount": 0,
+        "observedTransformChangeCount": 0,
+        "propertyChangeCount": 0,
+        "proximityChangeCount": 0,
+        "removedCount": 0,
+        "returnedChangeCount": 1,
+        "sourceAvailabilityChangeCount": 0,
+        "totalChangeCount": 1,
+        "transformChangeCount": 0
+      },
+      "geometryChanges": [
+        {
+          "basis": null,
+          "changeType": null,
+          "changedFields": null,
+          "documentKey": "fixture:host",
+          "intersects": null,
+          "nodeId": "node:duct-resize",
+          "nodeKind": "revit_element",
+          "precisionClass": null,
+          "relation": null,
+          "separationMm": null,
+          "sourceNodeId": null,
+          "targetNodeId": null
+        }
+      ],
+      "geometryIndeterminate": [],
+      "guarded": false,
+      "headRevisionFingerprint": "sha256:0606060606060606060606060606060606060606060606060606060606060606",
+      "headSnapshotId": "snapshot:diff-resize-head",
+      "moved": [],
+      "normalizedResultSha256": "sha256:2b2830742770fced163ad4f56fee6cc487f0980b1520a53f1c585de66771dd17",
+      "notices": [
+        "Snapshot diff is historical evidence bound to both explicit revision fingerprints."
+      ],
+      "partial": false,
+      "propertyChanges": [],
+      "proximityChanges": [],
+      "reason": null,
+      "removedIds": [],
+      "scanPolicy": {
+        "maxChanges": 10000,
+        "maxProximityCandidates": 40000,
+        "maxProximityPairs": 10000,
+        "proximityRadiusMm": 1000
+      },
+      "scanStoppedReason": "completed",
+      "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceAvailabilityChanges": [],
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "transformChanges": [],
+      "truncated": false,
+      "warnings": [
+        "aabb_only_geometry_change_classification_is_capability_limited",
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "moved_same_shape": {
+      "action": "compare_spatial_snapshots",
+      "addedIds": [],
+      "baseRevisionFingerprint": "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+      "baseSnapshotId": "snapshot:diff-move-base",
+      "capabilityCoverage": {
+        "base": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        },
+        "full": false,
+        "geometryChanges": {
+          "baseAabbOnlyNodeCount": 1,
+          "classification": "capability_limited",
+          "headAabbOnlyNodeCount": 1,
+          "indeterminateChangeCount": 1
+        },
+        "head": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        }
+      },
+      "connectivityChanges": [],
+      "connectorChanges": [],
+      "counts": {
+        "addedCount": 0,
+        "baseNodeCount": 1,
+        "connectivityChangeCount": 0,
+        "connectorChangeCount": 0,
+        "geometryChangeCount": 0,
+        "geometryIndeterminateCount": 1,
+        "headNodeCount": 1,
+        "movedCount": 1,
+        "observedAddedCount": 0,
+        "observedChangeCount": 2,
+        "observedChangeCountIsLowerBound": 0,
+        "observedConnectivityChangeCount": 0,
+        "observedConnectorChangeCount": 0,
+        "observedGeometryChangeCount": 0,
+        "observedGeometryIndeterminateCount": 1,
+        "observedMovedCount": 1,
+        "observedPropertyChangeCount": 0,
+        "observedProximityChangeCount": 0,
+        "observedRemovedCount": 0,
+        "observedSourceAvailabilityChangeCount": 0,
+        "observedTransformChangeCount": 0,
+        "propertyChangeCount": 0,
+        "proximityChangeCount": 0,
+        "removedCount": 0,
+        "returnedChangeCount": 2,
+        "sourceAvailabilityChangeCount": 0,
+        "totalChangeCount": 2,
+        "transformChangeCount": 0
+      },
+      "geometryChanges": [],
+      "geometryIndeterminate": [
+        {
+          "basis": null,
+          "changeType": null,
+          "changedFields": [
+            "aabb_or_geometry_fingerprint"
+          ],
+          "documentKey": "fixture:host",
+          "intersects": null,
+          "nodeId": "node:duct-move",
+          "nodeKind": "revit_element",
+          "precisionClass": null,
+          "relation": null,
+          "separationMm": null,
+          "sourceNodeId": null,
+          "targetNodeId": null
+        }
+      ],
+      "guarded": false,
+      "headRevisionFingerprint": "sha256:0808080808080808080808080808080808080808080808080808080808080808",
+      "headSnapshotId": "snapshot:diff-move-head",
+      "moved": [
+        {
+          "basis": null,
+          "changeType": null,
+          "changedFields": null,
+          "documentKey": "fixture:host",
+          "intersects": null,
+          "nodeId": "node:duct-move",
+          "nodeKind": "revit_element",
+          "precisionClass": null,
+          "relation": null,
+          "separationMm": null,
+          "sourceNodeId": null,
+          "targetNodeId": null
+        }
+      ],
+      "normalizedResultSha256": "sha256:ebad97fdc0cec3c9e040f3daaa769eb0f3235ab676e2680eb8b438aa3e67ad33",
+      "notices": [
+        "Snapshot diff is historical evidence bound to both explicit revision fingerprints."
+      ],
+      "partial": false,
+      "propertyChanges": [],
+      "proximityChanges": [],
+      "reason": null,
+      "removedIds": [],
+      "scanPolicy": {
+        "maxChanges": 10000,
+        "maxProximityCandidates": 40000,
+        "maxProximityPairs": 10000,
+        "proximityRadiusMm": 1000
+      },
+      "scanStoppedReason": "completed",
+      "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceAvailabilityChanges": [],
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "transformChanges": [],
+      "truncated": false,
+      "warnings": [
+        "aabb_only_geometry_change_classification_is_capability_limited",
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "system_property_change": {
+      "action": "compare_spatial_snapshots",
+      "addedIds": [],
+      "baseRevisionFingerprint": "sha256:0909090909090909090909090909090909090909090909090909090909090909",
+      "baseSnapshotId": "snapshot:diff-property-base",
+      "capabilityCoverage": {
+        "base": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        },
+        "full": false,
+        "geometryChanges": {
+          "baseAabbOnlyNodeCount": 1,
+          "classification": "capability_limited",
+          "headAabbOnlyNodeCount": 1,
+          "indeterminateChangeCount": 0
+        },
+        "head": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        }
+      },
+      "connectivityChanges": [],
+      "connectorChanges": [],
+      "counts": {
+        "addedCount": 0,
+        "baseNodeCount": 1,
+        "connectivityChangeCount": 0,
+        "connectorChangeCount": 0,
+        "geometryChangeCount": 0,
+        "geometryIndeterminateCount": 0,
+        "headNodeCount": 1,
+        "movedCount": 0,
+        "observedAddedCount": 0,
+        "observedChangeCount": 1,
+        "observedChangeCountIsLowerBound": 0,
+        "observedConnectivityChangeCount": 0,
+        "observedConnectorChangeCount": 0,
+        "observedGeometryChangeCount": 0,
+        "observedGeometryIndeterminateCount": 0,
+        "observedMovedCount": 0,
+        "observedPropertyChangeCount": 1,
+        "observedProximityChangeCount": 0,
+        "observedRemovedCount": 0,
+        "observedSourceAvailabilityChangeCount": 0,
+        "observedTransformChangeCount": 0,
+        "propertyChangeCount": 1,
+        "proximityChangeCount": 0,
+        "removedCount": 0,
+        "returnedChangeCount": 1,
+        "sourceAvailabilityChangeCount": 0,
+        "totalChangeCount": 1,
+        "transformChangeCount": 0
+      },
+      "geometryChanges": [],
+      "geometryIndeterminate": [],
+      "guarded": false,
+      "headRevisionFingerprint": "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "headSnapshotId": "snapshot:diff-property-head",
+      "moved": [],
+      "normalizedResultSha256": "sha256:aac4d9c6c322684a247d74cc7c6a3d35e66885cda06d41d1cffc364fcac2e5d8",
+      "notices": [
+        "Snapshot diff is historical evidence bound to both explicit revision fingerprints."
+      ],
+      "partial": false,
+      "propertyChanges": [
+        {
+          "basis": null,
+          "changeType": null,
+          "changedFields": [
+            "spatialProperties",
+            "systemKey"
+          ],
+          "documentKey": "fixture:host",
+          "intersects": null,
+          "nodeId": "node:duct-system",
+          "nodeKind": "revit_element",
+          "precisionClass": null,
+          "relation": null,
+          "separationMm": null,
+          "sourceNodeId": null,
+          "targetNodeId": null
+        }
+      ],
+      "proximityChanges": [],
+      "reason": null,
+      "removedIds": [],
+      "scanPolicy": {
+        "maxChanges": 10000,
+        "maxProximityCandidates": 40000,
+        "maxProximityPairs": 10000,
+        "proximityRadiusMm": 1000
+      },
+      "scanStoppedReason": "completed",
+      "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceAvailabilityChanges": [],
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "transformChanges": [],
+      "truncated": false,
+      "warnings": [
+        "aabb_only_geometry_change_classification_is_capability_limited",
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "connector_topology_rewire": {
+      "action": "compare_spatial_snapshots",
+      "addedIds": [],
+      "baseRevisionFingerprint": "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "baseSnapshotId": "snapshot:diff-topology-base",
+      "capabilityCoverage": {
+        "base": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        },
+        "full": false,
+        "geometryChanges": {
+          "baseAabbOnlyNodeCount": 3,
+          "classification": "capability_limited",
+          "headAabbOnlyNodeCount": 3,
+          "indeterminateChangeCount": 0
+        },
+        "head": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        }
+      },
+      "connectivityChanges": [
+        {
+          "basis": null,
+          "changeType": null,
+          "changedFields": null,
+          "documentKey": "fixture:host",
+          "intersects": null,
+          "nodeId": "connector:rewire-a",
+          "nodeKind": "connector",
+          "precisionClass": null,
+          "relation": null,
+          "separationMm": null,
+          "sourceNodeId": null,
+          "targetNodeId": null
+        },
+        {
+          "basis": null,
+          "changeType": null,
+          "changedFields": null,
+          "documentKey": "fixture:host",
+          "intersects": null,
+          "nodeId": "connector:rewire-b",
+          "nodeKind": "connector",
+          "precisionClass": null,
+          "relation": null,
+          "separationMm": null,
+          "sourceNodeId": null,
+          "targetNodeId": null
+        },
+        {
+          "basis": null,
+          "changeType": null,
+          "changedFields": null,
+          "documentKey": "fixture:host",
+          "intersects": null,
+          "nodeId": "connector:rewire-c",
+          "nodeKind": "connector",
+          "precisionClass": null,
+          "relation": null,
+          "separationMm": null,
+          "sourceNodeId": null,
+          "targetNodeId": null
+        }
+      ],
+      "connectorChanges": [],
+      "counts": {
+        "addedCount": 0,
+        "baseNodeCount": 6,
+        "connectivityChangeCount": 3,
+        "connectorChangeCount": 0,
+        "geometryChangeCount": 0,
+        "geometryIndeterminateCount": 0,
+        "headNodeCount": 6,
+        "movedCount": 0,
+        "observedAddedCount": 0,
+        "observedChangeCount": 3,
+        "observedChangeCountIsLowerBound": 0,
+        "observedConnectivityChangeCount": 3,
+        "observedConnectorChangeCount": 0,
+        "observedGeometryChangeCount": 0,
+        "observedGeometryIndeterminateCount": 0,
+        "observedMovedCount": 0,
+        "observedPropertyChangeCount": 0,
+        "observedProximityChangeCount": 0,
+        "observedRemovedCount": 0,
+        "observedSourceAvailabilityChangeCount": 0,
+        "observedTransformChangeCount": 0,
+        "propertyChangeCount": 0,
+        "proximityChangeCount": 0,
+        "removedCount": 0,
+        "returnedChangeCount": 3,
+        "sourceAvailabilityChangeCount": 0,
+        "totalChangeCount": 3,
+        "transformChangeCount": 0
+      },
+      "geometryChanges": [],
+      "geometryIndeterminate": [],
+      "guarded": false,
+      "headRevisionFingerprint": "sha256:0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+      "headSnapshotId": "snapshot:diff-topology-head",
+      "moved": [],
+      "normalizedResultSha256": "sha256:b8620bf2e705ba5d7bd861690f19f70a35af6fa78c80bcb4ce62456c03a22c0a",
+      "notices": [
+        "Snapshot diff is historical evidence bound to both explicit revision fingerprints."
+      ],
+      "partial": false,
+      "propertyChanges": [],
+      "proximityChanges": [],
+      "reason": null,
+      "removedIds": [],
+      "scanPolicy": {
+        "maxChanges": 10000,
+        "maxProximityCandidates": 40000,
+        "maxProximityPairs": 10000,
+        "proximityRadiusMm": 1000
+      },
+      "scanStoppedReason": "completed",
+      "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceAvailabilityChanges": [],
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "transformChanges": [],
+      "truncated": false,
+      "warnings": [
+        "aabb_only_geometry_change_classification_is_capability_limited",
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "journal_gap_allows_historical_diff_only": {
+      "action": "compare_spatial_snapshots",
+      "addedIds": [],
+      "baseRevisionFingerprint": "sha256:0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+      "baseSnapshotId": "snapshot:diff-gap-base",
+      "capabilityCoverage": {
+        "base": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        },
+        "full": true,
+        "geometryChanges": {
+          "baseAabbOnlyNodeCount": 0,
+          "classification": "complete",
+          "headAabbOnlyNodeCount": 0,
+          "indeterminateChangeCount": 0
+        },
+        "head": {
+          "adapter": "native_v03",
+          "analyticClearance": true,
+          "containment": true,
+          "geometry": true,
+          "limitations": [
+            "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+            "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+            "relation_outputs_are_context_or_screening_only_never_live_verdict"
+          ],
+          "properties": true,
+          "schemaVersion": "0.3",
+          "topology": true
+        }
+      },
+      "connectivityChanges": [],
+      "connectorChanges": [],
+      "counts": {
+        "addedCount": 0,
+        "baseNodeCount": 0,
+        "connectivityChangeCount": 0,
+        "connectorChangeCount": 0,
+        "geometryChangeCount": 0,
+        "geometryIndeterminateCount": 0,
+        "headNodeCount": 0,
+        "movedCount": 0,
+        "observedAddedCount": 0,
+        "observedChangeCount": 0,
+        "observedChangeCountIsLowerBound": 0,
+        "observedConnectivityChangeCount": 0,
+        "observedConnectorChangeCount": 0,
+        "observedGeometryChangeCount": 0,
+        "observedGeometryIndeterminateCount": 0,
+        "observedMovedCount": 0,
+        "observedPropertyChangeCount": 0,
+        "observedProximityChangeCount": 0,
+        "observedRemovedCount": 0,
+        "observedSourceAvailabilityChangeCount": 0,
+        "observedTransformChangeCount": 0,
+        "propertyChangeCount": 0,
+        "proximityChangeCount": 0,
+        "removedCount": 0,
+        "returnedChangeCount": 0,
+        "sourceAvailabilityChangeCount": 0,
+        "totalChangeCount": 0,
+        "transformChangeCount": 0
+      },
+      "geometryChanges": [],
+      "geometryIndeterminate": [],
+      "guarded": false,
+      "headRevisionFingerprint": "sha256:0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+      "headSnapshotId": "snapshot:diff-gap-head",
+      "moved": [],
+      "normalizedResultSha256": "sha256:73fbd89a96ab861cb415c9c448f7360fe6a2ff58d7626e798c740851ec536263",
+      "notices": [
+        "Snapshot diff is historical evidence bound to both explicit revision fingerprints."
+      ],
+      "partial": false,
+      "propertyChanges": [],
+      "proximityChanges": [],
+      "reason": null,
+      "removedIds": [],
+      "scanPolicy": {
+        "maxChanges": 10000,
+        "maxProximityCandidates": 40000,
+        "maxProximityPairs": 10000,
+        "proximityRadiusMm": 1000
+      },
+      "scanStoppedReason": "completed",
+      "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sourceAvailabilityChanges": [],
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "transformChanges": [],
+      "truncated": false,
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "partial_snapshot_is_not_diffable": {
+      "action": "compare_spatial_snapshots",
+      "addedIds": [],
+      "baseRevisionFingerprint": null,
+      "baseSnapshotId": null,
+      "capabilityCoverage": null,
+      "connectivityChanges": [],
+      "connectorChanges": [],
+      "counts": {
+        "totalChangeCount": 0
+      },
+      "geometryChanges": [],
+      "geometryIndeterminate": [],
+      "guarded": true,
+      "headRevisionFingerprint": null,
+      "headSnapshotId": null,
+      "moved": [],
+      "normalizedResultSha256": "sha256:3b7ac02d0ec37d343c4120751a746c5f01b2e40a0e1bf9fca184e95e86efa9ef",
+      "notices": [],
+      "partial": false,
+      "propertyChanges": [],
+      "proximityChanges": [],
+      "reason": "incomplete_snapshot",
+      "removedIds": [],
+      "scanPolicy": {},
+      "scanStoppedReason": "read_failed",
+      "scopeFingerprint": null,
+      "sourceAvailabilityChanges": [],
+      "state": "guarded",
+      "success": true,
+      "suggestedNextScopes": [],
+      "transformChanges": [],
+      "truncated": false,
+      "warnings": []
+    }
+  },
+  "compatibilityCases": {
+    "v0_1_identity_only_is_not_current_query_evidence": {
+      "action": "query_spatial_context",
+      "basis": null,
+      "capabilityCoverage": null,
+      "computed": null,
+      "counts": {
+        "computedCount": 0,
+        "edgeCount": 0,
+        "nodeCount": 0
+      },
+      "edges": [],
+      "guarded": true,
+      "inputs": null,
+      "liveness": null,
+      "mode": null,
+      "nextCursor": null,
+      "nodeIds": [],
+      "normalizedResultSha256": "sha256:0040e6ff2ccf4f5141f6b433eed11203436700a11525b3a3d35e00398925b8d3",
+      "notices": [],
+      "operation": null,
+      "partial": false,
+      "precisionClass": null,
+      "reason": "unsupported_snapshot_schema",
+      "revisionFingerprint": null,
+      "scanPolicy": {},
+      "scanStoppedReason": "read_failed",
+      "snapshotId": null,
+      "state": "guarded",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": null,
+      "warnings": []
+    },
+    "v0_2_aabb_direction_adapter_is_explicit": {
+      "action": "query_spatial_context",
+      "basis": "aabb_vertical_extents",
+      "capabilityCoverage": {
+        "adapter": "legacy_v02",
+        "analyticClearance": false,
+        "containment": true,
+        "geometry": true,
+        "limitations": [
+          "legacy_v02_has_no_system_property_or_topology_contract",
+          "legacy_v02_has_no_supported_profile_clearance_contract",
+          "legacy_v02_indexed_metadata_filters_require_explicit_node_ids",
+          "relation_outputs_are_context_or_screening_only_never_live_verdict"
+        ],
+        "properties": false,
+        "schemaVersion": "0.2",
+        "topology": false
+      },
+      "computed": {
+        "basis": "aabb_vertical_extents",
+        "direction": [
+          0,
+          0,
+          -1
+        ],
+        "intersects": false,
+        "penetrationDepthMm": null,
+        "precisionClass": "candidate",
+        "relation": "vertical_above",
+        "separationMm": 900,
+        "sourceNodeId": "node:compat-v02-high",
+        "targetNodeId": "node:compat-v02-low",
+        "verdictCapability": "screening_only",
+        "verticalRelation": "above"
+      },
+      "counts": {
+        "computedCount": 1,
+        "edgeCount": 0,
+        "nodeCount": 2
+      },
+      "edges": [],
+      "guarded": false,
+      "inputs": {
+        "name": "above_below",
+        "sourceNodeId": "node:compat-v02-high",
+        "targetNodeId": "node:compat-v02-low"
+      },
+      "liveness": "stale",
+      "mode": "operation",
+      "nextCursor": null,
+      "nodeIds": [
+        "node:compat-v02-high",
+        "node:compat-v02-low"
+      ],
+      "normalizedResultSha256": "sha256:6892d54943ae953c9d8635aed67f0654130bb33fefcbbf8d45097917345ff6c2",
+      "notices": [],
+      "operation": "above_below",
+      "partial": false,
+      "precisionClass": "candidate",
+      "reason": null,
+      "revisionFingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "scanPolicy": {
+        "exactNodeCount": 2
+      },
+      "scanStoppedReason": "completed",
+      "snapshotId": "snapshot:compat-v02-aabb",
+      "state": "completed",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": "screening_only",
+      "warnings": [
+        "legacy_v02_has_no_supported_profile_clearance_contract",
+        "legacy_v02_has_no_system_property_or_topology_contract",
+        "legacy_v02_indexed_metadata_filters_require_explicit_node_ids",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict",
+        "snapshot_liveness_stale"
+      ]
+    },
+    "v0_2_topology_is_not_inferred_from_is_connected": {
+      "action": "query_spatial_context",
+      "basis": null,
+      "capabilityCoverage": null,
+      "computed": null,
+      "counts": {
+        "computedCount": 0,
+        "edgeCount": 0,
+        "nodeCount": 0
+      },
+      "edges": [],
+      "guarded": true,
+      "inputs": null,
+      "liveness": null,
+      "mode": null,
+      "nextCursor": null,
+      "nodeIds": [],
+      "normalizedResultSha256": "sha256:fd1ae9442df087c4d9a702fc98fa88b9d2d2532b9221a6a054a8f42d039918e2",
+      "notices": [],
+      "operation": null,
+      "partial": false,
+      "precisionClass": null,
+      "reason": "unsupported_snapshot_capability",
+      "revisionFingerprint": null,
+      "scanPolicy": {},
+      "scanStoppedReason": "read_failed",
+      "snapshotId": null,
+      "state": "guarded",
+      "success": true,
+      "suggestedNextScopes": [],
+      "truncated": false,
+      "verdictCapability": null,
+      "warnings": [
+        "legacy_v02_has_no_supported_profile_clearance_contract",
+        "legacy_v02_has_no_system_property_or_topology_contract",
+        "legacy_v02_indexed_metadata_filters_require_explicit_node_ids",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "v0_2_v0_3_precise_diff_requires_capability_adapter": {
+      "action": "compare_spatial_snapshots",
+      "addedIds": [],
+      "baseRevisionFingerprint": null,
+      "baseSnapshotId": null,
+      "capabilityCoverage": null,
+      "connectivityChanges": [],
+      "connectorChanges": [],
+      "counts": {
+        "totalChangeCount": 0
+      },
+      "geometryChanges": [],
+      "geometryIndeterminate": [],
+      "guarded": true,
+      "headRevisionFingerprint": null,
+      "headSnapshotId": null,
+      "moved": [],
+      "normalizedResultSha256": "sha256:f6e3ed42db42624f0cb279a85c712fb8fde4dd8df6f4b2eedd6969e19748cbf1",
+      "notices": [],
+      "partial": false,
+      "propertyChanges": [],
+      "proximityChanges": [],
+      "reason": "snapshot_capability_mismatch",
+      "removedIds": [],
+      "scanPolicy": {},
+      "scanStoppedReason": "read_failed",
+      "scopeFingerprint": null,
+      "sourceAvailabilityChanges": [],
+      "state": "guarded",
+      "success": true,
+      "suggestedNextScopes": [],
+      "transformChanges": [],
+      "truncated": false,
+      "warnings": [
+        "aabb_only_shape_change_not_classified_without_rotation_invariant_primitive",
+        "analytic_clearance_is_limited_to_explicitly_supported_straight_round_swept_profiles",
+        "legacy_v02_has_no_supported_profile_clearance_contract",
+        "legacy_v02_has_no_system_property_or_topology_contract",
+        "legacy_v02_indexed_metadata_filters_require_explicit_node_ids",
+        "relation_outputs_are_context_or_screening_only_never_live_verdict"
+      ]
+    },
+    "coordinate_policy_mismatch_is_incomparable": {
+      "action": "compare_spatial_snapshots",
+      "addedIds": [],
+      "baseRevisionFingerprint": null,
+      "baseSnapshotId": null,
+      "capabilityCoverage": null,
+      "connectivityChanges": [],
+      "connectorChanges": [],
+      "counts": {
+        "totalChangeCount": 0
+      },
+      "geometryChanges": [],
+      "geometryIndeterminate": [],
+      "guarded": true,
+      "headRevisionFingerprint": null,
+      "headSnapshotId": null,
+      "moved": [],
+      "normalizedResultSha256": "sha256:ac2af5047b47065809b729879d0e920d5085e4ae7725d96839d91a5feb538ac1",
+      "notices": [],
+      "partial": false,
+      "propertyChanges": [],
+      "proximityChanges": [],
+      "reason": "incomparable_scopes",
+      "removedIds": [],
+      "scanPolicy": {},
+      "scanStoppedReason": "read_failed",
+      "scopeFingerprint": null,
+      "sourceAvailabilityChanges": [],
+      "state": "guarded",
+      "success": true,
+      "suggestedNextScopes": [],
+      "transformChanges": [],
+      "truncated": false,
+      "warnings": [
+        "base_coordinateFrame:host_internal_mm",
+        "head_coordinateFrame:shared_coordinates_mm"
+      ]
+    },
+    "partial_v0_3_is_not_a_diff_base": {
+      "action": "compare_spatial_snapshots",
+      "addedIds": [],
+      "baseRevisionFingerprint": null,
+      "baseSnapshotId": null,
+      "capabilityCoverage": null,
+      "connectivityChanges": [],
+      "connectorChanges": [],
+      "counts": {
+        "totalChangeCount": 0
+      },
+      "geometryChanges": [],
+      "geometryIndeterminate": [],
+      "guarded": true,
+      "headRevisionFingerprint": null,
+      "headSnapshotId": null,
+      "moved": [],
+      "normalizedResultSha256": "sha256:3b7ac02d0ec37d343c4120751a746c5f01b2e40a0e1bf9fca184e95e86efa9ef",
+      "notices": [],
+      "partial": false,
+      "propertyChanges": [],
+      "proximityChanges": [],
+      "reason": "incomplete_snapshot",
+      "removedIds": [],
+      "scanPolicy": {},
+      "scanStoppedReason": "read_failed",
+      "scopeFingerprint": null,
+      "sourceAvailabilityChanges": [],
+      "state": "guarded",
+      "success": true,
+      "suggestedNextScopes": [],
+      "transformChanges": [],
+      "truncated": false,
+      "warnings": []
+    }
+  }
+}

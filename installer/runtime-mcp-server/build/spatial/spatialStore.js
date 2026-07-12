@@ -4,9 +4,10 @@ import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { spatialSourceKey } from "./spatialLiveness.js";
+import { canonicalJson, cleanStringArray, cleanText, compareText, finiteNumber, finiteInteger, firstDefined, isJsonObject, sha256Canonical, } from "./spatialCanonical.js";
 import { getInstallRoot, getRuntimeRoot } from "../utils/runtimeIdentity.js";
 export const SPATIAL_STORE_SCHEMA_MAJOR = 1;
-export const SPATIAL_STORE_SCHEMA_MINOR = 1;
+export const SPATIAL_STORE_SCHEMA_MINOR = 2;
 export const DEFAULT_SPATIAL_RETENTION_DAYS = 30;
 export const DEFAULT_SPATIAL_MIN_COMPLETE_SNAPSHOTS = 20;
 export const SPATIAL_RETENTION_DAYS_ENV = "REVAGENT_SPATIAL_RETENTION_DAYS";
@@ -230,6 +231,58 @@ const SCHEMA_1_1_MIGRATION_SQL = `
   ALTER TABLE spatial_snapshot_sources ADD COLUMN document_key_resolution_json TEXT;
   ALTER TABLE spatial_snapshot_sources ADD COLUMN source_revision_json TEXT NOT NULL DEFAULT '{}';
 `;
+const SCHEMA_1_2_EDGE_SQL = `
+  CREATE TABLE spatial_edges (
+    edge_rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id TEXT NOT NULL,
+    edge_id TEXT NOT NULL,
+    source_node_id TEXT NOT NULL,
+    target_node_id TEXT NOT NULL,
+    relation_type TEXT NOT NULL,
+    relation_policy_version TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    bidirectional INTEGER NOT NULL DEFAULT 0 CHECK (bidirectional IN (0, 1)),
+    payload_json TEXT NOT NULL,
+    UNIQUE (snapshot_id, source_node_id, target_node_id, relation_type),
+    UNIQUE (snapshot_id, edge_id),
+    FOREIGN KEY (snapshot_id) REFERENCES spatial_snapshots(snapshot_id) ON DELETE CASCADE
+  );
+  CREATE INDEX spatial_edges_source
+    ON spatial_edges(snapshot_id, source_node_id, relation_type, target_node_id);
+  CREATE INDEX spatial_edges_target
+    ON spatial_edges(snapshot_id, target_node_id, relation_type, source_node_id);
+  CREATE INDEX spatial_edges_relation
+    ON spatial_edges(snapshot_id, relation_type, edge_id);
+
+`;
+const SCHEMA_1_2_TOPOLOGY_SQL = `
+  CREATE TABLE IF NOT EXISTS spatial_snapshot_topology (
+    snapshot_id TEXT PRIMARY KEY,
+    connector_count INTEGER NOT NULL CHECK (connector_count >= 0),
+    declared_peer_reference_count INTEGER NOT NULL CHECK (declared_peer_reference_count >= 0),
+    resolved_peer_reference_count INTEGER NOT NULL CHECK (resolved_peer_reference_count >= 0),
+    unresolved_peer_reference_count INTEGER NOT NULL CHECK (unresolved_peer_reference_count >= 0),
+    ambiguous_connector_count INTEGER NOT NULL CHECK (ambiguous_connector_count >= 0),
+    read_complete INTEGER NOT NULL CHECK (read_complete IN (0, 1)),
+    target_membership_validated INTEGER NOT NULL CHECK (target_membership_validated IN (0, 1)),
+    payload_json TEXT NOT NULL,
+    FOREIGN KEY (snapshot_id) REFERENCES spatial_snapshots(snapshot_id) ON DELETE CASCADE
+  );
+`;
+const SPATIAL_NODE_PROJECTION_COLUMNS = [
+    "category",
+    "built_in_category",
+    "category_role",
+    "level_unique_id",
+    "level_name",
+    "owner_node_id",
+    "system_key",
+    "geometry_fingerprint",
+    "placement_fingerprint",
+    "shape_fingerprint",
+    "property_fingerprint",
+    "topology_fingerprint",
+];
 export class SpatialStoreMigrationError extends Error {
     backupPath;
     constructor(message, backupPath, options) {
@@ -393,6 +446,240 @@ function parseJson(value, field) {
         throw new SpatialStoreIntegrityError(`Stored ${field} JSON is invalid.`, { cause: error });
     }
 }
+function projectedText(payload, paths) {
+    return cleanText(firstDefined(payload, paths));
+}
+function projectSpatialNodePayload(payload) {
+    return {
+        category: projectedText(payload, [["category"]]),
+        builtInCategory: projectedText(payload, [["builtInCategory"]]),
+        categoryRole: projectedText(payload, [["categoryRole"]]),
+        levelUniqueId: projectedText(payload, [
+            ["levelRef", "sourceLevelUniqueId"],
+            ["level", "uniqueId"],
+            ["levelUniqueId"],
+        ]),
+        levelName: projectedText(payload, [
+            ["levelRef", "sourceLevelName"],
+            ["level", "name"],
+            ["levelName"],
+        ]),
+        ownerNodeId: projectedText(payload, [
+            ["ownerNodeId"],
+            ["connectorRef", "ownerNodeId"],
+            ["nodeRef", "connectorRef", "ownerNodeId"],
+        ]),
+        systemKey: projectedText(payload, [
+            ["spatialProperties", "systemKey"],
+            ["system", "systemKey"],
+            ["system", "uniqueId"],
+            ["systemKey"],
+            ["systemName"],
+        ]),
+        geometryFingerprint: projectedText(payload, [
+            ["fingerprints", "geometry"],
+            ["geometry", "geometryFingerprint"],
+        ]),
+        placementFingerprint: projectedText(payload, [["fingerprints", "placement"]]),
+        shapeFingerprint: projectedText(payload, [["fingerprints", "shape"]]),
+        propertyFingerprint: projectedText(payload, [["fingerprints", "property"]]),
+        topologyFingerprint: projectedText(payload, [["fingerprints", "topology"]]),
+    };
+}
+function spatialPoint3(value) {
+    if (!Array.isArray(value) || value.length !== 3)
+        return null;
+    const coordinates = value.map(finiteNumber);
+    return coordinates.every((coordinate) => coordinate !== null)
+        ? coordinates
+        : null;
+}
+function exactAnalyticEnvelope(payload) {
+    const shape = cleanText(firstDefined(payload, [["profile", "shape"]]))?.toLowerCase() ?? null;
+    const diameterMm = finiteNumber(firstDefined(payload, [["profile", "diameterMm"]]));
+    const insulationThicknessMm = finiteNumber(firstDefined(payload, [["profile", "insulationThicknessMm"]]));
+    const curveType = cleanText(firstDefined(payload, [["geometry", "centerline", "curveType"]]))?.toLowerCase() ?? null;
+    const rawPoints = firstDefined(payload, [["geometry", "centerline", "points"]]);
+    if (shape !== "round" || diameterMm === null || diameterMm < 0
+        || insulationThicknessMm === null || insulationThicknessMm < 0
+        || curveType !== "line" || !Array.isArray(rawPoints) || rawPoints.length !== 2)
+        return null;
+    const points = rawPoints.map(spatialPoint3);
+    if (points.some((point) => point === null))
+        return null;
+    const radiusMm = diameterMm / 2 + insulationThicknessMm;
+    return {
+        minMm: [0, 1, 2].map((axis) => Math.min(...points.map((point) => point[axis])) - radiusMm),
+        maxMm: [0, 1, 2].map((axis) => Math.max(...points.map((point) => point[axis])) + radiusMm),
+    };
+}
+function assertExactAnalyticEnvelope(payload, nodeId) {
+    const required = exactAnalyticEnvelope(payload);
+    if (!required)
+        return;
+    const minimum = spatialPoint3(firstDefined(payload, [["geometry", "aabb", "min"]]));
+    const maximum = spatialPoint3(firstDefined(payload, [["geometry", "aabb", "max"]]));
+    const toleranceMm = 0.01;
+    if (!minimum || !maximum || [0, 1, 2].some((axis) => minimum[axis] > required.minMm[axis] + toleranceMm
+        || maximum[axis] < required.maxMm[axis] - toleranceMm)) {
+        throw new SpatialStoreIntegrityError(`Spatial v0.3 exact analytic profile AABB does not contain its diameter plus insulation envelope: ${nodeId}`);
+    }
+}
+function parseStoredObject(value, field) {
+    const parsed = parseJson(value, field);
+    if (!isJsonObject(parsed)) {
+        throw new SpatialStoreIntegrityError(`${field} is not a JSON object.`);
+    }
+    return parsed;
+}
+function boundedQueryLimit(value, fallback, maximum) {
+    if (value === undefined)
+        return fallback;
+    if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new RangeError("Spatial query limit must be a positive integer.");
+    }
+    return Math.min(value, maximum);
+}
+function cleanQueryValues(values, maximum = 2_000) {
+    if (values && values.length > maximum) {
+        throw new RangeError(`Spatial query accepts at most ${maximum} values for one filter.`);
+    }
+    return cleanStringArray(values ?? [], maximum);
+}
+function placeholders(count) {
+    return new Array(count).fill("?").join(", ");
+}
+function connectedPeerNodeIds(payload) {
+    const candidates = firstDefined(payload, [
+        ["connectedToNodeIds"],
+        ["peerNodeIds"],
+        ["topology", "connectedToNodeIds"],
+        ["topology", "peerNodeIds"],
+        ["connectorTopology", "connectedToNodeIds"],
+    ]);
+    const explicitPeers = Array.isArray(candidates) ? cleanStringArray(candidates) : [];
+    const connectionRefs = firstDefined(payload, [["connectionRefs"]]);
+    const resolvedReferencePeers = Array.isArray(connectionRefs)
+        ? cleanStringArray(connectionRefs.map((reference) => isJsonObject(reference) && reference.resolved === true
+            ? reference.targetConnectorNodeId
+            : null))
+        : [];
+    if (explicitPeers.length > 0 || resolvedReferencePeers.length > 0) {
+        return cleanStringArray([...explicitPeers, ...resolvedReferencePeers]);
+    }
+    const relations = firstDefined(payload, [
+        ["connections"],
+        ["topology", "connections"],
+    ]);
+    if (!Array.isArray(relations))
+        return [];
+    return cleanStringArray(relations.map((relation) => isJsonObject(relation)
+        ? relation.targetNodeId ?? relation.peerNodeId ?? relation.nodeId
+        : relation));
+}
+function connectorTopologyEvidence(payload) {
+    const coverage = firstDefined(payload, [
+        ["topologyCoverage"],
+        ["topology", "coverage"],
+        ["connectorTopology", "coverage"],
+    ]);
+    const coverageObject = isJsonObject(coverage) ? coverage : {};
+    const reasons = cleanStringArray(coverageObject.reasons);
+    const ambiguousCount = finiteInteger(coverageObject.ambiguousConnectorCount
+        ?? coverageObject.ambiguousReferenceCount
+        ?? firstDefined(payload, [["topology", "ambiguousReferenceCount"]])) ?? (coverageObject.ambiguous === true || reasons.some((reason) => reason.includes("ambiguous")) ? 1 : 0);
+    const nativeUnresolvedCount = Math.max(0, finiteInteger(coverageObject.unresolvedConnectorCount
+        ?? coverageObject.unresolvedPeerReferenceCount
+        ?? coverageObject.unresolvedReferenceCount) ?? 0);
+    const isConnected = firstDefined(payload, [["isConnected"]]) === true;
+    const peers = connectedPeerNodeIds(payload);
+    const connectedWithoutAllRefs = reasons.includes("connected_without_all_refs")
+        || (isConnected && peers.length === 0 && nativeUnresolvedCount === 0);
+    const declaredReferencedConnectorCount = finiteInteger(coverageObject.referencedConnectorCount);
+    const declaredResolvedConnectorNodeCount = finiteInteger(coverageObject.resolvedConnectorNodeCount);
+    const referencedConnectorCount = Math.max(0, declaredReferencedConnectorCount ?? peers.length + nativeUnresolvedCount);
+    const resolvedConnectorNodeCount = Math.max(0, declaredResolvedConnectorNodeCount ?? peers.length);
+    const countMismatchCount = declaredReferencedConnectorCount === null
+        || declaredResolvedConnectorNodeCount === null
+        ? 0
+        : Math.abs(resolvedConnectorNodeCount - peers.length)
+            + Math.abs(referencedConnectorCount - resolvedConnectorNodeCount - nativeUnresolvedCount);
+    const declaredUnresolvedCount = nativeUnresolvedCount
+        + (connectedWithoutAllRefs ? 1 : 0)
+        + countMismatchCount;
+    const readComplete = coverageObject.complete === true
+        && coverageObject.isConnectedRead === true
+        && coverageObject.allRefsRead === true
+        && declaredUnresolvedCount === 0
+        && ambiguousCount === 0;
+    return {
+        peers,
+        ambiguousCount: Math.max(0, ambiguousCount),
+        declaredUnresolvedCount: Math.max(0, declaredUnresolvedCount),
+        referencedConnectorCount,
+        resolvedConnectorNodeCount,
+        countMismatchCount,
+        readComplete,
+        isConnected,
+        reasons,
+    };
+}
+function edgeIdentifier(relationType, sourceNodeId, targetNodeId) {
+    return `edge:${relationType}:${sha256Canonical([sourceNodeId, targetNodeId]).slice("sha256:".length)}`;
+}
+const STORED_NODE_SELECT = `
+  n.snapshot_id, n.node_id, n.document_key, n.node_kind,
+  n.element_unique_id, n.link_instance_unique_id,
+  n.min_x, n.max_x, n.min_y, n.max_y, n.min_z, n.max_z,
+  n.payload_json, n.category, n.built_in_category, n.category_role,
+  n.level_unique_id, n.level_name, n.owner_node_id, n.system_key,
+  n.geometry_fingerprint, n.placement_fingerprint, n.shape_fingerprint,
+  n.property_fingerprint, n.topology_fingerprint
+`;
+function mapStoredNode(row) {
+    const payload = parseStoredObject(row.payload_json, "spatial node payload");
+    const projection = projectSpatialNodePayload(payload);
+    const hasBounds = [row.min_x, row.max_x, row.min_y, row.max_y, row.min_z, row.max_z]
+        .every((value) => typeof value === "number" && Number.isFinite(value));
+    return {
+        snapshotId: row.snapshot_id,
+        nodeId: row.node_id,
+        documentKey: row.document_key,
+        nodeKind: row.node_kind,
+        elementUniqueId: row.element_unique_id,
+        linkInstanceUniqueId: row.link_instance_unique_id,
+        aabb: hasBounds ? {
+            minMm: [row.min_x, row.min_y, row.min_z],
+            maxMm: [row.max_x, row.max_y, row.max_z],
+        } : null,
+        category: row.category ?? projection.category,
+        builtInCategory: row.built_in_category ?? projection.builtInCategory,
+        categoryRole: row.category_role ?? projection.categoryRole,
+        levelUniqueId: row.level_unique_id ?? projection.levelUniqueId,
+        levelName: row.level_name ?? projection.levelName,
+        ownerNodeId: row.owner_node_id ?? projection.ownerNodeId,
+        systemKey: row.system_key ?? projection.systemKey,
+        geometryFingerprint: row.geometry_fingerprint ?? projection.geometryFingerprint,
+        placementFingerprint: row.placement_fingerprint ?? projection.placementFingerprint,
+        shapeFingerprint: row.shape_fingerprint ?? projection.shapeFingerprint,
+        propertyFingerprint: row.property_fingerprint ?? projection.propertyFingerprint,
+        topologyFingerprint: row.topology_fingerprint ?? projection.topologyFingerprint,
+        payload,
+    };
+}
+function mapStoredEdge(row) {
+    return {
+        snapshotId: row.snapshot_id,
+        edgeId: row.edge_id,
+        sourceNodeId: row.source_node_id,
+        targetNodeId: row.target_node_id,
+        relationType: row.relation_type,
+        relationPolicyVersion: row.relation_policy_version,
+        fingerprint: row.fingerprint,
+        bidirectional: row.bidirectional === 1,
+        payload: parseStoredObject(row.payload_json, "spatial edge payload"),
+    };
+}
 function normalizeAabb(aabb) {
     if (!aabb) {
         return [null, null, null, null, null, null];
@@ -421,6 +708,43 @@ function compareVersions(left, right) {
 function tableExists(database, tableName) {
     const row = database.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName);
     return row?.found === 1;
+}
+function tableColumns(database, tableName) {
+    if (!tableExists(database, tableName))
+        return new Set();
+    const rows = database.pragma(`table_info('${tableName.replaceAll("'", "''")}')`);
+    return new Set(rows.map((row) => row.name));
+}
+function applySchema12Migration(database) {
+    for (const tableName of ["spatial_nodes", "spatial_staging_nodes"]) {
+        if (!tableExists(database, tableName))
+            continue;
+        const columns = tableColumns(database, tableName);
+        for (const column of SPATIAL_NODE_PROJECTION_COLUMNS) {
+            if (!columns.has(column)) {
+                database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${column} TEXT`);
+            }
+        }
+    }
+    const nodeColumns = tableColumns(database, "spatial_nodes");
+    const createNodeIndex = (name, columns) => {
+        if (columns.every((column) => nodeColumns.has(column))) {
+            database.exec(`CREATE INDEX IF NOT EXISTS ${name} ON spatial_nodes(${columns.join(", ")})`);
+        }
+    };
+    createNodeIndex("spatial_nodes_kind", ["snapshot_id", "node_kind", "node_id"]);
+    createNodeIndex("spatial_nodes_category", ["snapshot_id", "category", "node_id"]);
+    createNodeIndex("spatial_nodes_built_in_category", ["snapshot_id", "built_in_category", "node_id"]);
+    createNodeIndex("spatial_nodes_role", ["snapshot_id", "category_role", "node_id"]);
+    createNodeIndex("spatial_nodes_level_name", ["snapshot_id", "level_name", "node_id"]);
+    createNodeIndex("spatial_nodes_level_unique_id", ["snapshot_id", "level_unique_id", "node_id"]);
+    createNodeIndex("spatial_nodes_system", ["snapshot_id", "system_key", "node_id"]);
+    createNodeIndex("spatial_nodes_owner", ["snapshot_id", "owner_node_id", "node_id"]);
+    createNodeIndex("spatial_nodes_z_band", ["snapshot_id", "min_z", "max_z", "node_id"]);
+    if (!tableExists(database, "spatial_edges")) {
+        database.exec(SCHEMA_1_2_EDGE_SQL);
+    }
+    database.exec(SCHEMA_1_2_TOPOLOGY_SQL);
 }
 function readSchemaVersion(database) {
     if (!tableExists(database, "spatial_store_metadata")) {
@@ -459,7 +783,12 @@ function backupCandidates(databasePath) {
             return false;
         }
     })
-        .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs);
+        .sort((left, right) => {
+        const modifiedOrder = statSync(right).mtimeMs - statSync(left).mtimeMs;
+        if (modifiedOrder !== 0)
+            return modifiedOrder;
+        return right < left ? -1 : right > left ? 1 : 0;
+    });
 }
 function removeSqliteSidecars(databasePath) {
     rmSync(`${databasePath}-wal`, { force: true });
@@ -571,6 +900,11 @@ function applyMigrations(database, databasePath, existedBeforeOpen, nowMs, hooks
             if (working.major === 1 && working.minor === 0) {
                 database.exec(SCHEMA_1_1_MIGRATION_SQL);
                 working = { major: 1, minor: 1 };
+                writeSchemaVersion(database, working);
+            }
+            if (working.major === 1 && working.minor === 1) {
+                applySchema12Migration(database);
+                working = { major: 1, minor: 2 };
                 writeSchemaVersion(database, working);
             }
             if (compareVersions(working, target) !== 0) {
@@ -770,12 +1104,17 @@ export class SpatialStore {
         INSERT INTO spatial_staging_nodes(
           capture_id, page_ordinal, node_id, document_key, node_kind,
           element_unique_id, link_instance_unique_id,
-          min_x, max_x, min_y, max_y, min_z, max_z, payload_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          min_x, max_x, min_y, max_y, min_z, max_z, payload_json,
+          category, built_in_category, category_role,
+          level_unique_id, level_name, owner_node_id, system_key,
+          geometry_fingerprint, placement_fingerprint, shape_fingerprint,
+          property_fingerprint, topology_fingerprint
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
             for (const node of input.nodes) {
                 const bounds = normalizeAabb(node.aabb);
-                insertNode.run(input.captureId, ordinal, requireText(node.nodeId, "nodeId"), requireText(node.documentKey, "node.documentKey"), requireText(node.nodeKind, "nodeKind"), node.elementUniqueId?.trim() || null, node.linkInstanceUniqueId?.trim() || null, ...bounds, stringifyJson(node.payload, "node.payload"));
+                const projection = projectSpatialNodePayload(node.payload);
+                insertNode.run(input.captureId, ordinal, requireText(node.nodeId, "nodeId"), requireText(node.documentKey, "node.documentKey"), requireText(node.nodeKind, "nodeKind"), node.elementUniqueId?.trim() || null, node.linkInstanceUniqueId?.trim() || null, ...bounds, stringifyJson(node.payload, "node.payload"), projection.category, projection.builtInCategory, projection.categoryRole, projection.levelUniqueId, projection.levelName, projection.ownerNodeId, projection.systemKey, projection.geometryFingerprint, projection.placementFingerprint, projection.shapeFingerprint, projection.propertyFingerprint, projection.topologyFingerprint);
             }
             const insertOmission = this.database.prepare(`
         INSERT INTO spatial_staging_omissions(
@@ -951,15 +1290,24 @@ export class SpatialStore {
         INSERT INTO spatial_nodes(
           snapshot_id, node_id, document_key, node_kind,
           element_unique_id, link_instance_unique_id,
-          min_x, max_x, min_y, max_y, min_z, max_z, payload_json
+          min_x, max_x, min_y, max_y, min_z, max_z, payload_json,
+          category, built_in_category, category_role,
+          level_unique_id, level_name, owner_node_id, system_key,
+          geometry_fingerprint, placement_fingerprint, shape_fingerprint,
+          property_fingerprint, topology_fingerprint
         )
         SELECT ?, node_id, document_key, node_kind,
           element_unique_id, link_instance_unique_id,
-          min_x, max_x, min_y, max_y, min_z, max_z, payload_json
+          min_x, max_x, min_y, max_y, min_z, max_z, payload_json,
+          category, built_in_category, category_role,
+          level_unique_id, level_name, owner_node_id, system_key,
+          geometry_fingerprint, placement_fingerprint, shape_fingerprint,
+          property_fingerprint, topology_fingerprint
         FROM spatial_staging_nodes
         WHERE capture_id = ?
         ORDER BY page_ordinal, staging_node_rowid
       `).run(capture.snapshot_id, input.captureId);
+            this.rebuildSnapshotEdges(capture.snapshot_id);
             this.database.prepare(`
         INSERT INTO spatial_omissions(
           snapshot_id, document_key, reason, source_identity, payload_json
@@ -983,6 +1331,121 @@ export class SpatialStore {
             throw new SpatialStoreIntegrityError(`Committed spatial snapshot ${snapshotId} is not readable.`);
         }
         return summary;
+    }
+    rebuildSnapshotEdges(snapshotId) {
+        const snapshotRow = this.database.prepare(`
+      SELECT schema_version AS schemaVersion
+      FROM spatial_snapshots WHERE snapshot_id = ?
+    `).get(snapshotId);
+        const schemaVersion = snapshotRow?.schemaVersion ?? "";
+        const rows = this.database.prepare(`
+      SELECT node_id, node_kind, owner_node_id, payload_json
+      FROM spatial_nodes
+      WHERE snapshot_id = ?
+      ORDER BY node_id
+    `).all(snapshotId);
+        const nodeKinds = new Map(rows.map((row) => [row.node_id, row.node_kind]));
+        let connectorCount = 0;
+        let declaredPeerReferenceCount = 0;
+        let resolvedPeerReferenceCount = 0;
+        let nativeUnresolvedPeerReferenceCount = 0;
+        let membershipUnresolvedPeerReferenceCount = 0;
+        let ambiguousConnectorCount = 0;
+        let readComplete = schemaVersion === "0.3";
+        const unresolvedPeerNodeIds = new Set();
+        const insert = this.database.prepare(`
+      INSERT OR IGNORE INTO spatial_edges(
+        snapshot_id, edge_id, source_node_id, target_node_id,
+        relation_type, relation_policy_version, fingerprint,
+        bidirectional, payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+        const policyVersion = "phase1b-topology/1";
+        const connectorEntries = rows
+            .filter((row) => row.node_kind === "connector")
+            .map((row) => {
+            const payload = parseStoredObject(row.payload_json, "spatial connector payload");
+            return {
+                row,
+                payload,
+                topologyEvidence: connectorTopologyEvidence(payload),
+                ownerNodeId: row.owner_node_id ?? projectSpatialNodePayload(payload).ownerNodeId,
+            };
+        });
+        if (schemaVersion === "0.3") {
+            for (const row of rows) {
+                assertExactAnalyticEnvelope(parseStoredObject(row.payload_json, `spatial node ${row.node_id} payload`), row.node_id);
+            }
+        }
+        const connectorEvidenceByNodeId = new Map(connectorEntries.map((entry) => [
+            entry.row.node_id,
+            entry.topologyEvidence,
+        ]));
+        connectorCount = connectorEntries.length;
+        for (const { row, topologyEvidence, ownerNodeId } of connectorEntries) {
+            readComplete = readComplete && topologyEvidence.readComplete;
+            ambiguousConnectorCount += topologyEvidence.ambiguousCount;
+            nativeUnresolvedPeerReferenceCount += topologyEvidence.declaredUnresolvedCount;
+            declaredPeerReferenceCount += topologyEvidence.referencedConnectorCount;
+            if (ownerNodeId && nodeKinds.get(ownerNodeId) === "revit_element") {
+                const edgePayload = {
+                    basis: "connector_owner_identity",
+                    precisionClass: "measured",
+                    verdictCapability: "context_only",
+                };
+                insert.run(snapshotId, edgeIdentifier("owns_connector", ownerNodeId, row.node_id), ownerNodeId, row.node_id, "owns_connector", policyVersion, sha256Canonical({ ownerNodeId, connectorNodeId: row.node_id, policyVersion }), 0, canonicalJson(edgePayload));
+            }
+            else {
+                membershipUnresolvedPeerReferenceCount += 1;
+                unresolvedPeerNodeIds.add(ownerNodeId ?? `<missing_owner:${row.node_id}>`);
+            }
+            for (const peerNodeId of topologyEvidence.peers) {
+                const peerTopologyEvidence = connectorEvidenceByNodeId.get(peerNodeId);
+                const reciprocal = peerTopologyEvidence?.peers.includes(row.node_id) === true;
+                if (peerNodeId === row.node_id || nodeKinds.get(peerNodeId) !== "connector" || !reciprocal) {
+                    membershipUnresolvedPeerReferenceCount += 1;
+                    unresolvedPeerNodeIds.add(!reciprocal && nodeKinds.get(peerNodeId) === "connector"
+                        ? `<nonreciprocal:${row.node_id}->${peerNodeId}>`
+                        : peerNodeId);
+                    continue;
+                }
+                resolvedPeerReferenceCount += 1;
+                const [sourceNodeId, targetNodeId] = row.node_id < peerNodeId
+                    ? [row.node_id, peerNodeId]
+                    : [peerNodeId, row.node_id];
+                const edgePayload = {
+                    basis: "revit_connector_all_refs",
+                    precisionClass: "measured",
+                    verdictCapability: "context_only",
+                    targetMembershipValidated: true,
+                };
+                insert.run(snapshotId, edgeIdentifier("connected_to", sourceNodeId, targetNodeId), sourceNodeId, targetNodeId, "connected_to", policyVersion, sha256Canonical({ sourceNodeId, targetNodeId, policyVersion }), 1, canonicalJson(edgePayload));
+            }
+        }
+        const unresolvedPeerReferenceCount = nativeUnresolvedPeerReferenceCount
+            + membershipUnresolvedPeerReferenceCount;
+        const targetMembershipValidated = readComplete
+            && ambiguousConnectorCount === 0
+            && unresolvedPeerReferenceCount === 0;
+        const topologyPayload = {
+            basis: "committed_snapshot_connector_membership",
+            connectorCount,
+            declaredPeerReferenceCount,
+            resolvedPeerReferenceCount,
+            unresolvedPeerReferenceCount,
+            ambiguousConnectorCount,
+            readComplete,
+            targetMembershipValidated,
+            unresolvedPeerNodeIds: [...unresolvedPeerNodeIds].sort().slice(0, 1_000),
+        };
+        this.database.prepare(`
+      INSERT OR REPLACE INTO spatial_snapshot_topology(
+        snapshot_id, connector_count, declared_peer_reference_count,
+        resolved_peer_reference_count, unresolved_peer_reference_count,
+        ambiguous_connector_count, read_complete,
+        target_membership_validated, payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(snapshotId, connectorCount, declaredPeerReferenceCount, resolvedPeerReferenceCount, unresolvedPeerReferenceCount, ambiguousConnectorCount, readComplete ? 1 : 0, targetMembershipValidated ? 1 : 0, canonicalJson(topologyPayload));
     }
     getSnapshot(snapshotId) {
         this.assertOpen();
@@ -1048,6 +1511,31 @@ export class SpatialStore {
             };
         });
     }
+    getSnapshotTopologyCapability(snapshotId) {
+        this.assertOpen();
+        const row = this.database.prepare(`
+      SELECT snapshot_id, connector_count, declared_peer_reference_count,
+        resolved_peer_reference_count, unresolved_peer_reference_count,
+        ambiguous_connector_count, read_complete,
+        target_membership_validated, payload_json
+      FROM spatial_snapshot_topology
+      WHERE snapshot_id = ?
+    `).get(requireText(snapshotId, "snapshotId"));
+        if (!row)
+            return null;
+        const payload = parseStoredObject(row.payload_json, "spatial topology capability payload");
+        return {
+            snapshotId: row.snapshot_id,
+            connectorCount: row.connector_count,
+            declaredPeerReferenceCount: row.declared_peer_reference_count,
+            resolvedPeerReferenceCount: row.resolved_peer_reference_count,
+            unresolvedPeerReferenceCount: row.unresolved_peer_reference_count,
+            ambiguousConnectorCount: row.ambiguous_connector_count,
+            readComplete: row.read_complete === 1,
+            targetMembershipValidated: row.target_membership_validated === 1,
+            unresolvedPeerNodeIds: cleanStringArray(payload.unresolvedPeerNodeIds),
+        };
+    }
     getSnapshotRecord(snapshotId) {
         this.assertOpen();
         const summary = this.getSnapshot(snapshotId);
@@ -1087,6 +1575,187 @@ export class SpatialStore {
         return ids
             .map((row) => this.getSnapshot(row.snapshot_id))
             .filter((row) => row !== null);
+    }
+    getStoredNode(snapshotId, nodeId) {
+        this.assertOpen();
+        const row = this.database.prepare(`
+      SELECT ${STORED_NODE_SELECT}
+      FROM spatial_nodes n
+      WHERE n.snapshot_id = ? AND n.node_id = ?
+    `).get(requireText(snapshotId, "snapshotId"), requireText(nodeId, "nodeId"));
+        return row ? mapStoredNode(row) : null;
+    }
+    getStoredNodesByIds(snapshotId, nodeIds) {
+        this.assertOpen();
+        if (nodeIds.length > 100_000) {
+            throw new RangeError("Spatial node identity lookup is bounded to 100000 ids.");
+        }
+        const ids = cleanStringArray(nodeIds, 100_000);
+        if (ids.length === 0)
+            return [];
+        const normalizedSnapshotId = requireText(snapshotId, "snapshotId");
+        const rows = [];
+        for (let offset = 0; offset < ids.length; offset += 900) {
+            const chunk = ids.slice(offset, offset + 900);
+            rows.push(...this.database.prepare(`
+        SELECT ${STORED_NODE_SELECT}
+        FROM spatial_nodes n
+        WHERE n.snapshot_id = ? AND n.node_id IN (${placeholders(chunk.length)})
+        ORDER BY n.node_id
+      `).all(normalizedSnapshotId, ...chunk));
+        }
+        return rows.sort((left, right) => compareText(left.node_id, right.node_id)).map(mapStoredNode);
+    }
+    queryStoredNodes(query) {
+        this.assertOpen();
+        const snapshotId = requireText(query.snapshotId, "snapshotId");
+        const limit = boundedQueryLimit(query.limit, 100, 1_000);
+        const conditions = ["n.snapshot_id = ?"];
+        const parameters = [snapshotId];
+        const addValues = (column, values) => {
+            const cleaned = cleanQueryValues(values);
+            if (cleaned.length === 0)
+                return;
+            conditions.push(`${column} IN (${placeholders(cleaned.length)})`);
+            parameters.push(...cleaned);
+        };
+        addValues("n.node_id", query.nodeIds);
+        addValues("n.node_kind", query.nodeKinds);
+        addValues("n.category", query.categories);
+        addValues("n.built_in_category", query.builtInCategories);
+        addValues("n.category_role", query.categoryRoles);
+        addValues("n.level_name", query.levelNames);
+        addValues("n.level_unique_id", query.levelUniqueIds);
+        addValues("n.system_key", query.systemKeys);
+        addValues("n.owner_node_id", query.ownerNodeIds);
+        const afterNodeId = cleanText(query.afterNodeId);
+        if (afterNodeId) {
+            conditions.push("n.node_id > ?");
+            parameters.push(afterNodeId);
+        }
+        let join = "";
+        if (query.aabb) {
+            const bounds = normalizeAabb(query.aabb);
+            if (bounds.some((value) => value === null)) {
+                throw new RangeError("Spatial node query AABB must contain finite min/max coordinates.");
+            }
+            join = "JOIN spatial_node_rtree r ON r.node_rowid = n.node_rowid";
+            conditions.push("r.min_x <= ? AND r.max_x >= ?", "r.min_y <= ? AND r.max_y >= ?", "r.min_z <= ? AND r.max_z >= ?");
+            parameters.push(bounds[1], bounds[0], bounds[3], bounds[2], bounds[5], bounds[4]);
+        }
+        if (query.elevationBandMm) {
+            const minZ = finiteNumber(query.elevationBandMm.minZ);
+            const maxZ = finiteNumber(query.elevationBandMm.maxZ);
+            if (minZ === null || maxZ === null || minZ > maxZ) {
+                throw new RangeError("Spatial elevationBandMm requires finite minZ <= maxZ.");
+            }
+            if (!join)
+                join = "JOIN spatial_node_rtree r ON r.node_rowid = n.node_rowid";
+            conditions.push("r.min_z <= ? AND r.max_z >= ?");
+            parameters.push(maxZ, minZ);
+        }
+        const rows = this.database.prepare(`
+      SELECT ${STORED_NODE_SELECT}
+      FROM spatial_nodes n
+      ${join}
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY n.node_id
+      LIMIT ?
+    `).all(...parameters, limit + 1);
+        const hasMore = rows.length > limit;
+        const selected = hasMore ? rows.slice(0, limit) : rows;
+        return {
+            nodes: selected.map(mapStoredNode),
+            hasMore,
+            nextNodeId: hasMore && selected.length > 0 ? selected[selected.length - 1].node_id : null,
+        };
+    }
+    getStoredOmissions(query) {
+        this.assertOpen();
+        const snapshotId = requireText(query.snapshotId, "snapshotId");
+        const limit = boundedQueryLimit(query.limit, 100, 1_000);
+        const conditions = ["snapshot_id = ?"];
+        const parameters = [snapshotId];
+        const reasons = cleanQueryValues(query.reasons);
+        if (reasons.length > 0) {
+            conditions.push(`reason IN (${placeholders(reasons.length)})`);
+            parameters.push(...reasons);
+        }
+        if (query.afterRowId !== undefined && query.afterRowId !== null) {
+            requireNonNegativeInteger(query.afterRowId, "afterRowId");
+            conditions.push("omission_rowid > ?");
+            parameters.push(query.afterRowId);
+        }
+        const rows = this.database.prepare(`
+      SELECT omission_rowid, snapshot_id, document_key, reason, source_identity, payload_json
+      FROM spatial_omissions
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY omission_rowid
+      LIMIT ?
+    `).all(...parameters, limit + 1);
+        const hasMore = rows.length > limit;
+        const selected = hasMore ? rows.slice(0, limit) : rows;
+        return {
+            omissions: selected.map((row) => ({
+                snapshotId: row.snapshot_id,
+                documentKey: row.document_key,
+                reason: row.reason,
+                sourceIdentity: row.source_identity,
+                payload: parseStoredObject(row.payload_json, "spatial omission payload"),
+            })),
+            hasMore,
+            nextRowId: hasMore && selected.length > 0 ? selected[selected.length - 1].omission_rowid : null,
+        };
+    }
+    queryStoredEdges(query) {
+        this.assertOpen();
+        const snapshotId = requireText(query.snapshotId, "snapshotId");
+        const limit = boundedQueryLimit(query.limit, 200, 2_000);
+        const conditions = ["snapshot_id = ?"];
+        const parameters = [snapshotId];
+        const addValues = (column, values) => {
+            const cleaned = cleanQueryValues(values);
+            if (cleaned.length === 0)
+                return;
+            conditions.push(`${column} IN (${placeholders(cleaned.length)})`);
+            parameters.push(...cleaned);
+        };
+        addValues("relation_type", query.relationTypes);
+        addValues("source_node_id", query.sourceNodeIds);
+        addValues("target_node_id", query.targetNodeIds);
+        const incident = cleanQueryValues(query.incidentNodeIds);
+        if (incident.length > 0) {
+            conditions.push(`(source_node_id IN (${placeholders(incident.length)}) OR target_node_id IN (${placeholders(incident.length)}))`);
+            parameters.push(...incident, ...incident);
+        }
+        const afterEdgeId = cleanText(query.afterEdgeId);
+        if (afterEdgeId) {
+            conditions.push("edge_id > ?");
+            parameters.push(afterEdgeId);
+        }
+        const rows = this.database.prepare(`
+      SELECT snapshot_id, edge_id, source_node_id, target_node_id,
+        relation_type, relation_policy_version, fingerprint, bidirectional, payload_json
+      FROM spatial_edges
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY edge_id
+      LIMIT ?
+    `).all(...parameters, limit + 1);
+        const hasMore = rows.length > limit;
+        const selected = hasMore ? rows.slice(0, limit) : rows;
+        return {
+            edges: selected.map(mapStoredEdge),
+            hasMore,
+            nextEdgeId: hasMore && selected.length > 0 ? selected[selected.length - 1].edge_id : null,
+        };
+    }
+    getAdjacentStoredEdges(snapshotId, nodeId, options = {}) {
+        return this.queryStoredEdges({
+            snapshotId,
+            incidentNodeIds: [requireText(nodeId, "nodeId")],
+            relationTypes: options.relationTypes,
+            limit: boundedQueryLimit(options.limit, 500, 2_000),
+        }).edges;
     }
     queryIntersectingAabbs(aabb, snapshotId) {
         this.assertOpen();

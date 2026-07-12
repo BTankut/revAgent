@@ -48,8 +48,10 @@ remain exact implementation, tool, package, manifest, and path identifiers.
 - `docs/REVIT_IMAGE_EXPORT.md`: visual QA export workflow for active views,
   selected views, and coordination-focused 3D review images
 - `docs/REVAGENT_SPATIAL_PHASE1A_ACCEPTANCE.md`: Phase 1a CI-safe and live
-  acceptance checklist; implementation evidence remains pending until the
-  recorded gates pass
+  acceptance record; Gates A-E passed and Phase 1a was accepted on 2026-07-12
+- `docs/REVAGENT_SPATIAL_PHASE1B_ACCEPTANCE.md`: Phase 1b deterministic
+  query/diff/summary, exact-gold, live Revit, performance, and agent-eval gate;
+  evidence remains pending until every recorded gate passes
 - `installer/revit-api-docs-mcp/`: TypeScript source and required companion local MCP server for Revit API DLL + XML documentation search
 - `installer/lib/`: shared PowerShell helper modules for installer/updater behavior
 - `installer/install-self-contained.ps1`: self-contained installer script
@@ -99,11 +101,16 @@ explicit:
   primitives for session, active view, elements, and parameter schema
 - both MCP packages compile with `strict:true`, keep committed `build/` payloads
   fresh, and reject `@ts-nocheck` in runtime/docs MCP source
-- `capture_spatial_snapshot` is the Phase 1a read-only truth-foundation path:
+- `capture_spatial_snapshot` is the Phase 1b-compatible read-only truth path:
   the runtime owns bounded native pagination, validates the page/revision chain,
-  stages SpatialSnapshot v0.2 rows in a user-local versioned SQLite store, and
+  stages SpatialSnapshot v0.3 rows in a user-local versioned SQLite store, and
   exposes a snapshot only after an atomic commit; native staging pages are not
   public current-state evidence
+- `query_spatial_context` provides bounded deterministic retrieval and spatial
+  operations over a complete/current snapshot;
+  `compare_spatial_snapshots` provides compatible immutable historical diff;
+  `summarize_spatial_state` provides advisory per-level context. All three are
+  read-only and Phase 1b emits no live clash or clearance verdict
 - the runtime MCP server also exposes Revit image export tools for visual QA:
   `export_revit_view_image` is read-only for ordinary view/sheet exports and
   uses a temporary sheet for standalone Schedule exports, while
@@ -562,7 +569,7 @@ It also verifies that dynamic execution with `parseJsonResult=true` parses
 JSON-looking nested `result` strings, while disabled or failed parsing leaves
 the raw text available for debugging.
 
-For a DLL + runtime change such as Spatial Phase 1a, refresh generated payloads
+For a DLL + runtime change such as Spatial Phase 1a or Phase 1b, refresh generated payloads
 before the aggregate gates, then run the CI-safe gate locally as well:
 
 ```powershell
@@ -583,8 +590,9 @@ it does not publish or deploy. The canonical continuation is a topic-branch
 draft PR, protected review/checks, merge to `main`, automatic signed source-free
 build/validation, and only then a separately approved manual workflow dispatch
 with `publish_to_nas=true`. Never publish NAS stable directly from a topic
-branch. Spatial Phase 1a also has a separate live Revit acceptance gate
-documented in `docs/REVAGENT_SPATIAL_PHASE1A_ACCEPTANCE.md`; it is not part of
+branch. Spatial Phase 1a and Phase 1b also have separate live Revit acceptance
+gates documented in `docs/REVAGENT_SPATIAL_PHASE1A_ACCEPTANCE.md` and
+`docs/REVAGENT_SPATIAL_PHASE1B_ACCEPTANCE.md`; neither gate is part of
 `test-all.ps1` or `test-ci.ps1`.
 
 The protected `main` branch runs GitHub Actions on pull requests and pushes to
@@ -683,7 +691,7 @@ Expected MCP servers:
 
 11. If the installer stops with a Roslyn runtime error, repair the Revit 2022 installation first. Do not try to fix a normal end-user install by adding NuGet packages into the deployed bundle.
 
-Expected bundled runtime commands: 32 tools registered by the runtime server.
+Expected bundled runtime commands: 35 tools registered by the runtime server.
 
 - `list_revit_instances`
 - `get_revit_mcp_status`
@@ -717,6 +725,9 @@ Expected bundled runtime commands: 32 tools registered by the runtime server.
 - `set_schedule_cells`
 - `set_schedule_cells_by_text`
 - `capture_spatial_snapshot`
+- `query_spatial_context`
+- `compare_spatial_snapshots`
+- `summarize_spatial_state`
 
 Expected bundled docs commands:
 
@@ -869,7 +880,7 @@ Host-specific notes:
 
 ## Bundled runtime tool surface
 
-The runtime MCP server registers 32 tools in
+The runtime MCP server registers 35 tools in
 `installer/runtime-mcp-server/src/tools/register.ts`. They intentionally cover a
 small production surface instead of many narrow one-off commands.
 
@@ -878,7 +889,7 @@ small production surface instead of many narrow one-off commands.
 | Instance and status | `list_revit_instances`, `get_revit_mcp_status` | Read-only. `get_revit_mcp_status` is the only runtime tool intended to run while another Revit task is active. |
 | Dynamic execution | `send_code_to_revit`, `send_code_to_revit_safe` | Raw `send_code_to_revit` can write if the supplied C# writes. `transactionMode: "auto"` opens a wrapper-managed transaction and guards manual transaction snippets; `transactionMode: "none"` executes without an outer transaction. `send_code_to_revit_safe` is for read/preview work, rejects write-looking snippets, and uses `none`. |
 | Model context | `get_revit_session_context`, `get_active_view_context`, `inspect_elements`, `inspect_levels`, `inspect_sheet_text`, `inspect_schedules`, `count_annotations`, `inspect_parameter_schema` | Read-only model/session/element/level/sheet/schedule/annotation/parameter inspection before engineering decisions or writes. `get_revit_session_context` defaults to `detailLevel="minimal"` so document checks do not perform heavy category or linked room/space counts. `get_active_view_context` reports both sheet `viewports` and `scheduleSheetInstances`. `inspect_levels` deterministically lists host and loaded-linked Levels with exact link filters, document identity, source project elevation, transformed host elevation, and copy-ready linked source-level selectors; unavailable selected links make the inventory partial/read_failed. Use it before raw Level/link loops or choosing linked spatial scope. `inspect_sheet_text` is the native bounded DrawingSheet text-note, placed-schedule, and viewport-linked text-note inspection path for large projects and should be used instead of broad custom C# sheet or placed-view scans. `inspect_schedules` is the bounded schedule name/cell inspection path for large projects and should be used instead of broad custom C# schedule scans. `count_annotations` is the native bounded annotation count/inventory path for sheet text-note, viewport text-note, placed schedule-cell, and viewport tag evidence. |
-| Spatial Phase 1a truth foundation | `capture_spatial_snapshot` | Read-only, explicit-host-level durable capture. The runtime owns opaque native pagination, verifies the v0.2 page/hash/revision chain, stages rows in `%LOCALAPPDATA%\revAgent\spatial\spatial.db` (or `REVAGENT_SPATIAL_DB_PATH`), and exposes the snapshot only after an atomic store commit. Every emitted node still requires transformed physical host-Z band overlap; placement-qualified `linkedSourceLevels` may additionally narrow linked Room/Space rows while linked obstructions remain physical-overlap evidence. Inspect `committed`, `atomic`, `liveness`, `partial`, and `coverageStatus` independently: an atomically committed snapshot may still have incomplete coverage, and `stale`/`unknown` cannot support a current-state claim. The store is versioned, migration/recovery guarded, and R*Tree indexed. Phase 1a does not provide deterministic spatial query, snapshot diff, clash screening, or live clash/clearance verdict tools. |
+| Spatial Context Engine Phase 1b | `capture_spatial_snapshot`, `query_spatial_context`, `compare_spatial_snapshots`, `summarize_spatial_state` | Read-only. Capture uses explicit host-level scope, runtime-owned native pagination, the strict v0.3 page/revision chain, atomic local SQLite commit, and R*Tree/topology indexing. Query requires a complete/current snapshot and computes relations deterministically; the LLM must not do coordinate arithmetic. Compare accepts two complete compatible immutable snapshots and labels the result historical. Summary is advisory only. Every relation preserves evidence ids, basis, precision class, and verdict capability. AABB output is screening-only; supported straight-round analytic distance is measured context-only. No Phase 1b result is a live clash/clearance verdict. |
 | Review and reconciliation | `reconcile_schedule_excel` | Runtime-only, review-first, and write-free. It ingests explicit `.xlsx`, `.csv`, `.tsv`, or `rows` input plus normalized `inspect_schedules` evidence, applies deterministic matching/scoring, and returns compact `reviewTable`, `evidenceRows`, and count metadata by default. Use `responseMode="full"`/`"debug"` for raw `reviewRows`, token profiles, raw cells, and nested candidates. Accepted edits route separately through `set_schedule_cells`, `set_schedule_cells_by_text`, or a workbook-specific workflow after human review. |
 | Controlled data writes | `set_element_parameter`, `set_schedule_cells`, `set_schedule_cells_by_text` | `set_element_parameter` is the production-safe single-parameter set/clear path. It defaults to `mode="dryRun"` and `operation="set"`, performs exact `inspect_parameter_schema`-style identity resolution, blocks duplicate display names/read-only parameters/type writes without explicit approval, commits only with `mode="commit"`, and verifies the value by reading it back. `operation="clear"` attempts Revit `Parameter.ClearValue` for a true no-value state and reports `clear_value_not_supported` instead of faking clear with an empty string when Revit does not support it. `operation="clearVisibleValue"` is the explicit string-only visible cleanup path; it writes an empty string and reports that Revit may keep `HasValue=true`. `set_schedule_cells` writes exact schedule cells only by `scheduleId`, `section`, `row`, and `column`; it defaults to dry-run, can require `expectedCurrentText`, guards non-writable standard schedule body cells as `non_writable_standard_body_cell`, commits through the wrapper transaction, and verifies committed cell text. `set_schedule_cells_by_text` is the higher-level schedule workflow for bounded sheet/schedule scope plus row-text matching; it blocks ambiguous matches by default, supports `expectedCurrentText`, defaults to dry-run, guards the same standard body-cell restriction, and verifies commit readback. |
 | Live view navigation | `list_open_views`, `activate_view`, `close_view`, `clear_selection`, `get_ui_state`, `find_elements`, `open_existing_plan_for_element_level`, `focus_elements`, `show_element_in_plan_and_3d`, `smart_focus_elements` | UI/navigation and discovery helpers. They do not create physical MEP elements. `clear_selection` only clears the current UI selection and opens no transaction. |
@@ -1098,8 +1109,10 @@ bounded code previews are retained for later dashboard and LLM analysis. It
 still avoids full Revit response payloads, model geometry dumps, and exported
 images.
 
-Spatial extraction is a stricter exception. For `capture_spatial_snapshot` and
-native `extract_spatial_snapshot`, geometry, model/level/room/space names,
+Spatial context is a stricter exception. For `capture_spatial_snapshot`,
+`query_spatial_context`, `compare_spatial_snapshots`,
+`summarize_spatial_state`, and native spatial bridge commands, geometry,
+model/level/room/space names,
 element/link ids, cursor contents, task metadata, and error text are excluded
 from telemetry and production-context events. Only tool/command identity,
 coarse selector/count/byte/budget fields, duration, and guard/state codes are

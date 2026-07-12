@@ -4,6 +4,22 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added the read-only Spatial Context Engine Phase 1b query, diff, and summary
+  layer on top of durable Phase 1a snapshots. A backward-compatible
+  SpatialSnapshot v0.3 native capture contract now records separated
+  placement/shape/property/topology fingerprints, bounded MEP profile and
+  system evidence, and explicit connector adjacency so
+  `query_spatial_context`, `compare_spatial_snapshots`, and
+  `summarize_spatial_state` can return deterministic, cursor-bounded results.
+  Current-state queries fail closed unless snapshot liveness is proven;
+  historical comparisons remain explicitly historical. Exact analytic
+  clearance is limited to supported straight round swept profiles, while
+  rectangular and other unsupported profiles return AABB screening evidence
+  without a clearance or clash verdict. Spatial telemetry remains metadata
+  only, and Phase 1c live verification is not included. The runtime tool
+  surface is now `.45`. Local payload, targeted, aggregate, protected-CI-
+  equivalent, frozen Revit 2022 gold/performance, and 11-variant actual-agent
+  Gates A-D passed on 2026-07-12; protected delivery Gate E remains pending.
 - Fixed Spatial Phase 1a process-local document session tracking so transient
   Revit `Document` wrappers for the same open linked document share one
   `documentSessionId` and `DocumentChanged` journal across multiple placements.

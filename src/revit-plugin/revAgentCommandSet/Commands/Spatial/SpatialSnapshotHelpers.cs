@@ -17,13 +17,14 @@ namespace RevAgentCommandSet.Commands.Spatial
     internal static class SpatialSnapshotHelpers
     {
         internal const double FeetToMillimetres = 304.8;
-        internal const string SchemaVersion = "0.2";
-        internal const string ExtractorVersion = "phase1a-native/0.2";
+        internal const string SchemaVersion = "0.3";
+        internal const string ExtractorVersion = "phase1b-native/0.3";
         internal const string CoordinateFrame = "host_internal_mm";
         internal const string CursorVersion = "0.2";
         internal const string WorkCursorVersion = "0.2-work";
         internal const string CaptureConsistency = "document_change_sequence_bound";
-        internal const string Phase1aCaveat = "Phase 1a native transport pages are read-only, document-change-sequence-bound staging inputs. Only the runtime spatial store may publish an atomically committed current snapshot after validating the complete page chain. Continuation cursors are HMAC-bound to this add-in process session and are intentionally invalid after restart.";
+        internal const string Phase1aCaveat = "SpatialSnapshot v0.3 native transport pages are read-only, document-change-sequence-bound staging inputs. Only the runtime spatial store may publish an atomically committed current snapshot after validating the complete page chain. Connector topology comes only from Revit Connector.AllRefs; unresolved references remain explicit coverage gaps. Continuation cursors retain the v0.2 wire format, are HMAC-bound to this add-in process session, and are intentionally invalid after restart.";
+        internal const string FingerprintVersion = "phase1b-spatial-fingerprint/1.0";
         private const string CursorPrefix = "spatial-cursor-v0.2.";
         private const string WorkCursorPrefix = "spatial-work-cursor-v0.2.";
         private const int MaxCursorJsonBytes = 8192;
@@ -1015,6 +1016,12 @@ namespace RevAgentCommandSet.Commands.Spatial
                             }
                         }
                     }
+                    if (points.Count >= 2 && SameMillimetrePoint(
+                        (IList<double>)points[0],
+                        (IList<double>)points[points.Count - 1]))
+                    {
+                        points.RemoveAt(points.Count - 1);
+                    }
                     if (points.Count >= 3) result.Add(points);
                 }
             }
@@ -1064,6 +1071,14 @@ namespace RevAgentCommandSet.Commands.Spatial
                    Math.Abs(priorMm[2] - pointFeet.Z * FeetToMillimetres) < 0.01;
         }
 
+        private static bool SameMillimetrePoint(IList<double> left, IList<double> right)
+        {
+            return left != null && right != null && left.Count >= 3 && right.Count >= 3 &&
+                   Math.Abs(left[0] - right[0]) < 0.01 &&
+                   Math.Abs(left[1] - right[1]) < 0.01 &&
+                   Math.Abs(left[2] - right[2]) < 0.01;
+        }
+
         internal static List<XYZ> GetHostBoundingCorners(BoundingBoxXYZ box, Transform sourceToHost)
         {
             List<XYZ> result = new List<XYZ>();
@@ -1101,6 +1116,514 @@ namespace RevAgentCommandSet.Commands.Spatial
         private static string CanonicalGeometryText(Dictionary<string, object> geometry)
         {
             return CanonicalJson(geometry);
+        }
+
+        internal static Dictionary<string, object> BuildElementSpatialProperties(Document document, Element element)
+        {
+            string systemName = ReadParameterText(element, new[]
+            {
+                "RBS_SYSTEM_NAME_PARAM"
+            });
+            string systemClassification = ReadParameterText(element, new[]
+            {
+                "RBS_SYSTEM_CLASSIFICATION_PARAM"
+            });
+            Element systemElement = ResolveSystemElement(document, element);
+            if (systemElement != null)
+            {
+                if (string.IsNullOrWhiteSpace(systemName)) systemName = GetElementName(systemElement);
+                if (string.IsNullOrWhiteSpace(systemClassification))
+                {
+                    systemClassification = ReadPropertyText(systemElement, "SystemClassification");
+                }
+            }
+
+            return new Dictionary<string, object>
+            {
+                { "systemKey", systemElement != null ? "system:" + StableUniqueId(systemElement) : null },
+                { "systemName", string.IsNullOrWhiteSpace(systemName) ? null : systemName },
+                { "systemClassification", string.IsNullOrWhiteSpace(systemClassification) ? null : systemClassification }
+            };
+        }
+
+        internal static Dictionary<string, object> BuildElementProfile(Element element)
+        {
+            BuiltInCategory category = GetBuiltInCategory(element);
+            bool isPipeCurve = category == BuiltInCategory.OST_PipeCurves ||
+                category == BuiltInCategory.OST_FlexPipeCurves;
+            double? diameterMm = ReadLengthParameterMm(element, isPipeCurve
+                ? new[] { "RBS_PIPE_OUTER_DIAMETER" }
+                : new[] { "RBS_DUCT_DIAMETER_PARAM", "RBS_CURVE_DIAMETER_PARAM" });
+            double? widthMm = ReadLengthParameterMm(element, new[]
+            {
+                "RBS_CURVE_WIDTH_PARAM",
+                "RBS_DUCT_WIDTH_PARAM"
+            });
+            double? heightMm = ReadLengthParameterMm(element, new[]
+            {
+                "RBS_CURVE_HEIGHT_PARAM",
+                "RBS_DUCT_HEIGHT_PARAM"
+            });
+            double? insulationThicknessMm = ReadNonNegativeLengthParameterMm(element, new[]
+            {
+                "RBS_REFERENCE_INSULATION_THICKNESS",
+                "RBS_INSULATION_THICKNESS"
+            });
+            string shape = diameterMm.HasValue && diameterMm.Value > 0
+                ? "round"
+                : widthMm.HasValue && widthMm.Value > 0 && heightMm.HasValue && heightMm.Value > 0
+                    ? "rectangular"
+                    : "unknown";
+            string rawShape = ReadParameterText(element, new[] { "RBS_CURVE_PROFILE_PARAM", "RBS_DUCT_SHAPE_PARAM" });
+            if (!string.IsNullOrWhiteSpace(rawShape) && rawShape.IndexOf("oval", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                shape = "oval";
+            }
+
+            return new Dictionary<string, object>
+            {
+                { "shape", shape },
+                { "diameterMm", diameterMm },
+                { "widthMm", widthMm },
+                { "heightMm", heightMm },
+                { "insulationThicknessMm", insulationThicknessMm }
+            };
+        }
+
+        internal static void ApplyAnalyticProfileEnvelopeToGeometry(
+            Dictionary<string, object> geometry,
+            Dictionary<string, object> profile)
+        {
+            if (geometry == null || profile == null) return;
+            JObject geometryJson = JObject.FromObject(geometry);
+            JObject profileJson = JObject.FromObject(profile);
+            string shape = Convert.ToString(profileJson["shape"], CultureInfo.InvariantCulture);
+            double? diameterMm = profileJson["diameterMm"] != null && profileJson["diameterMm"].Type != JTokenType.Null
+                ? (double?)profileJson["diameterMm"].Value<double>()
+                : null;
+            double? insulationThicknessMm = profileJson["insulationThicknessMm"] != null && profileJson["insulationThicknessMm"].Type != JTokenType.Null
+                ? (double?)profileJson["insulationThicknessMm"].Value<double>()
+                : null;
+            JObject centerline = geometryJson["centerline"] as JObject;
+            JArray points = centerline != null ? centerline["points"] as JArray : null;
+            string curveType = centerline != null
+                ? Convert.ToString(centerline["curveType"], CultureInfo.InvariantCulture)
+                : null;
+            if (!string.Equals(shape, "round", StringComparison.OrdinalIgnoreCase)
+                || !diameterMm.HasValue || diameterMm.Value < 0
+                || !insulationThicknessMm.HasValue || insulationThicknessMm.Value < 0
+                || !string.Equals(curveType, "Line", StringComparison.OrdinalIgnoreCase)
+                || points == null || points.Count != 2
+                || points.Any(point => !(point is JArray) || ((JArray)point).Count != 3))
+            {
+                return;
+            }
+
+            double outerRadiusMm = diameterMm.Value / 2.0 + insulationThicknessMm.Value;
+            JObject aabb = geometryJson["aabb"] as JObject;
+            JArray currentMin = aabb != null ? aabb["min"] as JArray : null;
+            JArray currentMax = aabb != null ? aabb["max"] as JArray : null;
+            if (currentMin == null || currentMax == null || currentMin.Count != 3 || currentMax.Count != 3) return;
+
+            double[] minimum = Enumerable.Range(0, 3).Select(axis => currentMin[axis].Value<double>()).ToArray();
+            double[] maximum = Enumerable.Range(0, 3).Select(axis => currentMax[axis].Value<double>()).ToArray();
+            foreach (JArray point in points.OfType<JArray>())
+            {
+                for (int axis = 0; axis < 3; axis++)
+                {
+                    double coordinate = point[axis].Value<double>();
+                    minimum[axis] = Math.Min(minimum[axis], coordinate - outerRadiusMm);
+                    maximum[axis] = Math.Max(maximum[axis], coordinate + outerRadiusMm);
+                }
+            }
+
+            geometry["aabb"] = new Dictionary<string, object>
+            {
+                { "min", MillimetrePoint(minimum[0], minimum[1], minimum[2]) },
+                { "max", MillimetrePoint(maximum[0], maximum[1], maximum[2]) }
+            };
+            geometry.Remove("geometryFingerprint");
+            geometry["geometryFingerprint"] = Sha256(CanonicalGeometryText(geometry));
+        }
+
+        internal static Dictionary<string, object> BuildElementFingerprints(
+            Dictionary<string, object> geometry,
+            Dictionary<string, object> spatialProperties,
+            Dictionary<string, object> profile,
+            object propertyBasis)
+        {
+            Dictionary<string, object> topologyBasis = new Dictionary<string, object>
+            {
+                { "ownedConnectorNodeIds", new List<string>() },
+                { "connectorTopologyFingerprints", new List<string>() }
+            };
+            return new Dictionary<string, object>
+            {
+                { "version", FingerprintVersion },
+                { "placement", Sha256(CanonicalJson(BuildPlacementFingerprintBasis(geometry))) },
+                { "shape", Sha256(CanonicalJson(BuildShapeFingerprintBasis(geometry, profile))) },
+                { "property", Sha256(CanonicalJson(new Dictionary<string, object>
+                    {
+                        { "spatialProperties", spatialProperties },
+                        { "element", propertyBasis }
+                    }))
+                },
+                { "topology", Sha256(CanonicalJson(topologyBasis)) }
+            };
+        }
+
+        internal static void ApplyElementTopologyFingerprint(SpatialRow elementRow, IEnumerable<SpatialRow> connectorRows)
+        {
+            if (elementRow == null || elementRow.Payload == null) return;
+            List<SpatialRow> rows = (connectorRows ?? Enumerable.Empty<SpatialRow>())
+                .Where(row => row != null && row.IsNode && row.Payload != null)
+                .OrderBy(row => Convert.ToString(row.Payload.ContainsKey("nodeId") ? row.Payload["nodeId"] : null, CultureInfo.InvariantCulture), StringComparer.Ordinal)
+                .ToList();
+            List<string> connectorNodeIds = rows
+                .Select(row => Convert.ToString(row.Payload.ContainsKey("nodeId") ? row.Payload["nodeId"] : null, CultureInfo.InvariantCulture))
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .ToList();
+            List<string> connectorTopologyFingerprints = rows
+                .Select(row => row.Payload.ContainsKey("fingerprints") ? row.Payload["fingerprints"] as Dictionary<string, object> : null)
+                .Where(value => value != null && value.ContainsKey("topology"))
+                .Select(value => Convert.ToString(value["topology"], CultureInfo.InvariantCulture))
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .OrderBy(value => value, StringComparer.Ordinal)
+                .ToList();
+            Dictionary<string, object> fingerprints = elementRow.Payload.ContainsKey("fingerprints")
+                ? elementRow.Payload["fingerprints"] as Dictionary<string, object>
+                : null;
+            if (fingerprints == null) return;
+            fingerprints["topology"] = Sha256(CanonicalJson(new Dictionary<string, object>
+            {
+                { "ownedConnectorNodeIds", connectorNodeIds },
+                { "connectorTopologyFingerprints", connectorTopologyFingerprints }
+            }));
+            elementRow.PayloadFingerprint = Sha256(SerializePayload(elementRow.Payload));
+            elementRow.CanonicalByteCount = 0;
+        }
+
+        private static Dictionary<string, object> BuildShapeFingerprintBasis(
+            Dictionary<string, object> geometry,
+            Dictionary<string, object> profile)
+        {
+            JObject source = geometry != null ? JObject.FromObject(geometry) : new JObject();
+            JObject basis = new JObject
+            {
+                ["basis"] = source["basis"],
+                ["precisionClass"] = source["precisionClass"],
+                ["profile"] = profile != null ? JObject.FromObject(profile) : JValue.CreateNull()
+            };
+            JObject centerline = source["centerline"] as JObject;
+            JArray centerlinePoints = centerline != null ? centerline["points"] as JArray : null;
+            bool hasLinearCenterline = centerlinePoints != null && centerlinePoints.Count >= 2;
+            basis["centerlineShape"] = JObject.FromObject(PolylineShapeInvariants(centerlinePoints, false));
+            JArray boundaryLoops = source["boundaryLoops"] as JArray;
+            JArray normalizedLoops = new JArray();
+            if (boundaryLoops != null)
+            {
+                List<JObject> loopInvariants = boundaryLoops.OfType<JArray>()
+                    .Select(loop => JObject.FromObject(PolylineShapeInvariants(loop, true)))
+                    .OrderBy(loop => CanonicalJson(loop), StringComparer.Ordinal)
+                    .ToList();
+                foreach (JObject loopInvariant in loopInvariants) normalizedLoops.Add(loopInvariant);
+            }
+            basis["boundaryLoopShape"] = normalizedLoops;
+            if (!hasLinearCenterline && normalizedLoops.Count == 0)
+            {
+                // A host-axis-aligned AABB changes dimensions under a rigid
+                // rotation. Excluding it from the shape fingerprint avoids
+                // falsely classifying placement rotation as physical resize.
+                // The runtime reports this class as capability-limited.
+                basis["shapeSupport"] = "aabb_only_not_rotation_invariant";
+            }
+            return basis.ToObject<Dictionary<string, object>>();
+        }
+
+        private static Dictionary<string, object> BuildPlacementFingerprintBasis(Dictionary<string, object> geometry)
+        {
+            JObject source = geometry != null ? JObject.FromObject(geometry) : new JObject();
+            JObject centerline = source["centerline"] as JObject;
+            JArray centerlinePoints = centerline != null ? centerline["points"] as JArray : null;
+            JToken pointLocation = source["pointLocation"];
+            JArray boundaryLoops = source["boundaryLoops"] as JArray;
+            JObject basis = new JObject();
+            if (centerlinePoints != null && centerlinePoints.Count >= 2)
+            {
+                basis["centerlinePoints"] = CanonicalPointSequence(centerlinePoints, false);
+            }
+            else if (pointLocation != null && pointLocation.Type != JTokenType.Null)
+            {
+                basis["pointLocation"] = pointLocation.DeepClone();
+            }
+            else if (boundaryLoops != null && boundaryLoops.Count > 0)
+            {
+                JArray canonicalLoops = new JArray();
+                List<JArray> orderedLoops = boundaryLoops.OfType<JArray>()
+                    .Select(loop => CanonicalPointSequence(loop, true))
+                    .OrderBy(loop => CanonicalJson(loop), StringComparer.Ordinal)
+                    .ToList();
+                foreach (JArray loop in orderedLoops) canonicalLoops.Add(loop);
+                basis["boundaryLoops"] = canonicalLoops;
+            }
+            else
+            {
+                JObject aabb = source["aabb"] as JObject;
+                JArray min = aabb != null ? aabb["min"] as JArray : null;
+                JArray max = aabb != null ? aabb["max"] as JArray : null;
+                if (min != null && max != null && min.Count == 3 && max.Count == 3)
+                {
+                    basis["aabbCenterMm"] = new JArray(
+                        RoundMm((max[0].Value<double>() + min[0].Value<double>()) / 2.0),
+                        RoundMm((max[1].Value<double>() + min[1].Value<double>()) / 2.0),
+                        RoundMm((max[2].Value<double>() + min[2].Value<double>()) / 2.0));
+                }
+            }
+            return basis.ToObject<Dictionary<string, object>>();
+        }
+
+        private static JArray CanonicalPointSequence(JArray points, bool closed)
+        {
+            List<JToken> source = points != null
+                ? points.Where(point => point is JArray).Select(point => point.DeepClone()).ToList()
+                : new List<JToken>();
+            if (source.Count == 0) return new JArray();
+            List<List<JToken>> orientations = new List<List<JToken>>
+            {
+                source,
+                source.AsEnumerable().Reverse().Select(point => point.DeepClone()).ToList()
+            };
+            string bestCanonical = null;
+            JArray best = null;
+            foreach (List<JToken> orientation in orientations)
+            {
+                int candidateCount = closed ? orientation.Count : 1;
+                for (int offset = 0; offset < candidateCount; offset++)
+                {
+                    JArray candidate = new JArray(Enumerable.Range(0, orientation.Count)
+                        .Select(index => orientation[(index + offset) % orientation.Count].DeepClone()));
+                    string canonical = CanonicalJson(candidate);
+                    if (bestCanonical == null || string.CompareOrdinal(canonical, bestCanonical) < 0)
+                    {
+                        bestCanonical = canonical;
+                        best = candidate;
+                    }
+                }
+            }
+            return best ?? new JArray();
+        }
+
+        private static Dictionary<string, object> PolylineShapeInvariants(JArray points, bool closeLoop)
+        {
+            List<double[]> vectors = new List<double[]>();
+            if (points != null)
+            {
+                for (int index = 1; index < points.Count; index++)
+                {
+                    JArray previous = points[index - 1] as JArray;
+                    JArray current = points[index] as JArray;
+                    if (previous == null || current == null || previous.Count != 3 || current.Count != 3) continue;
+                    vectors.Add(new[]
+                    {
+                        current[0].Value<double>() - previous[0].Value<double>(),
+                        current[1].Value<double>() - previous[1].Value<double>(),
+                        current[2].Value<double>() - previous[2].Value<double>()
+                    });
+                }
+                if (closeLoop && points.Count >= 3)
+                {
+                    JArray last = points[points.Count - 1] as JArray;
+                    JArray first = points[0] as JArray;
+                    if (last != null && first != null && last.Count == 3 && first.Count == 3)
+                    {
+                        vectors.Add(new[]
+                        {
+                            first[0].Value<double>() - last[0].Value<double>(),
+                            first[1].Value<double>() - last[1].Value<double>(),
+                            first[2].Value<double>() - last[2].Value<double>()
+                        });
+                    }
+                }
+            }
+            if (closeLoop) return CanonicalClosedPolylineInvariants(vectors);
+            List<double> lengths = vectors.Select(vector => RoundMm(Math.Sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]))).ToList();
+            List<double> turnCosines = new List<double>();
+            for (int index = 1; index < vectors.Count; index++)
+            {
+                double leftLength = lengths[index - 1];
+                double rightLength = lengths[index];
+                double cosine = leftLength > 1e-9 && rightLength > 1e-9
+                    ? (vectors[index - 1][0] * vectors[index][0] + vectors[index - 1][1] * vectors[index][1] + vectors[index - 1][2] * vectors[index][2]) / (leftLength * rightLength)
+                    : 1.0;
+                turnCosines.Add(Math.Round(Math.Max(-1.0, Math.Min(1.0, cosine)), 12, MidpointRounding.AwayFromZero));
+            }
+            return new Dictionary<string, object>
+            {
+                { "segmentLengthsMm", lengths },
+                { "turnCosines", turnCosines }
+            };
+        }
+
+        private static Dictionary<string, object> CanonicalClosedPolylineInvariants(IList<double[]> vectors)
+        {
+            if (vectors == null || vectors.Count == 0)
+            {
+                return new Dictionary<string, object>
+                {
+                    { "segmentLengthsMm", new List<double>() },
+                    { "turnCosines", new List<double>() }
+                };
+            }
+
+            List<IList<double[]>> orientations = new List<IList<double[]>>
+            {
+                vectors.ToList(),
+                vectors.Reverse().Select(vector => new[] { -vector[0], -vector[1], -vector[2] }).ToList()
+            };
+            string bestCanonical = null;
+            Dictionary<string, object> best = null;
+            foreach (IList<double[]> orientation in orientations)
+            {
+                List<double> lengths = orientation.Select(VectorLengthMm).ToList();
+                List<double> turns = new List<double>();
+                for (int index = 0; index < orientation.Count; index++)
+                {
+                    turns.Add(VectorTurnCosine(
+                        orientation[index],
+                        orientation[(index + 1) % orientation.Count],
+                        lengths[index],
+                        lengths[(index + 1) % orientation.Count]));
+                }
+                for (int offset = 0; offset < orientation.Count; offset++)
+                {
+                    List<double> rotatedLengths = Enumerable.Range(0, orientation.Count)
+                        .Select(index => lengths[(index + offset) % orientation.Count])
+                        .ToList();
+                    List<double> rotatedTurns = Enumerable.Range(0, orientation.Count)
+                        .Select(index => turns[(index + offset) % orientation.Count])
+                        .ToList();
+                    Dictionary<string, object> candidate = new Dictionary<string, object>
+                    {
+                        { "segmentLengthsMm", rotatedLengths },
+                        { "turnCosines", rotatedTurns }
+                    };
+                    string canonical = CanonicalJson(candidate);
+                    if (bestCanonical == null || string.CompareOrdinal(canonical, bestCanonical) < 0)
+                    {
+                        bestCanonical = canonical;
+                        best = candidate;
+                    }
+                }
+            }
+            return best;
+        }
+
+        private static double VectorLengthMm(double[] vector)
+        {
+            return RoundMm(Math.Sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]));
+        }
+
+        private static double VectorTurnCosine(double[] left, double[] right, double leftLength, double rightLength)
+        {
+            double cosine = leftLength > 1e-9 && rightLength > 1e-9
+                ? (left[0] * right[0] + left[1] * right[1] + left[2] * right[2]) / (leftLength * rightLength)
+                : 1.0;
+            return Math.Round(Math.Max(-1.0, Math.Min(1.0, cosine)), 12, MidpointRounding.AwayFromZero);
+        }
+
+        private static Element ResolveSystemElement(Document document, Element element)
+        {
+            if (document == null || element == null) return null;
+            try
+            {
+                PropertyInfo property = element.GetType().GetProperty("MEPSystem", BindingFlags.Instance | BindingFlags.Public);
+                Element system = property != null ? property.GetValue(element, null) as Element : null;
+                if (system != null) return system;
+            }
+            catch { }
+            foreach (string parameterName in new[] { "RBS_DUCT_SYSTEM_TYPE_PARAM", "RBS_PIPING_SYSTEM_TYPE_PARAM" })
+            {
+                Parameter parameter = GetBuiltInParameter(element, parameterName);
+                try
+                {
+                    ElementId id = parameter != null && parameter.StorageType == StorageType.ElementId ? parameter.AsElementId() : ElementId.InvalidElementId;
+                    Element value = id != null && id != ElementId.InvalidElementId ? document.GetElement(id) : null;
+                    if (value != null) return value;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private static string ReadPropertyText(object value, string propertyName)
+        {
+            try
+            {
+                PropertyInfo property = value != null ? value.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public) : null;
+                object result = property != null ? property.GetValue(value, null) : null;
+                return result != null ? Convert.ToString(result, CultureInfo.InvariantCulture) : null;
+            }
+            catch { return null; }
+        }
+
+        private static Parameter GetBuiltInParameter(Element element, string name)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(name)) return null;
+            try
+            {
+                BuiltInParameter parameterId;
+                if (!Enum.TryParse(name, true, out parameterId)) return null;
+                return element.get_Parameter(parameterId);
+            }
+            catch { return null; }
+        }
+
+        private static string ReadParameterText(Element element, IEnumerable<string> parameterNames)
+        {
+            foreach (string name in parameterNames ?? Enumerable.Empty<string>())
+            {
+                Parameter parameter = GetBuiltInParameter(element, name);
+                if (parameter == null) continue;
+                try
+                {
+                    string text = parameter.StorageType == StorageType.String ? parameter.AsString() : parameter.AsValueString();
+                    if (!string.IsNullOrWhiteSpace(text)) return text.Trim();
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private static double? ReadLengthParameterMm(Element element, IEnumerable<string> parameterNames)
+        {
+            foreach (string name in parameterNames ?? Enumerable.Empty<string>())
+            {
+                Parameter parameter = GetBuiltInParameter(element, name);
+                if (parameter == null) continue;
+                try
+                {
+                    double value = parameter.AsDouble() * FeetToMillimetres;
+                    if (!double.IsNaN(value) && !double.IsInfinity(value) && value > 0) return RoundMm(value);
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private static double? ReadNonNegativeLengthParameterMm(Element element, IEnumerable<string> parameterNames)
+        {
+            foreach (string name in parameterNames ?? Enumerable.Empty<string>())
+            {
+                Parameter parameter = GetBuiltInParameter(element, name);
+                if (parameter == null || !parameter.HasValue) continue;
+                try
+                {
+                    double value = parameter.AsDouble() * FeetToMillimetres;
+                    if (!double.IsNaN(value) && !double.IsInfinity(value) && value >= 0) return RoundMm(value);
+                }
+                catch { }
+            }
+            return null;
         }
 
         internal static Dictionary<string, object> BuildTransformRecord(Transform transform, out double roundTripErrorMm, out bool valid)
@@ -1249,61 +1772,9 @@ namespace RevAgentCommandSet.Commands.Spatial
                 return new List<SpatialRow>();
             }
 
-            bool mepCurveOwner = owner is MEPCurve;
-            List<ConnectorDescriptor> endConnectors = descriptors
-                .Where(item => string.Equals(item.ConnectorType, "End", StringComparison.OrdinalIgnoreCase))
-                .OrderBy(item => item.EndpointOrder)
-                .ThenBy(item => item.Signature, StringComparer.Ordinal)
-                .ToList();
-            Dictionary<ConnectorDescriptor, string> keys = new Dictionary<ConnectorDescriptor, string>();
-            if (mepCurveOwner)
-            {
-                for (int index = 0; index < endConnectors.Count; index++)
-                {
-                    keys[endConnectors[index]] = "mepcurve-end:" + index.ToString(CultureInfo.InvariantCulture);
-                }
-            }
-
-            HashSet<string> uniqueApiIds = new HashSet<string>(StringComparer.Ordinal);
-            HashSet<string> duplicateApiIds = new HashSet<string>(StringComparer.Ordinal);
-            foreach (ConnectorDescriptor descriptor in descriptors.Where(item => !string.IsNullOrWhiteSpace(item.ApiId)))
-            {
-                if (!uniqueApiIds.Add(descriptor.ApiId)) duplicateApiIds.Add(descriptor.ApiId);
-            }
-
-            foreach (IGrouping<string, ConnectorDescriptor> group in descriptors
-                .Where(item => !keys.ContainsKey(item))
-                .GroupBy(item => item.Signature, StringComparer.Ordinal)
-                .OrderBy(item => item.Key, StringComparer.Ordinal))
-            {
-                if (DateTime.UtcNow >= deadlineUtc)
-                {
-                    deadlineExceeded = true;
-                    return new List<SpatialRow>();
-                }
-                if (group.Count() > 1 && group
-                    .Select(item => (item.ApiId ?? "") + "|" + item.HostPointKey)
-                    .Distinct(StringComparer.Ordinal)
-                    .Count() < group.Count())
-                {
-                    warnings.Add("Ambiguous connector signature collision on owner " + StableUniqueId(owner) + "; collision ordinals are session-deterministic and future remapping must be treated as remove/add.");
-                }
-                int collisionOrdinal = 0;
-                foreach (ConnectorDescriptor descriptor in group
-                    .OrderBy(item => item.HostPointKey, StringComparer.Ordinal)
-                    .ThenBy(item => item.ApiId ?? "", StringComparer.Ordinal))
-                {
-                    if (!string.IsNullOrWhiteSpace(descriptor.ApiId) && !duplicateApiIds.Contains(descriptor.ApiId))
-                    {
-                        keys[descriptor] = "api-id:" + descriptor.ApiId;
-                    }
-                    else
-                    {
-                        keys[descriptor] = BuildConnectorSignatureKey(group.Key, collisionOrdinal);
-                        collisionOrdinal++;
-                    }
-                }
-            }
+            HashSet<ConnectorDescriptor> ambiguousDescriptors;
+            Dictionary<ConnectorDescriptor, string> keys = BuildConnectorKeyMap(owner, descriptors, deadlineUtc, warnings, out ambiguousDescriptors, out deadlineExceeded);
+            if (deadlineExceeded) return new List<SpatialRow>();
 
             Dictionary<string, object> sourceRef = new Dictionary<string, object>
             {
@@ -1312,6 +1783,17 @@ namespace RevAgentCommandSet.Commands.Spatial
             };
             if (!source.IsHost) sourceRef["linkInstanceUniqueId"] = source.PlacementKey;
             List<SpatialRow> rows = new List<SpatialRow>();
+            Dictionary<string, object> ownerSpatialProperties = BuildElementSpatialProperties(source.Document, owner);
+            Dictionary<string, object> ownerProfile = BuildElementProfile(owner);
+            Dictionary<string, ConnectorResolutionSet> peerResolutionCache = new Dictionary<string, ConnectorResolutionSet>(StringComparer.Ordinal);
+            peerResolutionCache[ownerNodeId] = new ConnectorResolutionSet
+            {
+                Owner = owner,
+                OwnerNodeId = ownerNodeId,
+                Descriptors = descriptors,
+                Keys = keys,
+                AmbiguousDescriptors = ambiguousDescriptors
+            };
             foreach (ConnectorDescriptor descriptor in descriptors.OrderBy(item => keys[item], StringComparer.Ordinal))
             {
                 if (DateTime.UtcNow >= deadlineUtc)
@@ -1349,6 +1831,50 @@ namespace RevAgentCommandSet.Commands.Spatial
                 };
                 if (descriptor.HostDirectionMm != null) geometry["direction"] = descriptor.HostDirectionMm;
                 geometry["geometryFingerprint"] = Sha256(CanonicalGeometryText(geometry));
+                ConnectorTopologyEvidence topology = BuildConnectorTopologyEvidence(
+                    source,
+                    owner,
+                    nodeId,
+                    descriptor,
+                    peerResolutionCache,
+                    deadlineUtc,
+                    warnings,
+                    ambiguousDescriptors.Contains(descriptor),
+                    out deadlineExceeded);
+                if (deadlineExceeded) return new List<SpatialRow>();
+                Dictionary<string, object> profile = BuildConnectorProfile(descriptor, ownerProfile);
+                Dictionary<string, object> spatialProperties = BuildConnectorSpatialProperties(descriptor, ownerSpatialProperties);
+                Dictionary<string, object> fingerprints = new Dictionary<string, object>
+                {
+                    { "version", FingerprintVersion },
+                    { "placement", Sha256(CanonicalJson(new Dictionary<string, object>
+                        {
+                            { "originMm", descriptor.HostPointMm },
+                            { "direction", descriptor.HostDirectionMm }
+                        }))
+                    },
+                    { "shape", Sha256(CanonicalJson(new Dictionary<string, object>
+                        {
+                            { "profile", profile }
+                        }))
+                    },
+                    { "property", Sha256(CanonicalJson(new Dictionary<string, object>
+                        {
+                            { "spatialProperties", spatialProperties },
+                            { "domain", descriptor.Domain },
+                            { "connectorType", descriptor.ConnectorType }
+                        }))
+                    },
+                    { "topology", Sha256(CanonicalJson(new Dictionary<string, object>
+                        {
+                            { "isConnected", descriptor.IsConnected },
+                            { "connectedToNodeIds", topology.ConnectedToNodeIds },
+                            { "connectedOwnerNodeIds", topology.ConnectedOwnerNodeIds },
+                            { "connectionRefs", topology.ConnectionRefs },
+                            { "topologyCoverage", topology.Coverage }
+                        }))
+                    }
+                };
                 Dictionary<string, object> payload = new Dictionary<string, object>
                 {
                     { "nodeId", nodeId },
@@ -1362,6 +1888,13 @@ namespace RevAgentCommandSet.Commands.Spatial
                     { "connectorType", descriptor.ConnectorType },
                     { "shape", descriptor.Shape },
                     { "isConnected", descriptor.IsConnected },
+                    { "spatialProperties", spatialProperties },
+                    { "profile", profile },
+                    { "connectedToNodeIds", topology.ConnectedToNodeIds },
+                    { "connectedOwnerNodeIds", topology.ConnectedOwnerNodeIds },
+                    { "connectionRefs", topology.ConnectionRefs },
+                    { "topologyCoverage", topology.Coverage },
+                    { "fingerprints", fingerprints },
                     { "geometry", geometry }
                 };
                 rows.Add(new SpatialRow
@@ -1378,6 +1911,373 @@ namespace RevAgentCommandSet.Commands.Spatial
                 });
             }
             return rows;
+        }
+
+        private static Dictionary<ConnectorDescriptor, string> BuildConnectorKeyMap(
+            Element owner,
+            IList<ConnectorDescriptor> descriptors,
+            DateTime deadlineUtc,
+            IList<string> warnings,
+            out HashSet<ConnectorDescriptor> ambiguousDescriptors,
+            out bool deadlineExceeded)
+        {
+            deadlineExceeded = false;
+            ambiguousDescriptors = new HashSet<ConnectorDescriptor>();
+            List<ConnectorDescriptor> endConnectors = descriptors
+                .Where(item => string.Equals(item.ConnectorType, "End", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(item => item.EndpointOrder)
+                .ThenBy(item => item.Signature, StringComparer.Ordinal)
+                .ToList();
+            Dictionary<ConnectorDescriptor, string> keys = new Dictionary<ConnectorDescriptor, string>();
+            if (owner is MEPCurve)
+            {
+                for (int index = 0; index < endConnectors.Count; index++)
+                {
+                    keys[endConnectors[index]] = "mepcurve-end:" + index.ToString(CultureInfo.InvariantCulture);
+                }
+            }
+
+            HashSet<string> uniqueApiIds = new HashSet<string>(StringComparer.Ordinal);
+            HashSet<string> duplicateApiIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (ConnectorDescriptor descriptor in descriptors.Where(item => !string.IsNullOrWhiteSpace(item.ApiId)))
+            {
+                if (!uniqueApiIds.Add(descriptor.ApiId)) duplicateApiIds.Add(descriptor.ApiId);
+            }
+
+            foreach (IGrouping<string, ConnectorDescriptor> group in descriptors
+                .Where(item => !keys.ContainsKey(item))
+                .GroupBy(item => item.Signature, StringComparer.Ordinal)
+                .OrderBy(item => item.Key, StringComparer.Ordinal))
+            {
+                if (DateTime.UtcNow >= deadlineUtc)
+                {
+                    deadlineExceeded = true;
+                    return new Dictionary<ConnectorDescriptor, string>();
+                }
+                bool ambiguousGroup = group.Count() > 1 && group
+                    .Select(item => (item.ApiId ?? "") + "|" + item.HostPointKey)
+                    .Distinct(StringComparer.Ordinal)
+                    .Count() < group.Count();
+                if (ambiguousGroup)
+                {
+                    foreach (ConnectorDescriptor ambiguous in group) ambiguousDescriptors.Add(ambiguous);
+                    if (warnings != null)
+                    {
+                        warnings.Add("Ambiguous connector signature collision on owner " + StableUniqueId(owner) + "; collision ordinals are session-deterministic and future remapping must be treated as remove/add.");
+                    }
+                }
+                int collisionOrdinal = 0;
+                foreach (ConnectorDescriptor descriptor in group
+                    .OrderBy(item => item.HostPointKey, StringComparer.Ordinal)
+                    .ThenBy(item => item.ApiId ?? "", StringComparer.Ordinal))
+                {
+                    if (!string.IsNullOrWhiteSpace(descriptor.ApiId) && !duplicateApiIds.Contains(descriptor.ApiId))
+                    {
+                        keys[descriptor] = "api-id:" + descriptor.ApiId;
+                    }
+                    else
+                    {
+                        keys[descriptor] = BuildConnectorSignatureKey(group.Key, collisionOrdinal);
+                        collisionOrdinal++;
+                    }
+                }
+            }
+            return keys;
+        }
+
+        private static Dictionary<string, object> BuildConnectorProfile(
+            ConnectorDescriptor descriptor,
+            Dictionary<string, object> ownerProfile)
+        {
+            object insulation;
+            return new Dictionary<string, object>
+            {
+                { "shape", NormalizeProfileShape(descriptor.Shape, descriptor.DiameterMm, descriptor.WidthMm, descriptor.HeightMm) },
+                { "diameterMm", descriptor.DiameterMm },
+                { "widthMm", descriptor.WidthMm },
+                { "heightMm", descriptor.HeightMm },
+                { "insulationThicknessMm", ownerProfile != null && ownerProfile.TryGetValue("insulationThicknessMm", out insulation) ? insulation : null }
+            };
+        }
+
+        private static Dictionary<string, object> BuildConnectorSpatialProperties(
+            ConnectorDescriptor descriptor,
+            Dictionary<string, object> ownerSpatialProperties)
+        {
+            object ownerSystemKey;
+            object ownerSystemName;
+            object ownerClassification;
+            return new Dictionary<string, object>
+            {
+                { "systemKey", !string.IsNullOrWhiteSpace(descriptor.SystemKey)
+                    ? descriptor.SystemKey
+                    : ownerSpatialProperties != null && ownerSpatialProperties.TryGetValue("systemKey", out ownerSystemKey) ? ownerSystemKey : null },
+                { "systemName", !string.IsNullOrWhiteSpace(descriptor.SystemName)
+                    ? descriptor.SystemName
+                    : ownerSpatialProperties != null && ownerSpatialProperties.TryGetValue("systemName", out ownerSystemName) ? ownerSystemName : null },
+                { "systemClassification", !string.IsNullOrWhiteSpace(descriptor.SystemClassification)
+                    ? descriptor.SystemClassification
+                    : ownerSpatialProperties != null && ownerSpatialProperties.TryGetValue("systemClassification", out ownerClassification) ? ownerClassification : null }
+            };
+        }
+
+        private static ConnectorTopologyEvidence BuildConnectorTopologyEvidence(
+            SpatialSource source,
+            Element owner,
+            string currentNodeId,
+            ConnectorDescriptor descriptor,
+            Dictionary<string, ConnectorResolutionSet> resolutionCache,
+            DateTime deadlineUtc,
+            IList<string> warnings,
+            bool currentConnectorIdentityAmbiguous,
+            out bool deadlineExceeded)
+        {
+            deadlineExceeded = false;
+            ConnectorTopologyEvidence result = new ConnectorTopologyEvidence();
+            List<string> reasons = new List<string>();
+            if (currentConnectorIdentityAmbiguous) reasons.Add("connector_identity_ambiguous");
+            if (!descriptor.IsConnectedRead) reasons.Add("is_connected_read_failed");
+
+            ConnectorSet references = null;
+            try
+            {
+                references = descriptor.Connector != null ? descriptor.Connector.AllRefs : null;
+                result.AllRefsRead = references != null;
+                if (references == null) reasons.Add("all_refs_unavailable");
+            }
+            catch (Exception ex)
+            {
+                reasons.Add("all_refs_read_failed");
+                if (warnings != null) warnings.Add("Connector.AllRefs read failed on owner " + StableUniqueId(owner) + ": " + ex.GetType().Name + ".");
+            }
+
+            try
+            {
+                if (references != null)
+                {
+                    foreach (Connector peer in references)
+                    {
+                    if (DateTime.UtcNow >= deadlineUtc)
+                    {
+                        deadlineExceeded = true;
+                        return result;
+                    }
+                    result.ReferencedConnectorCount++;
+                    if (peer == null)
+                    {
+                        reasons.Add("peer_connector_unavailable");
+                        result.UnresolvedConnectorCount++;
+                        continue;
+                    }
+                    Element peerOwner = null;
+                    try { peerOwner = peer.Owner; }
+                    catch { }
+                    if (peerOwner == null)
+                    {
+                        reasons.Add("peer_owner_unavailable");
+                        result.UnresolvedConnectorCount++;
+                        continue;
+                    }
+                    string peerConnectorType = SafeConnectorText(delegate { return peer.ConnectorType.ToString(); });
+                    if (string.Equals(peerConnectorType, "Reference", StringComparison.OrdinalIgnoreCase) ||
+                        (string.Equals(peerConnectorType, "Logical", StringComparison.OrdinalIgnoreCase) && peerOwner is MEPSystem))
+                    {
+                        // Connector.AllRefs also exposes insulation/reference
+                        // bindings and the owning MEPSystem container. Those
+                        // are not element-to-element topology edges: system
+                        // membership is already captured in spatialProperties.
+                        result.ReferencedConnectorCount--;
+                        continue;
+                    }
+                    string peerUniqueId = StableUniqueId(peerOwner);
+                    if (peerUniqueId.StartsWith("element-id:", StringComparison.Ordinal))
+                    {
+                        reasons.Add("peer_stable_identity_unavailable");
+                        result.UnresolvedConnectorCount++;
+                        continue;
+                    }
+                    string peerOwnerNodeId = BuildNodeId(source, peerUniqueId);
+                    string peerConnectorNodeId;
+                    string unresolvedReason;
+                    bool resolved = TryResolvePeerConnectorNodeId(
+                        source,
+                        peerOwner,
+                        peerOwnerNodeId,
+                        peer,
+                        resolutionCache,
+                        deadlineUtc,
+                        warnings,
+                        out peerConnectorNodeId,
+                        out unresolvedReason,
+                        out deadlineExceeded);
+                    if (deadlineExceeded) return result;
+                    if (resolved && string.Equals(peerConnectorNodeId, currentNodeId, StringComparison.Ordinal))
+                    {
+                        result.ReferencedConnectorCount--;
+                        continue;
+                    }
+
+                    string relationKind = ResolveConnectionKind(descriptor.ConnectorType, peerConnectorType);
+                    Dictionary<string, object> connectionRef = new Dictionary<string, object>
+                    {
+                        { "targetOwnerNodeId", peerOwnerNodeId },
+                        { "targetConnectorNodeId", resolved ? peerConnectorNodeId : null },
+                        { "relationKind", relationKind },
+                        { "basis", "revit_connector_all_refs" },
+                        { "resolved", resolved }
+                    };
+                    string identity = peerOwnerNodeId + "|" + (resolved ? peerConnectorNodeId : "unresolved:" + (unresolvedReason ?? "unknown")) + "|" + relationKind;
+                    if (!result.ConnectionIdentityKeys.Add(identity)) continue;
+                    result.ConnectionRefs.Add(connectionRef);
+                    result.ConnectedOwnerNodeIds.Add(peerOwnerNodeId);
+                    if (resolved)
+                    {
+                        result.ConnectedToNodeIds.Add(peerConnectorNodeId);
+                    }
+                    else
+                    {
+                        result.UnresolvedConnectorCount++;
+                        reasons.Add(unresolvedReason ?? "peer_connector_identity_unresolved");
+                    }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                result.AllRefsRead = false;
+                reasons.Add("all_refs_enumeration_failed");
+                if (warnings != null) warnings.Add("Connector.AllRefs enumeration failed on owner " + StableUniqueId(owner) + ": " + ex.GetType().Name + ".");
+            }
+
+            result.ConnectedToNodeIds = result.ConnectedToNodeIds.Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal).ToList();
+            result.ConnectedOwnerNodeIds = result.ConnectedOwnerNodeIds.Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal).ToList();
+            result.ConnectionRefs = result.ConnectionRefs
+                .OrderBy(value => Convert.ToString(value["targetOwnerNodeId"], CultureInfo.InvariantCulture), StringComparer.Ordinal)
+                .ThenBy(value => Convert.ToString(value["targetConnectorNodeId"], CultureInfo.InvariantCulture), StringComparer.Ordinal)
+                .ThenBy(value => Convert.ToString(value["relationKind"], CultureInfo.InvariantCulture), StringComparer.Ordinal)
+                .ToList();
+            if (descriptor.IsConnected && result.ConnectionRefs.Count == 0)
+            {
+                reasons.Add("connected_without_all_refs");
+            }
+            List<string> distinctReasons = reasons.Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal).ToList();
+            bool complete = !currentConnectorIdentityAmbiguous && descriptor.IsConnectedRead && result.AllRefsRead && result.UnresolvedConnectorCount == 0 &&
+                (!descriptor.IsConnected || result.ConnectionRefs.Count > 0);
+            result.Coverage = new Dictionary<string, object>
+            {
+                { "basis", "revit_connector_all_refs" },
+                { "complete", complete },
+                { "targetMembershipValidated", false },
+                { "isConnectedRead", descriptor.IsConnectedRead },
+                { "allRefsRead", result.AllRefsRead },
+                { "referencedConnectorCount", result.ReferencedConnectorCount },
+                { "resolvedConnectorNodeCount", result.ConnectedToNodeIds.Count },
+                { "unresolvedConnectorCount", result.UnresolvedConnectorCount },
+                { "reasons", distinctReasons }
+            };
+            return result;
+        }
+
+        private static bool TryResolvePeerConnectorNodeId(
+            SpatialSource source,
+            Element peerOwner,
+            string peerOwnerNodeId,
+            Connector peer,
+            Dictionary<string, ConnectorResolutionSet> resolutionCache,
+            DateTime deadlineUtc,
+            IList<string> warnings,
+            out string peerConnectorNodeId,
+            out string unresolvedReason,
+            out bool deadlineExceeded)
+        {
+            peerConnectorNodeId = null;
+            unresolvedReason = null;
+            deadlineExceeded = false;
+            ConnectorResolutionSet set;
+            if (!resolutionCache.TryGetValue(peerOwnerNodeId, out set))
+            {
+                bool readFailed;
+                List<ConnectorDescriptor> peerDescriptors = ReadConnectorDescriptors(peerOwner, source, deadlineUtc, warnings, out readFailed, out deadlineExceeded);
+                if (deadlineExceeded) return false;
+                if (readFailed)
+                {
+                    unresolvedReason = "peer_connector_read_failed";
+                    return false;
+                }
+                HashSet<ConnectorDescriptor> peerAmbiguousDescriptors;
+                Dictionary<ConnectorDescriptor, string> peerKeys = BuildConnectorKeyMap(peerOwner, peerDescriptors, deadlineUtc, warnings, out peerAmbiguousDescriptors, out deadlineExceeded);
+                if (deadlineExceeded) return false;
+                set = new ConnectorResolutionSet
+                {
+                    Owner = peerOwner,
+                    OwnerNodeId = peerOwnerNodeId,
+                    Descriptors = peerDescriptors,
+                    Keys = peerKeys,
+                    AmbiguousDescriptors = peerAmbiguousDescriptors
+                };
+                resolutionCache[peerOwnerNodeId] = set;
+            }
+
+            ConnectorDescriptor match = set.Descriptors.FirstOrDefault(value => object.ReferenceEquals(value.Connector, peer));
+            string apiId = TryGetConnectorApiId(peer);
+            if (match == null && !string.IsNullOrWhiteSpace(apiId))
+            {
+                List<ConnectorDescriptor> apiMatches = set.Descriptors.Where(value => string.Equals(value.ApiId, apiId, StringComparison.Ordinal)).ToList();
+                if (apiMatches.Count == 1) match = apiMatches[0];
+            }
+            if (match == null)
+            {
+                XYZ localPoint = null;
+                string signature = null;
+                string hostPointKey = null;
+                try
+                {
+                    XYZ sourcePoint = peer.Origin;
+                    localPoint = ToOwnerLocalPoint(peerOwner, sourcePoint);
+                    signature = BuildConnectorSignature(peerOwner, peer, localPoint);
+                    hostPointKey = string.Join(",", MillimetrePoint(source.SourceToHost.OfPoint(sourcePoint)).Select(value => value.ToString("R", CultureInfo.InvariantCulture)));
+                }
+                catch { }
+                List<ConnectorDescriptor> signatureMatches = set.Descriptors
+                    .Where(value => string.Equals(value.Signature, signature, StringComparison.Ordinal) && string.Equals(value.HostPointKey, hostPointKey, StringComparison.Ordinal))
+                    .ToList();
+                if (signatureMatches.Count == 1) match = signatureMatches[0];
+            }
+            string key;
+            if (match == null || !set.Keys.TryGetValue(match, out key))
+            {
+                unresolvedReason = "peer_connector_identity_unresolved";
+                return false;
+            }
+            if (set.AmbiguousDescriptors != null && set.AmbiguousDescriptors.Contains(match))
+            {
+                unresolvedReason = "peer_connector_identity_ambiguous";
+                return false;
+            }
+            peerConnectorNodeId = BuildConnectorNodeId(peerOwnerNodeId, key);
+            return true;
+        }
+
+        private static string ResolveConnectionKind(string leftConnectorType, string rightConnectorType)
+        {
+            if (string.Equals(leftConnectorType, "Logical", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(rightConnectorType, "Logical", StringComparison.OrdinalIgnoreCase)) return "logical";
+            if (string.Equals(leftConnectorType, "unknown", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(rightConnectorType, "unknown", StringComparison.OrdinalIgnoreCase)) return "unknown";
+            return "physical";
+        }
+
+        private static string NormalizeProfileShape(string rawShape, double? diameterMm, double? widthMm, double? heightMm)
+        {
+            if (!string.IsNullOrWhiteSpace(rawShape))
+            {
+                if (rawShape.IndexOf("round", StringComparison.OrdinalIgnoreCase) >= 0) return "round";
+                if (rawShape.IndexOf("rect", StringComparison.OrdinalIgnoreCase) >= 0) return "rectangular";
+                if (rawShape.IndexOf("oval", StringComparison.OrdinalIgnoreCase) >= 0) return "oval";
+            }
+            if (diameterMm.HasValue && diameterMm.Value > 0) return "round";
+            if (widthMm.HasValue && widthMm.Value > 0 && heightMm.HasValue && heightMm.Value > 0) return "rectangular";
+            return "unknown";
         }
 
         private static List<ConnectorDescriptor> ReadConnectorDescriptors(
@@ -1437,8 +2337,15 @@ namespace RevAgentCommandSet.Commands.Spatial
                     catch { }
                     XYZ localPoint = ToOwnerLocalPoint(owner, sourcePoint);
                     string signature = BuildConnectorSignature(owner, connector, localPoint);
+                    bool isConnected;
+                    bool isConnectedRead = TryReadConnectorBool(connector, "IsConnected", out isConnected);
+                    double? diameterMm = TryReadConnectorLengthMm(connector, "Radius", 2.0);
+                    double? widthMm = TryReadConnectorLengthMm(connector, "Width", 1.0);
+                    double? heightMm = TryReadConnectorLengthMm(connector, "Height", 1.0);
+                    Element connectorSystem = ResolveConnectorSystemElement(connector);
                     result.Add(new ConnectorDescriptor
                     {
+                        Connector = connector,
                         ApiId = TryGetConnectorApiId(connector),
                         Signature = signature,
                         HostPointMm = MillimetrePoint(hostPoint),
@@ -1448,7 +2355,14 @@ namespace RevAgentCommandSet.Commands.Spatial
                         Domain = SafeConnectorText(delegate { return connector.Domain.ToString(); }),
                         ConnectorType = SafeConnectorText(delegate { return connector.ConnectorType.ToString(); }),
                         Shape = SafeConnectorText(delegate { return connector.Shape.ToString(); }),
-                        IsConnected = SafeConnectorBool(delegate { return connector.IsConnected; })
+                        IsConnected = isConnected,
+                        IsConnectedRead = isConnectedRead,
+                        DiameterMm = diameterMm,
+                        WidthMm = widthMm,
+                        HeightMm = heightMm,
+                        SystemKey = connectorSystem != null ? "system:" + StableUniqueId(connectorSystem) : null,
+                        SystemName = connectorSystem != null ? GetElementName(connectorSystem) : null,
+                        SystemClassification = connectorSystem != null ? ReadPropertyText(connectorSystem, "SystemClassification") : null
                     });
                 }
             }
@@ -1538,8 +2452,46 @@ namespace RevAgentCommandSet.Commands.Spatial
             catch { return false; }
         }
 
+        private static bool TryReadConnectorBool(Connector connector, string propertyName, out bool value)
+        {
+            value = false;
+            try
+            {
+                PropertyInfo property = connector != null ? connector.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public) : null;
+                object raw = property != null ? property.GetValue(connector, null) : null;
+                if (!(raw is bool)) return false;
+                value = (bool)raw;
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private static double? TryReadConnectorLengthMm(Connector connector, string propertyName, double multiplier)
+        {
+            try
+            {
+                PropertyInfo property = connector != null ? connector.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public) : null;
+                object raw = property != null ? property.GetValue(connector, null) : null;
+                if (raw == null) return null;
+                double value = Convert.ToDouble(raw, CultureInfo.InvariantCulture) * multiplier * FeetToMillimetres;
+                return !double.IsNaN(value) && !double.IsInfinity(value) && value > 0 ? (double?)RoundMm(value) : null;
+            }
+            catch { return null; }
+        }
+
+        private static Element ResolveConnectorSystemElement(Connector connector)
+        {
+            try
+            {
+                PropertyInfo property = connector != null ? connector.GetType().GetProperty("MEPSystem", BindingFlags.Instance | BindingFlags.Public) : null;
+                return property != null ? property.GetValue(connector, null) as Element : null;
+            }
+            catch { return null; }
+        }
+
         private sealed class ConnectorDescriptor
         {
+            public Connector Connector;
             public string ApiId;
             public string Signature;
             public IList<double> HostPointMm;
@@ -1550,6 +2502,45 @@ namespace RevAgentCommandSet.Commands.Spatial
             public string ConnectorType;
             public string Shape;
             public bool IsConnected;
+            public bool IsConnectedRead;
+            public double? DiameterMm;
+            public double? WidthMm;
+            public double? HeightMm;
+            public string SystemKey;
+            public string SystemName;
+            public string SystemClassification;
+        }
+
+        private sealed class ConnectorResolutionSet
+        {
+            public Element Owner;
+            public string OwnerNodeId;
+            public IList<ConnectorDescriptor> Descriptors;
+            public Dictionary<ConnectorDescriptor, string> Keys;
+            public HashSet<ConnectorDescriptor> AmbiguousDescriptors;
+        }
+
+        private sealed class ConnectorTopologyEvidence
+        {
+            public bool AllRefsRead;
+            public int ReferencedConnectorCount;
+            public int UnresolvedConnectorCount;
+            public List<string> ConnectedToNodeIds = new List<string>();
+            public List<string> ConnectedOwnerNodeIds = new List<string>();
+            public List<Dictionary<string, object>> ConnectionRefs = new List<Dictionary<string, object>>();
+            public HashSet<string> ConnectionIdentityKeys = new HashSet<string>(StringComparer.Ordinal);
+            public Dictionary<string, object> Coverage = new Dictionary<string, object>
+            {
+                { "basis", "revit_connector_all_refs" },
+                { "complete", false },
+                { "targetMembershipValidated", false },
+                { "isConnectedRead", false },
+                { "allRefsRead", false },
+                { "referencedConnectorCount", 0 },
+                { "resolvedConnectorNodeCount", 0 },
+                { "unresolvedConnectorCount", 0 },
+                { "reasons", new List<string> { "topology_not_evaluated" } }
+            };
         }
 
         internal static string GetElementName(Element element)

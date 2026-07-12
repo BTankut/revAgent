@@ -31,6 +31,16 @@
     "spatial-store-cli-test": "node scripts/spatial-store-cli.test.mjs",
     "spatial-phase1a-capture-test": "node scripts/spatial-phase1a-capture.test.mjs",
     "spatial-phase1a-contract-test": "node scripts/spatial-phase1a-contract.test.mjs",
+    "spatial-phase1b-contract-test": "node scripts/spatial-phase1b-contract.test.mjs",
+    "spatial-phase1b-fingerprint-test": "node scripts/spatial-phase1b-fingerprint.test.mjs",
+    "spatial-phase1b-store-test": "node scripts/spatial-phase1b-store.test.mjs",
+    "spatial-phase1b-query-test": "node scripts/spatial-phase1b-query.test.mjs",
+    "spatial-phase1b-diff-test": "node scripts/spatial-phase1b-diff.test.mjs",
+    "spatial-phase1b-summary-test": "node scripts/spatial-phase1b-summary.test.mjs",
+    "spatial-phase1b-golden-test": "node scripts/spatial-phase1b-golden.test.mjs",
+    "spatial-phase1b-eval-contract-test": "node scripts/spatial-phase1b-eval-contract.test.mjs",
+    "spatial-phase1b-agent-evidence-test": "node scripts/spatial-phase1b-agent-evidence.test.mjs",
+    "spatial-phase1b-performance-test": "node scripts/spatial-phase1b-performance.test.mjs",
     "casing-member-access-test": "node scripts/casing-member-access.test.mjs",
     "tool-inference-test": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck scripts/tool-inference-contract.test.ts",
     "revit-task-merge-test": "node scripts/revit-task-merge.test.mjs",
@@ -38,7 +48,7 @@
     "socket-test": "node scripts/socket-client.test.mjs",
     "env-alias-test": "node scripts/env-alias.test.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "npm run build && npm run guard-test && npm run runtime-result-test && npm run broad-scan-result-test && npm run excel-ingestion-test && npm run schedule-adapter-test && npm run matching-scoring-test && npm run reconcile-tool-test && npm run find-elements-compact-test && npm run write-tool-contract-test && npm run bridge-result-contract-test && npm run spatial-phase0-contract-test && npm run spatial-phase1a-contract-test && npm run spatial-phase1a-store-test && npm run spatial-store-cli-test && npm run spatial-phase1a-capture-test && npm run casing-member-access-test && npm run tool-inference-test && npm run revit-task-merge-test && npm run live-feed-test && npm run socket-test && npm run env-alias-test && npm run smoke"
+    "test": "npm run build && npm run guard-test && npm run runtime-result-test && npm run broad-scan-result-test && npm run excel-ingestion-test && npm run schedule-adapter-test && npm run matching-scoring-test && npm run reconcile-tool-test && npm run find-elements-compact-test && npm run write-tool-contract-test && npm run bridge-result-contract-test && npm run spatial-phase0-contract-test && npm run spatial-phase1a-contract-test && npm run spatial-phase1a-store-test && npm run spatial-store-cli-test && npm run spatial-phase1a-capture-test && npm run spatial-phase1b-contract-test && npm run spatial-phase1b-fingerprint-test && npm run spatial-phase1b-store-test && npm run spatial-phase1b-query-test && npm run spatial-phase1b-diff-test && npm run spatial-phase1b-summary-test && npm run spatial-phase1b-golden-test && npm run spatial-phase1b-eval-contract-test && npm run spatial-phase1b-agent-evidence-test && npm run spatial-phase1b-performance-test && npm run casing-member-access-test && npm run tool-inference-test && npm run revit-task-merge-test && npm run live-feed-test && npm run socket-test && npm run env-alias-test && npm run smoke"
   },
   "files": [
     "build",
