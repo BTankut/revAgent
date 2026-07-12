@@ -29,9 +29,15 @@ All notable revAgent workstation deployment changes are tracked here.
   2022 Gate D passed on 2026-07-12 with stable repeat capture, shared-session
   double-placement, connector/R*Tree/transform, concurrent-edit interruption,
   direct `stale` post-edit liveness, performance, and close/reopen `unknown`
-  evidence. Protected delivery Gate E remains pending
-  under `docs/REVAGENT_SPATIAL_PHASE1A_ACCEPTANCE.md`; this entry does not mark
-  the roadmap phase accepted and no NAS publish was performed.
+  evidence. Protected delivery Gate E then passed through PR #217,
+  protected-main CI, automatic signed validation, and the separately approved
+  canonical NAS publish. Stable `2026.07.12.532-45d4d812` passed signed
+  readiness and representative Revit 2022 smoke. NET01, MARINA, HAFIZE, and
+  WS3 installed and verified the release; the operator accepted those
+  powered-on workstations as the Phase 1a rollout scope, while powered-off
+  EMIN, OGUZHAN, OMER, SERDAR, and YASAR remain explicitly pending normal
+  scheduled uptake. The final scoped closure audit returned `ready=true` and
+  `actionRequiredCount=0`. Phase 1a is accepted; Phase 1b remains unstarted.
 - Clarified the `set_schedule_cells` dry-run change contract without breaking
   existing consumers. Change rows now separate the observed model value
   (`actualAfter`) from the requested post-commit projection (`projectedAfter`),
