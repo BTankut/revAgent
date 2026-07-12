@@ -29,6 +29,7 @@ const assertNonEmptyStrings = (value, label) => {
 
 const evalsPath = path.join(repoRoot, "evals", "evals.json");
 const acceptancePath = path.join(repoRoot, "docs", "REVAGENT_SPATIAL_PHASE1B_ACCEPTANCE.md");
+const planPath = path.join(repoRoot, "docs", "REVAGENT_SPATIAL_CONTEXT_ENGINE_PLAN.md");
 const operationFixturePath = path.join(fixtureRoot, "phase1b-operation.golden.json");
 const diffFixturePath = path.join(fixtureRoot, "phase1b-diff.golden.json");
 const compatibilityFixturePath = path.join(fixtureRoot, "phase1b-compatibility.golden.json");
@@ -45,6 +46,7 @@ const liveHarnessWrapperPath = path.join(repoRoot, "scripts", "test-spatial-phas
 for (const filePath of [
   evalsPath,
   acceptancePath,
+  planPath,
   operationFixturePath,
   diffFixturePath,
   compatibilityFixturePath,
@@ -341,6 +343,7 @@ for (const entry of compatibilityFixture.cases) {
 }
 
 const acceptance = read(acceptancePath);
+const plan = read(planPath);
 const agentEvidenceSchema = readJson(agentEvidenceSchemaPath);
 assert.ok(agentEvidenceSchema.properties.provenance.required.includes("databasePath"));
 assert.ok(agentEvidenceSchema.properties.provenance.required.includes("databasePathSha256"));
@@ -363,7 +366,7 @@ assert.match(liveHarnessWrapperSource, /fs\.realpathSync\.native/);
 assert.match(liveHarnessWrapperSource, /Resolve-NativeRealPath/);
 assert.match(liveHarnessWrapperSource, /dangling symlink or reparse-point path/i);
 assert.match(acceptance, /^# revAgent Spatial Context Engine — Phase 1b Acceptance/m);
-assert.match(acceptance, /Status: Gates A-D passed[\s\S]{0,160}Gate E remains\s+pending/i);
+assert.match(acceptance, /Status: Gates A-E passed[\s\S]{0,160}Phase 1b is accepted/i);
 for (const gate of ["A", "B", "C", "D", "E"]) {
   assert.match(acceptance, new RegExp(`^## Gate ${gate} —`, "m"), `Acceptance record is missing Gate ${gate}.`);
 }
@@ -383,11 +386,21 @@ assert.match(acceptance, /all affected evals must be rerun/i);
 assert.match(acceptance, /provider.*model.*agent run id.*turn id/is);
 assert.match(acceptance, /test-all\.ps1/);
 assert.match(acceptance, /test-ci\.ps1/);
-assert.match(acceptance, /Phase 1c is not authorized/i);
-assert.equal([...acceptance.matchAll(/^Evidence status: passed[\s\S]*?(?=\n\n##|$)/gm)].length, 4,
-  "Phase 1b Gates A-D must preserve reviewed passed evidence summaries.");
-assert.equal([...acceptance.matchAll(/^Evidence status: pending\.$/gm)].length, 1,
-  "Phase 1b protected delivery Gate E must remain pending until delivery closes.");
-assert.match(acceptance, /Phase 1b is not accepted\./);
+assert.match(acceptance, /Phase 1c[\s\S]{0,80}not authorized/i);
+assert.equal([...acceptance.matchAll(/^Evidence status: passed[\s\S]*?(?=\n\n##|$)/gm)].length, 5,
+  "Phase 1b Gates A-E must preserve reviewed passed evidence summaries.");
+assert.equal([...acceptance.matchAll(/^Evidence status: pending\.$/gm)].length, 0,
+  "Phase 1b must not retain a pending acceptance gate after protected delivery closes.");
+assert.match(acceptance, /PR #219/);
+assert.match(acceptance, /2026\.07\.12\.534-e0f8fc32/);
+assert.match(acceptance, /post-publish HAFIZE Revit 2022 sample-model smoke passed/i);
+assert.match(acceptance, /persistentTrust=false/);
+assert.match(acceptance, /66498919D2D3F3E6A2D9DC502A645B41583DA9C9E46AF69733588567BD5DA14D/i);
+assert.match(acceptance, /actionRequiredCount=0/);
+assert.match(acceptance, /Phase 1b is accepted\./);
+assert.match(plan, /Status: codex_execution; execution completed and accepted through Phase 1b\./);
+assert.match(plan, /^\s*- \[x\] \*\*Phase 1b — Deterministic queries \+ diff\.\*\*/m);
+assert.match(plan, /^\s*- \[ \] \*\*Phase 1c — Clash detection\.\*\* Not started\./m);
+assert.doesNotMatch(plan, /^\s*- \[x\] \*\*Phase 1c\b/m);
 
 console.log("spatial Phase 1b eval, fixture, and acceptance contract tests: ok");

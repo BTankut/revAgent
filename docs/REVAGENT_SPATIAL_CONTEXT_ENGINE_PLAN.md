@@ -1,9 +1,9 @@
 # revAgent Spatial Context Engine Plan
 
-Status: codex_execution; execution completed through Phase 1a. Phase 1b Gates
-A-D passed and protected delivery Gate E is in progress.
-Revision: v2.9 — Phase 1b implementation and local/live acceptance complete;
-protected delivery remains pending (2026-07-12).
+Status: codex_execution; execution completed and accepted through Phase 1b.
+Phase 1c is not started or authorized by this record.
+Revision: v3.0 — Phase 1b Gates A-E complete; protected delivery, signed stable
+publication, and scoped rollout closure accepted (2026-07-12).
 Supersedes draft v2.1, v2, and the draft previously named
 `REVAGENT_SPATIAL_DESIGN_ENGINE_PLAN.md`.
 
@@ -655,13 +655,23 @@ Execution checkpoint (2026-07-12):
   smoke, and a zero-action closure audit for the operator-approved
   open-workstations-only scope. The five powered-off workstations remain
   explicitly pending normal scheduled uptake.
-- [ ] **Phase 1b — Deterministic queries + diff.** Gates A-D passed on
+- [x] **Phase 1b — Deterministic queries + diff.** Completed and accepted on
   2026-07-12. SpatialSnapshot v0.3, deterministic query/diff/summary, 11/11
   actual-agent variants, zero wrong frozen gold answers, 0 mm supported
   analytic-distance error, 74.809 ms worst operation p95, and 4.656 ms diff p95
-  are accepted locally. The phase remains unchecked until protected PR review,
-  merge, signed stable publish, representative smoke, and the powered-on-only
-  rollout closure complete. Phase 1c remains unauthorized.
+  passed Gates A-D. Gate E passed through PR #219, protected-main CI,
+  GitGuardian and Claude review, squash merge `e0f8fc32`, signed validation, and
+  the separately approved NAS stable publish of
+  `2026.07.12.534-e0f8fc32` (`releaseSequence=20260712193201`). Signed
+  readiness was `readyForEnforce=true`; the stable/manifest/ZIP SHA-256 values
+  matched. Final-tree Gate D evidence remained accepted, and a post-publish
+  HAFIZE Revit 2022 sample-model commandset smoke passed against the published
+  stable release. The scoped closure audit returned `ready=true` with
+  `actionRequiredCount=0`. HAFIZE, MARINA, and WS3 updated and verified. NET01
+  remained safely deferred because Revit was open; the updater returned
+  `deferred-revit-close-required` without closing Revit. EMIN, OGUZHAN, OMER,
+  SERDAR, and YASAR were powered off and remain pending normal scheduled
+  uptake. Phase 1c remains unauthorized and unstarted.
 - [ ] **Phase 1c — Clash detection.** Not started.
 - [ ] **Phase 2a — Terminal placement (propose-only).** Not started.
 - [ ] **Phase 2b — Terminal materialization.** Not started.
@@ -744,6 +754,17 @@ numeric id guard
 
 ## Revision Record
 
+- v3.0 / `codex_execution` (2026-07-12): Accepted Phase 1b after Gate E. PR
+  #219 passed Engineering gates, GitGuardian, and Claude review and merged as
+  `e0f8fc32`. Signed stable `2026.07.12.534-e0f8fc32` was published through the
+  protected workflow and verified at release sequence `20260712193201` with
+  matching ZIP hashes and detached signatures. A post-publish HAFIZE Revit
+  2022 sample-model commandset smoke passed and was published as the canonical
+  rollout smoke evidence. HAFIZE, MARINA, and WS3 were updated and verified;
+  NET01 was safely deferred because Revit was open; the five powered-off
+  workstations remain explicitly pending normal scheduled uptake. The scoped
+  closure audit reported `ready=true` and `actionRequiredCount=0`. Phase 1c
+  remains unstarted and unauthorized.
 - v2.9 / `codex_execution` (2026-07-12): Completed Phase 1b implementation and
   Gates A-D. Final `test-all`/`test-ci`, frozen Revit 2022 operation gold,
   measured-distance, performance, fail-closed, and 11-variant actual-agent

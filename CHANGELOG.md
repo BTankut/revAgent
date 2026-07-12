@@ -19,7 +19,14 @@ All notable revAgent workstation deployment changes are tracked here.
   only, and Phase 1c live verification is not included. The runtime tool
   surface is now `.45`. Local payload, targeted, aggregate, protected-CI-
   equivalent, frozen Revit 2022 gold/performance, and 11-variant actual-agent
-  Gates A-D passed on 2026-07-12; protected delivery Gate E remains pending.
+  Gates A-D passed on 2026-07-12. Gate E passed through PR #219, protected-main
+  CI/review, signed stable publication of `2026.07.12.534-e0f8fc32`, a passing
+  post-publish HAFIZE Revit 2022 commandset smoke, and a scoped rollout closure
+  with zero remaining actions. HAFIZE, MARINA, and WS3 updated and verified.
+  NET01 was safely deferred by the signed updater because Revit was open; EMIN,
+  OGUZHAN, OMER, SERDAR, and YASAR were powered off. All deferred machines
+  remain explicitly pending normal scheduled uptake. Phase 1b is accepted;
+  Phase 1c remains unstarted and unauthorized.
 - Fixed Spatial Phase 1a process-local document session tracking so transient
   Revit `Document` wrappers for the same open linked document share one
   `documentSessionId` and `DocumentChanged` journal across multiple placements.

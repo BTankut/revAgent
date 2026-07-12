@@ -1,8 +1,7 @@
 # revAgent Spatial Context Engine — Phase 1b Acceptance
 
-Status: Gates A-D passed on 2026-07-12. Protected delivery Gate E remains
-pending, so Phase 1b is not yet accepted. Phase 1c is not authorized by this
-record.
+Status: Gates A-E passed on 2026-07-12. Phase 1b is accepted. Phase 1c is not
+started or authorized by this record.
 
 This document defines the acceptance boundary for Phase 1b deterministic
 queries and snapshot diff. Evidence is recorded only after the corresponding
@@ -416,12 +415,55 @@ After Gates A-D pass:
    2022 smoke, and the final rollout-readiness audit.
 8. Update only powered-on workstations in the accepted rollout scope. Powered-
    off workstations remain explicitly named as pending scheduled uptake and do
-   not block the scoped closure audit.
+   not block the scoped closure audit. A reachable workstation with Revit open
+   may be explicitly safe-deferred only when the signed updater proves
+   `deferred-revit-close-required`, Revit is not closed automatically, and the
+   machine remains named for normal scheduled uptake.
 
 Never publish from a topic branch, dirty tree, red CI run, incomplete Gate D,
 or unreviewed agent-eval result.
 
-Evidence status: pending.
+Evidence status: passed on 2026-07-12.
+
+- PR #219 passed Engineering gates, GitGuardian, and the risk-tiered Claude
+  review with no blocking issue, then squash-merged as
+  `e0f8fc32dcec0ef8554d9c154c23049d8ee045f6`.
+- Automatic signed build/validation run `29205583929` passed. Separately
+  approved production run `29205836154` published
+  `2026.07.12.534-e0f8fc32` with release sequence `20260712193201`.
+- Signed readiness returned `readyForEnforce=true`. Stable and release manifest
+  metadata agreed, both detached signatures were present, and the stable,
+  manifest, and actual ZIP SHA-256 all equaled
+  `9E60BA952BB5ACFF885380B61546B69D0539C349FA9038B1F3551C89E86AC0E3`.
+- Final-tree Gate D live evidence SHA-256
+  `3BAB1F91D6F3FB120EF09C8443BF0CCF1068C73A28FD483F2C3F368559336A47`
+  remained accepted and proved the installed Revit 2022 commandset/plugin
+  hashes matched the repository payload later signed from the merge.
+- Post-publish HAFIZE Revit 2022 sample-model smoke passed the repository's
+  standard commandset integration chain. Revit initially stopped at its
+  existing `TaskDialog_Security_Unsigned_File_Loading` publisher modal. UI
+  Automation re-verified the exact revAgent DLL path and signed-manifest SHA
+  before selecting only `Load Once`; `persistentTrust=false` and `Always Load`
+  was not selected. The canonical NAS smoke evidence SHA-256 is
+  `66498919D2D3F3E6A2D9DC502A645B41583DA9C9E46AF69733588567BD5DA14D`;
+  it records `passed=true`, Revit 2022, model `rme_basic_sample_project`, stable
+  `2026.07.12.534-e0f8fc32`, and merge commit `e0f8fc32`. All temporary smoke
+  and UI task/stage artifacts were removed; Revit was not force-closed.
+- HAFIZE, MARINA, and WS3 updated through the signed interactive-user updater.
+  Each reported `integrityState=verified`, the target release sequence/hash,
+  source-free evidence `ok`, desktop-launcher evidence `ok`, and confirmed
+  temporary task/stage cleanup.
+- NET01 was reachable with Revit open. The signed updater returned
+  `deferred-revit-close-required` and left version `532` and Revit untouched;
+  it remains pending normal scheduled uptake after Revit closes.
+- EMIN, OGUZHAN, OMER, SERDAR, and YASAR were powered off and remain pending
+  normal scheduled uptake when next online.
+- The final scoped closure record
+  `C:\ProgramData\DPE\revAgentOps\readiness\rollout-readiness-20260712-231753.json`
+  has SHA-256
+  `4C0415239482025751CEDDB7B9F6706CDEB4ACBE6BF134423A769DB7E7515C69`
+  and reports `ready=true`, `upToDateCount=3`, `outdatedCount=0`, live evidence
+  `verified` from the post-publish HAFIZE smoke, and `actionRequiredCount=0`.
 
 ## Completion record
 
@@ -433,8 +475,11 @@ Evidence status: pending.
 - Query p95 <=750 ms per operation: passed; worst p95 74.809 ms
 - Reference-level diff p95 <=3 seconds: passed; p95 4.656 ms
 - Spatial Grounding Protocol eval groups 1, 2, 4, 5, and 6: passed; 11/11 variants
-- Protected PR/CI/review/merge: pending
-- Signed build/validation and separately approved NAS publish: pending
-- Representative live smoke and scoped rollout closure: pending
+- Protected PR/CI/review/merge: passed; PR #219 / merge `e0f8fc32`
+- Signed build/validation and separately approved NAS publish: passed; stable
+  `2026.07.12.534-e0f8fc32`
+- Representative post-publish HAFIZE Revit 2022 commandset smoke and scoped
+  rollout closure: passed; closure `ready=true`, `actionRequiredCount=0`
 
-Phase 1b is not accepted. Phase 1c has not started.
+Phase 1b is accepted. Phase 1c has not started and is not authorized by this
+record.
