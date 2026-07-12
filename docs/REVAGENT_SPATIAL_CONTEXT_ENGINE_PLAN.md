@@ -1,8 +1,8 @@
 # revAgent Spatial Context Engine Plan
 
 Status: codex_final; execution completed through Phase 0.
-Revision: v2.5 — Phase 1a implementation complete; live acceptance pending
-(2026-07-11).
+Revision: v2.6 — Phase 1a implementation and live acceptance complete;
+protected delivery pending (2026-07-12).
 Supersedes draft v2.1, v2, and the draft previously named
 `REVAGENT_SPATIAL_DESIGN_ENGINE_PLAN.md`.
 
@@ -160,10 +160,16 @@ cloud project/model identity when available; workshared central-model
 identity; saved standalone model identity (project-information identity plus
 normalized path); and finally an explicitly session-only key for unsaved
 documents. Session-only documents cannot participate in cross-session diffs.
-`documentSessionId` changes after add-in restart, document close/reopen, or
-when the loaded document object is replaced. The exact resolver and its
-fallback reason are returned in snapshot metadata and covered by Phase 0/1a
-fixtures (cloud, central/local, standalone, link, and unsaved).
+`documentSessionId` is process-local to one native open-document session. Revit
+may surface multiple managed `Document` wrappers for that same session, notably
+when one linked document has multiple placements; those wrappers must resolve
+to one session id and one change journal. A successful document close retires
+all wrapper aliases, so the id changes after close/reopen or add-in restart.
+Save As refreshes the stable identity aliases without resetting the open
+session, so reopening the original path cannot inherit the Save As journal.
+The exact resolver and its fallback reason are returned in
+snapshot metadata and covered by Phase 0/1a fixtures (cloud, central/local,
+standalone, link, and unsaved).
 
 Connector identity is owner-based: `connector:{ownerNodeId}:{connectorKey}`.
 The connector-key provider is versioned and category-aware: use a proven
@@ -199,6 +205,9 @@ after capture. Liveness is tracked by sequence, not by clock:
   element ids in a bounded change journal. The journal exposes
   `oldestRetainedSequence`; a snapshot older than the retained history has
   `liveness=unknown`, never an assumed `current` state.
+- Wrapper aliases for the same native open document share that sequence and
+  journal. Successful close/reopen retires the prior binding; a cancelled or
+  failed close does not manufacture a new session.
 - Every snapshot binds to the `changeSequence` value of each in-scope
   document at capture time. Multi-page captures are atomic with respect to
   it: pages write to a staging capture and become visible only after the
@@ -621,7 +630,7 @@ but only after its extraction adapter and rule set pass Layer 1 gates.
 Change class per `AGENTS.md` deployment discipline. Raw dynamic snippets
 only in Phase 0.
 
-Execution checkpoint (2026-07-11):
+Execution checkpoint (2026-07-12):
 
 - [x] **Phase 0 — Contract + extraction spike.** Completed and
   operator-accepted against the real office model on runtime
@@ -631,9 +640,13 @@ Execution checkpoint (2026-07-11):
   verified. The Phase 0 trust boundary remains `atomic=false` and
   `liveness=unknown`.
 - [ ] **Phase 1a — Truth foundations.** Implementation complete. Local payload,
-  targeted, aggregate, and protected-CI-equivalent Gates A-C passed on
-  2026-07-11. Live Revit Gate D and protected delivery Gate E remain pending,
-  so the phase is not yet accepted or marked complete.
+  targeted, aggregate, and protected-CI-equivalent Gates A-C received a final
+  clean rerun on 2026-07-12. Revit 2022 live Gate D passed on 2026-07-12,
+  including stable repeat capture, shared-session double placement,
+  connector/R*Tree/transform
+  evidence, concurrent-edit interruption, performance ceilings, and a
+  close/reopen `unknown` liveness recheck. Protected delivery Gate E remains
+  pending, so the phase is not yet accepted or marked complete.
 - [ ] **Phase 1b — Deterministic queries + diff.** Not started.
 - [ ] **Phase 1c — Clash detection.** Not started.
 - [ ] **Phase 2a — Terminal placement (propose-only).** Not started.
@@ -717,6 +730,17 @@ numeric id guard
 
 ## Revision Record
 
+- v2.6 / `codex_final` (2026-07-12): Passed Phase 1a live Revit Gate D on an
+  operator-approved disposable Revit 2022 scope. Two stable captures each
+  committed 909 nodes with 606 connectors, zero omissions, shared-session
+  double-placement evidence, 909 R*Tree rows, and 0 mm transform error. The
+  concurrent edit failed closed without changing committed or staging state;
+  live liveness changed to `stale`, native UI occupancy and total capture stayed
+  within the acceptance ceilings, and close/reopen recheck returned the
+  required `unknown`. Final `test-all` and `test-ci` reruns passed in 185.1 and
+  189.9 seconds. Kept Phase 1a unchecked because protected PR/CI, signed build,
+  production publish, and pilot verification remain Gate E work. No NAS
+  publish was performed.
 - v2.5 / `codex_final` (2026-07-11): Implemented the Phase 1a truth
   foundations without beginning Phase 1b: native composite identity and
   canonical host-mm capture, resumable bounded native work, connector evidence,

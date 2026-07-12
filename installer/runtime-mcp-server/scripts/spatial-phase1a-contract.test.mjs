@@ -120,6 +120,7 @@ const trackerSource = read(path.join(repoRoot, "src", "revit-plugin", "revAgentP
 const applicationSource = read(path.join(repoRoot, "src", "revit-plugin", "revAgentPlugin", "Core", "Application.cs"));
 const livenessRequestSource = read(path.join(spatialRoot, "GetSpatialChangeStateCommand.cs"));
 const livenessCommandSource = read(path.join(spatialRoot, "GetSpatialChangeStateEventHandler.cs"));
+const liveHarnessSource = read(path.join(repoRoot, "scripts", "test-spatial-phase1a-live.mjs"));
 
 assert.match(helperSource, /SchemaVersion = "0\.2"/);
 assert.match(helperSource, /CursorVersion = "0\.2"/);
@@ -128,13 +129,44 @@ assert.match(helperSource, /SpatialChangeTracker\.Instance\.GetCurrentBinding/);
 assert.match(commandSource, /ReadInt\(parameters, "maxElapsedMs", 1800, 250, 5000\)/);
 assert.match(handlerSource, /SpatialCaptureSessionManager\.Instance\.Store/);
 assert.match(handlerSource, /ValidatePreparedCaptureBindings/);
+assert.match(handlerSource, /TryBindCurrentHostDocument/);
 assert.match(handlerSource, /capture_interrupted_by_change/);
+assert.match(handlerSource, /capture_document_session_changed/);
 assert.match(handlerSource, /"changeSequence", source\.Identity\.ChangeSequence/);
 assert.match(handlerSource, /"oldestRetainedSequence", source\.Identity\.OldestRetainedSequence/);
 assert.match(handlerSource, /"trackerSessionId", source\.Identity\.TrackerSessionId/);
+const workContinuationSource = handlerSource.slice(
+  handlerSource.indexOf("private void CompletePreparedWorkContinuation"),
+  handlerSource.indexOf("private void CompletePreparedPageContinuation"),
+);
 const pageContinuationSource = handlerSource.slice(
   handlerSource.indexOf("private void CompletePreparedPageContinuation"),
   handlerSource.indexOf("private DateTime ResolveWorkDeadline"),
+);
+for (const [name, source] of [
+  ["work", workContinuationSource],
+  ["page", pageContinuationSource],
+]) {
+  assert.match(source, /TryBindCurrentHostDocument/,
+    `${name} continuation must validate the tracker-backed active host binding.`);
+  assert.match(source, /BuildInterruptedByChange/,
+    `${name} continuation must discard a prepared capture when its host session changed.`);
+  assert.doesNotMatch(source, /ReferenceEquals\(prepared\.HostDocument,\s*hostDocument\)/,
+    `${name} continuation must not bind a cursor to one transient managed Document wrapper.`);
+}
+const hostBindingSource = handlerSource.slice(
+  handlerSource.indexOf("private static bool TryBindCurrentHostDocument"),
+  handlerSource.indexOf("private bool ValidatePreparedCaptureBindings"),
+);
+assert.match(hostBindingSource, /ResolveDocumentIdentity\(hostDocument\)/);
+assert.match(hostBindingSource, /prepared\.HostDocumentKey, currentIdentity\.DocumentKey/);
+assert.match(hostBindingSource, /prepared\.HostTrackerSessionId, currentIdentity\.TrackerSessionId/);
+assert.match(hostBindingSource, /prepared\.HostDocumentSessionId, currentIdentity\.DocumentSessionId/);
+assert.match(hostBindingSource, /prepared\.HostDocument = hostDocument/);
+assert.ok(
+  hostBindingSource.indexOf("prepared.HostDocumentSessionId, currentIdentity.DocumentSessionId")
+    < hostBindingSource.indexOf("prepared.HostDocument = hostDocument"),
+  "The transient host wrapper may refresh only after the stable open-document session matches.",
 );
 assert.ok(
   pageContinuationSource.lastIndexOf("ValidatePreparedCaptureBindings")
@@ -151,14 +183,53 @@ assert.match(handlerSource, /placementKey \+ ":" \+ classification \+ ":" \+ \(s
 assert.doesNotMatch(helperSource, /emittedScopeSemantics/);
 assert.match(sessionSource, /SessionLifetime/);
 assert.match(sessionSource, /PurgeExpired/);
+assert.match(sessionSource, /public string HostDocumentKey;/);
+assert.match(sessionSource, /public string HostDocumentSessionId;/);
+assert.match(sessionSource, /public string HostTrackerSessionId;/);
+assert.match(handlerSource, /HostDocumentKey = hostIdentity\.DocumentKey/);
+assert.match(handlerSource, /HostDocumentSessionId = hostIdentity\.DocumentSessionId/);
+assert.match(handlerSource, /HostTrackerSessionId = hostIdentity\.TrackerSessionId/);
 assert.match(trackerSource, /DocumentChanged/);
 assert.match(trackerSource, /ConditionalWeakTable<Document, DocumentState>/);
+assert.match(trackerSource, /Dictionary<string, DocumentState> _documentsByStableKey/);
+assert.match(trackerSource, /DocumentClosing \+= OnDocumentClosing/);
+assert.match(trackerSource, /DocumentClosed \+= OnDocumentClosed/);
+assert.match(trackerSource, /DocumentSavedAs \+= OnDocumentSavedAs/);
+assert.match(trackerSource, /args\.Status != RevitAPIEventStatus\.Succeeded/);
+assert.match(trackerSource, /A stable key is authoritative for the lifetime bracketed by/);
+const savedAsSource = trackerSource.slice(
+  trackerSource.indexOf("private void OnDocumentSavedAs"),
+  trackerSource.indexOf("private DocumentState GetOrCreateState"),
+);
+assert.match(savedAsSource, /RefreshStableAliases\(document, state\)/);
+const refreshAliasesSource = trackerSource.slice(
+  trackerSource.indexOf("private void RefreshStableAliases"),
+  trackerSource.indexOf("private void RemoveDocumentState"),
+);
+assert.match(refreshAliasesSource, /_documentsByStableKey\.Remove\(key\)/);
+assert.match(refreshAliasesSource, /state\.StableKeys\.Clear\(\)/);
+assert.ok(
+  refreshAliasesSource.indexOf("state.StableKeys.Clear()")
+    < refreshAliasesSource.indexOf("RegisterStableAliases(document, state)"),
+  "Save As must retire old stable identities before registering the current identity.",
+);
+const stableKeyResolutionSource = trackerSource.slice(
+  trackerSource.indexOf("private bool TryResolveState"),
+  trackerSource.indexOf("private void AddWrapperAlias"),
+);
+assert.match(stableKeyResolutionSource, /state = candidate;\s*return true;/);
+assert.doesNotMatch(stableKeyResolutionSource, /Equals\(|IsValidObject|ReferenceEquals/);
+assert.doesNotMatch(trackerSource, /keys\.Add\("project\|" \+ projectInformationId\)/);
+assert.match(trackerSource, /RemoveDocumentState\(state\)/);
 assert.match(trackerSource, /DefaultJournalCapacity = 512/);
 assert.match(applicationSource, /SpatialChangeTracker\.Instance\.Subscribe/);
 assert.match(applicationSource, /SpatialChangeTracker\.Instance\.Unsubscribe/);
 assert.match(livenessRequestSource, /InputOrdinal = index/);
 assert.match(livenessCommandSource, /host_binding_required_for_link_liveness/);
 assert.match(livenessCommandSource, /journal_gap|HistoryGap/);
+assert.match(liveHarnessSource, /doublePlacedBindingsConsistent/);
+assert.match(liveHarnessSource, /sharedDocumentSessionAndRevisionBinding/);
+assert.match(liveHarnessSource, /do not share one document session, tracker, sequence, and loaded version/);
 
 const storeSource = read(path.join(runtimeRoot, "src", "spatial", "spatialStore.ts"));
 const captureSource = read(path.join(runtimeRoot, "src", "spatial", "spatialCapture.ts"));

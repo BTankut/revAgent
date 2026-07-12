@@ -873,6 +873,116 @@ function Get-NodeMajorVersion {
     return -1
 }
 
+function Get-RevAgentSha256Hex {
+    param([string]$Text)
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Text)
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace("-", "")
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-NodeRuntimeIdentity {
+    param([string]$NodePath)
+
+    if ([string]::IsNullOrWhiteSpace($NodePath) -or -not (Test-Path -LiteralPath $NodePath -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        $identityJson = (& $NodePath -p 'JSON.stringify({nodeVersion:process.version,nodeModuleVersion:String(process.versions.modules),napiVersion:String(process.versions.napi),platform:process.platform,arch:process.arch})' 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($identityJson)) {
+            return $null
+        }
+
+        $identity = $identityJson | ConvertFrom-Json
+        $nodeModuleVersion = [string]$identity.nodeModuleVersion
+        $platform = [string]$identity.platform
+        $arch = [string]$identity.arch
+        if ([string]::IsNullOrWhiteSpace($nodeModuleVersion) -or
+            [string]::IsNullOrWhiteSpace($platform) -or
+            [string]::IsNullOrWhiteSpace($arch)) {
+            return $null
+        }
+
+        $napiVersion = [string]$identity.napiVersion
+        if ([string]::IsNullOrWhiteSpace($napiVersion)) {
+            $napiVersion = "none"
+        }
+        $runtimeKey = ("modules-{0}-napi-{1}-{2}-{3}" -f $nodeModuleVersion, $napiVersion, $platform, $arch) -replace '[^A-Za-z0-9._-]', '_'
+
+        return [pscustomobject][ordered]@{
+            nodePath = [System.IO.Path]::GetFullPath($NodePath)
+            nodeVersion = [string]$identity.nodeVersion
+            nodeModuleVersion = $nodeModuleVersion
+            napiVersion = $napiVersion
+            platform = $platform
+            arch = $arch
+            runtimeKey = $runtimeKey
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
+function Resolve-NpmCliScript {
+    param(
+        [string]$NpmPath,
+        [string]$NodePath
+    )
+
+    foreach ($candidate in @(
+            (Join-Path (Split-Path -Parent $NpmPath) "node_modules\npm\bin\npm-cli.js"),
+            (Join-Path (Split-Path -Parent $NodePath) "node_modules\npm\bin\npm-cli.js")
+        )) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+    }
+
+    throw "npm-cli.js was not found beside the selected npm or Node runtime. npm=$NpmPath node=$NodePath"
+}
+
+function Get-NpmCliRuntimeStatus {
+    param(
+        [string]$NodePath,
+        [string]$NpmPath
+    )
+
+    $npmCliPath = ""
+    $npmVersion = ""
+    $errorMessage = ""
+    try {
+        $npmCliPath = Resolve-NpmCliScript -NpmPath $NpmPath -NodePath $NodePath
+        $versionOutput = @(& $NodePath $npmCliPath --version 2>&1)
+        $versionExitCode = $LASTEXITCODE
+        $npmVersion = ($versionOutput | Out-String).Trim()
+        if ($versionExitCode -ne 0) {
+            $errorMessage = "Selected Node could not run npm-cli.js (exit $versionExitCode)."
+        }
+        elseif ([string]::IsNullOrWhiteSpace($npmVersion)) {
+            $errorMessage = "Selected Node returned an empty npm-cli.js version."
+        }
+    }
+    catch {
+        $errorMessage = $_.Exception.Message
+    }
+
+    return [pscustomobject][ordered]@{
+        nodePath = $NodePath
+        npmPath = $NpmPath
+        npmCliPath = $npmCliPath
+        npmVersion = $npmVersion
+        ready = (-not [string]::IsNullOrWhiteSpace($npmCliPath) -and -not [string]::IsNullOrWhiteSpace($npmVersion) -and [string]::IsNullOrWhiteSpace($errorMessage))
+        error = $errorMessage
+    }
+}
+
 function Get-NodeRuntimeStatus {
     $nodeCandidates = @(
         (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
@@ -886,12 +996,18 @@ function Get-NodeRuntimeStatus {
     $nodePath = Resolve-OptionalCommand -Names @("node.exe", "node") -Candidates $nodeCandidates
     $npmPath = Resolve-OptionalCommand -Names @("npm.cmd", "npm") -Candidates $npmCandidates
     $major = Get-NodeMajorVersion -NodePath $nodePath
+    $identity = Get-NodeRuntimeIdentity -NodePath $nodePath
+    $npmCliStatus = Get-NpmCliRuntimeStatus -NodePath $nodePath -NpmPath $npmPath
 
     return [pscustomobject][ordered]@{
         nodePath = $nodePath
         npmPath = $npmPath
+        npmCliPath = [string]$npmCliStatus.npmCliPath
+        npmVersion = [string]$npmCliStatus.npmVersion
+        npmError = [string]$npmCliStatus.error
         major = $major
-        ready = (-not [string]::IsNullOrWhiteSpace($nodePath) -and -not [string]::IsNullOrWhiteSpace($npmPath) -and $major -ge 20)
+        identity = $identity
+        ready = (-not [string]::IsNullOrWhiteSpace($nodePath) -and -not [string]::IsNullOrWhiteSpace($npmPath) -and $major -ge 20 -and $null -ne $identity -and [bool]$npmCliStatus.ready)
     }
 }
 
@@ -962,6 +1078,7 @@ function Ensure-NodeRuntime {
 
     Write-Host "Node.js ready: $($status.nodePath)"
     Write-Host "npm ready    : $($status.npmPath)"
+    Write-Host "npm CLI      : $($status.npmCliPath) ($($status.npmVersion))"
     Set-RevAgentNpmProxy -ProxyUrl $script:RevAgentProxyUrl
     return $status
 }
@@ -1133,26 +1250,54 @@ function Ensure-UpdateDependencies {
     }
 
     if (-not $SkipCodexMcpRegistration) {
-        Ensure-CodexDesktop
+        [void](Ensure-CodexDesktop)
     }
+
+    return $nodeStatus
 }
 
 function Get-NpmDependencyFingerprint {
-    param([string]$WorkingDirectory)
+    param(
+        [string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)]
+        [object]$RuntimeIdentity
+    )
 
+    $fingerprintPath = ""
+    $fingerprintSha256 = ""
     foreach ($relativePath in @("package-lock.json", "npm-shrinkwrap.json", "package.json")) {
         $candidate = Join-Path $WorkingDirectory $relativePath
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            return [pscustomobject][ordered]@{
-                path = $relativePath
-                sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $candidate).Hash
-            }
+            $fingerprintPath = $relativePath
+            $fingerprintSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $candidate).Hash
+            break
         }
     }
 
+    foreach ($requiredField in @("nodeModuleVersion", "platform", "arch", "runtimeKey")) {
+        if ([string]::IsNullOrWhiteSpace([string]$RuntimeIdentity.$requiredField)) {
+            throw "Node runtime identity is missing required field '$requiredField'."
+        }
+    }
+
+    $cacheKey = if ([string]::IsNullOrWhiteSpace($fingerprintSha256)) {
+        ""
+    }
+    else {
+        (Get-RevAgentSha256Hex -Text ("{0}|{1}" -f $fingerprintSha256, [string]$RuntimeIdentity.runtimeKey)).ToLowerInvariant()
+    }
+
     return [pscustomobject][ordered]@{
-        path = ""
-        sha256 = ""
+        path = $fingerprintPath
+        sha256 = $fingerprintSha256
+        nodePath = [string]$RuntimeIdentity.nodePath
+        nodeVersion = [string]$RuntimeIdentity.nodeVersion
+        nodeModuleVersion = [string]$RuntimeIdentity.nodeModuleVersion
+        napiVersion = [string]$RuntimeIdentity.napiVersion
+        platform = [string]$RuntimeIdentity.platform
+        arch = [string]$RuntimeIdentity.arch
+        runtimeKey = [string]$RuntimeIdentity.runtimeKey
+        cacheKey = $cacheKey
     }
 }
 
@@ -1196,18 +1341,119 @@ function Get-NpmDependencyCacheNodeModulesPath {
         [object]$Fingerprint
     )
 
-    if ([string]::IsNullOrWhiteSpace($CacheRoot) -or [string]::IsNullOrWhiteSpace([string]$Fingerprint.sha256)) {
+    if ([string]::IsNullOrWhiteSpace($CacheRoot) -or
+        [string]::IsNullOrWhiteSpace([string]$Fingerprint.sha256) -or
+        [string]::IsNullOrWhiteSpace([string]$Fingerprint.cacheKey)) {
         return ""
     }
 
     $packageName = Get-NpmPackageCacheName -WorkingDirectory $WorkingDirectory
-    return Join-Path $CacheRoot (Join-Path $packageName (Join-Path ([string]$Fingerprint.sha256) "node_modules"))
+    return Join-Path $CacheRoot (Join-Path $packageName (Join-Path ([string]$Fingerprint.cacheKey) "node_modules"))
+}
+
+function Test-NpmPackageDeclaresDependency {
+    param(
+        [string]$WorkingDirectory,
+        [string]$DependencyName
+    )
+
+    $packageJsonPath = Join-Path $WorkingDirectory "package.json"
+    if (-not (Test-Path -LiteralPath $packageJsonPath -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $packageJson = Get-Content -Raw -LiteralPath $packageJsonPath | ConvertFrom-Json
+        foreach ($sectionName in @("dependencies", "optionalDependencies")) {
+            $section = $packageJson.$sectionName
+            if ($null -eq $section) { continue }
+            foreach ($property in $section.PSObject.Properties) {
+                if ([string]::Equals([string]$property.Name, $DependencyName, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return $true
+                }
+            }
+        }
+    }
+    catch {
+        return $false
+    }
+
+    return $false
+}
+
+function Test-NpmNativeDependenciesLoad {
+    param(
+        [string]$WorkingDirectory,
+        [string]$NodePath,
+        [string]$NodeModulesPath = "",
+        [string]$Label = "Package",
+        [switch]$Quiet
+    )
+
+    if (-not (Test-NpmPackageDeclaresDependency -WorkingDirectory $WorkingDirectory -DependencyName "better-sqlite3")) {
+        return $true
+    }
+
+    if ([string]::IsNullOrWhiteSpace($NodeModulesPath)) {
+        $NodeModulesPath = Join-Path $WorkingDirectory "node_modules"
+    }
+    $dependencyPath = Join-Path $NodeModulesPath "better-sqlite3"
+    if (-not (Test-Path -LiteralPath $dependencyPath -PathType Container)) {
+        if (-not $Quiet) {
+            Write-Warning "$Label native dependency validation failed: better-sqlite3 is not installed under $NodeModulesPath."
+        }
+        return $false
+    }
+
+    $validationScript = @'
+const Database = require(process.argv[1]);
+const database = new Database(':memory:');
+database.prepare('SELECT 1 AS ok').get();
+database.close();
+'@
+    try {
+        $validationOutput = @(& $NodePath -e $validationScript $dependencyPath 2>&1)
+        $validationExitCode = $LASTEXITCODE
+        if ($validationExitCode -eq 0) {
+            return $true
+        }
+
+        if (-not $Quiet) {
+            $detail = ($validationOutput | Out-String).Trim()
+            if ($detail.Length -gt 600) {
+                $detail = $detail.Substring(0, 600) + "...[truncated]"
+            }
+            Write-Warning "$Label native dependency validation failed under '$NodePath' (exit $validationExitCode). $detail"
+        }
+        return $false
+    }
+    catch {
+        if (-not $Quiet) {
+            Write-Warning "$Label native dependency validation failed under '$NodePath'. $($_.Exception.Message)"
+        }
+        return $false
+    }
+}
+
+function Assert-NpmNativeDependenciesLoad {
+    param(
+        [string]$WorkingDirectory,
+        [string]$NodePath,
+        [string]$NodeModulesPath = "",
+        [string]$Label = "Package"
+    )
+
+    if (-not (Test-NpmNativeDependenciesLoad -WorkingDirectory $WorkingDirectory -NodePath $NodePath -NodeModulesPath $NodeModulesPath -Label $Label)) {
+        throw "$Label native dependencies are not loadable with the selected runtime Node: $NodePath"
+    }
 }
 
 function Test-NpmDependenciesCurrent {
     param(
         [string]$WorkingDirectory,
-        [object]$Fingerprint
+        [object]$Fingerprint,
+        [string]$NodePath,
+        [string]$Label = "Package"
     )
 
     $nodeModulesPath = Join-Path $WorkingDirectory "node_modules"
@@ -1222,20 +1468,80 @@ function Test-NpmDependenciesCurrent {
 
     try {
         $marker = Get-Content -Raw -LiteralPath $markerPath | ConvertFrom-Json
-        return [string]::Equals([string]$marker.fingerprintPath, [string]$Fingerprint.path, [System.StringComparison]::OrdinalIgnoreCase) -and
+        $markerMatches = [int]$marker.schemaVersion -ge 2 -and
+            [string]::Equals([string]$marker.fingerprintPath, [string]$Fingerprint.path, [System.StringComparison]::OrdinalIgnoreCase) -and
             [string]::Equals([string]$marker.fingerprintSha256, [string]$Fingerprint.sha256, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals([string]$marker.nodeModuleVersion, [string]$Fingerprint.nodeModuleVersion, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals([string]$marker.napiVersion, [string]$Fingerprint.napiVersion, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals([string]$marker.platform, [string]$Fingerprint.platform, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals([string]$marker.arch, [string]$Fingerprint.arch, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals([string]$marker.runtimeKey, [string]$Fingerprint.runtimeKey, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals([string]$marker.cacheKey, [string]$Fingerprint.cacheKey, [System.StringComparison]::OrdinalIgnoreCase) -and
             [bool]$marker.omitDev
+        if (-not $markerMatches) {
+            return $false
+        }
+
+        return Test-NpmNativeDependenciesLoad -WorkingDirectory $WorkingDirectory -NodePath $NodePath -Label $Label
     }
     catch {
         return $false
     }
 }
 
+function Remove-NpmNodeModulesPath {
+    param([string]$WorkingDirectory)
+
+    $nodeModulesPath = Join-Path $WorkingDirectory "node_modules"
+    $item = Get-Item -LiteralPath $nodeModulesPath -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
+        return
+    }
+
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        [System.IO.Directory]::Delete($nodeModulesPath, $false)
+        return
+    }
+
+    Remove-Item -LiteralPath $nodeModulesPath -Recurse -Force
+}
+
+function Remove-InvalidNpmDependencyCache {
+    param(
+        [string]$CacheRoot,
+        [string]$CacheNodeModulesPath,
+        [string]$Reason
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CacheNodeModulesPath)) {
+        return
+    }
+
+    $cacheEntryRoot = Split-Path -Parent $CacheNodeModulesPath
+    $safeCacheEntryRoot = Assert-PathUnderRoot -Path $cacheEntryRoot -Root $CacheRoot
+    if ($null -eq (Get-Item -LiteralPath $safeCacheEntryRoot -Force -ErrorAction SilentlyContinue)) {
+        return
+    }
+    Write-Warning "Discarding invalid npm dependency cache '$safeCacheEntryRoot'. $Reason"
+    Remove-Item -LiteralPath $safeCacheEntryRoot -Recurse -Force
+}
+
+function New-NpmDependencyJunction {
+    param(
+        [string]$Path,
+        [string]$Target
+    )
+
+    New-Item -ItemType Junction -Path $Path -Target $Target -Force | Out-Null
+}
+
 function Restore-NpmDependenciesFromCache {
     param(
         [string]$WorkingDirectory,
         [object]$Fingerprint,
-        [string]$CacheRoot
+        [string]$CacheRoot,
+        [string]$NodePath,
+        [string]$Label = "Package"
     )
 
     $nodeModulesPath = Join-Path $WorkingDirectory "node_modules"
@@ -1244,37 +1550,70 @@ function Restore-NpmDependenciesFromCache {
     }
 
     $cacheNodeModulesPath = Get-NpmDependencyCacheNodeModulesPath -CacheRoot $CacheRoot -WorkingDirectory $WorkingDirectory -Fingerprint $Fingerprint
-    if ([string]::IsNullOrWhiteSpace($cacheNodeModulesPath) -or -not (Test-Path -LiteralPath $cacheNodeModulesPath -PathType Container)) {
+    if ([string]::IsNullOrWhiteSpace($cacheNodeModulesPath)) {
+        return $false
+    }
+
+    if (-not (Test-Path -LiteralPath $cacheNodeModulesPath -PathType Container)) {
+        Remove-InvalidNpmDependencyCache -CacheRoot $CacheRoot -CacheNodeModulesPath $cacheNodeModulesPath -Reason "Cache entry does not contain a node_modules directory."
+        return $false
+    }
+
+    if (-not (Test-NpmNativeDependenciesLoad -WorkingDirectory $WorkingDirectory -NodePath $NodePath -NodeModulesPath $cacheNodeModulesPath -Label "$Label cache")) {
+        Remove-InvalidNpmDependencyCache -CacheRoot $CacheRoot -CacheNodeModulesPath $cacheNodeModulesPath -Reason "Native dependency validation failed before cache restore."
+        return $false
+    }
+
+    $markerPath = Get-NpmDependencyMarkerPath -WorkingDirectory $WorkingDirectory
+    Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+    try {
+        New-NpmDependencyJunction -Path $nodeModulesPath -Target $cacheNodeModulesPath
+    }
+    catch {
+        Write-Warning "Could not link cached npm dependencies; copying instead. $($_.Exception.Message)"
+        Remove-NpmNodeModulesPath -WorkingDirectory $WorkingDirectory
+        try {
+            Copy-Item -LiteralPath $cacheNodeModulesPath -Destination $nodeModulesPath -Recurse -Force
+        }
+        catch {
+            Remove-NpmNodeModulesPath -WorkingDirectory $WorkingDirectory
+            throw
+        }
+    }
+
+    if (-not (Test-NpmNativeDependenciesLoad -WorkingDirectory $WorkingDirectory -NodePath $NodePath -Label "$Label restored cache")) {
+        Remove-NpmNodeModulesPath -WorkingDirectory $WorkingDirectory
+        Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+        Remove-InvalidNpmDependencyCache -CacheRoot $CacheRoot -CacheNodeModulesPath $cacheNodeModulesPath -Reason "Native dependency validation failed after cache restore."
         return $false
     }
 
     try {
-        New-Item -ItemType Junction -Path $nodeModulesPath -Target $cacheNodeModulesPath -Force | Out-Null
         Write-NpmDependencyMarker -WorkingDirectory $WorkingDirectory -Fingerprint $Fingerprint
-        return $true
     }
     catch {
-        Write-Warning "Could not link cached npm dependencies; copying instead. $($_.Exception.Message)"
-        Copy-Item -LiteralPath $cacheNodeModulesPath -Destination $nodeModulesPath -Recurse -Force
-        Write-NpmDependencyMarker -WorkingDirectory $WorkingDirectory -Fingerprint $Fingerprint
-        return $true
+        Remove-NpmNodeModulesPath -WorkingDirectory $WorkingDirectory
+        Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+        throw "Could not write the npm dependency marker after validated cache restore. $($_.Exception.Message)"
     }
+
+    return $true
 }
 
 function Remove-StaleNpmDependencyJunction {
     param([string]$WorkingDirectory)
 
     $nodeModulesPath = Join-Path $WorkingDirectory "node_modules"
-    if (-not (Test-Path -LiteralPath $nodeModulesPath -PathType Container)) {
+    $item = Get-Item -LiteralPath $nodeModulesPath -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
         return
     }
 
-    $item = Get-Item -LiteralPath $nodeModulesPath -Force
     if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
         return
     }
 
-    Remove-Item -LiteralPath $nodeModulesPath -Force
+    [System.IO.Directory]::Delete($nodeModulesPath, $false)
 }
 
 function Write-NpmDependencyMarker {
@@ -1284,10 +1623,18 @@ function Write-NpmDependencyMarker {
     )
 
     $marker = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         app = "revAgent"
         fingerprintPath = [string]$Fingerprint.path
         fingerprintSha256 = [string]$Fingerprint.sha256
+        nodePath = [string]$Fingerprint.nodePath
+        nodeVersion = [string]$Fingerprint.nodeVersion
+        nodeModuleVersion = [string]$Fingerprint.nodeModuleVersion
+        napiVersion = [string]$Fingerprint.napiVersion
+        platform = [string]$Fingerprint.platform
+        arch = [string]$Fingerprint.arch
+        runtimeKey = [string]$Fingerprint.runtimeKey
+        cacheKey = [string]$Fingerprint.cacheKey
         omitDev = $true
         installedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
     }
@@ -1299,7 +1646,9 @@ function Save-NpmDependenciesToCache {
     param(
         [string]$WorkingDirectory,
         [object]$Fingerprint,
-        [string]$CacheRoot
+        [string]$CacheRoot,
+        [string]$NodePath,
+        [string]$Label = "Package"
     )
 
     $nodeModulesPath = Join-Path $WorkingDirectory "node_modules"
@@ -1308,46 +1657,108 @@ function Save-NpmDependenciesToCache {
     }
 
     $cacheNodeModulesPath = Get-NpmDependencyCacheNodeModulesPath -CacheRoot $CacheRoot -WorkingDirectory $WorkingDirectory -Fingerprint $Fingerprint
-    if ([string]::IsNullOrWhiteSpace($cacheNodeModulesPath) -or (Test-Path -LiteralPath $cacheNodeModulesPath -PathType Container)) {
+    if ([string]::IsNullOrWhiteSpace($cacheNodeModulesPath)) {
         return
     }
 
-    $cachePackageRoot = Split-Path -Parent $cacheNodeModulesPath
-    New-Item -ItemType Directory -Path $cachePackageRoot -Force | Out-Null
-    Copy-Item -LiteralPath $nodeModulesPath -Destination $cachePackageRoot -Recurse -Force
+    if (Test-Path -LiteralPath $cacheNodeModulesPath -PathType Container) {
+        if (Test-NpmNativeDependenciesLoad -WorkingDirectory $WorkingDirectory -NodePath $NodePath -NodeModulesPath $cacheNodeModulesPath -Label "$Label cache" -Quiet) {
+            return
+        }
+        Remove-InvalidNpmDependencyCache -CacheRoot $CacheRoot -CacheNodeModulesPath $cacheNodeModulesPath -Reason "Existing cache failed validation before save."
+    }
+    else {
+        Remove-InvalidNpmDependencyCache -CacheRoot $CacheRoot -CacheNodeModulesPath $cacheNodeModulesPath -Reason "Existing cache entry does not contain a node_modules directory."
+    }
+
+    $cacheEntryRoot = Split-Path -Parent $cacheNodeModulesPath
+    $cacheEntryParent = Split-Path -Parent $cacheEntryRoot
+    New-Item -ItemType Directory -Path $cacheEntryParent -Force | Out-Null
+    $stagingRoot = Join-Path $cacheEntryParent (".stg-" + [Guid]::NewGuid().ToString("N").Substring(0, 12))
+    try {
+        New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
+        Copy-Item -LiteralPath $nodeModulesPath -Destination $stagingRoot -Recurse -Force
+        $stagedNodeModulesPath = Join-Path $stagingRoot "node_modules"
+        Assert-NpmNativeDependenciesLoad -WorkingDirectory $WorkingDirectory -NodePath $NodePath -NodeModulesPath $stagedNodeModulesPath -Label "$Label staged cache"
+        Move-Item -LiteralPath $stagingRoot -Destination $cacheEntryRoot
+    }
+    finally {
+        if (Test-Path -LiteralPath $stagingRoot) {
+            Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+        }
+    }
+}
+
+function Invoke-NpmWithLifecycleScripts {
+    param(
+        [string]$NodePath,
+        [string]$NpmCliPath,
+        [string[]]$Arguments,
+        [string]$WorkingDirectory
+    )
+
+    if ([string]::IsNullOrWhiteSpace($NpmCliPath) -or -not (Test-Path -LiteralPath $NpmCliPath -PathType Leaf)) {
+        throw "The resolved npm-cli.js path is missing: $NpmCliPath"
+    }
+    $previousNpmIgnoreScripts = [Environment]::GetEnvironmentVariable("npm_config_ignore_scripts", "Process")
+    try {
+        $env:npm_config_ignore_scripts = "false"
+        Invoke-External -FilePath $NodePath -Arguments (@($npmCliPath) + @($Arguments)) -WorkingDirectory $WorkingDirectory
+    }
+    finally {
+        if ($null -eq $previousNpmIgnoreScripts) {
+            Remove-Item Env:\npm_config_ignore_scripts -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:npm_config_ignore_scripts = $previousNpmIgnoreScripts
+        }
+    }
 }
 
 function Invoke-NpmInstallIfNeeded {
     param(
-        [string]$NpmPath,
+        [string]$NodePath,
+        [string]$NpmCliPath,
         [string]$WorkingDirectory,
         [string]$Label,
         [string]$CacheRoot
     )
 
-    $fingerprint = Get-NpmDependencyFingerprint -WorkingDirectory $WorkingDirectory
+    $runtimeIdentity = Get-NodeRuntimeIdentity -NodePath $NodePath
+    if ($null -eq $runtimeIdentity) {
+        throw "Could not determine the selected runtime Node ABI/platform/architecture: $NodePath"
+    }
+
+    $fingerprint = Get-NpmDependencyFingerprint -WorkingDirectory $WorkingDirectory -RuntimeIdentity $runtimeIdentity
     if ([string]::IsNullOrWhiteSpace([string]$fingerprint.sha256)) {
         Write-Host "$Label dependencies: package manifest not found; running npm install."
-        Invoke-External -FilePath $NpmPath -Arguments @("install", "--omit=dev", "--no-audit", "--no-fund") -WorkingDirectory $WorkingDirectory
+        Invoke-NpmWithLifecycleScripts -NodePath $NodePath -NpmCliPath $NpmCliPath -Arguments @("install", "--omit=dev", "--no-audit", "--no-fund") -WorkingDirectory $WorkingDirectory
+        Assert-NpmNativeDependenciesLoad -WorkingDirectory $WorkingDirectory -NodePath $NodePath -Label $Label
         return
     }
 
-    if (Test-NpmDependenciesCurrent -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint) {
+    if (Test-NpmDependenciesCurrent -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint -NodePath $NodePath -Label $Label) {
         Write-Host "$Label dependencies: current; npm install skipped."
         return
     }
 
     Remove-StaleNpmDependencyJunction -WorkingDirectory $WorkingDirectory
 
-    if (Restore-NpmDependenciesFromCache -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint -CacheRoot $CacheRoot) {
+    if (Restore-NpmDependenciesFromCache -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint -CacheRoot $CacheRoot -NodePath $NodePath -Label $Label) {
         Write-Host "$Label dependencies: restored from local cache; npm install skipped."
         return
     }
 
     Write-Host "$Label dependencies: installing or refreshing."
-    Invoke-External -FilePath $NpmPath -Arguments @("install", "--omit=dev", "--no-audit", "--no-fund") -WorkingDirectory $WorkingDirectory
+    Invoke-NpmWithLifecycleScripts -NodePath $NodePath -NpmCliPath $NpmCliPath -Arguments @("install", "--omit=dev", "--no-audit", "--no-fund") -WorkingDirectory $WorkingDirectory
+    if (-not (Test-NpmNativeDependenciesLoad -WorkingDirectory $WorkingDirectory -NodePath $NodePath -Label $Label -Quiet) -and
+        (Test-NpmPackageDeclaresDependency -WorkingDirectory $WorkingDirectory -DependencyName "better-sqlite3")) {
+        Write-Warning "$Label better-sqlite3 binding is missing or incompatible after npm install; rebuilding with the selected runtime Node."
+        Invoke-NpmWithLifecycleScripts -NodePath $NodePath -NpmCliPath $NpmCliPath -Arguments @("rebuild", "better-sqlite3", "--no-audit", "--no-fund") -WorkingDirectory $WorkingDirectory
+    }
+    Assert-NpmNativeDependenciesLoad -WorkingDirectory $WorkingDirectory -NodePath $NodePath -Label $Label
     Write-NpmDependencyMarker -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint
-    Save-NpmDependenciesToCache -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint -CacheRoot $CacheRoot
+    Save-NpmDependenciesToCache -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint -CacheRoot $CacheRoot -NodePath $NodePath -Label $Label
 }
 
 function Resolve-NpmCommand {
@@ -3556,7 +3967,7 @@ try {
     }
 
     Initialize-RevAgentWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
-    Ensure-UpdateDependencies -SkipNpmInstall:$SkipNpmInstall -SkipCodexMcpRegistration:$SkipCodexMcpRegistration
+    $nodeRuntimeStatus = Ensure-UpdateDependencies -SkipNpmInstall:$SkipNpmInstall -SkipCodexMcpRegistration:$SkipCodexMcpRegistration
 
     if ((Test-Path -LiteralPath (Join-Path $PackageTarget ".git")) -and -not $AllowReplaceGitPackageTarget) {
         throw "PackageTarget is a git working tree. Refusing to replace it without -AllowReplaceGitPackageTarget: $PackageTarget"
@@ -3660,13 +4071,15 @@ try {
             $nasToolsSource = Join-Path (Split-Path -Parent $installer) "nas"
             Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $WorkRoot -ConfigPath $ConfigPath
             Invoke-RevAgentLogRetention -LogsRoot (Join-Path $WorkRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
-            Write-Host "Runtime dependencies: skipped; runtime payload unchanged."
             if ($SkipNpmInstall) {
+                Write-Host "Runtime dependencies: skipped by -SkipNpmInstall."
                 Write-Host "Documentation server dependencies: skipped by -SkipNpmInstall."
             }
             else {
-                $npmPath = Resolve-NpmCommand
-                Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
+                $nodePath = [string]$nodeRuntimeStatus.nodePath
+                $npmCliPath = [string]$nodeRuntimeStatus.npmCliPath
+                Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
+                Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
             }
             Write-Host "Revit API index: skipped; docs payload unchanged."
             Write-Host "Codex MCP registration: skipped; runtime/docs entry points unchanged."
@@ -3709,20 +4122,19 @@ try {
         & $installer @installArgs
 
         if (-not $SkipNpmInstall) {
-            $npmPath = Resolve-NpmCommand
+            $nodePath = [string]$nodeRuntimeStatus.nodePath
+            $npmCliPath = [string]$nodeRuntimeStatus.npmCliPath
             $powershellPath = Resolve-RequiredCommand -Name "powershell" -Candidates @(
                 (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
             )
 
             if ($skipRuntimePayloadInstall) {
-                Write-Host "Runtime dependencies: skipped; runtime payload unchanged."
+                Write-Host "Runtime payload unchanged; validating installed dependencies against the selected Node runtime."
             }
-            else {
-                Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
-            }
+            Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
 
             $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
-            Invoke-NpmInstallIfNeeded -NpmPath $npmPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
+            Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
             if ($skipDocsPayloadWork -and (Test-Path -LiteralPath $docsCachePath -PathType Leaf)) {
                 Write-Host "Revit API index: skipped; docs payload unchanged."
             }
@@ -3741,10 +4153,7 @@ try {
         }
         elseif (-not $SkipCodexMcpRegistration) {
             Ensure-CodexDesktop
-            $nodePath = Resolve-RequiredCommand -Name "node.exe" -Candidates @(
-                (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
-                (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")
-            )
+            $nodePath = [string]$nodeRuntimeStatus.nodePath
             $runtimeServerPath = Join-Path $ServerTarget "build\index.js"
             $docsServerEntryPath = Join-Path $docsServerPath "build\index.js"
             $registeredWithCommand = $false

@@ -1,7 +1,7 @@
 # revAgent Spatial Context Engine — Phase 1a Acceptance
 
-Status: implementation complete; local Gates A-C passed on 2026-07-11;
-live Gate D and delivery Gate E pending.
+Status: implementation complete; Gates A-D passed by 2026-07-12; delivery Gate
+E pending.
 
 This document defines the acceptance path for Phase 1a truth foundations only.
 It does not replace the historical Phase 0 acceptance record and does not mark
@@ -61,13 +61,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -Revit
 powershell -ExecutionPolicy Bypass -File .\scripts\build-revit-plugin.ps1 -RevitVersion 2025 -SkipPayloadCopy
 ```
 
-Evidence status: passed locally on 2026-07-11. `npm ci` and
-`npm run build:release` completed successfully; the hardened runtime bundle and
-v0.2 schemas were regenerated. Revit 2022 rebuilt and refreshed the committed
+Evidence status: passed locally on 2026-07-11 and refreshed after the final
+tracker fix on 2026-07-12. `npm ci` and `npm run build:release` completed
+successfully; the hardened runtime bundle and v0.2 schemas were regenerated.
+Revit 2022 rebuilt with zero warnings/errors and refreshed the committed
 installer payload plus `installer/revit-payload-manifest.json`. Revit
-2023/2024/2025 compile-only builds also completed with zero errors; the latter
-targets emitted compatibility/deprecation warnings but produced their expected
-DLLs. No install, deploy, ProgramData write, or NAS publish was performed.
+2023/2024/2025 compile-only builds also completed with zero errors on the
+initial pass; the latter targets emitted compatibility/deprecation warnings but
+produced their expected DLLs. The final matching Revit 2022 payload was
+installed locally only for Gate D; no production deploy or NAS publish was
+performed.
 
 ## Gate B — targeted CI-safe contracts
 
@@ -115,8 +118,9 @@ The purge line is permitted only after the user approves that preview and exact
 selector. A warning, nonzero exit, `partial=true`, or artifact cleanup failure
 remains incomplete and must not be recorded as successful maintenance.
 
-Evidence status: passed locally on 2026-07-11. Phase 0 compatibility, Phase 1a
-schema/contract, store, maintenance CLI, atomic capture, runtime smoke,
+Evidence status: passed locally on 2026-07-11 and rerun after the final fixes on
+2026-07-12. Phase 0 compatibility, Phase 1a schema/contract, store, maintenance
+CLI, atomic capture, updater native-dependency/cache regressions, runtime smoke,
 installer smoke, and MCP/Revit payload freshness all completed successfully.
 The runtime smoke registered 32 revAgent tools. No live Revit assertion is
 claimed by this gate.
@@ -134,13 +138,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-ci.ps1
 copies and is the local equivalent of the protected `Engineering gates` job.
 Neither command deploys, publishes, writes ProgramData, or touches NAS stable.
 
-Evidence status: passed locally on 2026-07-11. `scripts/test-all.ps1` completed
-in 173.2 seconds with `All local non-Revit tests passed.`
-`scripts/test-ci.ps1` completed in 177.7 seconds with
-`All CI-safe revAgent engineering gates passed.` Both ran with normal npm
-lifecycle scripts enabled and restored MCP packages in isolated work copies.
-Their signed publish/readiness checks used temporary test roots only; no real
-release channel, ProgramData installation, or NAS stable state changed.
+Evidence status: final rerun passed locally on 2026-07-12.
+`scripts/test-all.ps1` completed in 185.1 seconds with
+`All local non-Revit tests passed.` `scripts/test-ci.ps1` completed in 189.9
+seconds with `All CI-safe revAgent engineering gates passed.` Both ran through
+the documented Windows PowerShell path with normal npm lifecycle scripts
+enabled and restored MCP packages in isolated work copies. Their signed
+publish/readiness checks used temporary test roots only; no real release
+channel or NAS stable state changed.
 
 ## Gate D — live Revit acceptance
 
@@ -228,9 +233,11 @@ The CI-safe contracts, live harness, and recorded evidence together must prove:
 
 1. Exact composite identity and canonical host-mm transform behavior for the
    declared host/link scope, including a positive connector-node count, the
-   same linked `documentKey` bound to two distinct non-null placement ids, and
-   <=0.5 mm transform round-trip error. Only counts are emitted; raw document,
-   placement, connector, node, and snapshot ids stay out of evidence.
+   same linked `documentKey` and `documentSessionId` bound to two distinct
+   non-null placement ids, and <=0.5 mm transform round-trip error. Managed
+   Revit wrapper churn must not split one native linked document into multiple
+   process-local sessions. Only counts are emitted; raw document, placement,
+   connector, node, and snapshot ids stay out of evidence.
 2. Every committed snapshot is one revision. CI-safe interrupted-capture tests
    prove the deterministic contract, while the operator-assisted live probe
    requires the next cursor to return `capture_interrupted_by_change` with
@@ -258,10 +265,26 @@ Store the evidence outside the repo unless a compact, reviewed summary is
 explicitly added here. Do not package model geometry, element identifiers, room
 data, or raw snapshot pages in Git or release artifacts.
 
-Evidence status: pending. The refreshed source/runtime/DLL set has not been
-installed or exercised against an operator-approved frozen Revit reference
-scope. Connector, double-placement, concurrent-edit, post-edit liveness, and
-native UI/capture SLO evidence therefore remain unclaimed.
+Evidence status: passed on Revit 2022 on 2026-07-12 against an
+operator-approved disposable reference scope with an explicit retained local
+database outside the repository. Two stable captures each committed one
+complete page containing 3 sources, 909 nodes, 606 connector nodes, 909 R*Tree
+entries, and zero omissions. The same linked document was proven through two
+distinct placements with one shared document session/revision binding. Maximum
+host/link transform round-trip error was 0 mm.
+
+The repeated capture totals were 10.532 seconds and 3.123 seconds; aggregate
+p95/max was 10.532 seconds. Worst reported native Revit UI occupancy across
+data-page and preparation-work channels was 301 ms; preparation native p95/max
+was 259 ms. The required operator-assisted concurrent edit interrupted the
+first post-edit work continuation with `capture_interrupted_by_change`, zero
+retries, `committed=false`, an unchanged committed snapshot identity set, and
+zero staging rows before and after. The immediate post-edit probe returned
+`stale` for two changed sources. After discarding the disposable edit, closing,
+and reopening the saved fixture, the independent persisted-store recheck passed
+with expected/observed `unknown`; the prior open-document session was not
+misreported as current. Sanitized detailed capture and recheck evidence remains
+outside Git and release artifacts.
 
 ## Gate E — delivery boundary
 
@@ -286,14 +309,15 @@ implementation pass.
 
 ## Completion record
 
-- CI-safe gates: passed locally on 2026-07-11 (`test-all`, `test-ci`)
-- Revit payload freshness: passed locally on 2026-07-11
-- Live identity/transform/liveness/concurrent-edit gate: pending
-- Performance SLO evidence: pending
+- CI-safe gates: passed locally on 2026-07-12 (`test-all`, `test-ci`)
+- Revit payload freshness: passed locally on 2026-07-12
+- Live identity/transform/liveness/concurrent-edit gate: passed on Revit 2022
+  on 2026-07-12
+- Performance SLO evidence: passed on 2026-07-12
 - Protected PR/CI: pending
 - Signed build/validation: pending
-- Manual NAS publish: not authorized by this acceptance checklist
+- Manual NAS publish: pending Gate E; never permitted before protected `main`
+  signed validation
 
-Phase 1a remains unaccepted until the applicable implementation exit gates are
-recorded with concrete evidence. Phase 1b work must not be inferred from this
-document.
+Phase 1a remains unaccepted until delivery Gate E is recorded with concrete
+evidence. Phase 1b work must not be inferred from this document.

@@ -101,7 +101,7 @@
         },
         {
           "path": "src/revit-plugin/revAgentPlugin/Core/SpatialChangeTracker.cs",
-          "gitBlobSha": "636017e7e2e797ebbaa39c6cd49043668e662efa"
+          "gitBlobSha": "173b36ea6cd557465062c01a538977fe925753d8"
         },
         {
           "path": "src/revit-plugin/revAgentPlugin/Properties/AssemblyInfo.cs",
@@ -147,8 +147,8 @@
       "payloads": [
         {
           "path": "installer/revit-plugin/revAgentPlugin/revAgentPlugin.dll",
-          "sha256": "a4205e100a02aba7081a494fe5799b9329a9821bac313588dc51b37fa2005d18",
-          "sizeBytes": 109568
+          "sha256": "643ffb1a683911384f21a3ab3121b07d6fa3bc6d1f8f45b17986dfcdc46d73db",
+          "sizeBytes": 116736
         }
       ]
     },
@@ -200,7 +200,7 @@
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/ExtractSpatialSnapshotEventHandler.cs",
-          "gitBlobSha": "041c3d2c0e0c4c1769fb032a155070e0706c8560"
+          "gitBlobSha": "809c60fd41d62328251f0f6111d6e04d311e0389"
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/GetSpatialChangeStateCommand.cs",
@@ -220,7 +220,7 @@
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/SpatialCaptureSessionManager.cs",
-          "gitBlobSha": "216fee98c48fff9afe8b272ce14fe1fd653f41af"
+          "gitBlobSha": "05a99dfa1ce925120bb3ea93dfa2e2045155a8a1"
         },
         {
           "path": "src/revit-plugin/revAgentCommandSet/Commands/Spatial/SpatialSnapshotContracts.cs",
@@ -394,13 +394,13 @@
       "payloads": [
         {
           "path": "installer/command-payload/revAgentCommandSet.dll",
-          "sha256": "790d4af8df193e4d185ac0f568cc20ab6acb9f9e22197691ebc8538a62861c86",
-          "sizeBytes": 474624
+          "sha256": "b94bcc65b7cd3c3c9c0da065374a9974ebdce1ef9fe0e818b9d87f52450426f3",
+          "sizeBytes": 475136
         },
         {
           "path": "installer/revit-plugin/revAgentPlugin/Commands/revAgentCommandSet/2022/revAgentCommandSet.dll",
-          "sha256": "790d4af8df193e4d185ac0f568cc20ab6acb9f9e22197691ebc8538a62861c86",
-          "sizeBytes": 474624
+          "sha256": "b94bcc65b7cd3c3c9c0da065374a9974ebdce1ef9fe0e818b9d87f52450426f3",
+          "sizeBytes": 475136
         }
       ]
     }

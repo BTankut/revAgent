@@ -202,6 +202,9 @@ namespace RevAgentCommandSet.Commands.Spatial
                     CapturedAt = capturedAt,
                     CreatedAtUtc = DateTime.UtcNow,
                     HostDocument = hostDocument,
+                    HostDocumentKey = hostIdentity.DocumentKey,
+                    HostDocumentSessionId = hostIdentity.DocumentSessionId,
+                    HostTrackerSessionId = hostIdentity.TrackerSessionId,
                     PageTargetBytes = _request.PageTargetBytes,
                     Request = _request,
                     Sources = sources,
@@ -264,19 +267,24 @@ namespace RevAgentCommandSet.Commands.Spatial
                 return;
             }
 
-            if (!ReferenceEquals(prepared.HostDocument, hostDocument) ||
-                !string.Equals(cursor.CapturedAt, prepared.CapturedAt, StringComparison.Ordinal) ||
+            string consistencyReason;
+            if (!TryBindCurrentHostDocument(prepared, hostDocument, out consistencyReason))
+            {
+                Complete(BuildInterruptedByChange(prepared, consistencyReason, stopwatch));
+                return;
+            }
+
+            if (!string.Equals(cursor.CapturedAt, prepared.CapturedAt, StringComparison.Ordinal) ||
                 !string.Equals(cursor.ScopeFingerprint, prepared.ScopeFingerprint, StringComparison.Ordinal) ||
                 !string.Equals(cursor.SourceBindingFingerprint, prepared.SourceBindingFingerprint, StringComparison.Ordinal) ||
                 !string.Equals(cursor.WorkPhase, prepared.WorkPhase, StringComparison.Ordinal) ||
                 cursor.StepOrdinal != prepared.WorkStepOrdinal)
             {
                 SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
-                Complete(BuildCursorGuarded("invalid_work_cursor", "The authenticated work cursor does not match the prepared phase, step, scope, binding, or active host document.", stopwatch, prepared.Warnings, prepared.Notices, prepared.Scope, prepared.EffectiveSourcePolicy, prepared.ScopeFingerprint, prepared.RevisionFingerprint, prepared.SourceRevisions));
+                Complete(BuildCursorGuarded("invalid_work_cursor", "The authenticated work cursor does not match the prepared phase, step, scope, or binding.", stopwatch, prepared.Warnings, prepared.Notices, prepared.Scope, prepared.EffectiveSourcePolicy, prepared.ScopeFingerprint, prepared.RevisionFingerprint, prepared.SourceRevisions));
                 return;
             }
 
-            string consistencyReason;
             if (!ValidatePreparedCaptureBindings(prepared, out consistencyReason))
             {
                 Complete(BuildInterruptedByChange(prepared, consistencyReason, stopwatch));
@@ -306,10 +314,10 @@ namespace RevAgentCommandSet.Commands.Spatial
                 return;
             }
 
-            if (!ReferenceEquals(prepared.HostDocument, hostDocument))
+            string consistencyReason;
+            if (!TryBindCurrentHostDocument(prepared, hostDocument, out consistencyReason))
             {
-                SpatialCaptureSessionManager.Instance.Remove(prepared.CaptureId);
-                Complete(BuildCursorGuarded("cursor_scope_mismatch", "The active host document no longer matches the prepared capture session.", stopwatch, prepared.Warnings, prepared.Notices, prepared.Scope, prepared.EffectiveSourcePolicy, prepared.ScopeFingerprint, prepared.RevisionFingerprint, prepared.SourceRevisions));
+                Complete(BuildInterruptedByChange(prepared, consistencyReason, stopwatch));
                 return;
             }
             if (!prepared.PreparationComplete || !string.Equals(cursor.ScopeFingerprint, prepared.ScopeFingerprint, StringComparison.Ordinal))
@@ -326,7 +334,6 @@ namespace RevAgentCommandSet.Commands.Spatial
                 return;
             }
 
-            string consistencyReason;
             if (!ValidatePreparedCaptureBindings(prepared, out consistencyReason))
             {
                 Complete(BuildInterruptedByChange(prepared, consistencyReason, stopwatch));
@@ -895,6 +902,61 @@ namespace RevAgentCommandSet.Commands.Spatial
                 Warnings = new List<string>(prepared.Warnings ?? new List<string>()),
                 Notices = new List<string>(prepared.Notices ?? new List<string>())
             };
+        }
+
+        private static bool TryBindCurrentHostDocument(PreparedSpatialCapture prepared, Document hostDocument, out string reason)
+        {
+            reason = null;
+            if (prepared == null || hostDocument == null ||
+                string.IsNullOrWhiteSpace(prepared.HostDocumentKey) ||
+                string.IsNullOrWhiteSpace(prepared.HostDocumentSessionId) ||
+                string.IsNullOrWhiteSpace(prepared.HostTrackerSessionId))
+            {
+                reason = "capture_has_no_host_binding";
+                return false;
+            }
+
+            DocumentIdentity currentIdentity;
+            try
+            {
+                currentIdentity = SpatialSnapshotHelpers.ResolveDocumentIdentity(hostDocument);
+            }
+            catch
+            {
+                reason = "capture_host_binding_read_failed";
+                return false;
+            }
+
+            if (currentIdentity == null)
+            {
+                reason = "capture_host_binding_read_failed";
+                return false;
+            }
+            if (!string.Equals(prepared.HostDocumentKey, currentIdentity.DocumentKey, StringComparison.Ordinal))
+            {
+                reason = "capture_document_identity_changed";
+                return false;
+            }
+            if (!string.Equals(prepared.HostTrackerSessionId, currentIdentity.TrackerSessionId, StringComparison.Ordinal))
+            {
+                reason = "capture_tracker_session_changed";
+                return false;
+            }
+            if (!currentIdentity.TrackerSubscribed)
+            {
+                reason = "change_tracker_unavailable";
+                return false;
+            }
+            if (!string.Equals(prepared.HostDocumentSessionId, currentIdentity.DocumentSessionId, StringComparison.Ordinal))
+            {
+                reason = "capture_document_session_changed";
+                return false;
+            }
+
+            // Revit can surface a new managed wrapper for the same open native document.
+            // Refresh only after the stable tracker-backed open-document binding matches.
+            prepared.HostDocument = hostDocument;
+            return true;
         }
 
         private bool ValidatePreparedCaptureBindings(PreparedSpatialCapture prepared, out string reason)

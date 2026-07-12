@@ -151,6 +151,14 @@ Capture results separate four trust dimensions:
 - `scopeFingerprint` identifies immutable requested scope while
   `revisionFingerprint` identifies captured source state.
 
+The process-local tracker coalesces transient managed `Document` wrappers for
+one native open document into a single session binding and journal. This is
+required when the same linked document is placed more than once. Stable
+identity aliases survive wrapper churn. Save As retains the open session while
+replacing obsolete path/unsaved aliases with the new stable identity; a
+successful close retires the binding so close/reopen and add-in restart remain
+liveness breaks.
+
 `current` therefore means only that the committed snapshot's tracked revision
 still matches at liveness evaluation time. It does not turn the stored graph
 into a deterministic relation or verdict service. Phase 1a exposes no

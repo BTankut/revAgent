@@ -199,12 +199,16 @@ pulling and reinstalling on every machine.
   `C:\Projects` or user AppData folders.
 - Workstation updater logs are retained under the managed updater folder, with
   automatic cleanup keeping the latest 10 `.log` files.
-- Workstation updates check npm dependency lockfile markers and the managed
-  local npm cache, then skip runtime dependency installation when the installed
-  or cached `node_modules` already matches. The docs server dependency junction
-  is restored even when its payload fingerprint is unchanged, because the docs
-  server is stored inside the managed package folder that is replaced on every
-  versioned update.
+- Workstation updates bind npm dependency markers and the managed local cache to
+  the exact runtime Node ABI/N-API, platform, and architecture selected for MCP
+  registration. npm lifecycle scripts are enabled process-locally for install
+  and rebuild, then the prior environment is restored. A cache or installed
+  dependency tree is accepted only after native dependencies such as
+  `better-sqlite3` load under that same Node and open an in-memory database;
+  stale or incomplete cache entries are discarded and rebuilt. The docs server
+  dependency junction is restored even when its payload fingerprint is
+  unchanged, because the docs server is stored inside the managed package
+  folder that is replaced on every versioned update.
 - Release manifests classify changed surfaces before install. Updater-only
   changes use a fast package/updater refresh path. Runtime MCP server changes
   refresh only the runtime payload and related MCP registration. Revit add-in or
@@ -1360,4 +1364,7 @@ npm install --omit=dev --no-audit --no-fund
 
 The bundled runtime server pins `better-sqlite3` to a Node 24-compatible
 version so clean Windows installs do not need Python or Visual Studio Build
-Tools just to compile that native dependency.
+Tools just to compile that native dependency. The supported NAS updater is the
+authoritative installation path: it runs npm through the same `node.exe` used
+by the revAgent MCP registration, partitions its cache by native runtime
+compatibility, and rejects a missing or ABI-incompatible sqlite binding.

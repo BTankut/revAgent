@@ -4,6 +4,13 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Fixed Spatial Phase 1a process-local document session tracking so transient
+  Revit `Document` wrappers for the same open linked document share one
+  `documentSessionId` and `DocumentChanged` journal across multiple placements.
+  Save As refreshes stable aliases without resetting the session, preventing a
+  reopened original path from inheriting the Save As session; successful close
+  retires all aliases so close/reopen and add-in restart still invalidate
+  liveness. Capture revision validation remains fail-closed.
 - Added the Spatial Context Engine Phase 1a truth-foundation implementation.
   `capture_spatial_snapshot` now owns bounded native pagination in the runtime,
   validates one SpatialSnapshot v0.2 page/hash/revision chain, discards
@@ -18,10 +25,13 @@ All notable revAgent workstation deployment changes are tracked here.
   spatial query, snapshot diff, clash screening, or live clash/clearance
   verdict tools. The runtime tool surface is now `.42`.
   Local targeted tests, payload freshness, `test-all`, and the protected-CI
-  equivalent `test-ci` passed on 2026-07-11. Live Revit Gate D and protected
-  delivery Gate E remain pending under
-  `docs/REVAGENT_SPATIAL_PHASE1A_ACCEPTANCE.md`; this entry does not mark the
-  roadmap phase accepted and no deploy or NAS publish was performed.
+  equivalent `test-ci` received a final clean rerun on 2026-07-12. Live Revit
+  2022 Gate D passed on 2026-07-12 with stable repeat capture, shared-session
+  double-placement, connector/R*Tree/transform, concurrent-edit interruption,
+  direct `stale` post-edit liveness, performance, and close/reopen `unknown`
+  evidence. Protected delivery Gate E remains pending
+  under `docs/REVAGENT_SPATIAL_PHASE1A_ACCEPTANCE.md`; this entry does not mark
+  the roadmap phase accepted and no NAS publish was performed.
 - Clarified the `set_schedule_cells` dry-run change contract without breaking
   existing consumers. Change rows now separate the observed model value
   (`actualAfter`) from the requested post-commit projection (`projectedAfter`),

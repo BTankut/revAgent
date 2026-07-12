@@ -358,21 +358,45 @@ function storeEvidence(store, snapshotId, options = {}) {
       "The committed frozen MEP scope contains no connector node evidence.");
   }
 
-  const placementsByDocument = new Map();
+  const bindingsByDocument = new Map();
   for (const source of record.sourceRevisions) {
     const documentKey = String(source.documentKey || "");
     const placementId = String(source.linkInstanceUniqueId || "");
     if (!documentKey || !placementId) continue;
-    if (!placementsByDocument.has(documentKey)) placementsByDocument.set(documentKey, new Set());
-    placementsByDocument.get(documentKey).add(placementId);
+    if (!bindingsByDocument.has(documentKey)) {
+      bindingsByDocument.set(documentKey, {
+        placements: new Set(),
+        documentSessionIds: new Set(),
+        trackerSessionIds: new Set(),
+        changeSequences: new Set(),
+        loadedVersions: new Set(),
+      });
+    }
+    const binding = bindingsByDocument.get(documentKey);
+    binding.placements.add(placementId);
+    binding.documentSessionIds.add(String(source.documentSessionId || ""));
+    binding.trackerSessionIds.add(String(source.trackerSessionId || ""));
+    binding.changeSequences.add(String(source.changeSequence ?? ""));
+    binding.loadedVersions.add(String(source.loadedVersion || ""));
   }
-  const doublePlacedGroups = [...placementsByDocument.values()].filter((placements) => placements.size >= 2);
+  const doublePlacedGroups = [...bindingsByDocument.values()].filter((binding) => binding.placements.size >= 2);
   const maximumPlacementCount = doublePlacedGroups.length > 0
-    ? Math.max(...doublePlacedGroups.map((placements) => placements.size))
+    ? Math.max(...doublePlacedGroups.map((binding) => binding.placements.size))
     : 0;
+  const doublePlacedBindingsConsistent = doublePlacedGroups.every((binding) =>
+    binding.documentSessionIds.size === 1
+      && !binding.documentSessionIds.has("")
+      && binding.trackerSessionIds.size === 1
+      && !binding.trackerSessionIds.has("")
+      && binding.changeSequences.size === 1
+      && !binding.changeSequences.has("")
+      && binding.loadedVersions.size === 1
+      && !binding.loadedVersions.has(""));
   if (requireDoublePlacedLinkEvidence) {
     requireCondition(doublePlacedGroups.length > 0,
       "The committed frozen scope does not prove one linked document through two distinct placements.");
+    requireCondition(doublePlacedBindingsConsistent,
+      "Double placements of one linked document do not share one document session, tracker, sequence, and loaded version.");
   }
 
   const transformValidation = isObject(record.transformValidation) ? record.transformValidation : {};
@@ -421,6 +445,7 @@ function storeEvidence(store, snapshotId, options = {}) {
         state: requireDoublePlacedLinkEvidence ? "passed" : "not_run",
         qualifyingDocumentGroupCount: doublePlacedGroups.length,
         maximumDistinctPlacementCount: maximumPlacementCount,
+        sharedDocumentSessionAndRevisionBinding: doublePlacedBindingsConsistent,
       },
       rtreeEntryCount,
       indexedIdentitySha256: indexedIdentityHash,

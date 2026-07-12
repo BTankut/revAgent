@@ -638,6 +638,15 @@ do not merge or deploy from that change.
 `better-sqlite3` is installed normally in CI through `npm ci`; do not use
 `--ignore-scripts` unless a CI failure proves that the sqlite native install is
 the only blocking issue and the runtime tests do not load that native module.
+The workstation updater applies the same trust boundary to production
+dependencies: it invokes `npm-cli.js` with the exact Node selected for MCP
+registration, temporarily forces `npm_config_ignore_scripts=false`, restores
+the previous process environment in `finally`, and keys dependency markers and
+cache entries by Node modules ABI, N-API, platform, and architecture. Before an
+installed tree or cache is accepted, `better-sqlite3` must load under that Node
+and open an in-memory database. Missing or incompatible bindings invalidate the
+entry and trigger a clean install/rebuild; validation failure after rebuild is
+fatal and must not write a current marker or cache.
 
 Optional local pre-push hooks are available but are not enabled automatically:
 

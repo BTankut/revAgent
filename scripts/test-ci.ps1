@@ -46,6 +46,9 @@ try {
         Invoke-McpPackageNpmCi -PackageName $package.Name -PackageRoot $workCopy.PackageRoot -PackageRelativePath $package.Path
     }
 
+    $runtimePackageCopy = @($packageCopies | Where-Object { $_.Name -eq "runtime-mcp-server" }) | Select-Object -First 1
+    & (Join-Path $RepoRoot "scripts\test-updater-npm-dependencies.ps1") -RepoRoot $RepoRoot -RuntimePackageRoot $runtimePackageCopy.WorkCopy.PackageRoot
+
     foreach ($package in $packageCopies) {
         $tscPath = Get-McpPackageTscPath -PackageRoot $package.WorkCopy.PackageRoot -PackageRelativePath $package.Path
         Invoke-McpPackageCommand -PackageName "$($package.Name) forced strict" -PackageRoot $package.WorkCopy.PackageRoot -RepoRoot $RepoRoot -Command {

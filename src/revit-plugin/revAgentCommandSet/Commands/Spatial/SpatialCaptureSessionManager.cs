@@ -100,6 +100,9 @@ namespace RevAgentCommandSet.Commands.Spatial
         public DateTime CreatedAtUtc;
         public DateTime ExpiresAtUtc;
         public Document HostDocument;
+        public string HostDocumentKey;
+        public string HostDocumentSessionId;
+        public string HostTrackerSessionId;
         public int PageTargetBytes;
         public SpatialSnapshotRequest Request;
         public List<SpatialSource> Sources;

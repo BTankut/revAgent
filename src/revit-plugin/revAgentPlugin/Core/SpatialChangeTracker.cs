@@ -4,6 +4,7 @@ using Autodesk.Revit.DB.Events;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -12,9 +13,9 @@ namespace RevAgentPlugin.Core
 {
     /// <summary>
     /// Process-local, read-only Revit document change tracker used by the
-    /// spatial truth layer. A document session id belongs to one in-memory
-    /// Document object and is intentionally replaced after close/reopen or an
-    /// add-in restart.
+    /// spatial truth layer. A document session id belongs to one native open
+    /// document session, not to one transient managed Document wrapper. It is
+    /// intentionally replaced after close/reopen or an add-in restart.
     /// </summary>
     public sealed class SpatialChangeTracker
     {
@@ -30,8 +31,12 @@ namespace RevAgentPlugin.Core
             typeof(ElementId).GetProperty("IntegerValue", BindingFlags.Instance | BindingFlags.Public);
 
         private readonly object _gate = new object();
-        private readonly ConditionalWeakTable<Document, DocumentState> _documents =
+        private ConditionalWeakTable<Document, DocumentState> _documentAliases =
             new ConditionalWeakTable<Document, DocumentState>();
+        private readonly Dictionary<string, DocumentState> _documentsByStableKey =
+            new Dictionary<string, DocumentState>(StringComparer.Ordinal);
+        private readonly Dictionary<int, DocumentState> _closingDocuments =
+            new Dictionary<int, DocumentState>();
         private ControlledApplication _subscribedApplication;
 
         private SpatialChangeTracker()
@@ -75,9 +80,16 @@ namespace RevAgentPlugin.Core
                 if (_subscribedApplication != null)
                 {
                     _subscribedApplication.DocumentChanged -= OnDocumentChanged;
+                    _subscribedApplication.DocumentClosing -= OnDocumentClosing;
+                    _subscribedApplication.DocumentClosed -= OnDocumentClosed;
+                    _subscribedApplication.DocumentSavedAs -= OnDocumentSavedAs;
+                    ResetDocumentBindings();
                 }
 
                 application.DocumentChanged += OnDocumentChanged;
+                application.DocumentClosing += OnDocumentClosing;
+                application.DocumentClosed += OnDocumentClosed;
+                application.DocumentSavedAs += OnDocumentSavedAs;
                 _subscribedApplication = application;
             }
         }
@@ -91,7 +103,11 @@ namespace RevAgentPlugin.Core
                 if (application != null && !ReferenceEquals(current, application)) return;
 
                 current.DocumentChanged -= OnDocumentChanged;
+                current.DocumentClosing -= OnDocumentClosing;
+                current.DocumentClosed -= OnDocumentClosed;
+                current.DocumentSavedAs -= OnDocumentSavedAs;
                 _subscribedApplication = null;
+                ResetDocumentBindings();
             }
         }
 
@@ -227,19 +243,407 @@ namespace RevAgentPlugin.Core
             }
         }
 
+        private void OnDocumentClosing(object sender, DocumentClosingEventArgs args)
+        {
+            if (args == null) return;
+
+            Document document;
+            try
+            {
+                document = args.Document;
+            }
+            catch
+            {
+                return;
+            }
+            if (document == null) return;
+
+            lock (_gate)
+            {
+                DocumentState state;
+                if (TryResolveState(document, out state))
+                {
+                    _closingDocuments[args.DocumentId] = state;
+                }
+            }
+        }
+
+        private void OnDocumentClosed(object sender, DocumentClosedEventArgs args)
+        {
+            if (args == null) return;
+
+            lock (_gate)
+            {
+                DocumentState state;
+                if (!_closingDocuments.TryGetValue(args.DocumentId, out state)) return;
+                _closingDocuments.Remove(args.DocumentId);
+                if (args.Status != RevitAPIEventStatus.Succeeded) return;
+
+                RemoveDocumentState(state);
+            }
+        }
+
+        private void OnDocumentSavedAs(object sender, DocumentSavedAsEventArgs args)
+        {
+            if (args == null || args.Status != RevitAPIEventStatus.Succeeded) return;
+
+            Document document;
+            try
+            {
+                document = args.Document;
+            }
+            catch
+            {
+                return;
+            }
+            if (document == null) return;
+
+            lock (_gate)
+            {
+                DocumentState state;
+                if (_documentAliases.TryGetValue(document, out state))
+                {
+                    RefreshStableAliases(document, state);
+                    return;
+                }
+
+                string originalPath = NormalizeDocumentPath(
+                    SafeReadString(delegate { return args.OriginalPath; }));
+                if (!string.IsNullOrWhiteSpace(originalPath) &&
+                    _documentsByStableKey.TryGetValue("path|" + originalPath, out state))
+                {
+                    AddWrapperAlias(document, state);
+                    RefreshStableAliases(document, state);
+                    return;
+                }
+
+                string projectInformationId = TryGetProjectInformationId(document);
+                if (!string.IsNullOrWhiteSpace(projectInformationId) &&
+                    _documentsByStableKey.TryGetValue(
+                        "unsaved|project|" + projectInformationId,
+                        out state))
+                {
+                    AddWrapperAlias(document, state);
+                    RefreshStableAliases(document, state);
+                    return;
+                }
+
+                GetOrCreateState(document);
+            }
+        }
+
         private DocumentState GetOrCreateState(Document document)
         {
             DocumentState state;
-            if (_documents.TryGetValue(document, out state)) return state;
+            if (_documentAliases.TryGetValue(document, out state))
+            {
+                RegisterStableAliases(document, state);
+                return state;
+            }
+
+            if (TryResolveState(document, out state))
+            {
+                AddWrapperAlias(document, state);
+                RegisterStableAliases(document, state);
+                return state;
+            }
 
             state = new DocumentState
             {
                 DocumentSessionId = "document-session:" + Guid.NewGuid().ToString("N"),
                 CurrentSequence = 0,
-                Journal = new List<SpatialChangeJournalEntry>()
+                Journal = new List<SpatialChangeJournalEntry>(),
+                StableKeys = new HashSet<string>(StringComparer.Ordinal)
             };
-            _documents.Add(document, state);
+            AddWrapperAlias(document, state);
+            RegisterStableAliases(document, state);
             return state;
+        }
+
+        private bool TryResolveState(Document document, out DocumentState state)
+        {
+            state = null;
+            if (document == null) return false;
+
+            DocumentState aliased;
+            if (_documentAliases.TryGetValue(document, out aliased))
+            {
+                state = aliased;
+                return true;
+            }
+
+            foreach (string key in ResolveStableDocumentKeys(document))
+            {
+                DocumentState candidate;
+                if (!_documentsByStableKey.TryGetValue(key, out candidate)) continue;
+                // A stable key is authoritative for the lifetime bracketed by
+                // DocumentClosing/DocumentClosed. Revit may return different
+                // managed wrappers for one linked native document, so wrapper
+                // Equals/reference identity must not gate this reuse.
+                state = candidate;
+                return true;
+            }
+            return false;
+        }
+
+        private void AddWrapperAlias(Document document, DocumentState state)
+        {
+            DocumentState existing;
+            if (_documentAliases.TryGetValue(document, out existing))
+            {
+                if (ReferenceEquals(existing, state)) return;
+                _documentAliases.Remove(document);
+            }
+            _documentAliases.Add(document, state);
+        }
+
+        private void RegisterStableAliases(Document document, DocumentState state)
+        {
+            foreach (string key in ResolveStableDocumentKeys(document))
+            {
+                DocumentState existing;
+                if (_documentsByStableKey.TryGetValue(key, out existing) &&
+                    !ReferenceEquals(existing, state))
+                {
+                    // Strong stable keys are unique among simultaneously open
+                    // Revit documents. Do not overwrite another live binding;
+                    // its successful DocumentClosed event owns retirement.
+                    continue;
+                }
+
+                _documentsByStableKey[key] = state;
+                state.StableKeys.Add(key);
+            }
+        }
+
+        private void RefreshStableAliases(Document document, DocumentState state)
+        {
+            // Save As keeps the native open-document session but transfers its
+            // stable identity. Retaining the original path or unsaved key would
+            // incorrectly bind a separately reopened original file to this
+            // still-open session.
+            foreach (string key in state.StableKeys.ToList())
+            {
+                DocumentState current;
+                if (_documentsByStableKey.TryGetValue(key, out current) &&
+                    ReferenceEquals(current, state))
+                {
+                    _documentsByStableKey.Remove(key);
+                }
+            }
+            state.StableKeys.Clear();
+            RegisterStableAliases(document, state);
+        }
+
+        private void RemoveDocumentState(DocumentState state)
+        {
+            if (state == null) return;
+            foreach (string key in state.StableKeys.ToList())
+            {
+                DocumentState current;
+                if (_documentsByStableKey.TryGetValue(key, out current) &&
+                    ReferenceEquals(current, state))
+                {
+                    _documentsByStableKey.Remove(key);
+                }
+            }
+            state.StableKeys.Clear();
+
+            foreach (int documentId in _closingDocuments
+                .Where(item => ReferenceEquals(item.Value, state))
+                .Select(item => item.Key)
+                .ToList())
+            {
+                _closingDocuments.Remove(documentId);
+            }
+
+            // ConditionalWeakTable has wrapper-identity semantics and cannot
+            // enumerate aliases. Replacing it drops stale aliases while the
+            // stable-key registry preserves every other open document state.
+            _documentAliases = new ConditionalWeakTable<Document, DocumentState>();
+        }
+
+        private void ResetDocumentBindings()
+        {
+            _documentAliases = new ConditionalWeakTable<Document, DocumentState>();
+            _documentsByStableKey.Clear();
+            _closingDocuments.Clear();
+        }
+
+        private static IList<string> ResolveStableDocumentKeys(Document document)
+        {
+            List<string> keys = new List<string>();
+            string projectInformationId = TryGetProjectInformationId(document);
+            string cloudIdentity = TryGetCloudIdentity(document);
+            string centralIdentity = string.IsNullOrWhiteSpace(cloudIdentity)
+                ? TryGetCentralIdentity(document)
+                : "";
+            string path = NormalizeDocumentPath(SafeReadString(delegate { return document.PathName; }));
+
+            if (!string.IsNullOrWhiteSpace(cloudIdentity))
+            {
+                keys.Add("cloud|" + cloudIdentity);
+                if (!string.IsNullOrWhiteSpace(projectInformationId))
+                {
+                    keys.Add("cloud|" + cloudIdentity + "|project|" + projectInformationId);
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(centralIdentity))
+            {
+                keys.Add("central|" + centralIdentity);
+                if (!string.IsNullOrWhiteSpace(projectInformationId))
+                {
+                    keys.Add("central|" + centralIdentity + "|project|" + projectInformationId);
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                keys.Add("path|" + path);
+                if (!string.IsNullOrWhiteSpace(projectInformationId))
+                {
+                    keys.Add("path|" + path + "|project|" + projectInformationId);
+                }
+            }
+            if (keys.Count == 0 && !string.IsNullOrWhiteSpace(projectInformationId))
+            {
+                string title = SafeReadString(delegate { return document.Title; });
+                keys.Add("unsaved|project|" + projectInformationId);
+                if (!string.IsNullOrWhiteSpace(title))
+                {
+                    keys.Add("unsaved|project|" + projectInformationId + "|title|" + title);
+                }
+            }
+            else if (keys.Count == 0)
+            {
+                try
+                {
+                    string title = SafeReadString(delegate { return document.Title; });
+                    keys.Add("native|" + document.GetHashCode().ToString(CultureInfo.InvariantCulture) + "|title|" + title);
+                }
+                catch
+                {
+                }
+            }
+
+            return keys.Distinct(StringComparer.Ordinal).ToList();
+        }
+
+        private static string TryGetProjectInformationId(Document document)
+        {
+            return SafeReadString(delegate
+            {
+                ProjectInfo info = document.ProjectInformation;
+                return info != null ? info.UniqueId : "";
+            });
+        }
+
+        private static string SafeReadString(Func<string> reader)
+        {
+            try
+            {
+                return reader != null ? (reader() ?? "").Trim() : "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static string NormalizeDocumentPath(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "";
+            try
+            {
+                value = Path.GetFullPath(value);
+            }
+            catch
+            {
+            }
+            return value.Replace('\\', '/').Trim().ToUpperInvariant();
+        }
+
+        private static string TryGetCloudIdentity(Document document)
+        {
+            try
+            {
+                MethodInfo method = document.GetType().GetMethod(
+                    "GetCloudModelPath",
+                    BindingFlags.Instance | BindingFlags.Public,
+                    null,
+                    Type.EmptyTypes,
+                    null);
+                object modelPath = method != null ? method.Invoke(document, null) : null;
+                if (modelPath == null) return "";
+                Type type = modelPath.GetType();
+                PropertyInfo projectProperty = type.GetProperty("ProjectGUID", BindingFlags.Instance | BindingFlags.Public);
+                PropertyInfo modelProperty = type.GetProperty("ModelGUID", BindingFlags.Instance | BindingFlags.Public);
+                object project = projectProperty != null
+                    ? projectProperty.GetValue(modelPath, null)
+                    : InvokeNoArg(type, modelPath, "GetProjectGUID");
+                object model = modelProperty != null
+                    ? modelProperty.GetValue(modelPath, null)
+                    : InvokeNoArg(type, modelPath, "GetModelGUID");
+                return project != null || model != null ? (project ?? "") + "|" + (model ?? "") : "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static string TryGetCentralIdentity(Document document)
+        {
+            try
+            {
+                if (!document.IsWorkshared) return "";
+                MethodInfo centralGuidMethod = typeof(WorksharingUtils).GetMethod(
+                    "GetCentralGUID",
+                    BindingFlags.Public | BindingFlags.Static,
+                    null,
+                    new[] { typeof(Document) },
+                    null);
+                object guid = centralGuidMethod != null
+                    ? centralGuidMethod.Invoke(null, new object[] { document })
+                    : null;
+                if (guid != null &&
+                    !string.Equals(guid.ToString(), Guid.Empty.ToString(), StringComparison.OrdinalIgnoreCase))
+                {
+                    return guid.ToString();
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                ModelPath central = document.GetWorksharingCentralModelPath();
+                return central != null
+                    ? NormalizeDocumentPath(ModelPathUtils.ConvertModelPathToUserVisiblePath(central))
+                    : "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static object InvokeNoArg(Type type, object instance, string methodName)
+        {
+            try
+            {
+                MethodInfo method = type.GetMethod(
+                    methodName,
+                    BindingFlags.Instance | BindingFlags.Public,
+                    null,
+                    Type.EmptyTypes,
+                    null);
+                return method != null ? method.Invoke(instance, null) : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static ElementIdReadResult ReadElementIds(Func<ICollection<ElementId>> reader)
@@ -320,6 +724,7 @@ namespace RevAgentPlugin.Core
             public string DocumentSessionId;
             public long CurrentSequence;
             public List<SpatialChangeJournalEntry> Journal;
+            public HashSet<string> StableKeys;
             public long DroppedJournalEntryCount;
             public long DroppedElementIdCount;
             public bool ElementIdReadFailed;
