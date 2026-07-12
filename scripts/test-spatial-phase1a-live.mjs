@@ -331,14 +331,14 @@ function storeEvidence(store, snapshotId, options = {}) {
   const requireConnectorEvidence = options.requireConnectorEvidence !== false;
   const requireDoublePlacedLinkEvidence = options.requireDoublePlacedLinkEvidence !== false;
   const schemaVersion = store.getSchemaVersion();
-  requireCondition(schemaVersion.major === 1 && schemaVersion.minor >= 1,
-    "The built runtime spatial store is not at the Phase 1a schema version.");
+  requireCondition(schemaVersion.major === 1 && schemaVersion.minor >= 2,
+    "The built runtime spatial store is not at the current durable spatial schema version.");
   requireCondition(store.isRTreeAvailable() === true,
     "SQLite R*Tree is unavailable; Phase 1a acceptance cannot continue.");
   const record = store.getSnapshotRecord(snapshotId);
   requireCondition(record, "The committed snapshot is not readable from the durable store.");
-  requireCondition(record.schemaVersion === "0.2",
-    "The committed store record is not SpatialSnapshot v0.2.");
+  requireCondition(record.schemaVersion === "0.3",
+    "The committed store record is not the current durable SpatialSnapshot v0.3 contract.");
   if (requireComplete) {
     requireCondition(record.complete === true && record.partial === false && record.coverageStatus === "complete",
       "The committed store record is not complete.");
@@ -805,15 +805,15 @@ async function main() {
       const toolResponse = await captureHandler(captureArgs);
       const wallElapsedMs = Math.max(0, Math.round(performance.now() - wallStarted));
       const result = parseToolResult(toolResponse);
-      if (result.reason === "phase1a_native_contract_required") {
-        throw new Error("The connected Revit payload lacks the matching Phase 1a native contract. Refresh the DLL payload before live acceptance.");
+      if (result.reason === "phase1b_native_contract_required") {
+        throw new Error("The connected Revit payload lacks the matching SpatialSnapshot v0.3 native contract. Refresh the DLL payload before live acceptance.");
       }
       requireCondition(result.success === true && result.guarded === false && result.state === "completed",
         `Capture ${index + 1} did not complete under the Phase 1a public contract (reason: ${result.reason || "failed"}).`);
       requireCondition(result.committed === true && result.atomic === true,
         `Capture ${index + 1} was not atomically committed.`);
-      requireCondition(isObject(result.snapshot) && result.snapshot.schemaVersion === "0.2",
-        `Capture ${index + 1} did not return SpatialSnapshot v0.2.`);
+      requireCondition(isObject(result.snapshot) && result.snapshot.schemaVersion === "0.3",
+        `Capture ${index + 1} did not return the current durable SpatialSnapshot v0.3 contract.`);
       requireCondition(result.liveness === "current" && result.snapshot.liveness === "current",
         `Capture ${index + 1} was not current at commit-time liveness evaluation.`);
       requireCondition(result.partial === false && result.coverageStatus === "complete" && result.scanStoppedReason === "completed",

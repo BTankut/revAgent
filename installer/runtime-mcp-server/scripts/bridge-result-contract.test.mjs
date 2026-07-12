@@ -6,6 +6,7 @@ import {
   BRIDGE_RESULT_CONTRACT_VERSION,
   hasCanonicalBridgeResultContract,
   normalizeRevitExecutionResponse,
+  shouldRefreshLiveRevitStatusAfterCommand,
 } from "../build/utils/revitToolHelpers.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -197,6 +198,29 @@ assert.deepEqual(
   legacyAfterCanonical,
   normalizedLegacy,
   "Normalizer behavior must be per response, not controlled by a process-global contract flag.",
+);
+
+assert.equal(
+  shouldRefreshLiveRevitStatusAfterCommand({}),
+  true,
+  "Post-command live status refresh must remain enabled by default.",
+);
+assert.equal(
+  shouldRefreshLiveRevitStatusAfterCommand({ refreshStatusAfterCommand: false }),
+  false,
+  "Latency-sensitive internal probes must be able to suppress only the post-command background refresh.",
+);
+
+const spatialContextHelper = readRepo("installer/runtime-mcp-server/src/tools/spatial_context_tool_helpers.ts");
+assertContains(
+  spatialContextHelper,
+  "refreshStatusAfterCommand: false",
+  "Current-state snapshot trust probes must not launch a concurrent post-command mcp_status refresh.",
+);
+assertContains(
+  spatialContextHelper,
+  'sendRevitCommand("get_spatial_change_state"',
+  "The opt-out must remain bound to the native spatial change-state trust probe.",
 );
 
 console.log("bridge result contract tests passed");

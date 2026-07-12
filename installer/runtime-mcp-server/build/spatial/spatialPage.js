@@ -1,7 +1,7 @@
 import { validateSpatialExtractionPageContract } from "./spatialPageSchema.js";
-export const SPATIAL_SNAPSHOT_SCHEMA_VERSION = "0.2";
+export const SPATIAL_SNAPSHOT_SCHEMA_VERSION = "0.3";
 export const SPATIAL_COORDINATE_FRAME = "host_internal_mm";
-export const SPATIAL_PAGE_CONTRACT_VERSION = "spatial-extraction-page.v0.2";
+export const SPATIAL_PAGE_CONTRACT_VERSION = "spatial-extraction-page.v0.3";
 const canonicalStopReasons = new Set([
     "completed",
     "max_elapsed",
@@ -205,8 +205,8 @@ export function normalizeSpatialPage(payload, elapsedMs) {
     }
     const extractionPageValidation = validateSpatialExtractionPageContract(source);
     const errors = [...extractionPageValidation.errors];
-    if (schemaVersion !== "0.1" && schemaVersion !== SPATIAL_SNAPSHOT_SCHEMA_VERSION) {
-        errors.push(`schemaVersion must be 0.1 or ${SPATIAL_SNAPSHOT_SCHEMA_VERSION}`);
+    if (schemaVersion !== "0.1" && schemaVersion !== "0.2" && schemaVersion !== SPATIAL_SNAPSHOT_SCHEMA_VERSION) {
+        errors.push(`schemaVersion must be 0.1, 0.2, or ${SPATIAL_SNAPSHOT_SCHEMA_VERSION}`);
     }
     if (readField(source, "coordinateFrame") !== SPATIAL_COORDINATE_FRAME) {
         errors.push("coordinateFrame must be host_internal_mm");
@@ -257,15 +257,15 @@ export function normalizeSpatialPage(payload, elapsedMs) {
             errors.push("Phase 0 atomic must be false");
         }
     }
-    else if (schemaVersion === "0.2") {
+    else if (schemaVersion === "0.2" || schemaVersion === "0.3") {
         if (readField(source, "liveness") !== "staging") {
-            errors.push("Phase 1a native transport page liveness must be staging");
+            errors.push("Durable-capture native transport page liveness must be staging");
         }
         if (readField(source, "atomic") !== false) {
-            errors.push("A Phase 1a native transport page is not the atomic store commit");
+            errors.push("A native transport page is not the atomic store commit");
         }
         if (readField(source, "captureConsistency") !== "document_change_sequence_bound") {
-            errors.push("Phase 1a native transport page must be document_change_sequence_bound");
+            errors.push("A durable-capture native transport page must be document_change_sequence_bound");
         }
     }
     if (!nonEmptyString(readField(source, "revisionBasisCaveat"))) {

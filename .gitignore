@@ -19,6 +19,7 @@
 *.log
 *.tmp
 *.zip
+scripts/.tmp-phase1b-*
 
 # Large offline dependency payloads are kept locally/NAS-side, not in Git.
 installer/nas/dependencies/

@@ -1,8 +1,9 @@
 # revAgent Spatial Context Engine Plan
 
-Status: codex_final; execution completed through Phase 1a.
-Revision: v2.7 — Phase 1a accepted after protected delivery and rollout
-closure (2026-07-12).
+Status: codex_execution; execution completed through Phase 1a. Phase 1b Gates
+A-D passed and protected delivery Gate E is in progress.
+Revision: v2.9 — Phase 1b implementation and local/live acceptance complete;
+protected delivery remains pending (2026-07-12).
 Supersedes draft v2.1, v2, and the draft previously named
 `REVAGENT_SPATIAL_DESIGN_ENGINE_PLAN.md`.
 
@@ -379,6 +380,9 @@ distinguishes:
 - `transformChanges` / `moved`;
 - `geometryChanges` (centerline, footprint, profile, dimensions, insulation
   or physical envelope) using versioned geometry fingerprints;
+- `geometryIndeterminate` when an AABB-only element changed but rotation and
+  resize cannot be distinguished without a rotation-invariant primitive; this
+  makes snapshot-specific geometry capability coverage non-full;
 - `propertyChanges` for spatial/system-significant fields;
 - `connectorChanges` / `connectivityChanges` / system-topology changes; and
 - recomputed `proximityChanges` only for affected R-tree neighborhoods.
@@ -544,7 +548,7 @@ scheduled until the Layer 1 production gate passes.
 - `SnapshotDiff`: `{ baseSnapshotId, headSnapshotId, scopeFingerprint,
   baseRevisionFingerprint, headRevisionFingerprint, added[], removed[],
   sourceAvailabilityChanges[], transformChanges[], moved[],
-  geometryChanges[], propertyChanges[], connectorChanges[],
+  geometryChanges[], geometryIndeterminate[], propertyChanges[], connectorChanges[],
   connectivityChanges[], proximityChanges[] }`
 - `ClashScreeningReport`: `{ screeningId, snapshotId, liveness, basis,
   candidates: [{pairIds, separationMm?, intersects, basis}],
@@ -651,7 +655,13 @@ Execution checkpoint (2026-07-12):
   smoke, and a zero-action closure audit for the operator-approved
   open-workstations-only scope. The five powered-off workstations remain
   explicitly pending normal scheduled uptake.
-- [ ] **Phase 1b — Deterministic queries + diff.** Not started.
+- [ ] **Phase 1b — Deterministic queries + diff.** Gates A-D passed on
+  2026-07-12. SpatialSnapshot v0.3, deterministic query/diff/summary, 11/11
+  actual-agent variants, zero wrong frozen gold answers, 0 mm supported
+  analytic-distance error, 74.809 ms worst operation p95, and 4.656 ms diff p95
+  are accepted locally. The phase remains unchecked until protected PR review,
+  merge, signed stable publish, representative smoke, and the powered-on-only
+  rollout closure complete. Phase 1c remains unauthorized.
 - [ ] **Phase 1c — Clash detection.** Not started.
 - [ ] **Phase 2a — Terminal placement (propose-only).** Not started.
 - [ ] **Phase 2b — Terminal materialization.** Not started.
@@ -668,7 +678,7 @@ an SLO later requires an explicit plan revision, not an informal waiver.
 |-------|---------|--------------|-----------|
 | 0. Contract + extraction spike | Publish JSON schemas `SpatialSnapshot v0.1`, `NodeRef`, `ElementRef`, source revision, and cursor envelope; prototype paged `extract_spatial_snapshot` (snippets allowed) for one real office level with host MEP, an architectural Room/Space link, and structural obstruction evidence; add a double-placed-link fixture; run bounded-evidence LLM probes over deterministic operation outputs, never whole-graph dumps | DLL + runtime | 100% stable identity for audited supported nodes; >=99.5% extraction coverage with every omission classified; host/link transform round-trip error <=0.5 mm; no duplicate/omitted rows across pages; manual geometry/Room-Space audit complete. Truth-layer go/no-go is independent of LLM prose quality: if the LLM is weak, deterministic query results become more explicit and the LLM only cites/explains them |
 | 1a. Truth foundations | Native composite identity resolver, canonical host-mm transforms, `DocumentChanged` tracker + bounded journal, paged atomic capture, durable versioned store + migration/recovery + R-tree, scope/revision fingerprints | DLL + runtime | All Section 11.2 identity/transform/liveness tests pass; concurrent edits never commit mixed-revision snapshots; extraction page Revit-UI occupancy p95 <=2 s and max <=5 s; total frozen reference-level capture p95 <=45 s; next spatial query observes stale/unknown state after a relevant committed edit |
-| 1b. Deterministic queries + diff | `query_spatial_context` retrieve/operations, `compare_spatial_snapshots`, `summarize_spatial_state`; geometry/topology fingerprints; Spatial Grounding Protocol; agent evals 1-2, 4-6 | runtime + skill | Zero wrong containment/direction/topology answers on the frozen operation gold set; supported analytic distances within 1 mm of Revit-measured ground truth; bounded query p95 <=750 ms and reference-level diff p95 <=3 s; all applicable evals pass |
+| 1b. Deterministic queries + diff | SpatialSnapshot v0.3 system/profile/connector-peer evidence; `query_spatial_context` retrieve/operations, `compare_spatial_snapshots`, `summarize_spatial_state`; placement/shape/property/topology fingerprints; Spatial Grounding Protocol; agent evals 1-2, 4-6 | DLL + runtime + skill | Zero wrong containment/direction/topology answers on the frozen operation gold set; supported analytic distances within 1 mm of Revit-measured ground truth; bounded query p95 <=750 ms and reference-level diff p95 <=3 s; all applicable evals pass |
 | 1c. Clash detection | `screen_clash_candidates`; coverage-qualified `run_interference_check` + `detect_clashes`; hard-clash and supported-clearance rule sets; agent evals 3/5 | DLL + runtime + skill | Zero false negatives on the frozen hard-clash gold set; live-verdict precision >=95%; zero false pass from partial/incomplete/unsupported coverage; connected/excluded and transformed-link cases pass; frozen reference scope completes at p95 <=60 s, while larger scopes use honest bounded partial/continuation with native work chunks <=5 s; operator acceptance on a production project |
 | 2a. Terminal placement (propose-only) | `plan_terminal_layout` read-only candidates + human review | runtime + skill | Operator-accepted proposals on a production level |
 | 2b. Terminal materialization | `create_mep_elements` (terminals), `materialize_mep_design`, `verify_mep_design`, staleness gate; evals 7-8 | DLL + runtime + skill | Zero unresolved hard clashes; rejected-candidate rollback tested |
@@ -734,6 +744,19 @@ numeric id guard
 
 ## Revision Record
 
+- v2.9 / `codex_execution` (2026-07-12): Completed Phase 1b implementation and
+  Gates A-D. Final `test-all`/`test-ci`, frozen Revit 2022 operation gold,
+  measured-distance, performance, fail-closed, and 11-variant actual-agent
+  evidence all passed. Gate E remains pending; Phase 1b stays unchecked and
+  Phase 1c is not authorized until protected delivery and scoped rollout close.
+- v2.8 / `codex_execution` (2026-07-12): Started Phase 1b. Repository/runtime
+  audit proved that accepted SpatialSnapshot v0.2 does not persist the
+  system/profile/insulation and explicit connector-peer evidence required for
+  deterministic system filters, analytic supported-profile distance,
+  `trace_connectivity`, and topology diff. Added a backward-compatible v0.3
+  native schema-minor prerequisite and changed Phase 1b's honest change class
+  from `runtime + skill` to `DLL + runtime + skill`. Phase 1b remains unchecked
+  until all acceptance gates pass; Phase 1c is not authorized.
 - v2.7 / `codex_final` (2026-07-12): Accepted Phase 1a after all five gates.
   PR #217 merged to protected `main` as `45d4d812`; main CI and automatic
   signed validation passed before the separately approved manual NAS publish.

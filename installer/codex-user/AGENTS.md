@@ -59,9 +59,10 @@ Mandatory routing examples:
 - Exact schedule cell writes go through `set_schedule_cells`.
 - Row-text-driven schedule writes go through `set_schedule_cells_by_text`.
 - Element parameter writes go through `set_element_parameter`.
-- Phase 1a durable spatial capture goes through `capture_spatial_snapshot` with
+- Phase 1b-compatible durable spatial capture goes through
+  `capture_spatial_snapshot` with
   an explicit level scope. The runtime owns opaque native pagination, validates
-  one v0.2 revision chain, stages it in the user-local versioned store, and
+  one v0.3 revision chain, stages it in the user-local versioned store, and
   exposes a snapshot only after atomic commit. Check `committed`, `atomic`,
   `liveness`, `partial`, and `coverageStatus` independently; atomic does not
   mean complete, and stale/unknown cannot support current-state wording.
@@ -69,10 +70,16 @@ Mandatory routing examples:
   Every emitted node must physically overlap it after link transform; source
   Level identity never bypasses that test. Use placement-qualified
   `linkedSourceLevels` from `inspect_levels` for exact linked Room/Space scope;
-  linked obstructions remain physical-overlap evidence. Phase 1a provides no
-  deterministic spatial query, snapshot diff, clash screening, or live
-  clash/clearance verdict; do not infer them from stored geometry or current
-  liveness.
+  linked obstructions remain physical-overlap evidence. Connector topology
+  comes only from explicit Revit connector references, never coincident points.
+- Current spatial retrieval and relations go through `query_spatial_context`
+  over one explicit complete/current snapshot. Do not derive relations from
+  coordinates in the LLM. Preserve evidence ids, `basis`, `precisionClass`,
+  and `verdictCapability`; Phase 1b provides no live clash or clearance verdict.
+- Historical spatial change goes through `compare_spatial_snapshots` with two
+  explicit complete/compatible snapshots and both revision ids cited.
+- Compact per-level context goes through `summarize_spatial_state`; it is
+  advisory-only and never verification evidence.
 - Spatial-store cleanup is local operator maintenance, not a Revit MCP task.
   Use the same configured `node.exe` with
   `%ProgramData%\DPE\revAgent\package\installer\runtime-mcp-server\build\index.js`.

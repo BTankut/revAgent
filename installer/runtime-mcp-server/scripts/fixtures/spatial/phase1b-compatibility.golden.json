@@ -1,0 +1,362 @@
+{
+  "fixtureVersion": "1.0",
+  "suite": "spatial_phase1b_compatibility_gold",
+  "description": "Synthetic compatibility and fail-closed gold cases for stored SpatialSnapshot v0.1/v0.2/v0.3 records.",
+  "normalization": {
+    "sortRules": [
+      "capabilities and missingCapabilities by ordinal code",
+      "warnings and notices by ordinal text"
+    ],
+    "excludedNondeterministicFields": [
+      "evaluatedAt",
+      "elapsedMs"
+    ]
+  },
+  "adapters": [
+    {
+      "adapterId": "spatial-snapshot-v0.1-readonly-identity/1",
+      "fromSchemaVersion": "0.1",
+      "toSchemaVersion": "0.3",
+      "supportedCapabilities": [
+        "identity",
+        "placement_identity"
+      ],
+      "missingCapabilities": [
+        "current_liveness",
+        "analytic_profile_distance",
+        "native_connector_adjacency",
+        "property_fingerprint",
+        "topology_fingerprint"
+      ]
+    },
+    {
+      "adapterId": "spatial-snapshot-v0.2-query/1",
+      "fromSchemaVersion": "0.2",
+      "toSchemaVersion": "0.3",
+      "supportedCapabilities": [
+        "identity",
+        "aabb",
+        "boundary_loops",
+        "centerline",
+        "legacy_geometry_fingerprint",
+        "tracked_liveness"
+      ],
+      "missingCapabilities": [
+        "analytic_profile_distance",
+        "native_connector_adjacency",
+        "property_fingerprint",
+        "separate_placement_and_shape_fingerprints",
+        "topology_fingerprint"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "v0_1_identity_only_is_not_current_query_evidence",
+      "input": {
+        "snapshot": {
+          "snapshotId": "snapshot:compat-v01",
+          "schemaVersion": "0.1",
+          "atomic": false,
+          "liveness": "unknown",
+          "partial": false,
+          "scopeFingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "revisionFingerprint": "sha256:1212121212121212121212121212121212121212121212121212121212121212"
+        },
+        "requestedOperation": "above_below"
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": true,
+        "state": "guarded",
+        "action": "query_spatial_context",
+        "reason": "snapshot_capability_mismatch",
+        "snapshotId": "snapshot:compat-v01",
+        "liveness": "unknown",
+        "operation": "above_below",
+        "availableCapabilities": [
+          "identity",
+          "placement_identity"
+        ],
+        "missingCapabilities": [
+          "atomic_snapshot",
+          "measured_geometry"
+        ],
+        "verdictCapability": "context_only",
+        "warnings": [
+          "SpatialSnapshot v0.1 is historical Phase 0 evidence and cannot support a current deterministic relation."
+        ],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "v0_2_aabb_direction_adapter_is_explicit",
+      "input": {
+        "snapshot": {
+          "snapshotId": "snapshot:compat-v02-aabb",
+          "schemaVersion": "0.2",
+          "atomic": true,
+          "liveness": "stale",
+          "partial": false,
+          "coverageStatus": "complete",
+          "scopeFingerprint": "sha256:2121212121212121212121212121212121212121212121212121212121212121",
+          "revisionFingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "nodes": [
+            {
+              "nodeId": "node:compat-v02-high",
+              "geometry": {
+                "aabb": {
+                  "min": [
+                    0,
+                    0,
+                    2000
+                  ],
+                  "max": [
+                    1000,
+                    1000,
+                    2200
+                  ]
+                },
+                "geometryFingerprint": "sha256:2323232323232323232323232323232323232323232323232323232323232323"
+              }
+            },
+            {
+              "nodeId": "node:compat-v02-low",
+              "geometry": {
+                "aabb": {
+                  "min": [
+                    0,
+                    0,
+                    1000
+                  ],
+                  "max": [
+                    1000,
+                    1000,
+                    1100
+                  ]
+                },
+                "geometryFingerprint": "sha256:2424242424242424242424242424242424242424242424242424242424242424"
+              }
+            }
+          ]
+        },
+        "requestedOperation": "above_below"
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "query_spatial_context",
+        "snapshotId": "snapshot:compat-v02-aabb",
+        "revisionFingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "liveness": "stale",
+        "mode": "operation",
+        "operation": "above_below",
+        "computed": {
+          "relation": "first_above_second",
+          "separationMm": 900
+        },
+        "basis": "aabb",
+        "precisionClass": "candidate",
+        "verdictCapability": "context_only",
+        "adapterId": "spatial-snapshot-v0.2-query/1",
+        "partial": false,
+        "truncated": false,
+        "nextCursor": null,
+        "warnings": [
+          "The v0.2 result is historical because liveness=stale."
+        ],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "v0_2_topology_is_not_inferred_from_is_connected",
+      "input": {
+        "snapshot": {
+          "snapshotId": "snapshot:compat-v02-topology",
+          "schemaVersion": "0.2",
+          "atomic": true,
+          "liveness": "stale",
+          "partial": false,
+          "coverageStatus": "complete",
+          "scopeFingerprint": "sha256:3131313131313131313131313131313131313131313131313131313131313131",
+          "revisionFingerprint": "sha256:3232323232323232323232323232323232323232323232323232323232323232",
+          "connectors": [
+            {
+              "nodeId": "connector:compat-v02-a",
+              "pointMm": [
+                100,
+                100,
+                100
+              ],
+              "isConnected": true
+            },
+            {
+              "nodeId": "connector:compat-v02-b",
+              "pointMm": [
+                100,
+                100,
+                100
+              ],
+              "isConnected": true
+            }
+          ]
+        },
+        "requestedOperation": "trace_connectivity"
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": true,
+        "state": "guarded",
+        "action": "query_spatial_context",
+        "reason": "snapshot_capability_mismatch",
+        "snapshotId": "snapshot:compat-v02-topology",
+        "liveness": "stale",
+        "operation": "trace_connectivity",
+        "availableCapabilities": [
+          "connector_identity",
+          "connector_location",
+          "connector_state_flag"
+        ],
+        "missingCapabilities": [
+          "native_connector_adjacency",
+          "topology_fingerprint"
+        ],
+        "verdictCapability": "context_only",
+        "warnings": [
+          "isConnected and coincident coordinates do not identify the connected peer."
+        ],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "v0_2_v0_3_precise_diff_requires_capability_adapter",
+      "input": {
+        "baseSnapshot": {
+          "snapshotId": "snapshot:compat-diff-v02",
+          "schemaVersion": "0.2",
+          "scopeFingerprint": "sha256:4141414141414141414141414141414141414141414141414141414141414141",
+          "revisionFingerprint": "sha256:4242424242424242424242424242424242424242424242424242424242424242",
+          "coordinateFrame": "host_internal_mm",
+          "complete": true,
+          "partial": false,
+          "capabilities": [
+            "legacy_geometry_fingerprint"
+          ]
+        },
+        "headSnapshot": {
+          "snapshotId": "snapshot:compat-diff-v03",
+          "schemaVersion": "0.3",
+          "scopeFingerprint": "sha256:4141414141414141414141414141414141414141414141414141414141414141",
+          "revisionFingerprint": "sha256:4343434343434343434343434343434343434343434343434343434343434343",
+          "coordinateFrame": "host_internal_mm",
+          "complete": true,
+          "partial": false,
+          "capabilities": [
+            "placement_fingerprint",
+            "geometry_fingerprint",
+            "property_fingerprint",
+            "topology_fingerprint"
+          ]
+        }
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": true,
+        "state": "guarded",
+        "action": "compare_spatial_snapshots",
+        "reason": "snapshot_capability_mismatch",
+        "baseSnapshotId": "snapshot:compat-diff-v02",
+        "headSnapshotId": "snapshot:compat-diff-v03",
+        "scopeFingerprint": "sha256:4141414141414141414141414141414141414141414141414141414141414141",
+        "baseRevisionFingerprint": "sha256:4242424242424242424242424242424242424242424242424242424242424242",
+        "headRevisionFingerprint": "sha256:4343434343434343434343434343434343434343434343434343434343434343",
+        "missingCapabilities": [
+          "separate_placement_and_shape_fingerprints",
+          "property_fingerprint",
+          "topology_fingerprint"
+        ],
+        "warnings": [
+          "The adapter cannot fabricate v0.3 classification evidence from a legacy combined geometry fingerprint."
+        ],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "coordinate_policy_mismatch_is_incomparable",
+      "input": {
+        "baseSnapshot": {
+          "snapshotId": "snapshot:compat-coordinate-base",
+          "schemaVersion": "0.3",
+          "scopeFingerprint": "sha256:5151515151515151515151515151515151515151515151515151515151515151",
+          "revisionFingerprint": "sha256:5252525252525252525252525252525252525252525252525252525252525252",
+          "coordinateFrame": "host_internal_mm",
+          "complete": true,
+          "partial": false
+        },
+        "headSnapshot": {
+          "snapshotId": "snapshot:compat-coordinate-head",
+          "schemaVersion": "1.0",
+          "scopeFingerprint": "sha256:5151515151515151515151515151515151515151515151515151515151515151",
+          "revisionFingerprint": "sha256:5353535353535353535353535353535353535353535353535353535353535353",
+          "coordinateFrame": "shared_coordinates_mm",
+          "complete": true,
+          "partial": false
+        }
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": true,
+        "state": "guarded",
+        "action": "compare_spatial_snapshots",
+        "reason": "incomparable_scopes",
+        "baseSnapshotId": "snapshot:compat-coordinate-base",
+        "headSnapshotId": "snapshot:compat-coordinate-head",
+        "scopeFingerprint": "sha256:5151515151515151515151515151515151515151515151515151515151515151",
+        "warnings": [
+          "Schema-major and coordinate-policy mismatches cannot be adapted."
+        ],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "partial_v0_3_is_not_a_diff_base",
+      "input": {
+        "baseSnapshot": {
+          "snapshotId": "snapshot:compat-partial-base",
+          "schemaVersion": "0.3",
+          "scopeFingerprint": "sha256:6161616161616161616161616161616161616161616161616161616161616161",
+          "revisionFingerprint": "sha256:6262626262626262626262626262626262626262626262626262626262626262",
+          "coordinateFrame": "host_internal_mm",
+          "complete": false,
+          "partial": true,
+          "coverageStatus": "incomplete_omissions"
+        },
+        "headSnapshot": {
+          "snapshotId": "snapshot:compat-partial-head",
+          "schemaVersion": "0.3",
+          "scopeFingerprint": "sha256:6161616161616161616161616161616161616161616161616161616161616161",
+          "revisionFingerprint": "sha256:6363636363636363636363636363636363636363636363636363636363636363",
+          "coordinateFrame": "host_internal_mm",
+          "complete": true,
+          "partial": false,
+          "coverageStatus": "complete"
+        }
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": true,
+        "state": "guarded",
+        "action": "compare_spatial_snapshots",
+        "reason": "partial_snapshot_not_diffable",
+        "baseSnapshotId": "snapshot:compat-partial-base",
+        "headSnapshotId": "snapshot:compat-partial-head",
+        "scopeFingerprint": "sha256:6161616161616161616161616161616161616161616161616161616161616161",
+        "warnings": [
+          "Both diff inputs must have complete extraction coverage."
+        ],
+        "notices": []
+      }
+    }
+  ]
+}

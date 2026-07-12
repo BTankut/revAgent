@@ -27,6 +27,7 @@ namespace RevAgentPlugin.Core
 
             _uiControlledApplication = application;
             _uiControlledApplication.Idling += OnIdling;
+            _uiControlledApplication.ViewActivated += OnViewActivated;
 
             return Result.Succeeded;
         }
@@ -38,6 +39,7 @@ namespace RevAgentPlugin.Core
             if (_uiControlledApplication != null)
             {
                 _uiControlledApplication.Idling -= OnIdling;
+                _uiControlledApplication.ViewActivated -= OnViewActivated;
             }
 
             try
@@ -62,6 +64,14 @@ namespace RevAgentPlugin.Core
             }
 
             StartSocketService(sender as UIApplication);
+        }
+
+        private void OnViewActivated(object sender, ViewActivatedEventArgs e)
+        {
+            // Current-state spatial evidence is bound to the active Revit
+            // context. Conservatively invalidate even for same-document view
+            // changes; no model data is read or written by this callback.
+            SpatialChangeTracker.Instance.InvalidateActiveDocumentView();
         }
 
         private void StartSocketService(UIApplication uiApplication)

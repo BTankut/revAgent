@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.3/profile.schema.json",
+  "title": "revAgent Spatial Profile v0.3",
+  "description": "Normalized MEP profile evidence in millimetres. Null dimensions are explicit unsupported or unavailable evidence, never inferred values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["shape", "diameterMm", "widthMm", "heightMm", "insulationThicknessMm"],
+  "properties": {
+    "shape": { "type": "string", "enum": ["round", "rectangular", "oval", "unknown"] },
+    "diameterMm": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+    "widthMm": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+    "heightMm": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+    "insulationThicknessMm": { "type": ["number", "null"], "minimum": 0 }
+  }
+}

@@ -1,0 +1,757 @@
+{
+  "fixtureVersion": "1.0",
+  "suite": "spatial_phase1b_diff_gold",
+  "schemaVersion": "0.3",
+  "description": "Synthetic, self-contained Phase 1b SnapshotDiff classification gold set.",
+  "normalization": {
+    "contract": "SnapshotDiff",
+    "sortRules": [
+      "change arrays by nodeId or sourceKey",
+      "connector changes by ownerNodeId then connectorNodeId",
+      "connectivity changes by sourceNodeId then targetNodeId"
+    ],
+    "excludedNondeterministicFields": [
+      "evaluatedAt",
+      "elapsedMs",
+      "diffId"
+    ]
+  },
+  "scenarios": [
+    {
+      "caseId": "link_reload_add_remove_unload",
+      "base": {
+        "snapshotId": "snapshot:diff-source-base",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "stale",
+        "sourceRevisions": [
+          {
+            "sourceKey": "fixture-link-reload",
+            "documentKey": "fixture:reload",
+            "linkInstanceUniqueId": "fixture-link-reload",
+            "loadedVersion": "v1",
+            "availability": "loaded"
+          },
+          {
+            "sourceKey": "fixture-link-remove",
+            "documentKey": "fixture:remove",
+            "linkInstanceUniqueId": "fixture-link-remove",
+            "loadedVersion": "v1",
+            "availability": "loaded"
+          },
+          {
+            "sourceKey": "fixture-link-unload",
+            "documentKey": "fixture:unload",
+            "linkInstanceUniqueId": "fixture-link-unload",
+            "loadedVersion": "v1",
+            "availability": "loaded"
+          }
+        ],
+        "nodes": []
+      },
+      "head": {
+        "snapshotId": "snapshot:diff-source-head",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "current",
+        "sourceRevisions": [
+          {
+            "sourceKey": "fixture-link-add",
+            "documentKey": "fixture:add",
+            "linkInstanceUniqueId": "fixture-link-add",
+            "loadedVersion": "v1",
+            "availability": "loaded"
+          },
+          {
+            "sourceKey": "fixture-link-reload",
+            "documentKey": "fixture:reload",
+            "linkInstanceUniqueId": "fixture-link-reload",
+            "loadedVersion": "v2",
+            "availability": "loaded"
+          },
+          {
+            "sourceKey": "fixture-link-unload",
+            "documentKey": "fixture:unload",
+            "linkInstanceUniqueId": "fixture-link-unload",
+            "loadedVersion": "v1",
+            "availability": "unloaded"
+          }
+        ],
+        "nodes": []
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "compare_spatial_snapshots",
+        "baseSnapshotId": "snapshot:diff-source-base",
+        "headSnapshotId": "snapshot:diff-source-head",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "baseRevisionFingerprint": "sha256:0101010101010101010101010101010101010101010101010101010101010101",
+        "headRevisionFingerprint": "sha256:0202020202020202020202020202020202020202020202020202020202020202",
+        "historical": true,
+        "added": [],
+        "removed": [],
+        "sourceAvailabilityChanges": [
+          {
+            "sourceKey": "fixture-link-add",
+            "changeType": "added"
+          },
+          {
+            "sourceKey": "fixture-link-reload",
+            "changeType": "reloaded",
+            "beforeLoadedVersion": "v1",
+            "afterLoadedVersion": "v2"
+          },
+          {
+            "sourceKey": "fixture-link-remove",
+            "changeType": "removed"
+          },
+          {
+            "sourceKey": "fixture-link-unload",
+            "changeType": "unloaded"
+          }
+        ],
+        "transformChanges": [],
+        "moved": [],
+        "geometryChanges": [],
+        "propertyChanges": [],
+        "connectorChanges": [],
+        "connectivityChanges": [],
+        "proximityChanges": [],
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "link_transform_change_preserves_node_identity",
+      "base": {
+        "snapshotId": "snapshot:diff-transform-base",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "stale",
+        "sourceRevisions": [
+          {
+            "sourceKey": "fixture-link-transform",
+            "documentKey": "fixture:transform",
+            "linkInstanceUniqueId": "fixture-link-transform",
+            "loadedVersion": "v1",
+            "sourceToHostTransform": [
+              1,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              1
+            ]
+          }
+        ],
+        "nodes": [
+          {
+            "nodeId": "node:linked-transform-element",
+            "placementFingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "geometryFingerprint": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+            "propertyFingerprint": "sha256:1313131313131313131313131313131313131313131313131313131313131313",
+            "topologyFingerprint": "sha256:1414141414141414141414141414141414141414141414141414141414141414"
+          }
+        ]
+      },
+      "head": {
+        "snapshotId": "snapshot:diff-transform-head",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0404040404040404040404040404040404040404040404040404040404040404",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "current",
+        "sourceRevisions": [
+          {
+            "sourceKey": "fixture-link-transform",
+            "documentKey": "fixture:transform",
+            "linkInstanceUniqueId": "fixture-link-transform",
+            "loadedVersion": "v1",
+            "sourceToHostTransform": [
+              1,
+              0,
+              0,
+              1000,
+              0,
+              1,
+              0,
+              500,
+              0,
+              0,
+              1,
+              0,
+              0,
+              0,
+              0,
+              1
+            ]
+          }
+        ],
+        "nodes": [
+          {
+            "nodeId": "node:linked-transform-element",
+            "placementFingerprint": "sha256:1515151515151515151515151515151515151515151515151515151515151515",
+            "geometryFingerprint": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+            "propertyFingerprint": "sha256:1313131313131313131313131313131313131313131313131313131313131313",
+            "topologyFingerprint": "sha256:1414141414141414141414141414141414141414141414141414141414141414"
+          }
+        ]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "compare_spatial_snapshots",
+        "baseSnapshotId": "snapshot:diff-transform-base",
+        "headSnapshotId": "snapshot:diff-transform-head",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "baseRevisionFingerprint": "sha256:0303030303030303030303030303030303030303030303030303030303030303",
+        "headRevisionFingerprint": "sha256:0404040404040404040404040404040404040404040404040404040404040404",
+        "historical": true,
+        "added": [],
+        "removed": [],
+        "sourceAvailabilityChanges": [],
+        "transformChanges": [
+          {
+            "sourceKey": "fixture-link-transform",
+            "translationDeltaMm": [
+              1000,
+              500,
+              0
+            ]
+          }
+        ],
+        "moved": [
+          {
+            "nodeId": "node:linked-transform-element",
+            "basis": "source_transform_changed"
+          }
+        ],
+        "geometryChanges": [],
+        "propertyChanges": [],
+        "connectorChanges": [],
+        "connectivityChanges": [],
+        "proximityChanges": [],
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "resized_but_unmoved_duct",
+      "base": {
+        "snapshotId": "snapshot:diff-resize-base",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0505050505050505050505050505050505050505050505050505050505050505",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "stale",
+        "sourceRevisions": [],
+        "nodes": [
+          {
+            "nodeId": "node:duct-resize",
+            "centerline": [
+              [
+                0,
+                0,
+                2500
+              ],
+              [
+                5000,
+                0,
+                2500
+              ]
+            ],
+            "profile": {
+              "shape": "rectangular",
+              "widthMm": 400,
+              "heightMm": 200
+            },
+            "placementFingerprint": "sha256:2121212121212121212121212121212121212121212121212121212121212121",
+            "geometryFingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "propertyFingerprint": "sha256:2323232323232323232323232323232323232323232323232323232323232323",
+            "topologyFingerprint": "sha256:2424242424242424242424242424242424242424242424242424242424242424"
+          }
+        ]
+      },
+      "head": {
+        "snapshotId": "snapshot:diff-resize-head",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0606060606060606060606060606060606060606060606060606060606060606",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "current",
+        "sourceRevisions": [],
+        "nodes": [
+          {
+            "nodeId": "node:duct-resize",
+            "centerline": [
+              [
+                0,
+                0,
+                2500
+              ],
+              [
+                5000,
+                0,
+                2500
+              ]
+            ],
+            "profile": {
+              "shape": "rectangular",
+              "widthMm": 600,
+              "heightMm": 300
+            },
+            "placementFingerprint": "sha256:2121212121212121212121212121212121212121212121212121212121212121",
+            "geometryFingerprint": "sha256:2525252525252525252525252525252525252525252525252525252525252525",
+            "propertyFingerprint": "sha256:2323232323232323232323232323232323232323232323232323232323232323",
+            "topologyFingerprint": "sha256:2424242424242424242424242424242424242424242424242424242424242424"
+          }
+        ]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "compare_spatial_snapshots",
+        "baseSnapshotId": "snapshot:diff-resize-base",
+        "headSnapshotId": "snapshot:diff-resize-head",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "baseRevisionFingerprint": "sha256:0505050505050505050505050505050505050505050505050505050505050505",
+        "headRevisionFingerprint": "sha256:0606060606060606060606060606060606060606060606060606060606060606",
+        "historical": true,
+        "added": [],
+        "removed": [],
+        "sourceAvailabilityChanges": [],
+        "transformChanges": [],
+        "moved": [],
+        "geometryChanges": [
+          {
+            "nodeId": "node:duct-resize",
+            "changeType": "profile_resized",
+            "beforeProfile": "rectangular:400x200",
+            "afterProfile": "rectangular:600x300"
+          }
+        ],
+        "propertyChanges": [],
+        "connectorChanges": [],
+        "connectivityChanges": [],
+        "proximityChanges": [],
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "moved_same_shape",
+      "base": {
+        "snapshotId": "snapshot:diff-move-base",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "stale",
+        "sourceRevisions": [],
+        "nodes": [
+          {
+            "nodeId": "node:duct-move",
+            "placementFingerprint": "sha256:3131313131313131313131313131313131313131313131313131313131313131",
+            "geometryFingerprint": "sha256:3232323232323232323232323232323232323232323232323232323232323232",
+            "propertyFingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "topologyFingerprint": "sha256:3434343434343434343434343434343434343434343434343434343434343434"
+          }
+        ]
+      },
+      "head": {
+        "snapshotId": "snapshot:diff-move-head",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0808080808080808080808080808080808080808080808080808080808080808",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "current",
+        "sourceRevisions": [],
+        "nodes": [
+          {
+            "nodeId": "node:duct-move",
+            "placementFingerprint": "sha256:3535353535353535353535353535353535353535353535353535353535353535",
+            "geometryFingerprint": "sha256:3232323232323232323232323232323232323232323232323232323232323232",
+            "propertyFingerprint": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "topologyFingerprint": "sha256:3434343434343434343434343434343434343434343434343434343434343434"
+          }
+        ]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "compare_spatial_snapshots",
+        "baseSnapshotId": "snapshot:diff-move-base",
+        "headSnapshotId": "snapshot:diff-move-head",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "baseRevisionFingerprint": "sha256:0707070707070707070707070707070707070707070707070707070707070707",
+        "headRevisionFingerprint": "sha256:0808080808080808080808080808080808080808080808080808080808080808",
+        "historical": true,
+        "added": [],
+        "removed": [],
+        "sourceAvailabilityChanges": [],
+        "transformChanges": [],
+        "moved": [
+          {
+            "nodeId": "node:duct-move",
+            "basis": "placement_fingerprint_changed"
+          }
+        ],
+        "geometryChanges": [],
+        "propertyChanges": [],
+        "connectorChanges": [],
+        "connectivityChanges": [],
+        "proximityChanges": [],
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "system_property_change",
+      "base": {
+        "snapshotId": "snapshot:diff-property-base",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0909090909090909090909090909090909090909090909090909090909090909",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "stale",
+        "sourceRevisions": [],
+        "nodes": [
+          {
+            "nodeId": "node:duct-system",
+            "system": "Supply Air",
+            "placementFingerprint": "sha256:4141414141414141414141414141414141414141414141414141414141414141",
+            "geometryFingerprint": "sha256:4242424242424242424242424242424242424242424242424242424242424242",
+            "propertyFingerprint": "sha256:4343434343434343434343434343434343434343434343434343434343434343",
+            "topologyFingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        ]
+      },
+      "head": {
+        "snapshotId": "snapshot:diff-property-head",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "current",
+        "sourceRevisions": [],
+        "nodes": [
+          {
+            "nodeId": "node:duct-system",
+            "system": "Return Air",
+            "placementFingerprint": "sha256:4141414141414141414141414141414141414141414141414141414141414141",
+            "geometryFingerprint": "sha256:4242424242424242424242424242424242424242424242424242424242424242",
+            "propertyFingerprint": "sha256:4545454545454545454545454545454545454545454545454545454545454545",
+            "topologyFingerprint": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        ]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "compare_spatial_snapshots",
+        "baseSnapshotId": "snapshot:diff-property-base",
+        "headSnapshotId": "snapshot:diff-property-head",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "baseRevisionFingerprint": "sha256:0909090909090909090909090909090909090909090909090909090909090909",
+        "headRevisionFingerprint": "sha256:0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "historical": true,
+        "added": [],
+        "removed": [],
+        "sourceAvailabilityChanges": [],
+        "transformChanges": [],
+        "moved": [],
+        "geometryChanges": [],
+        "propertyChanges": [
+          {
+            "nodeId": "node:duct-system",
+            "fields": [
+              {
+                "name": "system",
+                "before": "Supply Air",
+                "after": "Return Air"
+              }
+            ]
+          }
+        ],
+        "connectorChanges": [],
+        "connectivityChanges": [],
+        "proximityChanges": [],
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "connector_topology_rewire",
+      "base": {
+        "snapshotId": "snapshot:diff-topology-base",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "stale",
+        "sourceRevisions": [],
+        "nodes": [
+          {
+            "nodeId": "connector:rewire-a",
+            "ownerNodeId": "node:rewire-owner-a",
+            "connectedConnectorNodeIds": [
+              "connector:rewire-b"
+            ],
+            "topologyFingerprint": "sha256:5151515151515151515151515151515151515151515151515151515151515151"
+          },
+          {
+            "nodeId": "connector:rewire-b",
+            "ownerNodeId": "node:rewire-owner-b",
+            "connectedConnectorNodeIds": [
+              "connector:rewire-a"
+            ],
+            "topologyFingerprint": "sha256:5252525252525252525252525252525252525252525252525252525252525252"
+          },
+          {
+            "nodeId": "connector:rewire-c",
+            "ownerNodeId": "node:rewire-owner-c",
+            "connectedConnectorNodeIds": [],
+            "topologyFingerprint": "sha256:5353535353535353535353535353535353535353535353535353535353535353"
+          }
+        ]
+      },
+      "head": {
+        "snapshotId": "snapshot:diff-topology-head",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "current",
+        "sourceRevisions": [],
+        "nodes": [
+          {
+            "nodeId": "connector:rewire-a",
+            "ownerNodeId": "node:rewire-owner-a",
+            "connectedConnectorNodeIds": [
+              "connector:rewire-c"
+            ],
+            "topologyFingerprint": "sha256:5454545454545454545454545454545454545454545454545454545454545454"
+          },
+          {
+            "nodeId": "connector:rewire-b",
+            "ownerNodeId": "node:rewire-owner-b",
+            "connectedConnectorNodeIds": [],
+            "topologyFingerprint": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          {
+            "nodeId": "connector:rewire-c",
+            "ownerNodeId": "node:rewire-owner-c",
+            "connectedConnectorNodeIds": [
+              "connector:rewire-a"
+            ],
+            "topologyFingerprint": "sha256:5656565656565656565656565656565656565656565656565656565656565656"
+          }
+        ]
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "compare_spatial_snapshots",
+        "baseSnapshotId": "snapshot:diff-topology-base",
+        "headSnapshotId": "snapshot:diff-topology-head",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "baseRevisionFingerprint": "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        "headRevisionFingerprint": "sha256:0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+        "historical": true,
+        "added": [],
+        "removed": [],
+        "sourceAvailabilityChanges": [],
+        "transformChanges": [],
+        "moved": [],
+        "geometryChanges": [],
+        "propertyChanges": [],
+        "connectorChanges": [
+          {
+            "connectorNodeId": "connector:rewire-a",
+            "changeType": "adjacency_changed"
+          },
+          {
+            "connectorNodeId": "connector:rewire-b",
+            "changeType": "adjacency_changed"
+          },
+          {
+            "connectorNodeId": "connector:rewire-c",
+            "changeType": "adjacency_changed"
+          }
+        ],
+        "connectivityChanges": [
+          {
+            "sourceNodeId": "connector:rewire-a",
+            "targetNodeId": "connector:rewire-b",
+            "changeType": "removed"
+          },
+          {
+            "sourceNodeId": "connector:rewire-a",
+            "targetNodeId": "connector:rewire-c",
+            "changeType": "added"
+          }
+        ],
+        "proximityChanges": [],
+        "warnings": [],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "journal_gap_allows_historical_diff_only",
+      "base": {
+        "snapshotId": "snapshot:diff-gap-base",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "unknown",
+        "livenessReason": "journal_gap",
+        "sourceRevisions": [],
+        "nodes": []
+      },
+      "head": {
+        "snapshotId": "snapshot:diff-gap-head",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "unknown",
+        "livenessReason": "journal_gap",
+        "sourceRevisions": [],
+        "nodes": []
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": false,
+        "state": "completed",
+        "action": "compare_spatial_snapshots",
+        "baseSnapshotId": "snapshot:diff-gap-base",
+        "headSnapshotId": "snapshot:diff-gap-head",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "baseRevisionFingerprint": "sha256:0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+        "headRevisionFingerprint": "sha256:0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+        "historical": true,
+        "added": [],
+        "removed": [],
+        "sourceAvailabilityChanges": [],
+        "transformChanges": [],
+        "moved": [],
+        "geometryChanges": [],
+        "propertyChanges": [],
+        "connectorChanges": [],
+        "connectivityChanges": [],
+        "proximityChanges": [],
+        "warnings": [
+          "Both snapshots have unknown live liveness and may be described only as historical inputs."
+        ],
+        "notices": []
+      }
+    },
+    {
+      "caseId": "partial_snapshot_is_not_diffable",
+      "base": {
+        "snapshotId": "snapshot:diff-partial-base",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "coordinateFrame": "host_internal_mm",
+        "complete": false,
+        "partial": true,
+        "coverageStatus": "incomplete_budget",
+        "liveness": "stale",
+        "sourceRevisions": [],
+        "nodes": []
+      },
+      "head": {
+        "snapshotId": "snapshot:diff-partial-head",
+        "schemaVersion": "0.3",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revisionFingerprint": "sha256:1010101010101010101010101010101010101010101010101010101010101010",
+        "coordinateFrame": "host_internal_mm",
+        "complete": true,
+        "partial": false,
+        "liveness": "current",
+        "sourceRevisions": [],
+        "nodes": []
+      },
+      "expectedNormalizedOutput": {
+        "success": true,
+        "guarded": true,
+        "state": "guarded",
+        "action": "compare_spatial_snapshots",
+        "reason": "partial_snapshot_not_diffable",
+        "baseSnapshotId": "snapshot:diff-partial-base",
+        "headSnapshotId": "snapshot:diff-partial-head",
+        "scopeFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "baseRevisionFingerprint": "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "headRevisionFingerprint": "sha256:1010101010101010101010101010101010101010101010101010101010101010",
+        "historical": true,
+        "added": [],
+        "removed": [],
+        "sourceAvailabilityChanges": [],
+        "transformChanges": [],
+        "moved": [],
+        "geometryChanges": [],
+        "propertyChanges": [],
+        "connectorChanges": [],
+        "connectivityChanges": [],
+        "proximityChanges": [],
+        "warnings": [
+          "SnapshotDiff requires two complete snapshots."
+        ],
+        "notices": []
+      }
+    }
+  ]
+}

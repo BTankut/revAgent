@@ -12,7 +12,7 @@ description: >
   critical path, or system flow. Localized Turkish requests for the same
   mechanical MEP tasks are also in scope.
 license: UNLICENSED
-version: 0.4.7
+version: 0.6.0
 ---
 
 # revAgent - MEP Automation Expert
@@ -55,6 +55,13 @@ Hard routing rules:
 - Host/linked Level discovery: use `inspect_levels` before any custom Level or
   RevitLinkInstance loop, especially before choosing a linked source level for
   `capture_spatial_snapshot`.
+- Current-state spatial questions: use a complete, current
+  `capture_spatial_snapshot`, then call `query_spatial_context`; never derive
+  relations by doing coordinate arithmetic in the LLM.
+- Historical spatial change: use `compare_spatial_snapshots` with two explicit
+  complete snapshot ids and cite both revision fingerprints.
+- Compact spatial context: use `summarize_spatial_state` only as advisory
+  context. It is never verification evidence.
 - Schedule-to-Excel reconciliation/review: use `reconcile_schedule_excel` after
   bounded schedule evidence is available.
 - Annotation inventory/count: use `count_annotations` before any custom
@@ -119,9 +126,10 @@ normalizer.
   `detailLevel="minimal"` so large-model document checks do not perform MEP
   category or linked room/space counts; request `counts` or `full` only when
   those expensive summaries are needed.
-- `capture_spatial_snapshot` - Phase 1a read-only durable spatial capture. It
+- `capture_spatial_snapshot` - Phase 1b-compatible read-only durable spatial
+  capture. It
   requires exact `levelIds` and/or `levelNames`; the runtime, not the caller,
-  owns opaque native pagination, validates one v0.2 page/hash/revision chain,
+  owns opaque native pagination, validates one v0.3 page/hash/revision chain,
   stages it in the user-local spatial store, and returns only after atomic
   commit or a guarded/failed result. The host Level creates a host-Z band, and
   every emitted node must physically overlap it after link transform; source
@@ -131,10 +139,28 @@ normalizer.
   band-overlap evidence. Inspect `committed`, `atomic`, `liveness`, `partial`,
   and `coverageStatus` independently. `coverageStatus` is `complete`,
   `incomplete_omissions`, or `incomplete_budget`; an atomic commit may still be
-  partial. `stale` or `unknown` cannot support current-state wording. Even a
-  current, complete snapshot is only the Phase 1a truth foundation: no
-  deterministic spatial query, snapshot diff, clash screening, or live
-  clash/clearance verdict is available yet.
+  partial. `stale` or `unknown` cannot support current-state wording. v0.3 adds
+  system/profile/fingerprint and explicit Revit `Connector.AllRefs` topology
+  evidence for Phase 1b; topology is never inferred from coincident points.
+- `query_spatial_context` - Phase 1b deterministic read-only retrieval and
+  relation engine over one explicit complete/current snapshot. Use
+  `mode="retrieve"` for bounded filtered subgraphs or `mode="operation"` for
+  `relation_between`, `nearest_elements`, `elements_within`,
+  `clearance_between`, `trace_connectivity`, `locate_in_space`, or
+  `above_below`. Every computed result reports evidence ids, `basis`,
+  `precisionClass`, and `verdictCapability`. AABB results are candidate/
+  screening evidence. Supported straight-round analytic separation is measured
+  context. Neither form is a live clearance or clash verdict.
+- `compare_spatial_snapshots` - Phase 1b deterministic historical diff over two
+  explicit complete, scope-compatible snapshots. It classifies source
+  availability, transforms/movement, geometry, properties, connectors,
+  connectivity, and affected-neighborhood proximity. Stale/unknown snapshots
+  remain valid immutable historical inputs, but both snapshot and revision ids
+  must be cited. Partial or incompatible snapshots are guarded.
+- `summarize_spatial_state` - Phase 1b bounded per-level count/extent summary.
+  It is always advisory, `context_only`, and not quotable as verification.
+  It must never be used to claim occupancy percentage, clearance, or
+  clash-free state.
 - Spatial-store purge is local CLI maintenance, not an MCP tool. Run it only
   for an explicit user request, with the same `node.exe` from the revAgent MCP
   config and `%ProgramData%\DPE\revAgent\package\installer\runtime-mcp-server\build\index.js`.
@@ -395,6 +421,12 @@ Default workflow for every Revit runtime task:
    Before a host/linked level-scoped workflow when the exact source Level name,
    id, link placement, or transformed host elevation is unknown, call
    `inspect_levels` and use exact link selectors where available.
+   For a spatial relation question, capture or select one complete snapshot and
+   call `query_spatial_context`; do not calculate relations from returned
+   coordinates yourself. If liveness is `stale` or `unknown`, recapture before
+   a current-state answer. Use `compare_spatial_snapshots` only for an explicit
+   historical comparison and cite both revisions. Treat
+   `summarize_spatial_state` as advisory context only.
 6. For DrawingSheet or placed-view annotation lookup, call
    `inspect_sheet_text` before writing raw C# sheet or viewport loops. Use
    `sheetQuery` or exact `sheetIds` and bounded limits; enable

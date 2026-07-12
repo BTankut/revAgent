@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,22 @@ import {
 import { SpatialStore } from "../build/spatial/spatialStore.js";
 
 const sha = (character) => `sha256:${character.repeat(64)}`;
+function semanticCanonicalJson(value) {
+  if (value === null) return "null";
+  if (typeof value === "number") {
+    const bytes = new ArrayBuffer(8);
+    const view = new DataView(bytes);
+    view.setFloat64(0, Object.is(value, -0) ? 0 : value, false);
+    return JSON.stringify(`n:${view.getBigUint64(0, false).toString(16).padStart(16, "0")}`);
+  }
+  if (typeof value === "string") return JSON.stringify(`s:${value}`);
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(semanticCanonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort()
+    .map((key) => `${JSON.stringify(key)}:${semanticCanonicalJson(value[key])}`).join(",")}}`;
+}
+const semanticHash = (value) => `sha256:${crypto.createHash("sha256")
+  .update(semanticCanonicalJson(value), "utf8").digest("hex")}`;
 const sourceRevisions = [{
   documentKey: "host:test",
   documentSessionId: "document-session-1",
@@ -140,6 +157,203 @@ function connectorOmission(ownerNodeId) {
   };
 }
 
+function strictV03Page() {
+  const strictSourceRef = {
+    documentKey: "host:test",
+    documentSessionId: "document-session-1",
+  };
+  const elementRef = {
+    ...strictSourceRef,
+    elementUniqueId: "strict-element-1",
+    elementId: 1,
+    sourceKind: "host",
+  };
+  const strictNode = {
+    nodeId: "node:strict-v03",
+    nodeKind: "revit_element",
+    nodeRef: {
+      nodeId: "node:strict-v03",
+      nodeKind: "revit_element",
+      elementRef,
+      sourceRefs: [strictSourceRef],
+    },
+    elementRef,
+    sourceRefs: [strictSourceRef],
+    category: "Ducts",
+    builtInCategory: "OST_DuctCurves",
+    categoryRole: "host_mep",
+    name: "Strict Duct",
+    familyName: "Strict Duct",
+    typeName: "100x100",
+    levelRef: {
+      sourceLevelId: 1,
+      sourceLevelName: "Level 1",
+      sourceLevelUniqueId: "level-1",
+    },
+    spatialProperties: {
+      systemKey: "Supply Air",
+      systemName: "Supply Air",
+      systemClassification: "Supply Air",
+    },
+    profile: {
+      shape: "rectangular",
+      diameterMm: null,
+      widthMm: 100,
+      heightMm: 100,
+      insulationThicknessMm: 0,
+    },
+    fingerprints: {
+      version: "phase1b-spatial-fingerprint/1.0",
+      placement: sha("1"),
+      shape: sha("2"),
+      property: sha("3"),
+      topology: sha("4"),
+    },
+    geometry: {
+      coordinateFrame: "host_internal_mm",
+      lengthUnit: "mm",
+      aabb: { min: [0, 0, 0], max: [100, 100, 100] },
+      centerline: null,
+      pointLocation: null,
+      boundaryLoops: [],
+      basis: "revit_element_aabb",
+      precisionClass: "aabb_only",
+      verdictCapability: "context_only",
+      geometryFingerprint: sha("5"),
+    },
+  };
+  const sortPosition = {
+    documentKey: "host:test",
+    linkPlacementKey: "host",
+    nodeKind: "revit_element",
+    stableSourceIdentity: "strict-element-1",
+  };
+  const strictCoverage = {
+    sourceCount: 1,
+    effectiveScope: true,
+    selectionComplete: true,
+    selectedLinkCount: 0,
+    loadedLinkCount: 0,
+    unloadedLinkCount: 0,
+    scannedElementCount: 1,
+    filteredOutOfScopeCount: 0,
+    sourceAvailabilityOmissionCount: 0,
+    totalOrderedRowCount: 1,
+    pageNodeCount: 1,
+    pageOmissionCount: 0,
+    eligibleByCategory: { OST_DuctCurves: 1 },
+    extractedByCategory: { OST_DuctCurves: 1 },
+    omittedByClassification: {},
+    connectorOmittedByClassification: {},
+    unmaterializedOmissionCount: 0,
+    unmaterializedOmissionsByClassification: {},
+    sourceOmittedByClassification: {},
+    classifiedOmissionCount: 0,
+    allEligibleOmissionsClassified: true,
+    extractionCoverageRatio: 1,
+    phase0TargetAtLeast0_995: true,
+    complete: true,
+  };
+  const pageRows = [{ orderKey: sortPosition, node: strictNode }];
+  const pagePayloadBytes = Buffer.byteLength(semanticCanonicalJson(pageRows), "utf8");
+  const pageHash = semanticHash({
+    captureId: "capture-strict-v03",
+    pageOrdinal: 0,
+    priorPageHash: null,
+    rows: pageRows,
+  });
+  return {
+    resultContractVersion: 2,
+    success: true,
+    guarded: false,
+    state: "completed",
+    action: "extract_spatial_snapshot",
+    reason: null,
+    message: "Spatial extraction page completed.",
+    error: null,
+    schemaVersion: "0.3",
+    extractorVersion: "phase1b-native/0.3",
+    coordinateFrame: "host_internal_mm",
+    lengthUnit: "mm",
+    captureId: "capture-strict-v03",
+    snapshotId: "capture-strict-v03",
+    capturedAt: "2026-07-11T20:00:00.000Z",
+    atomic: false,
+    liveness: "staging",
+    captureConsistency: "document_change_sequence_bound",
+    continuationKind: null,
+    sourceBindingFingerprint: sha("6"),
+    preparation: null,
+    revisionBasisCaveat: "Document change sequences bind this prepared capture.",
+    scope: captureScope,
+    effectiveSourcePolicy,
+    sourceRevisions: [{
+      ...sourceRevisions[0],
+      sourceToHostTransform: {
+        representation: "affine_4x4_row_major",
+        fromFrame: "source_internal",
+        toFrame: "host_internal_mm",
+        lengthUnit: "mm",
+        matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+      },
+    }],
+    scopeFingerprint: sha("7"),
+    revisionFingerprint: sha("8"),
+    nodes: [strictNode],
+    omissions: [],
+    counts: {
+      totalNodes: 1,
+      nodesByKind: { revit_element: 1, connector: 0, derived: 0 },
+      expectedSupportedNodes: 1,
+      extractedSupportedNodes: 1,
+      omittedSupportedNodes: 0,
+      omissionsByReason: {},
+      connectorOmissionsByReason: {},
+    },
+    coverage: strictCoverage,
+    transformValidation: {
+      transformCount: 1,
+      validatedCount: 1,
+      failedCount: 0,
+      maxRoundTripErrorMm: 0,
+      allWithin0_5mm: true,
+    },
+    page: {
+      ordinal: 0,
+      targetBytes: 4 * 1024 * 1024,
+      payloadBytes: pagePayloadBytes,
+      rows: pageRows,
+      rowCount: 1,
+      recordCount: 1,
+      nodeCount: 1,
+      omissionCount: 0,
+      hasMore: false,
+      pageSha256: pageHash,
+      pageHash,
+      priorPageSha256: null,
+      priorPageHash: null,
+      firstSortPosition: "host:test|host|revit_element|strict-element-1",
+      lastSortPosition: "host:test|host|revit_element|strict-element-1",
+      nextCursor: null,
+    },
+    pageCount: 1,
+    payloadBytes: pagePayloadBytes,
+    nextCursor: null,
+    partial: false,
+    coverageStatus: "complete",
+    scanStoppedReason: "completed",
+    scanPolicy: nativeScanPolicy,
+    suggestedNextScopes: [],
+    elapsedMs: 10,
+    lastReadDocumentKey: "host:test",
+    lastReadLinkInstanceUniqueId: null,
+    lastReadNodeKind: "revit_element",
+    lastReadItemId: 1,
+    warnings: [],
+    notices: [],
+  };
+}
+
 function page({
   captureId,
   ordinal,
@@ -171,8 +385,8 @@ function page({
     guarded: false,
     state: "completed",
     action: "extract_spatial_snapshot",
-    schemaVersion: "0.2",
-    extractorVersion: "phase1a-truth-foundation/0.2.0",
+    schemaVersion: "0.3",
+    extractorVersion: "phase1b-native/0.3",
     coordinateFrame: "host_internal_mm",
     lengthUnit: "mm",
     captureId,
@@ -258,8 +472,8 @@ function workContinuation({
     reason: null,
     message: "Spatial capture preparation remains in progress.",
     error: null,
-    schemaVersion: "0.2",
-    extractorVersion: "phase1a-truth-foundation/0.2.0",
+    schemaVersion: "0.3",
+    extractorVersion: "phase1b-native/0.3",
     coordinateFrame: "host_internal_mm",
     lengthUnit: "mm",
     captureId,
@@ -351,10 +565,13 @@ const linkedSourceRevision = {
   linkInstanceUniqueId: "link-instance-1",
 };
 
-const multiSourceProbe = validateSpatialLivenessProbe({
+const multiSourceProbePayload = {
   success: true,
   guarded: false,
   state: "completed",
+  livenessProbeBasis: "sequence_bound_process_cache",
+  livenessCacheHit: true,
+  livenessGeneration: 42,
   trackerSessionId: "tracker-session-1",
   trackerSubscribed: true,
   expectedSourceRevisionCount: 2,
@@ -384,8 +601,20 @@ const multiSourceProbe = validateSpatialLivenessProbe({
       externalLinkUpdateAvailable: false,
     },
   ],
-}, [sourceRevisions[0], linkedSourceRevision]);
+};
+const multiSourceProbe = validateSpatialLivenessProbe(
+  multiSourceProbePayload,
+  [sourceRevisions[0], linkedSourceRevision],
+);
 assert.equal(multiSourceProbe.liveness, "current", "inputOrdinal must bind reordered multi-source rows to their original request slots");
+const lyingCacheDiagnosticProbe = validateSpatialLivenessProbe({
+  ...multiSourceProbePayload,
+  trackerSessionId: "tracker-session-mismatch",
+  livenessCacheHit: true,
+}, [sourceRevisions[0], linkedSourceRevision]);
+assert.equal(lyingCacheDiagnosticProbe.liveness, "unknown",
+  "Cache provenance is diagnostic only and must not promote a mismatched tracker/source contract to current.");
+assert.deepEqual(lyingCacheDiagnosticProbe.unknownReasons, ["live_liveness_probe_failed"]);
 const externalUpdateProbePayload = {
   success: true,
   guarded: false,
@@ -466,6 +695,61 @@ function withStore(run) {
       fs.rmSync(root, { recursive: true, force: true });
     });
 }
+
+await withStore(async (store) => {
+  let normalizeCalls = 0;
+  let beginCalls = 0;
+  const originalBeginCapture = store.beginCapture.bind(store);
+  store.beginCapture = (...args) => {
+    beginCalls += 1;
+    return originalBeginCapture(...args);
+  };
+  const legacyPage = {
+    ...page({
+      captureId: "capture-v02-native-guard",
+      ordinal: 0,
+      priorPageHash: null,
+      pageHash: sha("9"),
+      hasMore: false,
+      nodes: [node("legacy-v02-node", 0)],
+      totalNodes: 1,
+      nodesByKind: { revit_element: 1, connector: 0, derived: 0 },
+      pageCount: 1,
+      totalPayloadBytes: 10,
+    }),
+    schemaVersion: "0.2",
+    extractorVersion: "phase1a-truth-foundation/0.2.0",
+  };
+  const result = await captureSpatialSnapshotAtomic({ nativeParams: {}, scanPolicy: policy }, {
+    store,
+    normalizePage: (payload, elapsedMs) => {
+      normalizeCalls += 1;
+      return passthroughNormalizer(payload, elapsedMs);
+    },
+    sendPage: async () => legacyPage,
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.guarded, true);
+  assert.equal(result.reason, "phase1b_native_contract_required");
+  assert.equal(result.requiredSchemaVersion, "0.3");
+  assert.equal(result.receivedSchemaVersion, "0.2");
+  assert.equal(result.committed, false);
+  assert.equal(normalizeCalls, 1, "A valid old page must be identified after strict page normalization.");
+  assert.equal(beginCalls, 0, "A v0.2 native page must be guarded before durable staging begins.");
+  assert.equal(store.listSnapshots().length, 0);
+});
+
+await withStore(async (store) => {
+  const strictPage = strictV03Page();
+  const result = await captureSpatialSnapshotAtomic({ nativeParams: {}, scanPolicy: policy }, {
+    store,
+    sendPage: async () => strictPage,
+    probeLiveness: async () => liveProbe("current"),
+  });
+  assert.equal(result.committed, true, JSON.stringify(result));
+  assert.equal(result.snapshot.schemaVersion, "0.3");
+  assert.equal(store.getStoredNode("capture-strict-v03", "node:strict-v03").category, "Ducts");
+});
 
 await withStore(async (store) => {
   const terminalPage = page({
@@ -720,7 +1004,7 @@ await withStore(async (store) => {
   assert.equal(result.committed, true);
   assert.equal(result.atomic, true);
   assert.equal(result.liveness, "current");
-  assert.equal(result.snapshot.schemaVersion, "0.2");
+  assert.equal(result.snapshot.schemaVersion, "0.3");
   assert.equal(result.snapshot.pageCount, 2);
   assert.equal(store.listSnapshots().length, 1);
   assert.equal(store.getSnapshot("capture-success").nodeCount, 2);

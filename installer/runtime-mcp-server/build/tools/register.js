@@ -30,6 +30,9 @@ import { registerSetScheduleCellsByTextTool } from "./set_schedule_cells_by_text
 import { registerListRevitInstancesTool } from "./list_revit_instances.js";
 import { registerGetRevitMcpStatusTool } from "./get_revit_mcp_status.js";
 import { registerCaptureSpatialSnapshotTool } from "./capture_spatial_snapshot.js";
+import { registerQuerySpatialContextTool } from "./query_spatial_context.js";
+import { registerCompareSpatialSnapshotsTool } from "./compare_spatial_snapshots.js";
+import { registerSummarizeSpatialStateTool } from "./summarize_spatial_state.js";
 import { wrapServerWithTelemetry } from "../utils/telemetry.js";
 export async function registerTools(server) {
     const telemetryServer = wrapServerWithTelemetry(server);
@@ -65,5 +68,8 @@ export async function registerTools(server) {
     registerSetScheduleCellsTool(telemetryServer);
     registerSetScheduleCellsByTextTool(telemetryServer);
     registerCaptureSpatialSnapshotTool(telemetryServer);
-    console.error("Registered 32 revAgent tools");
+    registerQuerySpatialContextTool(telemetryServer);
+    registerCompareSpatialSnapshotsTool(telemetryServer);
+    registerSummarizeSpatialStateTool(telemetryServer);
+    console.error("Registered 35 revAgent tools");
 }

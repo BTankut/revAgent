@@ -52,6 +52,12 @@ Mandatory routing examples:
 - Sheet text lookup goes through `inspect_sheet_text`.
 - Schedule discovery and cell reading go through `inspect_schedules`.
 - Host/linked Level discovery goes through `inspect_levels`.
+- Current spatial relations/retrieval go through `query_spatial_context` over
+  one complete/current snapshot; do not compute relations in the LLM.
+- Historical spatial change goes through `compare_spatial_snapshots` with both
+  snapshot/revision identities cited.
+- Compact spatial summaries go through `summarize_spatial_state` and remain
+  advisory-only.
 - Schedule-to-Excel reconciliation/review goes through `reconcile_schedule_excel`.
 - Annotation inventory/count work goes through `count_annotations`.
 - Exact schedule cell writes go through `set_schedule_cells`.
@@ -203,18 +209,18 @@ runtime compatibility normalizer. For raw and safe dynamic execution,
 practical, including double-encoded result strings; `parseJsonResult=false` is
 the debugging path for preserving raw wire text.
 
-`capture_spatial_snapshot` is the Phase 1a read-only durable capture surface.
+`capture_spatial_snapshot` is the Phase 1b-compatible read-only durable capture
+surface.
 It requires explicit level scope. The runtime owns opaque native pagination,
-validates the SpatialSnapshot v0.2 page/hash/revision chain, stages rows in the
+validates the SpatialSnapshot v0.3 page/hash/revision chain, stages rows in the
 user-local versioned SQLite store, and exposes a snapshot only after atomic
 commit. Native `extract_spatial_snapshot` pages remain internal staging evidence
 with `atomic=false` and `liveness="staging"`; callers do not pass their cursor.
 Inspect `committed`, `atomic`, `liveness`, `partial`, and `coverageStatus`
 independently. Atomic commit does not imply complete extraction, and
-`stale`/`unknown` cannot support current-state wording. Phase 1a provides no
-deterministic spatial query, snapshot diff, clash screening, or live
-clash/clearance verdict, so do not infer those claims from stored coordinates or
-from `liveness="current"`.
+`stale`/`unknown` cannot support current-state wording. v0.3 adds system,
+profile, fingerprint, and explicit `Connector.AllRefs` topology evidence;
+topology must never be inferred from coincident connector coordinates.
 The explicit host Level is a host-Z vertical band, not exact linked Level
 membership. Every emitted node must physically overlap that transformed band;
 source Level identity never bypasses it. Use placement-qualified
@@ -226,6 +232,24 @@ not by itself mean every omission threw an API exception. The spatial store
 defaults to `%LOCALAPPDATA%\revAgent\spatial\spatial.db`, is migration/recovery
 guarded, and requires R*Tree support; model geometry and identifiers remain
 local and must not enter release packages or usage-intelligence events.
+
+Use `query_spatial_context` for deterministic bounded retrieval and spatial
+operations: `relation_between`, `nearest_elements`, `elements_within`,
+`clearance_between`, `trace_connectivity`, `locate_in_space`, and
+`above_below`. Current-state query requires a complete snapshot and a fresh
+`liveness=current` probe. The LLM must not calculate spatial relations from raw
+coordinates. Every result must preserve its evidence ids, `basis`,
+`precisionClass`, and `verdictCapability`. AABB output is candidate/
+screening-only evidence; supported analytic output is measured context-only.
+Neither can support "clearance verified", "clash-free", or another live
+verdict. Live clash verification remains Phase 1c work.
+
+Use `compare_spatial_snapshots` only with two complete, scope-compatible
+snapshots. It is an immutable historical comparison and may use stale/unknown
+history, but every claim must cite both snapshot and revision ids. Partial,
+schema-incompatible, coordinate-policy-incompatible, or session-only
+cross-session inputs fail closed. Use `summarize_spatial_state` only for
+bounded per-level advisory context; it is never verification evidence.
 
 Spatial-store cleanup is an operator-maintenance CLI, not a Revit MCP task.
 Use it only after an explicit user request. Invoke the same `node.exe` configured

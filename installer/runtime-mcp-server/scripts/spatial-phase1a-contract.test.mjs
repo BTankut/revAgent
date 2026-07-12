@@ -122,8 +122,14 @@ const livenessRequestSource = read(path.join(spatialRoot, "GetSpatialChangeState
 const livenessCommandSource = read(path.join(spatialRoot, "GetSpatialChangeStateEventHandler.cs"));
 const liveHarnessSource = read(path.join(repoRoot, "scripts", "test-spatial-phase1a-live.mjs"));
 
-assert.match(helperSource, /SchemaVersion = "0\.2"/);
+assert.match(helperSource, /SchemaVersion = "0\.3"/);
+assert.match(helperSource, /ExtractorVersion = "phase1b-native\/0\.3"/);
 assert.match(helperSource, /CursorVersion = "0\.2"/);
+assert.match(helperSource, /WorkCursorVersion = "0\.2-work"/);
+assert.match(helperSource, /CursorPrefix = "spatial-cursor-v0\.2\."/,
+  "The v0.3 native payload must preserve the deployed opaque v0.2 page-cursor wire prefix.");
+assert.match(helperSource, /WorkCursorPrefix = "spatial-work-cursor-v0\.2\."/,
+  "The v0.3 native payload must preserve the deployed opaque v0.2 work-cursor wire prefix.");
 assert.match(helperSource, /CaptureConsistency = "document_change_sequence_bound"/);
 assert.match(helperSource, /SpatialChangeTracker\.Instance\.GetCurrentBinding/);
 assert.match(commandSource, /ReadInt\(parameters, "maxElapsedMs", 1800, 250, 5000\)/);
@@ -194,7 +200,10 @@ assert.match(trackerSource, /ConditionalWeakTable<Document, DocumentState>/);
 assert.match(trackerSource, /Dictionary<string, DocumentState> _documentsByStableKey/);
 assert.match(trackerSource, /DocumentClosing \+= OnDocumentClosing/);
 assert.match(trackerSource, /DocumentClosed \+= OnDocumentClosed/);
+assert.match(trackerSource, /DocumentSaved \+= OnDocumentSaved/);
 assert.match(trackerSource, /DocumentSavedAs \+= OnDocumentSavedAs/);
+assert.match(trackerSource, /DocumentSynchronizedWithCentral \+= OnDocumentSynchronizedWithCentral/);
+assert.match(trackerSource, /DocumentReloadedLatest \+= OnDocumentReloadedLatest/);
 assert.match(trackerSource, /args\.Status != RevitAPIEventStatus\.Succeeded/);
 assert.match(trackerSource, /A stable key is authoritative for the lifetime bracketed by/);
 const savedAsSource = trackerSource.slice(
@@ -224,9 +233,134 @@ assert.match(trackerSource, /RemoveDocumentState\(state\)/);
 assert.match(trackerSource, /DefaultJournalCapacity = 512/);
 assert.match(applicationSource, /SpatialChangeTracker\.Instance\.Subscribe/);
 assert.match(applicationSource, /SpatialChangeTracker\.Instance\.Unsubscribe/);
+assert.match(applicationSource, /ViewActivated \+= OnViewActivated/);
+assert.match(applicationSource, /ViewActivated -= OnViewActivated/);
+assert.match(applicationSource, /InvalidateActiveDocumentView/);
 assert.match(livenessRequestSource, /InputOrdinal = index/);
 assert.match(livenessCommandSource, /host_binding_required_for_link_liveness/);
 assert.match(livenessCommandSource, /journal_gap|HistoryGap/);
+assert.match(trackerSource, /public long LivenessGeneration/);
+assert.match(trackerSource, /checked\s*\{\s*_livenessGeneration\+\+/);
+const subscribeSource = trackerSource.slice(
+  trackerSource.indexOf("public void Subscribe"),
+  trackerSource.indexOf("public void Unsubscribe"),
+);
+const unsubscribeSource = trackerSource.slice(
+  trackerSource.indexOf("public void Unsubscribe"),
+  trackerSource.indexOf("public SpatialDocumentChangeSnapshot GetCurrentBinding"),
+);
+assert.match(subscribeSource, /AdvanceLivenessGeneration\(\)/,
+  "A new tracker subscription must invalidate prior process-local liveness cache entries.");
+assert.match(unsubscribeSource, /ResetDocumentBindings\(\)[\s\S]*AdvanceLivenessGeneration\(\)/,
+  "Tracker unsubscribe/reset must invalidate prior process-local liveness cache entries.");
+for (const [eventName, handlerName] of [
+  ["DocumentSaved", "OnDocumentSaved"],
+  ["DocumentSynchronizedWithCentral", "OnDocumentSynchronizedWithCentral"],
+  ["DocumentReloadedLatest", "OnDocumentReloadedLatest"],
+]) {
+  assert.match(subscribeSource, new RegExp(`${eventName} \\+= ${handlerName}`),
+    `${eventName} must invalidate current-liveness cache entries after success.`);
+  assert.match(unsubscribeSource, new RegExp(`${eventName} -= ${handlerName}`),
+    `${eventName} must be detached with the tracker subscription.`);
+}
+const documentChangedSource = trackerSource.slice(
+  trackerSource.indexOf("private void OnDocumentChanged"),
+  trackerSource.indexOf("private void OnDocumentClosing"),
+);
+assert.ok(
+  documentChangedSource.indexOf("AdvanceLivenessGeneration()")
+    < documentChangedSource.indexOf("ReadElementIds"),
+  "DocumentChanged must invalidate cached current evidence before reading change-id collections.",
+);
+const documentClosedSource = trackerSource.slice(
+  trackerSource.indexOf("private void OnDocumentClosed"),
+  trackerSource.indexOf("private void OnDocumentSavedAs"),
+);
+assert.ok(
+  documentClosedSource.indexOf("_closingDocuments.Remove(args.DocumentId)")
+    < documentClosedSource.indexOf("args.Status != RevitAPIEventStatus.Succeeded"),
+  "Every close result must retire its temporary closing marker before a cancelled/failed close returns.",
+);
+assert.ok(
+  documentClosedSource.indexOf("args.Status != RevitAPIEventStatus.Succeeded")
+    < documentClosedSource.indexOf("RemoveDocumentState(state)")
+    && documentClosedSource.indexOf("RemoveDocumentState(state)")
+      < documentClosedSource.indexOf("AdvanceLivenessGeneration()"),
+  "Only a successful close may retire document state and advance the liveness generation.",
+);
+for (const invalidationSource of [
+  documentChangedSource,
+  documentClosedSource,
+  trackerSource.slice(trackerSource.indexOf("private void OnDocumentSavedAs"), trackerSource.indexOf("private DocumentState GetOrCreateState")),
+  trackerSource.slice(trackerSource.indexOf("private void ResetDocumentBindings"), trackerSource.indexOf("private sealed class DocumentState")),
+]) {
+  assert.match(invalidationSource, /AdvanceLivenessGeneration\(\)/,
+    "Every model/session reset boundary must invalidate process-local current-liveness cache entries.");
+}
+const successfulDocumentBoundarySource = trackerSource.slice(
+  trackerSource.indexOf("private void OnDocumentSaved("),
+  trackerSource.indexOf("private DocumentState GetOrCreateState"),
+);
+assert.match(successfulDocumentBoundarySource, /OnDocumentSaved[\s\S]*InvalidateSuccessfulDocumentBoundary/);
+assert.match(successfulDocumentBoundarySource, /OnDocumentSynchronizedWithCentral[\s\S]*InvalidateSuccessfulDocumentBoundary/);
+assert.match(successfulDocumentBoundarySource, /OnDocumentReloadedLatest[\s\S]*InvalidateSuccessfulDocumentBoundary/);
+assert.ok(
+  successfulDocumentBoundarySource.indexOf("status != RevitAPIEventStatus.Succeeded")
+    < successfulDocumentBoundarySource.indexOf("AdvanceLivenessGeneration()"),
+  "Save, synchronize, and reload boundaries must invalidate only after successful completion.",
+);
+assert.match(livenessRequestSource, /MaxCurrentLivenessCacheEntries = 64/);
+assert.match(livenessRequestSource, /HandlerExecutionSync/);
+assert.match(livenessRequestSource, /BuildExactExpectedRevisionsKey/);
+assert.match(livenessRequestSource, /sourceToHostTransformFingerprint/);
+assert.match(livenessRequestSource, /generationBeforeEvaluation == generationAfterEvaluation/);
+assert.match(livenessRequestSource, /IsCacheableCurrentResult/);
+assert.match(livenessRequestSource, /sequence_bound_process_cache/);
+assert.match(livenessRequestSource, /revit_external_event/);
+assert.match(livenessRequestSource, /CloneRequest\(request\)/);
+assert.match(livenessRequestSource, /CloneResult\(entry\.Result\)/);
+assert.match(livenessRequestSource, /CurrentLivenessCache\.Count >= MaxCurrentLivenessCacheEntries/);
+assert.match(livenessRequestSource, /RaiseAndWaitForCompletion\(request\.TimeoutMs\)/,
+  "A cache miss or generation mismatch must retain the existing fail-closed ExternalEvent path.");
+const livenessExecuteSource = livenessRequestSource.slice(
+  livenessRequestSource.indexOf("public override object Execute"),
+  livenessRequestSource.indexOf("private static GetSpatialChangeStateResult PrepareCachedResult"),
+);
+const firstCacheLookup = livenessExecuteSource.indexOf("TryReadCurrentLivenessCache");
+const handlerLock = livenessExecuteSource.indexOf("lock (HandlerExecutionSync)");
+const secondCacheLookup = livenessExecuteSource.indexOf("TryReadCurrentLivenessCache", firstCacheLookup + 1);
+const priorPendingGuard = livenessExecuteSource.indexOf("HandlerInstance.WaitForCompletion(0)");
+const setSharedRequest = livenessExecuteSource.indexOf("HandlerInstance.SetRequest");
+assert.ok(
+  firstCacheLookup >= 0 && firstCacheLookup < handlerLock
+    && handlerLock < secondCacheLookup && secondCacheLookup < priorPendingGuard
+    && priorPendingGuard < setSharedRequest,
+  "The fast cache hit must remain lock-free while cache misses recheck trust inside the shared-handler lock.",
+);
+assert.match(livenessRequestSource, /_handlerRequestMayBePending = true[\s\S]*RaiseAndWaitForCompletion/,
+  "A timed-out ExternalEvent must remain marked pending so the next miss cannot overwrite its shared handler state.");
+assert.match(livenessRequestSource, /IsExactCurrentRowForRequest/);
+for (const exactBindingField of [
+  "documentKey",
+  "trackerSessionId",
+  "documentSessionId",
+  "changeSequence",
+  "loadedVersion",
+  "sourceToHostTransformFingerprint",
+  "externalLinkUpdateAvailable",
+  "changedSinceExpectedSequenceCount",
+]) {
+  assert.match(livenessRequestSource, new RegExp(exactBindingField),
+    `Cache admission must validate exact ${exactBindingField} evidence.`);
+}
+const livenessCacheSource = livenessRequestSource.slice(
+  livenessRequestSource.indexOf("BuildExactExpectedRevisionsKey"),
+  livenessRequestSource.indexOf("private static List<ExpectedSpatialSourceRevision> ReadSourceRevisions"),
+);
+assert.doesNotMatch(livenessCacheSource, /DateTime|TimeSpan|ttl|expires/i,
+  "Current liveness cache validity must be sequence/generation-bound, never clock-age-bound.");
+assert.doesNotMatch(handlerSource, /CurrentLivenessCache|sequence_bound_process_cache/,
+  "Native extraction must retain its revision-consistency checks and must not consume current-liveness cache entries.");
 assert.match(liveHarnessSource, /doublePlacedBindingsConsistent/);
 assert.match(liveHarnessSource, /sharedDocumentSessionAndRevisionBinding/);
 assert.match(liveHarnessSource, /do not share one document session, tracker, sequence, and loaded version/);

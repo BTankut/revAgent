@@ -12,9 +12,25 @@ const LIVE_STATUS_SCHEMA_VERSION = "revagent.live.status.v1";
 const LIVE_ACTIVITY_SCHEMA_VERSION = "revagent.live.activity.v1";
 const TELEMETRY_SESSION_ID = crypto.randomUUID();
 const TELEMETRY_PROCESS_STARTED_AT_UTC = new Date().toISOString();
-const SPATIAL_EXTRACTION_NAMES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot", "get_spatial_change_state", "inspect_levels"]);
+const SPATIAL_EXTRACTION_NAMES = new Set([
+    "capture_spatial_snapshot",
+    "extract_spatial_snapshot",
+    "get_spatial_change_state",
+    "inspect_levels",
+    "query_spatial_context",
+    "compare_spatial_snapshots",
+    "summarize_spatial_state",
+]);
 const SPATIAL_STATE_CODES = new Set(["running", "in_progress", "completed", "guarded", "failed"]);
-const SPATIAL_ACTION_CODES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot", "get_spatial_change_state", "inspect_levels"]);
+const SPATIAL_ACTION_CODES = new Set([
+    "capture_spatial_snapshot",
+    "extract_spatial_snapshot",
+    "get_spatial_change_state",
+    "inspect_levels",
+    "query_spatial_context",
+    "compare_spatial_snapshots",
+    "summarize_spatial_state",
+]);
 const SPATIAL_LIVENESS_CODES = new Set(["current", "stale", "unknown", "staging"]);
 const SPATIAL_REASON_CODES = new Set([
     "needs_scope",
@@ -39,8 +55,37 @@ const SPATIAL_REASON_CODES = new Set([
     "capture_session_expired",
     "change_tracker_unavailable",
     "phase1a_native_contract_required",
+    "phase1b_native_contract_required",
     "invalid_spatial_page_contract",
     "invalid_spatial_work_contract",
+    "snapshot_not_found",
+    "snapshot_incomplete",
+    "incomplete_snapshot",
+    "snapshot_not_current",
+    "unsupported_snapshot_schema",
+    "unsupported_snapshot_capability",
+    "snapshot_capability_mismatch",
+    "incomparable_scopes",
+    "schema_compatibility_adapter_required",
+    "session_only_cross_session_incomparable",
+    "invalid_operation",
+    "invalid_query_cursor",
+    "invalid_cursor",
+    "cursor_session_expired",
+    "cursor_query_mismatch",
+    "cursor_snapshot_mismatch",
+    "topology_data_unavailable",
+    "incomplete_topology_coverage",
+    "internal_topology_unsupported",
+    "analytic_geometry_unsupported",
+    "unsupported_geometry",
+    "node_not_found",
+    "node_not_found_or_geometry_unsupported",
+    "invalid_filter",
+    "unsupported_operation",
+    "store_integrity_error",
+    "max_items",
+    "max_bytes",
     "spatial_rtree_unavailable",
     "spatial_sqlite_native_binding_unavailable",
     "spatial_store_migration_failed",
@@ -133,6 +178,40 @@ export function summarizeSpatialExtractionTelemetryParams(params = {}, operation
     const sourceScope = ["hostOnly", "linkedOnly", "hostAndLinked"].includes(String(params.sourceScope || ""))
         ? params.sourceScope
         : null;
+    const spatialMode = ["retrieve", "operation"].includes(String(params.mode || ""))
+        ? params.mode
+        : null;
+    const operation = params.operation && typeof params.operation === "object" && !Array.isArray(params.operation)
+        ? params.operation
+        : {};
+    const spatialOperation = [
+        "relation_between",
+        "nearest_elements",
+        "elements_within",
+        "clearance_between",
+        "trace_connectivity",
+        "locate_in_space",
+        "above_below",
+    ].includes(String(params.operationName || operation.name || ""))
+        ? params.operationName || operation.name
+        : null;
+    const livenessPolicy = ["require_current", "allow_historical"].includes(String(params.livenessPolicy || ""))
+        ? params.livenessPolicy
+        : null;
+    const selectorArrays = [
+        params.nodeIds,
+        params.nodeKinds,
+        params.categories,
+        params.categoryRoles,
+        params.systemNames,
+        params.levelNames,
+        params.levelUniqueIds,
+        params.startNodeIds,
+        params.changeTypes,
+        params.filters?.nodeIds,
+        params.filters?.withinSpaceNodeIds,
+        operation.spaceNodeIds,
+    ];
     const summary = {
         privacyBoundary: "spatial_extraction",
         levelSelectorCount: count(params.levelIds) + count(params.levelNames),
@@ -142,15 +221,28 @@ export function summarizeSpatialExtractionTelemetryParams(params = {}, operation
         linkInstanceSelectorCount: count(params.linkInstanceIds) + count(params.linkInstanceUniqueIds),
         linkedSourceLevelSelectorCount: count(params.linkedSourceLevels) + count(params.linkedSourceLevelNames),
         sourceRevisionCount: count(params.sourceRevisions) + count(params.expectedSourceRevisions),
+        snapshotSelectorCount: [params.snapshotId, params.baseSnapshotId, params.headSnapshotId]
+            .filter((value) => typeof value === "string" && value.length > 0).length,
+        selectorCount: selectorArrays.reduce((total, value) => total + count(value), 0),
         sourceScope,
+        mode: spatialMode,
+        operationName: spatialOperation,
+        livenessPolicy,
         cursorPresent: typeof params.cursor === "string" && params.cursor.length > 0,
         pageTargetBytes: finiteInteger(params.pageTargetBytes),
         maxElements: finiteInteger(params.maxElements),
         maxResults: finiteInteger(params.maxResults),
+        maxItems: finiteInteger(params.maxItems),
+        maxResponseBytes: finiteInteger(params.maxResponseBytes),
+        maxDepth: finiteInteger(params.maxDepth ?? operation.maxDepth),
         maxElapsedMs: finiteInteger(params.maxElapsedMs),
         timeoutMs: finiteInteger(params.timeoutMs),
     };
-    if (String(operationName ?? "").trim().toLowerCase() !== "inspect_levels") {
+    const normalizedToolName = String(operationName ?? "").trim().toLowerCase();
+    if (normalizedToolName !== "inspect_levels"
+        && normalizedToolName !== "query_spatial_context"
+        && normalizedToolName !== "compare_spatial_snapshots"
+        && normalizedToolName !== "summarize_spatial_state") {
         summary.includeHostMep = params.includeHostMep !== false;
         summary.includeRoomsSpaces = params.includeRoomsSpaces !== false;
         summary.includeLinkedObstructions = params.includeLinkedObstructions !== false;
@@ -415,6 +507,7 @@ export function summarizeSpatialExtractionTelemetryResponse(response, error = nu
     const page = asObject(getValueCaseInsensitiveLocal(object, ["page", "Page"]));
     const preparation = asObject(getValueCaseInsensitiveLocal(object, ["preparation", "Preparation"]));
     const nodes = getValueCaseInsensitiveLocal(object, ["nodes", "Nodes"]);
+    const edges = getValueCaseInsensitiveLocal(object, ["edges", "Edges"]);
     const omissions = getValueCaseInsensitiveLocal(object, ["omissions", "Omissions"]);
     const revisions = getValueCaseInsensitiveLocal(object, ["sourceRevisions", "SourceRevisions"]);
     const sourceStates = getValueCaseInsensitiveLocal(object, ["sourceStates", "SourceStates"]);
@@ -433,6 +526,26 @@ export function summarizeSpatialExtractionTelemetryResponse(response, error = nu
         ?? getValueCaseInsensitiveLocal(page, ["nextCursor", "NextCursor"]);
     const continuationKindValue = String(getValueCaseInsensitiveLocal(object, ["continuationKind", "ContinuationKind"]) ?? "").trim().toLowerCase();
     const continuationKind = continuationKindValue === "work" ? "work" : null;
+    const countArray = (...names) => {
+        const value = getValueCaseInsensitiveLocal(object, names);
+        return Array.isArray(value) ? value.length : null;
+    };
+    const changeArrays = [
+        "added",
+        "removed",
+        "sourceAvailabilityChanges",
+        "transformChanges",
+        "moved",
+        "geometryChanges",
+        "propertyChanges",
+        "connectorChanges",
+        "connectivityChanges",
+        "proximityChanges",
+    ];
+    const returnedChangeCount = changeArrays.reduce((total, key) => {
+        const value = getValueCaseInsensitiveLocal(object, [key]);
+        return total + (Array.isArray(value) ? value.length : 0);
+    }, 0);
     return {
         success: typeof successValue === "boolean" ? successValue : !guarded,
         guarded,
@@ -449,7 +562,11 @@ export function summarizeSpatialExtractionTelemetryResponse(response, error = nu
         preparationTotal: coerceNumber(getValueCaseInsensitiveLocal(preparation, ["total", "Total"])),
         pageOrdinal,
         recordCount,
+        edgeCount: Array.isArray(edges) ? edges.length : null,
         omissionCount,
+        levelSummaryCount: countArray("levelSummaries", "LevelSummaries"),
+        capabilityGapCount: countArray("capabilityGaps", "CapabilityGaps"),
+        returnedChangeCount,
         sourceRevisionCount: Array.isArray(revisions) ? revisions.length : null,
         sourceStateCount: Array.isArray(sourceStates) ? sourceStates.length : null,
         liveness: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["liveness", "Liveness"]), SPATIAL_LIVENESS_CODES),
