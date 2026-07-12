@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.2/node-ref.schema.json",
+  "title": "revAgent Spatial NodeRef v0.2",
+  "description": "Generic SCG node identity with exactly one kind-specific reference.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "nodeId",
+    "nodeKind",
+    "sourceRefs"
+  ],
+  "properties": {
+    "nodeId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nodeKind": {
+      "$ref": "#/$defs/nodeKind"
+    },
+    "elementRef": {
+      "$ref": "./element-ref.schema.json"
+    },
+    "connectorRef": {
+      "$ref": "#/$defs/connectorRef"
+    },
+    "derivedRef": {
+      "$ref": "#/$defs/derivedRef"
+    },
+    "sourceRefs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sourceRef"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "nodeKind"
+        ],
+        "properties": {
+          "nodeKind": {
+            "const": "revit_element"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "elementRef"
+        ],
+        "properties": {
+          "elementRef": {},
+          "connectorRef": false,
+          "derivedRef": false
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "nodeKind"
+        ],
+        "properties": {
+          "nodeKind": {
+            "const": "connector"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "connectorRef"
+        ],
+        "properties": {
+          "elementRef": false,
+          "connectorRef": {},
+          "derivedRef": false
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "nodeKind"
+        ],
+        "properties": {
+          "nodeKind": {
+            "const": "derived"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "derivedRef"
+        ],
+        "properties": {
+          "elementRef": false,
+          "connectorRef": false,
+          "derivedRef": {}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nodeKind": {
+      "type": "string",
+      "enum": [
+        "revit_element",
+        "connector",
+        "derived"
+      ]
+    },
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentKey",
+        "documentSessionId"
+      ],
+      "properties": {
+        "documentKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "documentSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "linkInstanceUniqueId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "connectorRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ownerNodeId",
+        "connectorKey",
+        "providerVersion"
+      ],
+      "properties": {
+        "ownerNodeId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "connectorKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "providerVersion": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "derivedRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "derivedKind",
+        "derivationRuleVersion",
+        "scopeAnchor",
+        "derivedFrom"
+      ],
+      "properties": {
+        "derivedKind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "derivationRuleVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scopeAnchor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "derivedFrom": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

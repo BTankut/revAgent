@@ -1,0 +1,571 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.2/spatial-snapshot.schema.json",
+  "title": "revAgent SpatialSnapshot v0.2",
+  "description": "Logical metadata contract for one durable, atomically committed Phase 1a spatial capture.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "snapshotId",
+    "capturedAt",
+    "sourceRevisions",
+    "scope",
+    "scopeFingerprint",
+    "sourceBindingFingerprint",
+    "revisionFingerprint",
+    "coordinateFrame",
+    "lengthUnit",
+    "schemaVersion",
+    "extractorVersion",
+    "atomic",
+    "liveness",
+    "livenessBinding",
+    "committedAt",
+    "counts",
+    "partial",
+    "coverageStatus",
+    "scanStoppedReason",
+    "suggestedNextScopes",
+    "pageCount",
+    "payloadBytes"
+  ],
+  "properties": {
+    "snapshotId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "capturedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sourceRevisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "./source-revision.schema.json"
+      }
+    },
+    "scope": {
+      "$ref": "#/$defs/scope"
+    },
+    "scopeFingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "sourceBindingFingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "revisionFingerprint": {
+      "$ref": "#/$defs/sha256"
+    },
+    "coordinateFrame": {
+      "const": "host_internal_mm"
+    },
+    "lengthUnit": {
+      "const": "mm"
+    },
+    "schemaVersion": {
+      "const": "0.2"
+    },
+    "extractorVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "atomic": {
+      "const": true
+    },
+    "liveness": {
+      "type": "string",
+      "enum": ["current", "stale", "unknown"]
+    },
+    "livenessBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["basis", "evaluatedAt", "sourceCount", "unknownReasons"],
+      "properties": {
+        "basis": { "const": "document_change_sequence" },
+        "evaluatedAt": { "type": "string", "format": "date-time" },
+        "sourceCount": { "type": "integer", "minimum": 1 },
+        "unknownReasons": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "committedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "counts": {
+      "$ref": "#/$defs/counts"
+    },
+    "partial": {
+      "type": "boolean"
+    },
+    "coverageStatus": {
+      "$ref": "#/$defs/coverageStatus"
+    },
+    "scanStoppedReason": {
+      "$ref": "#/$defs/scanStoppedReason"
+    },
+    "suggestedNextScopes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "pageCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "payloadBytes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "partial"
+        ],
+        "properties": {
+          "partial": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "scanStoppedReason": {
+            "const": "completed"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "scanStoppedReason": {
+            "not": {
+              "const": "completed"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["coverageStatus"],
+        "properties": {
+          "coverageStatus": { "const": "complete" }
+        }
+      },
+      "then": {
+        "properties": {
+          "scanStoppedReason": {
+            "enum": ["completed", "max_bytes"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["coverageStatus"],
+        "properties": {
+          "coverageStatus": { "const": "incomplete_omissions" }
+        }
+      },
+      "then": {
+        "properties": {
+          "partial": { "const": true },
+          "scanStoppedReason": {
+            "enum": ["read_failed", "max_bytes"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["coverageStatus"],
+        "properties": {
+          "coverageStatus": { "const": "incomplete_budget" }
+        }
+      },
+      "then": {
+        "properties": {
+          "partial": { "const": true },
+          "scanStoppedReason": {
+            "enum": ["max_elapsed", "max_items"]
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hostDocumentKey",
+        "categories",
+        "linkInclusionPolicy",
+        "activePhase",
+        "phaseSelectionPolicy",
+        "designOptionsInEffect",
+        "worksetVisibilityPolicy",
+        "categoryRuleSetSelection",
+        "coordinateFrame"
+      ],
+      "properties": {
+        "hostDocumentKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestedLevelUniqueIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "requestedVolumes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/volume"
+          }
+        },
+        "categories": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "linkInclusionPolicy": {
+          "type": "string",
+          "enum": [
+            "host_only",
+            "loaded_links"
+          ]
+        },
+        "sourceDocumentPolicy": {
+          "type": "string",
+          "enum": [
+            "host_only",
+            "linked_only",
+            "host_and_loaded_links"
+          ]
+        },
+        "effectiveVerticalBands": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/effectiveVerticalBand"
+          }
+        },
+        "levelScopeSemantics": {
+          "const": "host_vertical_band"
+        },
+        "verticalBandIsExactLevelMembership": {
+          "const": false
+        },
+        "linkedSourceLevelFilterMode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "exact"
+          ]
+        },
+        "linkedSourceLevelFilterAppliesTo": {
+          "type": "array",
+          "prefixItems": [
+            { "const": "linked_room_space" }
+          ],
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "requestedLinkedSourceLevels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "linkInstanceUniqueId",
+              "levelId",
+              "levelUniqueId",
+              "levelName"
+            ],
+            "properties": {
+              "linkInstanceUniqueId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "levelId": {
+                "type": ["integer", "null"],
+                "minimum": 1
+              },
+              "levelUniqueId": {
+                "type": ["string", "null"],
+                "minLength": 1
+              },
+              "levelName": {
+                "type": ["string", "null"],
+                "minLength": 1
+              }
+            },
+            "anyOf": [
+              { "properties": { "levelId": { "type": "integer" } } },
+              { "properties": { "levelUniqueId": { "type": "string" } } },
+              { "properties": { "levelName": { "type": "string" } } }
+            ]
+          }
+        },
+        "requestedLinkedSourceLevelNames": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "resolvedLinkedSourceLevels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "linkInstanceUniqueId",
+              "levelId",
+              "levelUniqueId",
+              "levelName"
+            ],
+            "properties": {
+              "linkInstanceUniqueId": { "type": "string", "minLength": 1 },
+              "levelId": { "type": "integer", "minimum": 1 },
+              "levelUniqueId": { "type": "string", "minLength": 1 },
+              "levelName": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "activePhase": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phaseSelectionPolicy": {
+          "const": "collector_unfiltered_phase0"
+        },
+        "designOptionsInEffect": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "worksetVisibilityPolicy": {
+          "type": "string",
+          "enum": [
+            "active_view",
+            "all_open",
+            "explicit",
+            "collector_unfiltered_phase0"
+          ]
+        },
+        "categoryRuleSetSelection": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "coordinateFrame": {
+          "const": "host_internal_mm"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "requestedLevelUniqueIds"
+          ],
+          "properties": {
+            "requestedLevelUniqueIds": {}
+          }
+        },
+        {
+          "required": [
+            "requestedVolumes"
+          ],
+          "properties": {
+            "requestedVolumes": {}
+          }
+        }
+      ]
+    },
+    "volume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minMm",
+        "maxMm"
+      ],
+      "properties": {
+        "minMm": {
+          "$ref": "#/$defs/point3d"
+        },
+        "maxMm": {
+          "$ref": "#/$defs/point3d"
+        }
+      }
+    },
+    "effectiveVerticalBand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "levelId",
+        "levelUniqueId",
+        "levelName",
+        "elevationMm",
+        "minHostZMm",
+        "maxHostZMm"
+      ],
+      "properties": {
+        "levelId": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "levelUniqueId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "levelName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "elevationMm": {
+          "type": "number"
+        },
+        "minHostZMm": {
+          "type": "number"
+        },
+        "maxHostZMm": {
+          "type": "number"
+        }
+      }
+    },
+    "point3d": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "number"
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "totalNodes",
+        "nodesByKind",
+        "expectedSupportedNodes",
+        "extractedSupportedNodes",
+        "omittedSupportedNodes",
+        "omissionsByReason",
+        "connectorOmissionsByReason"
+      ],
+      "properties": {
+        "totalNodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nodesByKind": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "revit_element",
+            "connector",
+            "derived"
+          ],
+          "properties": {
+            "revit_element": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "connector": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "derived": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "expectedSupportedNodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extractedSupportedNodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omittedSupportedNodes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omissionsByReason": {
+          "type": "object",
+          "propertyNames": {
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "connectorOmissionsByReason": {
+          "type": "object",
+          "propertyNames": {
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "scanStoppedReason": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "max_elapsed",
+        "max_items",
+        "max_bytes",
+        "read_failed",
+        "needs_scope"
+      ]
+    },
+    "coverageStatus": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "incomplete_omissions",
+        "incomplete_budget"
+      ]
+    }
+  }
+}

@@ -590,11 +590,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-ci.ps1
 ```
 
 `test-ci.ps1` copies both MCP packages to isolated temporary work folders,
-restores dependencies there with `npm ci`, runs forced strict TypeScript checks
-in those copies, checks the zero `@ts-nocheck` policy, verifies distribution
+restores dependencies there with `npm ci`, and process-locally forces
+`npm_config_ignore_scripts=false` for that restore before returning the caller's
+environment to its previous state. This prevents a self-hosted runner's
+user-level npm configuration from silently skipping native lifecycle installs
+such as `better-sqlite3`. It then runs forced strict TypeScript checks in those
+copies, checks the zero `@ts-nocheck` policy, verifies distribution
 canonicalization/signature fixtures, verifies MCP build payload freshness with
-`test-mcp-build-payload-freshness.ps1`, then runs both package `npm test`
-chains from the temporary copies. The source package folders
+`test-mcp-build-payload-freshness.ps1`, and runs both package `npm test` chains
+from the temporary copies. The source package folders
 are not used as dependency restore targets, so live ProgramData package
 processes cannot lock `node_modules` cleanup. The Revit half reads
 `installer/revit-payload-manifest.json`; it does not rebuild the add-in or
@@ -634,6 +638,15 @@ do not merge or deploy from that change.
 `better-sqlite3` is installed normally in CI through `npm ci`; do not use
 `--ignore-scripts` unless a CI failure proves that the sqlite native install is
 the only blocking issue and the runtime tests do not load that native module.
+The workstation updater applies the same trust boundary to production
+dependencies: it invokes `npm-cli.js` with the exact Node selected for MCP
+registration, temporarily forces `npm_config_ignore_scripts=false`, restores
+the previous process environment in `finally`, and keys dependency markers and
+cache entries by Node modules ABI, N-API, platform, and architecture. Before an
+installed tree or cache is accepted, `better-sqlite3` must load under that Node
+and open an in-memory database. Missing or incompatible bindings invalidate the
+entry and trigger a clean install/rebuild; validation failure after rebuild is
+fatal and must not write a current marker or cache.
 
 Optional local pre-push hooks are available but are not enabled automatically:
 

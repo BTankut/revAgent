@@ -41,6 +41,8 @@ import {
 import {
   normalizeSpatialPage,
 } from "../build/spatial/spatialPage.js";
+import { captureSpatialSnapshotAtomic } from "../build/spatial/spatialCapture.js";
+import { SpatialStore } from "../build/spatial/spatialStore.js";
 
 const tools = new Map();
 const server = {
@@ -261,26 +263,27 @@ assert.equal(unavailableInspectLevels.summary.unavailableSourceCount, 1);
 
 const captureSpatialTool = tools.get("capture_spatial_snapshot");
 assert.match(captureSpatialTool.description, /SPATIAL_CAPTURE_READ_ONLY/);
-assert.match(captureSpatialTool.description, /one native extract_spatial_snapshot command per MCP call/);
-assert.match(captureSpatialTool.description, /non-atomic extraction spike with liveness=unknown/);
+assert.match(captureSpatialTool.description, /stages every page/);
+assert.match(captureSpatialTool.description, /atomic commit/);
+assert.match(captureSpatialTool.description, /mixed revisions never commit/);
 for (const field of [
   "levelIds",
   "levelNames",
   "sourceScope",
   "linkedSourceLevels",
   "linkedSourceLevelNames",
-  "cursor",
   "pageTargetBytes",
   "maxElements",
   "maxElapsedMs",
+  "maxCaptureElapsedMs",
 ]) {
   assert.equal(field in captureSpatialTool.schema, true, `capture_spatial_snapshot is missing ${field}.`);
 }
 const spatialPolicy = resolveSpatialCapturePolicy({});
 assert.equal(spatialPolicy.pageTargetBytes, 4 * 1024 * 1024);
 assert.equal(spatialPolicy.maxElements, 5000);
-assert.equal(spatialPolicy.maxElapsedMs, 4500);
-const opaqueCursor = "spatial-cursor-v0.1.opaque-payload";
+assert.equal(spatialPolicy.maxElapsedMs, 1800);
+assert.equal(spatialPolicy.maxCaptureElapsedMs, 45000);
 const spatialParams = buildSpatialCaptureParams({
   levelIds: [9, "9", 3],
   levelNames: ["Level 2", "Level 2"],
@@ -290,7 +293,6 @@ const spatialParams = buildSpatialCaptureParams({
     { linkInstanceUniqueId: "link-a", levelId: 22, levelName: "2FL" },
   ],
   linkedSourceLevelNames: ["2FL", "2FL"],
-  cursor: opaqueCursor,
 });
 assert.deepEqual(spatialParams.levelIds, [3, 9]);
 assert.deepEqual(spatialParams.levelNames, ["Level 2"]);
@@ -299,20 +301,8 @@ assert.deepEqual(spatialParams.linkedSourceLevels, [
   { linkInstanceUniqueId: "link-b", levelId: null, levelUniqueId: "level-2", levelName: "2FL" },
 ]);
 assert.deepEqual(spatialParams.linkedSourceLevelNames, ["2FL"]);
-assert.equal(spatialParams.cursor, opaqueCursor, "The runtime must pass the opaque spatial cursor through unchanged.");
+assert.equal("cursor" in spatialParams, false, "Phase 1a runtime orchestration must own native continuation cursors.");
 assert.equal(spatialParams.suppressTaskStatusWindow, true, "Paged spatial capture must not block continuation on a per-page Revit status window.");
-for (const nativeRejectedCursor of [
-  "spatial-cursor-v0.1.",
-  "spatial-cursor-v0.1.payload-only",
-  "wrong-prefix.payload.signature",
-  "spatial-cursor-v0.1.payload.signature.extra",
-]) {
-  assert.equal(
-    buildSpatialCaptureParams({ levelIds: [3], cursor: nativeRejectedCursor }).cursor,
-    nativeRejectedCursor,
-    "Cursor prefix/signature/envelope validation is native-owned; the runtime must not decode or rewrite opaque cursor bytes.",
-  );
-}
 const canonicalJson = (value) => {
   if (typeof value === "number" && !Number.isFinite(value)) throw new Error("Spatial canonical JSON rejects non-finite numbers.");
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -558,6 +548,81 @@ assert.deepEqual(
   ].sort(),
   "Normalized pages must expose an exact SpatialSnapshot v0.1 contract view.",
 );
+
+const phase1aNativeSpatialPage = structuredClone(nativeSpatialPage);
+phase1aNativeSpatialPage.schemaVersion = "0.2";
+phase1aNativeSpatialPage.extractorVersion = "phase1a-native/0.2";
+phase1aNativeSpatialPage.liveness = "staging";
+phase1aNativeSpatialPage.atomic = false;
+phase1aNativeSpatialPage.captureConsistency = "document_change_sequence_bound";
+phase1aNativeSpatialPage.continuationKind = null;
+phase1aNativeSpatialPage.sourceBindingFingerprint = `sha256:${"9".repeat(64)}`;
+phase1aNativeSpatialPage.preparation = null;
+phase1aNativeSpatialPage.revisionBasisCaveat = "Native pages are sequence-bound staging inputs; only the runtime store commit is atomic.";
+phase1aNativeSpatialPage.sourceRevisions = phase1aNativeSpatialPage.sourceRevisions.map((revision, index) => ({
+  ...revision,
+  changeSequence: index + 7,
+  changeSequenceState: "tracked",
+  oldestRetainedSequence: Math.max(0, index + 6),
+  trackerSessionId: "tracker-session-1",
+  journalEntryCount: index + 7,
+  journalCapacity: 512,
+  journalTruncated: false,
+}));
+phase1aNativeSpatialPage.counts.connectorOmissionsByReason = {};
+phase1aNativeSpatialPage.coverage.connectorOmittedByClassification = {};
+phase1aNativeSpatialPage.coverage.unmaterializedOmissionCount = 0;
+phase1aNativeSpatialPage.coverage.unmaterializedOmissionsByClassification = {};
+phase1aNativeSpatialPage.scanPolicy.maxElapsedMs = 1800;
+phase1aNativeSpatialPage.scanPolicy.cursorVersion = "0.2";
+phase1aNativeSpatialPage.scanPolicy.sequenceBound = true;
+phase1aNativeSpatialPage.scanPolicy.maxUiOccupancyMs = 5000;
+const normalizedPhase1aPage = normalizeSpatialPage(phase1aNativeSpatialPage);
+assert.equal(normalizedPhase1aPage.valid, true, normalizedPhase1aPage.errors.join("; "));
+assert.equal(normalizedPhase1aPage.payload.schemaVersion, "0.2");
+assert.equal(normalizedPhase1aPage.payload.liveness, "staging");
+assert.equal(normalizedPhase1aPage.payload.contractValidation.version, "spatial-extraction-page.v0.2");
+
+const strictAtomicPage = structuredClone(phase1aNativeSpatialPage);
+strictAtomicPage.page.hasMore = false;
+strictAtomicPage.page.nextCursor = null;
+strictAtomicPage.nextCursor = null;
+strictAtomicPage.pageCount = 1;
+strictAtomicPage.payloadBytes = strictAtomicPage.page.payloadBytes;
+strictAtomicPage.partial = false;
+strictAtomicPage.coverage.complete = true;
+strictAtomicPage.coverage.totalOrderedRowCount = strictAtomicPage.nodes.length;
+strictAtomicPage.counts = {
+  ...strictAtomicPage.counts,
+  totalNodes: strictAtomicPage.nodes.length,
+  nodesByKind: { revit_element: strictAtomicPage.nodes.length, connector: 0, derived: 0 },
+  expectedSupportedNodes: strictAtomicPage.nodes.length,
+  extractedSupportedNodes: strictAtomicPage.nodes.length,
+};
+strictAtomicPage.scanStoppedReason = "completed";
+strictAtomicPage.suggestedNextScopes = [];
+const strictAtomicValidation = normalizeSpatialPage(strictAtomicPage);
+assert.equal(strictAtomicValidation.valid, true, strictAtomicValidation.errors.join("; "));
+const strictAtomicRoot = fs.mkdtempSync(path.join(os.tmpdir(), "revagent-spatial-strict-atomic-"));
+const strictAtomicStore = new SpatialStore({
+  databasePath: path.join(strictAtomicRoot, "spatial.db"),
+  retentionPolicy: false,
+});
+try {
+  const strictAtomicResult = await captureSpatialSnapshotAtomic({
+    nativeParams: {},
+    scanPolicy: { pageTargetBytes: 4 * 1024 * 1024, maxElements: 5000, maxElapsedMs: 1800 },
+  }, {
+    store: strictAtomicStore,
+    sendPage: async () => strictAtomicPage,
+  });
+  assert.equal(strictAtomicResult.committed, true, strictAtomicResult.error);
+  assert.equal(strictAtomicResult.liveness, "unknown");
+  assert.equal(strictAtomicStore.getSnapshot(strictAtomicResult.snapshotId).nodeCount, strictAtomicPage.nodes.length);
+} finally {
+  strictAtomicStore.close();
+  fs.rmSync(strictAtomicRoot, { recursive: true, force: true });
+}
 
 const legacySpatialCoveragePage = structuredClone(nativeSpatialPage);
 delete legacySpatialCoveragePage.coverageStatus;
@@ -1121,6 +1186,31 @@ assert.equal(spatialTelemetryResponse.sourceRevisionCount, 1);
 assert.equal(spatialTelemetryResponse.nextCursorPresent, true);
 assert.equal(spatialTelemetryResponse.coverageStatus, "incomplete_omissions");
 assert.doesNotMatch(JSON.stringify(spatialTelemetryResponse), /Level 09|Room 901|7788|cursor-secret/);
+const spatialWorkTelemetryResponse = summarizeSpatialExtractionTelemetryResponse({
+  success: true,
+  guarded: false,
+  state: "in_progress",
+  action: "extract_spatial_snapshot",
+  continuationKind: "work",
+  nextCursor: "spatial-work-cursor-v0.2.cursor-secret",
+  sourceBindingFingerprint: spatialSecret,
+  scope: { requestedLevelNames: [spatialSecret] },
+  preparation: {
+    phase: "filter",
+    stepOrdinal: 3,
+    processed: 120,
+    total: 400,
+    nextCursor: "spatial-work-cursor-v0.2.cursor-secret",
+  },
+});
+assert.equal(spatialWorkTelemetryResponse.state, "in_progress");
+assert.equal(spatialWorkTelemetryResponse.continuationKind, "work");
+assert.equal(spatialWorkTelemetryResponse.preparationPhase, "filter");
+assert.equal(spatialWorkTelemetryResponse.preparationStepOrdinal, 3);
+assert.equal(spatialWorkTelemetryResponse.preparationProcessed, 120);
+assert.equal(spatialWorkTelemetryResponse.preparationTotal, 400);
+assert.equal(spatialWorkTelemetryResponse.workCursorPresent, true);
+assert.doesNotMatch(JSON.stringify(spatialWorkTelemetryResponse), /cursor-secret|Level 09|Room 901|7788/);
 assert.equal(isSpatialExtractionTelemetry({ toolName: "capture_spatial_snapshot" }), true);
 assert.equal(isSpatialExtractionTelemetry({ toolName: "inspect_levels" }), true);
 assert.equal(extractProductionContext({

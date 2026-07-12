@@ -12,25 +12,49 @@ const LIVE_STATUS_SCHEMA_VERSION = "revagent.live.status.v1";
 const LIVE_ACTIVITY_SCHEMA_VERSION = "revagent.live.activity.v1";
 const TELEMETRY_SESSION_ID = crypto.randomUUID();
 const TELEMETRY_PROCESS_STARTED_AT_UTC = new Date().toISOString();
-const SPATIAL_EXTRACTION_NAMES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot", "inspect_levels"]);
-const SPATIAL_STATE_CODES = new Set(["running", "completed", "guarded", "failed"]);
-const SPATIAL_ACTION_CODES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot", "inspect_levels"]);
+const SPATIAL_EXTRACTION_NAMES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot", "get_spatial_change_state", "inspect_levels"]);
+const SPATIAL_STATE_CODES = new Set(["running", "in_progress", "completed", "guarded", "failed"]);
+const SPATIAL_ACTION_CODES = new Set(["capture_spatial_snapshot", "extract_spatial_snapshot", "get_spatial_change_state", "inspect_levels"]);
+const SPATIAL_LIVENESS_CODES = new Set(["current", "stale", "unknown", "staging"]);
 const SPATIAL_REASON_CODES = new Set([
     "needs_scope",
+    "max_elapsed",
     "read_failed",
     "invalid_request",
     "invalid_cursor",
+    "invalid_work_cursor",
     "invalid_cursor_sort_position",
     "cursor_scope_mismatch",
     "cursor_revision_mismatch",
     "cursor_hash_mismatch",
     "capture_interrupted_by_change",
+    "capture_has_no_source_bindings",
+    "capture_source_binding_fingerprint_changed",
+    "capture_source_binding_read_failed",
+    "capture_candidate_identity_changed",
+    "candidate_inventory_limit_exceeded",
+    "prepared_capture_byte_limit_exceeded",
+    "invalid_capture_work_phase",
+    "expired_capture_session",
+    "capture_session_expired",
+    "change_tracker_unavailable",
+    "phase1a_native_contract_required",
     "invalid_spatial_page_contract",
+    "invalid_spatial_work_contract",
+    "spatial_rtree_unavailable",
+    "spatial_sqlite_native_binding_unavailable",
+    "spatial_store_migration_failed",
+    "spatial_store_recovery_failed",
+    "spatial_store_network_path_rejected",
+    "spatial_store_managed_path_rejected",
+    "spatial_store_artifact_path_rejected",
+    "spatial_store_unavailable",
     "runtime_exception",
     "invalid_response_kind",
 ]);
 const SPATIAL_STOP_CODES = new Set(["completed", "max_elapsed", "max_items", "max_bytes", "read_failed", "needs_scope"]);
 const SPATIAL_COVERAGE_CODES = new Set(["complete", "incomplete_omissions", "incomplete_budget"]);
+const SPATIAL_WORK_PHASE_CODES = new Set(["discover", "filter", "extract", "finalize"]);
 let telemetrySequence = 0;
 const liveActiveTasks = new Map();
 const liveRecentActivity = [];
@@ -117,6 +141,7 @@ export function summarizeSpatialExtractionTelemetryParams(params = {}, operation
         nameQueryPresent: typeof params.nameQuery === "string" && params.nameQuery.length > 0,
         linkInstanceSelectorCount: count(params.linkInstanceIds) + count(params.linkInstanceUniqueIds),
         linkedSourceLevelSelectorCount: count(params.linkedSourceLevels) + count(params.linkedSourceLevelNames),
+        sourceRevisionCount: count(params.sourceRevisions) + count(params.expectedSourceRevisions),
         sourceScope,
         cursorPresent: typeof params.cursor === "string" && params.cursor.length > 0,
         pageTargetBytes: finiteInteger(params.pageTargetBytes),
@@ -388,9 +413,11 @@ export function summarizeSpatialExtractionTelemetryResponse(response, error = nu
         };
     }
     const page = asObject(getValueCaseInsensitiveLocal(object, ["page", "Page"]));
+    const preparation = asObject(getValueCaseInsensitiveLocal(object, ["preparation", "Preparation"]));
     const nodes = getValueCaseInsensitiveLocal(object, ["nodes", "Nodes"]);
     const omissions = getValueCaseInsensitiveLocal(object, ["omissions", "Omissions"]);
     const revisions = getValueCaseInsensitiveLocal(object, ["sourceRevisions", "SourceRevisions"]);
+    const sourceStates = getValueCaseInsensitiveLocal(object, ["sourceStates", "SourceStates"]);
     const successValue = getValueCaseInsensitiveLocal(object, ["success", "Success"]);
     const guarded = getValueCaseInsensitiveLocal(object, ["guarded", "Guarded"]) === true;
     const pageOrdinal = coerceNumber(getValueCaseInsensitiveLocal(page, ["ordinal", "Ordinal", "pageOrdinal", "PageOrdinal"]))
@@ -404,6 +431,8 @@ export function summarizeSpatialExtractionTelemetryResponse(response, error = nu
         ?? coerceNumber(getValueCaseInsensitiveLocal(object, ["payloadBytes", "PayloadBytes"]));
     const nextCursor = getValueCaseInsensitiveLocal(object, ["nextCursor", "NextCursor"])
         ?? getValueCaseInsensitiveLocal(page, ["nextCursor", "NextCursor"]);
+    const continuationKindValue = String(getValueCaseInsensitiveLocal(object, ["continuationKind", "ContinuationKind"]) ?? "").trim().toLowerCase();
+    const continuationKind = continuationKindValue === "work" ? "work" : null;
     return {
         success: typeof successValue === "boolean" ? successValue : !guarded,
         guarded,
@@ -413,13 +442,21 @@ export function summarizeSpatialExtractionTelemetryResponse(response, error = nu
         scanStoppedReason: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["scanStoppedReason", "ScanStoppedReason"]), SPATIAL_STOP_CODES),
         coverageStatus: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["coverageStatus", "CoverageStatus"]), SPATIAL_COVERAGE_CODES),
         partial: getValueCaseInsensitiveLocal(object, ["partial", "Partial"]) === true,
+        continuationKind,
+        preparationPhase: safeSpatialCode(getValueCaseInsensitiveLocal(preparation, ["phase", "Phase"]), SPATIAL_WORK_PHASE_CODES),
+        preparationStepOrdinal: coerceNumber(getValueCaseInsensitiveLocal(preparation, ["stepOrdinal", "StepOrdinal"])),
+        preparationProcessed: coerceNumber(getValueCaseInsensitiveLocal(preparation, ["processed", "Processed"])),
+        preparationTotal: coerceNumber(getValueCaseInsensitiveLocal(preparation, ["total", "Total"])),
         pageOrdinal,
         recordCount,
         omissionCount,
         sourceRevisionCount: Array.isArray(revisions) ? revisions.length : null,
+        sourceStateCount: Array.isArray(sourceStates) ? sourceStates.length : null,
+        liveness: safeSpatialCode(getValueCaseInsensitiveLocal(object, ["liveness", "Liveness"]), SPATIAL_LIVENESS_CODES),
         payloadBytes,
         hasMore: getValueCaseInsensitiveLocal(page, ["hasMore", "HasMore"]) === true,
         nextCursorPresent: typeof nextCursor === "string" && nextCursor.length > 0,
+        workCursorPresent: continuationKind === "work" && typeof nextCursor === "string" && nextCursor.length > 0,
         privacyBoundary: "spatial_extraction",
     };
 }

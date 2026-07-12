@@ -7,7 +7,15 @@ import {
     sendRevitCommand,
     taskMetadataSchema,
 } from "../utils/revitToolHelpers.js";
-import { normalizeSpatialPage, SPATIAL_PAGE_CONTRACT_VERSION } from "../spatial/spatialPage.js";
+import {
+    captureSpatialSnapshotAtomic,
+    DEFAULT_SPATIAL_CAPTURE_MAX_ELAPSED_MS,
+    MAX_SPATIAL_CAPTURE_MAX_ELAPSED_MS,
+} from "../spatial/spatialCapture.js";
+import {
+    getSpatialStore,
+    SpatialStoreCapabilityError,
+} from "../spatial/spatialStoreManager.js";
 
 type JsonObject = Record<string, any>;
 
@@ -16,8 +24,8 @@ export const MIN_SPATIAL_PAGE_TARGET_BYTES = 64 * 1024;
 export const MAX_SPATIAL_PAGE_TARGET_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_SPATIAL_MAX_ELEMENTS = 5000;
 export const MAX_SPATIAL_MAX_ELEMENTS = 25000;
-export const DEFAULT_SPATIAL_MAX_ELAPSED_MS = 4500;
-export const MAX_SPATIAL_MAX_ELAPSED_MS = 25000;
+export const DEFAULT_SPATIAL_MAX_ELAPSED_MS = 1800;
+export const MAX_SPATIAL_MAX_ELAPSED_MS = 5000;
 export const DEFAULT_SPATIAL_TIMEOUT_MS = 12000;
 export const MAX_SPATIAL_TIMEOUT_MS = 60000;
 
@@ -107,6 +115,12 @@ export function resolveSpatialCapturePolicy(args: JsonObject = {}) {
         maxElements,
         maxElapsedMs,
         timeoutMs,
+        maxCaptureElapsedMs: clampInteger(
+            args.maxCaptureElapsedMs,
+            DEFAULT_SPATIAL_CAPTURE_MAX_ELAPSED_MS,
+            1000,
+            MAX_SPATIAL_CAPTURE_MAX_ELAPSED_MS,
+        ),
     };
 }
 
@@ -124,7 +138,6 @@ export function buildSpatialCaptureParams(args: JsonObject, policy = resolveSpat
         includeLinkedObstructions: args.includeLinkedObstructions !== false,
         belowLevelMm: args.belowLevelMm,
         aboveLevelMm: args.aboveLevelMm,
-        cursor: typeof args.cursor === "string" ? args.cursor : undefined,
         pageTargetBytes: policy.pageTargetBytes,
         maxElements: policy.maxElements,
         maxElapsedMs: policy.maxElapsedMs,
@@ -164,13 +177,13 @@ function guardedNeedsScope(policy: ReturnType<typeof resolveSpatialCapturePolicy
 export function registerCaptureSpatialSnapshotTool(server: ToolServer) {
     server.tool(
         "capture_spatial_snapshot",
-        "[SPATIAL_CAPTURE_READ_ONLY] Extract exactly one deterministic, bounded spatial snapshot page from one explicitly scoped Revit host level. The host scope is a host-Z vertical band, not exact linked-level membership; use placement-qualified linkedSourceLevels or linkedSourceLevelNames when linked Room/Space rows must come from exact source levels. Linked obstruction evidence intentionally remains physical host-band overlap even when that filter is present. This wrapper sends one native extract_spatial_snapshot command per MCP call, never decodes the opaque cursor, and never aggregates the whole graph. It also exposes snapshot as the exact published SpatialSnapshot v0.1 contract view for the capture metadata. Read page.hasMore for pagination and coverageStatus for extraction coverage. Phase 0 is a non-atomic extraction spike with liveness=unknown, not a durable/current snapshot store.",
+        "[SPATIAL_CAPTURE_READ_ONLY] Capture one explicit host-level scope as a durable SpatialSnapshot v0.2. The runtime owns opaque native paging, validates the revision/hash chain, stages every page in the user-local spatial store, and exposes the snapshot only after one atomic commit. A DocumentChanged sequence interruption discards staging and retries at most twice; mixed revisions never commit. The host scope remains a physical host-Z band. Use placement-qualified linkedSourceLevels when linked Room/Space rows must match an exact source Level; linked obstructions remain physical band-overlap evidence. Returns current/stale/unknown liveness, explicit coverage, counts, page totals, and bounded performance evidence. This tool never writes the Revit model.",
         {
             ...connectionTargetSchema(z),
             ...taskMetadataSchema(z),
-            levelIds: z.array(z.union([z.number().int().positive(), z.string()])).max(20).optional().describe("Explicit host Revit level ids. At least one levelIds or levelNames entry is required on every page call."),
-            levelNames: z.array(z.string().min(1)).max(20).optional().describe("Explicit host Revit level names. At least one levelIds or levelNames entry is required on every page call."),
-            sourceScope: z.enum(["hostOnly", "linkedOnly", "hostAndLinked"]).optional().describe("Source-document policy. Defaults hostAndLinked for the Phase 0 host/architecture/structure audit."),
+            levelIds: z.array(z.union([z.number().int().positive(), z.string()])).max(20).optional().describe("Explicit host Revit level ids. At least one levelIds or levelNames entry is required."),
+            levelNames: z.array(z.string().min(1)).max(20).optional().describe("Explicit host Revit level names. At least one levelIds or levelNames entry is required."),
+            sourceScope: z.enum(["hostOnly", "linkedOnly", "hostAndLinked"]).optional().describe("Source-document policy. Defaults hostAndLinked."),
             linkInstanceIds: z.array(z.union([z.number().int().positive(), z.string()])).max(100).optional().describe("Optional exact RevitLinkInstance ids inside the explicit level scope."),
             linkInstanceUniqueIds: z.array(z.string().min(1)).max(100).optional().describe("Optional exact RevitLinkInstance unique ids inside the explicit level scope."),
             linkedSourceLevels: z.array(z.object({
@@ -185,14 +198,13 @@ export function registerCaptureSpatialSnapshotTool(server: ToolServer) {
             includeLinkedObstructions: z.boolean().optional().describe("Include supported linked structural/architectural obstruction evidence. Defaults true."),
             belowLevelMm: z.number().min(0).max(10000).optional().describe("Optional bounded extent below each selected level, in millimetres. Defaults 1000; native cap 10000."),
             aboveLevelMm: z.number().min(100).max(30000).optional().describe("Optional bounded extent above each selected level, in millimetres. Defaults 6000; native cap 30000."),
-            cursor: z.string().min(1).max(32768).optional().describe("Opaque nextCursor returned by the immediately preceding page. Passed through unchanged and never decoded by the runtime wrapper."),
             pageTargetBytes: z.number().int().min(MIN_SPATIAL_PAGE_TARGET_BYTES).max(MAX_SPATIAL_PAGE_TARGET_BYTES).optional().describe("Native page target in bytes. Defaults 4 MiB; hard-capped at 8 MiB below the 32 MiB bridge ceiling."),
             maxElements: z.number().int().positive().max(MAX_SPATIAL_MAX_ELEMENTS).optional().describe("Maximum source elements considered by this native page call. Defaults 5000; hard-capped at 25000."),
-            maxElapsedMs: z.number().int().min(250).max(MAX_SPATIAL_MAX_ELAPSED_MS).optional().describe("Maximum native extraction work for this page. Defaults 4500 ms; native range 250-25000 ms for explicitly scoped real-model audits."),
+            maxElapsedMs: z.number().int().min(250).max(MAX_SPATIAL_MAX_ELAPSED_MS).optional().describe("Maximum Revit UI occupancy target for one native page/chunk. Defaults 1800 ms; hard-capped at 5000 ms."),
+            maxCaptureElapsedMs: z.number().int().min(1000).max(MAX_SPATIAL_CAPTURE_MAX_ELAPSED_MS).optional().describe("Total bound for one full staged capture attempt. Defaults 45000 ms; hard-capped at 120000 ms."),
             timeoutMs: z.number().int().min(2000).max(MAX_SPATIAL_TIMEOUT_MS).optional().describe("Socket timeout for this one page. Defaults to at least 12000 ms with 15000 ms headroom above maxElapsedMs; hard-capped at 60000 ms."),
         },
         async (args) => {
-            const startedAtMs = Date.now();
             const policy = resolveSpatialCapturePolicy(args);
             const params = buildSpatialCaptureParams(args, policy);
             if (!hasExplicitLevelScope(params)) {
@@ -200,62 +212,65 @@ export function registerCaptureSpatialSnapshotTool(server: ToolServer) {
             }
 
             try {
-                const response = await sendRevitCommand("extract_spatial_snapshot", params, {
-                    ...executionOptionsFromArgs({
-                        target: args.target,
-                        host: args.host,
-                        port: args.port,
+                const store = getSpatialStore();
+                const result = await captureSpatialSnapshotAtomic({
+                    nativeParams: params,
+                    scanPolicy: policy,
+                    maxCaptureElapsedMs: policy.maxCaptureElapsedMs,
+                }, {
+                    store,
+                    sendPage: async (pageParams) => await sendRevitCommand("extract_spatial_snapshot", pageParams, {
+                        ...executionOptionsFromArgs({
+                            target: args.target,
+                            host: args.host,
+                            port: args.port,
+                            timeoutMs: policy.timeoutMs,
+                            taskName: "Capture spatial snapshot page",
+                        }, "Capture spatial snapshot page"),
+                        toolName: "capture_spatial_snapshot",
                         timeoutMs: policy.timeoutMs,
-                        taskName: "Capture spatial snapshot page",
-                    }, "Capture spatial snapshot page"),
-                    toolName: "capture_spatial_snapshot",
-                    timeoutMs: policy.timeoutMs,
+                    }),
+                    probeLiveness: async (sourceRevisions) => {
+                        const rawRevisions = sourceRevisions.map((source) => source.metadata || source);
+                        const response = await sendRevitCommand("get_spatial_change_state", {
+                            sourceRevisions: rawRevisions,
+                            expectedTrackerSessionId: sourceRevisions.find((source) => source.trackerSessionId)?.trackerSessionId,
+                            timeoutMs: Math.min(policy.timeoutMs, 10000),
+                            suppressTaskStatusWindow: true,
+                            taskName: "Read spatial change state",
+                        }, {
+                            ...executionOptionsFromArgs({
+                                target: args.target,
+                                host: args.host,
+                                port: args.port,
+                                timeoutMs: Math.min(policy.timeoutMs, 10000),
+                                taskName: "Read spatial change state",
+                            }, "Read spatial change state"),
+                            toolName: "capture_spatial_snapshot",
+                            timeoutMs: Math.min(policy.timeoutMs, 10000),
+                        });
+                        return response && response.result ? response.result : response;
+                    },
                 });
-                const payload = response && response.result ? response.result : response;
-                const normalized = normalizeSpatialPage(payload, Date.now() - startedAtMs);
-                if (!normalized.valid) {
-                    return formatJsonContent({
-                        success: false,
-                        guarded: false,
-                        state: "failed",
-                        action: "capture_spatial_snapshot",
-                        reason: "invalid_spatial_page_contract",
-                        error: "The native extract_spatial_snapshot response did not satisfy the strict Phase 0 extraction-page contract.",
-                        contractValidation: normalized.payload.contractValidation || {
-                            version: SPATIAL_PAGE_CONTRACT_VERSION,
-                            valid: false,
-                            errors: normalized.errors,
-                        },
-                        pageEvidence: normalized.payload.pageEvidence,
-                        partial: false,
-                        scanStoppedReason: "read_failed",
-                        scanPolicy: policy,
-                        suggestedNextScopes: ["levelIds", "levelNames"],
-                        warnings: [],
-                        notices: [],
-                        nextCursor: null,
-                        elapsedMs: Date.now() - startedAtMs,
-                    });
-                }
-                normalized.payload.scanPolicy = normalized.payload.scanPolicy || policy;
-                return formatJsonContent(normalized.payload);
+                return formatJsonContent(result);
             }
             catch (error) {
+                const guarded = error instanceof SpatialStoreCapabilityError;
                 return formatJsonContent({
-                    success: false,
-                    guarded: false,
-                    state: "failed",
+                    success: guarded,
+                    guarded,
+                    state: guarded ? "guarded" : "failed",
                     action: "capture_spatial_snapshot",
-                    reason: "read_failed",
+                    reason: guarded ? error.reason : "read_failed",
                     error: error instanceof Error ? error.message : String(error),
+                    committed: false,
                     partial: false,
                     scanStoppedReason: "read_failed",
                     scanPolicy: policy,
-                    suggestedNextScopes: ["levelIds", "levelNames"],
+                    suggestedNextScopes: [],
                     warnings: [],
                     notices: [],
                     nextCursor: null,
-                    elapsedMs: Date.now() - startedAtMs,
                 });
             }
         },

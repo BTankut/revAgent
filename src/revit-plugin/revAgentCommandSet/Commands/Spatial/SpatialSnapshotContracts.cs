@@ -53,6 +53,10 @@ namespace RevAgentCommandSet.Commands.Spatial
         public string CapturedAt { get; set; }
         public bool Atomic { get; set; }
         public string Liveness { get; set; }
+        public string CaptureConsistency { get; set; }
+        public string ContinuationKind { get; set; }
+        public string SourceBindingFingerprint { get; set; }
+        public object Preparation { get; set; }
         public string RevisionBasisCaveat { get; set; }
         public object Scope { get; set; }
         public object EffectiveSourcePolicy { get; set; }
@@ -86,6 +90,8 @@ namespace RevAgentCommandSet.Commands.Spatial
     {
         public Document Document;
         public RevitLinkInstance LinkInstance;
+        public bool IsHostSource;
+        public int? LinkInstanceId;
         public Transform SourceToHost;
         public DocumentIdentity Identity;
         public string PlacementKey;
@@ -94,7 +100,7 @@ namespace RevAgentCommandSet.Commands.Spatial
 
         public bool IsHost
         {
-            get { return LinkInstance == null; }
+            get { return IsHostSource; }
         }
     }
 
@@ -106,6 +112,18 @@ namespace RevAgentCommandSet.Commands.Spatial
         public string FallbackReason;
         public bool CrossSessionStable;
         public string LoadedVersion;
+        public string LoadedVersionBasis;
+        public bool LoadedVersionAvailable;
+        public string ExternalSourceVersion;
+        public bool ExternalLinkUpdateAvailable;
+        public string ExternalObservationBasis;
+        public string TrackerSessionId;
+        public bool TrackerSubscribed;
+        public long ChangeSequence;
+        public long OldestRetainedSequence;
+        public int JournalEntryCount;
+        public int JournalCapacity;
+        public bool JournalTruncated;
     }
 
     internal sealed class SpatialRow
@@ -119,6 +137,26 @@ namespace RevAgentCommandSet.Commands.Spatial
         public bool IsNode;
         public Dictionary<string, object> Payload;
         public string PayloadFingerprint;
+        public int CanonicalByteCount;
+    }
+
+    internal sealed class SpatialCandidateRecord
+    {
+        public int SourceOrdinal;
+        public int ElementId;
+        public string StableSourceIdentity;
+        public string CategoryName;
+        public BuiltInCategory BuiltInCategory;
+        public string ScopeClassification;
+        public string LevelName;
+        public int? LevelId;
+        public string LevelUniqueId;
+    }
+
+    internal sealed class SpatialDiscoveryPartition
+    {
+        public int SourceOrdinal;
+        public BuiltInCategory Category;
     }
 
     internal sealed class SpatialCandidate
@@ -152,13 +190,17 @@ namespace RevAgentCommandSet.Commands.Spatial
         public int ScannedElementCount;
         public int EligibleElementCount;
         public int ExtractedNodeCount;
+        public int ExtractedConnectorCount;
+        public int OmittedConnectorCount;
         public int OmittedElementCount;
+        public int UnmaterializedOmissionCount;
         public int SourceAvailabilityOmissionCount;
         public int FilteredOutOfScopeCount;
         public int TransformCount;
         public int TransformValidationFailureCount;
         public double MaxTransformRoundTripErrorMm;
         public bool BudgetStopped;
+        public bool SelectionLimited;
         public bool SelectionComplete;
         public string ScanStoppedReason = "completed";
         public string LastReadDocumentKey;
@@ -168,6 +210,8 @@ namespace RevAgentCommandSet.Commands.Spatial
         public readonly Dictionary<string, int> EligibleByCategory = new Dictionary<string, int>(StringComparer.Ordinal);
         public readonly Dictionary<string, int> ExtractedByCategory = new Dictionary<string, int>(StringComparer.Ordinal);
         public readonly Dictionary<string, int> OmittedByClassification = new Dictionary<string, int>(StringComparer.Ordinal);
+        public readonly Dictionary<string, int> ConnectorOmittedByClassification = new Dictionary<string, int>(StringComparer.Ordinal);
+        public readonly Dictionary<string, int> UnmaterializedOmissionsByClassification = new Dictionary<string, int>(StringComparer.Ordinal);
         public readonly Dictionary<string, int> SourceOmittedByClassification = new Dictionary<string, int>(StringComparer.Ordinal);
 
         public void Increment(Dictionary<string, int> target, string key)
@@ -213,5 +257,17 @@ namespace RevAgentCommandSet.Commands.Spatial
         public string LinkPlacementKey { get; set; }
         public string NodeKind { get; set; }
         public string StableSourceIdentity { get; set; }
+    }
+
+    internal sealed class WorkCursorEnvelope
+    {
+        public string CursorVersion { get; set; }
+        public string CursorKind { get; set; }
+        public string CaptureId { get; set; }
+        public string WorkPhase { get; set; }
+        public int StepOrdinal { get; set; }
+        public string ScopeFingerprint { get; set; }
+        public string SourceBindingFingerprint { get; set; }
+        public string CapturedAt { get; set; }
     }
 }

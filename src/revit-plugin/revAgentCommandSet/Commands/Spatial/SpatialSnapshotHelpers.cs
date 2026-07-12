@@ -2,13 +2,13 @@ using Autodesk.Revit.DB;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using RevAgentCommandSet.Extensions;
+using RevAgentPlugin.Core;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -17,20 +17,20 @@ namespace RevAgentCommandSet.Commands.Spatial
     internal static class SpatialSnapshotHelpers
     {
         internal const double FeetToMillimetres = 304.8;
-        internal const string SchemaVersion = "0.1";
-        internal const string ExtractorVersion = "phase0-spike/0.1.1";
+        internal const string SchemaVersion = "0.2";
+        internal const string ExtractorVersion = "phase1a-native/0.2";
         internal const string CoordinateFrame = "host_internal_mm";
-        internal const string CursorVersion = "0.1";
-        internal const string Phase0Caveat = "Phase 0 extraction is read-only but is not atomic and cannot establish current liveness. Continuation cursors are HMAC-bound to this add-in process session and are intentionally invalid after restart. Atomic multi-page capture and change-sequence validation begin in Phase 1a.";
-        private const string CursorPrefix = "spatial-cursor-v0.1.";
+        internal const string CursorVersion = "0.2";
+        internal const string WorkCursorVersion = "0.2-work";
+        internal const string CaptureConsistency = "document_change_sequence_bound";
+        internal const string Phase1aCaveat = "Phase 1a native transport pages are read-only, document-change-sequence-bound staging inputs. Only the runtime spatial store may publish an atomically committed current snapshot after validating the complete page chain. Continuation cursors are HMAC-bound to this add-in process session and are intentionally invalid after restart.";
+        private const string CursorPrefix = "spatial-cursor-v0.2.";
+        private const string WorkCursorPrefix = "spatial-work-cursor-v0.2.";
         private const int MaxCursorJsonBytes = 8192;
         private const int MaxCursorEncodedChars = 12000;
 
-        private static readonly string AddinSessionId = Guid.NewGuid().ToString("N");
         private static readonly DateTimeOffset AddinSessionStartedAtUtc = DateTimeOffset.UtcNow;
         private static readonly byte[] CursorHmacKey = CreateRandomSecret(32);
-        private static readonly object SessionLock = new object();
-        private static readonly Dictionary<Document, string> DocumentSessions = new Dictionary<Document, string>();
 
         internal static readonly IList<BuiltInCategory> HostMepCategories = new List<BuiltInCategory>
         {
@@ -111,6 +111,111 @@ namespace RevAgentCommandSet.Commands.Spatial
             return CursorPrefix + ToBase64Url(payload) + "." + ToBase64Url(signature);
         }
 
+        internal static bool IsWorkCursor(string value)
+        {
+            return !string.IsNullOrWhiteSpace(value) && value.StartsWith(WorkCursorPrefix, StringComparison.Ordinal);
+        }
+
+        internal static string EncodeWorkCursor(WorkCursorEnvelope envelope)
+        {
+            JObject json = new JObject
+            {
+                ["cursorVersion"] = envelope.CursorVersion,
+                ["cursorKind"] = envelope.CursorKind,
+                ["captureId"] = envelope.CaptureId,
+                ["workPhase"] = envelope.WorkPhase,
+                ["stepOrdinal"] = envelope.StepOrdinal,
+                ["scopeFingerprint"] = envelope.ScopeFingerprint,
+                ["sourceBindingFingerprint"] = envelope.SourceBindingFingerprint,
+                ["capturedAt"] = envelope.CapturedAt
+            };
+            byte[] payload = Encoding.UTF8.GetBytes(CanonicalJson(json));
+            byte[] signature;
+            using (HMACSHA256 hmac = new HMACSHA256(CursorHmacKey))
+            {
+                signature = hmac.ComputeHash(payload);
+            }
+            return WorkCursorPrefix + ToBase64Url(payload) + "." + ToBase64Url(signature);
+        }
+
+        internal static bool TryDecodeWorkCursor(string value, out WorkCursorEnvelope envelope, out string error)
+        {
+            envelope = null;
+            error = null;
+            if (string.IsNullOrWhiteSpace(value)) return true;
+            try
+            {
+                if (!value.StartsWith(WorkCursorPrefix, StringComparison.Ordinal)) throw new FormatException("Work cursor prefix is missing or unsupported.");
+                string encoded = value.Substring(WorkCursorPrefix.Length);
+                int separator = encoded.IndexOf('.');
+                if (separator <= 0 || separator != encoded.LastIndexOf('.')) throw new FormatException("Work cursor must contain one payload/signature separator.");
+                string payloadText = encoded.Substring(0, separator);
+                string signatureText = encoded.Substring(separator + 1);
+                if (payloadText.Length > MaxCursorEncodedChars || signatureText.Length != 43) throw new FormatException("Work cursor size is outside the supported bounds.");
+                byte[] payload = FromBase64Url(payloadText, MaxCursorJsonBytes);
+                byte[] suppliedSignature = FromBase64Url(signatureText, 32);
+                byte[] expectedSignature;
+                using (HMACSHA256 hmac = new HMACSHA256(CursorHmacKey))
+                {
+                    expectedSignature = hmac.ComputeHash(payload);
+                }
+                if (!FixedTimeEquals(expectedSignature, suppliedSignature)) throw new FormatException("Work cursor authentication failed; it may be altered or from a prior add-in session.");
+
+                string jsonText = new UTF8Encoding(false, true).GetString(payload);
+                JObject json;
+                using (StringReader stringReader = new StringReader(jsonText))
+                using (JsonTextReader jsonReader = new JsonTextReader(stringReader))
+                {
+                    jsonReader.DateParseHandling = DateParseHandling.None;
+                    jsonReader.FloatParseHandling = FloatParseHandling.Double;
+                    json = JObject.Load(jsonReader);
+                }
+                HashSet<string> expectedFields = new HashSet<string>(new[]
+                {
+                    "cursorVersion", "cursorKind", "captureId", "workPhase", "stepOrdinal",
+                    "scopeFingerprint", "sourceBindingFingerprint", "capturedAt"
+                }, StringComparer.Ordinal);
+                if (json.Properties().Any(property => !expectedFields.Contains(property.Name)) || json.Properties().Count() != expectedFields.Count)
+                {
+                    throw new FormatException("Work cursor envelope fields do not match version 0.2-work.");
+                }
+                if (!string.Equals(jsonText, CanonicalJson(json), StringComparison.Ordinal)) throw new FormatException("Work cursor payload is not canonical JSON.");
+                if (json.Properties().Where(property => property.Name != "stepOrdinal").Any(property => !IsStringToken(property.Value)) ||
+                    json["stepOrdinal"] == null || json["stepOrdinal"].Type != JTokenType.Integer)
+                {
+                    throw new FormatException("Work cursor envelope value types do not match version 0.2-work.");
+                }
+
+                envelope = new WorkCursorEnvelope
+                {
+                    CursorVersion = ReadCursorString(json, "cursorVersion"),
+                    CursorKind = ReadCursorString(json, "cursorKind"),
+                    CaptureId = ReadCursorString(json, "captureId"),
+                    WorkPhase = ReadCursorString(json, "workPhase"),
+                    StepOrdinal = json["stepOrdinal"].Value<int>(),
+                    ScopeFingerprint = ReadCursorString(json, "scopeFingerprint"),
+                    SourceBindingFingerprint = ReadCursorString(json, "sourceBindingFingerprint"),
+                    CapturedAt = ReadCursorString(json, "capturedAt")
+                };
+                DateTimeOffset capturedAt;
+                if (!string.Equals(envelope.CursorVersion, WorkCursorVersion, StringComparison.Ordinal) ||
+                    !string.Equals(envelope.CursorKind, "work", StringComparison.Ordinal) ||
+                    !IsBoundedNonEmpty(envelope.CaptureId, 256) || envelope.StepOrdinal < 1 || envelope.StepOrdinal > 1000000 ||
+                    !IsWorkPhase(envelope.WorkPhase) || !IsSha256(envelope.ScopeFingerprint) || !IsSha256(envelope.SourceBindingFingerprint) ||
+                    !DateTimeOffset.TryParseExact(envelope.CapturedAt, "o", CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out capturedAt) ||
+                    capturedAt.Offset != TimeSpan.Zero || capturedAt > DateTimeOffset.UtcNow.AddMinutes(5) || capturedAt < AddinSessionStartedAtUtc.AddMinutes(-5))
+                {
+                    throw new FormatException("Work cursor envelope is incomplete or uses an unsupported version.");
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
         internal static bool TryDecodeCursor(string value, out CursorEnvelope envelope, out string error)
         {
             envelope = null;
@@ -150,7 +255,7 @@ namespace RevAgentCommandSet.Commands.Spatial
                 }, StringComparer.Ordinal);
                 if (json.Properties().Any(property => !expectedFields.Contains(property.Name)) || json.Properties().Count() != expectedFields.Count)
                 {
-                    throw new FormatException("Cursor envelope fields do not match version 0.1.");
+                    throw new FormatException("Cursor envelope fields do not match version 0.2.");
                 }
                 if (!string.Equals(jsonText, CanonicalJson(json), StringComparison.Ordinal)) throw new FormatException("Cursor payload is not canonical JSON.");
                 JObject sortObject = json["sortPosition"] as JObject;
@@ -165,7 +270,7 @@ namespace RevAgentCommandSet.Commands.Spatial
                     sortObject == null || sortObject.Properties().Any(property => !expectedSortFields.Contains(property.Name)) ||
                     sortObject.Properties().Count() != expectedSortFields.Count || sortObject.Properties().Any(property => !IsStringToken(property.Value)))
                 {
-                    throw new FormatException("Cursor envelope value types do not match version 0.1.");
+                    throw new FormatException("Cursor envelope value types do not match version 0.2.");
                 }
                 envelope = new CursorEnvelope
                 {
@@ -255,7 +360,8 @@ namespace RevAgentCommandSet.Commands.Spatial
         private static bool IsCursorNodeKind(string value)
         {
             return value == "revit_element" || value == "connector" || value == "derived" ||
-                value == "revit_element_omission" || value == "source_omission";
+                value == "revit_element_omission" || value == "connector_omission" ||
+                value == "source_omission";
         }
 
         private static bool IsSha256(string value)
@@ -287,9 +393,10 @@ namespace RevAgentCommandSet.Commands.Spatial
             };
         }
 
-        internal static DocumentIdentity ResolveDocumentIdentity(Document document)
+        internal static DocumentIdentity ResolveDocumentIdentity(Document document, bool isLinkedSource = false, bool observeExternalSource = true)
         {
-            string sessionId = GetDocumentSessionId(document);
+            SpatialDocumentChangeSnapshot changeBinding = SpatialChangeTracker.Instance.GetCurrentBinding(document);
+            string sessionId = changeBinding.DocumentSessionId;
             string path = NormalizePath(SafeGet(delegate { return document.PathName; }));
             string projectInfoIdentity = SafeGet(delegate
             {
@@ -297,68 +404,66 @@ namespace RevAgentCommandSet.Commands.Spatial
                 return info != null ? info.UniqueId : "";
             });
 
+            string documentKey;
+            string resolutionBasis;
+            string fallbackReason = null;
+            bool crossSessionStable;
             string cloudIdentity = TryGetCloudIdentity(document);
+            string centralIdentity = string.IsNullOrWhiteSpace(cloudIdentity) ? TryGetCentralIdentity(document) : "";
             if (!string.IsNullOrWhiteSpace(cloudIdentity))
             {
-                return new DocumentIdentity
-                {
-                    DocumentKey = "cloud:" + Sha256(cloudIdentity),
-                    DocumentSessionId = sessionId,
-                    ResolutionBasis = "cloud_project_model_identity",
-                    CrossSessionStable = true,
-                    LoadedVersion = ResolveLoadedVersion(document, path)
-                };
+                documentKey = "cloud:" + Sha256(cloudIdentity);
+                resolutionBasis = "cloud_project_model_identity";
+                crossSessionStable = true;
             }
-
-            string centralIdentity = TryGetCentralIdentity(document);
-            if (!string.IsNullOrWhiteSpace(centralIdentity))
+            else if (!string.IsNullOrWhiteSpace(centralIdentity))
             {
-                return new DocumentIdentity
-                {
-                    DocumentKey = "central:" + Sha256(centralIdentity),
-                    DocumentSessionId = sessionId,
-                    ResolutionBasis = "workshared_central_identity",
-                    CrossSessionStable = true,
-                    LoadedVersion = ResolveLoadedVersion(document, path)
-                };
+                documentKey = "central:" + Sha256(centralIdentity);
+                resolutionBasis = "workshared_central_identity";
+                crossSessionStable = true;
             }
-
-            if (!string.IsNullOrWhiteSpace(path))
+            else if (!string.IsNullOrWhiteSpace(path))
             {
-                string stableInput = (projectInfoIdentity ?? "") + "|" + path;
-                return new DocumentIdentity
-                {
-                    DocumentKey = "standalone:" + Sha256(stableInput),
-                    DocumentSessionId = sessionId,
-                    ResolutionBasis = "project_information_plus_normalized_path",
-                    FallbackReason = string.IsNullOrWhiteSpace(projectInfoIdentity) ? "project_information_identity_unavailable" : null,
-                    CrossSessionStable = !string.IsNullOrWhiteSpace(projectInfoIdentity),
-                    LoadedVersion = ResolveLoadedVersion(document, path)
-                };
+                documentKey = "standalone:" + Sha256((projectInfoIdentity ?? "") + "|" + path);
+                resolutionBasis = "project_information_plus_normalized_path";
+                fallbackReason = string.IsNullOrWhiteSpace(projectInfoIdentity) ? "project_information_identity_unavailable" : null;
+                crossSessionStable = !string.IsNullOrWhiteSpace(projectInfoIdentity);
+            }
+            else
+            {
+                documentKey = "session-only:" + sessionId;
+                resolutionBasis = "unsaved_session_only";
+                fallbackReason = "document_has_no_stable_saved_or_workshared_identity";
+                crossSessionStable = false;
             }
 
+            LoadedVersionObservation version = ResolveLoadedVersion(document, path, isLinkedSource, observeExternalSource, sessionId);
             return new DocumentIdentity
             {
-                DocumentKey = "session-only:" + sessionId,
+                DocumentKey = documentKey,
                 DocumentSessionId = sessionId,
-                ResolutionBasis = "unsaved_session_only",
-                FallbackReason = "document_has_no_stable_saved_or_workshared_identity",
-                CrossSessionStable = false,
-                LoadedVersion = "session-only"
+                ResolutionBasis = resolutionBasis,
+                FallbackReason = fallbackReason,
+                CrossSessionStable = crossSessionStable,
+                LoadedVersion = version.LoadedVersion,
+                LoadedVersionBasis = version.LoadedVersionBasis,
+                LoadedVersionAvailable = version.LoadedVersionAvailable,
+                ExternalSourceVersion = version.ExternalSourceVersion,
+                ExternalLinkUpdateAvailable = version.ExternalLinkUpdateAvailable,
+                ExternalObservationBasis = version.ExternalObservationBasis,
+                TrackerSessionId = changeBinding.TrackerSessionId,
+                TrackerSubscribed = changeBinding.TrackerSubscribed,
+                ChangeSequence = changeBinding.CurrentSequence,
+                OldestRetainedSequence = changeBinding.OldestRetainedSequence,
+                JournalEntryCount = changeBinding.JournalEntryCount,
+                JournalCapacity = changeBinding.JournalCapacity,
+                JournalTruncated = changeBinding.JournalTruncated
             };
         }
 
-        private static string GetDocumentSessionId(Document document)
+        private static bool IsWorkPhase(string value)
         {
-            lock (SessionLock)
-            {
-                string existing;
-                if (document != null && DocumentSessions.TryGetValue(document, out existing)) return existing;
-                string seed = AddinSessionId + "|" + RuntimeHelpers.GetHashCode(document).ToString(CultureInfo.InvariantCulture) + "|" + SafeGet(delegate { return document.Title; });
-                string value = Sha256Hex(seed).Substring(0, 32);
-                if (document != null) DocumentSessions[document] = value;
-                return value;
-            }
+            return value == "discover" || value == "filter" || value == "extract" || value == "finalize";
         }
 
         private static string TryGetCloudIdentity(Document document)
@@ -419,42 +524,92 @@ namespace RevAgentCommandSet.Commands.Spatial
             }
         }
 
-        private static string ResolveLoadedVersion(Document document, string normalizedPath)
+        private static LoadedVersionObservation ResolveLoadedVersion(Document document, string normalizedPath, bool isLinkedSource, bool observeExternalSource, string documentSessionId)
         {
-            List<string> parts = new List<string>();
+            string loadedToken = TryReadVersionToken(document);
+            LoadedVersionObservation result = new LoadedVersionObservation
+            {
+                LoadedVersionAvailable = !string.IsNullOrWhiteSpace(loadedToken),
+                LoadedVersionBasis = !string.IsNullOrWhiteSpace(loadedToken) ? "revit_in_memory_document_version" : "unavailable_session_bound",
+                LoadedVersion = !string.IsNullOrWhiteSpace(loadedToken)
+                    ? Sha256(loadedToken)
+                    : Sha256("loaded-version-unavailable|" + (documentSessionId ?? "")),
+                ExternalLinkUpdateAvailable = false,
+                ExternalObservationBasis = isLinkedSource ? "external_version_unavailable" : "not_linked_source"
+            };
+            if (!isLinkedSource || !observeExternalSource || string.IsNullOrWhiteSpace(normalizedPath) || !File.Exists(normalizedPath)) return result;
+
+            object basicFileInfo = null;
             try
             {
-                MethodInfo method = document.GetType().GetMethod("GetDocumentVersion", BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null);
-                object version = method != null ? method.Invoke(document, null) : null;
-                if (version != null)
+                MethodInfo extract = typeof(BasicFileInfo).GetMethod("Extract", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(string) }, null);
+                basicFileInfo = extract != null ? extract.Invoke(null, new object[] { normalizedPath }) : null;
+                string externalToken = TryReadVersionToken(basicFileInfo);
+                if (!string.IsNullOrWhiteSpace(externalToken))
                 {
-                    Type type = version.GetType();
-                    foreach (string propertyName in new[] { "VersionGUID", "NumberOfSaves" })
-                    {
-                        PropertyInfo property = type.GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
-                        object value = property != null ? property.GetValue(version, null) : null;
-                        if (value != null) parts.Add(propertyName + "=" + value);
-                    }
-                    if (parts.Count == 0) parts.Add(version.ToString());
+                    result.ExternalSourceVersion = Sha256(externalToken);
+                    result.ExternalObservationBasis = "revit_basic_file_document_version";
+                    result.ExternalLinkUpdateAvailable = result.LoadedVersionAvailable &&
+                        !string.Equals(result.ExternalSourceVersion, result.LoadedVersion, StringComparison.Ordinal);
+                    return result;
                 }
+
+                FileInfo file = new FileInfo(normalizedPath);
+                result.ExternalSourceVersion = Sha256(
+                    "length=" + file.Length.ToString(CultureInfo.InvariantCulture) +
+                    "|lastWriteUtc=" + file.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture));
+                result.ExternalObservationBasis = "file_metadata_uncompared";
             }
             catch
             {
+                result.ExternalObservationBasis = "external_version_read_failed";
             }
+            finally
+            {
+                IDisposable disposable = basicFileInfo as IDisposable;
+                if (disposable != null) disposable.Dispose();
+            }
+            return result;
+        }
+
+        private static string TryReadVersionToken(object source)
+        {
+            if (source == null) return "";
             try
             {
-                if (!string.IsNullOrWhiteSpace(normalizedPath) && File.Exists(normalizedPath))
+                object version = source;
+                MethodInfo method = source.GetType().GetMethod("GetDocumentVersion", BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null);
+                if (method != null) version = method.Invoke(source, null);
+                else
                 {
-                    FileInfo file = new FileInfo(normalizedPath);
-                    parts.Add("length=" + file.Length.ToString(CultureInfo.InvariantCulture));
-                    parts.Add("lastWriteUtc=" + file.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture));
+                    PropertyInfo property = source.GetType().GetProperty("DocumentVersion", BindingFlags.Instance | BindingFlags.Public);
+                    if (property != null) version = property.GetValue(source, null);
                 }
+                if (version == null) return "";
+                Type type = version.GetType();
+                List<string> parts = new List<string>();
+                foreach (string propertyName in new[] { "VersionGUID", "NumberOfSaves" })
+                {
+                    PropertyInfo property = type.GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
+                    object value = property != null ? property.GetValue(version, null) : null;
+                    if (value != null) parts.Add(propertyName + "=" + Convert.ToString(value, CultureInfo.InvariantCulture));
+                }
+                return parts.Count > 0 ? string.Join("|", parts) : "";
             }
             catch
             {
+                return "";
             }
-            if (parts.Count == 0) parts.Add("loaded-version-unavailable");
-            return Sha256(string.Join("|", parts));
+        }
+
+        private sealed class LoadedVersionObservation
+        {
+            public string LoadedVersion;
+            public string LoadedVersionBasis;
+            public bool LoadedVersionAvailable;
+            public string ExternalSourceVersion;
+            public bool ExternalLinkUpdateAvailable;
+            public string ExternalObservationBasis;
         }
 
         private static string NormalizePath(string path)
@@ -798,7 +953,13 @@ namespace RevAgentCommandSet.Commands.Spatial
             XYZ point = sourceToHost.OfPoint(location.Point);
             envelopePoints.Add(point);
             object rotationRadians = null;
-            try { rotationRadians = location.Rotation; }
+            try
+            {
+                double sourceRotation = location.Rotation;
+                XYZ sourceDirection = new XYZ(Math.Cos(sourceRotation), Math.Sin(sourceRotation), 0.0);
+                XYZ hostDirection = sourceToHost.OfVector(sourceDirection);
+                rotationRadians = Math.Atan2(hostDirection.Y, hostDirection.X);
+            }
             catch { }
             return new Dictionary<string, object>
             {
@@ -1017,6 +1178,380 @@ namespace RevAgentCommandSet.Commands.Spatial
             return result;
         }
 
+        internal static string BuildDerivedNodeId(string derivedKind, string derivationRuleVersion, string scopeAnchor, IEnumerable<string> derivedFrom)
+        {
+            List<string> sources = (derivedFrom ?? Enumerable.Empty<string>())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(value => value, StringComparer.Ordinal)
+                .ToList();
+            string basis = (derivedKind ?? "") + "\u001f" + (derivationRuleVersion ?? "") + "\u001f" +
+                (scopeAnchor ?? "") + "\u001f" + string.Join("\u001f", sources);
+            return "derived:" + Sha256(basis);
+        }
+
+        internal static string BuildConnectorNodeId(string ownerNodeId, string connectorKey)
+        {
+            if (string.IsNullOrWhiteSpace(ownerNodeId)) throw new ArgumentException("Connector identity requires an owner node id.", "ownerNodeId");
+            if (string.IsNullOrWhiteSpace(connectorKey)) throw new ArgumentException("Connector identity requires a connector key.", "connectorKey");
+            return "connector:" + ownerNodeId + ":" + connectorKey;
+        }
+
+        internal static string BuildConnectorSignatureKey(string canonicalOwnerLocalSignature, int collisionOrdinal)
+        {
+            if (string.IsNullOrWhiteSpace(canonicalOwnerLocalSignature)) throw new ArgumentException("Connector signature cannot be empty.", "canonicalOwnerLocalSignature");
+            if (collisionOrdinal < 0) throw new ArgumentOutOfRangeException("collisionOrdinal");
+            return "signature:" + Sha256(canonicalOwnerLocalSignature) + ":" + collisionOrdinal.ToString(CultureInfo.InvariantCulture);
+        }
+
+        internal static Dictionary<string, object> BuildDerivedNodeRef(
+            string derivedKind,
+            string derivationRuleVersion,
+            string scopeAnchor,
+            IEnumerable<string> derivedFrom,
+            IEnumerable<Dictionary<string, object>> sourceRefs)
+        {
+            List<string> sources = (derivedFrom ?? Enumerable.Empty<string>())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(value => value, StringComparer.Ordinal)
+                .ToList();
+            return new Dictionary<string, object>
+            {
+                { "nodeId", BuildDerivedNodeId(derivedKind, derivationRuleVersion, scopeAnchor, sources) },
+                { "nodeKind", "derived" },
+                { "derivedRef", new Dictionary<string, object>
+                    {
+                        { "derivedKind", derivedKind },
+                        { "derivationRuleVersion", derivationRuleVersion },
+                        { "scopeAnchor", scopeAnchor },
+                        { "derivedFrom", sources }
+                    }
+                },
+                { "sourceRefs", (sourceRefs ?? Enumerable.Empty<Dictionary<string, object>>()).Cast<object>().ToList() }
+            };
+        }
+
+        internal static List<SpatialRow> BuildConnectorRows(
+            SpatialSource source,
+            Element owner,
+            string ownerNodeId,
+            DateTime deadlineUtc,
+            List<string> warnings,
+            out bool readFailed,
+            out bool deadlineExceeded)
+        {
+            List<ConnectorDescriptor> descriptors = ReadConnectorDescriptors(owner, source, deadlineUtc, warnings, out readFailed, out deadlineExceeded);
+            if (descriptors.Count == 0) return new List<SpatialRow>();
+            if (DateTime.UtcNow >= deadlineUtc)
+            {
+                deadlineExceeded = true;
+                return new List<SpatialRow>();
+            }
+
+            bool mepCurveOwner = owner is MEPCurve;
+            List<ConnectorDescriptor> endConnectors = descriptors
+                .Where(item => string.Equals(item.ConnectorType, "End", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(item => item.EndpointOrder)
+                .ThenBy(item => item.Signature, StringComparer.Ordinal)
+                .ToList();
+            Dictionary<ConnectorDescriptor, string> keys = new Dictionary<ConnectorDescriptor, string>();
+            if (mepCurveOwner)
+            {
+                for (int index = 0; index < endConnectors.Count; index++)
+                {
+                    keys[endConnectors[index]] = "mepcurve-end:" + index.ToString(CultureInfo.InvariantCulture);
+                }
+            }
+
+            HashSet<string> uniqueApiIds = new HashSet<string>(StringComparer.Ordinal);
+            HashSet<string> duplicateApiIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (ConnectorDescriptor descriptor in descriptors.Where(item => !string.IsNullOrWhiteSpace(item.ApiId)))
+            {
+                if (!uniqueApiIds.Add(descriptor.ApiId)) duplicateApiIds.Add(descriptor.ApiId);
+            }
+
+            foreach (IGrouping<string, ConnectorDescriptor> group in descriptors
+                .Where(item => !keys.ContainsKey(item))
+                .GroupBy(item => item.Signature, StringComparer.Ordinal)
+                .OrderBy(item => item.Key, StringComparer.Ordinal))
+            {
+                if (DateTime.UtcNow >= deadlineUtc)
+                {
+                    deadlineExceeded = true;
+                    return new List<SpatialRow>();
+                }
+                if (group.Count() > 1 && group
+                    .Select(item => (item.ApiId ?? "") + "|" + item.HostPointKey)
+                    .Distinct(StringComparer.Ordinal)
+                    .Count() < group.Count())
+                {
+                    warnings.Add("Ambiguous connector signature collision on owner " + StableUniqueId(owner) + "; collision ordinals are session-deterministic and future remapping must be treated as remove/add.");
+                }
+                int collisionOrdinal = 0;
+                foreach (ConnectorDescriptor descriptor in group
+                    .OrderBy(item => item.HostPointKey, StringComparer.Ordinal)
+                    .ThenBy(item => item.ApiId ?? "", StringComparer.Ordinal))
+                {
+                    if (!string.IsNullOrWhiteSpace(descriptor.ApiId) && !duplicateApiIds.Contains(descriptor.ApiId))
+                    {
+                        keys[descriptor] = "api-id:" + descriptor.ApiId;
+                    }
+                    else
+                    {
+                        keys[descriptor] = BuildConnectorSignatureKey(group.Key, collisionOrdinal);
+                        collisionOrdinal++;
+                    }
+                }
+            }
+
+            Dictionary<string, object> sourceRef = new Dictionary<string, object>
+            {
+                { "documentKey", source.Identity.DocumentKey },
+                { "documentSessionId", source.Identity.DocumentSessionId }
+            };
+            if (!source.IsHost) sourceRef["linkInstanceUniqueId"] = source.PlacementKey;
+            List<SpatialRow> rows = new List<SpatialRow>();
+            foreach (ConnectorDescriptor descriptor in descriptors.OrderBy(item => keys[item], StringComparer.Ordinal))
+            {
+                if (DateTime.UtcNow >= deadlineUtc)
+                {
+                    deadlineExceeded = true;
+                    return new List<SpatialRow>();
+                }
+                string connectorKey = keys[descriptor];
+                string nodeId = BuildConnectorNodeId(ownerNodeId, connectorKey);
+                Dictionary<string, object> connectorRef = new Dictionary<string, object>
+                {
+                    { "ownerNodeId", ownerNodeId },
+                    { "connectorKey", connectorKey },
+                    { "providerVersion", "phase1a-connector-key/1.0" }
+                };
+                List<object> sourceRefs = new List<object> { new Dictionary<string, object>(sourceRef) };
+                Dictionary<string, object> nodeRef = new Dictionary<string, object>
+                {
+                    { "nodeId", nodeId },
+                    { "nodeKind", "connector" },
+                    { "connectorRef", connectorRef },
+                    { "sourceRefs", sourceRefs }
+                };
+                Dictionary<string, object> geometry = new Dictionary<string, object>
+                {
+                    { "coordinateFrame", CoordinateFrame },
+                    { "lengthUnit", "mm" },
+                    { "aabb", new Dictionary<string, object> { { "min", descriptor.HostPointMm }, { "max", descriptor.HostPointMm } } },
+                    { "centerline", null },
+                    { "pointLocation", new Dictionary<string, object> { { "point", descriptor.HostPointMm }, { "rotationRadians", null } } },
+                    { "boundaryLoops", new List<object>() },
+                    { "basis", "revit_connector_origin" },
+                    { "precisionClass", "connector_origin" },
+                    { "verdictCapability", "context_only" }
+                };
+                if (descriptor.HostDirectionMm != null) geometry["direction"] = descriptor.HostDirectionMm;
+                geometry["geometryFingerprint"] = Sha256(CanonicalGeometryText(geometry));
+                Dictionary<string, object> payload = new Dictionary<string, object>
+                {
+                    { "nodeId", nodeId },
+                    { "nodeKind", "connector" },
+                    { "nodeRef", nodeRef },
+                    { "connectorRef", connectorRef },
+                    { "sourceRefs", sourceRefs },
+                    { "ownerNodeId", ownerNodeId },
+                    { "connectorKey", connectorKey },
+                    { "domain", descriptor.Domain },
+                    { "connectorType", descriptor.ConnectorType },
+                    { "shape", descriptor.Shape },
+                    { "isConnected", descriptor.IsConnected },
+                    { "geometry", geometry }
+                };
+                rows.Add(new SpatialRow
+                {
+                    SortKey = BuildSortKey(source.Identity.DocumentKey, source.PlacementKey, "connector", ownerNodeId + "|" + connectorKey),
+                    DocumentKey = source.Identity.DocumentKey,
+                    PlacementKey = source.PlacementKey,
+                    NodeKind = "connector",
+                    StableSourceIdentity = ownerNodeId + "|" + connectorKey,
+                    ElementId = owner.Id.GetIdValue(),
+                    IsNode = true,
+                    Payload = payload,
+                    PayloadFingerprint = Sha256(SerializePayload(payload))
+                });
+            }
+            return rows;
+        }
+
+        private static List<ConnectorDescriptor> ReadConnectorDescriptors(
+            Element owner,
+            SpatialSource source,
+            DateTime deadlineUtc,
+            IList<string> warnings,
+            out bool readFailed,
+            out bool deadlineExceeded)
+        {
+            readFailed = false;
+            deadlineExceeded = false;
+            ConnectorManager manager = null;
+            try
+            {
+                MEPCurve curve = owner as MEPCurve;
+                if (curve != null) manager = curve.ConnectorManager;
+                FamilyInstance instance = owner as FamilyInstance;
+                if (manager == null && instance != null && instance.MEPModel != null) manager = instance.MEPModel.ConnectorManager;
+            }
+            catch (Exception ex)
+            {
+                if (warnings != null) warnings.Add("Connector manager read failed for " + StableUniqueId(owner) + ": " + ex.GetType().Name + ".");
+                readFailed = true;
+                return new List<ConnectorDescriptor>();
+            }
+            if (manager == null) return new List<ConnectorDescriptor>();
+
+            List<ConnectorDescriptor> result = new List<ConnectorDescriptor>();
+            XYZ firstEndpoint = null;
+            try
+            {
+                LocationCurve location = owner.Location as LocationCurve;
+                if (location != null && location.Curve != null) firstEndpoint = location.Curve.GetEndPoint(0);
+            }
+            catch { }
+            try
+            {
+                foreach (Connector connector in manager.Connectors)
+                {
+                    if (DateTime.UtcNow >= deadlineUtc)
+                    {
+                        deadlineExceeded = true;
+                        return new List<ConnectorDescriptor>();
+                    }
+                    XYZ sourcePoint = connector.Origin;
+                    XYZ hostPoint = source.SourceToHost.OfPoint(sourcePoint);
+                    XYZ hostDirection = null;
+                    try
+                    {
+                        Transform coordinateSystem = connector.CoordinateSystem;
+                        if (coordinateSystem != null && coordinateSystem.BasisZ != null)
+                        {
+                            hostDirection = source.SourceToHost.OfVector(coordinateSystem.BasisZ);
+                        }
+                    }
+                    catch { }
+                    XYZ localPoint = ToOwnerLocalPoint(owner, sourcePoint);
+                    string signature = BuildConnectorSignature(owner, connector, localPoint);
+                    result.Add(new ConnectorDescriptor
+                    {
+                        ApiId = TryGetConnectorApiId(connector),
+                        Signature = signature,
+                        HostPointMm = MillimetrePoint(hostPoint),
+                        HostPointKey = string.Join(",", MillimetrePoint(hostPoint).Select(value => value.ToString("R", CultureInfo.InvariantCulture))),
+                        HostDirectionMm = hostDirection != null ? MillimetreVector(hostDirection) : null,
+                        EndpointOrder = firstEndpoint != null ? sourcePoint.DistanceTo(firstEndpoint) : double.MaxValue,
+                        Domain = SafeConnectorText(delegate { return connector.Domain.ToString(); }),
+                        ConnectorType = SafeConnectorText(delegate { return connector.ConnectorType.ToString(); }),
+                        Shape = SafeConnectorText(delegate { return connector.Shape.ToString(); }),
+                        IsConnected = SafeConnectorBool(delegate { return connector.IsConnected; })
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                if (warnings != null) warnings.Add("Connector enumeration failed for " + StableUniqueId(owner) + ": " + ex.GetType().Name + ".");
+                readFailed = true;
+                return new List<ConnectorDescriptor>();
+            }
+            return result;
+        }
+
+        private static XYZ ToOwnerLocalPoint(Element owner, XYZ sourcePoint)
+        {
+            try
+            {
+                FamilyInstance instance = owner as FamilyInstance;
+                if (instance != null) return instance.GetTransform().Inverse.OfPoint(sourcePoint);
+                LocationPoint point = owner.Location as LocationPoint;
+                if (point != null && point.Point != null) return sourcePoint - point.Point;
+            }
+            catch { }
+            return sourcePoint;
+        }
+
+        private static string BuildConnectorSignature(Element owner, Connector connector, XYZ localPoint)
+        {
+            List<string> parts = new List<string>
+            {
+                "domain=" + SafeConnectorText(delegate { return connector.Domain.ToString(); }),
+                "type=" + SafeConnectorText(delegate { return connector.ConnectorType.ToString(); }),
+                "shape=" + SafeConnectorText(delegate { return connector.Shape.ToString(); }),
+                "point=" + string.Join(",", MillimetrePoint(localPoint).Select(value => value.ToString("R", CultureInfo.InvariantCulture)))
+            };
+            try
+            {
+                Transform coordinateSystem = connector.CoordinateSystem;
+                if (coordinateSystem != null && coordinateSystem.BasisZ != null)
+                {
+                    XYZ localDirection = ToOwnerLocalVector(owner, coordinateSystem.BasisZ);
+                    parts.Add("direction=" + string.Join(",", MillimetreVector(localDirection).Select(value => value.ToString("R", CultureInfo.InvariantCulture))));
+                }
+            }
+            catch { }
+            return string.Join("|", parts);
+        }
+
+        private static XYZ ToOwnerLocalVector(Element owner, XYZ sourceVector)
+        {
+            try
+            {
+                FamilyInstance instance = owner as FamilyInstance;
+                if (instance != null) return instance.GetTransform().Inverse.OfVector(sourceVector);
+            }
+            catch { }
+            return sourceVector;
+        }
+
+        private static string TryGetConnectorApiId(Connector connector)
+        {
+            try
+            {
+                PropertyInfo property = connector.GetType().GetProperty("Id", BindingFlags.Instance | BindingFlags.Public);
+                object value = property != null ? property.GetValue(connector, null) : null;
+                return value != null ? Convert.ToString(value, CultureInfo.InvariantCulture) : null;
+            }
+            catch { return null; }
+        }
+
+        private static IList<double> MillimetreVector(XYZ vector)
+        {
+            if (vector == null) return null;
+            double length = vector.GetLength();
+            XYZ normalized = length > 1e-12 ? vector / length : vector;
+            return new[] { RoundMm(normalized.X), RoundMm(normalized.Y), RoundMm(normalized.Z) };
+        }
+
+        private static string SafeConnectorText(Func<string> reader)
+        {
+            try { return reader() ?? "unknown"; }
+            catch { return "unknown"; }
+        }
+
+        private static bool SafeConnectorBool(Func<bool> reader)
+        {
+            try { return reader(); }
+            catch { return false; }
+        }
+
+        private sealed class ConnectorDescriptor
+        {
+            public string ApiId;
+            public string Signature;
+            public IList<double> HostPointMm;
+            public string HostPointKey;
+            public IList<double> HostDirectionMm;
+            public double EndpointOrder;
+            public string Domain;
+            public string ConnectorType;
+            public string Shape;
+            public bool IsConnected;
+        }
+
         internal static string GetElementName(Element element)
         {
             try { return element.Name ?? ""; }
@@ -1124,12 +1659,12 @@ namespace RevAgentCommandSet.Commands.Spatial
 
         internal static string BuildScopeFingerprint(SpatialSnapshotRequest request, IList<LevelBand> bands, Dictionary<string, object> scope)
         {
-            Dictionary<string, object> emittedScopeSemantics = (scope ?? new Dictionary<string, object>())
-                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
             Dictionary<string, object> fingerprintBasis = new Dictionary<string, object>
             {
                 { "schemaMajor", 0 },
-                { "emittedScopeSemantics", emittedScopeSemantics },
+                { "hostDocumentKey", scope != null && scope.ContainsKey("hostDocumentKey") ? scope["hostDocumentKey"] : null },
+                { "requestedLevelUniqueIds", bands.Select(band => !string.IsNullOrWhiteSpace(band.UniqueId) ? band.UniqueId : "level-id:" + band.Id.ToString(CultureInfo.InvariantCulture)).Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal).ToList() },
+                { "levelScopeSemantics", "host_vertical_band" },
                 { "sourceScope", request.SourceScope },
                 { "requestedLinkInstanceIds", request.LinkInstanceIds.OrderBy(value => value).ToList() },
                 { "requestedLinkInstanceUniqueIds", request.LinkInstanceUniqueIds.OrderBy(value => value, StringComparer.Ordinal).ToList() },
@@ -1139,7 +1674,13 @@ namespace RevAgentCommandSet.Commands.Spatial
                 { "includeRoomsSpaces", request.IncludeRoomsSpaces },
                 { "includeLinkedObstructions", request.IncludeLinkedObstructions },
                 { "belowLevelMm", request.BelowLevelMm },
-                { "aboveLevelMm", request.AboveLevelMm }
+                { "aboveLevelMm", request.AboveLevelMm },
+                { "activePhase", scope != null && scope.ContainsKey("activePhase") ? scope["activePhase"] : null },
+                { "phaseSelectionPolicy", scope != null && scope.ContainsKey("phaseSelectionPolicy") ? scope["phaseSelectionPolicy"] : null },
+                { "designOptionsInEffect", scope != null && scope.ContainsKey("designOptionsInEffect") ? scope["designOptionsInEffect"] : null },
+                { "worksetVisibilityPolicy", scope != null && scope.ContainsKey("worksetVisibilityPolicy") ? scope["worksetVisibilityPolicy"] : null },
+                { "categoryRuleSetSelection", scope != null && scope.ContainsKey("categoryRuleSetSelection") ? scope["categoryRuleSetSelection"] : null },
+                { "coordinateFrame", CoordinateFrame }
             };
             return Sha256(CanonicalJson(fingerprintBasis));
         }

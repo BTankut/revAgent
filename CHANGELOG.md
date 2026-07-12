@@ -4,6 +4,34 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Fixed Spatial Phase 1a process-local document session tracking so transient
+  Revit `Document` wrappers for the same open linked document share one
+  `documentSessionId` and `DocumentChanged` journal across multiple placements.
+  Save As refreshes stable aliases without resetting the session, preventing a
+  reopened original path from inheriting the Save As session; successful close
+  retires all aliases so close/reopen and add-in restart still invalidate
+  liveness. Capture revision validation remains fail-closed.
+- Added the Spatial Context Engine Phase 1a truth-foundation implementation.
+  `capture_spatial_snapshot` now owns bounded native pagination in the runtime,
+  validates one SpatialSnapshot v0.2 page/hash/revision chain, discards
+  interrupted staging, and exposes a snapshot only after atomic commit to the
+  user-local versioned SQLite store. The store includes transactional
+  migration/recovery, retention, and R*Tree indexing; process-local
+  `DocumentChanged` sequence/journal evidence supplies `current`, `stale`, or
+  `unknown` liveness independently from extraction coverage. A guarded local
+  `spatial-store` preview/purge CLI supports operator maintenance, and spatial
+  database/artifact/acceptance paths reject UNC, mapped-network, unknown, and
+  unready Windows roots fail-closed. This phase does not add deterministic
+  spatial query, snapshot diff, clash screening, or live clash/clearance
+  verdict tools. The runtime tool surface is now `.42`.
+  Local targeted tests, payload freshness, `test-all`, and the protected-CI
+  equivalent `test-ci` received a final clean rerun on 2026-07-12. Live Revit
+  2022 Gate D passed on 2026-07-12 with stable repeat capture, shared-session
+  double-placement, connector/R*Tree/transform, concurrent-edit interruption,
+  direct `stale` post-edit liveness, performance, and close/reopen `unknown`
+  evidence. Protected delivery Gate E remains pending
+  under `docs/REVAGENT_SPATIAL_PHASE1A_ACCEPTANCE.md`; this entry does not mark
+  the roadmap phase accepted and no NAS publish was performed.
 - Clarified the `set_schedule_cells` dry-run change contract without breaking
   existing consumers. Change rows now separate the observed model value
   (`actualAfter`) from the requested post-commit projection (`projectedAfter`),
@@ -18,9 +46,9 @@ All notable revAgent workstation deployment changes are tracked here.
   host-band scope metadata, and pagination-independent `coverageStatus`.
   Every emitted node now requires transformed physical host-band overlap;
   linked Room/Space rows may be narrowed further by exact source Level while
-  linked obstructions remain physical-overlap evidence. The runtime tool surface
-  is now `.41`; durable/current capture and clash/clearance verdicts remain out
-  of scope.
+  linked obstructions remain physical-overlap evidence. At that Phase 0 gate,
+  the runtime tool surface moved to `.41`; durable/current capture and
+  clash/clearance verdicts remained out of scope.
 - Implemented Spatial Context Engine Phase 0: published the v0.1 identity,
   revision, snapshot, and cursor schemas; added the read-only native
   `extract_spatial_snapshot` command and one-page `capture_spatial_snapshot`

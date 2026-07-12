@@ -514,10 +514,16 @@ function Assert-RevAgentUserPackHardenedJsPayload {
         }
 
         if ($relativePackageRoot -eq "installer\runtime-mcp-server") {
-            foreach ($schemaName in @("element-ref", "node-ref", "source-revision", "cursor-envelope", "spatial-snapshot", "extraction-page")) {
-                $schemaPath = Join-Path $packageRootPath "schemas\spatial\v0.1\$schemaName.schema.json"
-                if (-not (Test-Path -LiteralPath $schemaPath -PathType Leaf)) {
-                    $issues.Add("$relativePackageRoot missing published Spatial Phase 0 schema $schemaName")
+            $spatialSchemaNamesByVersion = @{
+                "v0.1" = @("element-ref", "node-ref", "source-revision", "cursor-envelope", "spatial-snapshot", "extraction-page")
+                "v0.2" = @("element-ref", "node-ref", "source-revision", "cursor-envelope", "spatial-snapshot", "extraction-page", "work-cursor-envelope", "work-continuation")
+            }
+            foreach ($schemaVersion in @("v0.1", "v0.2")) {
+                foreach ($schemaName in $spatialSchemaNamesByVersion[$schemaVersion]) {
+                    $schemaPath = Join-Path $packageRootPath "schemas\spatial\$schemaVersion\$schemaName.schema.json"
+                    if (-not (Test-Path -LiteralPath $schemaPath -PathType Leaf)) {
+                        $issues.Add("$relativePackageRoot missing published spatial schema $schemaVersion/$schemaName")
+                    }
                 }
             }
         }

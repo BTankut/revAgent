@@ -14,6 +14,8 @@ namespace RevAgentPlugin.Core
 
         public Result OnStartup(UIControlledApplication application)
         {
+            SpatialChangeTracker.Instance.Subscribe(application.ControlledApplication);
+
             RibbonPanel mcpPanel = application.CreateRibbonPanel("revAgent");
 
             PushButtonData pushButtonData = new PushButtonData("ID_EXCMD_REVAGENT_INFO", "revAgent\r\nInfo",
@@ -31,6 +33,8 @@ namespace RevAgentPlugin.Core
 
         public Result OnShutdown(UIControlledApplication application)
         {
+            SpatialChangeTracker.Instance.Unsubscribe(application != null ? application.ControlledApplication : null);
+
             if (_uiControlledApplication != null)
             {
                 _uiControlledApplication.Idling -= OnIdling;

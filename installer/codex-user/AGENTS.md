@@ -59,15 +59,26 @@ Mandatory routing examples:
 - Exact schedule cell writes go through `set_schedule_cells`.
 - Row-text-driven schedule writes go through `set_schedule_cells_by_text`.
 - Element parameter writes go through `set_element_parameter`.
-- Phase 0 spatial extraction goes through `capture_spatial_snapshot` with an
-  explicit level scope and opaque-cursor continuation. It is non-atomic with
-  unknown liveness and cannot support current-state or clearance claims.
+- Phase 1a durable spatial capture goes through `capture_spatial_snapshot` with
+  an explicit level scope. The runtime owns opaque native pagination, validates
+  one v0.2 revision chain, stages it in the user-local versioned store, and
+  exposes a snapshot only after atomic commit. Check `committed`, `atomic`,
+  `liveness`, `partial`, and `coverageStatus` independently; atomic does not
+  mean complete, and stale/unknown cannot support current-state wording.
   The host Level is a vertical host-Z band, not exact linked Level membership.
   Every emitted node must physically overlap it after link transform; source
   Level identity never bypasses that test. Use placement-qualified
   `linkedSourceLevels` from `inspect_levels` for exact linked Room/Space scope;
-  linked obstructions remain physical-overlap evidence. Report `page.hasMore`
-  and `coverageStatus` separately.
+  linked obstructions remain physical-overlap evidence. Phase 1a provides no
+  deterministic spatial query, snapshot diff, clash screening, or live
+  clash/clearance verdict; do not infer them from stored geometry or current
+  liveness.
+- Spatial-store cleanup is local operator maintenance, not a Revit MCP task.
+  Use the same configured `node.exe` with
+  `%ProgramData%\DPE\revAgent\package\installer\runtime-mcp-server\build\index.js`.
+  Only an explicit user request authorizes it: preview one exact selector, then
+  repeat that selector with `spatial-store purge ... --confirm`. A nonzero exit,
+  warning, `partial=true`, or incomplete artifact cleanup is not complete.
 - When an exact host/linked Level name, id, link placement, or transformed host
   elevation is unknown, call read-only `inspect_levels` before spatial capture
   or raw Level/RevitLinkInstance loops. Use exact link instance selectors when

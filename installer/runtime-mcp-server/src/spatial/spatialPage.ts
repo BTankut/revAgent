@@ -2,9 +2,9 @@ import { validateSpatialExtractionPageContract } from "./spatialPageSchema.js";
 
 type JsonObject = Record<string, any>;
 
-export const SPATIAL_SNAPSHOT_SCHEMA_VERSION = "0.1";
+export const SPATIAL_SNAPSHOT_SCHEMA_VERSION = "0.2";
 export const SPATIAL_COORDINATE_FRAME = "host_internal_mm";
-export const SPATIAL_PAGE_CONTRACT_VERSION = "spatial-extraction-page.v0.1";
+export const SPATIAL_PAGE_CONTRACT_VERSION = "spatial-extraction-page.v0.2";
 
 const canonicalStopReasons = new Set([
     "completed",
@@ -122,6 +122,7 @@ function nonEmptyString(value: unknown) {
  */
 export function normalizeSpatialPage(payload: unknown, elapsedMs?: number): SpatialPageNormalization {
     const source = isObject(payload) ? payload : {};
+    const schemaVersion = String(readField(source, "schemaVersion") ?? "");
     const rawPage = readField(source, "page");
     const page = isObject(rawPage) ? rawPage : {};
     const nodesValue = readField(source, "nodes");
@@ -233,8 +234,8 @@ export function normalizeSpatialPage(payload: unknown, elapsedMs?: number): Spat
 
     const extractionPageValidation = validateSpatialExtractionPageContract(source);
     const errors: string[] = [...extractionPageValidation.errors];
-    if (readField(source, "schemaVersion") !== SPATIAL_SNAPSHOT_SCHEMA_VERSION) {
-        errors.push("schemaVersion must be 0.1");
+    if (schemaVersion !== "0.1" && schemaVersion !== SPATIAL_SNAPSHOT_SCHEMA_VERSION) {
+        errors.push(`schemaVersion must be 0.1 or ${SPATIAL_SNAPSHOT_SCHEMA_VERSION}`);
     }
     if (readField(source, "coordinateFrame") !== SPATIAL_COORDINATE_FRAME) {
         errors.push("coordinateFrame must be host_internal_mm");
@@ -277,11 +278,23 @@ export function normalizeSpatialPage(payload: unknown, elapsedMs?: number): Spat
     if (totalPayloadBytes === null || totalPayloadBytes < 0) {
         errors.push("payloadBytes must be a non-negative integer");
     }
-    if (readField(source, "liveness") !== "unknown") {
-        errors.push("Phase 0 liveness must be unknown");
-    }
-    if (readField(source, "atomic") !== false) {
-        errors.push("Phase 0 atomic must be false");
+    if (schemaVersion === "0.1") {
+        if (readField(source, "liveness") !== "unknown") {
+            errors.push("Phase 0 liveness must be unknown");
+        }
+        if (readField(source, "atomic") !== false) {
+            errors.push("Phase 0 atomic must be false");
+        }
+    } else if (schemaVersion === "0.2") {
+        if (readField(source, "liveness") !== "staging") {
+            errors.push("Phase 1a native transport page liveness must be staging");
+        }
+        if (readField(source, "atomic") !== false) {
+            errors.push("A Phase 1a native transport page is not the atomic store commit");
+        }
+        if (readField(source, "captureConsistency") !== "document_change_sequence_bound") {
+            errors.push("Phase 1a native transport page must be document_change_sequence_bound");
+        }
     }
     if (!nonEmptyString(readField(source, "revisionBasisCaveat"))) {
         errors.push("revisionBasisCaveat is required");
@@ -356,7 +369,7 @@ export function normalizeSpatialPage(payload: unknown, elapsedMs?: number): Spat
         errors.push("scanStoppedReason conflicts with pagination/coverage state");
     }
     normalized.contractValidation = {
-        version: SPATIAL_PAGE_CONTRACT_VERSION,
+        version: `spatial-extraction-page.v${schemaVersion || "unknown"}`,
         schemaId: extractionPageValidation.schemaId,
         valid: errors.length === 0,
         errors,

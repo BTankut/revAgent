@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/spatial/v0.2/source-revision.schema.json",
+  "title": "revAgent Spatial SourceRevision v0.2",
+  "description": "One host source or one resolved linked-model placement bound to a capture revision.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "documentKey",
+    "documentSessionId",
+    "loadedVersion",
+    "changeSequence",
+    "changeSequenceState",
+    "oldestRetainedSequence",
+    "trackerSessionId",
+    "sourceToHostTransform"
+  ],
+  "properties": {
+    "documentKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "documentSessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "loadedVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "changeSequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "changeSequenceState": {
+      "const": "tracked"
+    },
+    "oldestRetainedSequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Oldest sequence for which the bounded journal can still prove continuous history."
+    },
+    "trackerSessionId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Add-in process tracker identity; a change marks persisted liveness unknown."
+    },
+    "journalEntryCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "journalCapacity": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "journalTruncated": {
+      "type": "boolean"
+    },
+    "linkInstanceUniqueId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceToHostTransform": {
+      "$ref": "#/$defs/sourceToHostTransform"
+    },
+    "externalLinkUpdateAvailable": {
+      "type": "boolean"
+    },
+    "documentKeyResolution": {
+      "$ref": "#/$defs/documentKeyResolution"
+    }
+  },
+  "$defs": {
+    "sourceToHostTransform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "representation",
+        "fromFrame",
+        "toFrame",
+        "lengthUnit",
+        "matrix"
+      ],
+      "properties": {
+        "representation": {
+          "const": "affine_4x4_row_major"
+        },
+        "fromFrame": {
+          "const": "source_internal"
+        },
+        "toFrame": {
+          "const": "host_internal_mm"
+        },
+        "lengthUnit": {
+          "const": "mm"
+        },
+        "matrix": {
+          "type": "array",
+          "minItems": 16,
+          "maxItems": 16,
+          "items": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "documentKeyResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resolverVersion",
+        "basis",
+        "crossSessionComparable"
+      ],
+      "properties": {
+        "resolverVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "basis": {
+          "type": "string",
+          "enum": [
+            "cloud",
+            "workshared_central",
+            "saved_standalone",
+            "session_only"
+          ]
+        },
+        "crossSessionComparable": {
+          "type": "boolean"
+        },
+        "fallbackReason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

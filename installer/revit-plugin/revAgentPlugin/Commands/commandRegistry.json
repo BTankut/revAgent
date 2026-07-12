@@ -238,7 +238,22 @@
         "website": "https://www.revagent.app",
         "organization": "DPE"
       },
-      "description": "Extract a read-only, level-bounded Phase 0 spatial snapshot page with deterministic host/link identity and host-mm geometry evidence"
+      "description": "Extract a read-only, level-bounded Phase 1a revision-bound spatial snapshot page with deterministic host/link identity and host-mm geometry evidence"
+    },
+    {
+      "commandName": "get_spatial_change_state",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Read process-local spatial source change sequences and conservative current, stale, or unknown liveness without opening a transaction"
     },
     {
       "commandName": "open_existing_plan_for_element_level",

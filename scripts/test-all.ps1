@@ -41,6 +41,8 @@ try {
         Invoke-McpPackageNpmCi -PackageName $package.Name -PackageRoot $workCopy.PackageRoot -PackageRelativePath $package.Path
     }
 
+    $runtimePackageCopy = @($packageCopies | Where-Object { $_.Name -eq "runtime-mcp-server" }) | Select-Object -First 1
+    & (Join-Path $RepoRoot "scripts\test-updater-npm-dependencies.ps1") -RepoRoot $RepoRoot -RuntimePackageRoot $runtimePackageCopy.WorkCopy.PackageRoot
     & (Join-Path $RepoRoot "scripts\test-installer-smoke.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-distribution-integrity.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-license-seat.ps1") -RepoRoot $RepoRoot

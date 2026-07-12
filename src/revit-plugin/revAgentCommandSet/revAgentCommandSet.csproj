@@ -57,6 +57,13 @@
       <Reference Include="System.Net.Http" />
     </ItemGroup>
 
+    <ItemGroup>
+      <ProjectReference Include="..\revAgentPlugin\revAgentPlugin.csproj">
+        <ReferenceOutputAssembly>true</ReferenceOutputAssembly>
+        <Private>false</Private>
+      </ProjectReference>
+    </ItemGroup>
+
     <Target Name="DeployCommandSet" AfterTargets="Build" Condition="'$(RevAgentDeployCommandSet)' == 'true'">
         <PropertyGroup>
             <PluginAddInRoot>$(ProjectDir)..\revAgentPlugin\bin\AddIn $(RevitVersion) $(Configuration)\revAgentPlugin\</PluginAddInRoot>
