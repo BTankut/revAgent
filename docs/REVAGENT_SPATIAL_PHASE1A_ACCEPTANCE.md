@@ -1,13 +1,13 @@
 # revAgent Spatial Context Engine — Phase 1a Acceptance
 
-Status: implementation complete; Gates A-D passed by 2026-07-12; delivery Gate
-E pending.
+Status: Gates A-E passed; Phase 1a accepted on 2026-07-12; Phase 1b not
+started.
 
-This document defines the acceptance path for Phase 1a truth foundations only.
-It does not replace the historical Phase 0 acceptance record and does not mark
-Phase 1a complete in `REVAGENT_SPATIAL_CONTEXT_ENGINE_PLAN.md`. Record actual
-commands, versions, model scope, timings, and artifacts here only after each
-gate runs successfully.
+This document defines and records the accepted Phase 1a truth foundations only.
+It does not replace the historical Phase 0 acceptance record, and it does not
+authorize or imply any Phase 1b implementation. Actual commands, versions,
+model scope, timings, and artifacts are recorded here only after each gate runs
+successfully.
 
 ## Capability boundary under test
 
@@ -303,9 +303,46 @@ After Gates A-C pass and Gate D has the required acceptance evidence:
 Never publish from a topic branch, a dirty tree, a red CI run, or pending live
 acceptance evidence.
 
-Evidence status: pending. No commit, push, PR, protected remote CI, signed
-release build, deploy, or NAS publish was performed as part of the local
-implementation pass.
+Evidence status: passed on 2026-07-12.
+
+- Topic commit `3b1c03c1` was delivered through PR #217 and squash-merged to
+  protected `main` as
+  `45d4d8126d4819c3baa5d4422c42552ae3a397b4`. Engineering gates,
+  GitGuardian, and the xhigh Claude review gate passed. Protected `main` CI run
+  `29176710402` passed.
+- Automatic signed source-free build/validation run `29176710420` passed
+  without publishing. The separately approved manual run `29176890563` then
+  published the same protected-main payload to canonical NAS stable.
+- Stable `2026.07.12.532-45d4d812` identifies merge commit
+  `45d4d8126d4819c3baa5d4422c42552ae3a397b4`, release sequence
+  `20260712023442`, and ZIP SHA256
+  `6684A1269617BBD44348BFE7187462AFC624EF261DB78C855889B28DE2BECD1D`.
+  Active-release signed readiness returned `readyForEnforce=true` with key
+  `revagent-prod-rsa-2026q3`, no private material, and no source/developer
+  artifacts.
+- The DESKTOP-OKNV128 Revit 2022 pilot ran the freshly installed runtime
+  `2026.07.12.532-45d4d812`, tool surface
+  `revit-mcp-runtime-tools.42`, and passed the canonical live commandset smoke.
+  Durable smoke evidence is
+  `reports\rollout\live-smoke-latest.json` under the canonical NAS root.
+- The first closure audit correctly exposed nine outdated standard-user
+  workstations. NET01, MARINA, HAFIZE, and WS3 were reachable, updated through
+  their interactive user context, and independently reported the signed stable
+  version, sequence, ZIP hash, and `integrityState=verified`.
+- The operator explicitly accepted an open-workstations-only Phase 1a rollout
+  scope. Powered-off EMIN, OGUZHAN, OMER, SERDAR, and YASAR remain named as
+  pending normal scheduled stable uptake rather than being reported as updated.
+  The immutable scope record is
+  `C:\ProgramData\DPE\revAgentOps\rollout-readiness-phase1a-gate-e.json`
+  (SHA256
+  `08C345544770839DEFA13863FF403A97595F54B1C410D4B20909B1DC9953108F`).
+  Final closure snapshot
+  `C:\ProgramData\DPE\revAgentOps\readiness\rollout-readiness-20260712-062222.json`
+  (SHA256
+  `2B301CE857736269620494D386354792C83A8695BEE4210CCA1CE7FED2BFD1B0`)
+  returned `ready=true`, `actionRequiredCount=0`, four in-scope/current
+  workstations, verified live smoke, canonical channel roots, and compatibility
+  retirement readiness.
 
 ## Completion record
 
@@ -314,10 +351,12 @@ implementation pass.
 - Live identity/transform/liveness/concurrent-edit gate: passed on Revit 2022
   on 2026-07-12
 - Performance SLO evidence: passed on 2026-07-12
-- Protected PR/CI: pending
-- Signed build/validation: pending
-- Manual NAS publish: pending Gate E; never permitted before protected `main`
-  signed validation
+- Protected PR/CI: passed through PR #217 and main CI run `29176710402`
+- Signed build/validation: passed in run `29176710420`
+- Manual NAS publish: passed in separately approved run `29176890563`
+- Representative live smoke and rollout closure: passed for the explicit
+  open-workstations-only scope; five powered-off machines remain pending normal
+  scheduled uptake
 
-Phase 1a remains unaccepted until delivery Gate E is recorded with concrete
-evidence. Phase 1b work must not be inferred from this document.
+Phase 1a is accepted. Phase 1b has not started and is not authorized by this
+record.

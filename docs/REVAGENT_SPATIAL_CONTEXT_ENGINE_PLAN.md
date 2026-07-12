@@ -1,8 +1,8 @@
 # revAgent Spatial Context Engine Plan
 
-Status: codex_final; execution completed through Phase 0.
-Revision: v2.6 — Phase 1a implementation and live acceptance complete;
-protected delivery pending (2026-07-12).
+Status: codex_final; execution completed through Phase 1a.
+Revision: v2.7 — Phase 1a accepted after protected delivery and rollout
+closure (2026-07-12).
 Supersedes draft v2.1, v2, and the draft previously named
 `REVAGENT_SPATIAL_DESIGN_ENGINE_PLAN.md`.
 
@@ -639,14 +639,18 @@ Execution checkpoint (2026-07-12):
   identity, omission classification, and repeat-capture determinism were
   verified. The Phase 0 trust boundary remains `atomic=false` and
   `liveness=unknown`.
-- [ ] **Phase 1a — Truth foundations.** Implementation complete. Local payload,
+- [x] **Phase 1a — Truth foundations.** Completed and accepted. Local payload,
   targeted, aggregate, and protected-CI-equivalent Gates A-C received a final
   clean rerun on 2026-07-12. Revit 2022 live Gate D passed on 2026-07-12,
   including stable repeat capture, shared-session double placement,
   connector/R*Tree/transform
   evidence, concurrent-edit interruption, performance ceilings, and a
-  close/reopen `unknown` liveness recheck. Protected delivery Gate E remains
-  pending, so the phase is not yet accepted or marked complete.
+  close/reopen `unknown` liveness recheck. Protected delivery Gate E passed
+  through PR #217, protected-main CI, signed validation, the separately
+  approved NAS publish of `2026.07.12.532-45d4d812`, representative Revit 2022
+  smoke, and a zero-action closure audit for the operator-approved
+  open-workstations-only scope. The five powered-off workstations remain
+  explicitly pending normal scheduled uptake.
 - [ ] **Phase 1b — Deterministic queries + diff.** Not started.
 - [ ] **Phase 1c — Clash detection.** Not started.
 - [ ] **Phase 2a — Terminal placement (propose-only).** Not started.
@@ -730,6 +734,16 @@ numeric id guard
 
 ## Revision Record
 
+- v2.7 / `codex_final` (2026-07-12): Accepted Phase 1a after all five gates.
+  PR #217 merged to protected `main` as `45d4d812`; main CI and automatic
+  signed validation passed before the separately approved manual NAS publish.
+  Stable `2026.07.12.532-45d4d812` passed signed readiness and the canonical
+  DESKTOP-OKNV128 Revit 2022 smoke on tool surface `.42`. NET01, MARINA,
+  HAFIZE, and WS3 installed and verified the signed release. The operator
+  accepted those powered-on workstations as the Phase 1a rollout scope; EMIN,
+  OGUZHAN, OMER, SERDAR, and YASAR remain explicitly pending scheduled uptake.
+  The final scoped audit returned `ready=true` and
+  `actionRequiredCount=0`. Phase 1b remains unstarted.
 - v2.6 / `codex_final` (2026-07-12): Passed Phase 1a live Revit Gate D on an
   operator-approved disposable Revit 2022 scope. Two stable captures each
   committed 909 nodes with 606 connectors, zero omissions, shared-session
