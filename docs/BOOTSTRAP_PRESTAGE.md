@@ -404,6 +404,7 @@ $evidenceBytes = Read-VerifiedBytes $EvidenceSource $ExpectedEvidenceSha256 6553
 $evidence = ([Text.UTF8Encoding]::new($false, $true)).GetString($evidenceBytes) | ConvertFrom-Json
 if (-not [string]::Equals([string]$evidence.localBootstrapInstallerScript, $ExpectedInstallerSha256, [StringComparison]::OrdinalIgnoreCase)) { throw 'Installer hash does not match the independently verified evidence.' }
 $installerBytes = Read-VerifiedBytes (Join-Path $SourceRoot 'installer\nas\install-revagent-local-bootstrap.ps1') $ExpectedInstallerSha256 1048576
+$trustedKeysBytes = Read-VerifiedBytes $TrustedKeys ([string]$evidence.sources.trustedKeys) 65536
 $dpePath = Join-Path $ProgramDataRoot 'DPE'
 $dpeGuard = $null
 try {
@@ -423,7 +424,7 @@ try {
   Assert-DirectoryGuardPath $dpeGuard $dpe
 } finally { $dpeGuard.Handle.Dispose() }
 $prestage = New-ProtectedChild $product 'prestage'
-$stagedEvidence = Join-Path $prestage 'bootstrap-prestage-evidence.json'; $stagedInstaller = Join-Path $prestage 'install-revagent-local-bootstrap.ps1'
+$stagedEvidence = Join-Path $prestage 'bootstrap-prestage-evidence.json'; $stagedInstaller = Join-Path $prestage 'install-revagent-local-bootstrap.ps1'; $stagedTrustedKeys = Join-Path $prestage 'release-trusted-keys.json'
 function Set-AdminOnlyAcl([string]$Path) {
   $item = Get-Item -LiteralPath $Path -Force
   $acl = if ($item.PSIsContainer) { [Security.AccessControl.DirectorySecurity]::new() } else { [Security.AccessControl.FileSecurity]::new() }
@@ -435,18 +436,24 @@ function Set-AdminOnlyAcl([string]$Path) {
   if ($item.PSIsContainer) { ([IO.DirectoryInfo]$item).SetAccessControl($acl) } else { ([IO.FileInfo]$item).SetAccessControl($acl) }
 }
 Set-AdminOnlyAcl $prestage
-foreach ($path in @($stagedEvidence, $stagedInstaller)) {
+foreach ($path in @($stagedEvidence, $stagedInstaller, $stagedTrustedKeys)) {
   if (Test-Path -LiteralPath $path) { if (((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Refusing linked prestage leaf: $path" }; Remove-Item -LiteralPath $path -Force }
 }
-[IO.File]::WriteAllBytes($stagedEvidence, $evidenceBytes); [IO.File]::WriteAllBytes($stagedInstaller, $installerBytes)
-foreach ($path in @($stagedEvidence, $stagedInstaller)) { Set-AdminOnlyAcl $path }
+[IO.File]::WriteAllBytes($stagedEvidence, $evidenceBytes); [IO.File]::WriteAllBytes($stagedInstaller, $installerBytes); [IO.File]::WriteAllBytes($stagedTrustedKeys, $trustedKeysBytes)
+foreach ($path in @($stagedEvidence, $stagedInstaller, $stagedTrustedKeys)) { Set-AdminOnlyAcl $path }
 
 & $stagedInstaller -RepoRoot $SourceRoot -ReleaseRoot $ReleaseRoot `
-  -TrustedKeysPath $TrustedKeys -ExpectedHashesPath $stagedEvidence `
+  -TrustedKeysPath $stagedTrustedKeys -ExpectedHashesPath $stagedEvidence `
   -ConfirmIndependentlyAuthenticatedSource
 ```
 
 The legacy shared-`DPE` migration is a supervised, quiescent one-time boundary.
+The trusted-key bytes are hash-bound to the authenticated evidence before they
+are written under the protected local prestage root. The installer receives
+that single-link NTFS leaf instead of the UNC source because the local bootstrap
+hardlink guard intentionally fails closed when a filesystem cannot enumerate
+hardlinks.
+
 The primary handle is opened with `MAXIMUM_ALLOWED` and without
 `FILE_SHARE_DELETE`; a separate share-all handle verifies the path/object
 identity. The owner is changed first and the exact raw canonical DACL is then
