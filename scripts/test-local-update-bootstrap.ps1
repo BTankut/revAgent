@@ -377,6 +377,184 @@ try {
     Assert-True ([string]$aclFixtureResult.maliciousOwnerError -match "untrusted owner" -and [int]$aclFixtureResult.callsAfterMaliciousOwner -eq 1) "A product root with an untrusted owner reached ACL mutation."
     Assert-True ([string]$aclFixtureResult.linkError -match "filesystem link") "A product-root junction was not rejected before ACL mutation."
 
+    Write-Host "Test standalone prestage shared-ancestor ACL gate"
+    $prestageInstallerPath = Join-Path $RepoRoot "scripts\install-revagent-local-bootstrap.ps1"
+    $parseTokens = $null
+    $parseErrors = $null
+    $prestageAst = [Management.Automation.Language.Parser]::ParseFile($prestageInstallerPath, [ref]$parseTokens, [ref]$parseErrors)
+    Assert-True (@($parseErrors).Count -eq 0) "Standalone prestage installer did not parse for executable ACL-gate regression coverage."
+    $validatorAsts = @($prestageAst.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -in @('Assert-RevAgentPrestageAdminDirectory', 'Assert-RevAgentPrestageSharedAncestorSafe')
+            }, $true))
+    Assert-True ($validatorAsts.Count -eq 2) "Standalone prestage ACL validators could not be loaded for executable regression coverage."
+    $validatorModule = New-Module -ScriptBlock ([scriptblock]::Create((@($validatorAsts | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n")))
+    try {
+        $validatorResult = & $validatorModule {
+            param($FixturePath, $UntrustedSid)
+
+            $script:FixtureOwnerSid = 'S-1-5-32-544'
+            $script:FixtureRights = [Security.AccessControl.FileSystemRights]::Write
+            $script:FixtureProtected = $false
+            $script:FixtureAccessControlType = [Security.AccessControl.AccessControlType]::Allow
+            $script:NoLinksCheckCount = 0
+
+            function Assert-RevAgentPrestagePathNoLinks {
+                param([Parameter(Mandatory = $true)][string]$Path)
+                $script:NoLinksCheckCount++
+                return [IO.Path]::GetFullPath($Path)
+            }
+
+            function Get-Acl {
+                [CmdletBinding()]
+                param([Parameter(Mandatory = $true)][string]$LiteralPath)
+                $rule = [pscustomobject]@{
+                    AccessControlType = $script:FixtureAccessControlType
+                    IdentityReference = [Security.Principal.SecurityIdentifier]::new($UntrustedSid)
+                    FileSystemRights = $script:FixtureRights
+                    IsInherited = $true
+                    InheritanceFlags = [Security.AccessControl.InheritanceFlags]::ContainerInherit
+                    PropagationFlags = [Security.AccessControl.PropagationFlags]::None
+                }
+                $descriptor = [pscustomobject]@{
+                    AreAccessRulesProtected = $script:FixtureProtected
+                    FixtureOwnerSid = $script:FixtureOwnerSid
+                    FixtureRules = @($rule)
+                }
+                $descriptor | Add-Member -MemberType ScriptMethod -Name GetOwner -Value {
+                    param($TargetType)
+                    return [Security.Principal.SecurityIdentifier]::new([string]$this.FixtureOwnerSid)
+                }
+                $descriptor | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value {
+                    param($IncludeExplicit, $IncludeInherited, $TargetType)
+                    return @($this.FixtureRules)
+                }
+                return $descriptor
+            }
+
+            $safeSharedAccepted = $true
+            try { Assert-RevAgentPrestageSharedAncestorSafe -Path $FixturePath }
+            catch { $safeSharedAccepted = $false }
+
+            $strictError = $null
+            try { Assert-RevAgentPrestageAdminDirectory -Path $FixturePath }
+            catch { $strictError = [string]$_.Exception.Message }
+
+            $script:FixtureProtected = $true
+            $script:FixtureRights = [Security.AccessControl.FileSystemRights]::ReadAndExecute
+            $protectedReadAccepted = $true
+            try { Assert-RevAgentPrestageAdminDirectory -Path $FixturePath }
+            catch { $protectedReadAccepted = $false }
+            $script:FixtureRights = [Security.AccessControl.FileSystemRights]::Write
+            $strictWriteError = $null
+            try { Assert-RevAgentPrestageAdminDirectory -Path $FixturePath }
+            catch { $strictWriteError = [string]$_.Exception.Message }
+
+            $dangerErrors = @{}
+            foreach ($right in @(
+                    [Security.AccessControl.FileSystemRights]::Delete,
+                    [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
+                    [Security.AccessControl.FileSystemRights]::ChangePermissions,
+                    [Security.AccessControl.FileSystemRights]::TakeOwnership,
+                    [Security.AccessControl.FileSystemRights]::Modify,
+                    [Security.AccessControl.FileSystemRights]::FullControl)) {
+                $script:FixtureRights = $right
+                try { Assert-RevAgentPrestageSharedAncestorSafe -Path $FixturePath }
+                catch { $dangerErrors[[string]$right] = [string]$_.Exception.Message }
+            }
+
+            $script:FixtureRights = [Security.AccessControl.FileSystemRights]::Write
+            $script:FixtureOwnerSid = $UntrustedSid
+            $ownerError = $null
+            try { Assert-RevAgentPrestageSharedAncestorSafe -Path $FixturePath }
+            catch { $ownerError = [string]$_.Exception.Message }
+
+            $script:FixtureOwnerSid = 'S-1-5-32-544'
+            $script:FixtureRights = [Security.AccessControl.FileSystemRights]::FullControl
+            $script:FixtureAccessControlType = [Security.AccessControl.AccessControlType]::Deny
+            $denyAccepted = $true
+            try { Assert-RevAgentPrestageSharedAncestorSafe -Path $FixturePath }
+            catch { $denyAccepted = $false }
+
+            return [pscustomobject]@{
+                safeSharedAccepted = $safeSharedAccepted
+                strictError = $strictError
+                protectedReadAccepted = $protectedReadAccepted
+                strictWriteError = $strictWriteError
+                dangerErrors = $dangerErrors
+                ownerError = $ownerError
+                denyAccepted = $denyAccepted
+                noLinksCheckCount = $script:NoLinksCheckCount
+            }
+        } $aclFixtureShared ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+    }
+    finally { Remove-Module $validatorModule.Name -Force -ErrorAction SilentlyContinue }
+    Assert-True ([bool]$validatorResult.safeSharedAccepted) "Standalone prestage rejected a trusted, inheritance-enabled shared DPE ancestor with non-admin create/write access."
+    Assert-True ([string]$validatorResult.strictError -match 'owner/DACL is not protected') "Standalone prestage no longer keeps the revAgent product-root gate strictly inheritance-protected."
+    Assert-True ([bool]$validatorResult.protectedReadAccepted) "Standalone prestage misclassified the protected revAgent root's intentional non-admin read/execute grant as writable."
+    Assert-True ([string]$validatorResult.strictWriteError -match 'writable by a non-administrator') "Standalone prestage accepted a protected revAgent root with non-admin write access."
+    foreach ($rightName in @('Delete', 'DeleteSubdirectoriesAndFiles', 'ChangePermissions', 'TakeOwnership', 'Modify', 'FullControl')) {
+        Assert-True ([string]$validatorResult.dangerErrors[$rightName] -match 'delete/ACL/owner capability') "Standalone prestage shared-ancestor gate accepted dangerous non-admin right '$rightName'."
+    }
+    Assert-True ([string]$validatorResult.ownerError -match 'must be owned by SYSTEM or Administrators') "Standalone prestage shared-ancestor gate accepted an untrusted owner."
+    Assert-True ([bool]$validatorResult.denyAccepted) "Standalone prestage shared-ancestor gate misclassified a non-admin deny ACE as delegated capability."
+    Assert-True ([int]$validatorResult.noLinksCheckCount -ge 7) "Standalone prestage ACL validators did not retain the no-link path preflight."
+
+    $sharedAncestorJunctionTarget = Join-Path $temp 'shared-ancestor-junction-target'
+    $sharedAncestorJunction = Join-Path $temp 'shared-ancestor-junction'
+    New-Item -ItemType Directory -Path $sharedAncestorJunctionTarget -Force | Out-Null
+    New-Item -ItemType Junction -Path $sharedAncestorJunction -Target $sharedAncestorJunctionTarget | Out-Null
+    $linkValidatorAsts = @($prestageAst.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -in @('Assert-RevAgentPrestagePathNoLinks', 'Assert-RevAgentPrestageSharedAncestorSafe')
+            }, $true))
+    Assert-True ($linkValidatorAsts.Count -eq 2) "Standalone prestage no-link/shared-ancestor validators could not be loaded for executable junction coverage."
+    $linkValidatorModule = New-Module -ScriptBlock ([scriptblock]::Create((@($linkValidatorAsts | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n")))
+    $sharedJunctionError = $null
+    try {
+        try { & $linkValidatorModule { param($Path) Assert-RevAgentPrestageSharedAncestorSafe -Path $Path } $sharedAncestorJunction }
+        catch { $sharedJunctionError = [string]$_.Exception.Message }
+    }
+    finally {
+        Remove-Module $linkValidatorModule.Name -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $sharedAncestorJunction) { [IO.Directory]::Delete($sharedAncestorJunction) }
+    }
+    Assert-True ([string]$sharedJunctionError -match 'filesystem link/reparse component') "Standalone prestage shared-ancestor gate did not reject a DPE-style junction through its real no-link validator."
+
+    $parentAst = @($prestageAst.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-RevAgentPrestageParent'
+            }, $true))
+    Assert-True ($parentAst.Count -eq 1) "Standalone prestage parent resolver could not be loaded for executable routing coverage."
+    $parentModule = New-Module -ScriptBlock ([scriptblock]::Create($parentAst[0].Extent.Text))
+    try {
+        $parentRouting = & $parentModule {
+            $script:SharedCalls = @()
+            $script:AdminCalls = @()
+            function Assert-RevAgentPrestagePathNoLinks { param([string]$Path) return [IO.Path]::GetFullPath($Path) }
+            function Test-Path { [CmdletBinding()] param([string]$LiteralPath) return $true }
+            function Assert-RevAgentPrestageSharedAncestorSafe { param([string]$Path) $script:SharedCalls += [IO.Path]::GetFullPath($Path) }
+            function Assert-RevAgentPrestageAdminDirectory { param([string]$Path) $script:AdminCalls += [IO.Path]::GetFullPath($Path) }
+            $common = [IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)).TrimEnd('\')
+            $expectedShared = Join-Path $common 'DPE'
+            $expectedProduct = Join-Path $expectedShared 'revAgent'
+            $resolved = Get-RevAgentPrestageParent -BootstrapPath (Join-Path $expectedProduct 'bootstrap')
+            [pscustomobject]@{
+                resolved = $resolved
+                expectedShared = $expectedShared
+                expectedProduct = $expectedProduct
+                sharedCalls = @($script:SharedCalls)
+                adminCalls = @($script:AdminCalls)
+            }
+        }
+    }
+    finally { Remove-Module $parentModule.Name -Force -ErrorAction SilentlyContinue }
+    Assert-True ($parentRouting.sharedCalls.Count -eq 1 -and [string]::Equals([string]$parentRouting.sharedCalls[0], [string]$parentRouting.expectedShared, [StringComparison]::OrdinalIgnoreCase)) "Standalone prestage parent resolver did not route only the shared DPE ancestor through shared-ancestor validation."
+    Assert-True ($parentRouting.adminCalls.Count -eq 1 -and [string]::Equals([string]$parentRouting.adminCalls[0], [string]$parentRouting.expectedProduct, [StringComparison]::OrdinalIgnoreCase)) "Standalone prestage parent resolver did not retain strict validation for the revAgent product root."
+    Assert-True ([string]::Equals([string]$parentRouting.resolved, [string]$parentRouting.expectedProduct, [StringComparison]::OrdinalIgnoreCase)) "Standalone prestage parent resolver returned an unexpected product root."
+
     $prestageDocText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "docs\BOOTSTRAP_PRESTAGE.md")
     $productHardenIndex = $prestageDocText.IndexOf('Set-ProtectedProductRootAcl $productPath', [StringComparison]::Ordinal)
     $prestageCreateIndex = $prestageDocText.IndexOf("New-ProtectedChild `$product 'prestage'", [StringComparison]::Ordinal)

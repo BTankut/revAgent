@@ -350,11 +350,47 @@ function Assert-RevAgentPrestageAdminDirectory {
     if ($ownerSid -notin @("S-1-5-18", "S-1-5-32-544") -or -not $acl.AreAccessRulesProtected) {
         throw "bootstrap_parent_not_protected: prestage directory owner/DACL is not protected: $($item.FullName)"
     }
-    $writeMask = [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::Modify -bor [Security.AccessControl.FileSystemRights]::FullControl -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
+    # Use atomic mutation bits. Modify/FullControl are aggregate values that
+    # also contain read/execute bits and would misclassify an intentional
+    # BUILTIN\Users ReadAndExecute grant as writable.
+    $writeMask = [Security.AccessControl.FileSystemRights]::Write -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
     foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
         $sid = [string]$rule.IdentityReference.Value
         if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and $sid -notin @("S-1-5-18", "S-1-5-32-544") -and (($rule.FileSystemRights -band $writeMask) -ne 0)) {
             throw "bootstrap_parent_not_protected: prestage directory is writable by a non-administrator principal. path=$($item.FullName) principal=$sid"
+        }
+    }
+}
+
+function Assert-RevAgentPrestageSharedAncestorSafe {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    [void](Assert-RevAgentPrestagePathNoLinks -Path $Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer) { throw "bootstrap_parent_not_protected: shared prestage ancestor is not a directory: $Path" }
+    $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+    $ownerSid = [string]$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($ownerSid -notin @("S-1-5-18", "S-1-5-32-544")) {
+        throw "bootstrap_parent_not_protected: shared prestage ancestor must be owned by SYSTEM or Administrators: $($item.FullName)"
+    }
+
+    # DPE is a shared product ancestor and can intentionally inherit/create
+    # access. It must not delegate deletion/rename of an existing child or
+    # ownership/DACL changes to a non-administrator principal.
+    $dangerousMask = [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        $sid = [string]$rule.IdentityReference.Value
+        if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            $sid -notin @("S-1-5-18", "S-1-5-32-544") -and
+            (($rule.FileSystemRights -band $dangerousMask) -ne 0)) {
+            throw "bootstrap_parent_not_protected: shared prestage ancestor grants delete/ACL/owner capability to a non-administrator principal. path=$($item.FullName) principal=$sid rights=$($rule.FileSystemRights)"
         }
     }
 }
@@ -379,7 +415,12 @@ function Get-RevAgentPrestageParent {
         if (-not (Test-Path -LiteralPath $candidate)) {
             [void]([IO.DirectoryInfo]::new($cursor).CreateSubdirectory($name, (New-RevAgentPrestageAdminDirectorySecurity)))
         }
-        Assert-RevAgentPrestageAdminDirectory -Path $candidate
+        if ([string]::Equals($name, "DPE", [StringComparison]::Ordinal)) {
+            Assert-RevAgentPrestageSharedAncestorSafe -Path $candidate
+        }
+        else {
+            Assert-RevAgentPrestageAdminDirectory -Path $candidate
+        }
         $cursor = $candidate
     }
     if (-not [string]::Equals([IO.Path]::GetFullPath($parentPath).TrimEnd("\"), [IO.Path]::GetFullPath($cursor).TrimEnd("\"), [StringComparison]::OrdinalIgnoreCase)) {
