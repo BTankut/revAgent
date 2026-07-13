@@ -165,6 +165,50 @@ jobs:
             Start-Sleep -Seconds 15
           }
 
+      - name: Download and verify pinned bundled Node.js MSI
+        id: node-msi
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $nodeMsiUri = "https://nodejs.org/dist/v24.14.1/node-v24.14.1-x64.msi"
+          $expectedSha256 = "FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231B51D78ABE7852D4EC"
+          [long]$expectedSize = 32387072
+          $expectedSignerSubject = "CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US"
+          $downloadRoot = Join-Path $env:RUNNER_TEMP ("revagent-node-msi-{0}-{1}" -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT)
+          if (Test-Path -LiteralPath $downloadRoot) {
+            throw "Job-unique Node.js MSI download root already exists; refusing cleanup or reuse: $downloadRoot"
+          }
+          $null = New-Item -ItemType Directory -Path $downloadRoot -ErrorAction Stop
+          $nodeMsiPath = Join-Path $downloadRoot "node-v24.14.1-x64.msi"
+
+          Invoke-WebRequest -Uri $nodeMsiUri -OutFile $nodeMsiPath -UseBasicParsing
+
+          $nodeMsiItem = Get-Item -LiteralPath $nodeMsiPath -Force -ErrorAction Stop
+          if (-not [string]::Equals($nodeMsiItem.FullName, [System.IO.Path]::GetFullPath($nodeMsiPath), [System.StringComparison]::OrdinalIgnoreCase) -or
+              ($nodeMsiItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+              -not [string]::IsNullOrWhiteSpace([string]$nodeMsiItem.LinkType)) {
+            throw "Downloaded Node.js MSI is not the exact ordinary file that was requested: $nodeMsiPath"
+          }
+          if ([long]$nodeMsiItem.Length -ne $expectedSize) {
+            throw "Downloaded Node.js MSI size mismatch. expected=$expectedSize actual=$($nodeMsiItem.Length)"
+          }
+
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeMsiPath -ErrorAction Stop).Hash
+          if (-not [string]::Equals($actualSha256, $expectedSha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Downloaded Node.js MSI SHA-256 mismatch. expected=$expectedSha256 actual=$actualSha256"
+          }
+
+          $signature = Get-AuthenticodeSignature -LiteralPath $nodeMsiPath
+          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+              $null -eq $signature.SignerCertificate -or
+              -not [string]::Equals([string]$signature.SignerCertificate.Subject, $expectedSignerSubject, [System.StringComparison]::Ordinal)) {
+            $actualSubject = if ($null -eq $signature.SignerCertificate) { "<missing>" } else { [string]$signature.SignerCertificate.Subject }
+            throw "Downloaded Node.js MSI Authenticode identity mismatch. status=$($signature.Status) expectedSubject='$expectedSignerSubject' actualSubject='$actualSubject'"
+          }
+
+          "node_msi_path=$nodeMsiPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: Build and validate signed release root
         id: build
         shell: pwsh
@@ -178,6 +222,7 @@ jobs:
           REVAGENT_CD_RELEASE_IDENTITY: ${{ github.event_name == 'workflow_dispatch' && inputs.release_identity || 'revAgent' }}
           REVAGENT_CD_PUBLISH_STABLE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_nas || false }}
           REVAGENT_CD_PUBLISH_PILOT: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_pilot || false }}
+          REVAGENT_NODE_MSI_PATH: ${{ steps.node-msi.outputs.node_msi_path }}
         run: |
           $ErrorActionPreference = "Stop"
           foreach ($name in @("REVAGENT_RELEASE_SIGNING_PRIVATE_KEY_PATH", "REVAGENT_RELEASE_SIGNING_KEY_ID", "REVAGENT_TRUSTED_RELEASE_KEYS_PATH")) {
@@ -211,6 +256,7 @@ jobs:
             SigningPrivateKeyPath = $env:REVAGENT_RELEASE_SIGNING_PRIVATE_KEY_PATH
             SigningKeyId = $env:REVAGENT_RELEASE_SIGNING_KEY_ID
             TrustedKeysPath = $env:REVAGENT_TRUSTED_RELEASE_KEYS_PATH
+            NodeMsiPath = $env:REVAGENT_NODE_MSI_PATH
             ReleaseSequence = $releaseSequence
             MinimumAcceptedReleaseSequence = $minimumAcceptedReleaseSequence
             ReleaseAppId = $releaseIdentity

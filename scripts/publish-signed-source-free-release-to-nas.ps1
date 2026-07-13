@@ -1288,7 +1288,9 @@ function Get-RevAgentSignedStableIdentity {
     $hasSignature = Test-Path -LiteralPath $SignaturePath -PathType Leaf
     if (-not $hasChannel -and -not $hasSignature) { return [pscustomobject][ordered]@{ exists = $false; artifact = $null; readiness = $null } }
     if (-not $hasChannel -or -not $hasSignature) { throw 'Current NAS stable channel is a partial/unsigned pair; refusing publish.' }
-    $readiness = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') -ReleaseRoot $ReleaseRoot -ChannelManifestPath $ChannelPath -TrustedKeysPath $TrustedKeysPath -ArtifactScanScope activeRelease -RepoRoot $RepoRoot
+    # This helper is used only for an already-active destination channel. The
+    # hidden transition allowance is never passed to candidate/source readiness.
+    $readiness = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') -ReleaseRoot $ReleaseRoot -ChannelManifestPath $ChannelPath -TrustedKeysPath $TrustedKeysPath -ArtifactScanScope activeRelease -AllowTestSigningIdentity:$AllowTestRoot -AllowLegacyMissingNodeMsi -RepoRoot $RepoRoot
     if (-not [bool]$readiness.success) { throw 'Current NAS stable channel failed signed readiness; refusing publish.' }
     return [pscustomobject][ordered]@{ exists = $true; artifact = (Get-RevAgentSignedArtifactIdentity -ReleaseRoot $ReleaseRoot -ChannelPath $ChannelPath -ChannelSignaturePath $SignaturePath); readiness = $readiness }
 }
@@ -1374,6 +1376,7 @@ $sourceReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness
     -ReleaseRoot $SourceReleaseRoot `
     -ChannelManifestPath $sourceChannelPath `
     -TrustedKeysPath $TrustedKeysPath `
+    -AllowTestSigningIdentity:$AllowTestRoot `
     -RepoRoot $RepoRoot
 if (-not [bool]$sourceReadiness.success) {
     throw "Source signed release root failed readiness verification."
@@ -1762,6 +1765,7 @@ try {
         -ReleaseRoot $SourceReleaseRoot `
         -ChannelManifestPath $sourceChannelPath `
         -TrustedKeysPath $TrustedKeysPath `
+        -AllowTestSigningIdentity:$AllowTestRoot `
         -RepoRoot $RepoRoot
     if (-not [bool]$lockedSourceReadiness.success) {
         throw 'Exact locked source signed set failed readiness verification.'

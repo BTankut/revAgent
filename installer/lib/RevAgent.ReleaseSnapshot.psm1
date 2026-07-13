@@ -5,6 +5,7 @@ $script:RevAgentProductionKeyFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2
 $script:RevAgentIntegrityModuleSha256 = 'DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E'
 $script:RevAgentNodeMsiName = 'node-v24.14.1-x64.msi'
 $script:RevAgentNodeMsiSha256 = 'FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231B51D78ABE7852D4EC'
+$script:RevAgentNodeMsiSizeBytes = [long]32387072
 $script:RevAgentNodeMsiSignerSubject = 'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US'
 
 if (-not ('RevAgent.ReleaseSnapshotNative' -as [type])) {
@@ -200,6 +201,71 @@ function Resolve-RevAgentSnapshotRelativePath {
         throw "Signed release path escaped its release root: $resolved"
     }
     return $resolved
+}
+
+function Get-RevAgentSignedNodeMsiMetadata {
+    param(
+        [Parameter(Mandatory = $true)][object]$Manifest,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$ReleaseRoot,
+        [switch]$AllowTestRoot
+    )
+
+    $externalProperty = $Manifest.PSObject.Properties['externalDependencies']
+    $nodeProperty = if ($null -ne $externalProperty -and $null -ne $externalProperty.Value) { $externalProperty.Value.PSObject.Properties['nodeMsi'] } else { $null }
+    if ($null -eq $nodeProperty -or $null -eq $nodeProperty.Value) {
+        throw 'Signed release manifest is missing externalDependencies.nodeMsi.'
+    }
+    $metadata = $nodeProperty.Value
+    if ([int]$metadata.schemaVersion -ne 1) { throw 'Signed Node.js MSI metadata requires schemaVersion 1.' }
+
+    $relativePath = ([string]$metadata.relativePath).Replace('/', '\')
+    $expectedRelativePath = "external\$($script:RevAgentNodeMsiName)"
+    if (-not [string]::Equals($relativePath, $expectedRelativePath, [StringComparison]::Ordinal)) {
+        throw "Signed Node.js MSI path must be the exact release-owned sidecar path '$expectedRelativePath'. actual='$relativePath'"
+    }
+    if ([IO.Path]::IsPathRooted($relativePath) -or $relativePath.IndexOf(':') -ge 0 -or @($relativePath.Split('\') | Where-Object { $_ -eq '..' -or $_ -eq '.' }).Count -gt 0) {
+        throw "Signed Node.js MSI path is not a canonical relative path: '$relativePath'"
+    }
+
+    $manifestDirectory = [IO.Path]::GetFullPath((Split-Path -Parent $ManifestPath)).TrimEnd('\')
+    if (-not (Test-RevAgentSnapshotPathUnderRoot -Path $manifestDirectory -Root $ReleaseRoot)) {
+        throw "Signed release manifest directory escaped the release root: $manifestDirectory"
+    }
+    $nodePath = Resolve-RevAgentSnapshotRelativePath -RelativePath $relativePath -BaseDirectory $manifestDirectory -Root $manifestDirectory
+    $expectedPath = [IO.Path]::GetFullPath((Join-Path $manifestDirectory $expectedRelativePath))
+    if (-not [string]::Equals($nodePath, $expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Signed Node.js MSI did not resolve to the exact versioned release sidecar. expected=$expectedPath actual=$nodePath"
+    }
+
+    $sha256 = ([string]$metadata.sha256).Trim().ToUpperInvariant()
+    [long]$sizeBytes = 0
+    if ($sha256 -cnotmatch '^[A-F0-9]{64}$' -or -not [long]::TryParse([string]$metadata.sizeBytes, [ref]$sizeBytes) -or $sizeBytes -lt 1 -or $sizeBytes -gt 268435456) {
+        throw 'Signed Node.js MSI hash/size metadata is invalid.'
+    }
+    $signerSubject = [string]$metadata.signerSubject
+    $authenticodeStatus = [string]$metadata.authenticodeStatus
+    if (-not $AllowTestRoot) {
+        if (-not [string]::Equals($sha256, $script:RevAgentNodeMsiSha256, [StringComparison]::Ordinal) -or
+            $sizeBytes -ne $script:RevAgentNodeMsiSizeBytes -or
+            -not [string]::Equals($signerSubject, $script:RevAgentNodeMsiSignerSubject, [StringComparison]::Ordinal) -or
+            -not [string]::Equals($authenticodeStatus, 'Valid', [StringComparison]::Ordinal)) {
+            throw 'Signed Node.js MSI metadata does not match the pinned production asset identity.'
+        }
+    }
+    elseif ([string]::IsNullOrWhiteSpace($signerSubject) -or [string]::IsNullOrWhiteSpace($authenticodeStatus)) {
+        throw 'Test-only signed Node.js MSI metadata must still state signer/status evidence.'
+    }
+
+    return [pscustomobject][ordered]@{
+        schemaVersion = 1
+        relativePath = $expectedRelativePath
+        path = $nodePath
+        sha256 = $sha256
+        sizeBytes = $sizeBytes
+        signerSubject = $signerSubject
+        authenticodeStatus = $authenticodeStatus
+    }
 }
 
 function Assert-RevAgentSignedChannelPolicy {
@@ -413,6 +479,12 @@ function Get-RevAgentVerifiedReleaseSet {
             $locks.Add([IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
         }
         $manifestDocument = Read-RevAgentSnapshotLockedJson -Stream $locks[2] -Path $manifestPath -MaxBytes 4194304
+        $nodeMsi = Get-RevAgentSignedNodeMsiMetadata -Manifest $manifestDocument -ManifestPath $manifestPath -ReleaseRoot $root -AllowTestRoot:$AllowTestRoot
+        [void](Assert-RevAgentSnapshotPathNoLinks -Path $nodeMsi.path -StopRoot (Split-Path -Parent $manifestPath) -RequireLeaf)
+        $locks.Add([IO.FileStream]::new([string]$nodeMsi.path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
+        if ([RevAgent.ReleaseSnapshotNative]::GetLinkCount($locks[5].SafeFileHandle) -ne 1) {
+            throw "Signed Node.js MSI sidecar must have exactly one hardlink reference: $($nodeMsi.path)"
+        }
         $trust = Assert-RevAgentSnapshotTrustInputs -TrustedKeysPath $TrustedKeysPath -IntegrityModulePath $IntegrityModulePath -AllowTestRoot:$AllowTestRoot
         $integrityModule = Import-Module $IntegrityModulePath -Force -PassThru
         $integrityCommand = Get-Command ("{0}\Test-RevAgentReleaseDistributionIntegrity" -f $integrityModule.Name) -ErrorAction Stop
@@ -429,6 +501,7 @@ function Get-RevAgentVerifiedReleaseSet {
             releaseManifest = Get-RevAgentSnapshotLockedStreamSha256 -Stream $locks[2]
             releaseManifestSignature = Get-RevAgentSnapshotLockedStreamSha256 -Stream $locks[3]
             package = Get-RevAgentSnapshotLockedStreamSha256 -Stream $locks[4]
+            nodeMsi = Get-RevAgentSnapshotLockedStreamSha256 -Stream $locks[5]
         }
         $packageHash = [string]$signedSetSha256.package
         $expectedPackageHash = [string]$channelDocument.sha256
@@ -442,6 +515,18 @@ function Get-RevAgentVerifiedReleaseSet {
         if ($manifestDocument.package.PSObject.Properties['sizeBytes'] -and [long]$manifestDocument.package.sizeBytes -ne $packageSizeBytes) {
             throw "Signed release package size mismatch. expected=$($manifestDocument.package.sizeBytes) actual=$packageSizeBytes"
         }
+        if (-not [string]::Equals([string]$signedSetSha256.nodeMsi, [string]$nodeMsi.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Signed Node.js MSI SHA-256 mismatch. expected=$($nodeMsi.sha256) actual=$($signedSetSha256.nodeMsi)"
+        }
+        if ([long]$locks[5].Length -ne [long]$nodeMsi.sizeBytes) {
+            throw "Signed Node.js MSI size mismatch. expected=$($nodeMsi.sizeBytes) actual=$($locks[5].Length)"
+        }
+        $nodeValidation = Test-RevAgentNodeMsi -Path $nodeMsi.path -ExpectedSha256 $nodeMsi.sha256 -ExpectedSizeBytes $nodeMsi.sizeBytes -AllowTestRoot:$AllowTestRoot
+        if (-not $AllowTestRoot -and
+            (-not [string]::Equals([string]$nodeValidation.signerSubject, [string]$nodeMsi.signerSubject, [StringComparison]::Ordinal) -or
+                -not [string]::Equals([string]$nodeValidation.authenticodeStatus, [string]$nodeMsi.authenticodeStatus, [StringComparison]::Ordinal))) {
+            throw 'Signed Node.js MSI Authenticode evidence does not match the signed manifest metadata.'
+        }
         return [pscustomobject][ordered]@{
             root = $root
             channelPath = $channelPath
@@ -449,6 +534,7 @@ function Get-RevAgentVerifiedReleaseSet {
             manifestPath = $manifestPath
             manifestSignaturePath = $manifestSignaturePath
             packagePath = $packagePath
+            nodeMsiPath = [string]$nodeMsi.path
             channel = $channelDocument
             manifest = $manifestDocument
             integrity = $integrity
@@ -457,6 +543,7 @@ function Get-RevAgentVerifiedReleaseSet {
             signedSetSha256 = $signedSetSha256
             packageSha256 = $packageHash
             packageSizeBytes = $packageSizeBytes
+            nodeMsi = $nodeValidation
         }
     }
     finally {
@@ -468,26 +555,43 @@ function Test-RevAgentNodeMsi {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [string]$ExpectedSha256 = $script:RevAgentNodeMsiSha256,
+        [long]$ExpectedSizeBytes = 0,
         [switch]$AllowTestRoot
     )
-    $actualHash = Get-RevAgentSnapshotFileSha256 -Path $Path
-    if (-not [string]::Equals($actualHash, $ExpectedSha256, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Bundled Node.js MSI hash mismatch. expected=$ExpectedSha256 actual=$actualHash"
-    }
-    $signature = $null
-    if (-not $AllowTestRoot) {
-        $signature = Get-AuthenticodeSignature -LiteralPath $Path
-        if ($null -eq $signature -or $signature.Status -ne [Management.Automation.SignatureStatus]::Valid) {
-            throw "Bundled Node.js MSI signature is not valid: $Path"
+
+    $fullPath = Assert-RevAgentSnapshotPathNoLinks -Path $Path -RequireLeaf
+    $stream = [IO.FileStream]::new($fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ([RevAgent.ReleaseSnapshotNative]::GetLinkCount($stream.SafeFileHandle) -ne 1) {
+            throw "Bundled Node.js MSI must have exactly one hardlink reference: $fullPath"
         }
-        if (-not [string]::Equals([string]$signature.SignerCertificate.Subject, $script:RevAgentNodeMsiSignerSubject, [StringComparison]::Ordinal)) {
-            throw "Bundled Node.js MSI signer mismatch. expected='$($script:RevAgentNodeMsiSignerSubject)' actual='$($signature.SignerCertificate.Subject)'"
+        if ($ExpectedSizeBytes -gt 0 -and $stream.Length -ne $ExpectedSizeBytes) {
+            throw "Bundled Node.js MSI size mismatch. expected=$ExpectedSizeBytes actual=$($stream.Length)"
+        }
+        $actualHash = Get-RevAgentSnapshotLockedStreamSha256 -Stream $stream
+        if (-not [string]::Equals($actualHash, $ExpectedSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Bundled Node.js MSI hash mismatch. expected=$ExpectedSha256 actual=$actualHash"
+        }
+        $signature = $null
+        if (-not $AllowTestRoot) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $fullPath
+            if ($null -eq $signature -or $signature.Status -ne [Management.Automation.SignatureStatus]::Valid) {
+                throw "Bundled Node.js MSI signature is not valid: $fullPath"
+            }
+            if (-not [string]::Equals([string]$signature.SignerCertificate.Subject, $script:RevAgentNodeMsiSignerSubject, [StringComparison]::Ordinal)) {
+                throw "Bundled Node.js MSI signer mismatch. expected='$($script:RevAgentNodeMsiSignerSubject)' actual='$($signature.SignerCertificate.Subject)'"
+            }
+        }
+        return [pscustomobject][ordered]@{
+            relativePath = "external\$($script:RevAgentNodeMsiName)"
+            sha256 = $actualHash
+            sizeBytes = [long]$stream.Length
+            signerSubject = if ($null -ne $signature) { [string]$signature.SignerCertificate.Subject } else { 'TEST-ONLY' }
+            authenticodeStatus = if ($null -ne $signature) { [string]$signature.Status } else { 'TestBypass' }
         }
     }
-    return [pscustomobject][ordered]@{
-        sha256 = $actualHash
-        signerSubject = if ($null -ne $signature) { [string]$signature.SignerCertificate.Subject } else { 'TEST-ONLY' }
-        authenticodeStatus = if ($null -ne $signature) { [string]$signature.Status } else { 'TestBypass' }
+    finally {
+        $stream.Dispose()
     }
 }
 
@@ -543,7 +647,14 @@ function New-RevAgentAuthenticatedReleaseInbox {
         $packageLeaf = [IO.Path]::GetFileName([string]$source.channel.packagePath)
         if ([string]::IsNullOrWhiteSpace($packageLeaf)) { throw 'Signed package path has no file name.' }
         $packageRelative = Join-Path $releaseRelativeRoot $packageLeaf
-        foreach ($directory in @('channels', $releaseRelativeRoot, 'external')) { New-Item -ItemType Directory -Path (Join-Path $inboxPath $directory) -Force | Out-Null }
+        $nodeMsiRelative = Join-Path $releaseRelativeRoot ([string]$source.nodeMsi.relativePath)
+        foreach ($directory in @('channels', $releaseRelativeRoot, (Join-Path $releaseRelativeRoot 'external'))) { New-Item -ItemType Directory -Path (Join-Path $inboxPath $directory) -Force | Out-Null }
+
+        $effectiveNodeHash = if ([string]::IsNullOrWhiteSpace($ExpectedNodeMsiSha256)) { [string]$source.nodeMsi.sha256 } else { $ExpectedNodeMsiSha256.Trim().ToUpperInvariant() }
+        if (-not $AllowTestRoot -and -not [string]::Equals($effectiveNodeHash, $script:RevAgentNodeMsiSha256, [StringComparison]::OrdinalIgnoreCase)) { throw 'Production Node.js MSI hash override is forbidden.' }
+        if (-not [string]::Equals($effectiveNodeHash, [string]$source.nodeMsi.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Requested Node.js MSI hash does not match the signed manifest. requested=$effectiveNodeHash signed=$($source.nodeMsi.sha256)"
+        }
 
         $files = [ordered]@{}
         $copyMap = [ordered]@{
@@ -552,23 +663,14 @@ function New-RevAgentAuthenticatedReleaseInbox {
             releaseManifest = @($source.manifestPath, $manifestRelative, 4194304, $source.signedSetSha256.releaseManifest)
             releaseManifestSignature = @($source.manifestSignaturePath, $manifestSignatureRelative, 1048576, $source.signedSetSha256.releaseManifestSignature)
             package = @($source.packagePath, $packageRelative, 4294967296, $source.packageSha256)
+            nodeMsi = @($source.nodeMsiPath, $nodeMsiRelative, 268435456, $source.signedSetSha256.nodeMsi)
         }
         foreach ($entry in $copyMap.GetEnumerator()) {
             $files[$entry.Key] = Copy-RevAgentSnapshotFileHandleBound -SourcePath $entry.Value[0] -DestinationPath (Join-Path $inboxPath $entry.Value[1]) -MaxBytes ([long]$entry.Value[2]) -ExpectedSha256 ([string]$entry.Value[3])
         }
 
-        $nodeSourcePath = Join-Path $releaseRootFullPath ("tools\dependencies\{0}" -f $script:RevAgentNodeMsiName)
-        if (-not (Test-Path -LiteralPath $nodeSourcePath -PathType Leaf)) {
-            if (-not $AllowTestRoot) { throw "Required bundled Node.js MSI was not found: $nodeSourcePath" }
-        }
-        else {
-            $effectiveNodeHash = if ([string]::IsNullOrWhiteSpace($ExpectedNodeMsiSha256)) { $script:RevAgentNodeMsiSha256 } else { $ExpectedNodeMsiSha256 }
-            if (-not $AllowTestRoot -and -not [string]::Equals($effectiveNodeHash, $script:RevAgentNodeMsiSha256, [StringComparison]::OrdinalIgnoreCase)) { throw 'Production Node.js MSI hash override is forbidden.' }
-            $nodeValidation = Test-RevAgentNodeMsi -Path $nodeSourcePath -ExpectedSha256 $effectiveNodeHash -AllowTestRoot:$AllowTestRoot
-            $files['nodeMsi'] = Copy-RevAgentSnapshotFileHandleBound -SourcePath $nodeSourcePath -DestinationPath (Join-Path $inboxPath ("external\{0}" -f $script:RevAgentNodeMsiName)) -MaxBytes 268435456 -ExpectedSha256 $nodeValidation.sha256
-            $files.nodeMsi | Add-Member -NotePropertyName signerSubject -NotePropertyValue $nodeValidation.signerSubject
-            $files.nodeMsi | Add-Member -NotePropertyName authenticodeStatus -NotePropertyValue $nodeValidation.authenticodeStatus
-        }
+        $files.nodeMsi | Add-Member -NotePropertyName signerSubject -NotePropertyValue $source.nodeMsi.signerSubject
+        $files.nodeMsi | Add-Member -NotePropertyName authenticodeStatus -NotePropertyValue $source.nodeMsi.authenticodeStatus
 
         # Verify the copied set, not the mutable source paths. If any path was
         # swapped after its handle-bound copy, signature/hash verification of
@@ -1050,6 +1152,7 @@ function New-RevAgentProtectedReleaseSnapshot {
             releaseManifest = @($verified.manifestPath, "$releaseRelativeRoot\manifest.json", 4194304, $verified.signedSetSha256.releaseManifest)
             releaseManifestSignature = @($verified.manifestSignaturePath, "$releaseRelativeRoot\manifest.sig.json", 1048576, $verified.signedSetSha256.releaseManifestSignature)
             package = @($verified.packagePath, "$releaseRelativeRoot\$packageLeaf", 4294967296, $verified.packageSha256)
+            nodeMsiReleaseSidecar = @($verified.nodeMsiPath, "$releaseRelativeRoot\$($verified.nodeMsi.relativePath)", 268435456, $verified.signedSetSha256.nodeMsi)
             trustedKeys = @($TrustedKeysPath, 'trust\release-trusted-keys.json', 1048576, $verified.trust.trustedKeysSha256)
             verifier = @($IntegrityModulePath, 'trust\RevAgent.DistributionIntegrity.psm1', 4194304, $verified.trust.verifierSha256)
         }
@@ -1063,19 +1166,25 @@ function New-RevAgentProtectedReleaseSnapshot {
         Expand-RevAgentSnapshotArchiveSecure -ZipPath (Join-Path $stage "$releaseRelativeRoot\$packageLeaf") -DestinationPath $payloadRoot
         $componentState = Get-RevAgentSnapshotComponentState -Manifest $verified.manifest -PayloadRoot $payloadRoot -SnapshotRoot $stage
 
-        $externalDependencies = [ordered]@{}
-        $inboxMsi = Join-Path $inbox ("external\{0}" -f $script:RevAgentNodeMsiName)
-        if (Test-Path -LiteralPath $inboxMsi -PathType Leaf) {
-            $effectiveNodeHash = if ([string]::IsNullOrWhiteSpace($ExpectedNodeMsiSha256)) { $script:RevAgentNodeMsiSha256 } else { $ExpectedNodeMsiSha256 }
-            if (-not $AllowTestRoot -and -not [string]::Equals($effectiveNodeHash, $script:RevAgentNodeMsiSha256, [StringComparison]::OrdinalIgnoreCase)) { throw 'Production Node.js MSI hash override is forbidden.' }
-            $nodeValidation = Test-RevAgentNodeMsi -Path $inboxMsi -ExpectedSha256 $effectiveNodeHash -AllowTestRoot:$AllowTestRoot
-            $nodeRelative = "payload\installer\nas\dependencies\$($script:RevAgentNodeMsiName)"
-            $nodeDestination = Join-Path $stage $nodeRelative
-            New-Item -ItemType Directory -Path (Split-Path -Parent $nodeDestination) -Force | Out-Null
-            [void](Copy-RevAgentSnapshotFileHandleBound -SourcePath $inboxMsi -DestinationPath $nodeDestination -MaxBytes 268435456 -ExpectedSha256 $nodeValidation.sha256)
-            $externalDependencies['nodeMsi'] = [ordered]@{ snapshotRelativePath = $nodeRelative; sha256 = $nodeValidation.sha256; signerSubject = $nodeValidation.signerSubject; authenticodeStatus = $nodeValidation.authenticodeStatus }
+        $effectiveNodeHash = if ([string]::IsNullOrWhiteSpace($ExpectedNodeMsiSha256)) { [string]$verified.nodeMsi.sha256 } else { $ExpectedNodeMsiSha256.Trim().ToUpperInvariant() }
+        if (-not $AllowTestRoot -and -not [string]::Equals($effectiveNodeHash, $script:RevAgentNodeMsiSha256, [StringComparison]::OrdinalIgnoreCase)) { throw 'Production Node.js MSI hash override is forbidden.' }
+        if (-not [string]::Equals($effectiveNodeHash, [string]$verified.nodeMsi.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Requested Node.js MSI hash does not match the verified signed inbox. requested=$effectiveNodeHash signed=$($verified.nodeMsi.sha256)"
         }
-        elseif (-not $AllowTestRoot) { throw 'Authenticated release inbox is missing the pinned Node.js MSI.' }
+        $nodeRelative = "payload\installer\nas\dependencies\$($script:RevAgentNodeMsiName)"
+        $nodeDestination = Join-Path $stage $nodeRelative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $nodeDestination) -Force | Out-Null
+        [void](Copy-RevAgentSnapshotFileHandleBound -SourcePath $verified.nodeMsiPath -DestinationPath $nodeDestination -MaxBytes 268435456 -ExpectedSha256 $verified.nodeMsi.sha256)
+        $externalDependencies = [ordered]@{
+            nodeMsi = [ordered]@{
+                releaseRelativePath = "$releaseRelativeRoot\$($verified.nodeMsi.relativePath)"
+                snapshotRelativePath = $nodeRelative
+                sha256 = [string]$verified.nodeMsi.sha256
+                sizeBytes = [long]$verified.nodeMsi.sizeBytes
+                signerSubject = [string]$verified.nodeMsi.signerSubject
+                authenticodeStatus = [string]$verified.nodeMsi.authenticodeStatus
+            }
+        }
 
         $state = [ordered]@{
             schemaVersion = 1
@@ -1127,7 +1236,8 @@ function New-RevAgentProtectedReleaseSnapshot {
         $statePath = Join-Path $final 'snapshot-state.json'
         $persisted = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
         if (-not [string]::Equals([string]$persisted.snapshotRoot, $final, [StringComparison]::OrdinalIgnoreCase) -or
-            -not [string]::Equals((Get-RevAgentSnapshotFileSha256 -Path (Join-Path $final $persisted.release.packageRelativePath)), [string]$persisted.release.packageSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            -not [string]::Equals((Get-RevAgentSnapshotFileSha256 -Path (Join-Path $final $persisted.release.packageRelativePath)), [string]$persisted.release.packageSha256, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals((Get-RevAgentSnapshotFileSha256 -Path (Join-Path $final $persisted.externalDependencies.nodeMsi.snapshotRelativePath)), [string]$persisted.externalDependencies.nodeMsi.sha256, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'Protected release snapshot failed post-promotion identity/hash verification.'
         }
         return [pscustomobject][ordered]@{ success = $true; action = 'protected-release-snapshot'; snapshotId = $snapshotId; snapshotRoot = $final; statePath = $statePath; channelManifestPath = (Join-Path $final $persisted.release.channelManifestRelativePath); releaseSequence = [long]$persisted.release.releaseSequence; state = $persisted }

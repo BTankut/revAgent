@@ -1040,7 +1040,11 @@ manual workflow dispatch. Pilot and stable inputs are mutually exclusive.
 The build job runs `scripts/invoke-signed-source-free-cd.ps1`. That wrapper
 runs `scripts/test-ci.ps1`, uses `publish-nas-release.ps1` against a staging
 release root, requires release signatures, copies public trusted keys into
-`tools\config`, and runs `scripts/check-signed-stable-readiness.ps1`.
+`tools\config`, and runs `scripts/check-signed-stable-readiness.ps1`. Before
+production packaging, the workflow downloads the exact official Node v24.14.1
+MSI and verifies the pinned SHA-256, byte size, valid Authenticode signature,
+and exact OpenJS signer. The producer then binds it into the signed manifest as
+the version-owned `external\node-v24.14.1-x64.msi` sidecar.
 
 For an explicit pilot or stable publish dispatch, the build job uploads the
 validated release root as one immutable, one-day GitHub Actions artifact and
@@ -1253,18 +1257,24 @@ expired, or tampered license evidence without blocking; `enforce` blocks before
 package replacement. License private keys must stay outside the repo, package,
 NAS tools, updater config, and workstation install.
 
-Large offline dependency payloads are local/NAS-side assets, not Git assets:
+Large offline dependency payloads are signed release sidecars, not Git or ZIP
+assets:
 
 ```text
-installer\nas\dependencies\
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\dependencies\
+releases\<version>\external\node-v24.14.1-x64.msi
 ```
 
-The local dependency folder is ignored by Git. Keep it populated on the
-development workstation before building. `publish-nas-release.ps1` copies it
-into the local signed staging root's `tools\dependencies\`, while excluding it
-from the versioned release ZIP. Only the hardened signed-root publisher may
-later copy an authorized tools tree to NAS; the pilot path never changes it.
+Signed CD supplies the producer with a separately downloaded, pinned official
+asset. `publish-nas-release.ps1` performs a deny-write/delete, single-hardlink,
+create-new copy into the versioned release, and the signed manifest records its
+exact path, SHA-256, size, signer, and signature status. A legacy-compatible
+copy may also exist in the local CD artifact's `tools\dependencies`, but pilot
+publication never copies or mutates shared NAS `tools`; the updater trusts only
+the manifest-bound versioned sidecar. A future stable publish remains a separate
+approval boundary. During this one-time contract transition, the NAS publisher
+may authenticate an exact canonical already-active STABLE or pilot destination
+baseline that predates the sidecar. That allowance never applies to a source,
+candidate, noncanonical channel path, or full-root readiness scan.
 
 Release ZIP layout:
 

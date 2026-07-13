@@ -55,6 +55,8 @@ param(
 
     [switch]$NoChannelUpdate,
 
+    [string]$NodeMsiPath = "",
+
     [Parameter(DontShow = $true)]
     [object]$StagingRootGuard = $null
 )
@@ -63,6 +65,190 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $script:RevAgentProductionSigningKeyId = 'revagent-prod-rsa-2026q3'
 $script:RevAgentProductionSigningFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
+$script:RevAgentNodeMsiName = 'node-v24.14.1-x64.msi'
+$script:RevAgentNodeMsiSha256 = 'FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231B51D78ABE7852D4EC'
+$script:RevAgentNodeMsiSizeBytes = [long]32387072
+$script:RevAgentNodeMsiSignerSubject = 'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US'
+
+if (-not ('RevAgent.ReleaseAssetNative' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+namespace RevAgent {
+    public static class ReleaseAssetNative {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FILETIME { public uint Low; public uint High; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BY_HANDLE_FILE_INFORMATION {
+            public uint FileAttributes;
+            public FILETIME CreationTime;
+            public FILETIME LastAccessTime;
+            public FILETIME LastWriteTime;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
+
+        private static BY_HANDLE_FILE_INFORMATION Read(SafeFileHandle handle) {
+            if (handle == null || handle.IsInvalid) throw new ArgumentException("A valid file handle is required.");
+            BY_HANDLE_FILE_INFORMATION information;
+            if (!GetFileInformationByHandle(handle, out information)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return information;
+        }
+
+        public static uint GetLinkCount(SafeFileHandle handle) { return Read(handle).NumberOfLinks; }
+        public static uint GetAttributes(SafeFileHandle handle) { return Read(handle).FileAttributes; }
+    }
+}
+'@
+}
+
+function Assert-RevAgentOrdinaryReleaseAssetPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "Required release asset was not found: $fullPath"
+    }
+    $cursor = $fullPath
+    while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+        if (Test-Path -LiteralPath $cursor) {
+            $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+            $linkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+                throw "Release asset path contains a filesystem link/reparse component: $cursor"
+            }
+        }
+        $parent = Split-Path -Parent $cursor
+        if ([string]::IsNullOrWhiteSpace($parent) -or [string]::Equals($parent, $cursor, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $cursor = $parent
+    }
+    return $fullPath
+}
+
+function Get-RevAgentLockedStreamSha256 {
+    param([Parameter(Mandatory = $true)][IO.FileStream]$Stream)
+
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $originalPosition = $Stream.Position
+    try {
+        $Stream.Position = 0
+        $buffer = New-Object byte[] 1048576
+        while (($read = $Stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            [void]$algorithm.TransformBlock($buffer, 0, $read, $null, 0)
+        }
+        [void]$algorithm.TransformFinalBlock((New-Object byte[] 0), 0, 0)
+        return ([BitConverter]::ToString($algorithm.Hash)).Replace('-', '')
+    }
+    finally {
+        $Stream.Position = $originalPosition
+        $algorithm.Dispose()
+    }
+}
+
+function Copy-RevAgentPinnedNodeMsiSidecar {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [switch]$AllowTestIdentity
+    )
+
+    $sourceFullPath = Assert-RevAgentOrdinaryReleaseAssetPath -Path $SourcePath
+    $destinationFullPath = [IO.Path]::GetFullPath($DestinationPath)
+    $destinationParent = Split-Path -Parent $destinationFullPath
+    if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) { throw "Release asset destination parent was not found: $destinationParent" }
+    if (Test-Path -LiteralPath $destinationFullPath) { throw "Release asset destination already exists: $destinationFullPath" }
+
+    $source = $null
+    $destination = $null
+    $destinationGuard = $null
+    $algorithm = $null
+    $completed = $false
+    try {
+        # Deny concurrent write/delete for the complete read/hash/copy window.
+        $source = [IO.FileStream]::new($sourceFullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ($source.Length -lt 1 -or $source.Length -gt 268435456) {
+            throw "Node.js MSI size is outside the bounded release-asset policy. path=$sourceFullPath size=$($source.Length)"
+        }
+        if (-not $AllowTestIdentity -and $source.Length -ne $script:RevAgentNodeMsiSizeBytes) {
+            throw "Node.js MSI size mismatch. expected=$($script:RevAgentNodeMsiSizeBytes) actual=$($source.Length)"
+        }
+        $sourceLinkCount = [uint32][RevAgent.ReleaseAssetNative]::GetLinkCount($source.SafeFileHandle)
+        if ($sourceLinkCount -ne 1) { throw "Node.js MSI source must have exactly one hardlink reference. path=$sourceFullPath linkCount=$sourceLinkCount" }
+        if (([RevAgent.ReleaseAssetNative]::GetAttributes($source.SafeFileHandle) -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Node.js MSI source is reparse-backed: $sourceFullPath"
+        }
+        [void](Assert-RevAgentOrdinaryReleaseAssetPath -Path $sourceFullPath)
+
+        $destination = [IO.File]::Open($destinationFullPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        $buffer = New-Object byte[] 1048576
+        [long]$total = 0
+        while (($read = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $total += $read
+            if ($total -gt 268435456) { throw "Node.js MSI exceeded its byte bound while copying: $sourceFullPath" }
+            [void]$algorithm.TransformBlock($buffer, 0, $read, $null, 0)
+            $destination.Write($buffer, 0, $read)
+        }
+        [void]$algorithm.TransformFinalBlock((New-Object byte[] 0), 0, 0)
+        $destination.Flush($true)
+        $sha256 = ([BitConverter]::ToString($algorithm.Hash)).Replace('-', '')
+        if ($total -ne $source.Length) { throw "Node.js MSI changed length while being copied: $sourceFullPath" }
+        if (-not $AllowTestIdentity -and -not [string]::Equals($sha256, $script:RevAgentNodeMsiSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Node.js MSI SHA-256 mismatch. expected=$($script:RevAgentNodeMsiSha256) actual=$sha256"
+        }
+
+        $destination.Dispose()
+        $destination = $null
+        $destinationGuard = [IO.FileStream]::new($destinationFullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ([RevAgent.ReleaseAssetNative]::GetLinkCount($destinationGuard.SafeFileHandle) -ne 1) { throw "Release-owned Node.js MSI must have exactly one hardlink reference: $destinationFullPath" }
+        $destinationHash = Get-RevAgentLockedStreamSha256 -Stream $destinationGuard
+        if (-not [string]::Equals($destinationHash, $sha256, [StringComparison]::OrdinalIgnoreCase) -or $destinationGuard.Length -ne $total) {
+            throw "Release-owned Node.js MSI failed post-copy identity verification: $destinationFullPath"
+        }
+
+        $signature = $null
+        if (-not $AllowTestIdentity) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $destinationFullPath
+            if ($null -eq $signature -or $signature.Status -ne [Management.Automation.SignatureStatus]::Valid) {
+                throw "Node.js MSI Authenticode signature is not valid: $destinationFullPath"
+            }
+            if (-not [string]::Equals([string]$signature.SignerCertificate.Subject, $script:RevAgentNodeMsiSignerSubject, [StringComparison]::Ordinal)) {
+                throw "Node.js MSI signer mismatch. expected='$($script:RevAgentNodeMsiSignerSubject)' actual='$($signature.SignerCertificate.Subject)'"
+            }
+        }
+        $completed = $true
+        return [pscustomobject][ordered]@{
+            sourcePath = $sourceFullPath
+            destinationPath = $destinationFullPath
+            relativePath = "external\$($script:RevAgentNodeMsiName)"
+            sha256 = $sha256
+            sizeBytes = $total
+            signerSubject = if ($null -ne $signature) { [string]$signature.SignerCertificate.Subject } else { 'TEST-ONLY' }
+            authenticodeStatus = if ($null -ne $signature) { [string]$signature.Status } else { 'TestBypass' }
+            sourceLinkCount = $sourceLinkCount
+        }
+    }
+    finally {
+        if ($null -ne $destinationGuard) { $destinationGuard.Dispose() }
+        if ($null -ne $algorithm) { $algorithm.Dispose() }
+        if ($null -ne $destination) { $destination.Dispose() }
+        if ($null -ne $source) { $source.Dispose() }
+        if (-not $completed -and (Test-Path -LiteralPath $destinationFullPath -PathType Leaf)) {
+            Remove-Item -LiteralPath $destinationFullPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 function Assert-RevAgentLocalStagingRoot {
     param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string[]]$AllowedPrefixes)
@@ -1089,6 +1275,31 @@ $packageRoot = Join-Path $stageRoot "package"
 New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 
 try {
+    $nodeMsiEvidence = $null
+    if ($RequireSigning -or $null -ne $signingContext -or -not [string]::IsNullOrWhiteSpace($NodeMsiPath)) {
+        if ([string]::IsNullOrWhiteSpace($NodeMsiPath)) {
+            throw 'Signed release generation requires -NodeMsiPath so the pinned Node.js installer can be bound into the signed versioned release.'
+        }
+        Write-Section "Stage signed external dependencies"
+        $externalReleaseRoot = Join-Path $releaseDir 'external'
+        New-Item -ItemType Directory -Path $externalReleaseRoot -Force | Out-Null
+        $nodeMsiEvidence = Copy-RevAgentPinnedNodeMsiSidecar `
+            -SourcePath $NodeMsiPath `
+            -DestinationPath (Join-Path $externalReleaseRoot $script:RevAgentNodeMsiName) `
+            -AllowTestIdentity:$AllowTestSigningIdentity
+        Write-Host "Node.js MSI sidecar: $($nodeMsiEvidence.destinationPath)" -ForegroundColor Green
+
+        # Keep the legacy tools dependency in the local CD artifact for a future
+        # separately approved stable publish. Pilot publication copies only the
+        # versioned release tree and therefore leaves NAS shared tools immutable.
+        $dependenciesTarget = Join-Path $toolsRoot 'dependencies'
+        New-Item -ItemType Directory -Path $dependenciesTarget -Force | Out-Null
+        [void](Copy-RevAgentPinnedNodeMsiSidecar `
+                -SourcePath $nodeMsiEvidence.destinationPath `
+                -DestinationPath (Join-Path $dependenciesTarget $script:RevAgentNodeMsiName) `
+                -AllowTestIdentity:$AllowTestSigningIdentity)
+    }
+
     Write-Section "Stage package"
     Copy-RevAgentUserPack
     Assert-RevAgentUserPackNoSourceLeak -Root $packageRoot
@@ -1240,6 +1451,18 @@ try {
         }
         components = $components
     }
+    if ($null -ne $nodeMsiEvidence) {
+        $manifest['externalDependencies'] = [ordered]@{
+            nodeMsi = [ordered]@{
+                schemaVersion = 1
+                relativePath = [string]$nodeMsiEvidence.relativePath
+                sha256 = [string]$nodeMsiEvidence.sha256
+                sizeBytes = [long]$nodeMsiEvidence.sizeBytes
+                signerSubject = [string]$nodeMsiEvidence.signerSubject
+                authenticodeStatus = [string]$nodeMsiEvidence.authenticodeStatus
+            }
+        }
+    }
     if ($ReleaseSequence -gt 0) {
         $manifest["releaseSequence"] = $ReleaseSequence
     }
@@ -1348,14 +1571,8 @@ try {
         Copy-Item -LiteralPath $trustedReleaseKeysFullPath -Destination $trustedReleaseKeysTarget -Force
         Write-Host "Trusted release keys: $trustedReleaseKeysTarget" -ForegroundColor Green
     }
-    $dependenciesSource = Join-Path $scriptRoot "dependencies"
-    if (Test-Path -LiteralPath $dependenciesSource -PathType Container) {
-        $dependenciesTarget = Join-Path $toolsRoot "dependencies"
-        if (Test-Path -LiteralPath $dependenciesTarget) {
-            Remove-Item -LiteralPath $dependenciesTarget -Recurse -Force
-        }
-        Copy-DirectoryFiltered -Source $dependenciesSource -Destination $dependenciesTarget
-        Write-Host "Dependencies path: $dependenciesTarget" -ForegroundColor Green
+    if ($null -ne $nodeMsiEvidence) {
+        Write-Host "Dependencies path: $(Join-Path $toolsRoot 'dependencies')" -ForegroundColor Green
     }
     Copy-RevAgentAdminAddonTools
     foreach ($legacyCmd in @(Get-ChildItem -LiteralPath $toolsRoot -File -Filter "*.cmd" -ErrorAction SilentlyContinue)) {

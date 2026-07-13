@@ -16,6 +16,7 @@
 param(
     [string]$ReleaseRoot = "",
     [string]$TrustedKeysPath = "",
+    [string]$NodeMsiPath = "",
     [string]$SigningPrivateKeyPath = "",
     [string]$SigningKeyId = "",
     [string]$Version = "",
@@ -257,6 +258,23 @@ if (-not (Test-Path -LiteralPath $trustedKeysFullPath -PathType Leaf)) {
     throw "Trusted release keys file was not found: $trustedKeysFullPath"
 }
 $testSigningIdentity = [bool]($AllowDirty -or $AllowNonMain)
+$nodeMsiFullPath = ""
+if ([string]::IsNullOrWhiteSpace($NodeMsiPath)) {
+    if (-not $testSigningIdentity) {
+        throw "NodeMsiPath is required for production signed source-free CD."
+    }
+}
+else {
+    $nodeMsiFullPath = [System.IO.Path]::GetFullPath($NodeMsiPath)
+    if (-not (Test-Path -LiteralPath $nodeMsiFullPath -PathType Leaf)) {
+        throw "Bundled Node.js MSI was not found: $nodeMsiFullPath"
+    }
+    $nodeMsiItem = Get-Item -LiteralPath $nodeMsiFullPath -Force -ErrorAction Stop
+    if (($nodeMsiItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        -not [string]::IsNullOrWhiteSpace([string]$nodeMsiItem.LinkType)) {
+        throw "Bundled Node.js MSI must be one ordinary file, not a reparse point or link: $nodeMsiFullPath"
+    }
+}
 if (-not $testSigningIdentity) {
     if (-not [string]::Equals($SigningKeyId, $productionSigningKeyId, [StringComparison]::Ordinal)) {
         throw "Production signed source-free CD requires signing key '$productionSigningKeyId'."
@@ -310,6 +328,9 @@ $publishArgs = @{
     PilotAllowedMachineNames = @($PilotAllowedMachineNames)
     StagingRootGuard = $stagingGuard
 }
+if (-not [string]::IsNullOrWhiteSpace($nodeMsiFullPath)) {
+    $publishArgs["NodeMsiPath"] = $nodeMsiFullPath
+}
 if (-not [string]::IsNullOrWhiteSpace($Version)) {
     $publishArgs["Version"] = $Version
 }
@@ -325,11 +346,16 @@ if ($Force) {
 
 & (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1") @publishArgs
 
-$readiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
-    -ReleaseRoot $ReleaseRoot `
-    -ChannelManifestPath (Join-Path $ReleaseRoot "channels\$Channel.json") `
-    -TrustedKeysPath $trustedKeysFullPath `
-    -RepoRoot $RepoRoot
+$readinessArgs = @{
+    ReleaseRoot = $ReleaseRoot
+    ChannelManifestPath = (Join-Path $ReleaseRoot "channels\$Channel.json")
+    TrustedKeysPath = $trustedKeysFullPath
+    RepoRoot = $RepoRoot
+}
+if ($testSigningIdentity) {
+    $readinessArgs["AllowTestSigningIdentity"] = $true
+}
+$readiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") @readinessArgs
 
 $channelPath = Join-Path $ReleaseRoot "channels\$Channel.json"
 $channelDocument = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json

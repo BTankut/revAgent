@@ -200,9 +200,11 @@ Workstation prerequisites handled by the installer:
   WinHTTP, npm, and Git where those tools are available. Repeated updates skip
   the slower proxy commands when the existing settings already match and log
   each proxy step as `ok`, `updated`, or `skipped`.
-- Node.js/npm is installed automatically. The updater first tries the internet
-  command-line install path, then falls back to the bundled NAS MSI under
-  `tools\dependencies`.
+- Node.js/npm is installed automatically. If the authenticated machine already
+  has a supported trusted Node runtime, no Node installer is launched. Otherwise
+  the updater may use the MSI copied from the authenticated execution snapshot.
+  The source MSI is a versioned release sidecar; shared NAS `tools` is not its
+  trust boundary.
 - `C:\Projects` is created before the Codex setup step so it can be selected as
   the Codex working folder.
 - ChatGPT/Codex is installed and signed in manually by the user. During the
@@ -212,9 +214,12 @@ Workstation prerequisites handled by the installer:
   interactive profile/`CODEX_HOME`. Older managed `codex_app` and
   `codex_command_payload` folders are removed from workstation installs.
 
-Large dependency payloads are intentionally kept out of Git under
-`installer\nas\dependencies\`. The publish step copies that local folder to
-NAS `tools\dependencies\`; the release ZIP does not include those binaries.
+Large dependency payloads remain outside Git and outside the release ZIP. Signed
+CD downloads the exact official Node MSI, verifies its pinned SHA-256, byte size,
+and Authenticode signer, then writes it as
+`releases\<version>\external\node-v24.14.1-x64.msi`. The signed release manifest
+binds that exact relative path and identity. Pilot publication copies the
+versioned sidecar while proving shared NAS `tools` byte-identical.
 
 Before the first run on a workstation, a coordinator must prestage the exact
 bootstrap/GUI/verifier files from an independently authenticated merged build.

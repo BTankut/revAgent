@@ -47,7 +47,13 @@ try {
     }
     $version = '2099.01.01.1-test'
     $releaseDirectory = Join-Path $releaseRoot "releases\$version"
-    New-Item -ItemType Directory -Path $releaseDirectory, (Join-Path $releaseRoot 'channels'), (Join-Path $releaseRoot 'tools\dependencies') -Force | Out-Null
+    $nodeMsiName = 'node-v24.14.1-x64.msi'
+    $nodeMsiRelative = "external\$nodeMsiName"
+    New-Item -ItemType Directory -Path $releaseDirectory, (Join-Path $releaseRoot 'channels'), (Join-Path $releaseDirectory 'external') -Force | Out-Null
+    $nodeMsiPath = Join-Path $releaseDirectory $nodeMsiRelative
+    [IO.File]::WriteAllBytes($nodeMsiPath, [Text.Encoding]::UTF8.GetBytes('TEST NODE MSI BYTES'))
+    $nodeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeMsiPath).Hash
+    $nodeSize = (Get-Item -LiteralPath $nodeMsiPath).Length
     $packageName = "revAgent-$version.zip"
     $packagePath = Join-Path $releaseDirectory $packageName
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -62,6 +68,16 @@ try {
         schemaVersion = 1; app = 'revAgent'; version = $version; channel = 'stable'; releaseSequence = 10; minimumAcceptedReleaseSequence = 1
         package = [ordered]@{ fileName = $packageName; path = "..\releases\$version\$packageName"; sha256 = $packageHash; sizeBytes = $packageSize }
         components = $components
+        externalDependencies = [ordered]@{
+            nodeMsi = [ordered]@{
+                schemaVersion = 1
+                relativePath = $nodeMsiRelative
+                sha256 = $nodeHash
+                sizeBytes = $nodeSize
+                signerSubject = 'TEST-ONLY'
+                authenticodeStatus = 'TestBypass'
+            }
+        }
     }
     $channel = [ordered]@{
         schemaVersion = 1; app = 'revAgent'; channel = 'stable'; version = $version; releaseSequence = 10; minimumAcceptedReleaseSequence = 1
@@ -73,10 +89,7 @@ try {
     Write-Utf8Json -Path $channelPath -Value $channel
     Write-Utf8Json -Path (Join-Path $releaseDirectory 'manifest.sig.json') -Value (New-RevAgentDetachedJsonSignature -Content $manifest -SignedObject 'release-manifest' -KeyId $keyId -PrivateKeyXml ($rsa.ToXmlString($true)) -App 'revAgent')
     Write-Utf8Json -Path (Join-Path $releaseRoot 'channels\stable.sig.json') -Value (New-RevAgentDetachedJsonSignature -Content $channel -SignedObject 'channel' -KeyId $keyId -PrivateKeyXml ($rsa.ToXmlString($true)) -App 'revAgent')
-
-    $nodeMsiPath = Join-Path $releaseRoot 'tools\dependencies\node-v24.14.1-x64.msi'
-    [IO.File]::WriteAllBytes($nodeMsiPath, [Text.Encoding]::UTF8.GetBytes('TEST NODE MSI BYTES'))
-    $nodeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeMsiPath).Hash
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\dependencies\$nodeMsiName"))) 'Fixture must not depend on the legacy shared tools Node.js MSI path.'
 
     Write-Host 'Test signed object/path binding and pre-parse channel locks'
     $substitutedChannel = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
@@ -106,13 +119,33 @@ try {
     $inboxOne = New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
     $inboxTwo = New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
     $inboxThree = New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
+    $releaseOwnedNodeRelative = "releases\$version\$nodeMsiRelative"
+    foreach ($inbox in @($inboxOne, $inboxTwo, $inboxThree)) {
+        $inboxNodePath = Join-Path $inbox.inboxRoot $releaseOwnedNodeRelative
+        Assert-True (Test-Path -LiteralPath $inboxNodePath -PathType Leaf) 'Authenticated inbox did not retain the release-owned Node.js MSI sidecar path.'
+        Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $inboxNodePath).Hash $nodeHash 'Authenticated inbox Node.js MSI hash mismatch.'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $inbox.inboxRoot "tools\dependencies\$nodeMsiName"))) 'Authenticated inbox recreated the legacy shared tools Node.js MSI path.'
+    }
+    [IO.File]::WriteAllBytes($nodeMsiPath, [Text.Encoding]::UTF8.GetBytes('TAMPERED RELEASE-OWNED NODE MSI'))
+    $tamperedNodeRejected = $false
+    try { [void](New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot) }
+    catch { $tamperedNodeRejected = $_.Exception.Message -match 'Node.js MSI SHA-256 mismatch|Node.js MSI hash mismatch|hash mismatch' }
+    Assert-True $tamperedNodeRejected 'Authenticated inbox acquisition accepted a tampered release-owned Node.js MSI sidecar.'
     [IO.File]::WriteAllBytes($packagePath, [Text.Encoding]::UTF8.GetBytes('MUTATED TRANSPORT AFTER INBOX'))
     $snapshot = New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxOne.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent $snapshotParent -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
     Assert-True $snapshot.success 'Protected release snapshot should succeed from an authenticated local inbox after transport mutation.'
     Assert-Equal $snapshot.state.transportTrust 'signed_local_snapshot' 'Snapshot transport trust mismatch.'
     Assert-Equal ([long]$snapshot.state.release.releaseSequence) ([long]10) 'Snapshot release sequence mismatch.'
     Assert-True (Test-Path -LiteralPath (Join-Path $snapshot.snapshotRoot 'payload\installer\nas\update-from-nas.ps1') -PathType Leaf) 'Snapshot updater entrypoint was not extracted.'
-    Assert-True (Test-Path -LiteralPath (Join-Path $snapshot.snapshotRoot 'payload\installer\nas\dependencies\node-v24.14.1-x64.msi') -PathType Leaf) 'Pinned Node MSI was not copied into the snapshot payload.'
+    $snapshotSidecarPath = Join-Path $snapshot.snapshotRoot $releaseOwnedNodeRelative
+    $snapshotPayloadNodePath = Join-Path $snapshot.snapshotRoot "payload\installer\nas\dependencies\$nodeMsiName"
+    Assert-True (Test-Path -LiteralPath $snapshotSidecarPath -PathType Leaf) 'Protected snapshot did not retain the release-owned Node.js MSI sidecar path.'
+    Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $snapshotSidecarPath).Hash $nodeHash 'Protected snapshot release-owned Node.js MSI sidecar hash mismatch.'
+    Assert-True (Test-Path -LiteralPath $snapshotPayloadNodePath -PathType Leaf) 'Pinned Node MSI was not copied into the snapshot payload.'
+    Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $snapshotPayloadNodePath).Hash $nodeHash 'Snapshot payload Node.js MSI hash mismatch.'
+    Assert-Equal ([string]$snapshot.state.externalDependencies.nodeMsi.releaseRelativePath) $releaseOwnedNodeRelative 'Snapshot Node.js MSI release-owned path state mismatch.'
+    Assert-Equal ([string]$snapshot.state.externalDependencies.nodeMsi.snapshotRelativePath) "payload\installer\nas\dependencies\$nodeMsiName" 'Snapshot Node.js MSI payload path state mismatch.'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $snapshot.snapshotRoot "tools\dependencies\$nodeMsiName"))) 'Protected snapshot recreated the legacy shared tools Node.js MSI path.'
     Assert-True (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot $snapshot.snapshotRoot -AllowTestRoot) 'Snapshot ACL/link/hardlink reattestation should pass.'
     Assert-True (Assert-RevAgentProtectedSnapshotParent -Path $snapshotParent -AllowTestRoot) 'Snapshot parent owner/DACL/path attestation should pass.'
 

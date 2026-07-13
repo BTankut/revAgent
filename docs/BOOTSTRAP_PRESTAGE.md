@@ -483,7 +483,10 @@ components:
 
 - `lib\RevAgent.ReleaseSnapshot.psm1`, which copies and re-verifies the signed
   transport set into a user-local authenticated inbox before UAC, then creates
-  the administrator-owned execution snapshot;
+  the administrator-owned execution snapshot. For current releases this set
+  includes the manifest-bound
+  `releases\<version>\external\node-v24.14.1-x64.msi` sidecar; it never falls
+  back to ambient shared `tools\dependencies`;
 - `Invoke-revAgent-PrivilegedSnapshotUpdate.ps1`, the only file the GUI may
   elevate. It creates the protected snapshot and invokes the exact snapshot
   machine entrypoint.

@@ -135,8 +135,9 @@ function Get-TestTreeDigest {
     }
     $bytes = [Text.Encoding]::UTF8.GetBytes(($rows -join "`n"))
     $sha = [Security.Cryptography.SHA256]::Create()
-    try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '') }
+    try { $digest = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '') }
     finally { $sha.Dispose() }
+    return [pscustomobject]@{ itemCount = $rows.Count; sha256 = $digest }
 }
 
 Write-Host "Test signed source-free CD producer and NAS publish wrapper"
@@ -163,12 +164,19 @@ try {
     }
     $trustedKeysPath = Join-Path $secretRoot "release-trusted-keys.json"
     $trustedKeys | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $trustedKeysPath -Encoding UTF8
+    $nodeMsiPath = Join-Path $tempRoot 'node-v24.14.1-x64.msi'
+    $nodeMsiBytes = [Text.Encoding]::UTF8.GetBytes('revAgent signed-CD test-only Node.js MSI fixture; never use outside disposable TEMP roots.')
+    [IO.File]::WriteAllBytes($nodeMsiPath, $nodeMsiBytes)
+    $nodeMsiSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeMsiPath).Hash
+    $nodeMsiSizeBytes = [long](Get-Item -LiteralPath $nodeMsiPath).Length
+    $nodeMsiRelativePath = 'external\node-v24.14.1-x64.msi'
     $preexistingReleaseRoot = Join-Path $tempRoot 'preexisting-release-root'
     New-Item -ItemType Directory -Path $preexistingReleaseRoot -Force | Out-Null
     Assert-ThrowsLike -Action {
         & (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1") `
             -ReleaseRoot $preexistingReleaseRoot `
             -TrustedKeysPath $trustedKeysPath `
+            -NodeMsiPath $nodeMsiPath `
             -SigningPrivateKeyPath $privateKeyPath `
             -SigningKeyId $keyId `
             -Version '2026.06.23.preexisting-cd-test' `
@@ -183,6 +191,7 @@ try {
     $buildResult = & (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1") `
         -ReleaseRoot $releaseRoot `
         -TrustedKeysPath $trustedKeysPath `
+        -NodeMsiPath $nodeMsiPath `
         -SigningPrivateKeyPath $privateKeyPath `
         -SigningKeyId $keyId `
         -Version $version `
@@ -201,6 +210,7 @@ try {
         & (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1") `
             -ReleaseRoot (Join-Path $tempRoot "unsigned-release-root") `
             -TrustedKeysPath $trustedKeysPath `
+            -NodeMsiPath $nodeMsiPath `
             -SigningKeyId $keyId `
             -Version "2026.06.23.unsigned-cd-test" `
             -SkipEngineeringGates `
@@ -225,6 +235,16 @@ try {
     Assert-True (-not [System.IO.Path]::IsPathRooted([string]$sourceChannel.packagePath)) "CD channel packagePath must be relative."
     Assert-True (-not [System.IO.Path]::IsPathRooted([string]$sourceChannel.manifestPath)) "CD channel manifestPath must be relative."
     Assert-Equal ([string]$sourceChannel.packagePath) ([string]$sourceManifest.package.path) "CD channel and manifest package paths must match."
+    Assert-Equal ([int]$sourceManifest.externalDependencies.nodeMsi.schemaVersion) 1 'Signed Node.js MSI metadata schema must be version 1.'
+    Assert-Equal ([string]$sourceManifest.externalDependencies.nodeMsi.relativePath) $nodeMsiRelativePath 'Signed Node.js MSI metadata must use the exact release-owned sidecar path.'
+    Assert-Equal ([string]$sourceManifest.externalDependencies.nodeMsi.sha256) $nodeMsiSha256 'Signed Node.js MSI metadata hash must bind the test fixture.'
+    Assert-Equal ([long]$sourceManifest.externalDependencies.nodeMsi.sizeBytes) $nodeMsiSizeBytes 'Signed Node.js MSI metadata size must bind the test fixture.'
+    Assert-Equal ([string]$sourceManifest.externalDependencies.nodeMsi.signerSubject) 'TEST-ONLY' 'Test-signed Node.js MSI metadata must expose its test-only signer identity.'
+    Assert-Equal ([string]$sourceManifest.externalDependencies.nodeMsi.authenticodeStatus) 'TestBypass' 'Test-signed Node.js MSI metadata must expose its test-only Authenticode bypass.'
+    $sourceNodeMsiSidecar = Join-Path (Split-Path -Parent $sourceManifestPath) $nodeMsiRelativePath
+    Assert-True (Test-Path -LiteralPath $sourceNodeMsiSidecar -PathType Leaf) 'Signed release must contain its release-owned Node.js MSI sidecar.'
+    Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceNodeMsiSidecar).Hash $nodeMsiSha256 'Release-owned Node.js MSI sidecar hash must match signed metadata.'
+    Assert-Equal ([long](Get-Item -LiteralPath $sourceNodeMsiSidecar).Length) $nodeMsiSizeBytes 'Release-owned Node.js MSI sidecar size must match signed metadata.'
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\config\release-trusted-keys.json") -PathType Leaf) "CD release root should carry public trusted keys in tools config."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\installer\install-dashboard-addon.ps1") -PathType Leaf) "CD release root should carry dashboard admin add-on tools."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "CD release root should carry usage-intelligence admin add-on tools."
@@ -250,8 +270,43 @@ try {
             )) {
             Assert-Equal @($sourceArchive.Entries | Where-Object { [string]::Equals($_.FullName.Replace("\", "/"), $entryName, [StringComparison]::OrdinalIgnoreCase) }).Count 1 "Signed user pack entry '$entryName' must exist exactly once."
         }
+        Assert-Equal @($sourceArchive.Entries | Where-Object { $_.FullName -match '(?i)\.msi$' }).Count 0 'The external Node.js MSI must not be embedded in the source-free ZIP.'
     }
     finally { $sourceArchive.Dispose() }
+
+    $sourceNodeMsiBytes = [IO.File]::ReadAllBytes($sourceNodeMsiSidecar)
+    try {
+        Remove-Item -LiteralPath $sourceNodeMsiSidecar -Force
+        $missingNodeMsiReadiness = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+            -ReleaseRoot $releaseRoot `
+            -ChannelManifestPath $sourceChannelPath `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestSigningIdentity `
+            -ReportOnly
+        Assert-True (-not [bool]$missingNodeMsiReadiness.success) 'Signed readiness accepted a missing release-owned Node.js MSI sidecar.'
+        Assert-True (@($missingNodeMsiReadiness.checks | Where-Object { $_.name -eq 'node_msi_file_present' -and -not [bool]$_.success }).Count -gt 0) 'Missing Node.js MSI readiness did not report node_msi_file_present.'
+    }
+    finally { [IO.File]::WriteAllBytes($sourceNodeMsiSidecar, $sourceNodeMsiBytes) }
+
+    $tamperedNodeMsiBytes = New-Object byte[] ($sourceNodeMsiBytes.Length + 1)
+    [Array]::Copy($sourceNodeMsiBytes, $tamperedNodeMsiBytes, $sourceNodeMsiBytes.Length)
+    $tamperedNodeMsiBytes[$tamperedNodeMsiBytes.Length - 1] = 0x7F
+    try {
+        [IO.File]::WriteAllBytes($sourceNodeMsiSidecar, $tamperedNodeMsiBytes)
+        $tamperedNodeMsiReadiness = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+            -ReleaseRoot $releaseRoot `
+            -ChannelManifestPath $sourceChannelPath `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestSigningIdentity `
+            -ReportOnly
+        Assert-True (-not [bool]$tamperedNodeMsiReadiness.success) 'Signed readiness accepted a tampered release-owned Node.js MSI sidecar.'
+        Assert-True (@($tamperedNodeMsiReadiness.checks | Where-Object { $_.name -in @('node_msi_size_matches_signed_metadata', 'node_msi_sha256_matches_signed_metadata') -and -not [bool]$_.success }).Count -gt 0) 'Tampered Node.js MSI readiness did not report a signed size/hash mismatch.'
+    }
+    finally { [IO.File]::WriteAllBytes($sourceNodeMsiSidecar, $sourceNodeMsiBytes) }
+    Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceNodeMsiSidecar).Hash $nodeMsiSha256 'Node.js MSI sidecar fixture was not restored after fail-closed readiness tests.'
+
     foreach ($componentKey in @("localBootstrapInstaller", "bootstrapPrestageEvidenceTool", "bootstrapPrestageEvidenceSchema", "bootstrapPrestageEvidenceExample", "localBootstrapLauncher", "localBootstrap", "installerLibLocalBootstrap")) {
         Assert-True ($null -ne $sourceManifest.components.$componentKey -and -not [string]::IsNullOrWhiteSpace([string]$sourceManifest.components.$componentKey.sha256)) "Signed manifest is missing bootstrap component '$componentKey'."
     }
@@ -490,6 +545,7 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
         -ReleaseRoot $nasRoot `
         -TrustedKeysPath $trustedKeysPath `
         -ArtifactScanScope activeRelease `
+        -AllowTestSigningIdentity `
         -RepoRoot $RepoRoot
     Assert-True ([bool]$nasReadiness.success) "Published NAS root should pass signed stable readiness."
     Assert-Equal ([string]$nasReadiness.artifactScanScope) "activeRelease" "NAS publish readiness should use the active release artifact scan scope."
@@ -501,6 +557,7 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     $pilotBuild = & (Join-Path $RepoRoot 'scripts\invoke-signed-source-free-cd.ps1') `
         -ReleaseRoot $pilotReleaseRoot `
         -TrustedKeysPath $trustedKeysPath `
+        -NodeMsiPath $nodeMsiPath `
         -SigningPrivateKeyPath $privateKeyPath `
         -SigningKeyId $keyId `
         -Version $pilotVersion `
@@ -514,6 +571,16 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
         -Force `
         -RepoRoot $RepoRoot
     Assert-True ([bool]$pilotBuild.success -and [string]$pilotBuild.channel -eq 'pilot') 'Pilot CD fixture did not build successfully.'
+    $pilotManifestPath = Join-Path $pilotReleaseRoot "releases\$pilotVersion\manifest.json"
+    $pilotManifest = Get-Content -Raw -LiteralPath $pilotManifestPath | ConvertFrom-Json
+    $pilotNodeMsiSidecar = Join-Path (Split-Path -Parent $pilotManifestPath) $nodeMsiRelativePath
+    Assert-Equal ([string]$pilotManifest.externalDependencies.nodeMsi.relativePath) $nodeMsiRelativePath 'Pilot manifest must bind the exact release-owned Node.js MSI sidecar.'
+    Assert-Equal ([string]$pilotManifest.externalDependencies.nodeMsi.sha256) $nodeMsiSha256 'Pilot manifest must bind the test Node.js MSI hash.'
+    Assert-Equal ([long]$pilotManifest.externalDependencies.nodeMsi.sizeBytes) $nodeMsiSizeBytes 'Pilot manifest must bind the test Node.js MSI size.'
+    Assert-Equal ([string]$pilotManifest.externalDependencies.nodeMsi.signerSubject) 'TEST-ONLY' 'Pilot manifest must expose the test-only MSI signer identity.'
+    Assert-Equal ([string]$pilotManifest.externalDependencies.nodeMsi.authenticodeStatus) 'TestBypass' 'Pilot manifest must expose the test-only MSI signature status.'
+    Assert-True (Test-Path -LiteralPath $pilotNodeMsiSidecar -PathType Leaf) 'Pilot source release is missing its release-owned Node.js MSI sidecar.'
+    Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $pilotNodeMsiSidecar).Hash $nodeMsiSha256 'Pilot source release Node.js MSI sidecar hash does not match its signed metadata.'
 
     foreach ($postPilotReadinessTarget in @(
             [pscustomobject]@{ label = 'source stable'; root = $releaseRoot },
@@ -523,10 +590,18 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
             -ReleaseRoot $postPilotReadinessTarget.root `
             -TrustedKeysPath $trustedKeysPath `
             -ArtifactScanScope activeRelease `
+            -AllowTestSigningIdentity `
             -RepoRoot $RepoRoot `
             -ReportOnly
         Assert-True ([bool]$postPilotReadiness.success) ("Post-pilot {0} readiness failed: {1}" -f $postPilotReadinessTarget.label, ($postPilotReadiness.integrity | ConvertTo-Json -Depth 8 -Compress))
     }
+
+    $nasSharedNodeDependency = Join-Path $nasRoot 'tools\dependencies\node-v24.14.1-x64.msi'
+    $nasSharedDependenciesRoot = Split-Path -Parent $nasSharedNodeDependency
+    if (Test-Path -LiteralPath $nasSharedDependenciesRoot) {
+        Remove-Item -LiteralPath $nasSharedDependenciesRoot -Recurse -Force
+    }
+    Assert-True (-not (Test-Path -LiteralPath $nasSharedNodeDependency)) 'Pilot isolation fixture must start without a NAS shared-tools Node.js MSI dependency.'
 
     $stableChannelBytes = [IO.File]::ReadAllBytes($nasStableChannelPath)
     $stableSignatureBytes = [IO.File]::ReadAllBytes($nasStableSignaturePath)
@@ -577,12 +652,7 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     New-Item -ItemType Directory -Path $pilotInboxRoot -Force | Out-Null
     $inboxProbe = [pscustomobject]@{ called = $false }
     $inboxHook = { param($path, $source); $inboxProbe.called = $true }.GetNewClosure()
-    $pilotDependenciesRoot = Join-Path $pilotReleaseRoot 'tools\dependencies'
-    $nodeMsi = if (Test-Path -LiteralPath $pilotDependenciesRoot -PathType Container) {
-        Get-ChildItem -LiteralPath $pilotDependenciesRoot -File -Filter '*.msi' -ErrorAction Stop | Select-Object -First 1
-    }
-    else { $null }
-    $nodeMsiHash = if ($null -ne $nodeMsi) { (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeMsi.FullName).Hash } else { '' }
+    $nodeMsiHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $pilotNodeMsiSidecar).Hash
     Assert-ThrowsLike -Action {
         & $newInboxCommand -ReleaseRoot $pilotReleaseRoot -Channel pilot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath (Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1') -InboxRoot $pilotInboxRoot -ExpectedNodeMsiSha256 $nodeMsiHash -AllowTestRoot -TestMachineName 'OUTSIDER01' -TestBeforeInboxChildCreateHook $inboxHook | Out-Null
     } -Pattern 'pilot_machine_not_allowed' -Message 'Authenticated inbox acquisition accepted an unauthorized pilot machine.'
@@ -664,6 +734,94 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     Assert-True (-not (Test-Path -LiteralPath $pilotChannelPath) -and -not (Test-Path -LiteralPath $pilotSignaturePath)) 'Pilot channel pair survived a failed owned-tree invariant after rollback.'
     Write-Host '  owned pilot tree hardlink rollback: PASS'
 
+    Write-Host '  legacy sidecar-less pilot baseline transition...'
+    $legacyPilotVersion = '2026.06.23.pilot.0-legacy-cd-test'
+    $legacyPilotSequence = [long]($pilotSequence - 1)
+    $legacyPilotNasReleaseRoot = Join-Path $nasRoot "releases\$legacyPilotVersion"
+    $pilotSourceReleaseRoot = Join-Path $pilotReleaseRoot "releases\$pilotVersion"
+    Copy-Item -LiteralPath $pilotSourceReleaseRoot -Destination $legacyPilotNasReleaseRoot -Recurse
+
+    $legacyPilotPackageName = "revAgent-$legacyPilotVersion.zip"
+    $legacyPilotOriginalPackages = @(Get-ChildItem -LiteralPath $legacyPilotNasReleaseRoot -File -Filter '*.zip')
+    Assert-Equal $legacyPilotOriginalPackages.Count 1 'Legacy pilot fixture must contain exactly one release ZIP.'
+    $legacyPilotOriginalPackage = $legacyPilotOriginalPackages[0]
+    Move-Item -LiteralPath $legacyPilotOriginalPackage.FullName -Destination (Join-Path $legacyPilotNasReleaseRoot $legacyPilotPackageName)
+    $legacyPilotExternalRoot = Join-Path $legacyPilotNasReleaseRoot 'external'
+    if (Test-Path -LiteralPath $legacyPilotExternalRoot) { Remove-Item -LiteralPath $legacyPilotExternalRoot -Recurse -Force }
+
+    $legacyPilotManifestPath = Join-Path $legacyPilotNasReleaseRoot 'manifest.json'
+    $legacyPilotManifestSignaturePath = Join-Path $legacyPilotNasReleaseRoot 'manifest.sig.json'
+    $legacyPilotManifest = Get-Content -Raw -LiteralPath $legacyPilotManifestPath -Encoding UTF8 | ConvertFrom-Json
+    if ($legacyPilotManifest.publishedAtUtc -is [DateTime]) {
+        $legacyPilotManifest.publishedAtUtc = ([DateTime]$legacyPilotManifest.publishedAtUtc).ToUniversalTime().ToString('o')
+    }
+    $legacyPilotManifest.version = $legacyPilotVersion
+    $legacyPilotManifest.releaseSequence = $legacyPilotSequence
+    $legacyPilotManifest.package.fileName = $legacyPilotPackageName
+    $legacyPilotManifest.package.path = "..\releases\$legacyPilotVersion\$legacyPilotPackageName"
+    [void]$legacyPilotManifest.PSObject.Properties.Remove('externalDependencies')
+    $legacyPilotManifest | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $legacyPilotManifestPath -Encoding UTF8
+    $legacyPilotManifestSignature = New-RevAgentDetachedJsonSignature -Content $legacyPilotManifest -SignedObject 'release-manifest' -KeyId $keyId -PrivateKeyXml ($rsa.ToXmlString($true)) -App 'revAgent'
+    $legacyPilotManifestSignature | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $legacyPilotManifestSignaturePath -Encoding UTF8
+
+    $legacyPilotChannel = Get-Content -Raw -LiteralPath (Join-Path $pilotReleaseRoot 'channels\pilot.json') -Encoding UTF8 | ConvertFrom-Json
+    if ($legacyPilotChannel.publishedAtUtc -is [DateTime]) {
+        $legacyPilotChannel.publishedAtUtc = ([DateTime]$legacyPilotChannel.publishedAtUtc).ToUniversalTime().ToString('o')
+    }
+    $legacyPilotChannel.version = $legacyPilotVersion
+    $legacyPilotChannel.releaseSequence = $legacyPilotSequence
+    $legacyPilotChannel.manifestPath = "..\releases\$legacyPilotVersion\manifest.json"
+    $legacyPilotChannel.packagePath = "..\releases\$legacyPilotVersion\$legacyPilotPackageName"
+    $legacyPilotChannel | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $pilotChannelPath -Encoding UTF8
+    $legacyPilotChannelSignature = New-RevAgentDetachedJsonSignature -Content $legacyPilotChannel -SignedObject 'channel' -KeyId $keyId -PrivateKeyXml ($rsa.ToXmlString($true)) -App 'revAgent'
+    $legacyPilotChannelSignature | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $pilotSignaturePath -Encoding UTF8
+
+    $legacyPilotReadiness = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+        -ReleaseRoot $nasRoot `
+        -ChannelManifestPath $pilotChannelPath `
+        -TrustedKeysPath $trustedKeysPath `
+        -ArtifactScanScope activeRelease `
+        -AllowTestSigningIdentity `
+        -AllowLegacyMissingNodeMsi `
+        -RepoRoot $RepoRoot
+    Assert-True ([bool]$legacyPilotReadiness.success -and [bool]$legacyPilotReadiness.nodeMsi.legacyBaselineAccepted) 'Exact active sidecar-less pilot baseline did not pass the bounded transition readiness allowance.'
+
+    $legacyPilotChannelBytes = [IO.File]::ReadAllBytes($pilotChannelPath)
+    $legacyPilotSignatureBytes = [IO.File]::ReadAllBytes($pilotSignaturePath)
+    $legacyPilotManifestBytes = [IO.File]::ReadAllBytes($legacyPilotManifestPath)
+    $legacyPilotTreeDigest = Get-TestTreeDigest -Root $legacyPilotNasReleaseRoot
+
+    $pilotNodeMsiBytes = [IO.File]::ReadAllBytes($pilotNodeMsiSidecar)
+    Remove-Item -LiteralPath $pilotNodeMsiSidecar -Force
+    try {
+        Assert-ThrowsLike -Action {
+            & (Join-Path $RepoRoot 'scripts\publish-signed-source-free-release-to-nas.ps1') -SourceReleaseRoot $pilotReleaseRoot -NasReleaseRoot $nasRoot -TrustedKeysPath $trustedKeysPath -Channel pilot -Force -RepoRoot $RepoRoot -AllowTestRoot | Out-Null
+        } -Pattern 'readiness|Node.js MSI|sidecar|external dependency' -Message 'Pilot publisher accepted a new candidate with its signed Node.js MSI sidecar missing.'
+    }
+    finally { [IO.File]::WriteAllBytes($pilotNodeMsiSidecar, $pilotNodeMsiBytes) }
+
+    [IO.File]::AppendAllText($pilotNodeMsiSidecar, 'TAMPERED')
+    try {
+        Assert-ThrowsLike -Action {
+            & (Join-Path $RepoRoot 'scripts\publish-signed-source-free-release-to-nas.ps1') -SourceReleaseRoot $pilotReleaseRoot -NasReleaseRoot $nasRoot -TrustedKeysPath $trustedKeysPath -Channel pilot -Force -RepoRoot $RepoRoot -AllowTestRoot | Out-Null
+        } -Pattern 'readiness|Node.js MSI|hash|signed metadata' -Message 'Pilot publisher accepted a new candidate with a tampered Node.js MSI sidecar.'
+    }
+    finally { [IO.File]::WriteAllBytes($pilotNodeMsiSidecar, $pilotNodeMsiBytes) }
+
+    $tamperedLegacyManifest = Get-Content -Raw -LiteralPath $legacyPilotManifestPath -Encoding UTF8 | ConvertFrom-Json
+    $tamperedLegacyManifest.version = 'tampered-legacy-pilot-baseline'
+    $tamperedLegacyManifest | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $legacyPilotManifestPath -Encoding UTF8
+    try {
+        Assert-ThrowsLike -Action {
+            & (Join-Path $RepoRoot 'scripts\publish-signed-source-free-release-to-nas.ps1') -SourceReleaseRoot $pilotReleaseRoot -NasReleaseRoot $nasRoot -TrustedKeysPath $trustedKeysPath -Channel pilot -Force -RepoRoot $RepoRoot -AllowTestRoot | Out-Null
+        } -Pattern 'readiness|integrity|signature' -Message 'Pilot publisher let the legacy baseline allowance bypass a tampered release manifest.'
+    }
+    finally { [IO.File]::WriteAllBytes($legacyPilotManifestPath, $legacyPilotManifestBytes) }
+
+    $legacyPilotTreeAfterRejects = Get-TestTreeDigest -Root $legacyPilotNasReleaseRoot
+    Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($pilotChannelPath), [byte[]]$legacyPilotChannelBytes) -and [Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($pilotSignaturePath), [byte[]]$legacyPilotSignatureBytes)) 'Rejected candidate/baseline tamper test changed the active legacy pilot pair.'
+    Assert-True ($legacyPilotTreeAfterRejects.itemCount -eq $legacyPilotTreeDigest.itemCount -and $legacyPilotTreeAfterRejects.sha256 -eq $legacyPilotTreeDigest.sha256) 'Rejected candidate/baseline tamper test changed the legacy pilot release tree.'
+
     Write-Host '  final successful pilot publish...'
     $pilotPublishResult = & (Join-Path $RepoRoot 'scripts\publish-signed-source-free-release-to-nas.ps1') -SourceReleaseRoot $pilotReleaseRoot -NasReleaseRoot $nasRoot -TrustedKeysPath $trustedKeysPath -Channel pilot -Force -RepoRoot $RepoRoot -AllowTestRoot
     Assert-True ([bool]$pilotPublishResult.success -and [bool]$pilotPublishResult.pilotIsolation.stableUnchanged -and [bool]$pilotPublishResult.pilotIsolation.sharedToolsUnchanged -and [bool]$pilotPublishResult.pilotIsolation.activeStableReleaseUnchanged -and [bool]$pilotPublishResult.pilotIsolation.heldHandleInvariantsVerified) 'Successful pilot publish did not return complete stable/tools/handle isolation evidence.'
@@ -671,6 +829,16 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     $stableToolsAfterPilot = Get-TestTreeDigest -Root (Join-Path $nasRoot 'tools')
     Assert-True ($stableReleaseAfterPilot.itemCount -eq $stableReleaseDigest.itemCount -and $stableReleaseAfterPilot.sha256 -eq $stableReleaseDigest.sha256 -and $stableToolsAfterPilot.itemCount -eq $stableToolsDigest.itemCount -and $stableToolsAfterPilot.sha256 -eq $stableToolsDigest.sha256) 'Successful pilot publish changed the canonical stable release or shared tools tree.'
     Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($nasStableChannelPath), [byte[]]$stableChannelBytes) -and [Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($nasStableSignaturePath), [byte[]]$stableSignatureBytes)) 'Successful pilot publish changed canonical stable channel bytes.'
+    Assert-True (-not (Test-Path -LiteralPath $nasSharedNodeDependency)) 'Pilot publish created the forbidden Node.js MSI dependency under NAS shared tools.'
+    $pilotNasNodeMsiSidecar = Join-Path $pilotNasReleaseRoot $nodeMsiRelativePath
+    Assert-True (Test-Path -LiteralPath $pilotNasNodeMsiSidecar -PathType Leaf) 'Pilot NAS release is missing its release-owned Node.js MSI sidecar.'
+    Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $pilotNasNodeMsiSidecar).Hash $nodeMsiSha256 'Pilot NAS release Node.js MSI sidecar hash does not match signed metadata.'
+    Assert-Equal ([long](Get-Item -LiteralPath $pilotNasNodeMsiSidecar).Length) $nodeMsiSizeBytes 'Pilot NAS release Node.js MSI sidecar size does not match signed metadata.'
+    $publishedPilotChannel = Get-Content -Raw -LiteralPath $pilotChannelPath | ConvertFrom-Json
+    Assert-Equal ([string]$publishedPilotChannel.version) $pilotVersion 'Legacy pilot transition did not activate the new sidecar-bearing pilot version.'
+    Assert-Equal ([long]$publishedPilotChannel.releaseSequence) ([long]$pilotSequence) 'Legacy pilot transition did not advance the active pilot release sequence.'
+    $legacyPilotTreeAfterPublish = Get-TestTreeDigest -Root $legacyPilotNasReleaseRoot
+    Assert-True ($legacyPilotTreeAfterPublish.itemCount -eq $legacyPilotTreeDigest.itemCount -and $legacyPilotTreeAfterPublish.sha256 -eq $legacyPilotTreeDigest.sha256) 'Successful replacement pilot publish mutated the immutable legacy pilot release tree.'
 
     $stableChannelBytesBeforeTamper = [IO.File]::ReadAllBytes($nasStableChannelPath)
     $legacyStableChannel = Get-Content -Raw -LiteralPath $nasStableChannelPath | ConvertFrom-Json
@@ -693,6 +861,7 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     $fullRootReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
         -ReleaseRoot $nasRoot `
         -TrustedKeysPath $trustedKeysPath `
+        -AllowTestSigningIdentity `
         -RepoRoot $RepoRoot `
         -ReportOnly
     Assert-True (-not [bool]$fullRootReadiness.success) "Full root readiness should still report legacy source artifacts."
@@ -714,6 +883,9 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     $publishJobCondition = ConvertTo-GithubWorkflowIfExpression -Expression $rawPublishJobCondition
     Assert-Equal $publishJobCondition "github.event_name == 'workflow_dispatch' && (inputs.publish_to_nas || inputs.publish_to_pilot)" "CD workflow must not auto-publish either signed channel on every push to main."
     Assert-True ($workflowText -match 'REVAGENT_CD_VERSION' -and $workflowText -match 'REVAGENT_CD_RELEASE_SEQUENCE') "CD workflow should route optional manual inputs through push-safe environment variables."
+    Assert-True ($workflowText -match 'https://nodejs\.org/dist/v24\.14\.1/node-v24\.14\.1-x64\.msi' -and $workflowText -match 'FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231B51D78ABE7852D4EC' -and $workflowText -match '32387072') 'CD workflow must download and pin the exact official Node.js MSI hash and size.'
+    Assert-True ($workflowText -match 'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US' -and $workflowText -match 'Get-AuthenticodeSignature' -and $workflowText -match 'SignatureStatus\]::Valid') 'CD workflow must validate the exact OpenJS Authenticode identity.'
+    Assert-True ($workflowText -match 'REVAGENT_NODE_MSI_PATH' -and $workflowText -match 'NodeMsiPath = \$env:REVAGENT_NODE_MSI_PATH') 'CD workflow must pass only its verified Node.js MSI path into the producer.'
 
     $producerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1")
     $publisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1")
@@ -724,6 +896,7 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     $productionSigningKeyId = 'revagent-prod-rsa-2026q3'
     $productionSigningFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
     Assert-True ($producerText -match 'test-ci\.ps1' -and $producerText -match 'RequireSigning') "CD producer should run engineering gates and require signing."
+    Assert-True ($producerText -match 'NodeMsiPath is required for production signed source-free CD' -and $producerText -match '\$publishArgs\["NodeMsiPath"\] = \$nodeMsiFullPath') 'CD producer must require and forward one explicit Node.js MSI asset in production.'
     foreach ($productionPinSurface in @($producerText, $publisherText, $legacyPublisherText, $bootstrapEvidenceText)) {
         Assert-True ($productionPinSurface -match [regex]::Escape($productionSigningKeyId) -and $productionPinSurface -match [regex]::Escape($productionSigningFingerprint)) "Every production signing/prestage surface must pin the exact production key id and fingerprint."
     }
@@ -731,6 +904,7 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     Assert-True ($producerText -match 'CdStagingNative' -and $producerText -match 'CreateDirectoryRelativeNoDelete' -and $producerText -match 'StagingRootGuard' -and $legacyPublisherText -match 'Assert-RevAgentAtomicStagingGuard') "CD generation must atomically create and hold one exact local staging leaf and reject unguarded production generation."
     Assert-True ($publisherText -match 'Stable NAS publish is temporarily fail-closed' -and $publisherText -match '\[ValidateSet\("stable", "pilot"\)\]' -and $publisherText -match 'DESKTOP-OKNV128' -and $publisherText -match 'NET01') "Production stable must remain fail-closed while pilot is restricted to the exact two-machine cohort."
     Assert-True ($publisherText -match 'Get-RevAgentNasPublishMutexName' -and $publisherText -match '\.WaitOne\(0, \$false\)' -and $publisherText -match 'Enter-RevAgentNasPublishLease' -and $publisherText -match 'ReleaseMutex' -and $publisherText -match 'publishLease\.stream\.Dispose') "NAS publisher must hold and release both its named mutex and NAS lease."
+    Assert-True ($publisherText -match 'Get-RevAgentSignedStableIdentity' -and $publisherText -match 'AllowLegacyMissingNodeMsi' -and ([regex]::Matches($publisherText, 'AllowLegacyMissingNodeMsi').Count -eq 1) -and $publisherText -match 'never passed to candidate/source readiness') 'Only an already-active signed destination channel baseline may use the transitional missing-sidecar readiness allowance.'
     Assert-True ($publisherText -match '\$candidateReleaseSequence\s*=\s*ConvertTo-RevAgentInt64OrZero -Value \$sourceArtifactIdentity\.releaseSequence' -and $publisherText -match '\$candidateReleaseSequence -ne \$readinessReleaseSequence') "NAS publisher anti-rollback guard must bind readiness releaseSequence to the post-readiness signed source identity."
     Assert-True ($publisherText -match '\[switch\]\$AllowRollback' -and $publisherText -match 'currentStableReleaseSequence' -and $publisherText -match 'current-sequence repair') "NAS publisher must block signed stable releaseSequence rollback or equal-sequence repair unless explicitly allowed."
     Assert-True ($publisherText -match 'candidate releaseSequence could not be determined as a positive integer') "NAS publisher must report an unreadable candidate releaseSequence separately from rollback protection."
@@ -754,22 +928,6 @@ finally {
     elseif (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
-}
-
-function Get-TestTreeDigest {
-    param([Parameter(Mandatory = $true)][string]$Root)
-    $fullRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\')
-    $rows = [Collections.Generic.List[string]]::new()
-    foreach ($directory in @(Get-ChildItem -LiteralPath $fullRoot -Directory -Recurse -Force | Sort-Object FullName)) {
-        [void]$rows.Add(('D|{0}' -f $directory.FullName.Substring($fullRoot.Length + 1).Replace('\', '/')))
-    }
-    foreach ($file in @(Get-ChildItem -LiteralPath $fullRoot -File -Recurse -Force | Sort-Object FullName)) {
-        [void]$rows.Add(('F|{0}|{1}|{2}' -f $file.FullName.Substring($fullRoot.Length + 1).Replace('\', '/'), $file.Length, (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash))
-    }
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try { $hash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($rows -join "`n"))))).Replace('-', '') }
-    finally { $sha.Dispose() }
-    return [pscustomobject]@{ itemCount = $rows.Count; sha256 = $hash }
 }
 
 Write-Host "Signed source-free CD tests passed." -ForegroundColor Green
