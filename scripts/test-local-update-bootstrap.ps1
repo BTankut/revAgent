@@ -533,20 +533,31 @@ try {
         $parentRouting = & $parentModule {
             $script:SharedCalls = @()
             $script:AdminCalls = @()
+            $script:MissingDpe = $false
             function Assert-RevAgentPrestagePathNoLinks { param([string]$Path) return [IO.Path]::GetFullPath($Path) }
-            function Test-Path { [CmdletBinding()] param([string]$LiteralPath) return $true }
+            function Test-Path {
+                [CmdletBinding()]
+                param([string]$LiteralPath)
+                if ($script:MissingDpe -and [string]::Equals((Split-Path -Leaf $LiteralPath), 'DPE', [StringComparison]::OrdinalIgnoreCase)) { return $false }
+                return $true
+            }
             function Assert-RevAgentPrestageSharedAncestorSafe { param([string]$Path) $script:SharedCalls += [IO.Path]::GetFullPath($Path) }
             function Assert-RevAgentPrestageAdminDirectory { param([string]$Path) $script:AdminCalls += [IO.Path]::GetFullPath($Path) }
             $common = [IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)).TrimEnd('\')
             $expectedShared = Join-Path $common 'DPE'
             $expectedProduct = Join-Path $expectedShared 'revAgent'
             $resolved = Get-RevAgentPrestageParent -BootstrapPath (Join-Path $expectedProduct 'bootstrap')
+            $script:MissingDpe = $true
+            $missingDpeError = $null
+            try { Get-RevAgentPrestageParent -BootstrapPath (Join-Path $expectedProduct 'bootstrap') | Out-Null }
+            catch { $missingDpeError = [string]$_.Exception.Message }
             [pscustomobject]@{
                 resolved = $resolved
                 expectedShared = $expectedShared
                 expectedProduct = $expectedProduct
                 sharedCalls = @($script:SharedCalls)
                 adminCalls = @($script:AdminCalls)
+                missingDpeError = $missingDpeError
             }
         }
     }
@@ -554,8 +565,356 @@ try {
     Assert-True ($parentRouting.sharedCalls.Count -eq 1 -and [string]::Equals([string]$parentRouting.sharedCalls[0], [string]$parentRouting.expectedShared, [StringComparison]::OrdinalIgnoreCase)) "Standalone prestage parent resolver did not route only the shared DPE ancestor through shared-ancestor validation."
     Assert-True ($parentRouting.adminCalls.Count -eq 1 -and [string]::Equals([string]$parentRouting.adminCalls[0], [string]$parentRouting.expectedProduct, [StringComparison]::OrdinalIgnoreCase)) "Standalone prestage parent resolver did not retain strict validation for the revAgent product root."
     Assert-True ([string]::Equals([string]$parentRouting.resolved, [string]$parentRouting.expectedProduct, [StringComparison]::OrdinalIgnoreCase)) "Standalone prestage parent resolver returned an unexpected product root."
+    Assert-True ([string]$parentRouting.missingDpeError -match 'bootstrap_shared_ancestor_not_prestaged') "Standalone production prestage did not fail closed when the shared DPE ancestor was missing."
 
     $prestageDocText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "docs\BOOTSTRAP_PRESTAGE.md")
+    $prestageInstallerSource = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-revagent-local-bootstrap.ps1")
+    Write-Host "Test canonical elevated-block shared DPE migration"
+    $elevatedBlockMatch = [regex]::Match($prestageDocText, '(?s)## 2\. Fresh elevated Windows PowerShell shell.*?```powershell\r?\n(.*?)\r?\n```')
+    Assert-True $elevatedBlockMatch.Success "Canonical elevated prestage block was not found."
+    $elevatedBlock = $elevatedBlockMatch.Groups[1].Value
+    $docTokens = $null
+    $docErrors = $null
+    $docAst = [Management.Automation.Language.Parser]::ParseInput($elevatedBlock, [ref]$docTokens, [ref]$docErrors)
+    Assert-True (@($docErrors).Count -eq 0) "Canonical elevated prestage block does not parse."
+
+    Write-Host "Test MAXIMUM_ALLOWED parent-only DACL mutation on real NTFS"
+    $nativeSourceMatch = [regex]::Match($elevatedBlock, "(?s)Add-Type -TypeDefinition @'\r?\n(.*?)\r?\n'@")
+    Assert-True $nativeSourceMatch.Success "Canonical elevated prestage native helper source was not found."
+    if (-not ('RevAgent.Prestage.DirectoryLockNative' -as [type])) { Add-Type -TypeDefinition $nativeSourceMatch.Groups[1].Value }
+    $propagationRoot = Join-Path $temp 'maximum-allowed-propagation'
+    $propagationParent = Join-Path $propagationRoot 'DPE'
+    $propagationChild = Join-Path $propagationParent 'existing-product'
+    $propagationGrandchild = Join-Path $propagationChild 'nested'
+    $propagationSibling = Join-Path $propagationParent 'sibling-product'
+    New-Item -ItemType Directory -Path $propagationGrandchild, $propagationSibling -Force | Out-Null
+    $guestSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-546')
+    $probeRule = [Security.AccessControl.FileSystemAccessRule]::new(
+        $guestSid,
+        [Security.AccessControl.FileSystemRights]::ReadAndExecute,
+        ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit),
+        [Security.AccessControl.PropagationFlags]::None,
+        [Security.AccessControl.AccessControlType]::Allow)
+    $childBeforeProbe = (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationChild).Sddl
+    $probeAcl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationParent
+    [void]$probeAcl.AddAccessRule($probeRule)
+    if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]::new($propagationParent), $probeAcl) }
+    else { ([IO.DirectoryInfo]::new($propagationParent)).SetAccessControl($probeAcl) }
+    $childAfterProbe = (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationChild).Sddl
+    Assert-True ($childAfterProbe -cne $childBeforeProbe) "The inheritable NTFS probe ACE did not first propagate to the existing child."
+    $childProbeRules = @((Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationChild).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { [string]$_.IdentityReference.Value -eq 'S-1-5-32-546' -and $_.IsInherited })
+    Assert-True ($childProbeRules.Count -eq 1) "The existing child did not receive exactly one inherited probe ACE."
+    $childSddlBeforeMax = (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationChild).Sddl
+    $grandchildSddlBeforeMax = (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationGrandchild).Sddl
+    $siblingSddlBeforeMax = (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationSibling).Sddl
+    $removeProbeAcl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationParent
+    $parentProbeRules = @($removeProbeAcl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) | Where-Object { [string]$_.IdentityReference.Value -eq 'S-1-5-32-546' })
+    Assert-True ($parentProbeRules.Count -eq 1) "The parent did not contain exactly one explicit inheritable probe ACE before MAXIMUM_ALLOWED removal."
+    $removeProbeAcl.RemoveAccessRuleSpecific($parentProbeRules[0])
+    $removeProbeRaw = [Security.AccessControl.RawSecurityDescriptor]::new($removeProbeAcl.GetSecurityDescriptorBinaryForm(), 0)
+    $removeProbeDacl = New-Object byte[] $removeProbeRaw.DiscretionaryAcl.BinaryLength
+    $removeProbeRaw.DiscretionaryAcl.GetBinaryForm($removeProbeDacl, 0)
+    $securityHandle = $null
+    try {
+        $securityHandle = [RevAgent.Prestage.DirectoryLockNative]::OpenSecurity($propagationParent)
+        $verifierHandle = [RevAgent.Prestage.DirectoryLockNative]::OpenVerifier($propagationParent)
+        try {
+            Assert-True ([string]::Equals([RevAgent.Prestage.DirectoryLockNative]::Identity($securityHandle), [RevAgent.Prestage.DirectoryLockNative]::Identity($verifierHandle), [StringComparison]::Ordinal)) "Share-all identity verifier did not resolve the guarded parent object."
+        }
+        finally { $verifierHandle.Dispose() }
+        $setDaclError = [RevAgent.Prestage.DirectoryLockNative]::SetDaclUnprotected($securityHandle, $removeProbeDacl)
+        Assert-True ($setDaclError -eq 0) "MAXIMUM_ALLOWED SetSecurityInfo returned error $setDaclError."
+        $verifierHandle = [RevAgent.Prestage.DirectoryLockNative]::OpenVerifier($propagationParent)
+        try {
+            Assert-True ([string]::Equals([RevAgent.Prestage.DirectoryLockNative]::Identity($securityHandle), [RevAgent.Prestage.DirectoryLockNative]::Identity($verifierHandle), [StringComparison]::Ordinal)) "Guarded parent identity changed after SetSecurityInfo."
+        }
+        finally { $verifierHandle.Dispose() }
+    }
+    finally { if ($null -ne $securityHandle) { $securityHandle.Dispose() } }
+    $parentAfterMax = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationParent
+    $parentProbeAfter = @($parentAfterMax.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { [string]$_.IdentityReference.Value -eq 'S-1-5-32-546' })
+    $parentRawAfterMax = [Security.AccessControl.RawSecurityDescriptor]::new($parentAfterMax.GetSecurityDescriptorBinaryForm(), 0)
+    Assert-True ($parentProbeAfter.Count -eq 0) "MAXIMUM_ALLOWED parent mutation did not remove the explicit inheritable probe ACE from the parent."
+    Assert-True (($parentRawAfterMax.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclAutoInherited) -ne 0 -and -not $parentAfterMax.AreAccessRulesProtected) "MAXIMUM_ALLOWED parent mutation did not retain the unprotected D:AI state."
+    Assert-True ((Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationChild).Sddl -ceq $childSddlBeforeMax) "MAXIMUM_ALLOWED parent mutation changed existing child SDDL."
+    Assert-True ((Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationGrandchild).Sddl -ceq $grandchildSddlBeforeMax) "MAXIMUM_ALLOWED parent mutation changed existing grandchild SDDL."
+    Assert-True ((Microsoft.PowerShell.Security\Get-Acl -LiteralPath $propagationSibling).Sddl -ceq $siblingSddlBeforeMax) "MAXIMUM_ALLOWED parent mutation changed existing sibling SDDL."
+
+    $docFunctionNames = @(
+        'Assert-SafeExistingDirectory', 'Get-AclRuleShape', 'Get-AclRuleShapeFromRule',
+        'Get-RawAclAceShape', 'Get-CanonicalSharedDpeRawShapes', 'Get-CanonicalSharedDpeShapes', 'Assert-CanonicalProgramDataCreatorOwner',
+        'Get-SharedDpeAclState', 'Test-ExactAclShapes', 'Assert-FinalSharedDpe',
+        'Get-CanonicalSharedDpeDaclBytes', 'Initialize-SafeSharedDpe'
+    )
+    $docFunctionAsts = @($docAst.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $docFunctionNames
+            }, $true))
+    Assert-True ($docFunctionAsts.Count -eq $docFunctionNames.Count) "Canonical elevated shared-DPE functions could not all be loaded for executable tests."
+
+    $docFixtureProgramData = Join-Path $temp 'doc-programdata'
+    $docFixtureDpe = Join-Path $docFixtureProgramData 'DPE'
+    $docFixtureChild = Join-Path $docFixtureDpe 'existing-product'
+    $docFixtureSibling = Join-Path $docFixtureDpe 'sibling-product'
+    $docFixtureJunction = Join-Path $temp 'doc-dpe-junction'
+    New-Item -ItemType Directory -Path $docFixtureChild, $docFixtureSibling -Force | Out-Null
+    New-Item -ItemType Junction -Path $docFixtureJunction -Target $docFixtureDpe | Out-Null
+    $docChildMarker = Join-Path $docFixtureChild 'unchanged.txt'
+    [IO.File]::WriteAllText($docChildMarker, 'unchanged-child-content', [Text.UTF8Encoding]::new($false))
+    $docChildIdentityBefore = '{0}|{1:o}' -f ([IO.DirectoryInfo]$docFixtureChild).FullName, ([IO.DirectoryInfo]$docFixtureChild).CreationTimeUtc
+    $docChildAclBefore = (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $docFixtureChild).Sddl
+    $docChildHashBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $docChildMarker).Hash
+    $docSiblingIdentityBefore = '{0}|{1:o}' -f ([IO.DirectoryInfo]$docFixtureSibling).FullName, ([IO.DirectoryInfo]$docFixtureSibling).CreationTimeUtc
+    $docSiblingAclBefore = (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $docFixtureSibling).Sddl
+
+    $docMigrationModule = New-Module -ScriptBlock ([scriptblock]::Create((@($docFunctionAsts | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n")))
+    try {
+        $docMigrationResult = & $docMigrationModule {
+            param($ProgramDataPath, $DpePath, $JunctionPath)
+
+            $script:ProgramDataRoot = [IO.Path]::GetFullPath($ProgramDataPath).TrimEnd('\')
+            $script:DpePath = [IO.Path]::GetFullPath($DpePath).TrimEnd('\')
+            $script:CurrentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $script:OtherSid = 'S-1-5-21-111-222-333-444'
+            $script:currentIdentity = [pscustomobject]@{ User = [Security.Principal.SecurityIdentifier]::new($script:CurrentSid) }
+            $script:trustedOwners = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+            $script:danger = [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
+            $script:OwnerWrites = 0
+            $script:InheritanceRefreshes = 0
+            $script:MutationTargets = @()
+            $script:RaceGuard = $false
+
+            $rawFixtureAcl = [Security.AccessControl.DirectorySecurity]::new()
+            $rawFixtureAcl.SetSecurityDescriptorSddlForm(('O:{0}G:BUD:AI(A;ID;FA;;;{0})(A;OICIIOID;GA;;;CO)(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;0x1200a9;;;BU)(A;CIID;0x116;;;BU)' -f $script:CurrentSid))
+            $rawFixture = [Security.AccessControl.RawSecurityDescriptor]::new($rawFixtureAcl.GetSecurityDescriptorBinaryForm(), 0)
+            $rawFixtureState = [pscustomobject]@{
+                Acl = $rawFixtureAcl
+                Raw = $rawFixture
+                RawShapes = @($rawFixture.DiscretionaryAcl | ForEach-Object { Get-RawAclAceShape $_ } | Sort-Object)
+                DaclPresent = $true
+                DaclAutoInherited = $true
+            }
+            $reconstructedBytes = Get-CanonicalSharedDpeDaclBytes $rawFixtureState $script:CurrentSid
+            $reconstructedAcl = [Security.AccessControl.RawAcl]::new([byte[]]$reconstructedBytes, 0)
+            $reconstructedShapes = @($reconstructedAcl | ForEach-Object { Get-RawAclAceShape $_ } | Sort-Object)
+            $rawReconstruction = [pscustomobject]@{
+                ruleCount = $reconstructedAcl.Count
+                exactCanonical = Test-ExactAclShapes $reconstructedShapes @(Get-CanonicalSharedDpeRawShapes)
+                allInherited = @($reconstructedAcl | Where-Object { (([int]$_.AceFlags -band [int][Security.AccessControl.AceFlags]::Inherited) -eq 0) }).Count -eq 0
+            }
+
+            function New-FixtureRule {
+                param(
+                    [string]$Sid,
+                    [Int64]$Rights,
+                    [Security.AccessControl.AccessControlType]$Type = [Security.AccessControl.AccessControlType]::Allow,
+                    [bool]$Inherited = $true,
+                    [Security.AccessControl.InheritanceFlags]$Inheritance = [Security.AccessControl.InheritanceFlags]::None,
+                    [Security.AccessControl.PropagationFlags]$Propagation = [Security.AccessControl.PropagationFlags]::None
+                )
+                return [pscustomobject]@{
+                    IdentityReference = [Security.Principal.SecurityIdentifier]::new($Sid)
+                    FileSystemRights = [Int64]$Rights
+                    AccessControlType = $Type
+                    IsInherited = $Inherited
+                    InheritanceFlags = $Inheritance
+                    PropagationFlags = $Propagation
+                }
+            }
+
+            function New-CanonicalRules {
+                $ciOi = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+                return @(
+                    (New-FixtureRule 'S-1-5-18' ([Int64][Security.AccessControl.FileSystemRights]::FullControl) -Inheritance $ciOi),
+                    (New-FixtureRule 'S-1-5-32-544' ([Int64][Security.AccessControl.FileSystemRights]::FullControl) -Inheritance $ciOi),
+                    (New-FixtureRule 'S-1-3-0' 268435456 -Inheritance $ciOi -Propagation ([Security.AccessControl.PropagationFlags]::InheritOnly)),
+                    (New-FixtureRule 'S-1-5-32-545' ([Int64]([Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [Security.AccessControl.FileSystemRights]::Synchronize)) -Inheritance $ciOi),
+                    (New-FixtureRule 'S-1-5-32-545' ([Int64][Security.AccessControl.FileSystemRights]::Write) -Inheritance ([Security.AccessControl.InheritanceFlags]::ContainerInherit))
+                )
+            }
+
+            function New-LegacyOwnerRule {
+                param(
+                    [Security.AccessControl.AccessControlType]$Type = [Security.AccessControl.AccessControlType]::Allow,
+                    [bool]$Inherited = $true,
+                    [Security.AccessControl.InheritanceFlags]$Inheritance = [Security.AccessControl.InheritanceFlags]::None
+                )
+                return New-FixtureRule $script:CurrentSid ([Int64][Security.AccessControl.FileSystemRights]::FullControl) -Type $Type -Inherited $Inherited -Inheritance $Inheritance
+            }
+
+            function New-FixtureAcl {
+                param([string]$Owner, [bool]$Protected, [object[]]$Rules)
+                $descriptor = [pscustomobject]@{ FixtureOwner = $Owner; AreAccessRulesProtected = $Protected; FixtureRules = @($Rules) }
+                $descriptor | Add-Member -MemberType ScriptMethod -Name GetOwner -Value {
+                    param($TargetType)
+                    return [Security.Principal.SecurityIdentifier]::new([string]$this.FixtureOwner)
+                }
+                $descriptor | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value {
+                    param($IncludeExplicit, $IncludeInherited, $TargetType)
+                    return @($this.FixtureRules | Where-Object { ($_.IsInherited -and $IncludeInherited) -or (-not $_.IsInherited -and $IncludeExplicit) })
+                }
+                return $descriptor
+            }
+
+            $script:ProgramDataAcl = New-FixtureAcl 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464' $false @(
+                (New-FixtureRule 'S-1-3-0' 268435456 -Inherited $false -Inheritance ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit) -Propagation ([Security.AccessControl.PropagationFlags]::InheritOnly))
+            )
+            $script:DpeOwner = $script:CurrentSid
+            $script:DpeProtected = $false
+            $script:DpeRules = @((New-CanonicalRules) + (New-LegacyOwnerRule))
+
+            function Get-Acl {
+                [CmdletBinding()]
+                param([Parameter(Mandatory = $true)][string]$LiteralPath)
+                $full = [IO.Path]::GetFullPath($LiteralPath).TrimEnd('\')
+                if ([string]::Equals($full, $script:ProgramDataRoot, [StringComparison]::OrdinalIgnoreCase)) { return $script:ProgramDataAcl }
+                if ([string]::Equals($full, $script:DpePath, [StringComparison]::OrdinalIgnoreCase)) { return New-FixtureAcl $script:DpeOwner $script:DpeProtected $script:DpeRules }
+                return Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath
+            }
+
+            function Get-SharedDpeAclState {
+                param([string]$Path)
+                $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+                if (-not [string]::Equals($full, $script:DpePath, [StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe shared DPE ancestor: $Path" }
+                $acl = New-FixtureAcl $script:DpeOwner $script:DpeProtected $script:DpeRules
+                $shapes = @($script:DpeRules | ForEach-Object { Get-AclRuleShapeFromRule $_ } | Sort-Object)
+                $canonical = @(Get-CanonicalSharedDpeShapes)
+                $legacy = @(Get-CanonicalSharedDpeShapes $script:CurrentSid)
+                $rawShapes = if (Test-ExactAclShapes $shapes $canonical) { @(Get-CanonicalSharedDpeRawShapes) }
+                    elseif (Test-ExactAclShapes $shapes $legacy) { @(Get-CanonicalSharedDpeRawShapes $script:CurrentSid) }
+                    else { @('invalid-fixture-raw-shape') }
+                return [pscustomobject]@{
+                    Item = [IO.DirectoryInfo]::new($script:DpePath)
+                    Acl = $acl
+                    Owner = $script:DpeOwner
+                    Shapes = $shapes
+                    ExplicitCount = @($script:DpeRules | Where-Object { -not $_.IsInherited }).Count
+                    Raw = $null
+                    RawShapes = $rawShapes
+                    DaclPresent = $true
+                    DaclAutoInherited = $true
+                }
+            }
+            function Open-DpeSecurityGuard {
+                param([string]$Path)
+                return [pscustomobject]@{ Path = [IO.Path]::GetFullPath($Path).TrimEnd('\'); Identity = 'stable-dpe'; Handle = [IO.MemoryStream]::new(); SecurityMutation = $true }
+            }
+            function Assert-DirectoryGuardPath {
+                param($Guard, [string]$Path)
+                if ($script:RaceGuard) { $script:RaceGuard = $false; throw 'Prestage directory path/handle identity changed: deterministic-race' }
+                if (-not [string]::Equals([string]$Guard.Path, [IO.Path]::GetFullPath($Path).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Prestage directory path/handle identity changed: path' }
+            }
+            function Set-SharedDpeOwnerAdministrators {
+                param($Guard)
+                $script:OwnerWrites++
+                $script:MutationTargets += [IO.Path]::GetFullPath([string]$Guard.Path).TrimEnd('\')
+                $script:DpeOwner = 'S-1-5-32-544'
+            }
+            function Refresh-SharedDpeInheritance {
+                param($Guard, $State, [string]$LegacyCreatorSid)
+                $script:InheritanceRefreshes++
+                $script:MutationTargets += [IO.Path]::GetFullPath([string]$Guard.Path).TrimEnd('\')
+                $script:DpeOwner = 'S-1-5-32-544'
+                $script:DpeProtected = $false
+                $script:DpeRules = @(New-CanonicalRules)
+            }
+
+            function Reset-Fixture([string]$Owner, [object[]]$Rules) {
+                $script:DpeOwner = $Owner; $script:DpeProtected = $false; $script:DpeRules = @($Rules)
+                $script:OwnerWrites = 0; $script:InheritanceRefreshes = 0; $script:MutationTargets = @(); $script:RaceGuard = $false
+            }
+            function Capture-Error([scriptblock]$Action) { try { & $Action | Out-Null; return '' } catch { return [string]$_.Exception.Message } }
+
+            Reset-Fixture $script:CurrentSid @((New-CanonicalRules) + (New-LegacyOwnerRule))
+            $successPath = Initialize-SafeSharedDpe $script:DpePath
+            $success = [pscustomobject]@{ path = $successPath; ownerWrites = $script:OwnerWrites; refreshes = $script:InheritanceRefreshes; owner = $script:DpeOwner; ruleCount = $script:DpeRules.Count; targets = @($script:MutationTargets) }
+
+            Reset-Fixture $script:OtherSid @((New-CanonicalRules) + (New-LegacyOwnerRule))
+            $wrongOwnerError = Capture-Error { Initialize-SafeSharedDpe $script:DpePath }
+            $wrongOwnerMutations = $script:OwnerWrites + $script:InheritanceRefreshes
+
+            Reset-Fixture $script:CurrentSid @((New-CanonicalRules) + (New-LegacyOwnerRule) + (New-FixtureRule $script:CurrentSid ([Int64][Security.AccessControl.FileSystemRights]::Delete) -Inherited $false))
+            $extraDangerError = Capture-Error { Initialize-SafeSharedDpe $script:DpePath }
+            $extraDangerMutations = $script:OwnerWrites + $script:InheritanceRefreshes
+
+            Reset-Fixture $script:CurrentSid @((New-CanonicalRules) + (New-LegacyOwnerRule) + (New-FixtureRule -Sid $script:CurrentSid -Rights ([Int64][Security.AccessControl.FileSystemRights]::Read) -Type ([Security.AccessControl.AccessControlType]::Deny)))
+            $denyError = Capture-Error { Initialize-SafeSharedDpe $script:DpePath }
+            $denyMutations = $script:OwnerWrites + $script:InheritanceRefreshes
+
+            Reset-Fixture $script:CurrentSid @((New-CanonicalRules) + (New-LegacyOwnerRule -Inheritance ([Security.AccessControl.InheritanceFlags]::ContainerInherit)))
+            $inheritableOwnerError = Capture-Error { Initialize-SafeSharedDpe $script:DpePath }
+            $inheritableOwnerMutations = $script:OwnerWrites + $script:InheritanceRefreshes
+
+            Reset-Fixture 'S-1-5-32-544' @(New-CanonicalRules)
+            $safePath = Initialize-SafeSharedDpe $script:DpePath
+            $safeNoOpMutations = $script:OwnerWrites + $script:InheritanceRefreshes
+
+            Reset-Fixture 'S-1-5-32-544' @((New-CanonicalRules) + (New-LegacyOwnerRule))
+            $recoveryPath = Initialize-SafeSharedDpe $script:DpePath
+            $recovery = [pscustomobject]@{ path = $recoveryPath; ownerWrites = $script:OwnerWrites; refreshes = $script:InheritanceRefreshes; owner = $script:DpeOwner }
+
+            Reset-Fixture $script:CurrentSid @((New-CanonicalRules) + (New-LegacyOwnerRule))
+            $script:RaceGuard = $true
+            $raceError = Capture-Error { Initialize-SafeSharedDpe $script:DpePath }
+            $raceMutations = $script:OwnerWrites + $script:InheritanceRefreshes
+
+            $junctionError = Capture-Error { Initialize-SafeSharedDpe $JunctionPath }
+
+            return [pscustomobject]@{
+                rawReconstruction = $rawReconstruction
+                success = $success
+                wrongOwnerError = $wrongOwnerError; wrongOwnerMutations = $wrongOwnerMutations
+                extraDangerError = $extraDangerError; extraDangerMutations = $extraDangerMutations
+                denyError = $denyError; denyMutations = $denyMutations
+                inheritableOwnerError = $inheritableOwnerError; inheritableOwnerMutations = $inheritableOwnerMutations
+                safePath = $safePath; safeNoOpMutations = $safeNoOpMutations
+                recovery = $recovery
+                raceError = $raceError; raceMutations = $raceMutations
+                junctionError = $junctionError
+            }
+        } $docFixtureProgramData $docFixtureDpe $docFixtureJunction
+    }
+    finally {
+        Remove-Module $docMigrationModule.Name -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $docFixtureJunction) { [IO.Directory]::Delete($docFixtureJunction) }
+    }
+
+    Assert-True ([int]$docMigrationResult.success.ownerWrites -eq 1 -and [int]$docMigrationResult.success.refreshes -eq 1 -and [string]$docMigrationResult.success.owner -eq 'S-1-5-32-544' -and [int]$docMigrationResult.success.ruleCount -eq 5) "Exact NET01 legacy shared-DPE pattern did not complete owner-first inheritance refresh."
+    Assert-True ([bool]$docMigrationResult.rawReconstruction.exactCanonical -and [bool]$docMigrationResult.rawReconstruction.allInherited -and [int]$docMigrationResult.rawReconstruction.ruleCount -eq 5) "Raw exact legacy DACL reconstruction did not retain the five canonical inherited ACEs."
+    Assert-True (@($docMigrationResult.success.targets | Where-Object { -not [string]::Equals([string]$_, [IO.Path]::GetFullPath($docFixtureDpe).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) "Legacy shared-DPE migration targeted a child or sibling path."
+    Assert-True ([string]$docMigrationResult.wrongOwnerError -match 'exact current-caller' -and [int]$docMigrationResult.wrongOwnerMutations -eq 0) "Wrong legacy owner reached shared-DPE mutation."
+    Assert-True ([string]$docMigrationResult.extraDangerError -match 'exact current-caller' -and [int]$docMigrationResult.extraDangerMutations -eq 0) "Extra explicit/dangerous ACE reached shared-DPE mutation."
+    Assert-True ([string]$docMigrationResult.denyError -match 'exact current-caller' -and [int]$docMigrationResult.denyMutations -eq 0) "Deny ACE reached shared-DPE mutation."
+    Assert-True ([string]$docMigrationResult.inheritableOwnerError -match 'exact current-caller' -and [int]$docMigrationResult.inheritableOwnerMutations -eq 0) "Inheritable legacy owner ACE reached shared-DPE mutation."
+    Assert-True ([int]$docMigrationResult.safeNoOpMutations -eq 0 -and [string]::Equals([string]$docMigrationResult.safePath, [IO.Path]::GetFullPath($docFixtureDpe), [StringComparison]::OrdinalIgnoreCase)) "Already-safe shared DPE was not a validation-only no-op."
+    Assert-True ([int]$docMigrationResult.recovery.ownerWrites -eq 0 -and [int]$docMigrationResult.recovery.refreshes -eq 1 -and [string]$docMigrationResult.recovery.owner -eq 'S-1-5-32-544') "Interrupted owner-first migration state did not recover through inheritance refresh only."
+    Assert-True ([string]$docMigrationResult.raceError -match 'identity changed' -and [int]$docMigrationResult.raceMutations -eq 0) "Shared-DPE guard race reached mutation."
+    Assert-True ([string]$docMigrationResult.junctionError -match 'Unsafe shared DPE ancestor') "Canonical elevated shared-DPE migration did not reject a junction."
+
+    $docChildIdentityAfter = '{0}|{1:o}' -f ([IO.DirectoryInfo]$docFixtureChild).FullName, ([IO.DirectoryInfo]$docFixtureChild).CreationTimeUtc
+    $docChildAclAfter = (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $docFixtureChild).Sddl
+    $docChildHashAfter = (Get-FileHash -Algorithm SHA256 -LiteralPath $docChildMarker).Hash
+    $docSiblingIdentityAfter = '{0}|{1:o}' -f ([IO.DirectoryInfo]$docFixtureSibling).FullName, ([IO.DirectoryInfo]$docFixtureSibling).CreationTimeUtc
+    $docSiblingAclAfter = (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $docFixtureSibling).Sddl
+    Assert-True ($docChildIdentityAfter -eq $docChildIdentityBefore -and $docChildAclAfter -eq $docChildAclBefore -and $docChildHashAfter -eq $docChildHashBefore) "Legacy shared-DPE migration changed existing child identity, ACL, or content."
+    Assert-True ($docSiblingIdentityAfter -eq $docSiblingIdentityBefore -and $docSiblingAclAfter -eq $docSiblingAclBefore) "Legacy shared-DPE migration changed sibling identity or ACL."
+
+    $newSharedDpeAst = @($docAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'New-InheritanceEnabledSharedDpe' }, $true))
+    Assert-True ($newSharedDpeAst.Count -eq 1) "Canonical absent-DPE creation function is missing."
+    $newSharedDpeText = $newSharedDpeAst[0].Extent.Text
+    Assert-True ($elevatedBlock -match 'CreateDirectoryWithSecurityDescriptor' -and $elevatedBlock -match 'CreateDirectoryW' -and $newSharedDpeText -match 'RawSecurityDescriptor' -and $newSharedDpeText -match 'ControlFlags\]::SelfRelative' -and $newSharedDpeText -notmatch 'ControlFlags\]::DiscretionaryAclPresent' -and $newSharedDpeText -notmatch 'CreateSubdirectory') "Absent-DPE path does not use owner-only native ACL-at-create without a supplied DACL."
+    Assert-True ($elevatedBlock -notmatch "New-ProtectedChild \$ProgramDataRoot 'DPE'" -and $elevatedBlock -match 'New-InheritanceEnabledSharedDpe \$ProgramDataRoot') "Absent-DPE routing still creates a protected/private DPE ancestor."
+    Assert-True ($elevatedBlock -match '(?s)New-InheritanceEnabledSharedDpe \$ProgramDataRoot\s+\$dpeGuard = Open-DpeSecurityGuard \$dpe\s+\$dpe = Initialize-SafeSharedDpe \$dpe \$dpeGuard') "Absent-DPE routing does not revalidate the newly opened shared ancestor while holding the MAXIMUM_ALLOWED guard."
+    Assert-True ($nativeSourceMatch.Groups[1].Value -match 'OpenSecurity\(string path\).*0x02000000,3' -and $nativeSourceMatch.Groups[1].Value -match 'OpenVerifier\(string path\).*path,0,7' -and $nativeSourceMatch.Groups[1].Value -match 'SetSecurityInfo\(handle,1,0x00000001' -and $nativeSourceMatch.Groups[1].Value -match 'SetSecurityInfo\(handle,1,0x20000004') "Native shared-DPE helper does not bind MAXIMUM_ALLOWED/share-3 mutation, share-7 identity verification, and owner/DACL calls to the required handle APIs."
+    $sharedMutationAsts = @($docAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Set-SharedDpeOwnerAdministrators', 'Refresh-SharedDpeInheritance', 'Initialize-SafeSharedDpe', 'Get-CanonicalSharedDpeDaclBytes') }, $true))
+    Assert-True ($sharedMutationAsts.Count -eq 4) "Shared-DPE handle-bound mutation functions are incomplete."
+    $sharedMutationText = @($sharedMutationAsts | ForEach-Object { $_.Extent.Text }) -join "`r`n"
+    Assert-True ($sharedMutationText -match 'SetOwner\(\$Guard\.Handle' -and $sharedMutationText -match 'SetDaclUnprotected\(\$Guard\.Handle' -and $sharedMutationText -notmatch 'SetAccessControl|SetNamedSecurityInfo|Get-ChildItem|/T') "Shared-DPE migration is not exclusively handle-bound and parent-only."
+    $initializeText = [string](@($sharedMutationAsts | Where-Object Name -eq 'Initialize-SafeSharedDpe')[0].Extent.Text)
+    Assert-True ($initializeText.IndexOf('Set-SharedDpeOwnerAdministrators $guard', [StringComparison]::Ordinal) -ge 0 -and $initializeText.IndexOf('Refresh-SharedDpeInheritance $guard', [StringComparison]::Ordinal) -gt $initializeText.IndexOf('Set-SharedDpeOwnerAdministrators $guard', [StringComparison]::Ordinal)) "Shared-DPE migration does not set owner before rebuilding inheritance on the same guard handle."
+    Assert-True ($prestageInstallerSource -notmatch 'Initialize-RevAgentPrestageSharedAncestor' -and (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\lib\RevAgent.LocalBootstrap.psm1')) -notmatch 'Initialize-RevAgentBootstrapSharedAncestor') "Persistent wrapper/module gained a legacy shared-DPE mutation authority."
+    Assert-True ($prestageInstallerSource -match 'bootstrap_shared_ancestor_not_prestaged' -and (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\lib\RevAgent.LocalBootstrap.psm1')) -match 'bootstrap_shared_ancestor_not_prestaged') "Production wrapper/module do not fail closed when DPE was not prestaged."
+
     $productHardenIndex = $prestageDocText.IndexOf('Set-ProtectedProductRootAcl $productPath', [StringComparison]::Ordinal)
     $prestageCreateIndex = $prestageDocText.IndexOf("New-ProtectedChild `$product 'prestage'", [StringComparison]::Ordinal)
     Assert-True ($prestageDocText -match 'exact existing product root \(or prestage child\) may carry the' -and $prestageDocText -match 'Never apply this migration to the shared DPE ancestor') "Manual prestage does not document the exact product-root/prestage legacy ACL migration boundary."
