@@ -577,7 +577,11 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     New-Item -ItemType Directory -Path $pilotInboxRoot -Force | Out-Null
     $inboxProbe = [pscustomobject]@{ called = $false }
     $inboxHook = { param($path, $source); $inboxProbe.called = $true }.GetNewClosure()
-    $nodeMsi = Get-ChildItem -LiteralPath (Join-Path $pilotReleaseRoot 'tools\dependencies') -File -Filter '*.msi' | Select-Object -First 1
+    $pilotDependenciesRoot = Join-Path $pilotReleaseRoot 'tools\dependencies'
+    $nodeMsi = if (Test-Path -LiteralPath $pilotDependenciesRoot -PathType Container) {
+        Get-ChildItem -LiteralPath $pilotDependenciesRoot -File -Filter '*.msi' -ErrorAction Stop | Select-Object -First 1
+    }
+    else { $null }
     $nodeMsiHash = if ($null -ne $nodeMsi) { (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeMsi.FullName).Hash } else { '' }
     Assert-ThrowsLike -Action {
         & $newInboxCommand -ReleaseRoot $pilotReleaseRoot -Channel pilot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath (Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1') -InboxRoot $pilotInboxRoot -ExpectedNodeMsiSha256 $nodeMsiHash -AllowTestRoot -TestMachineName 'OUTSIDER01' -TestBeforeInboxChildCreateHook $inboxHook | Out-Null
