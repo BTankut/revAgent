@@ -543,8 +543,12 @@ function Copy-RevAgentUserPack {
     Copy-UserPackFile -SourceRelativePath "config\revit-versions.json"
 
     Copy-UserPackFile -SourceRelativePath "installer\install-self-contained.ps1"
+    Copy-UserPackFile -SourceRelativePath "scripts\install-revagent-local-bootstrap.ps1" -DestinationRelativePath "installer\nas\install-revagent-local-bootstrap.ps1"
+    Copy-UserPackFile -SourceRelativePath "scripts\New-RevAgentBootstrapPrestageEvidence.ps1" -DestinationRelativePath "installer\nas\New-RevAgentBootstrapPrestageEvidence.ps1"
+    Copy-UserPackFile -SourceRelativePath "config\bootstrap-prestage-evidence.schema.json" -DestinationRelativePath "installer\nas\bootstrap-prestage-evidence.schema.json"
+    Copy-UserPackFile -SourceRelativePath "config\bootstrap-prestage-evidence.example.json" -DestinationRelativePath "installer\nas\bootstrap-prestage-evidence.example.json"
     Copy-UserPackDirectory -SourceRelativePath "installer\lib"
-    foreach ($nasTool in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1")) {
+    foreach ($nasTool in @("Start-revAgent-Update.ps1", "Start-revAgent-Update.cmd", "Install-revAgent-Updater-GUI.ps1", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1")) {
         Copy-UserPackFile -SourceRelativePath (Join-Path "installer\nas" $nasTool)
     }
 
@@ -963,17 +967,31 @@ try {
         installerLibVersions = "installer\lib\RevAgent.RevitVersions.psm1"
         installerLibPackage = "installer\lib\RevAgent.Package.psm1"
         installerLibPermissions = "installer\lib\RevAgent.Permissions.psm1"
+        installerLibSecureTemp = "installer\lib\RevAgent.SecureTemp.psm1"
         installerLibUpdatePolicy = "installer\lib\RevAgent.UpdatePolicy.psm1"
         installerLibProxy = "installer\lib\RevAgent.Proxy.psm1"
         installerLibLogRetention = "installer\lib\RevAgent.LogRetention.psm1"
         installerLibCodexRegistration = "installer\lib\RevAgent.CodexRegistration.psm1"
+        installerLibConfigSync = "installer\lib\RevAgent.ConfigSync.psm1"
+        installerLibDesktopLauncherCleanup = "installer\lib\RevAgent.DesktopLauncherCleanup.psm1"
+        installerLibDistributionIntegrity = "installer\lib\RevAgent.DistributionIntegrity.psm1"
+        installerLibLicense = "installer\lib\RevAgent.License.psm1"
         installerLibReporting = "installer\lib\RevAgent.Reporting.psm1"
         installerLibSourceFreeMigration = "installer\lib\RevAgent.SourceFreeMigration.psm1"
+        installerLibLocalBootstrap = "installer\lib\RevAgent.LocalBootstrap.psm1"
         installer = "installer\install-self-contained.ps1"
+        localBootstrapInstaller = "installer\nas\install-revagent-local-bootstrap.ps1"
+        bootstrapPrestageEvidenceTool = "installer\nas\New-RevAgentBootstrapPrestageEvidence.ps1"
+        bootstrapPrestageEvidenceSchema = "installer\nas\bootstrap-prestage-evidence.schema.json"
+        bootstrapPrestageEvidenceExample = "installer\nas\bootstrap-prestage-evidence.example.json"
+        localBootstrap = "installer\nas\Start-revAgent-Update.ps1"
+        localBootstrapLauncher = "installer\nas\Start-revAgent-Update.cmd"
         updater = "installer\nas\update-from-nas.ps1"
+        updaterGui = "installer\nas\Install-revAgent-Updater-GUI.ps1"
         versionStatusTool = "installer\nas\show-installed-version.ps1"
         updaterTaskInstaller = "installer\nas\install-updater-task.ps1"
         sourceFreeMigrationTool = "installer\nas\migrate-source-free-install.ps1"
+        codexUserIntegrationTool = "installer\nas\Invoke-revAgent-CodexUserIntegration.ps1"
         revitPlugin = "installer\revit-plugin\revAgentPlugin\revAgentPlugin.dll"
         commandSet = "installer\command-payload\revAgentCommandSet.dll"
         runtimeBundle = "installer\runtime-mcp-server\build\index.js"
@@ -1044,6 +1062,7 @@ try {
             entryPoint = "installer\install-self-contained.ps1"
             docsServerPath = "installer\revit-api-docs-mcp"
             sourceFreeMigrationTool = "installer\nas\migrate-source-free-install.ps1"
+            codexUserIntegrationTool = "installer\nas\Invoke-revAgent-CodexUserIntegration.ps1"
             updaterMinimumVersion = "0.1.0"
         }
         updatePolicy = [ordered]@{
@@ -1113,7 +1132,7 @@ try {
     }
 
     Write-Section "Refresh NAS tools"
-    foreach ($toolName in @("Install-revAgent-Updater.cmd", "Install-revAgent-Updater-GUI.cmd", "Install-revAgent-Updater-GUI.ps1", "revAgent Updater STABLE.cmd", "Install-Revit-MCP-Updater.cmd", "Install-Revit-MCP-Updater-GUI.cmd", "Install-Revit-MCP-Updater-GUI.ps1", "Revit MCP Updater STABLE.cmd", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "promote-nas-release.ps1", "README.md")) {
+    foreach ($toolName in @("Start-revAgent-Update.ps1", "Install-revAgent-Updater-GUI.ps1", "Install-Revit-MCP-Updater-GUI.ps1", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1", "promote-nas-release.ps1", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $scriptRoot $toolName) -Destination (Join-Path $toolsRoot $toolName) -Force
     }
     Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\publish-desktop-launcher-evidence.ps1") -Destination (Join-Path $toolsRoot "publish-desktop-launcher-evidence.ps1") -Force
@@ -1162,6 +1181,13 @@ try {
         Write-Host "Dependencies path: $dependenciesTarget" -ForegroundColor Green
     }
     Copy-RevAgentAdminAddonTools
+    foreach ($legacyCmd in @(Get-ChildItem -LiteralPath $toolsRoot -File -Filter "*.cmd" -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $legacyCmd.FullName -Force -ErrorAction Stop
+    }
+    $remainingToolCmds = @(Get-ChildItem -LiteralPath $toolsRoot -Recurse -File -Filter "*.cmd" -ErrorAction Stop)
+    if ($remainingToolCmds.Count -gt 0) {
+        throw "Production NAS tools tree must not contain CMD launchers: $(@($remainingToolCmds | Select-Object -ExpandProperty FullName) -join '; ')"
+    }
     Write-Host "Tools path: $toolsRoot" -ForegroundColor Green
 
     Write-Host "Release package: $zipPath" -ForegroundColor Green

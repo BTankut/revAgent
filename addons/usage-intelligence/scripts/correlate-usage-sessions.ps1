@@ -377,7 +377,9 @@ function Get-SendCodeDiagnosticClassification {
         [string]$ErrorMessage = ""
     )
 
-    $writePatternText = (@($WritePatterns) -join " ")
+    $writePatternValues = @(ConvertTo-StringArray $WritePatterns)
+    $writePatternCount = $writePatternValues.Count
+    $writePatternText = ($writePatternValues -join " ")
     $text = (@($ToolName, $TaskName, $Preview, $writePatternText, $ErrorMessage) |
         Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join " "
     $lower = $text.ToLowerInvariant()
@@ -398,9 +400,9 @@ function Get-SendCodeDiagnosticClassification {
         return New-SendCodeClassification -Classification "capability_gap" -Subtype "schedule_visual_structure" -Confidence "high" -Reasons @("schedule_visual_or_structure_pattern") -CoveredToolCandidates @("inspect_schedules", "set_schedule_cells") -SuggestedAction "Consider one guarded schedule-formatting design spike instead of one tool per table request."
     }
 
-    $hasScheduleTextWrite = @($WritePatterns | Where-Object { $_ -eq "Schedule.SetCellText" }).Count -gt 0
-    $hasParameterWrite = @($WritePatterns | Where-Object { $_ -eq "Parameter.Set" -or $_ -eq "Parameter.SetValueString" }).Count -gt 0
-    $hasDestructiveWrite = @($WritePatterns | Where-Object { $_ -eq "Document.Delete" }).Count -gt 0 -or $lower -match 'document\s*\.\s*delete\s*\('
+    $hasScheduleTextWrite = @($writePatternValues | Where-Object { $_ -eq "Schedule.SetCellText" }).Count -gt 0
+    $hasParameterWrite = @($writePatternValues | Where-Object { $_ -eq "Parameter.Set" -or $_ -eq "Parameter.SetValueString" }).Count -gt 0
+    $hasDestructiveWrite = @($writePatternValues | Where-Object { $_ -eq "Document.Delete" }).Count -gt 0 -or $lower -match 'document\s*\.\s*delete\s*\('
     if ($hasDestructiveWrite) {
         return New-SendCodeClassification -Classification "capability_gap" -Subtype "destructive_write_pattern" -Confidence "medium" -Reasons @("destructive_write_requires_human_review") -CoveredToolCandidates @() -SuggestedAction "Inspect the exact requested model mutation before deciding whether this is a real native capability, a policy gap, or an unsafe escape hatch."
     }
@@ -424,7 +426,7 @@ function Get-SendCodeDiagnosticClassification {
         return New-SendCodeClassification -Classification "routing_miss" -Subtype "element_parameter_tool_available" -Confidence "medium" -Reasons @("parameter_write_pattern") -CoveredToolCandidates @("set_element_parameter") -SuggestedAction "Prefer set_element_parameter after inspect_parameter_schema preflight."
     }
 
-    if (-not $HasManualTransaction -and @($WritePatterns).Count -eq 0) {
+    if (-not $HasManualTransaction -and $writePatternCount -eq 0) {
         if ($lower -match 'to tsv|export .*rows|export current|export placed|readable excel report|final qa tsv|schedule cells to') {
             return New-SendCodeClassification -Classification "tool_tuning_gap" -Subtype "export_friendly_read_output" -Confidence "medium" -Reasons @("read_only_export_or_report_shape") -CoveredToolCandidates @("inspect_schedules", "inspect_sheet_text", "reconcile_schedule_excel") -SuggestedAction "Improve read-tool output ergonomics or provide a standard local report adapter before adding a Revit tool."
         }
@@ -439,8 +441,8 @@ function Get-SendCodeDiagnosticClassification {
         }
     }
 
-    if ($HasManualTransaction -or @($WritePatterns).Count -gt 0) {
-        $triage = Get-SendCodeWriteReviewTriage -Preview $Preview -WritePatterns $WritePatterns -HasManualTransaction $HasManualTransaction
+    if ($HasManualTransaction -or $writePatternCount -gt 0) {
+        $triage = Get-SendCodeWriteReviewTriage -Preview $Preview -WritePatterns $writePatternValues -HasManualTransaction $HasManualTransaction
         return New-SendCodeClassification -Classification "capability_gap" -Subtype "unclassified_write_pattern" -Confidence "low" -Reasons @("write_pattern_requires_human_review") -CoveredToolCandidates @() -SuggestedAction "Manual triage required; use reviewBucket before deciding whether this is routing, tuning, acceptable escape hatch, or a real native capability gap." -ReviewBucket ([string]$triage.reviewBucket) -ReviewSignals @($triage.reviewSignals) -RequiresManualTriage $true
     }
 

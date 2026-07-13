@@ -864,8 +864,10 @@ try {
     $recursiveContext = Get-Content -Raw -Encoding UTF8 -LiteralPath $recursiveContextPath | ConvertFrom-Json
     Assert-Equal $recursiveContext.source.messageSource "event_msg" "Codex exporter must prefer visible event_msg messages over response_item duplicates."
     Assert-Equal $recursiveContext.threadTitle "Old folder continued thread" "Codex exporter must attach thread title from session_index.jsonl."
-    Assert-True ($recursiveContext.startedAtUtc -match '^2026-05-27T09:00:00') "Date-scoped context start must come from visible message time, not old folder creation time."
-    Assert-True ($recursiveContext.source.fullStartedAtUtc -match '^2026-05-01T07:00:00') "Codex context should preserve full thread first activity separately."
+    $recursiveStartedAtIso = ([datetime]$recursiveContext.startedAtUtc).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss")
+    $recursiveFullStartedAtIso = ([datetime]$recursiveContext.source.fullStartedAtUtc).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss")
+    Assert-Equal $recursiveStartedAtIso "2026-05-27T09:00:00" "Date-scoped context start must come from visible message time, not old folder creation time."
+    Assert-Equal $recursiveFullStartedAtIso "2026-05-01T07:00:00" "Codex context should preserve full thread first activity separately."
     Assert-True ($recursiveContext.userRequests[0].text -match 'Old folder date-scoped visible request') "Event message user request missing."
     Assert-True ($recursiveContext.userRequests[0].text -notmatch 'response_item duplicate') "Response item duplicate must not be exported when event_msg is available."
     Assert-True (@($recursiveContext.userRequests[0].localImagePaths).Count -eq 1) "Event message local image path should be preserved as bounded evidence."
@@ -1189,7 +1191,8 @@ try {
     Assert-Equal ([bool]$promotionSummary.humanReviewRequired) $true "Promotion summary must require human review."
     Assert-True (($promotionSummary.sendCode.classificationCounts | Where-Object { $_.name -eq "routing_miss" }).count -ge 1) "Promotion summary should classify covered-tool send_code as routing_miss."
     Assert-True (($promotionSummary.sendCode.classificationCounts | Where-Object { $_.name -eq "capability_gap" }).count -ge 1) "Promotion summary should classify unsupported send_code as capability_gap."
-    Assert-True (($promotionSummary.sendCode.classificationSubtypes | Where-Object { $_.name -eq "unclassified_write_pattern" }).count -eq 4) "Promotion summary should preserve unclassified write subtype counts."
+    $unclassifiedWriteSubtype = @($promotionSummary.sendCode.classificationSubtypes | Where-Object { $_.name -eq "unclassified_write_pattern" }) | Select-Object -First 1
+    Assert-True ($null -ne $unclassifiedWriteSubtype -and [int]$unclassifiedWriteSubtype.count -eq 4) "Promotion summary should preserve unclassified write subtype counts."
     Assert-True (($promotionSummary.sendCode.unclassifiedWriteReviewBuckets | Where-Object { $_.name -eq "local_export_adapter_review" }).count -eq 2) "Unclassified local/export bucket count mismatch."
     Assert-True (($promotionSummary.sendCode.unclassifiedWriteReviewBuckets | Where-Object { $_.name -eq "revit_db_mutation_review" }).count -eq 1) "Unclassified Revit DB mutation bucket count mismatch."
     Assert-True (($promotionSummary.sendCode.unclassifiedWriteReviewBuckets | Where-Object { $_.name -eq "read_helper_or_geometry_review" }).count -eq 1) "Unclassified read/helper bucket count mismatch."

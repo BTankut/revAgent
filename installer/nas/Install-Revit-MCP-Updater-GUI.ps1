@@ -27,7 +27,7 @@ if ($SmokeTest) {
     $arguments += "-SmokeTest"
 }
 
-& (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe") @arguments
+& (Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe") @arguments
 if ($null -ne $LASTEXITCODE) {
     exit $LASTEXITCODE
 }

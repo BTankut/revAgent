@@ -45,7 +45,12 @@ function Get-UtcTimeValue {
         return $null
     }
     try {
-        return [DateTimeOffset]::Parse([string]$Value).UtcDateTime
+        if ($Value -is [DateTimeOffset]) { return ([DateTimeOffset]$Value).UtcDateTime }
+        if ($Value -is [DateTime]) { return ([DateTime]$Value).ToUniversalTime() }
+        return [DateTimeOffset]::Parse(
+            [string]$Value,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind).UtcDateTime
     }
     catch {
         return $null

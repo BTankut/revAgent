@@ -24,11 +24,11 @@ function Join-RevitMcpWindowsCommandArguments {
 }
 
 function Resolve-RevitMcpWindowsPowerShellPath {
-    return (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
+    return (Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe")
 }
 
 function Resolve-RevitMcpWScriptPath {
-    return (Join-Path $env:WINDIR "System32\wscript.exe")
+    return (Join-Path ([Environment]::SystemDirectory) "wscript.exe")
 }
 
 function Write-RevitMcpHiddenPowerShellLauncher {

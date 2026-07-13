@@ -19,6 +19,8 @@ if ([string]::IsNullOrWhiteSpace($RuntimePackageRoot)) {
     $RuntimePackageRoot = Join-Path $RepoRoot "installer\runtime-mcp-server"
 }
 $RuntimePackageRoot = [System.IO.Path]::GetFullPath($RuntimePackageRoot)
+$script:RevAgentOsProgramFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+$script:RevAgentOsProgramFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
 
 function Assert-True {
     param(

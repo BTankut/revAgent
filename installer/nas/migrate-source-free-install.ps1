@@ -440,9 +440,9 @@ if ($Mode -eq "commit") {
         throw "Source-free migration commit mode requires the local trusted updater under WorkRoot: $updaterPath. Run Install/Repair first to bootstrap the local updater."
     }
 
-    $powerShellPath = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
-    if ([string]::IsNullOrWhiteSpace($powerShellPath)) {
-        $powerShellPath = "powershell.exe"
+    $powerShellPath = Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe"
+    if (-not (Test-Path -LiteralPath $powerShellPath -PathType Leaf)) {
+        throw "Canonical Windows PowerShell host was not found: $powerShellPath"
     }
 
     $updateArgs = [System.Collections.Generic.List[string]]::new()
